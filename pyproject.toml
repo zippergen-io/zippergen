@@ -4,8 +4,33 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "zippergen"
-version = "0.1.0"
+version = "0.1.0a1"
+description = "Python DSL and runtime for structured multi-agent coordination"
+readme = "README.md"
 requires-python = ">=3.11"
+license = { file = "LICENSE" }
+authors = [
+  { name = "The ZipperGen Authors" }
+]
+keywords = ["agents", "llm", "coordination", "protocols", "msc"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Developers",
+  "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.11",
+  "Topic :: Software Development :: Libraries",
+  "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/zippergen-io/zippergen"
+Repository = "https://github.com/zippergen-io/zippergen"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
