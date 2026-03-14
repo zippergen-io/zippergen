@@ -1,0 +1,199 @@
+"""
+ZipperGen — Layer 2: Action decorators.
+
+Design notes
+------------
+**What this module is.**
+This module provides ``@llm`` and ``@pure``, two decorators that let you define
+actions using ordinary Python function syntax. They read the function's
+parameter annotations to extract input types, and produce a ``LLMAction`` or
+``PureAction`` IR node (from Layer 1). The function itself is not called by
+the decorator — it is stored inside the IR node for later use by the executor.
+
+**Why decorators instead of constructing IR nodes directly?**
+Decorators keep the action definition close to normal Python style and avoid
+repeating the parameter names (once in the signature, once in an inputs tuple).
+They also enforce that every parameter has a ZipperGen type annotation, which
+prevents silent mistakes.
+
+**Why do the decorators return an IR node, not a callable?**
+An action in ZipperGen is a declaration, not a function call. Returning an IR
+node makes this explicit: after ``@pure``, the name refers to a ``PureAction``
+object that belongs to a program. If you need to call the underlying Python
+function directly (e.g. in tests), use ``action.fn(...)``.
+
+**Why does @llm always require outputs= explicitly?**
+An LLM action's body is ``...`` — there is no Python code to inspect for
+return information. Output names and types must therefore be stated explicitly.
+For ``@pure``, a single output can be inferred from the return annotation
+(``-> Bool``) as a convenience, but multiple outputs always require
+``outputs=``.
+
+**Why does @pure always require parentheses (@pure() not @pure)?**
+Without parentheses, Python passes the decorated function as the first
+argument to ``pure``, which requires a conditional check to distinguish
+"called with a function" from "called with keyword arguments". That is a
+non-obvious Python trick. Requiring parentheses keeps ``pure`` a simple
+function that always returns a decorator — one clear path, no special cases.
+
+**The Pylance warnings on ZipperGen-annotated functions are expected.**
+Pylance treats ``Text``, ``Bool``, etc. as variables rather than types, and
+warns that they cannot appear in annotation position. This is a static checker
+limitation — Python itself handles any object as an annotation at runtime,
+which is how the decorator reads them via ``inspect.signature``.
+
+Usage
+-----
+    @llm(
+        system="You are a medical expert ...",
+        user="Notes: {notes}\\nDiagnosis: {diag}",
+        parse="json",
+        outputs=(("verdict", Text), ("reason", Text)),
+    )
+    def assess(notes: Text, diag: Text) -> None: ...
+
+    # Single output: name defaults to function name, type from return annotation
+    @pure()
+    def check_agreement(v1: Text, v2: Text) -> Bool:
+        return v1 == v2
+
+    # Multiple outputs: declare them explicitly
+    @pure(outputs=(("verdict", Text), ("reason", Text)))
+    def combine(x: Text, y: Text) -> None: ...
+
+Notes
+-----
+The decorated name becomes a LLMAction / PureAction IR node, not a callable.
+To call the underlying Python function directly, use ``action.fn(...)``.
+"""
+
+from __future__ import annotations
+
+import inspect
+from collections.abc import Callable, Sequence
+
+from zippergen.syntax import (
+    ZType, LLMAction, PureAction, is_ztype,
+)
+
+__all__ = ["llm", "pure"]
+
+# Type alias for an output spec list/tuple
+OutputSpec = Sequence[tuple[str, ZType]]
+
+
+# ---------------------------------------------------------------------------
+# Internal helpers
+# ---------------------------------------------------------------------------
+
+def _extract_inputs(fn: Callable) -> tuple[tuple[str, ZType], ...]:
+    """
+    Read (name, ZType) pairs from a function's parameter annotations.
+    Raises TypeError for missing or non-ZType annotations.
+    """
+    sig = inspect.signature(fn)
+    inputs: list[tuple[str, ZType]] = []
+    for name, param in sig.parameters.items():
+        ann = param.annotation
+        if ann is inspect.Parameter.empty:
+            raise TypeError(
+                f"@action '{fn.__name__}': parameter '{name}' "
+                f"must have a ZipperGen type annotation (e.g. Text, Bool)."
+            )
+        if not is_ztype(ann):
+            raise TypeError(
+                f"@action '{fn.__name__}': annotation for '{name}' "
+                f"must be a ZType (Text, Bool, Int, Float, or TTuple), "
+                f"got {ann!r}."
+            )
+        inputs.append((name, ann))
+    return tuple(inputs)
+
+
+def _single_output_from_return(fn: Callable) -> tuple[tuple[str, ZType], ...]:
+    """
+    Derive a single output from the return annotation.
+    The output name is taken from the function name.
+    Raises TypeError if the annotation is missing or not a ZType.
+    """
+    ret = fn.__annotations__.get("return")
+    if ret is None or not is_ztype(ret):
+        raise TypeError(
+            f"@pure '{fn.__name__}': return annotation must be a ZType "
+            f"(e.g. -> Bool) for single-output inference, "
+            f"or supply outputs= explicitly."
+        )
+    return ((fn.__name__, ret),)
+
+
+# ---------------------------------------------------------------------------
+# @llm decorator
+# ---------------------------------------------------------------------------
+
+def llm(
+    *,
+    system: str,
+    user: str,
+    parse: str,
+    outputs: OutputSpec,
+) -> Callable[[Callable], LLMAction]:
+    """
+    Decorator that produces a LLMAction node.
+
+    Parameters
+    ----------
+    system : str
+        System prompt passed to the LLM.
+    user : str
+        User prompt template; may contain ``{var_name}`` placeholders.
+    parse : str
+        Expected output format: ``"json"``, ``"text"``, or ``"bool"``.
+    outputs : sequence of (name, ZType) pairs
+        Output variable names and their ZipperGen types.
+    """
+    def decorator(fn: Callable) -> LLMAction:
+        inputs = _extract_inputs(fn)
+        return LLMAction(
+            name=fn.__name__,
+            inputs=inputs,
+            outputs=tuple(outputs),
+            system_prompt=system,
+            user_prompt=user,
+            parse_format=parse,
+        )
+    return decorator
+
+
+# ---------------------------------------------------------------------------
+# @pure decorator
+# ---------------------------------------------------------------------------
+
+def pure(
+    *,
+    outputs: OutputSpec | None = None,
+) -> Callable[[Callable], PureAction]:
+    """
+    Decorator that produces a PureAction node.
+
+    Always called with parentheses:
+
+        @pure()
+        def check_agreement(v1: Text, v2: Text) -> Bool:
+            return v1 == v2
+
+        @pure(outputs=(("verdict", Text), ("reason", Text)))
+        def combine(x: Text, y: Text) -> None: ...
+
+    If ``outputs`` is omitted, the single output name is taken from the
+    function name and its type from the return annotation.
+    """
+    def decorator(f: Callable) -> PureAction:
+        inputs = _extract_inputs(f)
+        out = tuple(outputs) if outputs is not None else _single_output_from_return(f)
+        return PureAction(
+            name=f.__name__,
+            inputs=inputs,
+            outputs=out,
+            fn=f,
+        )
+    return decorator
