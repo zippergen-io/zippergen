@@ -93,6 +93,35 @@ def _next_act_seq() -> int:
         return seq
 
 
+# ---------------------------------------------------------------------------
+# Lamport logical clocks — per-lifeline thread-local
+# ---------------------------------------------------------------------------
+
+_lts = threading.local()
+
+
+def _lts_send() -> int:
+    """Increment clock for a send event; return the new value."""
+    if not hasattr(_lts, 'c'):
+        _lts.c = 0
+    _lts.c += 1
+    return _lts.c
+
+
+def _lts_recv(sender_clock: int) -> None:
+    """Update clock on receive: max(local, sender) + 1."""
+    if not hasattr(_lts, 'c'):
+        _lts.c = 0
+    _lts.c = max(_lts.c, sender_clock) + 1
+
+
+def _lts_tick() -> None:
+    """Increment clock for a local event (act_start, act)."""
+    if not hasattr(_lts, 'c'):
+        _lts.c = 0
+    _lts.c += 1
+
+
 def _default_trace(event: dict) -> None:
     name = threading.current_thread().name
     t = event["type"]
@@ -125,13 +154,13 @@ class _SeqQueue:
         self._q: queue.Queue = queue.Queue()
         self._next = 0
 
-    def put(self, values: tuple) -> int:
+    def put(self, values: tuple, lts: int = 0) -> int:
         seq = self._next
         self._next += 1
-        self._q.put((seq, values))
+        self._q.put((seq, values, lts))
         return seq
 
-    def get(self) -> tuple[int, tuple]:
+    def get(self) -> tuple[int, tuple, int]:
         return self._q.get()
 
 
@@ -213,17 +242,19 @@ def _exec(stmt: LocalStmt, env: Env, ch: Channels, llm_backend, trace) -> None:
 
         case SendStmt(lifeline=A, payload=xs, receiver=B):
             values = tuple(_eval(x, env) for x in xs)
-            seq = ch[(A.name, B.name)].put(values)
+            lts = _lts_send()
+            seq = ch[(A.name, B.name)].put(values, lts)
             if trace:
                 trace({
                     "type": "send",
                     "from": A.name, "to": B.name,
                     "values": [_jsonify(v) for v in values],
-                    "seq": seq,
+                    "seq": seq, "lts": lts,
                 })
 
         case RecvStmt(lifeline=A, bindings=ys, sender=B):
-            seq, values = ch[(B.name, A.name)].get()
+            seq, values, sender_lts = ch[(B.name, A.name)].get()
+            _lts_recv(sender_lts)
             _bind(ys, values, env)
             if trace:
                 trace({
@@ -237,13 +268,14 @@ def _exec(stmt: LocalStmt, env: Env, ch: Channels, llm_backend, trace) -> None:
             in_vals = tuple(_eval(x, env) for x in ins)
             named_inputs = {name: val for (name, _), val in zip(action.inputs, in_vals)}
             seq = _next_act_seq()
+            _lts_tick()
             if trace:
                 trace({
                     "type": "act_start",
                     "lifeline": threading.current_thread().name,
                     "action": action.name,
                     "inputs": {k: _jsonify(v) for k, v in named_inputs.items()},
-                    "seq": seq,
+                    "seq": seq, "lts": _lts.c,
                 })
             if isinstance(action, PureAction):
                 raw = action.fn(*in_vals)
@@ -258,6 +290,7 @@ def _exec(stmt: LocalStmt, env: Env, ch: Channels, llm_backend, trace) -> None:
                     for (aname, _), var in zip(action.outputs, outs)
                 }
             env.update(out_map)
+            _lts_tick()
             if trace:
                 trace({
                     "type": "act",
@@ -276,7 +309,8 @@ def _exec(stmt: LocalStmt, env: Env, ch: Channels, llm_backend, trace) -> None:
             _exec(t if _eval(c, env) else f, env, ch, llm_backend, trace)
 
         case IfRecvStmt(lifeline=A, bindings=ys, sender=B, branch_true=t, branch_false=f):
-            seq, values = ch[(B.name, A.name)].get()
+            seq, values, sender_lts = ch[(B.name, A.name)].get()
+            _lts_recv(sender_lts)
             _bind(ys, values, env)
             flag = _eval(ys[0], env) if isinstance(ys[0], VarExpr) else values[0]
             if trace:
@@ -295,7 +329,8 @@ def _exec(stmt: LocalStmt, env: Env, ch: Channels, llm_backend, trace) -> None:
 
         case WhileRecvStmt(lifeline=A, bindings=ys, sender=B, body=body, exit_body=exit_b):
             while True:
-                seq, values = ch[(B.name, A.name)].get()
+                seq, values, sender_lts = ch[(B.name, A.name)].get()
+                _lts_recv(sender_lts)
                 _bind(ys, values, env)
                 flag = _eval(ys[0], env) if isinstance(ys[0], VarExpr) else values[0]
                 if trace:

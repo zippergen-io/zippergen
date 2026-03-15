@@ -227,6 +227,10 @@ _HTML = r"""<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { --ui-zoom: 1.1; }
+  html  { zoom: var(--ui-zoom); }
+</style>
 <title>ZipperChat</title>
 <style>
 /* ── Reset & base ─────────────────────────────────────────────────────── */
@@ -239,7 +243,7 @@ body {
   color: #c9d1d9;
   display: flex;
   flex-direction: column;
-  height: 100vh;
+  height: calc(100vh / var(--ui-zoom));  /* compensate so body fills exactly the viewport after zoom */
   overflow: hidden;
 }
 
@@ -316,18 +320,33 @@ body {
 #container {
   flex: 1;
   overflow-y: auto;
-  padding: 24px 28px 60px;
+  padding: 0 28px 60px;
+}
+
+/* ── Header row — sticky inside the scroll container ─────────────────── */
+/* Placing the header inside #container means the header grid and every    */
+/* row-wrapper grid share the same containing block, so 1fr resolves to    */
+/* exactly the same pixel width and columns stay aligned at all times.     */
+#diagram-header {
+  position: sticky;
+  top: 0;
+  z-index: 10;          /* above event rows, which create stacking contexts via animation */
+  display: grid;
+  /* grid-template-columns set dynamically */
+  column-gap: 0;
+  padding-top: 24px;
+  padding-bottom: 4px;  /* covers the gap between header and first event row */
+  background: #0d1117;
 }
 #container::-webkit-scrollbar { width: 6px; }
 #container::-webkit-scrollbar-track { background: transparent; }
 #container::-webkit-scrollbar-thumb { background: #30363d; border-radius: 3px; }
 
-/* ── Diagram grid ─────────────────────────────────────────────────────── */
+/* ── Diagram column (events only) ────────────────────────────────────── */
 #diagram {
-  display: grid;
-  /* grid-template-columns set dynamically */
-  row-gap: 4px;
-  column-gap: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 
 /* ── Column header cells ─────────────────────────────────────────────── */
@@ -388,30 +407,36 @@ body {
   white-space: pre-line;
 }
 
-/* ── Message row (spans all columns) ─────────────────────────────────── */
+/* ── Act row wrapper ──────────────────────────────────────────────────── */
+.act-row {
+  display: grid;
+  column-gap: 0;
+  /* grid-template-columns set dynamically */
+}
+
+/* ── Message row wrapper ──────────────────────────────────────────────── */
 .msg-row {
-  /* grid-column: 1 / N+1 set dynamically */
+  display: grid;
+  column-gap: 0;
+  /* grid-template-columns set dynamically */
   position: relative;
-  display: flex;
   min-height: 56px;
   margin: 0;
   border-radius: 4px;
   overflow: visible;
   animation: fadein 0.15s ease;
 }
-.msg-row.pending { opacity: 0.6; }
 
 /* ── Message cell ─────────────────────────────────────────────────────── */
 .msg-cell {
-  flex: 1;
   display: flex;
   align-items: center;
+  justify-content: center;
   padding: 6px 8px;
   min-height: 56px;
   border-radius: 4px;
   margin: 0 3px;
 }
-.msg-cell { justify-content: center; }
 
 /* ── Message box (send or recv) ──────────────────────────────────────── */
 .msg-box {
@@ -511,8 +536,9 @@ body {
   <span id="status">connecting…</span>
 </div>
 
-<!-- ── Main content ────────────────────────────────────────────────────── -->
+<!-- ── Scrolling events (header is sticky inside so columns stay aligned) ── -->
 <div id="container">
+  <div id="diagram-header"></div>
   <div id="diagram"></div>
 </div>
 
@@ -530,14 +556,24 @@ const COLS = [
 let lifelines = [];
 let N = 0;
 const diagram   = document.getElementById('diagram');
+const headerEl  = document.getElementById('diagram-header');
 const container = document.getElementById('container');
 const statusEl  = document.getElementById('status');
 const topbar    = document.getElementById('topbar');
 
-const pending  = {};   // key "from->to:seq" → entry
-const completed = [];
-let actRow = null;
-const pendingActs = {};
+// ── Constraint graph ────────────────────────────────────────────────────
+// Each row (act or message) is a node with a level (vertical position).
+// AddEdge(u,v) means u must appear above v.  Raise() propagates level
+// increases transitively.  syncOrder() re-sorts DOM elements by level.
+const cgRows    = {};         // id → CgRow
+let   cgIdSeq   = 0;
+const cgLast    = {};         // lifeline → CgRow (last materialized event)
+const cgPending = {};         // lifeline → Set of CgRow (open msg rows, recv pending)
+const cgOpen    = {};         // "A->B" → CgRow[] FIFO
+
+const completed       = [];   // message rows that have received (for arrow redraw)
+let   actRow          = null; // { cgRow, occupied: Set<lifelineIdx> } — visual compression heuristic
+const pendingActBoxes = {};   // "lifeline:seq" → act-box DOM element
 
 // ── Helpers ────────────────────────────────────────────────────────────
 const col = i => COLS[i % COLS.length];
@@ -573,29 +609,76 @@ function isCtrlVals(vals) {
 // ── Diagram init ───────────────────────────────────────────────────────
 function clearDiagram() {
   diagram.innerHTML = '';
-  lifelines = [];
-  N = 0;
-  Object.keys(pending).forEach(k => delete pending[k]);
+  headerEl.innerHTML = '';
+  lifelines = []; N = 0;
+  Object.keys(cgRows).forEach(k => delete cgRows[k]);
+  cgIdSeq = 0;
+  Object.keys(cgLast).forEach(k => delete cgLast[k]);
+  Object.keys(cgPending).forEach(k => delete cgPending[k]);
+  Object.keys(cgOpen).forEach(k => delete cgOpen[k]);
+  Object.keys(pendingActBoxes).forEach(k => delete pendingActBoxes[k]);
   completed.length = 0;
-  Object.keys(pendingActs).forEach(k => delete pendingActs[k]);
   actRow = null;
 }
 
 function initDiagram(lls) {
   lifelines = lls;
   N = lls.length;
-  diagram.style.gridTemplateColumns = `repeat(${N}, 1fr)`;
+  headerEl.style.gridTemplateColumns = `repeat(${N}, 1fr)`;
+  // #diagram is now a flex column; grid template is set per-row wrapper
 
   lls.forEach((name, i) => {
     const c = col(i);
     const h = document.createElement('div');
     h.className = 'll-header';
     h.textContent = name;
-    h.style.background = c.bg;
     h.style.borderBottomColor = c.accent;
     h.style.color = c.text;
-    diagram.appendChild(h);
+    headerEl.appendChild(h);
   });
+}
+
+// ── Constraint graph helpers ────────────────────────────────────────────
+function newCgRow(kind) {
+  const r = { id: cgIdSeq++, kind, level: 0, succ: new Set(), pred: new Set(),
+              wrapper: null, cells: null, svg: null,
+              fromIdx: -1, toIdx: -1, ctrl: false, color: null };
+  cgRows[r.id] = r;
+  return r;
+}
+
+function cgAddEdge(u, v) {
+  if (!u || !v || u.id === v.id) return;
+  if (u.succ.has(v.id)) return;
+  u.succ.add(v.id); v.pred.add(u.id);
+  if (v.level <= u.level) cgRaise(v, u.level + 1);
+}
+
+function cgRaise(v, nl) {
+  if (nl <= v.level) return;
+  v.level = nl;
+  for (const wId of v.succ) cgRaise(cgRows[wId], v.level + 1);
+}
+
+// r becomes the next materialized event on `lifeline`:
+//   • it must follow the last event on that lifeline
+//   • it must precede any still-pending receives on that lifeline
+function materializeOnLifeline(lifeline, r) {
+  cgAddEdge(cgLast[lifeline], r);
+  for (const p of (cgPending[lifeline] || [])) {
+    if (p.id !== r.id) cgAddEdge(r, p);
+  }
+  cgLast[lifeline] = r;
+}
+
+// Re-sort all row wrappers in the diagram by their level.
+// Uses the "append each in order" trick: appendChild on an existing child moves it.
+function syncOrder() {
+  const sorted = Object.values(cgRows)
+    .filter(r => r.wrapper)
+    .sort((a, b) => a.level !== b.level ? a.level - b.level : a.id - b.id);
+  for (const r of sorted) diagram.appendChild(r.wrapper);
+  requestAnimationFrame(redrawAll);
 }
 
 // ── Replay button ──────────────────────────────────────────────────────
@@ -619,20 +702,34 @@ function showReplayButton() {
 // ── Act rows ───────────────────────────────────────────────────────────
 function handleActStart(ev) {
   const i = lifelineIdx(ev.lifeline);
+  const c = col(i);
 
-  if (!actRow || actRow.occupied.has(i)) {
-    const cells = lifelines.map((_, k) => {
+  let r;
+  if (actRow && !actRow.occupied.has(i)) {
+    // Reuse current act row for a concurrent act on another lifeline.
+    // materializeOnLifeline adds the ordering constraint and may raise the
+    // shared row's level if this lifeline's history demands it.
+    r = actRow.cgRow;
+    materializeOnLifeline(ev.lifeline, r);
+  } else {
+    r = newCgRow('action');
+    const wrapper = document.createElement('div');
+    wrapper.className = 'act-row';
+    wrapper.style.gridTemplateColumns = `repeat(${N}, 1fr)`;
+    r.wrapper = wrapper;
+    r.cells = lifelines.map((_, k) => {
       const cell = document.createElement('div');
       cell.className = 'act-cell';
       cell.style.background = col(k).bg;
-      diagram.appendChild(cell);
+      wrapper.appendChild(cell);
       return cell;
     });
-    actRow = { cells, occupied: new Set() };
+    materializeOnLifeline(ev.lifeline, r);
+    diagram.appendChild(wrapper);
+    actRow = { cgRow: r, occupied: new Set() };
   }
   actRow.occupied.add(i);
 
-  const c = col(i);
   const box = document.createElement('div');
   box.className = 'act-box running';
   box.style.borderLeftColor = c.accent;
@@ -651,15 +748,16 @@ function handleActStart(ev) {
     box.appendChild(el);
   }
 
-  actRow.cells[i].appendChild(box);
+  r.cells[i].appendChild(box);
+  pendingActBoxes[`${ev.lifeline}:${ev.seq}`] = box;
+  syncOrder();
   scrollDown();
-  pendingActs[`${ev.lifeline}:${ev.seq}`] = box;
 }
 
 function handleAct(ev) {
-  const box = pendingActs[`${ev.lifeline}:${ev.seq}`];
+  const box = pendingActBoxes[`${ev.lifeline}:${ev.seq}`];
   if (!box) return;
-  delete pendingActs[`${ev.lifeline}:${ev.seq}`];
+  delete pendingActBoxes[`${ev.lifeline}:${ev.seq}`];
 
   box.classList.remove('running');
 
@@ -674,8 +772,6 @@ function handleAct(ev) {
 }
 
 // ── Message rows ───────────────────────────────────────────────────────
-function breakActRow() { actRow = null; }
-
 function makeBox(label, text, color) {
   const box = document.createElement('div');
   box.className = 'msg-box';
@@ -697,52 +793,72 @@ function makeBox(label, text, color) {
 }
 
 function handleSend(ev) {
-  breakActRow();
-  const key = `${ev.from}->${ev.to}:${ev.seq}`;
+  actRow = null;  // a send ends the current act-sharing window
   const fromIdx = lifelineIdx(ev.from);
   const toIdx   = lifelineIdx(ev.to);
   const ctrl    = isCtrlVals(ev.values);
   const color   = col(fromIdx).accent;
 
-  const row = document.createElement('div');
-  row.className = 'msg-row';
-  row.style.gridColumn = `1 / ${N + 1}`;
+  const r = newCgRow('message');
+  r.fromIdx = fromIdx; r.toIdx = toIdx; r.ctrl = ctrl; r.color = color;
 
-  const cells = lifelines.map((_, k) => {
+  const wrapper = document.createElement('div');
+  wrapper.className = 'msg-row';
+  wrapper.style.gridTemplateColumns = `repeat(${N}, 1fr)`;
+  r.wrapper = wrapper;
+  r.cells = lifelines.map((_, k) => {
     const cell = document.createElement('div');
     cell.className = 'msg-cell';
     cell.style.background = col(k).bg;
-    row.appendChild(cell);
+    wrapper.appendChild(cell);
     return cell;
   });
 
-  cells[fromIdx].appendChild(
-    makeBox('send', fmtList(ev.values) || null, color));
-
+  r.cells[fromIdx].appendChild(makeBox('send', fmtList(ev.values) || null, color));
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-  row.appendChild(svg);
-  diagram.appendChild(row);
+  wrapper.appendChild(svg);
+  r.svg = svg;
 
-  const p = { row, svg, cells, fromIdx, toIdx, ctrl, color, sendVals: ev.values };
-  pending[key] = p;
-  requestAnimationFrame(() => { _drawArrow(p, true); scrollDown(); });
+  // Register in the constraint graph: send event on from-lifeline
+  materializeOnLifeline(ev.from, r);
+
+  // Register as a pending receive on to-lifeline
+  const chanKey = `${ev.from}->${ev.to}`;
+  if (!cgOpen[chanKey]) cgOpen[chanKey] = [];
+  cgOpen[chanKey].push(r);
+  if (!cgPending[ev.to]) cgPending[ev.to] = new Set();
+  cgPending[ev.to].add(r);
+
+  // Register for arrow drawing now (recv box is empty until recv fires;
+  // _drawArrow falls back to column-midpoint for the missing endpoint).
+  const p = { row: wrapper, svg, cells: r.cells,
+              fromIdx, toIdx, ctrl, color };
+  r._completed = p;
+  completed.push(p);
+
+  diagram.appendChild(wrapper);
+  syncOrder();
+  scrollDown();
 }
 
 function handleRecv(ev) {
-  const key = `${ev.from}->${ev.to}:${ev.seq}`;
-  const p = pending[key];
-  if (!p) return;
-  delete pending[key];
+  const chanKey = `${ev.from}->${ev.to}`;
+  const queue   = cgOpen[chanKey];
+  if (!queue || !queue.length) return;
+  const r = queue.shift();
 
-  p.cells[p.toIdx].appendChild(
-    makeBox('recv', fmtDict(ev.bindings || {}) || null, col(p.toIdx).accent));
+  // Remove from pending-receive set
+  cgPending[ev.to]?.delete(r);
 
-  completed.push(p);
-  requestAnimationFrame(() => {
-    p.svg.innerHTML = '';
-    _drawArrow(p, false);
-    scrollDown();
-  });
+  // Fill in recv box (arrow is redrawn by syncOrder → redrawAll)
+  r.cells[r.toIdx].appendChild(
+    makeBox('recv', fmtDict(ev.bindings || {}) || null, col(r.toIdx).accent));
+
+  // Register recv event on to-lifeline (may raise level of later rows)
+  materializeOnLifeline(ev.to, r);
+
+  syncOrder();
+  scrollDown();
 }
 
 // ── Arrow drawing ──────────────────────────────────────────────────────
@@ -757,20 +873,25 @@ function _drawArrow(p, dashed) {
   const recvBox  = p.cells[p.toIdx].querySelector('.msg-box');
   const rowRect  = row.getBoundingClientRect();
 
+  // getBoundingClientRect() returns visual pixels (affected by CSS zoom),
+  // but clientWidth / viewBox are in CSS pixels.  Derive the zoom factor
+  // from the row element itself so arrow coords stay in viewBox space.
+  const zoom = W > 0 ? rowRect.width / W : 1;
+
   let x1, x2;
   const dir = p.toIdx > p.fromIdx ? 1 : -1;
   const cellW = W / N;
 
   if (sendBox) {
     const r = sendBox.getBoundingClientRect();
-    x1 = dir > 0 ? r.right - rowRect.left : r.left - rowRect.left;
+    x1 = (dir > 0 ? r.right - rowRect.left : r.left - rowRect.left) / zoom;
   } else {
     x1 = (p.fromIdx + 0.5) * cellW;
   }
 
   if (recvBox) {
     const r = recvBox.getBoundingClientRect();
-    x2 = dir > 0 ? r.left - rowRect.left : r.right - rowRect.left;
+    x2 = (dir > 0 ? r.left - rowRect.left : r.right - rowRect.left) / zoom;
   } else {
     x2 = (p.toIdx + 0.5) * cellW;
   }
@@ -801,7 +922,6 @@ function _drawArrow(p, dashed) {
 
 // ── Redraw all arrows on zoom / resize ────────────────────────────────
 function redrawAll() {
-  Object.values(pending).forEach(p => { p.svg.innerHTML = ''; _drawArrow(p, true); });
   completed.forEach(p => { p.svg.innerHTML = ''; _drawArrow(p, false); });
 }
 new ResizeObserver(redrawAll).observe(container);
