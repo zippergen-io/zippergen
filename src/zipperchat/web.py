@@ -7,14 +7,16 @@ Server-Sent Events (SSE). No external dependencies — only stdlib.
 
 Usage
 -----
-    from zippergen.web import WebTrace
+    from zipperchat import WebTrace
     from zippergen.runtime import run
 
-    wt = WebTrace(program.lifelines)
-    wt.start()   # opens http://localhost:8765, prints the URL
+    wt = WebTrace(program.lifelines).start()
 
-    run(proc, list(program.lifelines), initial, trace=wt)
-    wt.done()    # signals the browser that execution is complete
+    while True:
+        wt.reset()
+        run(proc, list(program.lifelines), initial, trace=wt)
+        wt.done()
+        wt.wait_for_replay()   # blocks until the ▶ button is clicked
 """
 
 from __future__ import annotations
@@ -57,16 +59,25 @@ class _EventBus:
 
     def publish(self, event: dict) -> None:
         with self._lock:
-            self._history.append(event)
+            # Don't store terminal events in replay history
+            if event.get("type") not in ("done", "close"):
+                self._history.append(event)
             for q in self._subs:
                 q.put(event)
+
+    def reset(self) -> None:
+        """Clear history; new events will flow through existing connections."""
+        with self._lock:
+            self._history.clear()
 
 
 # ---------------------------------------------------------------------------
 # HTTP handler — serves the viewer HTML and the /events SSE stream
 # ---------------------------------------------------------------------------
 
-def _make_handler(bus: _EventBus, lifelines: list[str]):
+def _make_handler(bus: _EventBus, lifelines: list[str],
+                  replay_event: threading.Event,
+                  init_event: dict):
     class _Handler(BaseHTTPRequestHandler):
 
         def do_GET(self):
@@ -86,14 +97,12 @@ def _make_handler(bus: _EventBus, lifelines: list[str]):
                 self.send_header("Access-Control-Allow-Origin", "*")
                 self.end_headers()
 
-                self._sse({"type": "init", "lifelines": lifelines})
-
                 q = bus.subscribe()
                 try:
                     while True:
                         event = q.get()
                         self._sse(event)
-                        if event.get("type") == "done":
+                        if event.get("type") == "close":
                             break
                 except (BrokenPipeError, ConnectionResetError):
                     pass
@@ -115,6 +124,19 @@ def _make_handler(bus: _EventBus, lifelines: list[str]):
                     self.send_response(404)
                     self.end_headers()
 
+            else:
+                self.send_response(404)
+                self.end_headers()
+
+        def do_POST(self):
+            if self.path == "/replay":
+                # Reset bus history and publish fresh init *before* responding,
+                # so a reconnecting browser gets a clean slate from history.
+                bus.reset()
+                bus.publish(init_event)
+                replay_event.set()
+                self.send_response(204)
+                self.end_headers()
             else:
                 self.send_response(404)
                 self.end_headers()
@@ -144,7 +166,15 @@ class WebTrace:
     Callable trace that feeds events to the browser viewer via SSE.
 
     Pass an instance as ``trace=`` to ``run()``.
-    Call ``.start()`` before ``run()`` and ``.done()`` after.
+
+    Typical loop::
+
+        wt = WebTrace(program.lifelines).start()
+        while True:
+            wt.reset()
+            run(proc, lifelines, initial, trace=wt)
+            wt.done()
+            wt.wait_for_replay()
     """
 
     def __init__(self, lifelines, port: int = 8765):
@@ -152,14 +182,29 @@ class WebTrace:
         self._port = port
         self._bus = _EventBus()
         self._server: ThreadingHTTPServer | None = None
+        self._replay_event = threading.Event()
 
     def start(self) -> "WebTrace":
-        handler = _make_handler(self._bus, self._lifelines)
+        init_ev = {"type": "init", "lifelines": self._lifelines}
+        handler = _make_handler(self._bus, self._lifelines, self._replay_event, init_ev)
         self._server = _Server(("", self._port), handler)
         t = threading.Thread(target=self._server.serve_forever, daemon=True)
         t.start()
         print(f"ZipperChat → http://localhost:{self._port}")
+        self._bus.publish(init_ev)
         return self
+
+    def reset(self) -> "WebTrace":
+        """Clear the diagram and prepare for a new run."""
+        self._replay_event.clear()
+        self._bus.reset()
+        self._bus.publish({"type": "init", "lifelines": self._lifelines})
+        return self
+
+    def wait_for_replay(self) -> None:
+        """Block until the ▶ Run again button is clicked in the browser."""
+        self._replay_event.wait()
+        self._replay_event.clear()
 
     def __call__(self, event: dict) -> None:
         self._bus.publish(event)
@@ -168,6 +213,7 @@ class WebTrace:
         self._bus.publish({"type": "done"})
 
     def stop(self) -> None:
+        self._bus.publish({"type": "close"})
         if self._server:
             self._server.shutdown()
 
@@ -247,6 +293,24 @@ body {
 }
 #status.running { background: #1a4731; color: #3fb950; }
 #status.done    { background: #1c2a3a; color: #58a6ff; }
+
+/* ── Replay button ───────────────────────────────────────────────────── */
+#replay-btn {
+  padding: 6px 16px;
+  border-radius: 20px;
+  border: 1px solid #C8860A;
+  background: transparent;
+  color: #C8860A;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  letter-spacing: 0.3px;
+  transition: background 0.15s, color 0.15s;
+}
+#replay-btn:hover {
+  background: #C8860A;
+  color: #0d1117;
+}
 
 /* ── Scroll container ─────────────────────────────────────────────────── */
 #container {
@@ -454,7 +518,6 @@ body {
 
 <script>
 // ── Column palette ─────────────────────────────────────────────────────
-// background tint, header accent border, act-box left border, message box border
 const COLS = [
   { bg: 'rgba(56,139,253,0.07)',   accent: '#388bfd', text: '#79b8ff' },
   { bg: 'rgba(56,211,159,0.07)',   accent: '#2ea043', text: '#56d364' },
@@ -463,28 +526,22 @@ const COLS = [
   { bg: 'rgba(255,87,166,0.07)',   accent: '#da3633', text: '#ff7b72' },
 ];
 
-const MSG_COLOR   = '#e05c4b';   // data message arrow / box border
-const CTRL_COLOR  = '#8957e5';   // control message arrow / box border
-
 // ── State ──────────────────────────────────────────────────────────────
 let lifelines = [];
 let N = 0;
-const diagram  = document.getElementById('diagram');
+const diagram   = document.getElementById('diagram');
 const container = document.getElementById('container');
 const statusEl  = document.getElementById('status');
+const topbar    = document.getElementById('topbar');
 
-// pending sends: key "from->to:seq" → {row, svg, cells, fromIdx, toIdx, ctrl, color}
-const pending = {};
-// completed arrows (need redraw on zoom): same shape as pending entries
+const pending  = {};   // key "from->to:seq" → entry
 const completed = [];
-// current act row: {cells: [], occupied: Set}
 let actRow = null;
+const pendingActs = {};
 
 // ── Helpers ────────────────────────────────────────────────────────────
 const col = i => COLS[i % COLS.length];
-
 function lifelineIdx(name) { return lifelines.indexOf(name); }
-
 function scrollDown() { container.scrollTop = container.scrollHeight; }
 
 function fmt(v) {
@@ -514,6 +571,16 @@ function isCtrlVals(vals) {
 }
 
 // ── Diagram init ───────────────────────────────────────────────────────
+function clearDiagram() {
+  diagram.innerHTML = '';
+  lifelines = [];
+  N = 0;
+  Object.keys(pending).forEach(k => delete pending[k]);
+  completed.length = 0;
+  Object.keys(pendingActs).forEach(k => delete pendingActs[k]);
+  actRow = null;
+}
+
 function initDiagram(lls) {
   lifelines = lls;
   N = lls.length;
@@ -531,9 +598,25 @@ function initDiagram(lls) {
   });
 }
 
-// ── Act rows ───────────────────────────────────────────────────────────
-const pendingActs = {};
+// ── Replay button ──────────────────────────────────────────────────────
+function showReplayButton() {
+  const existing = document.getElementById('replay-btn');
+  if (existing) return;
+  const btn = document.createElement('button');
+  btn.id = 'replay-btn';
+  btn.textContent = '▶  Run again';
+  btn.onclick = () => {
+    btn.remove();
+    statusEl.textContent = 'waiting…';
+    statusEl.className = '';
+    // POST resets bus history and publishes init before responding;
+    // then reconnect so we pick up the clean history immediately.
+    fetch('/replay', { method: 'POST' }).then(() => connect());
+  };
+  topbar.appendChild(btn);
+}
 
+// ── Act rows ───────────────────────────────────────────────────────────
 function handleActStart(ev) {
   const i = lifelineIdx(ev.lifeline);
 
@@ -674,7 +757,6 @@ function _drawArrow(p, dashed) {
   const recvBox  = p.cells[p.toIdx].querySelector('.msg-box');
   const rowRect  = row.getBoundingClientRect();
 
-  // Anchor points: right edge of send box → left edge of recv box (or cell center if no box)
   let x1, x2;
   const dir = p.toIdx > p.fromIdx ? 1 : -1;
   const cellW = W / N;
@@ -696,7 +778,6 @@ function _drawArrow(p, dashed) {
   const y = H / 2;
   const color = p.color;
 
-  // Line
   const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
   line.setAttribute('x1', x1); line.setAttribute('y1', y);
   line.setAttribute('x2', x2); line.setAttribute('y2', y);
@@ -705,7 +786,6 @@ function _drawArrow(p, dashed) {
   if (dashed || p.ctrl) line.setAttribute('stroke-dasharray', '6 4');
   svg.appendChild(line);
 
-  // Arrowhead at recv end
   const ah = 8;
   const pts = `${x2},${y} ${x2 - dir*ah},${y - ah*0.5} ${x2 - dir*ah},${y + ah*0.5}`;
   const arrow = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
@@ -713,7 +793,6 @@ function _drawArrow(p, dashed) {
   arrow.setAttribute('fill', color);
   svg.appendChild(arrow);
 
-  // Dot at send end
   const dot = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
   dot.setAttribute('cx', x1); dot.setAttribute('cy', y); dot.setAttribute('r', '4');
   dot.setAttribute('fill', color);
@@ -722,20 +801,17 @@ function _drawArrow(p, dashed) {
 
 // ── Redraw all arrows on zoom / resize ────────────────────────────────
 function redrawAll() {
-  Object.values(pending).forEach(p => {
-    p.svg.innerHTML = '';
-    _drawArrow(p, true);
-  });
-  completed.forEach(p => {
-    p.svg.innerHTML = '';
-    _drawArrow(p, false);
-  });
+  Object.values(pending).forEach(p => { p.svg.innerHTML = ''; _drawArrow(p, true); });
+  completed.forEach(p => { p.svg.innerHTML = ''; _drawArrow(p, false); });
 }
 new ResizeObserver(redrawAll).observe(container);
 
 // ── SSE connection ─────────────────────────────────────────────────────
+let eventSrc = null;
 function connect() {
+  if (eventSrc) { eventSrc.close(); eventSrc = null; }
   const src = new EventSource('/events');
+  eventSrc = src;
 
   src.onopen = () => {
     statusEl.textContent = 'connected';
@@ -745,17 +821,30 @@ function connect() {
   src.onmessage = (e) => {
     const ev = JSON.parse(e.data);
     switch (ev.type) {
-      case 'init':  initDiagram(ev.lifelines);
-                    statusEl.textContent = 'running…';
-                    statusEl.className = 'running'; break;
+      case 'init':
+        clearDiagram();
+        const rb = document.getElementById('replay-btn');
+        if (rb) rb.remove();
+        initDiagram(ev.lifelines);
+        statusEl.textContent = 'running…';
+        statusEl.className = 'running';
+        break;
       case 'act_start': handleActStart(ev); break;
       case 'act':       handleAct(ev);      break;
-      case 'send':  handleSend(ev); break;
-      case 'recv':  handleRecv(ev); break;
-      case 'done':  actRow = null;
-                    statusEl.textContent = 'done ✓';
-                    statusEl.className = 'done';
-                    src.close(); break;
+      case 'send':      handleSend(ev);     break;
+      case 'recv':      handleRecv(ev);     break;
+      case 'done':
+        actRow = null;
+        statusEl.textContent = 'done ✓';
+        statusEl.className = 'done';
+        showReplayButton();
+        break;
+      case 'close':
+        src.close();
+        eventSrc = null;
+        statusEl.textContent = 'stopped';
+        statusEl.className = '';
+        break;
     }
   };
 
