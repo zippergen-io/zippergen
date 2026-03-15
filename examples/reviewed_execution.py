@@ -143,16 +143,18 @@ if __name__ == "__main__":
     wt = WebTrace(program.lifelines).start()
     time.sleep(0.3)   # give the browser a moment to connect
 
-    print("Running reviewedExecution (mock LLM)…")
-    final_envs = run(
-        reviewedExecution,
-        list(program.lifelines),
-        initial,
-        llm_backend=lambda a, i: mock_llm(a, i, min_delay=5, max_delay=10),
-        trace=wt,
-        timeout=60,
-    )
-    wt.done()
-
-    print(f"\nResult → {final_envs['Orchestrator'].get('final')}")
-    input("\nPress Enter to stop the server…")
+    while True:
+        wt.reset()
+        print("Running reviewedExecution (mock LLM)…")
+        final_envs = run(
+            reviewedExecution,
+            list(program.lifelines),
+            initial,
+            llm_backend=lambda a, i: mock_llm(a, i, min_delay=5, max_delay=10),
+            trace=wt,
+            timeout=60,
+        )
+        wt.done()
+        print(f"\nResult → {final_envs['Orchestrator'].get('final')}")
+        print("Click ▶ Run again in the browser, or Ctrl-C to quit.")
+        wt.wait_for_replay()

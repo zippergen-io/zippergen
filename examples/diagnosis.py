@@ -167,16 +167,18 @@ if __name__ == "__main__":
     wt = WebTrace(program.lifelines).start()
     time.sleep(0.3)   # give the browser a moment to connect
 
-    print("Running diagnosis consensus (mock LLM)…")
-    final = run(
-        diagnosisConsensus,
-        list(program.lifelines),
-        initial,
-        llm_backend=lambda a, i: mock_llm(a, i, min_delay=10.3, max_delay=20.2),
-        trace=wt,
-        timeout=600,
-    )
-    wt.done()
-
-    print(f"\nResult → {final['User'].get('result')}")
-    input("\nPress Enter to stop the server…")
+    while True:
+        wt.reset()
+        print("Running diagnosis consensus (mock LLM)…")
+        final = run(
+            diagnosisConsensus,
+            list(program.lifelines),
+            initial,
+            llm_backend=lambda a, i: mock_llm(a, i, min_delay=10.3, max_delay=20.2),
+            trace=wt,
+            timeout=600,
+        )
+        wt.done()
+        print(f"\nResult → {final['User'].get('result')}")
+        print("Click ▶ Run again in the browser, or Ctrl-C to quit.")
+        wt.wait_for_replay()
