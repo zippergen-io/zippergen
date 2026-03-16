@@ -4,6 +4,9 @@
 
 No orchestrator polling. No spaghetti callbacks. Just Zip, zipping things together.
 
+![ZipperChat screenshot](assets/zipperchat-screenshot.jpg)
+*ZipperChat — live MSC diagram for the reviewed-execution example (Planner, Reviewer, Orchestrator, Executor)*
+
 ## Quick start
 
 ```bash
