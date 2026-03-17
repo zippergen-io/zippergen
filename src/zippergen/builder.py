@@ -313,9 +313,14 @@ class _ProcTransformer(ast.NodeTransformer):
     - ``Sender(x, y) >> Receiver(a, b)``      →  ``msg(Sender, (x, y), Receiver, (a, b))``
     - ``if cond @ owner: ...``                →  ``if_(cond, owner, then=..., else_=...)``
     - ``while cond @ owner: ...``             →  ``while_(cond, owner, body=..., exit_body=...)``
+    - ``return var``                          →  removed; ``var`` stored in ``self.return_var_name``
 
     All other Python statements pass through unchanged.
     """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.return_var_name: str | None = None
 
     @staticmethod
     def _is_at(node: ast.expr) -> bool:
@@ -332,6 +337,12 @@ class _ProcTransformer(ast.NodeTransformer):
                 f"Use empty brackets for no payload: Sender() >> Receiver()."
             )
         return node.func, list(node.args)
+
+    def visit_Return(self, node: ast.Return) -> ast.stmt:
+        """Strip ``return var`` and record the variable name as the proc output."""
+        if isinstance(node.value, ast.Name):
+            self.return_var_name = node.value.id
+        return ast.Pass()
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> ast.stmt:
         """Rewrite ``Lifeline: outputs = action(inputs)`` to ``act(...)``."""
@@ -429,7 +440,7 @@ class _ProcTransformer(ast.NodeTransformer):
         return [body_fn, exit_fn, call]
 
 
-def _transform_proc_source(fn: Callable) -> Callable:
+def _transform_proc_source(fn: Callable) -> tuple[Callable, str | None]:
     """
     Obtain the source of *fn*, apply ``_ProcTransformer``, compile and exec
     the result in *fn*'s global namespace, and return the rewritten function.
@@ -490,7 +501,7 @@ def _transform_proc_source(fn: Callable) -> Callable:
     local_ns: dict = {}
     exec(code, exec_globals, local_ns)   # noqa: S102
 
-    return local_ns[fn.__name__]
+    return local_ns[fn.__name__], transformer.return_var_name
 
 
 # ---------------------------------------------------------------------------
@@ -552,12 +563,23 @@ def proc(fn: Callable) -> Proc:
     inputs = _proc_inputs(fn)
     output_type = _proc_output(fn)
 
-    # Rewrite native if/while into if_()/while_() calls.
-    transformed = _transform_proc_source(fn)
+    # Rewrite native if/while/>> into builder-function calls.
+    transformed, return_var_name = _transform_proc_source(fn)
 
     # Execute the transformed body once to record all statements.
     kwargs = {name: Var(name, ztype) for name, ztype in inputs}
     body = _collect(lambda: transformed(**kwargs))
+
+    # Resolve the return variable to a Var object if declared.
+    output_var: Var | None = None
+    if return_var_name is not None:
+        namespace = {**fn.__globals__, **kwargs}
+        output_var = namespace.get(return_var_name)
+        if not isinstance(output_var, Var):
+            raise NameError(
+                f"@proc '{fn.__name__}': return variable '{return_var_name}' "
+                f"is not a declared Var."
+            )
 
     return Proc(
         name=fn.__name__,
@@ -565,4 +587,5 @@ def proc(fn: Callable) -> Proc:
         output_type=output_type,
         vars=(),    # variable declarations populated by verifier (Layer 5)
         body=body,
+        output_var=output_var,
     )
