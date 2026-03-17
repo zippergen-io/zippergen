@@ -110,7 +110,7 @@ def reviewedExecution(task: Text) -> Text:
     Executor: result = executePlan(tE)
     Executor(result) >> Orchestrator(result)
     Orchestrator: final = finalizeWithReview(critique, result)
-    return final
+    return final @ Orchestrator
 
 
 # ---------------------------------------------------------------------------

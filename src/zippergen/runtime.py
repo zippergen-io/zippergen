@@ -405,12 +405,6 @@ def run(
         final_envs[ll.name] = result
 
     if proc.output_var is not None:
-        var_name = proc.output_var.name
-        for env in final_envs.values():
-            if var_name in env:
-                return env[var_name]
-        raise RuntimeError(
-            f"Output variable '{var_name}' not found in any lifeline's final env."
-        )
+        return final_envs[proc.output_lifeline.name][proc.output_var.name]
 
     return final_envs
