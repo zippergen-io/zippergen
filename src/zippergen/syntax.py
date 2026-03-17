@@ -34,7 +34,7 @@ for an open hierarchy.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Union
 
 __all__ = [
@@ -51,6 +51,8 @@ __all__ = [
     "VarExpr", "LitExpr", "NotExpr", "AndExpr", "OrExpr", "TupleExpr",
     # Actions
     "LLMAction", "PureAction",
+    # Type + lifeline annotation helper
+    "ZTypeAtLifeline",
     # Type helpers
     "is_ztype",
     # Statements
@@ -125,6 +127,23 @@ class Lifeline:
 
     def __repr__(self) -> str:
         return self.name
+
+    def __rmatmul__(self, ztype: object) -> ZTypeAtLifeline:
+        """Support ``Text @ Planner`` as a parameter annotation."""
+        return ZTypeAtLifeline(ztype, self)  # type: ignore[arg-type]
+
+
+@dataclass(frozen=True)
+class ZTypeAtLifeline:
+    """Result of ``ZType @ Lifeline`` in a ``@proc`` parameter annotation.
+
+    Declares both the type of an input variable and the lifeline that holds it
+    at the start of execution::
+
+        def myProc(task: Text @ Planner) -> Text: ...
+    """
+    type: ZType
+    lifeline: Lifeline
 
 
 # ---------------------------------------------------------------------------
@@ -430,15 +449,65 @@ LocalStmt = Union[
 @dataclass
 class Proc:
     name: str
-    inputs: tuple[tuple[str, ZType], ...]
+    inputs: tuple[tuple[str, ZType, Lifeline | None], ...]  # (name, type, lifeline)
     output_type: ZType
     vars: tuple[Var, ...]       # locally declared variables
     body: Stmt
     output_var: Var | None = None           # declared via ``return var @ Lifeline``
     output_lifeline: Lifeline | None = None
+    _backend: object = field(default=None, init=False, repr=False)
+    _trace: object   = field(default=None, init=False, repr=False)
+    _timeout: float  = field(default=60.0, init=False, repr=False)
+
+    def configure(self, *,
+                  backend: object = None,
+                  trace:   object = None,
+                  timeout: float  = 60.0) -> Proc:
+        """Configure runtime parameters and return self for chaining.
+
+        Parameters
+        ----------
+        backend : LLM backend callable ``(action, inputs_dict) → outputs_dict``.
+                  Defaults to the built-in mock backend.
+        trace   : trace callable passed to ``run()``.
+        timeout : per-thread timeout in seconds (default 60).
+        """
+        if backend is not None:
+            self._backend = backend
+        self._trace   = trace
+        self._timeout = timeout
+        return self
+
+    def __call__(self, **kwargs: object) -> object:
+        """Run this proc like a regular Python function.
+
+        Keyword arguments must match the proc's declared inputs (one per
+        parameter in the ``@proc`` signature).  Call ``configure()`` first to
+        set the LLM backend, trace, and timeout.
+        """
+        from zippergen.runtime import run, mock_llm  # lazy to avoid circular import
+
+        initial_envs: dict[str, dict[str, object]] = {}
+        for name, _ztype, lifeline in self.inputs:
+            if lifeline is None:
+                raise TypeError(
+                    f"{self.name}(): input '{name}' has no lifeline declared. "
+                    f"Use 'name: Type @ Lifeline' in the @proc signature."
+                )
+            if name not in kwargs:
+                raise TypeError(f"{self.name}() missing argument: '{name}'")
+            initial_envs.setdefault(lifeline.name, {})[name] = kwargs[name]
+
+        lifelines = sorted(participation_set(self.body), key=lambda l: l.name)
+        backend = self._backend if self._backend is not None else mock_llm
+        return run(self, lifelines, initial_envs,
+                   llm_backend=backend, trace=self._trace, timeout=self._timeout)
 
     def __repr__(self) -> str:
-        ins = ", ".join(f"{n}: {t!r}" for n, t in self.inputs)
+        parts = []
+        for n, t, ll in self.inputs:
+            parts.append(f"{n}: {t!r} @ {ll.name}" if ll else f"{n}: {t!r}")
+        ins = ", ".join(parts)
         out = (f" → {self.output_var.name}@{self.output_lifeline.name}"
                if self.output_var else "")
         return f"Proc({self.name!r}, ({ins}) -> {self.output_type!r}{out})"

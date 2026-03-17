@@ -96,7 +96,7 @@ def finalizeWithReview(result: Text, critique: Text) -> None: ...
 # ---------------------------------------------------------------------------
 
 @proc
-def reviewedExecution(task: Text) -> Text:
+def reviewedExecution(task: Text @ Planner) -> Text:
     Planner: (plan, planNeedsReview) = makePlan(task)
 
     if planNeedsReview @ Planner:
@@ -129,29 +129,22 @@ program = Program(
 
 if __name__ == "__main__":
     import time
-    from zippergen.runtime import run, mock_llm
+    from zippergen.runtime import mock_llm
     from zipperchat import WebTrace
-
-    initial = {
-        "Planner": {
-            "task": "Build a REST API for a to-do list application.",
-        }
-    }
 
     wt = WebTrace(program.lifelines).start()
     time.sleep(0.3)   # give the browser a moment to connect
 
+    reviewedExecution.configure(
+        backend=lambda a, i: mock_llm(a, i, min_delay=5, max_delay=10),
+        trace=wt,
+        timeout=60,
+    )
+
     while True:
         wt.reset()
         print("Running reviewedExecution (mock LLM)…")
-        final = run(
-            reviewedExecution,
-            list(program.lifelines),
-            initial,
-            llm_backend=lambda a, i: mock_llm(a, i, min_delay=5, max_delay=10),
-            trace=wt,
-            timeout=60,
-        )
+        final = reviewedExecution(task="Build a REST API for a to-do list application.")
         wt.done()
         print(f"\nResult → {final}")
         print("Click ▶ Run again in the browser, or Ctrl-C to quit.")
