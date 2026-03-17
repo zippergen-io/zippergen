@@ -133,6 +133,7 @@ def diagnosisConsensus(notes: Text, diagnosis: Text) -> Text:
     # Final result computed by LLM1, sent to User
     LLM1: result = choose_result(verdict1, agreed)
     LLM1(result) >> User(result)
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -167,7 +168,7 @@ if __name__ == "__main__":
     while True:
         wt.reset()
         print("Running diagnosis consensus (mock LLM)…")
-        final = run(
+        result = run(
             diagnosisConsensus,
             list(program.lifelines),
             initial,
@@ -176,6 +177,6 @@ if __name__ == "__main__":
             timeout=600,
         )
         wt.done()
-        print(f"\nResult → {final['User'].get('result')}")
+        print(f"\nResult → {result}")
         print("Click ▶ Run again in the browser, or Ctrl-C to quit.")
         wt.wait_for_replay()

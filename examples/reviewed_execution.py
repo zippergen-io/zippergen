@@ -110,6 +110,7 @@ def reviewedExecution(task: Text) -> Text:
     Executor: result = executePlan(tE)
     Executor(result) >> Orchestrator(result)
     Orchestrator: final = finalizeWithReview(critique, result)
+    return final
 
 
 # ---------------------------------------------------------------------------
@@ -143,7 +144,7 @@ if __name__ == "__main__":
     while True:
         wt.reset()
         print("Running reviewedExecution (mock LLM)…")
-        final_envs = run(
+        final = run(
             reviewedExecution,
             list(program.lifelines),
             initial,
@@ -152,6 +153,6 @@ if __name__ == "__main__":
             timeout=60,
         )
         wt.done()
-        print(f"\nResult → {final_envs['Orchestrator'].get('final')}")
+        print(f"\nResult → {final}")
         print("Click ▶ Run again in the browser, or Ctrl-C to quit.")
         wt.wait_for_replay()

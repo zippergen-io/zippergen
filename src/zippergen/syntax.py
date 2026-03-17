@@ -434,10 +434,12 @@ class Proc:
     output_type: ZType
     vars: tuple[Var, ...]       # locally declared variables
     body: Stmt
+    output_var: Var | None = None   # declared via ``return var`` in @proc body
 
     def __repr__(self) -> str:
         ins = ", ".join(f"{n}: {t!r}" for n, t in self.inputs)
-        return f"Proc({self.name!r}, ({ins}) -> {self.output_type!r})"
+        out = f" → {self.output_var.name}" if self.output_var else ""
+        return f"Proc({self.name!r}, ({ins}) -> {self.output_type!r}{out})"
 
 
 @dataclass
