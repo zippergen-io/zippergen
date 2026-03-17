@@ -15,7 +15,7 @@ from zippergen.syntax import (
     pp,
 )
 from zippergen.actions import llm, pure
-from zippergen.builder import proc, msg, act, while_, not_
+from zippergen.builder import proc, msg, act
 
 # ---------------------------------------------------------------------------
 # Lifelines
@@ -120,18 +120,15 @@ def diagnosisConsensus(notes: Text, diagnosis: Text) -> Text:
     act(LLM2, assess, (n2, d2), (verdict2, reason2))
 
     # Consensus loop — owned by LLM1
-    def loop_body():
+    while (not agreed) @ LLM1:
         msg(LLM1, (verdict1, reason1), LLM2, (v1, r1))
         msg(LLM2, (verdict2, reason2), LLM1, (v2, r2))
         act(LLM1, reconsider, (n1, d1, verdict1, reason1, v2, r2), (verdict1, reason1))
         act(LLM2, reconsider, (n2, d2, verdict2, reason2, v1, r1), (verdict2, reason2))
         msg(LLM2, (verdict2,), LLM1, (verdict2,))
         act(LLM1, check_agreement, (verdict1, verdict2), (agreed,))
-
-    def loop_exit():
+    else:
         msg(LLM1, (verdict1, reason1), LLM2, (v1, r1))
-
-    while_(not_(agreed), LLM1, body=loop_body, exit_body=loop_exit)
 
     # Final result computed by LLM1, sent to User
     act(LLM1, choose_result, (verdict1, agreed), (result,))
