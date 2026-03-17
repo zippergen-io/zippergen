@@ -15,7 +15,7 @@ from zippergen.syntax import (
     pp,
 )
 from zippergen.actions import llm, pure
-from zippergen.builder import proc, msg, act
+from zippergen.builder import proc, act
 
 # ---------------------------------------------------------------------------
 # Lifelines
@@ -112,8 +112,8 @@ choose_result   = chooseResult
 @proc
 def diagnosisConsensus(notes: Text, diagnosis: Text) -> Text:
     # Distribute notes to both LLMs
-    msg(User, (notes, diagnosis), LLM1, (n1, d1))
-    msg(User, (notes, diagnosis), LLM2, (n2, d2))
+    User(notes, diagnosis) >> LLM1(n1, d1)
+    User(notes, diagnosis) >> LLM2(n2, d2)
 
     # Independent initial assessments
     act(LLM1, assess, (n1, d1), (verdict1, reason1))
@@ -121,18 +121,18 @@ def diagnosisConsensus(notes: Text, diagnosis: Text) -> Text:
 
     # Consensus loop — owned by LLM1
     while (not agreed) @ LLM1:
-        msg(LLM1, (verdict1, reason1), LLM2, (v1, r1))
-        msg(LLM2, (verdict2, reason2), LLM1, (v2, r2))
+        LLM1(verdict1, reason1) >> LLM2(v1, r1)
+        LLM2(verdict2, reason2) >> LLM1(v2, r2)
         act(LLM1, reconsider, (n1, d1, verdict1, reason1, v2, r2), (verdict1, reason1))
         act(LLM2, reconsider, (n2, d2, verdict2, reason2, v1, r1), (verdict2, reason2))
-        msg(LLM2, (verdict2,), LLM1, (verdict2,))
+        LLM2(verdict2) >> LLM1(verdict2)
         act(LLM1, check_agreement, (verdict1, verdict2), (agreed,))
     else:
-        msg(LLM1, (verdict1, reason1), LLM2, (v1, r1))
+        LLM1(verdict1, reason1) >> LLM2(v1, r1)
 
     # Final result computed by LLM1, sent to User
     act(LLM1, choose_result, (verdict1, agreed), (result,))
-    msg(LLM1, (result,), User, (result,))
+    LLM1(result) >> User(result)
 
 
 # ---------------------------------------------------------------------------

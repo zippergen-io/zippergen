@@ -17,7 +17,7 @@ from zippergen.syntax import (
     pp,
 )
 from zippergen.actions import llm, pure
-from zippergen.builder import proc, msg, act, skip
+from zippergen.builder import proc, act, skip
 
 # ---------------------------------------------------------------------------
 # Lifelines
@@ -100,15 +100,15 @@ def reviewedExecution(task: Text) -> Text:
     act(Planner, makePlan, (task,), (plan, planNeedsReview))
 
     if planNeedsReview @ Planner:
-        msg(Planner,  (plan,),     Reviewer,     (tR,))
-        act(Reviewer, reviewPlan,  (tR,),         (critique,))
-        msg(Reviewer, (critique,), Orchestrator,  (critique,))
+        Planner(plan) >> Reviewer(tR)
+        act(Reviewer, reviewPlan, (tR,), (critique,))
+        Reviewer(critique) >> Orchestrator(critique)
     else:
         skip(Planner)
 
-    msg(Planner,   (plan,),   Executor,     (tE,))
-    act(Executor,  executePlan, (tE,),      (result,))
-    msg(Executor,  (result,), Orchestrator, (result,))
+    Planner(plan) >> Executor(tE)
+    act(Executor, executePlan, (tE,), (result,))
+    Executor(result) >> Orchestrator(result)
     act(Orchestrator, finalizeWithReview, (critique, result), (final,))
 
 
