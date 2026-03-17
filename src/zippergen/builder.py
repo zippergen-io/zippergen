@@ -6,33 +6,52 @@ Design notes
 **What this module is.**
 This module provides helper functions that let you write a coordination program
 as a normal Python function (decorated with ``@proc``) instead of constructing
-IR nodes by hand. The helpers ``msg()``, ``act()``, ``while_()``, etc. are the
-user-facing API for building programs.
+IR nodes by hand. The helpers ``msg()``, ``act()``, ``skip()`` are the primary
+user-facing API. Control structures (``if``/``while``) are written as native
+Python — no special builder functions needed.
 
 **How the recording context works.**
 There is a global stack of statement lists (``_stack``). Entering a scope
-(a ``@proc`` body or a nested ``body``/``exit_body`` function) pushes a new
-empty list onto the stack. Every call to ``msg()``, ``act()``, etc. appends
-one IR node to the top list. Leaving the scope pops the list and folds it
-into a ``Stmt`` tree using ``seq()``. This is the only "magic" in this module.
+(a ``@proc`` body or a nested branch) pushes a new empty list onto the stack.
+Every call to ``msg()``, ``act()``, etc. appends one IR node to the top list.
+Leaving the scope pops the list and folds it into a ``Stmt`` tree using
+``seq()``. This is the only "magic" in this module.
 
-**Statement builders vs expression builders.**
-``msg()``, ``act()``, ``skip()``, ``if_()``, ``while_()`` are statement
-builders: they record a node into the current scope and return ``None``.
-``not_()``, ``and_()``, ``or_()``, ``lit()`` are expression builders: they
-are pure functions that construct and return an ``Expr`` object without
-touching the recording stack at all.
+**Native if/while syntax.**
+The ``@proc`` decorator rewrites the function's AST before executing it.
+Any ``if`` or ``while`` whose condition is of the form ``expr @ Lifeline``
+is rewritten into the equivalent ``if_()`` / ``while_()`` call, where the
+``@ Lifeline`` part identifies the owner of the control decision.
 
-**Why nested def for while_/if_ bodies?**
-Python lambdas cannot contain multiple statements, so the natural way to pass
-a block of code is a plain nested ``def``. The body function is called once
-by ``_collect()``, which temporarily pushes a new scope, runs the function,
-and returns the collected statements as a single ``Stmt``.
+  .. code-block:: python
 
-**Why @proc is a simple decorator (no parentheses)?**
-It always takes exactly one argument — the function — so there is no need
-for the double-parentheses pattern. Compare with ``@llm(...)`` which requires
-configuration arguments.
+      @proc
+      def myProc(task: Text) -> Text:
+          if planNeedsReview @ Planner:
+              msg(Planner, (plan,), Reviewer, (tR,))
+          else:
+              skip(Planner)
+
+          while (not agreed) @ LLM1:
+              msg(LLM1, (v1,), LLM2, (v2,))
+              ...
+          else:              # while...else = exit body
+              msg(LLM1, (v1,), User, (result,))
+
+The condition (left of ``@``) can use native Python ``not``, ``and``, ``or``
+and boolean literals — they are translated to ``Expr`` IR at rewrite time, so
+they are never executed as Python boolean operations.
+
+**Operator precedence note.**
+Because Python gives ``@`` higher precedence than ``not``/``and``/``or``,
+wrap compound conditions in parentheses when they start with ``not``:
+
+  - ``if (not agreed) @ LLM1:``   ✓  — condition is ``not agreed``
+  - ``if not agreed @ LLM1:``     ✗  — parsed as ``not (agreed @ LLM1)``
+
+**Backward compatibility.**
+The old ``if_()`` and ``while_()`` builder functions still work; existing
+programs need no changes.
 
 **Thread safety.**
 The stack is a plain module-level list. This works correctly for sequential
@@ -43,11 +62,14 @@ object — a one-line change.
 
 from __future__ import annotations
 
+import ast
 import inspect
+import textwrap
 from collections.abc import Callable
 
 from zippergen.syntax import (
     ZType, Lifeline, Var,
+    Bool,
     Expr, VarExpr, LitExpr, NotExpr, AndExpr, OrExpr,
     Stmt, MsgStmt, ActStmt, SkipStmt, IfStmt, WhileStmt,
     LLMAction, PureAction,
@@ -61,7 +83,7 @@ __all__ = [
     # Statement builders
     "msg", "act", "skip",
     "if_", "while_",
-    # Expression builders
+    # Expression builders (usable outside @proc, or as explicit style inside)
     "not_", "and_", "or_", "lit",
 ]
 
@@ -78,7 +100,7 @@ def _record(stmt: Stmt) -> None:
     if not _stack:
         raise RuntimeError(
             "Statement builders (msg, act, etc.) must be called "
-            "inside a @proc body or a nested body/exit_body function."
+            "inside a @proc body or a nested branch."
         )
     _stack[-1].append(stmt)
 
@@ -106,7 +128,7 @@ def _to_expr(x: object) -> Expr:
 
 
 def not_(expr: object) -> NotExpr:
-    """Logical negation: not_(agreed)  →  NotExpr(VarExpr(agreed))"""
+    """Logical negation."""
     return NotExpr(_to_expr(expr))
 
 
@@ -121,7 +143,7 @@ def or_(left: object, right: object) -> OrExpr:
 
 
 def lit(value: object, type_: ZType) -> LitExpr:
-    """A literal value: lit(42, Int)  →  LitExpr(42, Int)"""
+    """A literal value: lit(True, Bool)  →  LitExpr(True, Bool)"""
     return LitExpr(value, type_)
 
 
@@ -181,7 +203,8 @@ def if_(
     """
     if condition@owner then { then() } else { else_() }
 
-    Pass the two branches as plain callables (nested defs or lambdas).
+    Prefer native ``if cond @ owner:`` syntax inside ``@proc`` bodies.
+    This function is the explicit fallback (e.g. for programmatic construction).
     """
     _record(IfStmt(
         _to_expr(condition),
@@ -201,7 +224,8 @@ def while_(
     """
     while condition@owner do { body() } exit { exit_body() }
 
-    Pass the two blocks as plain callables (nested defs).
+    Prefer native ``while cond @ owner: ... else: ...`` inside ``@proc``.
+    This function is the explicit fallback (e.g. for programmatic construction).
     """
     _record(WhileStmt(
         _to_expr(condition),
@@ -209,6 +233,202 @@ def while_(
         _collect(body),
         _collect(exit_body),
     ))
+
+
+# ---------------------------------------------------------------------------
+# AST rewriting — translating native if/while to if_()/while_() calls
+# ---------------------------------------------------------------------------
+
+_gen_counter: int = 0
+
+
+def _fresh(prefix: str) -> str:
+    global _gen_counter
+    _gen_counter += 1
+    return f"__{prefix}_{_gen_counter}"
+
+
+def _ast_to_expr_ast(node: ast.expr) -> ast.expr:
+    """
+    Translate a Python condition AST node to an AST fragment that, when
+    executed, produces a ZipperGen ``Expr`` object.
+
+    - ``Name('x')``          → left as-is  (Var at runtime; _to_expr handles it)
+    - ``UnaryOp(Not, ...)``  → ``Call(not_, [...])``
+    - ``BoolOp(And, [...])`` → folded ``Call(and_, [..., ...])``
+    - ``BoolOp(Or, [...])``  → folded ``Call(or_, [..., ...])``
+    - ``Constant(bool)``     → ``Call(lit, [value, Bool])``
+    - anything else          → left as-is  (e.g. explicit not_(), and_() calls)
+    """
+    if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+        return ast.Call(
+            func=ast.Name(id="not_", ctx=ast.Load()),
+            args=[_ast_to_expr_ast(node.operand)],
+            keywords=[],
+        )
+
+    if isinstance(node, ast.BoolOp):
+        fn_name = "and_" if isinstance(node.op, ast.And) else "or_"
+        # Right-fold: a and b and c  →  and_(a, and_(b, c))
+        result = _ast_to_expr_ast(node.values[-1])
+        for val in reversed(node.values[:-1]):
+            result = ast.Call(
+                func=ast.Name(id=fn_name, ctx=ast.Load()),
+                args=[_ast_to_expr_ast(val), result],
+                keywords=[],
+            )
+        return result
+
+    if isinstance(node, ast.Constant) and isinstance(node.value, bool):
+        return ast.Call(
+            func=ast.Name(id="lit", ctx=ast.Load()),
+            args=[node, ast.Name(id="Bool", ctx=ast.Load())],
+            keywords=[],
+        )
+
+    # Name, Call, Attribute, etc. — pass through unchanged.
+    return node
+
+
+def _make_fn(name: str, body: list[ast.stmt]) -> ast.FunctionDef:
+    """Build a no-argument FunctionDef AST node."""
+    return ast.FunctionDef(
+        name=name,
+        args=ast.arguments(
+            posonlyargs=[], args=[], vararg=None,
+            kwonlyargs=[], kw_defaults=[], kwarg=None, defaults=[],
+        ),
+        body=body or [ast.Pass()],
+        decorator_list=[],
+        returns=None,
+        lineno=0, col_offset=0,
+    )
+
+
+class _ProcTransformer(ast.NodeTransformer):
+    """
+    Rewrites ``if cond @ owner: ...`` and ``while cond @ owner: ...`` into
+    ``if_(cond, owner, then=..., else_=...)`` and ``while_(...)`` calls.
+
+    Only nodes whose condition is a ``BinOp`` with ``MatMult`` (``@``) are
+    touched; ordinary Python ``if``/``while`` pass through unchanged.
+    """
+
+    @staticmethod
+    def _is_at(node: ast.expr) -> bool:
+        return isinstance(node, ast.BinOp) and isinstance(node.op, ast.MatMult)
+
+    def visit_If(self, node: ast.If) -> ast.stmt | list[ast.stmt]:
+        # Recurse into children first (bottom-up).
+        self.generic_visit(node)
+
+        if not self._is_at(node.test):
+            return node
+
+        cond = _ast_to_expr_ast(node.test.left)   # type: ignore[arg-type]
+        owner = node.test.right                     # type: ignore[union-attr]
+
+        then_name = _fresh("then")
+        else_name = _fresh("else")
+        then_fn = _make_fn(then_name, node.body)
+        else_fn = _make_fn(else_name, node.orelse or [ast.Pass()])
+
+        call = ast.Expr(ast.Call(
+            func=ast.Name(id="if_", ctx=ast.Load()),
+            args=[cond, owner],
+            keywords=[
+                ast.keyword(arg="then",  value=ast.Name(id=then_name, ctx=ast.Load())),
+                ast.keyword(arg="else_", value=ast.Name(id=else_name, ctx=ast.Load())),
+            ],
+        ))
+        return [then_fn, else_fn, call]
+
+    def visit_While(self, node: ast.While) -> ast.stmt | list[ast.stmt]:
+        # Recurse into children first (bottom-up).
+        self.generic_visit(node)
+
+        if not self._is_at(node.test):
+            return node
+
+        cond = _ast_to_expr_ast(node.test.left)   # type: ignore[arg-type]
+        owner = node.test.right                     # type: ignore[union-attr]
+
+        body_name = _fresh("body")
+        exit_name = _fresh("exit")
+        body_fn = _make_fn(body_name, node.body)
+        exit_fn = _make_fn(exit_name, node.orelse or [ast.Pass()])
+
+        call = ast.Expr(ast.Call(
+            func=ast.Name(id="while_", ctx=ast.Load()),
+            args=[cond, owner],
+            keywords=[
+                ast.keyword(arg="body",      value=ast.Name(id=body_name, ctx=ast.Load())),
+                ast.keyword(arg="exit_body", value=ast.Name(id=exit_name, ctx=ast.Load())),
+            ],
+        ))
+        return [body_fn, exit_fn, call]
+
+
+def _transform_proc_source(fn: Callable) -> Callable:
+    """
+    Obtain the source of *fn*, apply ``_ProcTransformer``, compile and exec
+    the result in *fn*'s global namespace, and return the rewritten function.
+
+    The ``@proc`` decorator is stripped from the AST before compilation to
+    avoid re-entrant decoration.
+    """
+    try:
+        source = inspect.getsource(fn)
+    except (OSError, TypeError) as exc:
+        raise RuntimeError(
+            f"@proc '{fn.__name__}': cannot retrieve source for AST rewriting. "
+            f"Define the function in a .py file (not interactively). "
+            f"Original error: {exc}"
+        ) from exc
+
+    source = textwrap.dedent(source)
+
+    try:
+        tree = ast.parse(source)
+    except SyntaxError as exc:
+        raise SyntaxError(
+            f"@proc '{fn.__name__}': failed to parse source."
+        ) from exc
+
+    # Strip all decorators from the target function so we don't recurse.
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == fn.__name__:
+            node.decorator_list = []
+            break
+
+    transformer = _ProcTransformer()
+    new_tree = transformer.visit(tree)
+    ast.fix_missing_locations(new_tree)
+
+    # Compile in the original file so tracebacks point to real lines.
+    try:
+        filename = inspect.getfile(fn)
+    except (OSError, TypeError):
+        filename = "<@proc>"
+
+    code = compile(new_tree, filename, "exec")
+
+    # Inject builder helpers so users don't need to import them explicitly.
+    exec_globals = fn.__globals__.copy()
+    exec_globals.update({
+        "if_":   if_,
+        "while_": while_,
+        "not_":  not_,
+        "and_":  and_,
+        "or_":   or_,
+        "lit":   lit,
+        "Bool":  Bool,
+    })
+
+    local_ns: dict = {}
+    exec(code, exec_globals, local_ns)   # noqa: S102
+
+    return local_ns[fn.__name__]
 
 
 # ---------------------------------------------------------------------------
@@ -249,22 +469,32 @@ def _proc_output(fn: Callable) -> ZType:
 
 def proc(fn: Callable) -> Proc:
     """
-    Decorator that runs the function body once (recording all statements)
-    and returns a Proc IR node.
+    Decorator that records a coordination program and returns a ``Proc`` IR node.
 
-    The function parameters declare the proc's input interface; each must
-    have a ZipperGen type annotation. The return annotation declares the
-    output type.
+    The function parameters declare the proc's input interface; each must have
+    a ZipperGen type annotation. The return annotation declares the output type.
 
-    Inside the body, use msg(), act(), skip(), if_(), while_() to build
-    the program. Vars passed as parameters are equal to same-named
-    module-level Var objects (frozen dataclass equality), so either works.
+    Inside the body use:
+
+    - ``msg()``, ``act()``, ``skip()`` — coordination statements
+    - Native ``if cond @ owner: ... else: ...`` — conditional branching
+    - Native ``while cond @ owner: ... else: ...`` — loops (else = exit body)
+
+    The condition (left of ``@``) supports ``not``, ``and``, ``or``, and
+    boolean literals. Wrap compound conditions in parentheses when they start
+    with ``not`` (Python precedence: ``@`` binds tighter than ``not``).
     """
+    # Annotations are read from the original function before transformation.
     inputs = _proc_inputs(fn)
     output_type = _proc_output(fn)
-    # Pass Var objects for each declared input so the function can be called.
+
+    # Rewrite native if/while into if_()/while_() calls.
+    transformed = _transform_proc_source(fn)
+
+    # Execute the transformed body once to record all statements.
     kwargs = {name: Var(name, ztype) for name, ztype in inputs}
-    body = _collect(lambda: fn(**kwargs))
+    body = _collect(lambda: transformed(**kwargs))
+
     return Proc(
         name=fn.__name__,
         inputs=inputs,
