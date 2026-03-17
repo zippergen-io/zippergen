@@ -28,15 +28,15 @@ is rewritten into the equivalent ``if_()`` / ``while_()`` call, where the
       @proc
       def myProc(task: Text) -> Text:
           if planNeedsReview @ Planner:
-              msg(Planner, (plan,), Reviewer, (tR,))
+              Planner(plan) >> Reviewer(tR)
           else:
               skip(Planner)
 
           while (not agreed) @ LLM1:
-              msg(LLM1, (v1,), LLM2, (v2,))
+              LLM1(v1) >> LLM2(v2)
               ...
           else:              # while...else = exit body
-              msg(LLM1, (v1,), User, (result,))
+              LLM1(v1) >> User(result)
 
 The condition (left of ``@``) can use native Python ``not``, ``and``, ``or``
 and boolean literals — they are translated to ``Expr`` IR at rewrite time, so
@@ -307,16 +307,49 @@ def _make_fn(name: str, body: list[ast.stmt]) -> ast.FunctionDef:
 
 class _ProcTransformer(ast.NodeTransformer):
     """
-    Rewrites ``if cond @ owner: ...`` and ``while cond @ owner: ...`` into
-    ``if_(cond, owner, then=..., else_=...)`` and ``while_(...)`` calls.
+    Rewrites coordination-DSL patterns into their builder-function equivalents:
 
-    Only nodes whose condition is a ``BinOp`` with ``MatMult`` (``@``) are
-    touched; ordinary Python ``if``/``while`` pass through unchanged.
+    - ``Sender(x, y) >> Receiver(a, b)``  →  ``msg(Sender, (x, y), Receiver, (a, b))``
+    - ``if cond @ owner: ...``             →  ``if_(cond, owner, then=..., else_=...)``
+    - ``while cond @ owner: ...``          →  ``while_(cond, owner, body=..., exit_body=...)``
+
+    All other Python statements pass through unchanged.
     """
 
     @staticmethod
     def _is_at(node: ast.expr) -> bool:
         return isinstance(node, ast.BinOp) and isinstance(node.op, ast.MatMult)
+
+    @staticmethod
+    def _parse_msg_side(node: ast.expr, side: str) -> tuple[ast.expr, list[ast.expr]]:
+        """Return (lifeline_ast, args) from a Call node ``Lifeline(x, y, ...)``."""
+        if not isinstance(node, ast.Call):
+            raise SyntaxError(
+                f"Both sides of '>>' must be a lifeline call, "
+                f"e.g. Sender(x) >> Receiver(y). "
+                f"Got a non-call on the {side} side. "
+                f"Use empty brackets for no payload: Sender() >> Receiver()."
+            )
+        return node.func, list(node.args)
+
+    def visit_Expr(self, node: ast.Expr) -> ast.Expr:
+        """Rewrite ``Sender(payload) >> Receiver(bindings)`` to ``msg(...)``."""
+        self.generic_visit(node)
+        val = node.value
+        if not (isinstance(val, ast.BinOp) and isinstance(val.op, ast.RShift)):
+            return node
+        sender_ast, payload = self._parse_msg_side(val.left,  "left (sender)")
+        receiver_ast, bindings = self._parse_msg_side(val.right, "right (receiver)")
+        return ast.Expr(ast.Call(
+            func=ast.Name(id="msg", ctx=ast.Load()),
+            args=[
+                sender_ast,
+                ast.Tuple(elts=payload,   ctx=ast.Load()),
+                receiver_ast,
+                ast.Tuple(elts=bindings,  ctx=ast.Load()),
+            ],
+            keywords=[],
+        ))
 
     def visit_If(self, node: ast.If) -> ast.stmt | list[ast.stmt]:
         # Recurse into children first (bottom-up).
@@ -416,6 +449,7 @@ def _transform_proc_source(fn: Callable) -> Callable:
     # Inject builder helpers so users don't need to import them explicitly.
     exec_globals = fn.__globals__.copy()
     exec_globals.update({
+        "msg":   msg,
         "if_":   if_,
         "while_": while_,
         "not_":  not_,
@@ -476,7 +510,8 @@ def proc(fn: Callable) -> Proc:
 
     Inside the body use:
 
-    - ``msg()``, ``act()``, ``skip()`` — coordination statements
+    - ``Sender(x, y) >> Receiver(a, b)`` — message passing
+    - ``act()``, ``skip()`` — local action / no-op
     - Native ``if cond @ owner: ... else: ...`` — conditional branching
     - Native ``while cond @ owner: ... else: ...`` — loops (else = exit body)
 
