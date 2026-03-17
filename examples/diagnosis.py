@@ -110,7 +110,7 @@ choose_result   = chooseResult
 # ---------------------------------------------------------------------------
 
 @proc
-def diagnosisConsensus(notes: Text, diagnosis: Text) -> Text:
+def diagnosisConsensus(notes: Text @ User, diagnosis: Text @ User) -> Text:
     # Distribute notes to both LLMs
     User(notes, diagnosis) >> LLM1(n1, d1)
     User(notes, diagnosis) >> LLM2(n2, d2)
@@ -152,29 +152,24 @@ program = Program(
 
 if __name__ == "__main__":
     import time
-    from zippergen.runtime import run, mock_llm
+    from zippergen.runtime import mock_llm
     from zipperchat import WebTrace
-
-    initial = {
-        "User": {
-            "notes": "Patient has fever, cough, and fatigue for 5 days.",
-            "diagnosis": "Influenza",
-        }
-    }
 
     wt = WebTrace(program.lifelines).start()
     time.sleep(0.3)   # give the browser a moment to connect
 
+    diagnosisConsensus.configure(
+        backend=lambda a, i: mock_llm(a, i, min_delay=10.3, max_delay=20.2),
+        trace=wt,
+        timeout=600,
+    )
+
     while True:
         wt.reset()
         print("Running diagnosis consensus (mock LLM)…")
-        result = run(
-            diagnosisConsensus,
-            list(program.lifelines),
-            initial,
-            llm_backend=lambda a, i: mock_llm(a, i, min_delay=10.3, max_delay=20.2),
-            trace=wt,
-            timeout=600,
+        result = diagnosisConsensus(
+            notes="Patient has fever, cough, and fatigue for 5 days.",
+            diagnosis="Influenza",
         )
         wt.done()
         print(f"\nResult → {result}")

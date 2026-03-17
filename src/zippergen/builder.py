@@ -69,7 +69,7 @@ from collections.abc import Callable
 
 from zippergen.syntax import (
     ZType, Lifeline, Var,
-    Bool,
+    Bool, ZTypeAtLifeline,
     Expr, VarExpr, LitExpr, NotExpr, AndExpr, OrExpr,
     Stmt, MsgStmt, ActStmt, SkipStmt, IfStmt, WhileStmt,
     LLMAction, PureAction,
@@ -516,8 +516,12 @@ def _transform_proc_source(fn: Callable) -> tuple[Callable, str | None, str | No
 # @proc decorator
 # ---------------------------------------------------------------------------
 
-def _proc_inputs(fn: Callable) -> tuple[tuple[str, ZType], ...]:
-    """Extract (name, ZType) pairs from parameter annotations."""
+def _proc_inputs(fn: Callable) -> tuple[tuple[str, ZType, Lifeline | None], ...]:
+    """Extract (name, ZType, Lifeline | None) triples from parameter annotations.
+
+    Accepts either plain ``ZType`` (lifeline is ``None``) or
+    ``ZType @ Lifeline`` (a ``ZTypeAtLifeline`` object).
+    """
     sig = inspect.signature(fn)
     inputs = []
     for name, param in sig.parameters.items():
@@ -525,15 +529,17 @@ def _proc_inputs(fn: Callable) -> tuple[tuple[str, ZType], ...]:
         if ann is inspect.Parameter.empty:
             raise TypeError(
                 f"@proc '{fn.__name__}': parameter '{name}' "
-                f"must have a ZipperGen type annotation (e.g. Text, Bool)."
+                f"must have a type annotation (e.g. Text @ Planner)."
             )
-        if not is_ztype(ann):
+        if isinstance(ann, ZTypeAtLifeline):
+            inputs.append((name, ann.type, ann.lifeline))
+        elif is_ztype(ann):
+            inputs.append((name, ann, None))
+        else:
             raise TypeError(
                 f"@proc '{fn.__name__}': annotation for '{name}' "
-                f"must be a ZType (Text, Bool, Int, Float, or TTuple), "
-                f"got {ann!r}."
+                f"must be a ZType or ZType @ Lifeline, got {ann!r}."
             )
-        inputs.append((name, ann))
     return tuple(inputs)
 
 
@@ -575,7 +581,7 @@ def proc(fn: Callable) -> Proc:
     transformed, return_var_name, return_lifeline_name = _transform_proc_source(fn)
 
     # Execute the transformed body once to record all statements.
-    kwargs = {name: Var(name, ztype) for name, ztype in inputs}
+    kwargs = {name: Var(name, ztype) for name, ztype, _ll in inputs}
     body = _collect(lambda: transformed(**kwargs))
 
     # Resolve return var @ Lifeline if declared.
