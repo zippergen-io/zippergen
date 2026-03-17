@@ -133,7 +133,7 @@ def diagnosisConsensus(notes: Text, diagnosis: Text) -> Text:
     # Final result computed by LLM1, sent to User
     LLM1: result = choose_result(verdict1, agreed)
     LLM1(result) >> User(result)
-    return result
+    return result @ User
 
 
 # ---------------------------------------------------------------------------

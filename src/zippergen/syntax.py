@@ -434,11 +434,13 @@ class Proc:
     output_type: ZType
     vars: tuple[Var, ...]       # locally declared variables
     body: Stmt
-    output_var: Var | None = None   # declared via ``return var`` in @proc body
+    output_var: Var | None = None           # declared via ``return var @ Lifeline``
+    output_lifeline: Lifeline | None = None
 
     def __repr__(self) -> str:
         ins = ", ".join(f"{n}: {t!r}" for n, t in self.inputs)
-        out = f" → {self.output_var.name}" if self.output_var else ""
+        out = (f" → {self.output_var.name}@{self.output_lifeline.name}"
+               if self.output_var else "")
         return f"Proc({self.name!r}, ({ins}) -> {self.output_type!r}{out})"
 
 
