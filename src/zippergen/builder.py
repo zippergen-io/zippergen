@@ -309,9 +309,10 @@ class _ProcTransformer(ast.NodeTransformer):
     """
     Rewrites coordination-DSL patterns into their builder-function equivalents:
 
-    - ``Sender(x, y) >> Receiver(a, b)``  →  ``msg(Sender, (x, y), Receiver, (a, b))``
-    - ``if cond @ owner: ...``             →  ``if_(cond, owner, then=..., else_=...)``
-    - ``while cond @ owner: ...``          →  ``while_(cond, owner, body=..., exit_body=...)``
+    - ``Lifeline: outputs = action(inputs)``  →  ``act(Lifeline, action, inputs, outputs)``
+    - ``Sender(x, y) >> Receiver(a, b)``      →  ``msg(Sender, (x, y), Receiver, (a, b))``
+    - ``if cond @ owner: ...``                →  ``if_(cond, owner, then=..., else_=...)``
+    - ``while cond @ owner: ...``             →  ``while_(cond, owner, body=..., exit_body=...)``
 
     All other Python statements pass through unchanged.
     """
@@ -331,6 +332,32 @@ class _ProcTransformer(ast.NodeTransformer):
                 f"Use empty brackets for no payload: Sender() >> Receiver()."
             )
         return node.func, list(node.args)
+
+    def visit_AnnAssign(self, node: ast.AnnAssign) -> ast.stmt:
+        """Rewrite ``Lifeline: outputs = action(inputs)`` to ``act(...)``."""
+        self.generic_visit(node)
+        if node.value is None or not isinstance(node.value, ast.Call):
+            return node
+        # Target has Store context; rebuild as Load for use as a function arg.
+        target = node.target
+        lifeline_ast = (
+            ast.Name(id=target.id, ctx=ast.Load())
+            if isinstance(target, ast.Name)
+            else target
+        )
+        action_call = node.value
+        ann = node.annotation
+        outputs = list(ann.elts) if isinstance(ann, ast.Tuple) else [ann]
+        return ast.Expr(ast.Call(
+            func=ast.Name(id="act", ctx=ast.Load()),
+            args=[
+                lifeline_ast,
+                action_call.func,
+                ast.Tuple(elts=list(action_call.args), ctx=ast.Load()),
+                ast.Tuple(elts=outputs,                ctx=ast.Load()),
+            ],
+            keywords=[],
+        ))
 
     def visit_Expr(self, node: ast.Expr) -> ast.Expr:
         """Rewrite ``Sender(payload) >> Receiver(bindings)`` to ``msg(...)``."""
@@ -450,6 +477,7 @@ def _transform_proc_source(fn: Callable) -> Callable:
     exec_globals = fn.__globals__.copy()
     exec_globals.update({
         "msg":   msg,
+        "act":   act,
         "if_":   if_,
         "while_": while_,
         "not_":  not_,
@@ -511,7 +539,8 @@ def proc(fn: Callable) -> Proc:
     Inside the body use:
 
     - ``Sender(x, y) >> Receiver(a, b)`` — message passing
-    - ``act()``, ``skip()`` — local action / no-op
+    - ``Lifeline: outputs = action(inputs)`` — local action (mirrors paper's ``act A : y := f(x)``)
+    - ``skip()`` — local no-op
     - Native ``if cond @ owner: ... else: ...`` — conditional branching
     - Native ``while cond @ owner: ... else: ...`` — loops (else = exit body)
 
