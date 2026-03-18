@@ -59,8 +59,7 @@ class _EventBus:
 
     def publish(self, event: dict) -> None:
         with self._lock:
-            # Don't store terminal events in replay history
-            if event.get("type") not in ("done", "close"):
+            if event.get("type") != "close":
                 self._history.append(event)
             for q in self._subs:
                 q.put(event)

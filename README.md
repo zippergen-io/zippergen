@@ -41,28 +41,59 @@ def my_backend(action, inputs):
 run(proc, lifelines, initial_envs, llm_backend=my_backend)
 ```
 
+## Hello, World!
+
+Here is the smallest possible ZipperGen program. `User` sends a name to `Greeter`, `Greeter` builds a greeting and sends it back, and the result is returned to the caller:
+
+```python
+from zippergen.syntax import Text, Lifeline, Var
+from zippergen.actions import pure
+from zippergen.builder import proc
+
+User    = Lifeline("User")
+Greeter = Lifeline("Greeter")
+
+name     = Var("name",     Text)
+greeting = Var("greeting", Text)
+
+@pure()
+def greet(name: Text) -> Text:
+    return f"Hello, {name}!"
+
+@proc
+def hello(name: Text @ User) -> Text:
+    User(name) >> Greeter(name)
+    Greeter: greeting = greet(name)
+    Greeter(greeting) >> User(greeting)
+    return greeting @ User
+
+result = hello(name="World")   # → "Hello, World!"
+```
+
+- `User(name) >> Greeter(name)` — `User` sends `name` to `Greeter`.
+- `Greeter: greeting = greet(name)` — `Greeter` runs a local action.
+- `return greeting @ User` — declares `User` as the lifeline that owns the result.
+
+ZipperGen projects this global protocol onto each agent and runs them in parallel threads. Deadlock-freedom is guaranteed by construction.
+
 ## How it works
 
 ZipperGen programs are *global coordination protocols* — you describe what messages flow between which agents and who owns each decision. ZipperGen automatically projects the global protocol onto per-agent local programs and executes them in parallel threads with FIFO message queues.
 
-Programs are written as plain Python functions decorated with `@proc`. Control structures use native `if`/`while` with `@ Lifeline` to name the agent that owns the decision:
+Control structures use native `if`/`while` with `@ Lifeline` to name the agent that owns the decision:
 
 ```python
-@proc
-def diagnosisConsensus(notes: Text, diagnosis: Text) -> Text:
-    msg(User, (notes, diagnosis), LLM1, (n1, d1))
-    msg(User, (notes, diagnosis), LLM2, (n2, d2))
-    act(LLM1, assess, (n1, d1), (verdict1, reason1))
-    act(LLM2, assess, (n2, d2), (verdict2, reason2))
-
-    while (not agreed) @ LLM1:          # LLM1 owns the loop condition
-        msg(LLM1, (verdict1,), LLM2, (v1,))
-        msg(LLM2, (verdict2,), LLM1, (v2,))
-        act(LLM1, check_agreement, (verdict1, verdict2), (agreed,))
-    else:                                # else = exit body (runs once on exit)
-        msg(LLM1, (verdict1,), User, (result,))
+while (not agreed) @ LLM1:   # LLM1 owns the loop condition
+    LLM1(verdict1, reason1) >> LLM2(v1, r1)
+    LLM2(verdict2, reason2) >> LLM1(v2, r2)
+    LLM1: (verdict1, reason1) = reconsider(n1, d1, verdict1, reason1, v2, r2)
+    LLM2: (verdict2, reason2) = reconsider(n2, d2, verdict2, reason2, v1, r1)
+    LLM2(verdict2) >> LLM1(verdict2)
+    LLM1: agreed = check_agreement(verdict1, verdict2)
+else:                          # else = exit body (runs once on loop exit)
+    LLM1(verdict1, reason1) >> LLM2(v1, r1)
 ```
 
-The `@ LLM1` annotation mirrors the paper's notation `c@B` — it tells ZipperGen which agent evaluates the condition and broadcasts control messages to the others. Deadlock-freedom is guaranteed by construction.
+The `@ LLM1` annotation mirrors the paper's notation `c@B` — it tells ZipperGen which agent evaluates the condition and broadcasts control messages to the others.
 
 The formal foundation is in the paper *"Provable Coordination for LLM Agents via Message Sequence Charts"*.
