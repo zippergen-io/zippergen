@@ -43,36 +43,35 @@ run(proc, lifelines, initial_envs, llm_backend=my_backend)
 
 ## Hello, World!
 
-Here is the smallest possible ZipperGen program. `User` sends a name to `Greeter`, `Greeter` builds a greeting and sends it back, and the result is returned to the caller:
+Here is the smallest possible ZipperGen program. `User` sends a number to `Adder`, `Adder` increments it, and the result is returned to the caller:
 
 ```python
-from zippergen.syntax import Text, Lifeline, Var
+from zippergen.syntax import Int, Lifeline, Var
 from zippergen.actions import pure
 from zippergen.builder import proc
 
-User    = Lifeline("User")
-Greeter = Lifeline("Greeter")
+User  = Lifeline("User")
+Adder = Lifeline("Adder")
 
-name     = Var("name",     Text)
-greeting = Var("greeting", Text)
+number = Var("number", Int)
 
 @pure()
-def greet(name: Text) -> Text:
-    return f"Hello, {name}!"
+def inc(x: Int) -> Int:
+    return x + 1
 
 @proc
-def hello(name: Text @ User) -> Text:
-    User(name) >> Greeter(name)
-    Greeter: greeting = greet(name)
-    Greeter(greeting) >> User(greeting)
-    return greeting @ User
+def increment(number: Int @ User) -> Int:
+    User(number) >> Adder(number)
+    Adder: number = inc(number)
+    Adder(number) >> User(number)
+    return number @ User
 
-result = hello(name="World")   # → "Hello, World!"
+result = increment(number=1)   # → 2
 ```
 
-- `User(name) >> Greeter(name)` — `User` sends `name` to `Greeter`.
-- `Greeter: greeting = greet(name)` — `Greeter` runs a local action.
-- `return greeting @ User` — declares `User` as the lifeline that owns the result.
+- `User(number) >> Adder(number)` — `User` sends `number` to `Adder`.
+- `Adder: number = inc(number)` — `Adder` runs a local action.
+- `return number @ User` — declares `User` as the lifeline that owns the result.
 
 ZipperGen projects this global protocol onto each agent and runs them in parallel threads. Deadlock-freedom is guaranteed by construction.
 

@@ -1,13 +1,12 @@
 # pyright: reportInvalidTypeForm=false, reportGeneralTypeIssues=false, reportOperatorIssue=false, reportCallIssue=false, reportAttributeAccessIssue=false, reportUnusedExpression=false, reportUnboundVariable=false
 """
-Hello World — minimal tutorial example.
+Increment — minimal tutorial example.
 
-User sends a name to Greeter, Greeter builds a personalised greeting,
-and sends it back. Demonstrates the core DSL in five lines:
-one input, one message each way, one local action, one return value.
+User sends a number to Adder, Adder increments it by one,
+and sends the result back.
 """
 
-from zippergen.syntax import Text, Lifeline, Var, Program
+from zippergen.syntax import Int, Lifeline, Var, Program
 from zippergen.actions import pure
 from zippergen.builder import proc
 
@@ -15,43 +14,42 @@ from zippergen.builder import proc
 # Lifelines
 # ---------------------------------------------------------------------------
 
-User    = Lifeline("User")
-Greeter = Lifeline("Greeter")
+User  = Lifeline("User")
+Adder = Lifeline("Adder")
 
 # ---------------------------------------------------------------------------
 # Variables
 # ---------------------------------------------------------------------------
 
-name     = Var("name",     Text)
-greeting = Var("greeting", Text)
+number = Var("number", Int)
 
 # ---------------------------------------------------------------------------
 # Actions
 # ---------------------------------------------------------------------------
 
 @pure()
-def greet(name: Text) -> Text:
-    return f"Hello, {name}!"
+def inc(x: Int) -> Int:
+    return x + 1
 
 # ---------------------------------------------------------------------------
 # Proc
 # ---------------------------------------------------------------------------
 
 @proc
-def hello(name: Text @ User) -> Text:
-    User(name) >> Greeter(name)
-    Greeter: greeting = greet(name)
-    Greeter(greeting) >> User(greeting)
-    return greeting @ User
+def increment(number: Int @ User) -> Int:
+    User(number) >> Adder(number)
+    Adder: number = inc(number)
+    Adder(number) >> User(number)
+    return number @ User
 
 # ---------------------------------------------------------------------------
 # Program
 # ---------------------------------------------------------------------------
 
 program = Program(
-    lifelines=(User, Greeter),
-    actions=(greet,),
-    procs=(hello,),
+    lifelines=(User, Adder),
+    actions=(inc,),
+    procs=(increment,),
 )
 
 # ---------------------------------------------------------------------------
@@ -63,14 +61,14 @@ if __name__ == "__main__":
     from zipperchat import WebTrace
 
     wt = WebTrace(program.lifelines).start()
-    time.sleep(0.3)   # give the browser a moment to connect
+    time.sleep(0.3)
 
-    hello.configure(trace=wt, timeout=10)
+    increment.configure(trace=wt, timeout=10)
 
     while True:
         wt.reset()
-        print("Running hello world…")
-        result = hello(name="World")
+        print("Running increment…")
+        result = increment(number=1)
         wt.done()
         print(f"\nResult → {result}")
         print("Click ▶ Run again in the browser, or Ctrl-C to quit.")
