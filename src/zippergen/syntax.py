@@ -47,7 +47,7 @@ __all__ = [
     "Var",
     # Expressions
     "Expr",
-    "VarExpr", "LitExpr", "NotExpr", "AndExpr", "OrExpr", "LtExpr", "TupleExpr",
+    "VarExpr", "LitExpr",
     # Actions
     "LLMAction", "PureAction",
     # Type + lifeline annotation helper
@@ -151,50 +151,7 @@ class LitExpr:
         return repr(self.value)
 
 
-@dataclass(frozen=True)
-class NotExpr:
-    operand: Expr
-
-    def __repr__(self) -> str:
-        return f"not {self.operand!r}"
-
-
-@dataclass(frozen=True)
-class AndExpr:
-    left: Expr
-    right: Expr
-
-    def __repr__(self) -> str:
-        return f"({self.left!r} and {self.right!r})"
-
-
-@dataclass(frozen=True)
-class OrExpr:
-    left: Expr
-    right: Expr
-
-    def __repr__(self) -> str:
-        return f"({self.left!r} or {self.right!r})"
-
-
-@dataclass(frozen=True)
-class LtExpr:
-    left: Expr
-    right: Expr
-
-    def __repr__(self) -> str:
-        return f"({self.left!r} < {self.right!r})"
-
-
-@dataclass(frozen=True)
-class TupleExpr:
-    elements: tuple[Expr, ...]
-
-    def __repr__(self) -> str:
-        return f"({', '.join(repr(e) for e in self.elements)})"
-
-
-Expr = Union[VarExpr, LitExpr, NotExpr, AndExpr, OrExpr, LtExpr, TupleExpr]
+Expr = Union[VarExpr, LitExpr]
 
 # Reserved control tag — used only by the projection engine in control-broadcast
 # messages (send B(⊤, κ_ctrl) → C).  Must not appear in user-written programs.
@@ -300,7 +257,7 @@ class SeqStmt:
 @dataclass(frozen=True)
 class IfStmt:
     """if condition@owner then branch_true else branch_false"""
-    condition: Expr
+    condition: object  # Callable[[dict, dict], bool]
     owner: Lifeline
     branch_true: Stmt
     branch_false: Stmt
@@ -316,7 +273,7 @@ class IfStmt:
 @dataclass(frozen=True)
 class WhileStmt:
     """while condition@owner do { body } exit { exit_body }"""
-    condition: Expr
+    condition: object  # Callable[[dict, dict], bool]
     owner: Lifeline
     body: Stmt
     exit_body: Stmt
@@ -423,6 +380,7 @@ class Workflow:
     body: Stmt
     output_var: Var | None = None           # declared via ``return var @ Lifeline``
     output_lifeline: Lifeline | None = None
+    ns: dict = field(default_factory=dict)  # workflow's global namespace (for condition lambdas)
     _backend: object = field(default=None, init=False, repr=False)
     _trace: object   = field(default=None, init=False, repr=False)
     _timeout: float  = field(default=60.0, init=False, repr=False)
@@ -477,7 +435,7 @@ class Workflow:
             parts.append(f"{n}: {t.__name__} @ {ll.name}" if ll else f"{n}: {t.__name__}")
         ins = ", ".join(parts)
         out = (f" → {self.output_var.name}@{self.output_lifeline.name}"
-               if self.output_var else "")
+               if self.output_var and self.output_lifeline else "")
         return f"Workflow({self.name!r}, ({ins}) -> {self.output_type.__name__}{out})"
 
 

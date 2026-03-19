@@ -78,15 +78,17 @@ ZipperGen programs are *global coordination protocols* — you describe what mes
 Control structures use native `if`/`while` with `@ Lifeline` to name the agent that owns the decision:
 
 ```python
-while (not agreed) @ LLM1:   # LLM1 owns the loop condition
-    LLM1(verdict1, reason1) >> LLM2(v1, r1)
-    LLM2(verdict2, reason2) >> LLM1(v2, r2)
-    LLM1: (verdict1, reason1) = reconsider(n1, d1, verdict1, reason1, v2, r2)
-    LLM2: (verdict2, reason2) = reconsider(n2, d2, verdict2, reason2, v1, r1)
-    LLM2(verdict2) >> LLM1(verdict2)
-    LLM1: agreed = check_agreement(verdict1, verdict2)
-else:                          # else = exit body (runs once on loop exit)
-    LLM1(verdict1, reason1) >> LLM2(v1, r1)
+while (not agreed and trials < MAX_ROUNDS) @ LLM1:   # LLM1 owns the loop condition
+    LLM1(verdict, reason) >> LLM2(other_verdict, other_reason)
+    LLM2(verdict, reason) >> LLM1(other_verdict, other_reason)
+    LLM1: (verdict, reason) = reconsider(notes, diagnosis, verdict, reason, other_verdict, other_reason)
+    LLM2: (verdict, reason) = reconsider(notes, diagnosis, verdict, reason, other_verdict, other_reason)
+    LLM2(verdict) >> LLM1(other_verdict)
+    with LLM1:
+        agreed = checkAgreement(verdict, other_verdict)
+        trials = incTrials(trials)
+else:                                                  # else = exit body (runs once on loop exit)
+    LLM1(verdict, reason) >> LLM2(other_verdict, other_reason)
 ```
 
 The `@ LLM1` annotation mirrors the paper's notation `c@B` — it tells ZipperGen which agent evaluates the condition and broadcasts control messages to the others.
