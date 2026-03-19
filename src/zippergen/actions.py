@@ -28,11 +28,10 @@ return information. Output names and types must therefore be stated explicitly.
 For ``@pure``, the single output name and type are inferred from the function
 name and return annotation.
 
-**The Pylance warnings on ZipperGen-annotated functions are expected.**
-Pylance treats ``Text``, ``Bool``, etc. as variables rather than types, and
-warns that they cannot appear in annotation position. This is a static checker
-limitation — Python itself handles any object as an annotation at runtime,
-which is how the decorator reads them via ``inspect.signature``.
+**Type annotations use ordinary Python built-ins.**
+ZipperGen coordination types are expressed with built-in Python types like
+``str``, ``bool``, ``int``, and ``float``. The decorators read these runtime
+annotations directly via ``inspect.signature``.
 
 Usage
 -----
@@ -40,12 +39,12 @@ Usage
         system="You are a medical expert ...",
         user="Notes: {notes}\\nDiagnosis: {diag}",
         parse="json",
-        outputs=(("verdict", Text), ("reason", Text)),
+        outputs=(("verdict", bool), ("reason", str)),
     )
-    def assess(notes: Text, diag: Text) -> None: ...
+    def assess(notes: str, diag: str) -> None: ...
 
     @pure
-    def check_agreement(v1: Text, v2: Text) -> Bool:
+    def check_agreement(v1: bool, v2: bool) -> bool:
         return v1 == v2
 
 Notes
@@ -85,12 +84,14 @@ def _extract_inputs(fn: Callable) -> tuple[tuple[str, ZType], ...]:
         if ann is inspect.Parameter.empty:
             raise TypeError(
                 f"@action '{fn.__name__}': parameter '{name}' "
-                f"must have a ZipperGen type annotation (e.g. Text, Bool)."
+                f"must have a ZipperGen type annotation "
+                f"(e.g. str, bool, int, float)."
             )
         if not is_ztype(ann):
             raise TypeError(
                 f"@action '{fn.__name__}': annotation for '{name}' "
-                f"must be a ZType (Text, Bool, Int, Float, or TTuple), "
+                f"must be a supported coordination type "
+                f"(str, bool, int, float, or tuple), "
                 f"got {ann!r}."
             )
         inputs.append((name, ann))
@@ -106,9 +107,8 @@ def _single_output_from_return(fn: Callable) -> tuple[tuple[str, ZType], ...]:
     ret = fn.__annotations__.get("return")
     if ret is None or not is_ztype(ret):
         raise TypeError(
-            f"@pure '{fn.__name__}': return annotation must be a ZType "
-            f"(e.g. -> Bool) for single-output inference, "
-            f"or supply outputs= explicitly."
+            f"@pure '{fn.__name__}': return annotation must be a supported "
+            f"coordination type (e.g. -> bool)."
         )
     return ((fn.__name__, ret),)
 
@@ -160,7 +160,7 @@ def pure(fn: Callable) -> PureAction:
     Decorator that produces a PureAction node.
 
         @pure
-        def check_agreement(v1: Text, v2: Text) -> Bool:
+        def check_agreement(v1: bool, v2: bool) -> bool:
             return v1 == v2
 
     The output name is taken from the function name and its type from the
