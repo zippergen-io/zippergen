@@ -17,7 +17,7 @@ from zippergen.syntax import (
     pp,
 )
 from zippergen.actions import llm, pure
-from zippergen.builder import proc, skip
+from zippergen.builder import workflow, skip
 
 # ---------------------------------------------------------------------------
 # Lifelines
@@ -95,7 +95,7 @@ def finalizeWithReview(result: str, critique: str) -> None: ...
 # Proc — direct translation of the paper's reviewedExecution
 # ---------------------------------------------------------------------------
 
-@proc
+@workflow
 def reviewedExecution(task: str @ Planner) -> str:
     Planner: (plan, planNeedsReview) = makePlan(task)
 

@@ -59,8 +59,8 @@ __all__ = [
     # Local-only statements (produced by projection)
     "LocalStmt",
     "SendStmt", "RecvStmt", "IfRecvStmt", "WhileRecvStmt",
-    # Proc and Program
-    "Proc", "Program",
+    # Workflow and Program
+    "Workflow", "Program",
     # Reserved literals
     "kappa_ctrl",
     # Helpers
@@ -411,11 +411,11 @@ LocalStmt = Union[
 
 
 # ---------------------------------------------------------------------------
-# Proc and Program
+# Workflow and Program
 # ---------------------------------------------------------------------------
 
 @dataclass
-class Proc:
+class Workflow:
     name: str
     inputs: tuple[tuple[str, ZType, Lifeline | None], ...]  # (name, type, lifeline)
     output_type: ZType
@@ -430,7 +430,7 @@ class Proc:
     def configure(self, *,
                   backend: object = None,
                   trace:   object = None,
-                  timeout: float  = 60.0) -> Proc:
+                  timeout: float  = 60.0) -> Workflow:
         """Configure runtime parameters and return self for chaining.
 
         Parameters
@@ -447,10 +447,10 @@ class Proc:
         return self
 
     def __call__(self, **kwargs: object) -> object:
-        """Run this proc like a regular Python function.
+        """Run this workflow like a regular Python function.
 
-        Keyword arguments must match the proc's declared inputs (one per
-        parameter in the ``@proc`` signature).  Call ``configure()`` first to
+        Keyword arguments must match the workflow's declared inputs (one per
+        parameter in the ``@workflow`` signature).  Call ``configure()`` first to
         set the LLM backend, trace, and timeout.
         """
         from zippergen.runtime import run, mock_llm  # lazy to avoid circular import
@@ -460,7 +460,7 @@ class Proc:
             if lifeline is None:
                 raise TypeError(
                     f"{self.name}(): input '{name}' has no lifeline declared. "
-                    f"Use 'name: type @ Lifeline' in the @proc signature."
+                    f"Use 'name: type @ Lifeline' in the @workflow signature."
                 )
             if name not in kwargs:
                 raise TypeError(f"{self.name}() missing argument: '{name}'")
@@ -478,14 +478,14 @@ class Proc:
         ins = ", ".join(parts)
         out = (f" → {self.output_var.name}@{self.output_lifeline.name}"
                if self.output_var else "")
-        return f"Proc({self.name!r}, ({ins}) -> {self.output_type.__name__}{out})"
+        return f"Workflow({self.name!r}, ({ins}) -> {self.output_type.__name__}{out})"
 
 
 @dataclass
 class Program:
     lifelines: tuple[Lifeline, ...]
     actions: tuple[Union[LLMAction, PureAction], ...]
-    procs: tuple[Proc, ...]
+    procs: tuple[Workflow, ...]
 
     def __repr__(self) -> str:
         ls = ", ".join(repr(l) for l in self.lifelines)

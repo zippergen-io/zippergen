@@ -6,7 +6,7 @@ Design notes
 **What this module is.**
 This module implements the syntax-directed projection  π_A(P)  from the paper
 (Tables tab:projection-base, tab:projection-if, tab:projection-while).
-Given a global Proc and a lifeline A, it returns the local program (a
+Given a global Workflow and a lifeline A, it returns the local program (a
 LocalStmt) that A must execute.
 
 **The three cases for if/while.**
@@ -45,7 +45,7 @@ from zippergen.syntax import (
     SendStmt, RecvStmt, IfRecvStmt, WhileRecvStmt,
     Lifeline, LocalStmt, Stmt, Var, VarExpr, LitExpr,
     kappa_ctrl, participation_set, seq,
-    Proc,
+    Workflow,
 )
 
 __all__ = ["project"]
@@ -182,12 +182,12 @@ def _project(stmt: Stmt, A: Lifeline, counter: list[int]) -> LocalStmt:
 # Public API
 # ---------------------------------------------------------------------------
 
-def project(proc: Proc, lifeline: Lifeline) -> LocalStmt:
+def project(wf: Workflow, lifeline: Lifeline) -> LocalStmt:
     """
-    Project a global Proc onto a single lifeline.
+    Project a global Workflow onto a single lifeline.
 
     Returns the local program (a LocalStmt) that `lifeline` must execute.
-    The result is a faithful implementation of  π_lifeline(proc.body)
+    The result is a faithful implementation of  π_lifeline(wf.body)
     as defined in the paper.
     """
-    return _project(proc.body, lifeline, [0])
+    return _project(wf.body, lifeline, [0])

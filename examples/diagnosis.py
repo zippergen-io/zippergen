@@ -16,7 +16,7 @@ from zippergen.syntax import (
     pp,
 )
 from zippergen.actions import llm, pure
-from zippergen.builder import proc
+from zippergen.builder import workflow
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -123,7 +123,7 @@ choose_result   = chooseResult
 # Proc — direct translation of Listing 1
 # ---------------------------------------------------------------------------
 
-@proc
+@workflow
 def diagnosisConsensus(notes: str @ User, diagnosis: str @ User) -> str:
     # Distribute notes to both LLMs
     User(notes, diagnosis) >> LLM1(n1, d1)
@@ -140,8 +140,9 @@ def diagnosisConsensus(notes: str @ User, diagnosis: str @ User) -> str:
         LLM1: (verdict1, reason1) = reconsider(n1, d1, verdict1, reason1, v2, r2)
         LLM2: (verdict2, reason2) = reconsider(n2, d2, verdict2, reason2, v1, r1)
         LLM2(verdict2) >> LLM1(verdict2)
-        LLM1: agreed = check_agreement(verdict1, verdict2)
-        LLM1: trials = inc_trials(trials)
+        with LLM1:
+            agreed = check_agreement(verdict1, verdict2)
+            trials = inc_trials(trials)
     else:
         LLM1(verdict1, reason1) >> LLM2(v1, r1)
 

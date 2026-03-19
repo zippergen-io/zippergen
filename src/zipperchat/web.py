@@ -14,7 +14,7 @@ Usage
 
     while True:
         wt.reset()
-        run(proc, list(program.lifelines), initial, trace=wt)
+        run(wf, list(program.lifelines), initial, trace=wt)
         wt.done()
         wt.wait_for_replay()   # blocks until the ▶ button is clicked
 """
@@ -171,7 +171,7 @@ class WebTrace:
         wt = WebTrace(program.lifelines).start()
         while True:
             wt.reset()
-            run(proc, lifelines, initial, trace=wt)
+            run(wf, lifelines, initial, trace=wt)
             wt.done()
             wt.wait_for_replay()
     """
