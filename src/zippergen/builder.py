@@ -310,6 +310,7 @@ class _ProcTransformer(ast.NodeTransformer):
     Rewrites coordination-DSL patterns into their builder-function equivalents:
 
     - ``Lifeline: outputs = action(inputs)``  →  ``act(Lifeline, action, inputs, outputs)``
+    - ``with Lifeline:\n    y = f(x)\n    ...``  →  one ``act(...)`` call per body line
     - ``Sender(x, y) >> Receiver(a, b)``      →  ``msg(Sender, (x, y), Receiver, (a, b))``
     - ``if cond @ owner: ...``                →  ``if_(cond, owner, then=..., else_=...)``
     - ``while cond @ owner: ...``             →  ``while_(cond, owner, body=..., exit_body=...)``
@@ -377,6 +378,53 @@ class _ProcTransformer(ast.NodeTransformer):
             ],
             keywords=[],
         ))
+
+    def visit_With(self, node: ast.With) -> ast.stmt | list[ast.stmt]:
+        """
+        Rewrite a ``with Lifeline:`` block into one ``act(...)`` call per line.
+
+        Only single-item ``with`` blocks without an ``as`` clause whose every
+        body statement has the form ``outputs = action(inputs)`` are matched.
+        Anything else passes through unchanged (let Python handle it normally).
+        """
+        # Must be a bare `with Lifeline:` — no `as var`, no multiple items.
+        if len(node.items) != 1 or node.items[0].optional_vars is not None:
+            self.generic_visit(node)
+            return node
+
+        lifeline_ast = node.items[0].context_expr
+        result: list[ast.stmt] = []
+
+        for stmt in node.body:
+            if not (
+                isinstance(stmt, ast.Assign)
+                and len(stmt.targets) == 1
+                and isinstance(stmt.value, ast.Call)
+            ):
+                # Unrecognised body statement — fall through to normal Python.
+                self.generic_visit(node)
+                return node
+
+            target = stmt.targets[0]
+            action_call = stmt.value
+            # Assign targets have Store context; rewrite to Load for use as args.
+            def _to_load(n: ast.expr) -> ast.expr:
+                if isinstance(n, ast.Name):
+                    return ast.Name(id=n.id, ctx=ast.Load())
+                return n
+            outputs = [_to_load(e) for e in target.elts] if isinstance(target, ast.Tuple) else [_to_load(target)]
+            result.append(ast.Expr(ast.Call(
+                func=ast.Name(id="act", ctx=ast.Load()),
+                args=[
+                    lifeline_ast,
+                    action_call.func,
+                    ast.Tuple(elts=list(action_call.args), ctx=ast.Load()),
+                    ast.Tuple(elts=outputs,               ctx=ast.Load()),
+                ],
+                keywords=[],
+            )))
+
+        return result if result else [ast.Pass()]
 
     def visit_Expr(self, node: ast.Expr) -> ast.Expr:
         """Rewrite ``Sender(payload) >> Receiver(bindings)`` to ``msg(...)``."""
@@ -563,7 +611,8 @@ def proc(fn: Callable) -> Proc:
     Inside the body use:
 
     - ``Sender(x, y) >> Receiver(a, b)`` — message passing
-    - ``Lifeline: outputs = action(inputs)`` — local action (mirrors paper's ``act A : y := f(x)``)
+    - ``Lifeline: outputs = action(inputs)`` — single local action
+    - ``with Lifeline:\n        y1 = f1(x)\n        y2 = f2(y1)`` — block of consecutive local actions on one lifeline
     - ``skip()`` — local no-op
     - Native ``if cond @ owner: ... else: ...`` — conditional branching
     - Native ``while cond @ owner: ... else: ...`` — loops (else = exit body)

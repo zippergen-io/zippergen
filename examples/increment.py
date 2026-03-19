@@ -2,7 +2,7 @@
 """
 Increment — minimal tutorial example.
 
-User sends a number to Adder, Adder increments it by one,
+User sends a number to Adder, Adder increments it by one and then doubles it,
 and sends the result back.
 """
 
@@ -31,6 +31,10 @@ number = Var("number", int)
 def inc(x: int) -> int:
     return x + 1
 
+@pure
+def double(x: int) -> int:
+    return x * 2
+
 # ---------------------------------------------------------------------------
 # Proc
 # ---------------------------------------------------------------------------
@@ -38,19 +42,11 @@ def inc(x: int) -> int:
 @proc
 def increment(number: int @ User) -> int:
     User(number) >> Adder(number)
-    Adder: number = inc(number)
+    with Adder:
+        number = inc(number)
+        number = double(number)
     Adder(number) >> User(number)
     return number @ User
-
-# ---------------------------------------------------------------------------
-# Program
-# ---------------------------------------------------------------------------
-
-program = Program(
-    lifelines=(User, Adder),
-    actions=(inc,),
-    procs=(increment,),
-)
 
 # ---------------------------------------------------------------------------
 # Run
