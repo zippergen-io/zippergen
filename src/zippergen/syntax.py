@@ -47,7 +47,7 @@ __all__ = [
     "Var",
     # Expressions
     "Expr",
-    "VarExpr", "LitExpr", "NotExpr", "AndExpr", "OrExpr", "TupleExpr",
+    "VarExpr", "LitExpr", "NotExpr", "AndExpr", "OrExpr", "LtExpr", "TupleExpr",
     # Actions
     "LLMAction", "PureAction",
     # Type + lifeline annotation helper
@@ -178,6 +178,15 @@ class OrExpr:
 
 
 @dataclass(frozen=True)
+class LtExpr:
+    left: Expr
+    right: Expr
+
+    def __repr__(self) -> str:
+        return f"({self.left!r} < {self.right!r})"
+
+
+@dataclass(frozen=True)
 class TupleExpr:
     elements: tuple[Expr, ...]
 
@@ -185,7 +194,7 @@ class TupleExpr:
         return f"({', '.join(repr(e) for e in self.elements)})"
 
 
-Expr = Union[VarExpr, LitExpr, NotExpr, AndExpr, OrExpr, TupleExpr]
+Expr = Union[VarExpr, LitExpr, NotExpr, AndExpr, OrExpr, LtExpr, TupleExpr]
 
 # Reserved control tag — used only by the projection engine in control-broadcast
 # messages (send B(⊤, κ_ctrl) → C).  Must not appear in user-written programs.

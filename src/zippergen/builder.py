@@ -70,7 +70,7 @@ from collections.abc import Callable
 from zippergen.syntax import (
     ZType, Lifeline, Var,
     ZTypeAtLifeline,
-    Expr, VarExpr, LitExpr, NotExpr, AndExpr, OrExpr,
+    Expr, VarExpr, LitExpr, NotExpr, AndExpr, OrExpr, LtExpr,
     Stmt, MsgStmt, ActStmt, SkipStmt, IfStmt, WhileStmt,
     LLMAction, PureAction,
     Proc,
@@ -121,9 +121,17 @@ def _collect(fn: Callable) -> Stmt:
 # ---------------------------------------------------------------------------
 
 def _to_expr(x: object) -> Expr:
-    """Coerce a Var to VarExpr; pass through anything already an Expr."""
+    """Coerce a Var or Python literal to an Expr; pass through existing Expr."""
     if isinstance(x, Var):
         return VarExpr(x)
+    if isinstance(x, bool):
+        return LitExpr(x, bool)
+    if isinstance(x, int):
+        return LitExpr(x, int)
+    if isinstance(x, float):
+        return LitExpr(x, float)
+    if isinstance(x, str):
+        return LitExpr(x, str)
     return x  # type: ignore[return-value]
 
 
@@ -140,6 +148,11 @@ def and_(left: object, right: object) -> AndExpr:
 def or_(left: object, right: object) -> OrExpr:
     """Logical disjunction."""
     return OrExpr(_to_expr(left), _to_expr(right))
+
+
+def lt_(left: object, right: object) -> LtExpr:
+    """Less-than comparison."""
+    return LtExpr(_to_expr(left), _to_expr(right))
 
 
 def lit(value: object, type_: ZType) -> LitExpr:
@@ -283,6 +296,16 @@ def _ast_to_expr_ast(node: ast.expr) -> ast.expr:
         return ast.Call(
             func=ast.Name(id="lit", ctx=ast.Load()),
             args=[node, ast.Name(id="bool", ctx=ast.Load())],
+            keywords=[],
+        )
+
+    if (isinstance(node, ast.Compare)
+            and len(node.ops) == 1
+            and isinstance(node.ops[0], ast.Lt)):
+        return ast.Call(
+            func=ast.Name(id="lt_", ctx=ast.Load()),
+            args=[_ast_to_expr_ast(node.left),
+                  _ast_to_expr_ast(node.comparators[0])],
             keywords=[],
         )
 
@@ -550,6 +573,7 @@ def _transform_proc_source(fn: Callable) -> tuple[Callable, str | None, str | No
         "not_":  not_,
         "and_":  and_,
         "or_":   or_,
+        "lt_":   lt_,
         "lit":   lit,
     })
 

@@ -39,7 +39,7 @@ import time
 from zippergen.syntax import (
     EmptyStmt, SendStmt, RecvStmt, ActStmt, SkipStmt,
     SeqStmt, IfStmt, WhileStmt, IfRecvStmt, WhileRecvStmt,
-    VarExpr, LitExpr, NotExpr, AndExpr, OrExpr, TupleExpr,
+    VarExpr, LitExpr, NotExpr, AndExpr, OrExpr, LtExpr, TupleExpr,
     LLMAction, PureAction,
     Lifeline, Proc, LocalStmt,
     kappa_ctrl,
@@ -156,6 +156,8 @@ def _eval(expr, env: Env) -> object:
             return _eval(l, env) and _eval(r, env)
         case OrExpr(left=l, right=r):
             return _eval(l, env) or _eval(r, env)
+        case LtExpr(left=l, right=r):
+            return _eval(l, env) < _eval(r, env)
         case TupleExpr(elements=es):
             return tuple(_eval(e, env) for e in es)
         case _:
