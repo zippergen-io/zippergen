@@ -25,16 +25,8 @@ function directly (e.g. in tests), use ``action.fn(...)``.
 **Why does @llm always require outputs= explicitly?**
 An LLM action's body is ``...`` — there is no Python code to inspect for
 return information. Output names and types must therefore be stated explicitly.
-For ``@pure``, a single output can be inferred from the return annotation
-(``-> Bool``) as a convenience, but multiple outputs always require
-``outputs=``.
-
-**Why does @pure always require parentheses (@pure() not @pure)?**
-Without parentheses, Python passes the decorated function as the first
-argument to ``pure``, which requires a conditional check to distinguish
-"called with a function" from "called with keyword arguments". That is a
-non-obvious Python trick. Requiring parentheses keeps ``pure`` a simple
-function that always returns a decorator — one clear path, no special cases.
+For ``@pure``, the single output name and type are inferred from the function
+name and return annotation.
 
 **The Pylance warnings on ZipperGen-annotated functions are expected.**
 Pylance treats ``Text``, ``Bool``, etc. as variables rather than types, and
@@ -52,14 +44,9 @@ Usage
     )
     def assess(notes: Text, diag: Text) -> None: ...
 
-    # Single output: name defaults to function name, type from return annotation
-    @pure()
+    @pure
     def check_agreement(v1: Text, v2: Text) -> Bool:
         return v1 == v2
-
-    # Multiple outputs: declare them explicitly
-    @pure(outputs=(("verdict", Text), ("reason", Text)))
-    def combine(x: Text, y: Text) -> None: ...
 
 Notes
 -----
@@ -70,7 +57,7 @@ To call the underlying Python function directly, use ``action.fn(...)``.
 from __future__ import annotations
 
 import inspect
-from collections.abc import Callable, Sequence
+from collections.abc import Callable
 
 from zippergen.syntax import (
     ZType, LLMAction, PureAction, is_ztype,
@@ -78,8 +65,8 @@ from zippergen.syntax import (
 
 __all__ = ["llm", "pure"]
 
-# Type alias for an output spec list/tuple
-OutputSpec = Sequence[tuple[str, ZType]]
+# Type alias for an output spec list/tuple (used by @llm)
+OutputSpec = list[tuple[str, ZType]] | tuple[tuple[str, ZType], ...]
 
 
 # ---------------------------------------------------------------------------
@@ -168,32 +155,22 @@ def llm(
 # @pure decorator
 # ---------------------------------------------------------------------------
 
-def pure(
-    *,
-    outputs: OutputSpec | None = None,
-) -> Callable[[Callable], PureAction]:
+def pure(fn: Callable) -> PureAction:
     """
     Decorator that produces a PureAction node.
 
-    Always called with parentheses:
-
-        @pure()
+        @pure
         def check_agreement(v1: Text, v2: Text) -> Bool:
             return v1 == v2
 
-        @pure(outputs=(("verdict", Text), ("reason", Text)))
-        def combine(x: Text, y: Text) -> None: ...
-
-    If ``outputs`` is omitted, the single output name is taken from the
-    function name and its type from the return annotation.
+    The output name is taken from the function name and its type from the
+    return annotation.
     """
-    def decorator(f: Callable) -> PureAction:
-        inputs = _extract_inputs(f)
-        out = tuple(outputs) if outputs is not None else _single_output_from_return(f)
-        return PureAction(
-            name=f.__name__,
-            inputs=inputs,
-            outputs=out,
-            fn=f,
-        )
-    return decorator
+    inputs = _extract_inputs(fn)
+    outputs = _single_output_from_return(fn)
+    return PureAction(
+        name=fn.__name__,
+        inputs=inputs,
+        outputs=outputs,
+        fn=fn,
+    )
