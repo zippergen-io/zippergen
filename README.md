@@ -24,14 +24,14 @@ from zippergen.builder import proc
 User  = Lifeline("User")
 Adder = Lifeline("Adder")
 
-number = Var("number", Int)
+number = Var("number", int)
 
 @pure
-def inc(x: Int) -> Int:
+def inc(x: int) -> int:
     return x + 1
 
 @proc
-def increment(number: Int @ User) -> Int:
+def increment(number: int @ User) -> int:
     User(number) >> Adder(number)
     Adder: number = inc(number)
     Adder(number) >> User(number)
