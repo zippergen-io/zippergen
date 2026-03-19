@@ -14,7 +14,7 @@ Python 3.11 or later required.
 
 ## Hello, World!
 
-Here is the smallest possible ZipperGen program. `User` sends a number to `Adder`, `Adder` increments it and doubles it, and the result is returned to the caller:
+Here is the smallest possible ZipperGen program. `User` sends a number to `Compute`, `Compute` increments it and doubles it, and the result is returned to the caller:
 
 ```python
 from zippergen.syntax import Lifeline, Var
@@ -22,7 +22,7 @@ from zippergen.actions import pure
 from zippergen.builder import proc
 
 User  = Lifeline("User")
-Adder = Lifeline("Adder")
+Compute = Lifeline("Compute")
 
 number = Var("number", int)
 
@@ -36,18 +36,18 @@ def double(x: int) -> int:
 
 @proc
 def increment(number: int @ User) -> int:
-    User(number) >> Adder(number)
-    with Adder:
+    User(number) >> Compute(number)
+    with Compute:
         number = inc(number)
         number = double(number)
-    Adder(number) >> User(number)
+    Compute(number) >> User(number)
     return number @ User
 
 result = increment(number=1)   # → 4
 ```
 
-- `User(number) >> Adder(number)` — `User` sends `number` to `Adder`.
-- `with Adder:` — a block of consecutive local actions on `Adder`.
+- `User(number) >> Compute(number)` — `User` sends `number` to `Compute`.
+- `with Compute:` — a block of consecutive local actions on `Compute`.
 - `return number @ User` — declares `User` as the lifeline that owns the result.
 
 ZipperGen projects this global protocol onto each agent and runs them in parallel threads. Deadlock-freedom is guaranteed by construction.
@@ -91,7 +91,7 @@ else:                          # else = exit body (runs once on loop exit)
 
 The `@ LLM1` annotation mirrors the paper's notation `c@B` — it tells ZipperGen which agent evaluates the condition and broadcasts control messages to the others.
 
-The formal foundation is in the paper *"Provable Coordination for LLM Agents via Message Sequence Charts"*.
+The formal foundation is in the forthcoming paper *"Provable Coordination for LLM Agents via Message Sequence Charts"*.
 
 ## Wiring a real LLM
 
