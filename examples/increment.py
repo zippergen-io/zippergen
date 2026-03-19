@@ -8,7 +8,7 @@ and sends the result back.
 
 from zippergen.syntax import Lifeline, Var, Program
 from zippergen.actions import pure
-from zippergen.builder import proc
+from zippergen.builder import workflow
 
 # ---------------------------------------------------------------------------
 # Lifelines
@@ -39,7 +39,7 @@ def double(x: int) -> int:
 # Proc
 # ---------------------------------------------------------------------------
 
-@proc
+@workflow
 def increment(number: int @ User) -> int:
     User(number) >> Compute(number)
     with Compute:

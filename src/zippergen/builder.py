@@ -5,28 +5,28 @@ Design notes
 ------------
 **What this module is.**
 This module provides helper functions that let you write a coordination program
-as a normal Python function (decorated with ``@proc``) instead of constructing
+as a normal Python function (decorated with ``@workflow``) instead of constructing
 IR nodes by hand. The helpers ``msg()``, ``act()``, ``skip()`` are the primary
 user-facing API. Control structures (``if``/``while``) are written as native
 Python — no special builder functions needed.
 
 **How the recording context works.**
 There is a global stack of statement lists (``_stack``). Entering a scope
-(a ``@proc`` body or a nested branch) pushes a new empty list onto the stack.
+(a ``@workflow`` body or a nested branch) pushes a new empty list onto the stack.
 Every call to ``msg()``, ``act()``, etc. appends one IR node to the top list.
 Leaving the scope pops the list and folds it into a ``Stmt`` tree using
 ``seq()``. This is the only "magic" in this module.
 
 **Native if/while syntax.**
-The ``@proc`` decorator rewrites the function's AST before executing it.
+The ``@workflow`` decorator rewrites the function's AST before executing it.
 Any ``if`` or ``while`` whose condition is of the form ``expr @ Lifeline``
 is rewritten into the equivalent ``if_()`` / ``while_()`` call, where the
 ``@ Lifeline`` part identifies the owner of the control decision.
 
   .. code-block:: python
 
-      @proc
-      def myProc(task: str) -> str:
+      @workflow
+      def myWorkflow(task: str) -> str:
           if planNeedsReview @ Planner:
               Planner(plan) >> Reviewer(tR)
           else:
@@ -55,7 +55,7 @@ programs need no changes.
 
 **Thread safety.**
 The stack is a plain module-level list. This works correctly for sequential
-(single-threaded) use, which covers all normal cases. If concurrent proc
+(single-threaded) use, which covers all normal cases. If concurrent workflow
 definitions are ever needed, replace ``_stack`` with a ``threading.local()``
 object — a one-line change.
 """
@@ -73,17 +73,17 @@ from zippergen.syntax import (
     Expr, VarExpr, LitExpr, NotExpr, AndExpr, OrExpr, LtExpr,
     Stmt, MsgStmt, ActStmt, SkipStmt, IfStmt, WhileStmt,
     LLMAction, PureAction,
-    Proc,
+    Workflow,
     seq, is_ztype,
 )
 
 __all__ = [
-    # Proc decorator
-    "proc",
+    # Workflow decorator
+    "workflow",
     # Statement builders
     "msg", "act", "skip",
     "if_", "while_",
-    # Expression builders (usable outside @proc, or as explicit style inside)
+    # Expression builders (usable outside @workflow, or as explicit style inside)
     "not_", "and_", "or_", "lit",
 ]
 
@@ -100,7 +100,7 @@ def _record(stmt: Stmt) -> None:
     if not _stack:
         raise RuntimeError(
             "Statement builders (msg, act, etc.) must be called "
-            "inside a @proc body or a nested branch."
+            "inside a @workflow body or a nested branch."
         )
     _stack[-1].append(stmt)
 
@@ -216,7 +216,7 @@ def if_(
     """
     if condition@owner then { then() } else { else_() }
 
-    Prefer native ``if cond @ owner:`` syntax inside ``@proc`` bodies.
+    Prefer native ``if cond @ owner:`` syntax inside ``@workflow`` bodies.
     This function is the explicit fallback (e.g. for programmatic construction).
     """
     _record(IfStmt(
@@ -237,7 +237,7 @@ def while_(
     """
     while condition@owner do { body() } exit { exit_body() }
 
-    Prefer native ``while cond @ owner: ... else: ...`` inside ``@proc``.
+    Prefer native ``while cond @ owner: ... else: ...`` inside ``@workflow``.
     This function is the explicit fallback (e.g. for programmatic construction).
     """
     _record(WhileStmt(
@@ -364,7 +364,7 @@ class _ProcTransformer(ast.NodeTransformer):
         return node.func, list(node.args)
 
     def visit_Return(self, node: ast.Return) -> ast.stmt:
-        """Strip ``return var @ Lifeline`` and record both names as the proc output."""
+        """Strip ``return var @ Lifeline`` and record both names as the workflow output."""
         val = node.value
         if (isinstance(val, ast.BinOp) and isinstance(val.op, ast.MatMult)
                 and isinstance(val.left, ast.Name) and isinstance(val.right, ast.Name)):
@@ -372,7 +372,7 @@ class _ProcTransformer(ast.NodeTransformer):
             self.return_lifeline_name = val.right.id
         else:
             raise SyntaxError(
-                "return in @proc must have the form  return var @ Lifeline"
+                "return in @workflow must have the form  return var @ Lifeline"
             )
         return ast.Pass()
 
@@ -524,14 +524,14 @@ def _transform_proc_source(fn: Callable) -> tuple[Callable, str | None, str | No
     Obtain the source of *fn*, apply ``_ProcTransformer``, compile and exec
     the result in *fn*'s global namespace, and return the rewritten function.
 
-    The ``@proc`` decorator is stripped from the AST before compilation to
+    The ``@workflow`` decorator is stripped from the AST before compilation to
     avoid re-entrant decoration.
     """
     try:
         source = inspect.getsource(fn)
     except (OSError, TypeError) as exc:
         raise RuntimeError(
-            f"@proc '{fn.__name__}': cannot retrieve source for AST rewriting. "
+            f"@workflow '{fn.__name__}': cannot retrieve source for AST rewriting. "
             f"Define the function in a .py file (not interactively). "
             f"Original error: {exc}"
         ) from exc
@@ -542,7 +542,7 @@ def _transform_proc_source(fn: Callable) -> tuple[Callable, str | None, str | No
         tree = ast.parse(source)
     except SyntaxError as exc:
         raise SyntaxError(
-            f"@proc '{fn.__name__}': failed to parse source."
+            f"@workflow '{fn.__name__}': failed to parse source."
         ) from exc
 
     # Strip all decorators from the target function so we don't recurse.
@@ -559,7 +559,7 @@ def _transform_proc_source(fn: Callable) -> tuple[Callable, str | None, str | No
     try:
         filename = inspect.getfile(fn)
     except (OSError, TypeError):
-        filename = "<@proc>"
+        filename = "<@workflow>"
 
     code = compile(new_tree, filename, "exec")
 
@@ -584,10 +584,10 @@ def _transform_proc_source(fn: Callable) -> tuple[Callable, str | None, str | No
 
 
 # ---------------------------------------------------------------------------
-# @proc decorator
+# @workflow decorator
 # ---------------------------------------------------------------------------
 
-def _proc_inputs(fn: Callable) -> tuple[tuple[str, ZType, Lifeline | None], ...]:
+def _workflow_inputs(fn: Callable) -> tuple[tuple[str, ZType, Lifeline | None], ...]:
     """Extract (name, ZType, Lifeline | None) triples from parameter annotations.
 
     Accepts either plain ``ZType`` (lifeline is ``None``) or
@@ -599,7 +599,7 @@ def _proc_inputs(fn: Callable) -> tuple[tuple[str, ZType, Lifeline | None], ...]
         ann = param.annotation
         if ann is inspect.Parameter.empty:
             raise TypeError(
-                f"@proc '{fn.__name__}': parameter '{name}' "
+                f"@workflow '{fn.__name__}': parameter '{name}' "
                 f"must have a type annotation (e.g. str @ Planner)."
             )
         if isinstance(ann, ZTypeAtLifeline):
@@ -608,29 +608,29 @@ def _proc_inputs(fn: Callable) -> tuple[tuple[str, ZType, Lifeline | None], ...]
             inputs.append((name, ann, None))
         else:
             raise TypeError(
-                f"@proc '{fn.__name__}': annotation for '{name}' "
+                f"@workflow '{fn.__name__}': annotation for '{name}' "
                 f"must be a supported coordination type or "
                 f"type @ Lifeline, got {ann!r}."
             )
     return tuple(inputs)
 
 
-def _proc_output(fn: Callable) -> ZType:
+def _workflow_output(fn: Callable) -> ZType:
     """Extract output ZType from return annotation."""
     ret = fn.__annotations__.get("return")
     if ret is None or not is_ztype(ret):
         raise TypeError(
-            f"@proc '{fn.__name__}': return annotation must be a supported "
+            f"@workflow '{fn.__name__}': return annotation must be a supported "
             f"coordination type (e.g. -> str)."
         )
     return ret
 
 
-def proc(fn: Callable) -> Proc:
+def workflow(fn: Callable) -> Workflow:
     """
-    Decorator that records a coordination program and returns a ``Proc`` IR node.
+    Decorator that records a coordination program and returns a ``Workflow`` IR node.
 
-    The function parameters declare the proc's input interface; each must have
+    The function parameters declare the workflow's input interface; each must have
     a ZipperGen type annotation. The return annotation declares the output type.
 
     Inside the body use:
@@ -642,13 +642,13 @@ def proc(fn: Callable) -> Proc:
     - Native ``if cond @ owner: ... else: ...`` — conditional branching
     - Native ``while cond @ owner: ... else: ...`` — loops (else = exit body)
 
-    The condition (left of ``@``) supports ``not``, ``and``, ``or``, and
+    The condition (left of ``@``) supports ``not``, ``and``, ``or``, ``<``, and
     boolean literals. Wrap compound conditions in parentheses when they start
     with ``not`` (Python precedence: ``@`` binds tighter than ``not``).
     """
     # Annotations are read from the original function before transformation.
-    inputs = _proc_inputs(fn)
-    output_type = _proc_output(fn)
+    inputs = _workflow_inputs(fn)
+    output_type = _workflow_output(fn)
 
     # Rewrite native if/while/>> into builder-function calls.
     transformed, return_var_name, return_lifeline_name = _transform_proc_source(fn)
@@ -663,24 +663,24 @@ def proc(fn: Callable) -> Proc:
     if return_var_name is not None:
         if return_lifeline_name is None:
             raise RuntimeError(
-                f"@proc '{fn.__name__}': internal error: return lifeline missing "
+                f"@workflow '{fn.__name__}': internal error: return lifeline missing "
                 f"for return variable '{return_var_name}'."
             )
         namespace = {**fn.__globals__, **kwargs}
         output_var = namespace.get(return_var_name)
         if not isinstance(output_var, Var):
             raise NameError(
-                f"@proc '{fn.__name__}': return variable '{return_var_name}' "
+                f"@workflow '{fn.__name__}': return variable '{return_var_name}' "
                 f"is not a declared Var."
             )
         output_lifeline = namespace.get(return_lifeline_name)
         if not isinstance(output_lifeline, Lifeline):
             raise NameError(
-                f"@proc '{fn.__name__}': return lifeline '{return_lifeline_name}' "
+                f"@workflow '{fn.__name__}': return lifeline '{return_lifeline_name}' "
                 f"is not a declared Lifeline."
             )
 
-    return Proc(
+    return Workflow(
         name=fn.__name__,
         inputs=inputs,
         output_type=output_type,

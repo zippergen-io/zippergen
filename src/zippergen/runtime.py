@@ -3,9 +3,9 @@ ZipperGen — Layer 5: Runtime executor.
 
 Workflow
 --------
-1. Call ``run(proc, lifelines, initial_envs)`` with a global Proc, the list of
+1. Call ``run(wf, lifelines, initial_envs)`` with a global Workflow, the list of
    lifelines to participate, and the initial variable bindings for each.
-2. The runtime projects the proc onto every lifeline, creates one thread per
+2. The runtime projects the workflow onto every lifeline, creates one thread per
    lifeline, wires FIFO queues between them, and runs everything to completion.
 3. When all threads finish, ``run()`` returns the final env of every lifeline.
 
@@ -41,7 +41,7 @@ from zippergen.syntax import (
     SeqStmt, IfStmt, WhileStmt, IfRecvStmt, WhileRecvStmt,
     VarExpr, LitExpr, NotExpr, AndExpr, OrExpr, LtExpr, TupleExpr,
     LLMAction, PureAction,
-    Lifeline, Proc, LocalStmt,
+    Lifeline, Workflow, LocalStmt,
     kappa_ctrl,
 )
 from zippergen.projection import project
@@ -332,7 +332,7 @@ def _thread_body(local_stmt, env, ch, result_box, llm_backend, trace):
 # ---------------------------------------------------------------------------
 
 def run(
-    proc: Proc,
+    wf: Workflow,
     lifelines: list[Lifeline],
     initial_envs: dict[str, dict[str, object]],
     *,
@@ -342,11 +342,11 @@ def run(
     timeout: float = 60.0,
 ) -> dict[str, dict[str, object]]:
     """
-    Project ``proc`` onto every lifeline and run all of them concurrently.
+    Project ``wf`` onto every lifeline and run all of them concurrently.
 
     Parameters
     ----------
-    proc          : global Proc to execute
+    wf            : global Workflow to execute
     lifelines     : ordered list of Lifeline objects to participate
     initial_envs  : mapping lifeline_name → {var_name: value}
     llm_backend   : optional callable(action, inputs_dict) → outputs_dict
@@ -376,7 +376,7 @@ def run(
     result_boxes: dict[str, list] = {}
 
     for ll in lifelines:
-        local_stmt = project(proc, ll)
+        local_stmt = project(wf, ll)
         env = dict(initial_envs.get(ll.name, {}))
         box: list = []
         result_boxes[ll.name] = box
@@ -410,7 +410,7 @@ def run(
             raise RuntimeError(f"Lifeline '{ll.name}' raised: {result}") from result
         final_envs[ll.name] = result
 
-    if proc.output_var is not None:
-        return final_envs[proc.output_lifeline.name][proc.output_var.name]
+    if wf.output_var is not None:
+        return final_envs[wf.output_lifeline.name][wf.output_var.name]
 
     return final_envs

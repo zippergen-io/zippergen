@@ -19,7 +19,7 @@ Here is the smallest possible ZipperGen program. `User` sends a number to `Compu
 ```python
 from zippergen.syntax import Lifeline, Var
 from zippergen.actions import pure
-from zippergen.builder import proc
+from zippergen.builder import workflow
 
 User  = Lifeline("User")
 Compute = Lifeline("Compute")
@@ -34,7 +34,7 @@ def inc(x: int) -> int:
 def double(x: int) -> int:
     return x * 2
 
-@proc
+@workflow
 def increment(number: int @ User) -> int:
     User(number) >> Compute(number)
     with Compute:
@@ -102,6 +102,6 @@ def my_backend(action, inputs):
     # call OpenAI / Anthropic / etc.
     return {"verdict": True, "reason": "..."}
 
-my_proc.configure(backend=my_backend, timeout=60)
-result = my_proc(input="...")
+my_workflow.configure(backend=my_backend, timeout=60)
+result = my_workflow(input="...")
 ```
