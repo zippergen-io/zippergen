@@ -26,7 +26,7 @@ is rewritten into the equivalent ``if_()`` / ``while_()`` call, where the
   .. code-block:: python
 
       @proc
-      def myProc(task: Text) -> Text:
+      def myProc(task: str) -> str:
           if planNeedsReview @ Planner:
               Planner(plan) >> Reviewer(tR)
           else:
@@ -143,7 +143,7 @@ def or_(left: object, right: object) -> OrExpr:
 
 
 def lit(value: object, type_: ZType) -> LitExpr:
-    """A literal value: lit(True, Bool)  →  LitExpr(True, Bool)"""
+    """A literal value: lit(True, bool)  →  LitExpr(True, bool)"""
     return LitExpr(value, type_)
 
 
@@ -257,7 +257,7 @@ def _ast_to_expr_ast(node: ast.expr) -> ast.expr:
     - ``UnaryOp(Not, ...)``  → ``Call(not_, [...])``
     - ``BoolOp(And, [...])`` → folded ``Call(and_, [..., ...])``
     - ``BoolOp(Or, [...])``  → folded ``Call(or_, [..., ...])``
-    - ``Constant(bool)``     → ``Call(lit, [value, Bool])``
+    - ``Constant(bool)``     → ``Call(lit, [value, bool])``
     - anything else          → left as-is  (e.g. explicit not_(), and_() calls)
     """
     if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
@@ -576,7 +576,7 @@ def _proc_inputs(fn: Callable) -> tuple[tuple[str, ZType, Lifeline | None], ...]
         if ann is inspect.Parameter.empty:
             raise TypeError(
                 f"@proc '{fn.__name__}': parameter '{name}' "
-                f"must have a type annotation (e.g. Text @ Planner)."
+                f"must have a type annotation (e.g. str @ Planner)."
             )
         if isinstance(ann, ZTypeAtLifeline):
             inputs.append((name, ann.type, ann.lifeline))
@@ -585,7 +585,8 @@ def _proc_inputs(fn: Callable) -> tuple[tuple[str, ZType, Lifeline | None], ...]
         else:
             raise TypeError(
                 f"@proc '{fn.__name__}': annotation for '{name}' "
-                f"must be a ZType or ZType @ Lifeline, got {ann!r}."
+                f"must be a supported coordination type or "
+                f"type @ Lifeline, got {ann!r}."
             )
     return tuple(inputs)
 
@@ -595,8 +596,8 @@ def _proc_output(fn: Callable) -> ZType:
     ret = fn.__annotations__.get("return")
     if ret is None or not is_ztype(ret):
         raise TypeError(
-            f"@proc '{fn.__name__}': return annotation must be a ZType "
-            f"(e.g. -> Text)."
+            f"@proc '{fn.__name__}': return annotation must be a supported "
+            f"coordination type (e.g. -> str)."
         )
     return ret
 
