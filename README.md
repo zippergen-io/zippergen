@@ -17,7 +17,7 @@ Python 3.11 or later required.
 Here is the smallest possible ZipperGen program. `User` sends a number to `Adder`, `Adder` increments it, and the result is returned to the caller:
 
 ```python
-from zippergen.syntax import Int, Lifeline, Var
+from zippergen.syntax import Lifeline, Var
 from zippergen.actions import pure
 from zippergen.builder import proc
 

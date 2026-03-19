@@ -10,7 +10,6 @@ on a diagnosis verdict. LLM1 owns the consensus loop.
 """
 
 from zippergen.syntax import (
-    Text, Bool,
     Lifeline, Var,
     Program,
     pp,
@@ -31,30 +30,30 @@ LLM2 = Lifeline("LLM2")
 # ---------------------------------------------------------------------------
 
 # Proc inputs
-notes     = Var("notes",     Text)
-diagnosis = Var("diagnosis", Text)
+notes     = Var("notes",     str)
+diagnosis = Var("diagnosis", str)
 
 # Local copies of inputs
-n1 = Var("n1", Text)
-n2 = Var("n2", Text)
-d1 = Var("d1", Text)
-d2 = Var("d2", Text)
+n1 = Var("n1", str)
+n2 = Var("n2", str)
+d1 = Var("d1", str)
+d2 = Var("d2", str)
 
-# Verdicts (Bool) and reasoning (Text), local to each LLM
-verdict1 = Var("verdict1", Bool)
-reason1  = Var("reason1",  Text)
-verdict2 = Var("verdict2", Bool)
-reason2  = Var("reason2",  Text)
+# Verdicts (bool) and reasoning (str), local to each LLM
+verdict1 = Var("verdict1", bool)
+reason1  = Var("reason1",  str)
+verdict2 = Var("verdict2", bool)
+reason2  = Var("reason2",  str)
 
 # Received copies for reconsideration
-v1 = Var("v1", Bool)
-r1 = Var("r1", Text)
-v2 = Var("v2", Bool)
-r2 = Var("r2", Text)
+v1 = Var("v1", bool)
+r1 = Var("r1", str)
+v2 = Var("v2", bool)
+r2 = Var("r2", str)
 
 # Control and output
-agreed = Var("agreed", Bool, default=False)
-result = Var("result", Text)
+agreed = Var("agreed", bool, default=False)
+result = Var("result", str)
 
 # ---------------------------------------------------------------------------
 # Action definitions  (Listing 2 from the paper)
@@ -68,9 +67,9 @@ result = Var("result", Text)
     ),
     user="Notes: {notes}\nDiagnosis: {diag}",
     parse="json",   # expects {"verdict": "...", "reason": "..."}
-    outputs=(("verdict", Bool), ("reason", Text)),
+    outputs=(("verdict", bool), ("reason", str)),
 )
-def assess(notes: Text, diag: Text) -> None: ...
+def assess(notes: str, diag: str) -> None: ...
 
 
 @llm(
@@ -85,20 +84,20 @@ def assess(notes: Text, diag: Text) -> None: ...
         "Colleague: {otherVerdict} because {otherReason}"
     ),
     parse="json",   # expects {"verdict": true/false, "reason": "..."}
-    outputs=(("verdict", Bool), ("reason", Text)),
+    outputs=(("verdict", bool), ("reason", str)),
 )
-def reconsider(notes: Text, diag: Text, 
-               myVerdict: Bool, myReason: Text,
-               otherVerdict: Bool, otherReason: Text) -> None: ...
+def reconsider(notes: str, diag: str, 
+               myVerdict: bool, myReason: str,
+               otherVerdict: bool, otherReason: str) -> None: ...
 
 
 @pure
-def checkAgreement(v1: Bool, v2: Bool) -> Bool:
+def checkAgreement(v1: bool, v2: bool) -> bool:
     return v1 == v2
 
 
 @pure
-def chooseResult(v: Bool, agreed: Bool) -> Text:
+def chooseResult(v: bool, agreed: bool) -> str:
     return ("true" if v else "false") if agreed else "unknown"
 
 
@@ -111,7 +110,7 @@ choose_result   = chooseResult
 # ---------------------------------------------------------------------------
 
 @proc
-def diagnosisConsensus(notes: Text @ User, diagnosis: Text @ User) -> Text:
+def diagnosisConsensus(notes: str @ User, diagnosis: str @ User) -> str:
     # Distribute notes to both LLMs
     User(notes, diagnosis) >> LLM1(n1, d1)
     User(notes, diagnosis) >> LLM2(n2, d2)
