@@ -1,11 +1,6 @@
 # ZipperGen
 
-**Zip** (our mascot) keeps your agents in line — literally. ZipperGen is a Python DSL and runtime for structured multi-agent LLM coordination, grounded in the theory of Message Sequence Charts. You write a single global protocol; ZipperGen projects it onto each agent and runs them concurrently, with deadlock-freedom guaranteed by construction.
-
-No orchestrator polling. No spaghetti callbacks. Just Zip, zipping things together.
-
-![ZipperChat screenshot](assets/zipperchat-screenshot.jpg)
-*ZipperChat — live MSC diagram for the reviewed-execution example (Planner, Reviewer, Orchestrator, Executor)*
+**Zip** (our mascot) literally keeps your agents in line. ZipperGen is a Python DSL and runtime for structured multi-agent LLM coordination, grounded in the theory of Message Sequence Charts. You write a single global protocol; ZipperGen projects it onto each agent and runs them concurrently, with deadlock-freedom guaranteed by construction.
 
 ## Quick start
 
@@ -16,30 +11,6 @@ pip install -e .
 ```
 
 Python 3.11 or later required.
-
-## See it in action
-
-The `diagnosis` example runs two LLMs through a medical consensus protocol until they agree. It opens a live diagram in your browser:
-
-```bash
-python examples/diagnosis.py
-```
-
-Then visit **http://localhost:8765** — ZipperChat will show the agents exchanging messages in real time as a message sequence chart. The example uses a mock LLM backend by default (no API key needed), with simulated latency so you can watch Zip do its thing.
-
-## Wiring a real LLM
-
-Pass any callable as `llm_backend` to `run()`:
-
-```python
-from zippergen.runtime import run
-
-def my_backend(action, inputs):
-    # call OpenAI / Anthropic / etc.
-    return {"verdict": True, "reason": "..."}
-
-run(proc, lifelines, initial_envs, llm_backend=my_backend)
-```
 
 ## Hello, World!
 
@@ -75,6 +46,25 @@ result = increment(number=1)   # → 2
 
 ZipperGen projects this global protocol onto each agent and runs them in parallel threads. Deadlock-freedom is guaranteed by construction.
 
+Run it with ZipperChat to see the live MSC diagram in your browser:
+
+```bash
+python examples/increment.py
+```
+
+## See it in action
+
+The `diagnosis` example runs two LLMs through a medical consensus protocol until they agree:
+
+```bash
+python examples/diagnosis.py
+```
+
+Then visit **http://localhost:8765** — ZipperChat will show the agents exchanging messages in real time as a message sequence chart. The example uses a mock LLM backend by default (no API key needed), with simulated latency so you can watch Zip do its thing.
+
+![ZipperChat screenshot](assets/zipperchat-screenshot.jpg)
+*ZipperChat — live MSC diagram for the reviewed-execution example (Planner, Reviewer, Orchestrator, Executor)*
+
 ## How it works
 
 ZipperGen programs are *global coordination protocols* — you describe what messages flow between which agents and who owns each decision. ZipperGen automatically projects the global protocol onto per-agent local programs and executes them in parallel threads with FIFO message queues.
@@ -96,3 +86,16 @@ else:                          # else = exit body (runs once on loop exit)
 The `@ LLM1` annotation mirrors the paper's notation `c@B` — it tells ZipperGen which agent evaluates the condition and broadcasts control messages to the others.
 
 The formal foundation is in the paper *"Provable Coordination for LLM Agents via Message Sequence Charts"*.
+
+## Wiring a real LLM
+
+Pass any callable as `backend` to `configure()`:
+
+```python
+def my_backend(action, inputs):
+    # call OpenAI / Anthropic / etc.
+    return {"verdict": True, "reason": "..."}
+
+my_proc.configure(backend=my_backend, timeout=60)
+result = my_proc(input="...")
+```
