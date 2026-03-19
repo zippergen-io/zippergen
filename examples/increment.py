@@ -6,7 +6,7 @@ User sends a number to Adder, Adder increments it by one,
 and sends the result back.
 """
 
-from zippergen.syntax import Int, Lifeline, Var, Program
+from zippergen.syntax import Lifeline, Var, Program
 from zippergen.actions import pure
 from zippergen.builder import proc
 
@@ -21,14 +21,14 @@ Adder = Lifeline("Adder")
 # Variables
 # ---------------------------------------------------------------------------
 
-number = Var("number", Int)
+number = Var("number", int)
 
 # ---------------------------------------------------------------------------
 # Actions
 # ---------------------------------------------------------------------------
 
 @pure
-def inc(x: Int) -> Int:
+def inc(x: int) -> int:
     return x + 1
 
 # ---------------------------------------------------------------------------
@@ -36,7 +36,7 @@ def inc(x: Int) -> Int:
 # ---------------------------------------------------------------------------
 
 @proc
-def increment(number: Int @ User) -> Int:
+def increment(number: int @ User) -> int:
     User(number) >> Adder(number)
     Adder: number = inc(number)
     Adder(number) >> User(number)

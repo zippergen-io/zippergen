@@ -50,26 +50,30 @@ __all__ = ["run", "mock_llm"]
 
 
 # ---------------------------------------------------------------------------
-# Default LLM backend — random Bool verdicts, sentinel strings for Text
+# Default LLM backend — simple values for built-in scalar types
 # ---------------------------------------------------------------------------
 
 def mock_llm(action: LLMAction, inputs: dict[str, object], *,
              min_delay: float = 0.0, max_delay: float = 0.0):
     """
-    Trivial mock: Bool outputs → random True/False; Text outputs → sentinel.
+    Trivial mock: Bool outputs → random True/False; Text outputs → sentinel;
+    Int outputs → random integers; Float outputs → random floats.
 
     ``min_delay`` / ``max_delay`` add a random sleep to simulate LLM latency.
     Pass a backend via ``llm_backend=lambda a, i: mock_llm(a, i, min_delay=0.3, max_delay=1.2)``.
     """
     import random
-    from zippergen.syntax import TBool, TText
     if max_delay > 0:
         time.sleep(random.uniform(min_delay, max_delay))
     result: dict[str, object] = {}
     for name, ztype in action.outputs:
-        if isinstance(ztype, TBool):
+        if ztype is bool:
             result[name] = random.choice([True, False])
-        elif isinstance(ztype, TText):
+        elif ztype is int:
+            result[name] = random.randint(0, 10)
+        elif ztype is float:
+            result[name] = random.uniform(0.0, 10.0)
+        elif ztype is str:
             result[name] = f"[{action.name}:{name}]"
         else:
             result[name] = None

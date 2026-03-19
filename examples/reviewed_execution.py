@@ -1,3 +1,4 @@
+# pyright: reportInvalidTypeForm=false, reportGeneralTypeIssues=false, reportOperatorIssue=false, reportCallIssue=false, reportAttributeAccessIssue=false, reportUnusedExpression=false, reportUnboundVariable=false
 """
 Review-before-action workflow — motivating example from the paper.
 
@@ -11,7 +12,6 @@ Direct transcription of Listing 1 / Figure 1 from the paper
 """
 
 from zippergen.syntax import (
-    Text, Bool,
     Lifeline, Var,
     Program,
     pp,
@@ -32,14 +32,14 @@ Executor     = Lifeline("Executor")
 # Variables
 # ---------------------------------------------------------------------------
 
-task            = Var("task",            Text)
-plan            = Var("plan",            Text)
-planNeedsReview = Var("planNeedsReview", Bool, default=False)
-tR              = Var("tR",              Text)
-critique        = Var("critique",        Text, default="")
-tE              = Var("tE",              Text)
-result          = Var("result",          Text)
-final           = Var("final",           Text)
+task            = Var("task",            str)
+plan            = Var("plan",            str)
+planNeedsReview = Var("planNeedsReview", bool, default=False)
+tR              = Var("tR",              str)
+critique        = Var("critique",        str, default="")
+tE              = Var("tE",              str)
+result          = Var("result",          str)
+final           = Var("final",           str)
 
 # ---------------------------------------------------------------------------
 # Actions
@@ -52,9 +52,9 @@ final           = Var("final",           Text)
     ),
     user="Task: {task}",
     parse="json",
-    outputs=(("plan", Text), ("planNeedsReview", Bool)),
+    outputs=(("plan", str), ("planNeedsReview", bool)),
 )
-def makePlan(task: Text) -> None: ...
+def makePlan(task: str) -> None: ...
 
 
 @llm(
@@ -63,9 +63,9 @@ def makePlan(task: Text) -> None: ...
     ),
     user="Plan: {plan}",
     parse="json",
-    outputs=(("critique", Text),),
+    outputs=(("critique", str),),
 )
-def reviewPlan(plan: Text) -> None: ...
+def reviewPlan(plan: str) -> None: ...
 
 
 @llm(
@@ -74,9 +74,9 @@ def reviewPlan(plan: Text) -> None: ...
     ),
     user="Plan: {plan}",
     parse="json",
-    outputs=(("result", Text),),
+    outputs=(("result", str),),
 )
-def executePlan(plan: Text) -> None: ...
+def executePlan(plan: str) -> None: ...
 
 
 @llm(
@@ -86,9 +86,9 @@ def executePlan(plan: Text) -> None: ...
     ),
     user="Result: {result}\nCritique (may be empty): {critique}",
     parse="json",
-    outputs=(("final", Text),),
+    outputs=(("final", str),),
 )
-def finalizeWithReview(result: Text, critique: Text) -> None: ...
+def finalizeWithReview(result: str, critique: str) -> None: ...
 
 
 # ---------------------------------------------------------------------------
@@ -96,7 +96,7 @@ def finalizeWithReview(result: Text, critique: Text) -> None: ...
 # ---------------------------------------------------------------------------
 
 @proc
-def reviewedExecution(task: Text @ Planner) -> Text:
+def reviewedExecution(task: str @ Planner) -> str:
     Planner: (plan, planNeedsReview) = makePlan(task)
 
     if planNeedsReview @ Planner:

@@ -41,7 +41,6 @@ via seq() so that ε-elimination is applied automatically.
 from __future__ import annotations
 
 from zippergen.syntax import (
-    Bool,
     EmptyStmt, MsgStmt, ActStmt, SkipStmt, SeqStmt, IfStmt, WhileStmt,
     SendStmt, RecvStmt, IfRecvStmt, WhileRecvStmt,
     Lifeline, LocalStmt, Stmt, Var, VarExpr, LitExpr,
@@ -69,14 +68,14 @@ def _ctrl_sends(owner: Lifeline, value: bool, receivers: list[Lifeline]) -> list
     Generate  send owner(⊤/⊥, κ_ctrl) → C  for each C in receivers.
     These are the control-broadcast sends prepended by the owner in each branch.
     """
-    lit = LitExpr(value, Bool)
+    lit = LitExpr(value, bool)
     return [SendStmt(owner, (lit, kappa_ctrl), C) for C in receivers]
 
 
 def _fresh_ctrl(counter: list[int]) -> Var:
     """Allocate a fresh Bool variable _ctrl1, _ctrl2, … for a receive-guard."""
     counter[0] += 1
-    return Var(f"_ctrl{counter[0]}", Bool)
+    return Var(f"_ctrl{counter[0]}", bool)
 
 
 # ---------------------------------------------------------------------------

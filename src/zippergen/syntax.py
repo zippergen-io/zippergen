@@ -27,9 +27,10 @@ The ``match``/``case`` pattern (used in ``participation_set`` and ``pp``) then
 mirrors a mathematical case analysis, which makes it easy to check against the
 paper's definitions.
 
-**Why is ZType a type alias too?**
-Same reason: the paper defines a small fixed set of types. There is no need
-for an open hierarchy.
+**Types.**
+ZipperGen uses Python's built-in types as coordination types: ``str``, ``int``,
+``bool``, ``float``, and ``tuple``. ``ZType`` is an alias for ``type`` used in
+annotations to make this intent explicit.
 """
 
 from __future__ import annotations
@@ -39,9 +40,7 @@ from typing import Union
 
 __all__ = [
     # Types
-    "ZType",
-    "TText", "TBool", "TInt", "TFloat", "TTuple",
-    "Text", "Bool", "Int", "Float",
+    "ZType", "is_ztype",
     # Lifeline
     "Lifeline",
     # Var
@@ -53,8 +52,6 @@ __all__ = [
     "LLMAction", "PureAction",
     # Type + lifeline annotation helper
     "ZTypeAtLifeline",
-    # Type helpers
-    "is_ztype",
     # Statements
     "Stmt",
     "EmptyStmt", "MsgStmt", "ActStmt", "SkipStmt",
@@ -75,46 +72,16 @@ __all__ = [
 # Types
 # ---------------------------------------------------------------------------
 
-@dataclass(frozen=True)
-class TText:
-    def __repr__(self) -> str:
-        return "Text"
+# ZType is a Python built-in type used as a coordination type annotation.
+# Supported: str, int, bool, float, tuple.
+ZType = type
+
+_BUILTIN_ZTYPES: frozenset[type] = frozenset({str, int, bool, float, tuple})
 
 
-@dataclass(frozen=True)
-class TBool:
-    def __repr__(self) -> str:
-        return "Bool"
-
-
-@dataclass(frozen=True)
-class TInt:
-    def __repr__(self) -> str:
-        return "Int"
-
-
-@dataclass(frozen=True)
-class TFloat:
-    def __repr__(self) -> str:
-        return "Float"
-
-
-@dataclass(frozen=True)
-class TTuple:
-    elements: tuple[ZType, ...]
-
-    def __repr__(self) -> str:
-        return f"TTuple({', '.join(repr(e) for e in self.elements)})"
-
-
-ZType = Union[TText, TBool, TInt, TFloat, TTuple]
-
-# Convenient singletons
-Text: TText = TText()
-Bool: TBool = TBool()
-Int: TInt = TInt()
-Float: TFloat = TFloat()
-
+def is_ztype(x: object) -> bool:
+    """Return True iff x is a supported ZipperGen coordination type."""
+    return x in _BUILTIN_ZTYPES
 
 
 # ---------------------------------------------------------------------------
@@ -129,7 +96,7 @@ class Lifeline:
         return self.name
 
     def __rmatmul__(self, ztype: object) -> ZTypeAtLifeline:
-        """Support ``Text @ Planner`` as a parameter annotation."""
+        """Support ``str @ Planner`` as a parameter annotation."""
         return ZTypeAtLifeline(ztype, self)  # type: ignore[arg-type]
 
 
@@ -140,7 +107,7 @@ class ZTypeAtLifeline:
     Declares both the type of an input variable and the lifeline that holds it
     at the start of execution::
 
-        def myProc(task: Text @ Planner) -> Text: ...
+        def myProc(task: str @ Planner) -> str: ...
     """
     type: ZType
     lifeline: Lifeline
@@ -157,9 +124,10 @@ class Var:
     default: object = None  # optional Python literal default
 
     def __repr__(self) -> str:
+        t = self.type.__name__
         if self.default is not None:
-            return f"Var({self.name!r}: {self.type!r} = {self.default!r})"
-        return f"Var({self.name!r}: {self.type!r})"
+            return f"Var({self.name!r}: {t} = {self.default!r})"
+        return f"Var({self.name!r}: {t})"
 
 
 # ---------------------------------------------------------------------------
@@ -221,16 +189,7 @@ Expr = Union[VarExpr, LitExpr, NotExpr, AndExpr, OrExpr, TupleExpr]
 
 # Reserved control tag — used only by the projection engine in control-broadcast
 # messages (send B(⊤, κ_ctrl) → C).  Must not appear in user-written programs.
-kappa_ctrl: LitExpr = LitExpr("κ_ctrl", Text)
-
-
-# ---------------------------------------------------------------------------
-# Type helpers
-# ---------------------------------------------------------------------------
-
-def is_ztype(x: object) -> bool:
-    """Return True iff x is a ZipperGen type instance."""
-    return isinstance(x, (TText, TBool, TInt, TFloat, TTuple))
+kappa_ctrl: LitExpr = LitExpr("κ_ctrl", str)
 
 
 # ---------------------------------------------------------------------------
@@ -247,8 +206,8 @@ class LLMAction:
     parse_format: str       # "json" | "text" | "bool"
 
     def __repr__(self) -> str:
-        ins = ", ".join(f"{n}: {t!r}" for n, t in self.inputs)
-        outs = ", ".join(f"{n}: {t!r}" for n, t in self.outputs)
+        ins = ", ".join(f"{n}: {t.__name__}" for n, t in self.inputs)
+        outs = ", ".join(f"{n}: {t.__name__}" for n, t in self.outputs)
         return f"LLMAction({self.name!r}, ({ins}) -> ({outs}))"
 
 
@@ -260,8 +219,8 @@ class PureAction:
     fn: object  # the actual Python callable
 
     def __repr__(self) -> str:
-        ins = ", ".join(f"{n}: {t!r}" for n, t in self.inputs)
-        outs = ", ".join(f"{n}: {t!r}" for n, t in self.outputs)
+        ins = ", ".join(f"{n}: {t.__name__}" for n, t in self.inputs)
+        outs = ", ".join(f"{n}: {t.__name__}" for n, t in self.outputs)
         return f"PureAction({self.name!r}, ({ins}) -> ({outs}))"
 
 
@@ -396,11 +355,11 @@ class RecvStmt:
 class IfRecvStmt:
     """if A(y⃗) ← B then branch_true else branch_false
 
-    A receives y⃗ from B.  bindings[0] is a Bool variable; its runtime value
+    A receives y⃗ from B.  bindings[0] is a bool variable; its runtime value
     determines which branch is taken.
     """
     lifeline: Lifeline
-    bindings: tuple[Expr, ...]   # bindings[0] is the Bool control variable
+    bindings: tuple[Expr, ...]   # bindings[0] is the bool control variable
     sender: Lifeline
     branch_true: LocalStmt
     branch_false: LocalStmt
@@ -418,11 +377,11 @@ class IfRecvStmt:
 class WhileRecvStmt:
     """while A(y⃗) ← B do body exit exit_body
 
-    Each iteration A receives y⃗ from B.  bindings[0] is a Bool variable;
+    Each iteration A receives y⃗ from B.  bindings[0] is a bool variable;
     True means continue the body, False means take the exit.
     """
     lifeline: Lifeline
-    bindings: tuple[Expr, ...]   # bindings[0] is the Bool control variable
+    bindings: tuple[Expr, ...]   # bindings[0] is the bool control variable
     sender: Lifeline
     body: LocalStmt
     exit_body: LocalStmt
@@ -492,7 +451,7 @@ class Proc:
             if lifeline is None:
                 raise TypeError(
                     f"{self.name}(): input '{name}' has no lifeline declared. "
-                    f"Use 'name: Type @ Lifeline' in the @proc signature."
+                    f"Use 'name: type @ Lifeline' in the @proc signature."
                 )
             if name not in kwargs:
                 raise TypeError(f"{self.name}() missing argument: '{name}'")
@@ -506,11 +465,11 @@ class Proc:
     def __repr__(self) -> str:
         parts = []
         for n, t, ll in self.inputs:
-            parts.append(f"{n}: {t!r} @ {ll.name}" if ll else f"{n}: {t!r}")
+            parts.append(f"{n}: {t.__name__} @ {ll.name}" if ll else f"{n}: {t.__name__}")
         ins = ", ".join(parts)
         out = (f" → {self.output_var.name}@{self.output_lifeline.name}"
                if self.output_var else "")
-        return f"Proc({self.name!r}, ({ins}) -> {self.output_type!r}{out})"
+        return f"Proc({self.name!r}, ({ins}) -> {self.output_type.__name__}{out})"
 
 
 @dataclass

@@ -69,7 +69,7 @@ from collections.abc import Callable
 
 from zippergen.syntax import (
     ZType, Lifeline, Var,
-    Bool, ZTypeAtLifeline,
+    ZTypeAtLifeline,
     Expr, VarExpr, LitExpr, NotExpr, AndExpr, OrExpr,
     Stmt, MsgStmt, ActStmt, SkipStmt, IfStmt, WhileStmt,
     LLMAction, PureAction,
@@ -282,7 +282,7 @@ def _ast_to_expr_ast(node: ast.expr) -> ast.expr:
     if isinstance(node, ast.Constant) and isinstance(node.value, bool):
         return ast.Call(
             func=ast.Name(id="lit", ctx=ast.Load()),
-            args=[node, ast.Name(id="Bool", ctx=ast.Load())],
+            args=[node, ast.Name(id="bool", ctx=ast.Load())],
             keywords=[],
         )
 
@@ -503,7 +503,6 @@ def _transform_proc_source(fn: Callable) -> tuple[Callable, str | None, str | No
         "and_":  and_,
         "or_":   or_,
         "lit":   lit,
-        "Bool":  Bool,
     })
 
     local_ns: dict = {}
@@ -588,6 +587,11 @@ def proc(fn: Callable) -> Proc:
     output_var: Var | None = None
     output_lifeline: Lifeline | None = None
     if return_var_name is not None:
+        if return_lifeline_name is None:
+            raise RuntimeError(
+                f"@proc '{fn.__name__}': internal error: return lifeline missing "
+                f"for return variable '{return_var_name}'."
+            )
         namespace = {**fn.__globals__, **kwargs}
         output_var = namespace.get(return_var_name)
         if not isinstance(output_var, Var):
