@@ -13,7 +13,6 @@ consensus loop.
 from zippergen.syntax import (
     Lifeline, Var,
     Program,
-    pp,
 )
 from zippergen.actions import llm, pure
 from zippergen.builder import workflow
@@ -36,27 +35,17 @@ LLM2 = Lifeline("LLM2")
 # Variables
 # ---------------------------------------------------------------------------
 
-# Proc inputs
-notes     = Var("notes",     str)
-diagnosis = Var("diagnosis", str)
+# Workflow inputs (each LLM gets its own copy via message binding)
+notes           = Var("notes",         str)
+diagnosis       = Var("diagnosis",     str)
 
-# Local copies of inputs
-n1 = Var("n1", str)
-n2 = Var("n2", str)
-d1 = Var("d1", str)
-d2 = Var("d2", str)
+# Own verdict and reasoning (local to each LLM)
+verdict         = Var("verdict",       bool)
+reason          = Var("reason",        str)
 
-# Verdicts (bool) and reasoning (str), local to each LLM
-verdict1 = Var("verdict1", bool)
-reason1  = Var("reason1",  str)
-verdict2 = Var("verdict2", bool)
-reason2  = Var("reason2",  str)
-
-# Received copies for reconsideration
-v1 = Var("v1", bool)
-r1 = Var("r1", str)
-v2 = Var("v2", bool)
-r2 = Var("r2", str)
+# Received verdict and reasoning (from the other LLM)
+other_verdict   = Var("other_verdict", bool)
+other_reason    = Var("other_reason",  str)
 
 # Control and output
 agreed = Var("agreed", bool, default=False)
@@ -120,34 +109,34 @@ check_agreement = checkAgreement
 choose_result   = chooseResult
 
 # ---------------------------------------------------------------------------
-# Proc — direct translation of Listing 1
+# Workflow — direct translation of Listing 1
 # ---------------------------------------------------------------------------
 
 @workflow
 def diagnosisConsensus(notes: str @ User, diagnosis: str @ User) -> str:
     # Distribute notes to both LLMs
-    User(notes, diagnosis) >> LLM1(n1, d1)
-    User(notes, diagnosis) >> LLM2(n2, d2)
+    User(notes, diagnosis) >> LLM1(notes, diagnosis)
+    User(notes, diagnosis) >> LLM2(notes, diagnosis)
 
     # Independent initial assessments
-    LLM1: (verdict1, reason1) = assess(n1, d1)
-    LLM2: (verdict2, reason2) = assess(n2, d2)
+    LLM1: (verdict, reason) = assess(notes, diagnosis)
+    LLM2: (verdict, reason) = assess(notes, diagnosis)
 
     # Consensus loop — owned by LLM1 (at most MAX_ROUNDS rounds)
     while (not agreed and trials < MAX_ROUNDS) @ LLM1:
-        LLM1(verdict1, reason1) >> LLM2(v1, r1)
-        LLM2(verdict2, reason2) >> LLM1(v2, r2)
-        LLM1: (verdict1, reason1) = reconsider(n1, d1, verdict1, reason1, v2, r2)
-        LLM2: (verdict2, reason2) = reconsider(n2, d2, verdict2, reason2, v1, r1)
-        LLM2(verdict2) >> LLM1(verdict2)
+        LLM1(verdict, reason) >> LLM2(other_verdict, other_reason)
+        LLM2(verdict, reason) >> LLM1(other_verdict, other_reason)
+        LLM1: (verdict, reason) = reconsider(notes, diagnosis, verdict, reason, other_verdict, other_reason)
+        LLM2: (verdict, reason) = reconsider(notes, diagnosis, verdict, reason, other_verdict, other_reason)
+        LLM2(verdict) >> LLM1(other_verdict)
         with LLM1:
-            agreed = check_agreement(verdict1, verdict2)
+            agreed = check_agreement(verdict, other_verdict)
             trials = inc_trials(trials)
     else:
-        LLM1(verdict1, reason1) >> LLM2(v1, r1)
+        LLM1(verdict, reason) >> LLM2(other_verdict, other_reason)
 
     # Final result computed by LLM1, sent to User
-    LLM1: result = choose_result(verdict1, agreed)
+    LLM1: result = choose_result(verdict, agreed)
     LLM1(result) >> User(result)
     return result @ User
 
