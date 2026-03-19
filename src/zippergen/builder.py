@@ -38,9 +38,11 @@ is rewritten into the equivalent ``if_()`` / ``while_()`` call, where the
           else:              # while...else = exit body
               LLM1(v1) >> User(result)
 
-The condition (left of ``@``) can use native Python ``not``, ``and``, ``or``
-and boolean literals — they are translated to ``Expr`` IR at rewrite time, so
-they are never executed as Python boolean operations.
+The condition (left of ``@``) can be any Python boolean expression — it is
+captured as a ``lambda _e: <condition>`` at rewrite time and evaluated at
+runtime against the lifeline's local env. Names in the condition (variables,
+constants) are resolved via a ``_CondEnv`` proxy that looks in the lifeline's
+env first, then falls back to the workflow's global namespace.
 
 **Operator precedence note.**
 Because Python gives ``@`` higher precedence than ``not``/``and``/``or``,
@@ -70,7 +72,7 @@ from collections.abc import Callable
 from zippergen.syntax import (
     ZType, Lifeline, Var,
     ZTypeAtLifeline,
-    Expr, VarExpr, LitExpr, NotExpr, AndExpr, OrExpr, LtExpr,
+    Expr, VarExpr, LitExpr,
     Stmt, MsgStmt, ActStmt, SkipStmt, IfStmt, WhileStmt,
     LLMAction, PureAction,
     Workflow,
@@ -83,8 +85,6 @@ __all__ = [
     # Statement builders
     "msg", "act", "skip",
     "if_", "while_",
-    # Expression builders (usable outside @workflow, or as explicit style inside)
-    "not_", "and_", "or_", "lit",
 ]
 
 
@@ -133,31 +133,6 @@ def _to_expr(x: object) -> Expr:
     if isinstance(x, str):
         return LitExpr(x, str)
     return x  # type: ignore[return-value]
-
-
-def not_(expr: object) -> NotExpr:
-    """Logical negation."""
-    return NotExpr(_to_expr(expr))
-
-
-def and_(left: object, right: object) -> AndExpr:
-    """Logical conjunction."""
-    return AndExpr(_to_expr(left), _to_expr(right))
-
-
-def or_(left: object, right: object) -> OrExpr:
-    """Logical disjunction."""
-    return OrExpr(_to_expr(left), _to_expr(right))
-
-
-def lt_(left: object, right: object) -> LtExpr:
-    """Less-than comparison."""
-    return LtExpr(_to_expr(left), _to_expr(right))
-
-
-def lit(value: object, type_: ZType) -> LitExpr:
-    """A literal value: lit(True, bool)  →  LitExpr(True, bool)"""
-    return LitExpr(value, type_)
 
 
 # ---------------------------------------------------------------------------
@@ -220,7 +195,7 @@ def if_(
     This function is the explicit fallback (e.g. for programmatic construction).
     """
     _record(IfStmt(
-        _to_expr(condition),
+        condition,
         owner,
         _collect(then),
         _collect(else_),
@@ -241,7 +216,7 @@ def while_(
     This function is the explicit fallback (e.g. for programmatic construction).
     """
     _record(WhileStmt(
-        _to_expr(condition),
+        condition,
         owner,
         _collect(body),
         _collect(exit_body),
@@ -261,56 +236,44 @@ def _fresh(prefix: str) -> str:
     return f"__{prefix}_{_gen_counter}"
 
 
-def _ast_to_expr_ast(node: ast.expr) -> ast.expr:
+def _cond_ast(node: ast.expr) -> ast.expr:
     """
-    Translate a Python condition AST node to an AST fragment that, when
-    executed, produces a ZipperGen ``Expr`` object.
+    Recursively rewrite a condition AST so that every ``Name('x')`` becomes
+    ``Attribute(Name('_e'), 'x')`` — i.e. ``_e.x``.
 
-    - ``Name('x')``          → left as-is  (Var at runtime; _to_expr handles it)
-    - ``UnaryOp(Not, ...)``  → ``Call(not_, [...])``
-    - ``BoolOp(And, [...])`` → folded ``Call(and_, [..., ...])``
-    - ``BoolOp(Or, [...])``  → folded ``Call(or_, [..., ...])``
-    - ``Constant(bool)``     → ``Call(lit, [value, bool])``
-    - anything else          → left as-is  (e.g. explicit not_(), and_() calls)
+    The result is used as the body of a ``lambda _e: <body>`` expression.
+    At runtime ``_e`` is a ``_CondEnv`` proxy that resolves names against
+    the lifeline's local env first, then the workflow's global namespace.
     """
-    if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
-        return ast.Call(
-            func=ast.Name(id="not_", ctx=ast.Load()),
-            args=[_ast_to_expr_ast(node.operand)],
-            keywords=[],
+    if isinstance(node, ast.Name):
+        return ast.Attribute(
+            value=ast.Name(id="_e", ctx=ast.Load()),
+            attr=node.id,
+            ctx=ast.Load(),
         )
-
+    if isinstance(node, ast.UnaryOp):
+        return ast.UnaryOp(op=node.op, operand=_cond_ast(node.operand))
     if isinstance(node, ast.BoolOp):
-        fn_name = "and_" if isinstance(node.op, ast.And) else "or_"
-        # Right-fold: a and b and c  →  and_(a, and_(b, c))
-        result = _ast_to_expr_ast(node.values[-1])
-        for val in reversed(node.values[:-1]):
-            result = ast.Call(
-                func=ast.Name(id=fn_name, ctx=ast.Load()),
-                args=[_ast_to_expr_ast(val), result],
-                keywords=[],
-            )
-        return result
-
-    if isinstance(node, ast.Constant) and isinstance(node.value, bool):
-        return ast.Call(
-            func=ast.Name(id="lit", ctx=ast.Load()),
-            args=[node, ast.Name(id="bool", ctx=ast.Load())],
-            keywords=[],
+        return ast.BoolOp(op=node.op, values=[_cond_ast(v) for v in node.values])
+    if isinstance(node, ast.Compare):
+        return ast.Compare(
+            left=_cond_ast(node.left),
+            ops=node.ops,
+            comparators=[_cond_ast(c) for c in node.comparators],
         )
-
-    if (isinstance(node, ast.Compare)
-            and len(node.ops) == 1
-            and isinstance(node.ops[0], ast.Lt)):
-        return ast.Call(
-            func=ast.Name(id="lt_", ctx=ast.Load()),
-            args=[_ast_to_expr_ast(node.left),
-                  _ast_to_expr_ast(node.comparators[0])],
-            keywords=[],
-        )
-
-    # Name, Call, Attribute, etc. — pass through unchanged.
+    # Constants and anything else pass through unchanged.
     return node
+
+
+def _make_cond_lambda(cond_node: ast.expr) -> ast.expr:
+    """Wrap a rewritten condition AST in ``lambda _e: <cond>``."""
+    return ast.Lambda(
+        args=ast.arguments(
+            posonlyargs=[], args=[ast.arg(arg="_e")], vararg=None,
+            kwonlyargs=[], kw_defaults=[], kwarg=None, defaults=[],
+        ),
+        body=_cond_ast(cond_node),
+    )
 
 
 def _make_fn(name: str, body: list[ast.stmt]) -> ast.FunctionDef:
@@ -475,7 +438,7 @@ class _ProcTransformer(ast.NodeTransformer):
         if not self._is_at(node.test):
             return node
 
-        cond = _ast_to_expr_ast(node.test.left)   # type: ignore[arg-type]
+        cond = _make_cond_lambda(node.test.left)   # type: ignore[arg-type]
         owner = node.test.right                     # type: ignore[union-attr]
 
         then_name = _fresh("then")
@@ -500,7 +463,7 @@ class _ProcTransformer(ast.NodeTransformer):
         if not self._is_at(node.test):
             return node
 
-        cond = _ast_to_expr_ast(node.test.left)   # type: ignore[arg-type]
+        cond = _make_cond_lambda(node.test.left)   # type: ignore[arg-type]
         owner = node.test.right                     # type: ignore[union-attr]
 
         body_name = _fresh("body")
@@ -566,15 +529,10 @@ def _transform_proc_source(fn: Callable) -> tuple[Callable, str | None, str | No
     # Inject builder helpers so users don't need to import them explicitly.
     exec_globals = fn.__globals__.copy()
     exec_globals.update({
-        "msg":   msg,
-        "act":   act,
-        "if_":   if_,
+        "msg":    msg,
+        "act":    act,
+        "if_":    if_,
         "while_": while_,
-        "not_":  not_,
-        "and_":  and_,
-        "or_":   or_,
-        "lt_":   lt_,
-        "lit":   lit,
     })
 
     local_ns: dict = {}
@@ -688,4 +646,5 @@ def workflow(fn: Callable) -> Workflow:
         body=body,
         output_var=output_var,
         output_lifeline=output_lifeline,
+        ns=fn.__globals__,
     )

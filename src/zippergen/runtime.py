@@ -39,7 +39,7 @@ import time
 from zippergen.syntax import (
     EmptyStmt, SendStmt, RecvStmt, ActStmt, SkipStmt,
     SeqStmt, IfStmt, WhileStmt, IfRecvStmt, WhileRecvStmt,
-    VarExpr, LitExpr, NotExpr, AndExpr, OrExpr, LtExpr, TupleExpr,
+    VarExpr, LitExpr, Var,
     LLMAction, PureAction,
     Lifeline, Workflow, LocalStmt,
     kappa_ctrl,
@@ -144,22 +144,37 @@ Channels = dict[tuple[str, str], _SeqQueue]
 Env = dict[str, object]
 
 
+class _CondEnv:
+    """Attribute-access proxy for condition lambdas.
+
+    Resolves ``_e.name`` by looking up ``name`` in the lifeline's local env
+    first, then falling back to the workflow's global namespace (for constants
+    like ``MAX_ROUNDS``).
+    """
+    __slots__ = ("_env", "_ns")
+
+    def __init__(self, env: dict, ns: dict) -> None:
+        object.__setattr__(self, "_env", env)
+        object.__setattr__(self, "_ns", ns)
+
+    def __getattr__(self, name: str) -> object:
+        env = object.__getattribute__(self, "_env")
+        ns  = object.__getattribute__(self, "_ns")
+        if name in env:
+            return env[name]
+        if name in ns:
+            return ns[name]
+        raise AttributeError(
+            f"Condition variable {name!r} not found in env or workflow namespace"
+        )
+
+
 def _eval(expr, env: Env) -> object:
     match expr:
         case VarExpr(var=v):
             return env.get(v.name, v.default)
         case LitExpr(value=val):
             return val
-        case NotExpr(operand=e):
-            return not _eval(e, env)
-        case AndExpr(left=l, right=r):
-            return _eval(l, env) and _eval(r, env)
-        case OrExpr(left=l, right=r):
-            return _eval(l, env) or _eval(r, env)
-        case LtExpr(left=l, right=r):
-            return _eval(l, env) < _eval(r, env)
-        case TupleExpr(elements=es):
-            return tuple(_eval(e, env) for e in es)
         case _:
             raise TypeError(f"Unknown expr: {type(expr).__name__}")
 
@@ -205,7 +220,7 @@ def _bound_dict(bindings: tuple, values: tuple) -> dict:
 # Local-program interpreter
 # ---------------------------------------------------------------------------
 
-def _exec(stmt: LocalStmt, env: Env, ch: Channels, llm_backend, trace) -> None:
+def _exec(stmt: LocalStmt, env: Env, ch: Channels, ns: dict, llm_backend, trace) -> None:
     """Execute a LocalStmt, updating env in place."""
     match stmt:
 
@@ -270,11 +285,11 @@ def _exec(stmt: LocalStmt, env: Env, ch: Channels, llm_backend, trace) -> None:
                 })
 
         case SeqStmt(first=p1, second=p2):
-            _exec(p1, env, ch, llm_backend, trace)
-            _exec(p2, env, ch, llm_backend, trace)
+            _exec(p1, env, ch, ns, llm_backend, trace)
+            _exec(p2, env, ch, ns, llm_backend, trace)
 
         case IfStmt(condition=c, owner=_, branch_true=t, branch_false=f):
-            _exec(t if _eval(c, env) else f, env, ch, llm_backend, trace)
+            _exec(t if c(_CondEnv(env, ns)) else f, env, ch, ns, llm_backend, trace)
 
         case IfRecvStmt(lifeline=A, bindings=ys, sender=B, branch_true=t, branch_false=f):
             seq, values = ch[(B.name, A.name)].get()
@@ -287,12 +302,12 @@ def _exec(stmt: LocalStmt, env: Env, ch: Channels, llm_backend, trace) -> None:
                     "bindings": {"branch": "true" if flag else "false"},
                     "seq": seq, "ctrl": True,
                 })
-            _exec(t if flag else f, env, ch, llm_backend, trace)
+            _exec(t if flag else f, env, ch, ns, llm_backend, trace)
 
         case WhileStmt(condition=c, owner=_, body=body, exit_body=exit_b):
-            while _eval(c, env):
-                _exec(body, env, ch, llm_backend, trace)
-            _exec(exit_b, env, ch, llm_backend, trace)
+            while c(_CondEnv(env, ns)):
+                _exec(body, env, ch, ns, llm_backend, trace)
+            _exec(exit_b, env, ch, ns, llm_backend, trace)
 
         case WhileRecvStmt(lifeline=A, bindings=ys, sender=B, body=body, exit_body=exit_b):
             while True:
@@ -308,8 +323,8 @@ def _exec(stmt: LocalStmt, env: Env, ch: Channels, llm_backend, trace) -> None:
                     })
                 if not flag:
                     break
-                _exec(body, env, ch, llm_backend, trace)
-            _exec(exit_b, env, ch, llm_backend, trace)
+                _exec(body, env, ch, ns, llm_backend, trace)
+            _exec(exit_b, env, ch, ns, llm_backend, trace)
 
         case _:
             raise TypeError(f"Unknown local stmt: {type(stmt).__name__}")
@@ -319,9 +334,9 @@ def _exec(stmt: LocalStmt, env: Env, ch: Channels, llm_backend, trace) -> None:
 # Per-lifeline thread body
 # ---------------------------------------------------------------------------
 
-def _thread_body(local_stmt, env, ch, result_box, llm_backend, trace):
+def _thread_body(local_stmt, env, ch, ns, result_box, llm_backend, trace):
     try:
-        _exec(local_stmt, env, ch, llm_backend, trace)
+        _exec(local_stmt, env, ch, ns, llm_backend, trace)
         result_box.append(env)
     except Exception as exc:
         result_box.append(exc)
@@ -377,13 +392,16 @@ def run(
 
     for ll in lifelines:
         local_stmt = project(wf, ll)
-        env = dict(initial_envs.get(ll.name, {}))
+        # Seed env with Var defaults so conditions see proper values before
+        # any assignment has run, then override with caller-supplied values.
+        env = {k: v.default for k, v in wf.ns.items() if isinstance(v, Var)}
+        env.update(initial_envs.get(ll.name, {}))
         box: list = []
         result_boxes[ll.name] = box
 
         def make_target(stmt, e, b):
             def target():
-                _thread_body(stmt, e, channels, b, llm_backend, trace)
+                _thread_body(stmt, e, channels, wf.ns, b, llm_backend, trace)
             return target
 
         t = threading.Thread(
