@@ -2,7 +2,7 @@
 """
 Increment — minimal tutorial example.
 
-User sends a number to Adder, Adder increments it by one and then doubles it,
+User sends a number to Compute, Compute increments it by one and then doubles it,
 and sends the result back.
 """
 
@@ -15,7 +15,7 @@ from zippergen.builder import proc
 # ---------------------------------------------------------------------------
 
 User  = Lifeline("User")
-Adder = Lifeline("Adder")
+Compute = Lifeline("Compute")
 
 # ---------------------------------------------------------------------------
 # Variables
@@ -41,11 +41,11 @@ def double(x: int) -> int:
 
 @proc
 def increment(number: int @ User) -> int:
-    User(number) >> Adder(number)
-    with Adder:
+    User(number) >> Compute(number)
+    with Compute:
         number = inc(number)
         number = double(number)
-    Adder(number) >> User(number)
+    Compute(number) >> User(number)
     return number @ User
 
 # ---------------------------------------------------------------------------
