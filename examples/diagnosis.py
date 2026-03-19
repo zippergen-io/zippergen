@@ -103,10 +103,6 @@ def chooseResult(v: bool, agreed: bool) -> str:
     return ("true" if v else "false") if agreed else "unknown"
 
 
-# Aliases to match the paper's camelCase names used in ActStmt below
-inc_trials      = incTrials
-check_agreement = checkAgreement
-choose_result   = chooseResult
 
 # ---------------------------------------------------------------------------
 # Workflow — direct translation of Listing 1
@@ -130,13 +126,13 @@ def diagnosisConsensus(notes: str @ User, diagnosis: str @ User) -> str:
         LLM2: (verdict, reason) = reconsider(notes, diagnosis, verdict, reason, other_verdict, other_reason)
         LLM2(verdict) >> LLM1(other_verdict)
         with LLM1:
-            agreed = check_agreement(verdict, other_verdict)
-            trials = inc_trials(trials)
+            agreed = checkAgreement(verdict, other_verdict)
+            trials = incTrials(trials)
     else:
         LLM1(verdict, reason) >> LLM2(other_verdict, other_reason)
 
     # Final result computed by LLM1, sent to User
-    LLM1: result = choose_result(verdict, agreed)
+    LLM1: result = chooseResult(verdict, agreed)
     LLM1(result) >> User(result)
     return result @ User
 
@@ -147,7 +143,7 @@ def diagnosisConsensus(notes: str @ User, diagnosis: str @ User) -> str:
 
 program = Program(
     lifelines=(User, LLM1, LLM2),
-    actions=(assess, reconsider, inc_trials, check_agreement, choose_result),
+    actions=(assess, reconsider, incTrials, checkAgreement, chooseResult),
     procs=(diagnosisConsensus,),
 )
 
