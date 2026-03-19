@@ -6,7 +6,8 @@ Direct transcription of Listing 1 / Listing 2 from the paper
 "Provable Coordination for LLM Agents via Message Sequence Charts".
 
 Two independent LLMs analyze patient notes and iterate until they agree
-on a diagnosis verdict. LLM1 owns the consensus loop.
+on a diagnosis verdict, or until MAX_ROUNDS is reached. LLM1 owns the
+consensus loop.
 """
 
 from zippergen.syntax import (
@@ -16,6 +17,12 @@ from zippergen.syntax import (
 )
 from zippergen.actions import llm, pure
 from zippergen.builder import proc
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+
+MAX_ROUNDS = 5
 
 # ---------------------------------------------------------------------------
 # Lifelines
@@ -53,6 +60,7 @@ r2 = Var("r2", str)
 
 # Control and output
 agreed = Var("agreed", bool, default=False)
+trials = Var("trials", int,  default=0)
 result = Var("result", str)
 
 # ---------------------------------------------------------------------------
@@ -92,6 +100,11 @@ def reconsider(notes: str, diag: str,
 
 
 @pure
+def incTrials(t: int) -> int:
+    return t + 1
+
+
+@pure
 def checkAgreement(v1: bool, v2: bool) -> bool:
     return v1 == v2
 
@@ -102,6 +115,7 @@ def chooseResult(v: bool, agreed: bool) -> str:
 
 
 # Aliases to match the paper's camelCase names used in ActStmt below
+inc_trials      = incTrials
 check_agreement = checkAgreement
 choose_result   = chooseResult
 
@@ -119,14 +133,15 @@ def diagnosisConsensus(notes: str @ User, diagnosis: str @ User) -> str:
     LLM1: (verdict1, reason1) = assess(n1, d1)
     LLM2: (verdict2, reason2) = assess(n2, d2)
 
-    # Consensus loop — owned by LLM1
-    while (not agreed) @ LLM1:
+    # Consensus loop — owned by LLM1 (at most MAX_ROUNDS rounds)
+    while (not agreed and trials < MAX_ROUNDS) @ LLM1:
         LLM1(verdict1, reason1) >> LLM2(v1, r1)
         LLM2(verdict2, reason2) >> LLM1(v2, r2)
         LLM1: (verdict1, reason1) = reconsider(n1, d1, verdict1, reason1, v2, r2)
         LLM2: (verdict2, reason2) = reconsider(n2, d2, verdict2, reason2, v1, r1)
         LLM2(verdict2) >> LLM1(verdict2)
         LLM1: agreed = check_agreement(verdict1, verdict2)
+        LLM1: trials = inc_trials(trials)
     else:
         LLM1(verdict1, reason1) >> LLM2(v1, r1)
 
@@ -142,7 +157,7 @@ def diagnosisConsensus(notes: str @ User, diagnosis: str @ User) -> str:
 
 program = Program(
     lifelines=(User, LLM1, LLM2),
-    actions=(assess, reconsider, check_agreement, choose_result),
+    actions=(assess, reconsider, inc_trials, check_agreement, choose_result),
     procs=(diagnosisConsensus,),
 )
 
