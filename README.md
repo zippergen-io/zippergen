@@ -14,7 +14,7 @@ Python 3.11 or later required.
 
 ## Hello, World!
 
-Here is the smallest possible ZipperGen program. `User` sends a number to `Adder`, `Adder` increments it, and the result is returned to the caller:
+Here is the smallest possible ZipperGen program. `User` sends a number to `Adder`, `Adder` increments it and doubles it, and the result is returned to the caller:
 
 ```python
 from zippergen.syntax import Lifeline, Var
@@ -30,18 +30,24 @@ number = Var("number", int)
 def inc(x: int) -> int:
     return x + 1
 
+@pure
+def double(x: int) -> int:
+    return x * 2
+
 @proc
 def increment(number: int @ User) -> int:
     User(number) >> Adder(number)
-    Adder: number = inc(number)
+    with Adder:
+        number = inc(number)
+        number = double(number)
     Adder(number) >> User(number)
     return number @ User
 
-result = increment(number=1)   # → 2
+result = increment(number=1)   # → 4
 ```
 
 - `User(number) >> Adder(number)` — `User` sends `number` to `Adder`.
-- `Adder: number = inc(number)` — `Adder` runs a local action.
+- `with Adder:` — a block of consecutive local actions on `Adder`.
 - `return number @ User` — declares `User` as the lifeline that owns the result.
 
 ZipperGen projects this global protocol onto each agent and runs them in parallel threads. Deadlock-freedom is guaranteed by construction.
