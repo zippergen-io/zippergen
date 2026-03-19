@@ -26,7 +26,7 @@ Adder = Lifeline("Adder")
 
 number = Var("number", Int)
 
-@pure()
+@pure
 def inc(x: Int) -> Int:
     return x + 1
 

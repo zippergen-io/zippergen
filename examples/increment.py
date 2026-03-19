@@ -27,7 +27,7 @@ number = Var("number", Int)
 # Actions
 # ---------------------------------------------------------------------------
 
-@pure()
+@pure
 def inc(x: Int) -> Int:
     return x + 1
 
@@ -56,20 +56,5 @@ program = Program(
 # Run
 # ---------------------------------------------------------------------------
 
-if __name__ == "__main__":
-    import time
-    from zipperchat import WebTrace
-
-    wt = WebTrace(program.lifelines).start()
-    time.sleep(0.3)
-
-    increment.configure(trace=wt, timeout=10)
-
-    while True:
-        wt.reset()
-        print("Running increment…")
-        result = increment(number=1)
-        wt.done()
-        print(f"\nResult → {result}")
-        print("Click ▶ Run again in the browser, or Ctrl-C to quit.")
-        wt.wait_for_replay()
+result = increment(number=1)
+print(f"\nResult: {result}")

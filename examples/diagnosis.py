@@ -1,3 +1,4 @@
+# pyright: reportInvalidTypeForm=false, reportGeneralTypeIssues=false, reportOperatorIssue=false, reportCallIssue=false, reportAttributeAccessIssue=false, reportUnusedExpression=false, reportUnboundVariable=false
 """
 Medical Diagnosis Consensus — running example.
 
@@ -87,17 +88,17 @@ def assess(notes: Text, diag: Text) -> None: ...
     outputs=(("verdict", Bool), ("reason", Text)),
 )
 def reconsider(notes: Text, diag: Text, 
-               myVerdict: Text, myReason: Text,
-               otherVerdict: Text, otherReason: Text) -> None: ...
+               myVerdict: Bool, myReason: Text,
+               otherVerdict: Bool, otherReason: Text) -> None: ...
 
 
-@pure()
-def checkAgreement(v1: Text, v2: Text) -> Bool:
+@pure
+def checkAgreement(v1: Bool, v2: Bool) -> Bool:
     return v1 == v2
 
 
-@pure(outputs=(("result", Text),))
-def chooseResult(v: Bool, agreed: Bool) -> None:
+@pure
+def chooseResult(v: Bool, agreed: Bool) -> Text:
     return ("true" if v else "false") if agreed else "unknown"
 
 
