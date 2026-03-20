@@ -75,20 +75,36 @@ Then visit **http://localhost:8765** — ZipperChat will show the agents exchang
 
 ZipperGen programs are *global coordination protocols* — you describe what messages flow between which agents and who owns each decision. ZipperGen automatically projects the global protocol onto per-agent local programs and executes them in parallel threads with FIFO message queues.
 
-Control structures use native `if`/`while` with `@ Lifeline` to name the agent that owns the decision:
+Here is the full diagnosis protocol — two LLMs iterate until they agree on a verdict, or a round limit is reached:
 
 ```python
-while (not agreed and trials < MAX_ROUNDS) @ LLM1:   # LLM1 owns the loop condition
-    LLM1(verdict, reason) >> LLM2(other_verdict, other_reason)
-    LLM2(verdict, reason) >> LLM1(other_verdict, other_reason)
-    LLM1: (verdict, reason) = reconsider(notes, diagnosis, verdict, reason, other_verdict, other_reason)
-    LLM2: (verdict, reason) = reconsider(notes, diagnosis, verdict, reason, other_verdict, other_reason)
-    LLM2(verdict) >> LLM1(other_verdict)
-    with LLM1:
-        agreed = checkAgreement(verdict, other_verdict)
-        trials = incTrials(trials)
-else:                                                  # else = exit body (runs once on loop exit)
-    LLM1(verdict, reason) >> LLM2(other_verdict, other_reason)
+@workflow
+def diagnosisConsensus(notes: str @ User, diagnosis: str @ User) -> str:
+    # Distribute inputs to both LLMs
+    User(notes, diagnosis) >> LLM1(notes, diagnosis)
+    User(notes, diagnosis) >> LLM2(notes, diagnosis)
+
+    # Independent initial assessments
+    LLM1: (verdict, reason) = assess(notes, diagnosis)
+    LLM2: (verdict, reason) = assess(notes, diagnosis)
+
+    # Consensus loop — owned by LLM1 (at most MAX_ROUNDS rounds)
+    while (not agreed and trials < MAX_ROUNDS) @ LLM1:
+        LLM1(verdict, reason) >> LLM2(other_verdict, other_reason)
+        LLM2(verdict, reason) >> LLM1(other_verdict, other_reason)
+        LLM1: (verdict, reason) = reconsider(notes, diagnosis, verdict, reason, other_verdict, other_reason)
+        LLM2: (verdict, reason) = reconsider(notes, diagnosis, verdict, reason, other_verdict, other_reason)
+        LLM2(verdict) >> LLM1(other_verdict)
+        with LLM1:
+            agreed = checkAgreement(verdict, other_verdict)
+            trials = incTrials(trials)
+    else:                                              # runs once on loop exit
+        LLM1(verdict, reason) >> LLM2(other_verdict, other_reason)
+
+    # Final result computed by LLM1, returned to User
+    LLM1: result = chooseResult(verdict, agreed)
+    LLM1(result) >> User(result)
+    return result @ User
 ```
 
 The `@ LLM1` annotation mirrors the paper's notation `c@B` — it tells ZipperGen which agent evaluates the condition and broadcasts control messages to the others.
