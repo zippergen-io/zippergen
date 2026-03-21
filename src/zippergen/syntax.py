@@ -35,6 +35,7 @@ annotations to make this intent explicit.
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Union
@@ -407,6 +408,9 @@ class Workflow:
     _timeout: float  = field(default=60.0, init=False, repr=False)
     _webtrace: object = field(default=None, init=False, repr=False)
     _ui_enabled: bool = field(default=False, init=False, repr=False)
+    _run_lock: object = field(default_factory=threading.Lock, init=False, repr=False)
+    _replay_thread: object = field(default=None, init=False, repr=False)
+    _last_kwargs: dict[str, object] = field(default_factory=dict, init=False, repr=False)
 
     def configure(self, *,
                   backend: object = None,
@@ -467,13 +471,7 @@ class Workflow:
         self._timeout = timeout
         return self
 
-    def __call__(self, **kwargs: object) -> object:
-        """Run this workflow like a regular Python function.
-
-        Keyword arguments must match the workflow's declared inputs (one per
-        parameter in the ``@workflow`` signature).  Call ``configure()`` first to
-        set the LLM backend, trace, and timeout.
-        """
+    def _run_once(self, kwargs: dict[str, object]) -> object:
         from zippergen.runtime import run, mock_llm  # lazy to avoid circular import
 
         initial_envs: dict[str, dict[str, object]] = {}
@@ -489,13 +487,50 @@ class Workflow:
 
         lifelines = _ordered_workflow_lifelines(self)
         backend = self._backend if self._backend is not None else mock_llm
-        if self._webtrace is not None and self._ui_enabled:
-            self._webtrace.reset()
-        result = run(self, lifelines, initial_envs,
-                     llm_backend=backend, trace=self._trace, timeout=self._timeout)
-        if self._webtrace is not None and self._ui_enabled:
-            self._webtrace.done()
-        return result
+        with self._run_lock:
+            if self._webtrace is not None and self._ui_enabled:
+                self._webtrace.reset()
+            try:
+                return run(
+                    self,
+                    lifelines,
+                    initial_envs,
+                    llm_backend=backend,
+                    trace=self._trace,
+                    timeout=self._timeout,
+                )
+            finally:
+                if self._webtrace is not None and self._ui_enabled:
+                    self._webtrace.done()
+
+    def _ensure_replay_loop(self) -> None:
+        if not self._ui_enabled or self._webtrace is None or self._replay_thread is not None:
+            return
+
+        def _worker() -> None:
+            while True:
+                self._webtrace.wait_for_replay()
+                if not self._last_kwargs:
+                    continue
+                try:
+                    result = self._run_once(dict(self._last_kwargs))
+                    print(f"\nResult → {result}")
+                except Exception as exc:
+                    print(f"\nReplay failed: {exc}")
+
+        self._replay_thread = threading.Thread(target=_worker, daemon=True)
+        self._replay_thread.start()
+
+    def __call__(self, **kwargs: object) -> object:
+        """Run this workflow like a regular Python function.
+
+        Keyword arguments must match the workflow's declared inputs (one per
+        parameter in the ``@workflow`` signature).  Call ``configure()`` first to
+        set the LLM backend, trace, and timeout.
+        """
+        self._last_kwargs = dict(kwargs)
+        self._ensure_replay_loop()
+        return self._run_once(dict(kwargs))
 
     def __repr__(self) -> str:
         parts = []
@@ -539,7 +574,6 @@ def seq(*stmts: Stmt) -> Stmt:
     if len(non_empty) == 1:
         return non_empty[0]
     return SeqStmt(non_empty[0], seq(*non_empty[1:]))
-
 
 # ---------------------------------------------------------------------------
 # participation_set — L(P) from the paper (Definition 8)
