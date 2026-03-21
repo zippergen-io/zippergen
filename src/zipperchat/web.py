@@ -145,7 +145,7 @@ def _make_handler(bus: _EventBus, lifelines: list[str],
             self.wfile.write(msg)
             self.wfile.flush()
 
-        def log_message(self, *_):
+        def log_message(self, format: str, *args: object) -> None:
             pass   # suppress request logging
 
     return _Handler
@@ -238,8 +238,8 @@ _HTML = r"""<!DOCTYPE html>
 body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter',
                Helvetica, Arial, sans-serif;
-  background: #0d1117;
-  color: #c9d1d9;
+  background: #f6f3eb;
+  color: #24313d;
   display: flex;
   flex-direction: column;
   height: calc(100vh / var(--ui-zoom));  /* compensate so body fills exactly the viewport after zoom */
@@ -253,8 +253,8 @@ body {
   gap: 14px;
   padding: 0 20px 0 30px;
   height: 56px;
-  background: #0d1117;
-  border-bottom: 1px solid #21262d;
+  background: #fbf8f2;
+  border-bottom: 1px solid #dccfb9;
   flex-shrink: 0;
 }
 
@@ -275,13 +275,13 @@ body {
 .brand-main {
   font-size: 17px;
   font-weight: 700;
-  color: #e6edf3;
+  color: #24313d;
   letter-spacing: -0.3px;
 }
 .brand-sub {
   font-size: 10px;
   font-weight: 500;
-  color: #8b949e;
+  color: #7b6f61;
   letter-spacing: 0.5px;
 }
 
@@ -289,13 +289,13 @@ body {
   margin-left: auto;
   padding: 4px 12px;
   border-radius: 20px;
-  background: #21262d;
-  color: #8b949e;
+  background: #efe7d8;
+  color: #7b6f61;
   font-size: 12px;
   font-weight: 500;
 }
-#status.running { background: #1a4731; color: #3fb950; }
-#status.done    { background: #1c2a3a; color: #58a6ff; }
+#status.running { background: #e3f3e8; color: #177245; }
+#status.done    { background: #e4eefb; color: #215ea6; }
 
 /* ── Replay button ───────────────────────────────────────────────────── */
 #replay-btn {
@@ -312,7 +312,7 @@ body {
 }
 #replay-btn:hover {
   background: #C8860A;
-  color: #0d1117;
+  color: #fbf8f2;
 }
 
 /* ── Scroll container ─────────────────────────────────────────────────── */
@@ -335,11 +335,11 @@ body {
   column-gap: 0;
   padding-top: 24px;
   padding-bottom: 4px;  /* covers the gap between header and first event row */
-  background: #0d1117;
+  background: #f6f3eb;
 }
 #container::-webkit-scrollbar { width: 6px; }
 #container::-webkit-scrollbar-track { background: transparent; }
-#container::-webkit-scrollbar-thumb { background: #30363d; border-radius: 3px; }
+#container::-webkit-scrollbar-thumb { background: #c9bda9; border-radius: 3px; }
 
 /* ── Diagram column (events only) ────────────────────────────────────── */
 #diagram {
@@ -352,13 +352,15 @@ body {
 .ll-header {
   padding: 9px 16px;
   border-radius: 10px 10px 0 0;
-  border: 1px solid #21262d;
+  border: 1px solid #d8cfbf;
   border-bottom: 2px solid;  /* accent border, set per column */
   text-align: center;
   font-weight: 700;
   font-size: 13px;
   margin: 0 3px 10px;
   letter-spacing: 0.2px;
+  background: rgba(255, 252, 246, 0.9);
+  box-shadow: 0 1px 0 rgba(120, 97, 64, 0.04);
 }
 
 /* ── Act row cells ────────────────────────────────────────────────────── */
@@ -376,23 +378,24 @@ body {
 .act-box {
   width: 100%;
   max-width: 230px;
-  background: #161b22;
-  border: 1px solid #30363d;
+  background: #fffdfa;
+  border: 1px solid #d8cfbf;
   border-left: 3px solid;   /* accent, set per column */
   border-radius: 7px;
   padding: 8px 11px;
   animation: fadein 0.18s ease;
+  box-shadow: 0 6px 16px rgba(84, 63, 37, 0.08);
 }
 .act-name {
   font-size: 13px;
   font-weight: 600;
   margin-bottom: 4px;
-  color: #e6edf3;
+  color: #24313d;
 }
 .act-in {
   font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
   font-size: 10px;
-  color: #8b949e;
+  color: #62584d;
   line-height: 1.5;
   word-break: break-all;
   white-space: pre-line;
@@ -400,7 +403,7 @@ body {
 .act-out {
   font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
   font-size: 10px;
-  color: #3fb950;
+  color: #177245;
   line-height: 1.5;
   word-break: break-all;
   white-space: pre-line;
@@ -422,7 +425,7 @@ body {
   right: 0;
   bottom: 0;
   height: 1.8em;
-  background: linear-gradient(to bottom, rgba(22,27,34,0), #161b22 88%);
+  background: linear-gradient(to bottom, rgba(255,253,250,0), #fffdfa 88%);
   pointer-events: none;
 }
 .trace-toggle {
@@ -430,13 +433,13 @@ body {
   padding: 0;
   border: 0;
   background: none;
-  color: #58a6ff;
+  color: #215ea6;
   font-size: 10px;
   font-weight: 600;
   cursor: pointer;
 }
 .trace-toggle:hover {
-  color: #79c0ff;
+  color: #17497f;
 }
 
 /* ── Act row wrapper ──────────────────────────────────────────────────── */
@@ -472,14 +475,15 @@ body {
 
 /* ── Message box (send or recv) ──────────────────────────────────────── */
 .msg-box {
-  background: #161b22;
-  border: 1px solid #30363d;
+  background: #fffdfa;
+  border: 1px solid #d8cfbf;
   border-left: 3px solid;  /* accent color set inline */
   border-radius: 7px;
   padding: 7px 11px;
   font-size: 11px;
   max-width: 180px;
   min-width: 60px;
+  box-shadow: 0 6px 16px rgba(84, 63, 37, 0.07);
 }
 .msg-box .msg-label {
   font-size: 10px;
@@ -492,7 +496,7 @@ body {
 .msg-box .msg-vals {
   font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
   font-size: 10px;
-  color: #c9d1d9;
+  color: #3b4753;
   word-break: break-all;
   line-height: 1.4;
   white-space: pre-line;
@@ -577,11 +581,11 @@ body {
 <script>
 // ── Column palette ─────────────────────────────────────────────────────
 const COLS = [
-  { bg: 'rgba(56,139,253,0.07)',   accent: '#388bfd', text: '#79b8ff' },
-  { bg: 'rgba(56,211,159,0.07)',   accent: '#2ea043', text: '#56d364' },
-  { bg: 'rgba(188,140,255,0.07)', accent: '#8957e5', text: '#d2a8ff' },
-  { bg: 'rgba(255,166,87,0.07)',   accent: '#d29922', text: '#ffa657' },
-  { bg: 'rgba(255,87,166,0.07)',   accent: '#da3633', text: '#ff7b72' },
+  { bg: 'rgba(71, 125, 209, 0.08)', accent: '#2c6cc9', text: '#2b4c7e' },
+  { bg: 'rgba(52, 145, 92, 0.08)',  accent: '#2a8b57', text: '#205d3e' },
+  { bg: 'rgba(132, 95, 204, 0.08)', accent: '#7851c6', text: '#55318d' },
+  { bg: 'rgba(207, 138, 44, 0.08)', accent: '#c8860a', text: '#8b5b08' },
+  { bg: 'rgba(194, 82, 112, 0.08)', accent: '#c25270', text: '#8c3148' },
 ];
 
 // ── State ──────────────────────────────────────────────────────────────
