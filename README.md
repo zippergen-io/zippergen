@@ -118,6 +118,32 @@ The `@ LLM1` annotation mirrors the paper's notation `c@B`: it tells ZipperGen w
 
 The formal foundation is developed in the forthcoming paper *"Provable Coordination for LLM Agents via Message Sequence Charts"*.
 
+## Defining LLM actions
+
+Prompts are defined directly on Python functions with `@llm`. You specify:
+
+- `system`: the role or instruction for the model
+- `user`: the user prompt template
+- `parse`: how the response should be parsed
+- `outputs`: the expected output fields and their Python types
+
+For example:
+
+```python
+@llm(
+    system=(
+        "You are a medical expert. Analyze the notes and determine "
+        "if the diagnosis applies."
+    ),
+    user="Notes: {notes}\nDiagnosis: {diag}",
+    parse="json",
+    outputs=(("verdict", bool), ("reason", str)),
+)
+def assess(notes: str, diag: str) -> None: ...
+```
+
+Here, `notes` and `diag` are inserted into the prompt template, and ZipperGen expects the model to return a JSON object with exactly the keys `verdict` and `reason`. The returned values are validated against the declared Python types.
+
 ## Using real LLMs
 
 The simplest way is:
