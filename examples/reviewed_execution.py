@@ -13,7 +13,6 @@ Direct transcription of Listing 1 / Figure 1 from the paper
 
 from zippergen.syntax import (
     Lifeline, Var,
-    Program,
     pp,
 )
 from zippergen.actions import llm, pure
@@ -113,39 +112,16 @@ def reviewedExecution(task: str @ Planner) -> str:
     return final @ Orchestrator
 
 
-# ---------------------------------------------------------------------------
-# Program
-# ---------------------------------------------------------------------------
-
-program = Program(
-    lifelines=(Planner, Reviewer, Orchestrator, Executor),
-    actions=(makePlan, reviewPlan, executePlan, finalizeWithReview),
-    procs=(reviewedExecution,),
-)
-
-# ---------------------------------------------------------------------------
-# Quick sanity check
-# ---------------------------------------------------------------------------
-
 if __name__ == "__main__":
-    import time
-    from zippergen.runtime import mock_llm
-    from zipperchat import WebTrace
-
-    wt = WebTrace(program.lifelines).start()
-    time.sleep(0.3)   # give the browser a moment to connect
+    USE_UI = True
 
     reviewedExecution.configure(
-        backend=lambda a, i: mock_llm(a, i, min_delay=5, max_delay=10),
-        trace=wt,
+        llms="mock",
+        ui=USE_UI,
         timeout=60,
+        mock_delay=(5.0, 10.0),
     )
-
-    while True:
-        wt.reset()
-        print("Running reviewedExecution (mock LLM)…")
-        final = reviewedExecution(task="Build a REST API for a to-do list application.")
-        wt.done()
-        print(f"\nResult → {final}")
-        print("Click ▶ Run again in the browser, or Ctrl-C to quit.")
-        wt.wait_for_replay()
+    final = reviewedExecution(task="Build a REST API for a to-do list application.")
+    print(f"\nResult → {final}")
+    if USE_UI:
+        input("ZipperChat is running at http://localhost:8765 . Press Enter to close. ")

@@ -405,6 +405,39 @@ body {
   word-break: break-all;
   white-space: pre-line;
 }
+.expandable {
+  margin-top: 2px;
+}
+.expandable-text {
+  position: relative;
+}
+.expandable-text.collapsed {
+  max-height: 6.3em;
+  overflow: hidden;
+}
+.expandable-text.collapsed::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 1.8em;
+  background: linear-gradient(to bottom, rgba(22,27,34,0), #161b22 88%);
+  pointer-events: none;
+}
+.trace-toggle {
+  margin-top: 4px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: #58a6ff;
+  font-size: 10px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.trace-toggle:hover {
+  color: #79c0ff;
+}
 
 /* ── Act row wrapper ──────────────────────────────────────────────────── */
 .act-row {
@@ -571,7 +604,6 @@ const cgPending = {};         // lifeline → Set of CgRow (open msg rows, recv 
 const cgOpen    = {};         // "A->B" → CgRow[] FIFO
 
 const completed       = [];   // message rows that have received (for arrow redraw)
-let   actRow          = null; // { cgRow, occupied: Set<lifelineIdx> } — visual compression heuristic
 const pendingActBoxes = {};   // "lifeline:seq" → act-box DOM element
 
 // ── Helpers ────────────────────────────────────────────────────────────
@@ -579,30 +611,65 @@ const col = i => COLS[i % COLS.length];
 function lifelineIdx(name) { return lifelines.indexOf(name); }
 function scrollDown() { container.scrollTop = container.scrollHeight; }
 
-function fmt(v) {
+function fmt(v, truncateStrings = true) {
   if (v === null || v === undefined) return 'null';
   if (v === 'κ_ctrl') return null;
   if (typeof v === 'boolean') return v ? 'true' : 'false';
-  if (typeof v === 'string') return v.length > 32 ? v.slice(0, 30) + '…' : v;
+  if (typeof v === 'string') {
+    return truncateStrings && v.length > 32 ? v.slice(0, 30) + '…' : v;
+  }
   if (Array.isArray(v)) {
-    const parts = v.map(fmt).filter(x => x !== null);
+    const parts = v.map(item => fmt(item, truncateStrings)).filter(x => x !== null);
     return parts.length ? parts.join('\n') : null;
   }
   return String(v);
 }
 
-function fmtDict(d) {
+function fmtDict(d, truncateStrings = true) {
   return Object.entries(d)
-    .map(([k, v]) => { const s = fmt(v); return s !== null ? `${k} = ${s}` : null; })
+    .map(([k, v]) => {
+      const s = fmt(v, truncateStrings);
+      return s !== null ? `${k} = ${s}` : null;
+    })
     .filter(Boolean).join('\n');
 }
 
-function fmtList(arr) {
-  return (arr || []).map(fmt).filter(x => x !== null).join('\n');
+function fmtList(arr, truncateStrings = true) {
+  return (arr || []).map(v => fmt(v, truncateStrings)).filter(x => x !== null).join('\n');
 }
 
 function isCtrlVals(vals) {
   return Array.isArray(vals) && vals.includes('κ_ctrl');
+}
+
+function makeExpandableText(className, text) {
+  const wrapper = document.createElement('div');
+  wrapper.className = 'expandable';
+
+  const body = document.createElement('div');
+  body.className = `${className} expandable-text collapsed`;
+  body.textContent = text;
+  wrapper.appendChild(body);
+
+  const btn = document.createElement('button');
+  btn.className = 'trace-toggle';
+  btn.type = 'button';
+  btn.textContent = 'show more';
+  btn.hidden = true;
+  btn.onclick = () => {
+    const expanded = !body.classList.contains('collapsed');
+    body.classList.toggle('collapsed', expanded);
+    btn.textContent = expanded ? 'show more' : 'show less';
+  };
+  wrapper.appendChild(btn);
+
+  requestAnimationFrame(() => {
+    const needsToggle = body.scrollHeight > body.clientHeight + 1;
+    btn.hidden = !needsToggle;
+    if (!needsToggle) body.classList.remove('collapsed');
+  });
+
+  return wrapper;
 }
 
 // ── Diagram init ───────────────────────────────────────────────────────
@@ -617,7 +684,6 @@ function clearDiagram() {
   Object.keys(cgOpen).forEach(k => delete cgOpen[k]);
   Object.keys(pendingActBoxes).forEach(k => delete pendingActBoxes[k]);
   completed.length = 0;
-  actRow = null;
 }
 
 function initDiagram(lls) {
@@ -641,7 +707,8 @@ function initDiagram(lls) {
 function newCgRow(kind) {
   const r = { id: cgIdSeq++, kind, level: 0, succ: new Set(), pred: new Set(),
               wrapper: null, cells: null, svg: null,
-              fromIdx: -1, toIdx: -1, ctrl: false, color: null };
+              fromIdx: -1, toIdx: -1, ctrl: false, color: null,
+              occupied: new Set() };
   cgRows[r.id] = r;
   return r;
 }
@@ -657,6 +724,43 @@ function cgRaise(v, nl) {
   if (nl <= v.level) return;
   v.level = nl;
   for (const wId of v.succ) cgRaise(cgRows[wId], v.level + 1);
+}
+
+function hasPath(start, target) {
+  if (!start || !target) return false;
+  if (start.id === target.id) return true;
+  const seen = new Set([start.id]);
+  const stack = [...start.succ];
+  while (stack.length) {
+    const id = stack.pop();
+    if (id === target.id) return true;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    const row = cgRows[id];
+    if (!row) continue;
+    for (const succ of row.succ) stack.push(succ);
+  }
+  return false;
+}
+
+function canReuseActRow(lifeline, r) {
+  if (!r || r.kind !== 'action') return false;
+  const idx = lifelineIdx(lifeline);
+  if (r.occupied.has(idx)) return false;
+
+  const last = cgLast[lifeline];
+  if (last && hasPath(r, last)) return false;
+
+  for (const pending of (cgPending[lifeline] || [])) {
+    if (pending.id !== r.id && hasPath(pending, r)) return false;
+  }
+  return true;
+}
+
+function findReusableActRow(lifeline) {
+  return Object.values(cgRows)
+    .filter(r => canReuseActRow(lifeline, r))
+    .sort((a, b) => b.level !== a.level ? b.level - a.level : b.id - a.id)[0] || null;
 }
 
 // r becomes the next materialized event on `lifeline`:
@@ -703,12 +807,8 @@ function handleActStart(ev) {
   const i = lifelineIdx(ev.lifeline);
   const c = col(i);
 
-  let r;
-  if (actRow && !actRow.occupied.has(i)) {
-    // Reuse current act row for a concurrent act on another lifeline.
-    // materializeOnLifeline adds the ordering constraint and may raise the
-    // shared row's level if this lifeline's history demands it.
-    r = actRow.cgRow;
+  let r = findReusableActRow(ev.lifeline);
+  if (r) {
     materializeOnLifeline(ev.lifeline, r);
   } else {
     r = newCgRow('action');
@@ -725,9 +825,8 @@ function handleActStart(ev) {
     });
     materializeOnLifeline(ev.lifeline, r);
     diagram.appendChild(wrapper);
-    actRow = { cgRow: r, occupied: new Set() };
   }
-  actRow.occupied.add(i);
+  r.occupied.add(i);
 
   const box = document.createElement('div');
   box.className = 'act-box running';
@@ -739,12 +838,9 @@ function handleActStart(ev) {
   nameEl.textContent = ev.action;
   box.appendChild(nameEl);
 
-  const inStr = fmtDict(ev.inputs || {});
+  const inStr = fmtDict(ev.inputs || {}, false);
   if (inStr) {
-    const el = document.createElement('div');
-    el.className = 'act-in';
-    el.textContent = '← ' + inStr;
-    box.appendChild(el);
+    box.appendChild(makeExpandableText('act-in', '← ' + inStr));
   }
 
   r.cells[i].appendChild(box);
@@ -760,12 +856,9 @@ function handleAct(ev) {
 
   box.classList.remove('running');
 
-  const outStr = fmtDict(ev.outputs || {});
+  const outStr = fmtDict(ev.outputs || {}, false);
   if (outStr) {
-    const el = document.createElement('div');
-    el.className = 'act-out';
-    el.textContent = '→ ' + outStr;
-    box.appendChild(el);
+    box.appendChild(makeExpandableText('act-out', '→ ' + outStr));
   }
   scrollDown();
 }
@@ -792,7 +885,6 @@ function makeBox(label, text, color) {
 }
 
 function handleSend(ev) {
-  actRow = null;  // a send ends the current act-sharing window
   const fromIdx = lifelineIdx(ev.from);
   const toIdx   = lifelineIdx(ev.to);
   const ctrl    = isCtrlVals(ev.values);

@@ -35,6 +35,7 @@ annotations to make this intent explicit.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Union
 
@@ -367,6 +368,26 @@ LocalStmt = Union[
 ]
 
 
+def _ordered_workflow_lifelines(wf: "Workflow") -> tuple[Lifeline, ...]:
+    participants = participation_set(wf.body)
+    ordered: list[Lifeline] = []
+    seen: set[Lifeline] = set()
+
+    for value in wf.ns.values():
+        if isinstance(value, Lifeline) and value in participants and value not in seen:
+            ordered.append(value)
+            seen.add(value)
+
+    for _name, _ztype, lifeline in wf.inputs:
+        if lifeline is not None and lifeline in participants and lifeline not in seen:
+            ordered.append(lifeline)
+            seen.add(lifeline)
+
+    remaining = sorted((lifeline for lifeline in participants if lifeline not in seen), key=lambda l: l.name)
+    ordered.extend(remaining)
+    return tuple(ordered)
+
+
 # ---------------------------------------------------------------------------
 # Workflow and Program
 # ---------------------------------------------------------------------------
@@ -384,11 +405,16 @@ class Workflow:
     _backend: object = field(default=None, init=False, repr=False)
     _trace: object   = field(default=None, init=False, repr=False)
     _timeout: float  = field(default=60.0, init=False, repr=False)
+    _webtrace: object = field(default=None, init=False, repr=False)
+    _ui_enabled: bool = field(default=False, init=False, repr=False)
 
     def configure(self, *,
                   backend: object = None,
                   trace:   object = None,
-                  timeout: float  = 60.0) -> Workflow:
+                  timeout: float  = 60.0,
+                  llms: str | Mapping[str, str] | None = None,
+                  ui: bool | None = None,
+                  mock_delay: tuple[float, float] = (1.0, 2.0)) -> Workflow:
         """Configure runtime parameters and return self for chaining.
 
         Parameters
@@ -397,10 +423,47 @@ class Workflow:
                   Defaults to the built-in mock backend.
         trace   : trace callable passed to ``run()``.
         timeout : per-thread timeout in seconds (default 60).
+        llms    : ``"mock"``, a provider name like ``"openai"`` / ``"mistral"``,
+                  or a mapping ``lifeline_name -> provider``. This is a simple
+                  convenience layer for examples and demos.
+        ui      : if true, start ZipperChat and mirror the execution there.
+        mock_delay : delay range used by the mock backend when ``llms="mock"``
+                     or when no provider route is configured.
         """
+        lifelines = _ordered_workflow_lifelines(self)
+
+        if llms is not None:
+            from zippergen.backends import router_from_env
+            from zippergen.runtime import mock_llm
+
+            if llms == "mock":
+                routes: dict[str, str] = {}
+            elif isinstance(llms, str):
+                routes = {lifeline.name: llms for lifeline in lifelines}
+            else:
+                routes = {str(k): str(v) for k, v in llms.items()}
+
+            built_backend, _label = router_from_env(
+                routes,
+                fallback=lambda a, i: mock_llm(a, i, min_delay=mock_delay[0], max_delay=mock_delay[1]),
+            )
+            self._backend = built_backend
         if backend is not None:
             self._backend = backend
-        self._trace   = trace
+
+        if ui is not None:
+            self._ui_enabled = ui
+        if self._ui_enabled:
+            from zippergen.runtime import console_trace, tee_traces
+            from zipperchat import WebTrace
+
+            if self._webtrace is None:
+                self._webtrace = WebTrace(lifelines).start()
+            base_trace = trace if trace is not None else console_trace
+            self._trace = tee_traces(self._webtrace, base_trace)
+        elif trace is not None:
+            self._trace = trace
+
         self._timeout = timeout
         return self
 
@@ -424,10 +487,15 @@ class Workflow:
                 raise TypeError(f"{self.name}() missing argument: '{name}'")
             initial_envs.setdefault(lifeline.name, {})[name] = kwargs[name]
 
-        lifelines = sorted(participation_set(self.body), key=lambda l: l.name)
+        lifelines = _ordered_workflow_lifelines(self)
         backend = self._backend if self._backend is not None else mock_llm
-        return run(self, lifelines, initial_envs,
-                   llm_backend=backend, trace=self._trace, timeout=self._timeout)
+        if self._webtrace is not None and self._ui_enabled:
+            self._webtrace.reset()
+        result = run(self, lifelines, initial_envs,
+                     llm_backend=backend, trace=self._trace, timeout=self._timeout)
+        if self._webtrace is not None and self._ui_enabled:
+            self._webtrace.done()
+        return result
 
     def __repr__(self) -> str:
         parts = []

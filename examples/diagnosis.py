@@ -8,11 +8,12 @@ Direct transcription of Listing 1 / Listing 2 from the paper
 Two independent LLMs analyze patient notes and iterate until they agree
 on a diagnosis verdict, or until MAX_ROUNDS is reached. LLM1 owns the
 consensus loop.
+
+Set the provider choice in ``__main__`` via ``diagnosisConsensus.configure``.
 """
 
 from zippergen.syntax import (
     Lifeline, Var,
-    Program,
 )
 from zippergen.actions import llm, pure
 from zippergen.builder import workflow
@@ -103,7 +104,6 @@ def chooseResult(v: bool, agreed: bool) -> str:
     return ("true" if v else "false") if agreed else "unknown"
 
 
-
 # ---------------------------------------------------------------------------
 # Workflow — direct translation of Listing 1
 # ---------------------------------------------------------------------------
@@ -117,6 +117,8 @@ def diagnosisConsensus(notes: str @ User, diagnosis: str @ User) -> str:
     # Independent initial assessments
     LLM1: (verdict, reason) = assess(notes, diagnosis)
     LLM2: (verdict, reason) = assess(notes, diagnosis)
+    LLM2(verdict) >> LLM1(other_verdict)
+    LLM1: agreed = checkAgreement(verdict, other_verdict)
 
     # Consensus loop — owned by LLM1 (at most MAX_ROUNDS rounds)
     while (not agreed and trials < MAX_ROUNDS) @ LLM1:
@@ -137,42 +139,26 @@ def diagnosisConsensus(notes: str @ User, diagnosis: str @ User) -> str:
     return result @ User
 
 
-# ---------------------------------------------------------------------------
-# Program
-# ---------------------------------------------------------------------------
-
-program = Program(
-    lifelines=(User, LLM1, LLM2),
-    actions=(assess, reconsider, incTrials, checkAgreement, chooseResult),
-    procs=(diagnosisConsensus,),
-)
-
-# ---------------------------------------------------------------------------
-# Quick sanity check
-# ---------------------------------------------------------------------------
-
 if __name__ == "__main__":
-    import time
-    from zippergen.runtime import mock_llm
-    from zipperchat import WebTrace
-
-    wt = WebTrace(program.lifelines).start()
-    time.sleep(0.3)   # give the browser a moment to connect
+    USE_UI = True
 
     diagnosisConsensus.configure(
-        backend=lambda a, i: mock_llm(a, i, min_delay=10.3, max_delay=20.2),
-        trace=wt,
+        llms="mock",
+        ui=USE_UI,
         timeout=600,
     )
-
-    while True:
-        wt.reset()
-        print("Running diagnosis consensus (mock LLM)…")
-        result = diagnosisConsensus(
-            notes="Patient has fever, cough, and fatigue for 5 days.",
-            diagnosis="Influenza",
-        )
-        wt.done()
-        print(f"\nResult → {result}")
-        print("Click ▶ Run again in the browser, or Ctrl-C to quit.")
-        wt.wait_for_replay()
+    result = diagnosisConsensus(
+        notes=(
+            "56-year-old woman presents with sudden shortness of breath and right-sided "
+            "pleuritic chest pain for 8 hours. Heart rate 112, blood pressure 128/76, "
+            "oxygen saturation 93% on room air, temperature 37.4 C. She returned from "
+            "a 10-hour flight 2 days ago. History of breast cancer in remission and "
+            "hypertension. Mild swelling and tenderness of the left calf noted on exam. "
+            "No productive cough. Troponin negative. Chest X-ray shows no focal infiltrate. "
+            "D-dimer elevated at 1.8 mg/L FEU."
+        ),
+        diagnosis="Pulmonary embolism",
+    )
+    print(f"\nResult → {result}")
+    if USE_UI:
+        input("ZipperChat is running at http://localhost:8765 . Press Enter to close. ")

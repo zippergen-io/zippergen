@@ -2,9 +2,11 @@
 
 from zippergen.syntax import *     # noqa: F401, F403
 from zippergen.actions import *    # noqa: F401, F403
+from zippergen.backends import *   # noqa: F401, F403
+from zippergen.demo import *       # noqa: F401, F403
 from zippergen.builder import *    # noqa: F401, F403
 from zippergen.projection import * # noqa: F401, F403
 from zippergen.runtime import *    # noqa: F401, F403
-from zippergen import syntax, actions, builder, projection, runtime
+from zippergen import syntax, actions, backends, demo, builder, projection, runtime
 
-__all__ = syntax.__all__ + actions.__all__ + builder.__all__ + projection.__all__ + runtime.__all__
+__all__ = syntax.__all__ + actions.__all__ + backends.__all__ + demo.__all__ + builder.__all__ + projection.__all__ + runtime.__all__
