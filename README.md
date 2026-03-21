@@ -62,7 +62,7 @@ python examples/increment.py
 
 ## See it in action
 
-The `diagnosis` example runs two LLMs through a medical consensus protocol until they agree.
+The `increment` example shows the core DSL on a tiny workflow. The `diagnosis` example is a more realistic LLM coordination scenario: two agents analyze the same case and iterate until they agree.
 
 1. Run it once with the built-in mock backend:
 
