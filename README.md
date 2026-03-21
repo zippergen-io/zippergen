@@ -54,12 +54,6 @@ result = increment(number=1)   # → 4
 
 ZipperGen projects this global protocol onto each agent and runs them in parallel threads.
 
-Run it with ZipperChat to see the live MSC diagram in your browser:
-
-```bash
-python examples/increment.py
-```
-
 ## See it in action
 
 The `increment` example shows the core DSL on a tiny workflow. The `diagnosis` example is a more realistic LLM coordination scenario: two agents analyze the same case and iterate until they agree.
@@ -72,7 +66,7 @@ python examples/diagnosis.py
 
 2. Open **http://localhost:8765**.
 
-ZipperChat will show the agents exchanging messages in real time as a message sequence chart. By default, the example uses the mock backend, so no API key is needed.
+ZipperChat, the browser-based UI for ZipperGen, will show the agents exchanging messages in real time as a message sequence chart. By default, the example uses the mock backend, so no API key is needed.
 
 ![ZipperChat screenshot](assets/zipperchat-screenshot.png)
 
