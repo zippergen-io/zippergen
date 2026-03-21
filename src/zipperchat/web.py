@@ -264,6 +264,7 @@ body {
   height: 44px;
   overflow: hidden;
   flex-shrink: 0;
+  margin-left: 5px;
 }
 .logo-wrap svg { display: block; }
 
@@ -287,6 +288,7 @@ body {
 
 #status {
   margin-left: auto;
+  margin-right: 18px;
   padding: 4px 12px;
   border-radius: 20px;
   background: #efe7d8;
@@ -300,6 +302,7 @@ body {
 /* ── Replay button ───────────────────────────────────────────────────── */
 #replay-btn {
   padding: 6px 16px;
+  margin-right: 18px;
   border-radius: 20px;
   border: 1px solid #C8860A;
   background: transparent;
