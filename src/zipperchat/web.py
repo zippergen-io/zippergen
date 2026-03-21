@@ -429,7 +429,8 @@ body {
   pointer-events: none;
 }
 .trace-toggle {
-  margin-top: 4px;
+  margin-top: 2px;
+  margin-bottom: 5px;
   padding: 0;
   border: 0;
   background: none;
@@ -998,19 +999,20 @@ function _drawArrow(p, dashed) {
   line.setAttribute('x1', x1); line.setAttribute('y1', y);
   line.setAttribute('x2', x2); line.setAttribute('y2', y);
   line.setAttribute('stroke', color);
-  line.setAttribute('stroke-width', '2');
+  line.setAttribute('stroke-width', '2.4');
   if (dashed || p.ctrl) line.setAttribute('stroke-dasharray', '6 4');
   svg.appendChild(line);
 
-  const ah = 8;
-  const pts = `${x2},${y} ${x2 - dir*ah},${y - ah*0.5} ${x2 - dir*ah},${y + ah*0.5}`;
+  const arrowLen = 12;
+  const arrowHalfHeight = 6.0;
+  const pts = `${x2},${y} ${x2 - dir*arrowLen},${y - arrowHalfHeight} ${x2 - dir*arrowLen},${y + arrowHalfHeight}`;
   const arrow = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
   arrow.setAttribute('points', pts);
   arrow.setAttribute('fill', color);
   svg.appendChild(arrow);
 
   const dot = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-  dot.setAttribute('cx', x1); dot.setAttribute('cy', y); dot.setAttribute('r', '4');
+  dot.setAttribute('cx', x1); dot.setAttribute('cy', y); dot.setAttribute('r', '2.75');
   dot.setAttribute('fill', color);
   svg.appendChild(dot);
 }
