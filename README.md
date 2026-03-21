@@ -74,7 +74,7 @@ python examples/diagnosis.py
 
 ZipperChat will show the agents exchanging messages in real time as a message sequence chart. By default, the example uses the mock backend, so no API key is needed.
 
-![ZipperChat screenshot](assets/zipperchat-screenshot.jpg)
+![ZipperChat screenshot](assets/zipperchat-screenshot.png)
 
 ## How it works
 
