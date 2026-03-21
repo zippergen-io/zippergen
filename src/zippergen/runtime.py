@@ -33,8 +33,11 @@ Each event dict has a ``"type"`` key with values:
 from __future__ import annotations
 
 import queue
+import inspect
 import threading
 import time
+import textwrap
+from contextlib import nullcontext
 
 from zippergen.syntax import (
     EmptyStmt, SendStmt, RecvStmt, ActStmt, SkipStmt,
@@ -46,7 +49,7 @@ from zippergen.syntax import (
 )
 from zippergen.projection import project
 
-__all__ = ["run", "mock_llm"]
+__all__ = ["run", "mock_llm", "console_trace", "tee_traces"]
 
 
 # ---------------------------------------------------------------------------
@@ -97,19 +100,119 @@ def _next_act_seq() -> int:
         return seq
 
 
-def _default_trace(event: dict) -> None:
-    name = threading.current_thread().name
+def _format_scalar(value: object) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if value is None:
+        return "null"
+    if isinstance(value, list):
+        return "[" + ", ".join(_format_scalar(v) for v in value) + "]"
+    return str(value)
+
+
+def _format_mapping_lines(mapping: dict[str, object], *, width: int = 88) -> list[str]:
+    lines: list[str] = []
+    for key, value in mapping.items():
+        rendered = _format_scalar(value)
+        wrapped = textwrap.wrap(
+            rendered,
+            width=width,
+            break_long_words=False,
+            break_on_hyphens=False,
+            replace_whitespace=False,
+            drop_whitespace=False,
+        ) or [""]
+        lines.append(f"    {key} = {wrapped[0]}")
+        for extra in wrapped[1:]:
+            lines.append(f"      {extra}")
+    return lines
+
+
+def _format_sequence_lines(values: list[object], *, width: int = 88) -> list[str]:
+    lines: list[str] = []
+    for idx, value in enumerate(values, start=1):
+        if value == "κ_ctrl":
+            continue
+        rendered = _format_scalar(value)
+        wrapped = textwrap.wrap(
+            rendered,
+            width=width,
+            break_long_words=False,
+            break_on_hyphens=False,
+            replace_whitespace=False,
+            drop_whitespace=False,
+        ) or [""]
+        lines.append(f"    [{idx}] = {wrapped[0]}")
+        for extra in wrapped[1:]:
+            lines.append(f"          {extra}")
+    return lines
+
+
+def console_trace(event: dict) -> None:
+    lifeline = event.get("lifeline") or threading.current_thread().name
     t = event["type"]
+    lines: list[str] | None = None
+
     if t == "send":
-        msg = f"send → {event['to']}  {_fmt_vals(event['values'])}"
+        is_ctrl = "κ_ctrl" in (event.get("values") or [])
+        lines = [f"[{lifeline}] {'control' if is_ctrl else 'send'} -> {event['to']}"]
+        payload_lines = _format_sequence_lines(event.get("values") or [])
+        if payload_lines:
+            lines.append("  payload")
+            lines.extend(payload_lines)
+        else:
+            lines.append("  payload")
+            lines.append("    (empty)")
     elif t == "recv":
-        msg = f"recv ← {event['from']}  {event['bindings']}"
+        is_ctrl = bool(event.get("ctrl"))
+        lines = [f"[{lifeline}] {'control' if is_ctrl else 'recv'} <- {event['from']}"]
+        bindings = event.get("bindings") or {}
+        if bindings:
+            lines.append("  bindings")
+            lines.extend(_format_mapping_lines(bindings))
+        else:
+            lines.append("  bindings")
+            lines.append("    (none)")
+    elif t == "act_start":
+        lines = [f"[{lifeline}] --- {event['action']} ---"]
+        inputs = event.get("inputs") or {}
+        if inputs:
+            lines.append("  input")
+            lines.extend(_format_mapping_lines(inputs))
+        else:
+            lines.append("  input")
+            lines.append("    (none)")
     elif t == "act":
-        msg = f"act  {event['action']}({event['inputs']}) → {event['outputs']}"
-    else:
+        lines = [f"[{lifeline}] --- {event['action']} done ---"]
+        outputs = event.get("outputs") or {}
+        if outputs:
+            lines.append("  output")
+            lines.extend(_format_mapping_lines(outputs))
+        else:
+            lines.append("  output")
+            lines.append("    (none)")
+
+    if not lines:
         return
+
     with _print_lock:
-        print(f"  [{name}] {msg}")
+        print("\n".join(lines))
+        if t in {"act_start", "act"}:
+            print()
+
+
+def _default_trace(event: dict) -> None:
+    console_trace(event)
+
+
+def tee_traces(*traces):
+    active = [trace for trace in traces if trace is not None]
+
+    def _trace(event: dict) -> None:
+        for trace in active:
+            trace(event)
+
+    return _trace
 
 
 # ---------------------------------------------------------------------------
@@ -216,6 +319,29 @@ def _bound_dict(bindings: tuple, values: tuple) -> dict:
     }
 
 
+def _call_llm_backend(llm_backend, action, inputs: dict[str, object], lifeline_name: str) -> dict[str, object]:
+    accepts_lifeline = getattr(llm_backend, "_zippergen_accepts_lifeline", None)
+    if accepts_lifeline is None:
+        try:
+            accepts_lifeline = len(inspect.signature(llm_backend).parameters) >= 3
+        except (TypeError, ValueError):
+            accepts_lifeline = False
+        try:
+            setattr(llm_backend, "_zippergen_accepts_lifeline", accepts_lifeline)
+        except (AttributeError, TypeError):
+            pass
+    if accepts_lifeline:
+        return llm_backend(action, inputs, lifeline_name)
+    return llm_backend(action, inputs)
+
+
+def _backend_lock(llm_backend, lifeline_name: str):
+    lock_for = getattr(llm_backend, "_zippergen_lock_for", None)
+    if callable(lock_for):
+        return lock_for(lifeline_name)
+    return getattr(llm_backend, "_zippergen_lock", None)
+
+
 # ---------------------------------------------------------------------------
 # Local-program interpreter
 # ---------------------------------------------------------------------------
@@ -253,26 +379,37 @@ def _exec(stmt: LocalStmt, env: Env, ch: Channels, ns: dict, llm_backend, trace)
             in_vals = tuple(_eval(x, env) for x in ins)
             named_inputs = {name: val for (name, _), val in zip(action.inputs, in_vals)}
             seq = _next_act_seq()
-            if trace:
-                trace({
-                    "type": "act_start",
-                    "lifeline": threading.current_thread().name,
-                    "action": action.name,
-                    "inputs": {k: _jsonify(v) for k, v in named_inputs.items()},
-                    "seq": seq,
-                })
-            if isinstance(action, PureAction):
-                raw = action.fn(*in_vals)
-                if len(outs) == 1:
-                    out_map = {outs[0].name: raw}
-                else:
-                    out_map = {var.name: val for var, val in zip(outs, raw)}
+            lock = _backend_lock(llm_backend, threading.current_thread().name) if not isinstance(action, PureAction) else None
+            if lock is None:
+                lock_ctx = nullcontext()
             else:
-                named_outputs = llm_backend(action, named_inputs)
-                out_map = {
-                    var.name: named_outputs.get(aname)
-                    for (aname, _), var in zip(action.outputs, outs)
-                }
+                lock_ctx = lock
+            with lock_ctx:
+                if trace:
+                    trace({
+                        "type": "act_start",
+                        "lifeline": threading.current_thread().name,
+                        "action": action.name,
+                        "inputs": {k: _jsonify(v) for k, v in named_inputs.items()},
+                        "seq": seq,
+                    })
+                if isinstance(action, PureAction):
+                    raw = action.fn(*in_vals)
+                    if len(outs) == 1:
+                        out_map = {outs[0].name: raw}
+                    else:
+                        out_map = {var.name: val for var, val in zip(outs, raw)}
+                else:
+                    named_outputs = _call_llm_backend(
+                        llm_backend,
+                        action,
+                        named_inputs,
+                        threading.current_thread().name,
+                    )
+                    out_map = {
+                        var.name: named_outputs.get(aname)
+                        for (aname, _), var in zip(action.outputs, outs)
+                    }
             env.update(out_map)
             if trace:
                 trace({
