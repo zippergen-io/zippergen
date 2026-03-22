@@ -238,8 +238,8 @@ _HTML = r"""<!DOCTYPE html>
 body {
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Inter',
                Helvetica, Arial, sans-serif;
-  background: #f6f3eb;
-  color: #24313d;
+  background: #F4F8FC;
+  color: #17324D;
   display: flex;
   flex-direction: column;
   height: calc(100vh / var(--ui-zoom));  /* compensate so body fills exactly the viewport after zoom */
@@ -253,8 +253,8 @@ body {
   gap: 14px;
   padding: 0 20px 0 30px;
   height: 56px;
-  background: #fbf8f2;
-  border-bottom: 1px solid #dccfb9;
+  background: #FFFFFF;
+  border-bottom: 1px solid #D9E2EC;
   flex-shrink: 0;
 }
 
@@ -276,13 +276,13 @@ body {
 .brand-main {
   font-size: 17px;
   font-weight: 700;
-  color: #24313d;
+  color: #17324D;
   letter-spacing: -0.3px;
 }
 .brand-sub {
   font-size: 10px;
   font-weight: 500;
-  color: #7b6f61;
+  color: #64748B;
   letter-spacing: 0.5px;
 }
 
@@ -291,13 +291,13 @@ body {
   margin-right: 18px;
   padding: 4px 12px;
   border-radius: 20px;
-  background: #efe7d8;
-  color: #7b6f61;
+  background: #EEF2F7;
+  color: #64748B;
   font-size: 12px;
   font-weight: 500;
 }
-#status.running { background: #e3f3e8; color: #177245; }
-#status.done    { background: #e4eefb; color: #215ea6; }
+#status.running { background: #E2F0F5; color: #4A6D87; }
+#status.done    { background: #E8F0F8; color: #17324D; }
 
 /* ── Replay button ───────────────────────────────────────────────────── */
 #replay-btn {
@@ -338,11 +338,11 @@ body {
   column-gap: 0;
   padding-top: 24px;
   padding-bottom: 4px;  /* covers the gap between header and first event row */
-  background: #f6f3eb;
+  background: #F4F8FC;
 }
 #container::-webkit-scrollbar { width: 6px; }
 #container::-webkit-scrollbar-track { background: transparent; }
-#container::-webkit-scrollbar-thumb { background: #c9bda9; border-radius: 3px; }
+#container::-webkit-scrollbar-thumb { background: #B0C4D8; border-radius: 3px; }
 
 /* ── Diagram column (events only) ────────────────────────────────────── */
 #diagram {
@@ -355,15 +355,15 @@ body {
 .ll-header {
   padding: 9px 16px;
   border-radius: 10px 10px 0 0;
-  border: 1px solid #d8cfbf;
+  border: 1px solid #D9E2EC;
   border-bottom: 2px solid;  /* accent border, set per column */
   text-align: center;
   font-weight: 700;
   font-size: 13px;
   margin: 0 3px 10px;
   letter-spacing: 0.2px;
-  background: rgba(255, 252, 246, 0.9);
-  box-shadow: 0 1px 0 rgba(120, 97, 64, 0.04);
+  background: rgba(255, 255, 255, 0.92);
+  box-shadow: 0 1px 0 rgba(23, 50, 77, 0.04);
 }
 
 /* ── Act row cells ────────────────────────────────────────────────────── */
@@ -381,38 +381,41 @@ body {
 .act-box {
   width: 100%;
   max-width: 230px;
-  background: #fffdfa;
-  border: 1px solid #d8cfbf;
-  border-left: 3px solid;   /* accent, set per column */
-  border-radius: 7px;
+  background: #FFFFFF;
+  border: 1px solid #D9E2EC;
+  border-left: 2px solid;   /* accent, set per column */
+  border-radius: 5px;
   padding: 8px 11px;
   animation: fadein 0.18s ease;
-  box-shadow: 0 6px 16px rgba(84, 63, 37, 0.08);
+  box-shadow: 0 4px 14px rgba(23, 50, 77, 0.07);
 }
 .act-name {
   font-size: 13px;
   font-weight: 600;
-  margin-bottom: 4px;
-  color: #24313d;
+  margin-bottom: 5px;
+  color: #17324D;
 }
 .act-in {
-  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
-  font-size: 10px;
-  color: #62584d;
+  font-size: 11px;
+  color: #64748B;
   line-height: 1.5;
-  word-break: break-all;
+  word-break: break-word;
   white-space: pre-line;
 }
 .act-out {
-  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
-  font-size: 10px;
-  color: #177245;
+  font-size: 11px;
+  color: #2E7D53;
   line-height: 1.5;
-  word-break: break-all;
+  word-break: break-word;
   white-space: pre-line;
 }
 .expandable {
-  margin-top: 2px;
+  margin-top: 3px;
+}
+.expandable + .expandable {
+  margin-top: 5px;
+  padding-top: 5px;
+  border-top: 1px solid #EEF2F7;
 }
 .expandable-text {
   position: relative;
@@ -428,7 +431,7 @@ body {
   right: 0;
   bottom: 0;
   height: 1.8em;
-  background: linear-gradient(to bottom, rgba(255,253,250,0), #fffdfa 88%);
+  background: linear-gradient(to bottom, rgba(255,255,255,0), #ffffff 88%);
   pointer-events: none;
 }
 .trace-toggle {
@@ -437,13 +440,13 @@ body {
   padding: 0;
   border: 0;
   background: none;
-  color: #215ea6;
+  color: #4A6D87;
   font-size: 10px;
   font-weight: 600;
   cursor: pointer;
 }
 .trace-toggle:hover {
-  color: #17497f;
+  color: #17324D;
 }
 
 /* ── Act row wrapper ──────────────────────────────────────────────────── */
@@ -479,15 +482,15 @@ body {
 
 /* ── Message box (send or recv) ──────────────────────────────────────── */
 .msg-box {
-  background: #fffdfa;
-  border: 1px solid #d8cfbf;
-  border-left: 3px solid;  /* accent color set inline */
-  border-radius: 7px;
+  background: #FFFFFF;
+  border: 1px solid #D9E2EC;
+  border-left: 2px solid;  /* accent color set inline */
+  border-radius: 5px;
   padding: 7px 11px;
   font-size: 11px;
   max-width: 180px;
   min-width: 60px;
-  box-shadow: 0 6px 16px rgba(84, 63, 37, 0.07);
+  box-shadow: 0 4px 14px rgba(23, 50, 77, 0.06);
 }
 .msg-box .msg-label {
   font-size: 10px;
@@ -498,13 +501,14 @@ body {
   opacity: 0.7;
 }
 .msg-box .msg-vals {
-  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
-  font-size: 10px;
-  color: #3b4753;
-  word-break: break-all;
-  line-height: 1.4;
-  white-space: pre-line;
+  font-size: 11px;
+  color: #17324D;
+  word-break: break-word;
+  line-height: 1.6;
 }
+.msg-vals .vn { color: #64748B; font-size: 10.5px; }
+.msg-vals .vs { color: #C8D8E8; }
+.msg-vals .vb { color: #C8D8E8; user-select: none; }
 
 /* ── SVG arrow overlay ───────────────────────────────────────────────── */
 .msg-row svg {
@@ -585,11 +589,11 @@ body {
 <script>
 // ── Column palette ─────────────────────────────────────────────────────
 const COLS = [
-  { bg: 'rgba(71, 125, 209, 0.08)', accent: '#2c6cc9', text: '#2b4c7e' },
-  { bg: 'rgba(52, 145, 92, 0.08)',  accent: '#2a8b57', text: '#205d3e' },
-  { bg: 'rgba(132, 95, 204, 0.08)', accent: '#7851c6', text: '#55318d' },
-  { bg: 'rgba(207, 138, 44, 0.08)', accent: '#c8860a', text: '#8b5b08' },
-  { bg: 'rgba(194, 82, 112, 0.08)', accent: '#c25270', text: '#8c3148' },
+  { bg: 'rgba(23,  50,  77,  0.07)', accent: '#17324D', text: '#17324D' },
+  { bg: 'rgba(74,  109, 135, 0.09)', accent: '#4A6D87', text: '#3A5A72' },
+  { bg: 'rgba(168, 121, 42,  0.08)', accent: '#A8792A', text: '#8B6020' },
+  { bg: 'rgba(46,  125, 83,  0.08)', accent: '#2E7D53', text: '#235E3F' },
+  { bg: 'rgba(46,  91,  122, 0.08)', accent: '#2E5B7A', text: '#2E5B7A' },
 ];
 
 // ── State ──────────────────────────────────────────────────────────────
@@ -644,6 +648,26 @@ function fmtDict(d, truncateStrings = true) {
 
 function fmtList(arr, truncateStrings = true) {
   return (arr || []).map(v => fmt(v, truncateStrings)).filter(x => x !== null).join('\n');
+}
+
+function esc(s) {
+  return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+}
+
+function fmtDictHtml(d) {
+  const lines = Object.entries(d).map(([k, v]) => {
+    const s = fmt(v);
+    if (s === null) return null;
+    return `<span class="vn">${esc(k)}</span><span class="vs"> = </span>${esc(s)}`;
+  }).filter(Boolean);
+  return lines.length ? lines.join('<br>') : null;
+}
+
+function fmtListHtml(arr) {
+  const parts = (arr || []).map(v => fmt(v)).filter(x => x !== null);
+  if (!parts.length) return null;
+  if (parts.length === 1) return esc(parts[0]);
+  return parts.map(s => `<span class="vb">·</span> ${esc(s)}`).join('<br>');
 }
 
 function isCtrlVals(vals) {
@@ -848,7 +872,7 @@ function handleActStart(ev) {
 
   const inStr = fmtDict(ev.inputs || {}, false);
   if (inStr) {
-    box.appendChild(makeExpandableText('act-in', '← ' + inStr));
+    box.appendChild(makeExpandableText('act-in', inStr));
   }
 
   r.cells[i].appendChild(box);
@@ -866,7 +890,7 @@ function handleAct(ev) {
 
   const outStr = fmtDict(ev.outputs || {}, false);
   if (outStr) {
-    box.appendChild(makeExpandableText('act-out', '→ ' + outStr));
+    box.appendChild(makeExpandableText('act-out', outStr));
   }
   scrollDown();
 }
@@ -886,7 +910,7 @@ function makeBox(label, text, color) {
   if (text) {
     const vals = document.createElement('div');
     vals.className = 'msg-vals';
-    vals.textContent = text;
+    vals.innerHTML = text;
     box.appendChild(vals);
   }
   return box;
@@ -913,7 +937,10 @@ function handleSend(ev) {
     return cell;
   });
 
-  r.cells[fromIdx].appendChild(makeBox('send', fmtList(ev.values) || null, color));
+  const sendContent = ctrl
+    ? fmtDictHtml({branch: ev.values[0]})
+    : fmtDictHtml(ev.bindings || {});
+  r.cells[fromIdx].appendChild(makeBox('send', sendContent, color));
   const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
   wrapper.appendChild(svg);
   r.svg = svg;
@@ -951,7 +978,7 @@ function handleRecv(ev) {
 
   // Fill in recv box (arrow is redrawn by syncOrder → redrawAll)
   r.cells[r.toIdx].appendChild(
-    makeBox('recv', fmtDict(ev.bindings || {}) || null, col(r.toIdx).accent));
+    makeBox('recv', fmtDictHtml(ev.bindings || {}), col(r.toIdx).accent));
 
   // Register recv event on to-lifeline (may raise level of later rows)
   materializeOnLifeline(ev.to, r);
@@ -1014,10 +1041,6 @@ function _drawArrow(p, dashed) {
   arrow.setAttribute('fill', color);
   svg.appendChild(arrow);
 
-  const dot = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-  dot.setAttribute('cx', x1); dot.setAttribute('cy', y); dot.setAttribute('r', '2.75');
-  dot.setAttribute('fill', color);
-  svg.appendChild(dot);
 }
 
 // ── Redraw all arrows on zoom / resize ────────────────────────────────

@@ -357,10 +357,12 @@ def _exec(stmt: LocalStmt, env: Env, ch: Channels, ns: dict, llm_backend, trace)
             values = tuple(_eval(x, env) for x in xs)
             seq = ch[(A.name, B.name)].put(values)
             if trace:
+                names = [x.var.name if isinstance(x, VarExpr) else f"_{i}" for i, x in enumerate(xs)]
                 trace({
                     "type": "send",
                     "from": A.name, "to": B.name,
                     "values": [_jsonify(v) for v in values],
+                    "bindings": {name: _jsonify(v) for name, v in zip(names, values)},
                     "seq": seq,
                 })
 
