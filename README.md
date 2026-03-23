@@ -99,8 +99,6 @@ def diagnosisConsensus(notes: str @ User, diagnosis: str @ User) -> str:
         with LLM1:
             agreed = checkAgreement(verdict, other_verdict)
             trials = incTrials(trials)
-    else:                                              # runs once on loop exit
-        LLM1(verdict, reason) >> LLM2(other_verdict, other_reason)
 
     # Final result computed by LLM1, returned to User
     LLM1: result = chooseResult(verdict, agreed)
