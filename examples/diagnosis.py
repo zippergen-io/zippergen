@@ -130,8 +130,6 @@ def diagnosisConsensus(notes: str @ User, diagnosis: str @ User) -> str:
         with LLM1:
             agreed = checkAgreement(verdict, other_verdict)
             trials = incTrials(trials)
-    else:
-        LLM1(verdict, reason) >> LLM2(other_verdict, other_reason)
 
     # Final result computed by LLM1, sent to User
     LLM1: result = chooseResult(verdict, agreed)
@@ -143,7 +141,8 @@ if __name__ == "__main__":
     USE_UI = True
 
     diagnosisConsensus.configure(
-        llms={"LLM1": "mistral", "LLM2": "openai"},
+        # llms={"LLM1": "mistral", "LLM2": "openai"},
+        llms="mock",
         ui=USE_UI,
         timeout=600,
     )
