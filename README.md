@@ -1,8 +1,10 @@
 # ZipperGen
 
-**Zip** (our mascot) literally keeps your agents in line. ZipperGen is a Python DSL and runtime for structured multi-agent LLM coordination, grounded in the theory of Message Sequence Charts. You write a single global protocol; ZipperGen projects it onto each agent and runs them concurrently.
+**Zip** (our mascot) literally keeps your agents in line.
 
-If you just want to try it, start with the examples below. If you want the formal model behind the framework, see the forthcoming paper.
+ZipperGen is a Python DSL and runtime for structured multi-agent LLM coordination. You write a single **global protocol** — who sends what to whom, who runs which LLM, who owns each decision. ZipperGen projects it onto each agent automatically and runs them concurrently.
+
+Because coordination is derived by projection rather than left to each agent, the global protocol is also a complete audit trail — and **deadlock is impossible by construction**.
 
 ## Quick start
 
@@ -12,18 +14,18 @@ cd zippergen
 pip install -e .
 ```
 
-Python 3.11 or later required.
+Python 3.11 or later required. No external dependencies — stdlib only.
 
 ## Hello, World!
 
-Here is a small ZipperGen program. `User` sends a number to `Compute`, `Compute` increments it and doubles it, and the result is returned to the caller:
+`User` sends a number to `Compute`, which increments and doubles it:
 
 ```python
 from zippergen.syntax import Lifeline, Var
 from zippergen.actions import pure
 from zippergen.builder import workflow
 
-User  = Lifeline("User")
+User    = Lifeline("User")
 Compute = Lifeline("Compute")
 
 number = Var("number", int)
@@ -56,25 +58,76 @@ ZipperGen projects this global protocol onto each agent and runs them in paralle
 
 ## See it in action
 
-The `increment` example shows the core DSL on a tiny workflow. The `diagnosis` example is a more realistic LLM coordination scenario: two agents analyze the same case and iterate until they agree.
+Two examples ship with the repo. Both work out of the box with the built-in mock backend — no API key needed.
 
-1. Run it once with the built-in mock backend:
+### Medical diagnosis consensus (`examples/diagnosis.py`)
+
+Two LLM agents independently assess a case, then iterate until they agree or a round limit is reached:
 
 ```bash
 python examples/diagnosis.py
 ```
 
-2. Open **http://localhost:8765**.
-
-ZipperChat, the browser-based UI for ZipperGen, will show the agents exchanging messages in real time as a message sequence chart. By default, the example uses the mock backend, so no API key is needed.
+Open **http://localhost:8765** to watch the agents exchange messages in real time as a message sequence chart.
 
 ![ZipperChat screenshot](assets/zipperchat-screenshot.png)
 
+### Contract review (`examples/contract_review.py`)
+
+Four agents collaborate to review a contract for legal risks. Three specialists analyse in parallel; an Orchestrator consolidates their findings and decides whether to escalate to a deeper review:
+
+```bash
+python examples/contract_review.py
+```
+
+```python
+@workflow
+def contractReview(contract: str @ User) -> str:
+    # Phase 1: distribute contract to all specialists
+    User(contract) >> Jurisdiction(contract)
+    User(contract) >> Liability(contract)
+    User(contract) >> Confidentiality(contract)
+
+    # Phase 2: independent specialist analysis (concurrent)
+    Jurisdiction:    (j_issues, j_critical)   = analyze_jurisdiction(contract)
+    Liability:       (l_issues, l_critical)   = analyze_liability(contract)
+    Confidentiality: (cf_issues, cf_critical) = analyze_confidentiality(contract)
+
+    # Phase 3: specialists report to Orchestrator
+    Jurisdiction(j_issues, j_critical)      >> Orchestrator(j_issues, j_critical)
+    Liability(l_issues, l_critical)         >> Orchestrator(l_issues, l_critical)
+    Confidentiality(cf_issues, cf_critical) >> Orchestrator(cf_issues, cf_critical)
+
+    # Phase 4: consolidate and decide whether to escalate
+    Orchestrator: (critical_found, summary) = consolidate(...)
+
+    # Phase 5: conditional deep review
+    if critical_found @ Orchestrator:
+        Orchestrator(summary) >> Jurisdiction(context)
+        Orchestrator(summary) >> Liability(context)
+        Orchestrator(summary) >> Confidentiality(context)
+
+        Jurisdiction:    j_deep  = deep_review(contract, j_issues, context)
+        Liability:       l_deep  = deep_review(contract, l_issues, context)
+        Confidentiality: cf_deep = deep_review(contract, cf_issues, context)
+
+        Jurisdiction(j_deep)     >> Orchestrator(j_deep)
+        Liability(l_deep)        >> Orchestrator(l_deep)
+        Confidentiality(cf_deep) >> Orchestrator(cf_deep)
+
+        Orchestrator: report = final_report_critical(summary, j_deep, l_deep, cf_deep)
+    else:
+        Orchestrator: report = standard_report(summary)
+
+    Orchestrator(report) >> User(report)
+    return report @ User
+```
+
+The escalation path is explicit in the protocol — the `if critical_found @ Orchestrator` branch is the only way a deep review can be triggered, and that decision is owned and broadcast by the Orchestrator.
+
 ## How it works
 
-ZipperGen programs are *global coordination protocols*: you describe what messages flow between which agents and who owns each decision. ZipperGen then projects the global protocol onto per-agent local programs and executes them in parallel threads with FIFO message queues.
-
-The key research idea is that coordination is written once, globally, and then compiled into local behavior. In the formal model, this gives a deadlock-freedom guarantee by construction.
+ZipperGen programs are *global coordination protocols*: you describe what messages flow between which agents and who owns each decision. ZipperGen projects the global protocol onto per-agent local programs and executes them in parallel threads with FIFO message queues.
 
 Here is the full diagnosis protocol — two LLMs iterate until they agree on a verdict, or a round limit is reached:
 
@@ -108,18 +161,9 @@ def diagnosisConsensus(notes: str @ User, diagnosis: str @ User) -> str:
 
 The `@ LLM1` annotation mirrors the paper's notation `c@B`: it tells ZipperGen which agent evaluates the condition and broadcasts control messages to the others.
 
-The formal foundation is developed in the forthcoming paper *"Provable Coordination for LLM Agents via Message Sequence Charts"*.
-
 ## Defining LLM actions
 
-Prompts are defined directly on Python functions with `@llm`. You specify:
-
-- `system`: the role or instruction for the model
-- `user`: the user prompt template
-- `parse`: how the response should be parsed
-- `outputs`: the expected output fields and their Python types
-
-For example:
+Prompts are defined directly on Python functions with `@llm`:
 
 ```python
 @llm(
@@ -134,50 +178,30 @@ For example:
 def assess(notes: str, diag: str) -> None: ...
 ```
 
-Here, `notes` and `diag` are inserted into the prompt template, and ZipperGen expects the model to return a JSON object with exactly the keys `verdict` and `reason`. The returned values are validated against the declared Python types.
+- `parse="json"` — ZipperGen appends a type-annotated JSON instruction to the prompt and validates the response against the declared output types.
+- `parse="text"` — single `str` output, returned as plain text.
+- `parse="bool"` — single `bool` output, model replies `true` or `false`.
 
 ## Using real LLMs
 
-The simplest way is:
+The simplest way is to export your API key and set `llms=` in `configure()`.
 
-1. Export your API key.
-2. Change the `diagnosisConsensus.configure(...)` call in `examples/diagnosis.py` from `llms="mock"` to `llms=...`, or use the same call pattern in your own script.
-3. Call the workflow like a normal Python function.
-
-Built-in provider names are:
-
-- `"openai"`
-- `"mistral"`
-- `"claude"` (alias: `"anthropic"`)
-
-Example: both agents on OpenAI
+**All agents on the same provider:**
 
 ```bash
 export OPENAI_API_KEY=...
-python examples/diagnosis.py
 ```
-
-Set the workflow configuration to:
 
 ```python
-diagnosisConsensus.configure(
-    llms="openai",
-    ui=True,
-    timeout=600,
-)
-
-result = diagnosisConsensus(notes="...", diagnosis="...")
+diagnosisConsensus.configure(llms="openai", ui=True, timeout=600)
 ```
 
-Example: one agent on Mistral, one on OpenAI
+**Different providers per agent:**
 
 ```bash
 export MISTRAL_API_KEY=...
 export OPENAI_API_KEY=...
-python examples/diagnosis.py
 ```
-
-Set the workflow configuration to:
 
 ```python
 diagnosisConsensus.configure(
@@ -187,35 +211,25 @@ diagnosisConsensus.configure(
 )
 ```
 
-Example: one agent on Claude, one on OpenAI
-
-```bash
-export ANTHROPIC_API_KEY=...
-export OPENAI_API_KEY=...
-python examples/diagnosis.py
-```
-
-Set the workflow configuration to:
+**Different API keys per agent** (useful for parallel rate limits):
 
 ```python
-diagnosisConsensus.configure(
-    llms={"LLM1": "claude", "LLM2": "openai"},
-    ui=True,
+from zippergen.backends import make_openai_backend
+
+contractReview.configure(
+    llms={
+        "Jurisdiction":    make_openai_backend(api_key="sk-..."),
+        "Liability":       make_openai_backend(api_key="sk-..."),
+        "Confidentiality": make_openai_backend(api_key="sk-..."),
+        "Orchestrator":    "mistral",
+    },
     timeout=600,
 )
 ```
 
-You can also turn the UI off:
+Built-in provider names: `"openai"`, `"mistral"`, `"claude"` (alias: `"anthropic"`).
 
-```python
-diagnosisConsensus.configure(
-    llms="openai",
-    ui=False,
-)
-result = diagnosisConsensus(notes="...", diagnosis="...")
-```
-
-The built-in backends read these optional environment variables:
+The built-in backends read these environment variables:
 
 | Variable | Default |
 |---|---|
@@ -224,14 +238,21 @@ The built-in backends read these optional environment variables:
 | `MISTRAL_API_KEY` | — |
 | `MISTRAL_MODEL` | `mistral-small-latest` |
 | `ANTHROPIC_API_KEY` | — |
-| `ANTHROPIC_MODEL` | `claude-sonnet-4-5` |
+| `ANTHROPIC_MODEL` | `claude-sonnet-4-6` |
 
-If you want full manual control, you can still pass a backend callable yourself:
+**Custom backend:**
 
 ```python
 def my_backend(action, inputs):
-    # action.system_prompt, action.user_prompt, action.outputs are available
+    # action.system_prompt, action.user_prompt, action.outputs available
     return {"verdict": True, "reason": "..."}
 
 my_workflow.configure(backend=my_backend, timeout=60)
 ```
+
+## Formal foundation
+
+The implementation is grounded in the theory of Message Sequence Charts. The key properties:
+
+- **Correctness** — The distributed projected programs produce exactly the same behaviors as the global program.
+- **Deadlock-freedom** — Follows by structural induction; no runtime checking required.

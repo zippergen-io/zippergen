@@ -55,7 +55,12 @@ def _retry_json_request(req: request.Request, *, timeout: float, max_retries: in
         except HTTPError as exc:
             detail = exc.read().decode("utf-8", errors="replace")
             if exc.code in {429, 500, 502, 503, 504} and attempt < max_retries:
-                time.sleep(1.0 + attempt)
+                retry_after = exc.headers.get("Retry-After") if exc.headers else None
+                try:
+                    delay = float(retry_after) if retry_after else (1.0 + attempt)
+                except ValueError:
+                    delay = 1.0 + attempt
+                time.sleep(delay)
                 continue
             raise RuntimeError(f"API error: {detail}") from exc
         except URLError as exc:
@@ -66,11 +71,15 @@ def _retry_json_request(req: request.Request, *, timeout: float, max_retries: in
     raise RuntimeError("Unreachable.")
 
 
+_TYPE_NAMES = {bool: "boolean (true or false)", str: "string", int: "integer", float: "number"}
+
+
 def _json_instruction(action) -> str:
-    return (
-        "Return only valid JSON with exactly these keys: "
-        + ", ".join(name for name, _ in action.outputs)
+    fields = ", ".join(
+        f"{name} ({_TYPE_NAMES.get(t, t.__name__)})"
+        for name, t in action.outputs
     )
+    return "Return only valid JSON with exactly these keys: " + fields
 
 
 def _short_content(content: str, limit: int = 220) -> str:
@@ -180,8 +189,9 @@ def make_mistral_backend(
     api_key: str,
     model: str = "mistral-small-latest",
     temperature: float = 0.2,
-    timeout: float = 60.0,
-    max_retries: int = 2,
+    max_tokens: int = 2048,
+    timeout: float = 90.0,
+    max_retries: int = 3,
 ) -> Callable:
     """Return a Mistral backend callable compatible with ``Workflow.configure``."""
 
@@ -190,6 +200,7 @@ def make_mistral_backend(
         payload: dict = {
             "model": model,
             "temperature": temperature,
+            "max_tokens": max_tokens,
             "messages": messages,
         }
         if use_json:
@@ -209,7 +220,6 @@ def make_mistral_backend(
             raise RuntimeError(f"Unexpected Mistral response content: {content!r}")
         return _parse_response(action, content)
 
-    backend._zippergen_lock = threading.Lock()  # type: ignore[attr-defined]
     return backend
 
 
@@ -218,8 +228,9 @@ def make_openai_backend(
     api_key: str,
     model: str = "gpt-4o-mini",
     temperature: float = 0.2,
-    timeout: float = 60.0,
-    max_retries: int = 2,
+    max_tokens: int = 2048,
+    timeout: float = 90.0,
+    max_retries: int = 3,
 ) -> Callable:
     """Return an OpenAI backend callable compatible with ``Workflow.configure``."""
 
@@ -228,6 +239,7 @@ def make_openai_backend(
         payload: dict = {
             "model": model,
             "temperature": temperature,
+            "max_tokens": max_tokens,
             "messages": messages,
         }
         if use_json:
@@ -247,17 +259,16 @@ def make_openai_backend(
             raise RuntimeError(f"Unexpected OpenAI response content: {content!r}")
         return _parse_response(action, content)
 
-    backend._zippergen_lock = threading.Lock()  # type: ignore[attr-defined]
     return backend
 
 
 def make_anthropic_backend(
     *,
     api_key: str,
-    model: str = "claude-sonnet-4-5",
+    model: str = "claude-sonnet-4-6",
     max_tokens: int = 1024,
-    timeout: float = 60.0,
-    max_retries: int = 2,
+    timeout: float = 90.0,
+    max_retries: int = 3,
 ) -> Callable:
     """Return an Anthropic Claude backend callable compatible with ``Workflow.configure``."""
 
@@ -295,26 +306,22 @@ def make_anthropic_backend(
             raise RuntimeError(f"Unexpected Anthropic response content: {content_blocks!r}")
         return _parse_response(action, "\n".join(text_parts))
 
-    backend._zippergen_lock = threading.Lock()  # type: ignore[attr-defined]
     return backend
 
 
 def make_lifeline_router(backends: dict[str, Callable]) -> Callable:
-    """Route LLM calls by lifeline name."""
+    """Route LLM calls to the backend registered for the calling lifeline.
 
-    def backend(action, inputs: dict[str, object], lifeline_name: str) -> dict[str, object]:
+    The calling lifeline is identified by the current thread name, which the
+    runtime sets to the lifeline name when it creates each thread.
+    """
+
+    def backend(action, inputs: dict[str, object]) -> dict[str, object]:
+        lifeline_name = threading.current_thread().name
         if lifeline_name not in backends:
             raise RuntimeError(f"No backend configured for lifeline {lifeline_name!r}.")
         return backends[lifeline_name](action, inputs)
 
-    def lock_for(lifeline_name: str):
-        target = backends.get(lifeline_name)
-        if target is None:
-            return None
-        return getattr(target, "_zippergen_lock", None)
-
-    backend._zippergen_accepts_lifeline = True  # type: ignore[attr-defined]
-    backend._zippergen_lock_for = lock_for      # type: ignore[attr-defined]
     return backend
 
 
@@ -334,7 +341,7 @@ def _backend_from_env(provider: str) -> tuple[Callable, str]:
         return make_openai_backend(api_key=api_key, model=model), f"OpenAI ({model})"
     if provider in {"anthropic", "claude"}:
         api_key = os.environ.get("ANTHROPIC_API_KEY")
-        model = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-5")
+        model = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-6")
         if not api_key:
             raise RuntimeError("ANTHROPIC_API_KEY is not set.")
         return make_anthropic_backend(api_key=api_key, model=model), f"Claude ({model})"
@@ -342,25 +349,31 @@ def _backend_from_env(provider: str) -> tuple[Callable, str]:
 
 
 def router_from_env(
-    routes: dict[str, str],
+    routes: dict[str, str | Callable],
     *,
     fallback: Callable | None = None,
     fallback_label: str = "mock LLM",
 ) -> tuple[Callable, str]:
-    """Build a per-lifeline backend router from env-configured providers."""
+    """Build a per-lifeline backend router from env-configured providers.
+
+    Values in ``routes`` can be a provider name string (``"openai"``,
+    ``"mistral"``, ``"anthropic"``) or a pre-built backend callable
+    (e.g. ``make_mistral_backend(api_key=...)``).
+    """
 
     if not routes:
         if fallback is None:
             raise RuntimeError("No routes configured.")
         return fallback, fallback_label
 
-    shared_backends: dict[str, tuple[Callable, str]] = {}
     built_backends: dict[str, Callable] = {}
     labels: list[str] = []
     for lifeline_name, provider in routes.items():
-        provider_key = provider.lower()
-        if provider_key not in shared_backends:
-            shared_backends[provider_key] = _backend_from_env(provider_key)
-        built_backends[lifeline_name], label = shared_backends[provider_key]
-        labels.append(f"{lifeline_name}={label}")
+        if callable(provider):
+            built_backends[lifeline_name] = provider
+            labels.append(f"{lifeline_name}=custom")
+        else:
+            backend, label = _backend_from_env(provider.lower())
+            built_backends[lifeline_name] = backend
+            labels.append(f"{lifeline_name}={label}")
     return make_lifeline_router(built_backends), ", ".join(labels)

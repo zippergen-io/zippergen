@@ -36,7 +36,7 @@ annotations to make this intent explicit.
 from __future__ import annotations
 
 import threading
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Union
 
@@ -416,7 +416,7 @@ class Workflow:
                   backend: object = None,
                   trace:   object = None,
                   timeout: float  = 60.0,
-                  llms: str | Mapping[str, str] | None = None,
+                  llms: str | Mapping[str, str | Callable] | None = None,
                   ui: bool | None = None,
                   mock_delay: tuple[float, float] = (1.0, 2.0)) -> Workflow:
         """Configure runtime parameters and return self for chaining.
@@ -441,11 +441,12 @@ class Workflow:
             from zippergen.runtime import mock_llm
 
             if llms == "mock":
-                routes: dict[str, str] = {}
+                routes: dict[str, object] = {}
             elif isinstance(llms, str):
                 routes = {lifeline.name: llms for lifeline in lifelines}
             else:
-                routes = {str(k): str(v) for k, v in llms.items()}
+                # Values may be provider name strings OR pre-built backend callables.
+                routes = {str(k): v for k, v in llms.items()}
 
             built_backend, _label = router_from_env(
                 routes,
