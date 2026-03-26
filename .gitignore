@@ -40,3 +40,6 @@ Thumbs.db
 # Docs build
 docs/_build/
 CLAUDE.md
+
+# Work in progress examples
+examples/email_writer.py
