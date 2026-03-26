@@ -33,17 +33,15 @@ Each event dict has a ``"type"`` key with values:
 from __future__ import annotations
 
 import queue
-import inspect
 import threading
 import time
 import textwrap
-from contextlib import nullcontext
 
 from zippergen.syntax import (
     EmptyStmt, SendStmt, RecvStmt, ActStmt, SkipStmt,
     SeqStmt, IfStmt, WhileStmt, IfRecvStmt, WhileRecvStmt,
     VarExpr, LitExpr, Var,
-    LLMAction, PureAction,
+    PureAction,
     Lifeline, Workflow, LocalStmt,
     kappa_ctrl,
 )
@@ -233,8 +231,15 @@ class _SeqQueue:
         self._q.put((seq, values))
         return seq
 
-    def get(self) -> tuple[int, tuple]:
-        return self._q.get()
+    def get(self, *, stop: threading.Event | None = None) -> tuple[int, tuple]:
+        if stop is None:
+            return self._q.get()
+        while True:
+            try:
+                return self._q.get(timeout=0.5)
+            except queue.Empty:
+                if stop.is_set():
+                    raise RuntimeError("Workflow cancelled: another lifeline failed")
 
 
 Channels = dict[tuple[str, str], _SeqQueue]
@@ -319,34 +324,13 @@ def _bound_dict(bindings: tuple, values: tuple) -> dict:
     }
 
 
-def _call_llm_backend(llm_backend, action, inputs: dict[str, object], lifeline_name: str) -> dict[str, object]:
-    accepts_lifeline = getattr(llm_backend, "_zippergen_accepts_lifeline", None)
-    if accepts_lifeline is None:
-        try:
-            accepts_lifeline = len(inspect.signature(llm_backend).parameters) >= 3
-        except (TypeError, ValueError):
-            accepts_lifeline = False
-        try:
-            setattr(llm_backend, "_zippergen_accepts_lifeline", accepts_lifeline)
-        except (AttributeError, TypeError):
-            pass
-    if accepts_lifeline:
-        return llm_backend(action, inputs, lifeline_name)
-    return llm_backend(action, inputs)
-
-
-def _backend_lock(llm_backend, lifeline_name: str):
-    lock_for = getattr(llm_backend, "_zippergen_lock_for", None)
-    if callable(lock_for):
-        return lock_for(lifeline_name)
-    return getattr(llm_backend, "_zippergen_lock", None)
-
 
 # ---------------------------------------------------------------------------
 # Local-program interpreter
 # ---------------------------------------------------------------------------
 
-def _exec(stmt: LocalStmt, env: Env, ch: Channels, ns: dict, llm_backend, trace) -> None:
+def _exec(stmt: LocalStmt, env: Env, ch: Channels, ns: dict, llm_backend, trace,
+          stop: threading.Event | None = None) -> None:
     """Execute a LocalStmt, updating env in place."""
     match stmt:
 
@@ -367,7 +351,7 @@ def _exec(stmt: LocalStmt, env: Env, ch: Channels, ns: dict, llm_backend, trace)
                 })
 
         case RecvStmt(lifeline=A, bindings=ys, sender=B):
-            seq, values = ch[(B.name, A.name)].get()
+            seq, values = ch[(B.name, A.name)].get(stop=stop)
             _bind(ys, values, env)
             if trace:
                 trace({
@@ -381,37 +365,25 @@ def _exec(stmt: LocalStmt, env: Env, ch: Channels, ns: dict, llm_backend, trace)
             in_vals = tuple(_eval(x, env) for x in ins)
             named_inputs = {name: val for (name, _), val in zip(action.inputs, in_vals)}
             seq = _next_act_seq()
-            lock = _backend_lock(llm_backend, threading.current_thread().name) if not isinstance(action, PureAction) else None
-            if lock is None:
-                lock_ctx = nullcontext()
+            if trace:
+                trace({
+                    "type": "act_start",
+                    "lifeline": threading.current_thread().name,
+                    "action": action.name,
+                    "inputs": {k: _jsonify(v) for k, v in named_inputs.items()},
+                    "seq": seq,
+                })
+            if isinstance(action, PureAction):
+                raw = action.fn(*in_vals)
+                out_map = {outs[0].name: raw} if len(outs) == 1 else {
+                    var.name: val for var, val in zip(outs, raw)
+                }
             else:
-                lock_ctx = lock
-            with lock_ctx:
-                if trace:
-                    trace({
-                        "type": "act_start",
-                        "lifeline": threading.current_thread().name,
-                        "action": action.name,
-                        "inputs": {k: _jsonify(v) for k, v in named_inputs.items()},
-                        "seq": seq,
-                    })
-                if isinstance(action, PureAction):
-                    raw = action.fn(*in_vals)
-                    if len(outs) == 1:
-                        out_map = {outs[0].name: raw}
-                    else:
-                        out_map = {var.name: val for var, val in zip(outs, raw)}
-                else:
-                    named_outputs = _call_llm_backend(
-                        llm_backend,
-                        action,
-                        named_inputs,
-                        threading.current_thread().name,
-                    )
-                    out_map = {
-                        var.name: named_outputs.get(aname)
-                        for (aname, _), var in zip(action.outputs, outs)
-                    }
+                named_outputs = llm_backend(action, named_inputs)
+                out_map = {
+                    var.name: named_outputs.get(aname)
+                    for (aname, _), var in zip(action.outputs, outs)
+                }
             env.update(out_map)
             if trace:
                 trace({
@@ -424,14 +396,14 @@ def _exec(stmt: LocalStmt, env: Env, ch: Channels, ns: dict, llm_backend, trace)
                 })
 
         case SeqStmt(first=p1, second=p2):
-            _exec(p1, env, ch, ns, llm_backend, trace)
-            _exec(p2, env, ch, ns, llm_backend, trace)
+            _exec(p1, env, ch, ns, llm_backend, trace, stop)
+            _exec(p2, env, ch, ns, llm_backend, trace, stop)
 
         case IfStmt(condition=c, owner=_, branch_true=t, branch_false=f):
-            _exec(t if c(_CondEnv(env, ns)) else f, env, ch, ns, llm_backend, trace)
+            _exec(t if c(_CondEnv(env, ns)) else f, env, ch, ns, llm_backend, trace, stop)
 
         case IfRecvStmt(lifeline=A, bindings=ys, sender=B, branch_true=t, branch_false=f):
-            seq, values = ch[(B.name, A.name)].get()
+            seq, values = ch[(B.name, A.name)].get(stop=stop)
             _bind(ys, values, env)
             flag = _eval(ys[0], env) if isinstance(ys[0], VarExpr) else values[0]
             if trace:
@@ -441,16 +413,16 @@ def _exec(stmt: LocalStmt, env: Env, ch: Channels, ns: dict, llm_backend, trace)
                     "bindings": {"branch": "true" if flag else "false"},
                     "seq": seq, "ctrl": True,
                 })
-            _exec(t if flag else f, env, ch, ns, llm_backend, trace)
+            _exec(t if flag else f, env, ch, ns, llm_backend, trace, stop)
 
         case WhileStmt(condition=c, owner=_, body=body, exit_body=exit_b):
             while c(_CondEnv(env, ns)):
-                _exec(body, env, ch, ns, llm_backend, trace)
-            _exec(exit_b, env, ch, ns, llm_backend, trace)
+                _exec(body, env, ch, ns, llm_backend, trace, stop)
+            _exec(exit_b, env, ch, ns, llm_backend, trace, stop)
 
         case WhileRecvStmt(lifeline=A, bindings=ys, sender=B, body=body, exit_body=exit_b):
             while True:
-                seq, values = ch[(B.name, A.name)].get()
+                seq, values = ch[(B.name, A.name)].get(stop=stop)
                 _bind(ys, values, env)
                 flag = _eval(ys[0], env) if isinstance(ys[0], VarExpr) else values[0]
                 if trace:
@@ -462,8 +434,8 @@ def _exec(stmt: LocalStmt, env: Env, ch: Channels, ns: dict, llm_backend, trace)
                     })
                 if not flag:
                     break
-                _exec(body, env, ch, ns, llm_backend, trace)
-            _exec(exit_b, env, ch, ns, llm_backend, trace)
+                _exec(body, env, ch, ns, llm_backend, trace, stop)
+            _exec(exit_b, env, ch, ns, llm_backend, trace, stop)
 
         case _:
             raise TypeError(f"Unknown local stmt: {type(stmt).__name__}")
@@ -473,11 +445,12 @@ def _exec(stmt: LocalStmt, env: Env, ch: Channels, ns: dict, llm_backend, trace)
 # Per-lifeline thread body
 # ---------------------------------------------------------------------------
 
-def _thread_body(local_stmt, env, ch, ns, result_box, llm_backend, trace):
+def _thread_body(local_stmt, env, ch, ns, result_box, llm_backend, trace, stop):
     try:
-        _exec(local_stmt, env, ch, ns, llm_backend, trace)
+        _exec(local_stmt, env, ch, ns, llm_backend, trace, stop)
         result_box.append(env)
     except Exception as exc:
+        stop.set()  # unblock any threads waiting on queue.get()
         result_box.append(exc)
 
 
@@ -520,6 +493,8 @@ def run(
     if trace is None and verbose:
         trace = _default_trace
 
+    stop = threading.Event()
+
     names = [l.name for l in lifelines]
     channels: Channels = {
         (a, b): _SeqQueue()
@@ -540,7 +515,7 @@ def run(
 
         def make_target(stmt, e, b):
             def target():
-                _thread_body(stmt, e, channels, wf.ns, b, llm_backend, trace)
+                _thread_body(stmt, e, channels, wf.ns, b, llm_backend, trace, stop)
             return target
 
         t = threading.Thread(
@@ -552,11 +527,22 @@ def run(
 
     for t in threads:
         t.start()
+
+    deadline = time.monotonic() + timeout
     for t in threads:
-        t.join(timeout=timeout)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            stop.set()
+            raise TimeoutError(f"Workflow did not finish within {timeout}s")
+        t.join(timeout=remaining)
         if t.is_alive():
+            stop.set()
             raise TimeoutError(f"Lifeline '{t.name}' did not finish within {timeout}s")
 
+    # Collect all exceptions, preferring root-cause errors over secondary
+    # "Workflow cancelled" errors that are triggered by the stop event.
+    root_cause: tuple[str, Exception] | None = None
+    cancelled: tuple[str, Exception] | None = None
     final_envs: dict[str, dict] = {}
     for ll in lifelines:
         box = result_boxes[ll.name]
@@ -564,8 +550,20 @@ def run(
             raise RuntimeError(f"Lifeline '{ll.name}' produced no result.")
         result = box[0]
         if isinstance(result, Exception):
-            raise RuntimeError(f"Lifeline '{ll.name}' raised: {result}") from result
-        final_envs[ll.name] = result
+            msg = str(result)
+            if "Workflow cancelled" in msg:
+                if cancelled is None:
+                    cancelled = (ll.name, result)
+            else:
+                if root_cause is None:
+                    root_cause = (ll.name, result)
+        else:
+            final_envs[ll.name] = result
+
+    error = root_cause or cancelled
+    if error is not None:
+        name, exc = error
+        raise RuntimeError(f"Lifeline '{name}' raised: {exc}") from exc
 
     if wf.output_var is not None:
         return final_envs[wf.output_lifeline.name][wf.output_var.name]

@@ -141,8 +141,8 @@ if __name__ == "__main__":
     USE_UI = True
 
     diagnosisConsensus.configure(
-        # llms={"LLM1": "mistral", "LLM2": "openai"},
-        llms="mock",
+        llms={"LLM1": "mistral", "LLM2": "openai"},
+        # llms="mock",
         ui=USE_UI,
         timeout=600,
     )
