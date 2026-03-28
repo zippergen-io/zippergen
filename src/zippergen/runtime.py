@@ -607,7 +607,6 @@ def _exec_planner(action: PlannerAction, named_inputs: dict, llm_backend, trace=
     """Execute a PlannerAction: generate a workflow spec via LLM, then run it."""
     import ast as _ast
     import importlib.util as _ilu
-    import json as _json
     import os as _os
     import sys as _sys
     import tempfile as _tmpfile
@@ -662,15 +661,11 @@ def _exec_planner(action: PlannerAction, named_inputs: dict, llm_backend, trace=
     )
     system = "\n\n".join(system_parts)
 
-    # --- 2. Parse inputs_json to describe available data variables ---
-    inputs_json_str = str(named_inputs.get("inputs_json", "{}"))
-    try:
-        inputs_data: dict = _json.loads(inputs_json_str)
-    except _json.JSONDecodeError:
-        inputs_data = {}
-
-    inputs_desc = ", ".join(f"{k}: str" for k in inputs_data.keys())
+    # --- 2. Describe available input variables ---
     request_text = str(named_inputs.get("request", ""))
+    # All named inputs except "request" are domain data variables passed to workers
+    inputs_data = {k: v for k, v in named_inputs.items() if k != "request"}
+    inputs_desc = ", ".join(f"{k}: str" for k in inputs_data.keys())
 
     # --- 3. Call LLM to generate workflow spec ---
     # Pre-format the user content so .format() receives no template variables
@@ -814,7 +809,7 @@ def _exec_planner(action: PlannerAction, named_inputs: dict, llm_backend, trace=
         except SyntaxError:
             pass
 
-        inputs_for_wf = {name: inputs_data[name] for name in inner_param_names if name in inputs_data}
+        inputs_for_wf = {name: named_inputs[name] for name in inner_param_names if name in named_inputs}
 
         # Wrap the outer backend so inner lifeline threads route through the
         # Planner's provider.  The outer router is keyed by thread name, and
