@@ -531,6 +531,48 @@ body {
 .act-box.running {
   animation: fadein 0.18s ease, act-pulse 1.4s ease-in-out 0.18s infinite;
 }
+
+/* ── Breadcrumb navigation ───────────────────────────────────────────── */
+#breadcrumb {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 13px;
+  color: #17324D;
+  overflow: hidden;
+  flex: 1;
+  min-width: 0;
+}
+.bc-seg {
+  cursor: pointer;
+  color: #4A6D87;
+  white-space: nowrap;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+.bc-seg:hover { background: rgba(74,109,135,0.12); }
+.bc-sep { color: #A0B4C8; flex-shrink: 0; }
+.bc-seg.bc-current {
+  color: #17324D;
+  font-weight: 600;
+  cursor: default;
+}
+.bc-seg.bc-current:hover { background: none; }
+
+/* ── Drill-down indicator on act boxes ───────────────────────────────── */
+.act-drill {
+  display: inline-block;
+  margin-left: 6px;
+  font-size: 10px;
+  padding: 1px 5px;
+  border-radius: 3px;
+  background: rgba(74,109,135,0.15);
+  color: #4A6D87;
+  cursor: pointer;
+  vertical-align: middle;
+  user-select: none;
+}
+.act-drill:hover { background: rgba(74,109,135,0.3); }
 </style>
 </head>
 <body>
@@ -577,6 +619,8 @@ body {
     <span class="brand-sub">powered by ZipperGen</span>
   </div>
 
+  <div id="breadcrumb"></div>
+
   <span id="status">connecting…</span>
 </div>
 
@@ -595,6 +639,26 @@ const COLS = [
   { bg: 'rgba(46,  125, 83,  0.08)', accent: '#2E7D53', text: '#235E3F' },
   { bg: 'rgba(46,  91,  122, 0.08)', accent: '#2E5B7A', text: '#2E5B7A' },
 ];
+
+// ── Nested level state ────────────────────────────────────────────────
+const levels = new Map();   // pathKey → {name, lifelineNames, events[], childActs: Map}
+let currentPath = [];       // [] = root level
+
+function pathKey(p) { return p.length ? p.join('\x00') : '__root'; }
+function currentKey() { return pathKey(currentPath); }
+
+function ensureLevel(path, name, lifelineNames) {
+  const k = pathKey(path);
+  if (!levels.has(k)) {
+    levels.set(k, { name, lifelineNames: lifelineNames || [], events: [], childActs: new Map() });
+  }
+  return levels.get(k);
+}
+
+function bufferEvent(path, ev) {
+  const lev = levels.get(pathKey(path));
+  if (lev) lev.events.push(ev);
+}
 
 // ── State ──────────────────────────────────────────────────────────────
 let lifelines = [];
@@ -834,6 +898,182 @@ function showReplayButton() {
   topbar.appendChild(btn);
 }
 
+// ── Breadcrumb ─────────────────────────────────────────────────────────
+function renderBreadcrumb() {
+  const bc = document.getElementById('breadcrumb');
+  if (!bc) return;
+  bc.innerHTML = '';
+  // Build segments: root + each step of currentPath
+  const rootLev = levels.get(pathKey([]));
+  const segments = [{ label: rootLev ? rootLev.name : 'workflow', path: [] }];
+  for (let i = 0; i < currentPath.length; i++) {
+    segments.push({ label: currentPath[i], path: currentPath.slice(0, i + 1) });
+  }
+  segments.forEach((seg, idx) => {
+    if (idx > 0) {
+      const sep = document.createElement('span');
+      sep.className = 'bc-sep';
+      sep.textContent = '/';
+      bc.appendChild(sep);
+    }
+    const el = document.createElement('span');
+    el.className = 'bc-seg' + (idx === segments.length - 1 ? ' bc-current' : '');
+    el.textContent = seg.label;
+    if (idx < segments.length - 1) {
+      const targetPath = seg.path;
+      el.addEventListener('click', () => switchToLevel(targetPath));
+    }
+    bc.appendChild(el);
+  });
+}
+
+
+function switchToLevel(path) {
+  currentPath = path;
+  renderBreadcrumb();
+  const lev = levels.get(currentKey());
+  if (!lev) return;
+  // Use clearDiagram (resets all CG state + DOM) then initDiagram for headers.
+  // Do NOT route through dispatchEvent — the init branch calls levels.clear()
+  // which would destroy all buffered inner events.
+  clearDiagram();
+  initDiagram(lev.lifelineNames);
+  // Replay diagram events (skip the synthetic init already handled above)
+  for (const ev of lev.events) {
+    if (ev.type === 'init') continue;
+    renderDiagramEvent(ev);
+  }
+  // Re-apply drill indicators for child acts
+  lev.childActs.forEach((childPath, parentSeq) => {
+    markActDrillable(parentSeq, childPath);
+  });
+}
+
+// ── Drill-down ─────────────────────────────────────────────────────────
+function markActDrillable(seq, childPath) {
+  // Find the act box DOM element. pendingActBoxes stores "lifeline:seq" → element.
+  // Search all entries whose key ends with ':' + seq
+  const suffix = ':' + seq;
+  for (const [k, boxEl] of Object.entries(pendingActBoxes)) {
+    if (k.endsWith(suffix)) {
+      addDrillButton(boxEl, childPath);
+      return;
+    }
+  }
+  // If act is done, search in cgRows by seq
+  for (const row of Object.values(cgRows)) {
+    if (row.seq === seq) {
+      // Find the act box inside row.wrapper
+      const box = row.wrapper && row.wrapper.querySelector('.act-box');
+      if (box) addDrillButton(box, childPath);
+      return;
+    }
+  }
+}
+
+function addDrillButton(boxEl, childPath) {
+  if (boxEl.querySelector('.act-drill')) return;  // already added
+  const btn = document.createElement('span');
+  btn.className = 'act-drill';
+  btn.textContent = '▶';
+  btn.title = 'View inner workflow';
+  btn.addEventListener('click', (ev) => {
+    ev.stopPropagation();
+    switchToLevel(childPath);
+  });
+  boxEl.appendChild(btn);
+}
+
+// ── Level push handling ────────────────────────────────────────────────
+function handleLevelPush(e) {
+  const childPath = e.path;  // already the full path including action name
+  const parentPath = childPath.slice(0, -1);
+  // Create child level with synthetic init event
+  const childLev = ensureLevel(childPath, e.name, e.lifelines);
+  childLev.events = [{ type: 'init', lifelines: e.lifelines }];
+  childLev.childActs = new Map();
+  // Register this child in parent's childActs
+  const parentLev = levels.get(pathKey(parentPath));
+  if (parentLev) {
+    parentLev.childActs.set(e.parent_seq, childPath);
+  }
+  // If currently viewing the parent, mark the act box as drillable
+  if (pathKey(parentPath) === currentKey()) {
+    markActDrillable(e.parent_seq, childPath);
+  }
+}
+
+// ── Render a single diagram event ──────────────────────────────────────
+function renderDiagramEvent(e) {
+  if (e.type === 'act_start') handleActStart(e);
+  else if (e.type === 'act') handleAct(e);
+  else if (e.type === 'send') handleSend(e);
+  else if (e.type === 'recv') handleRecv(e);
+}
+
+// ── Central event dispatch ─────────────────────────────────────────────
+function dispatchEvent(e) {
+  const evPath = e.path || [];
+  const evKey = pathKey(evPath);
+
+  if (e.type === 'init') {
+    // Root level init
+    levels.clear();
+    currentPath = [];
+    ensureLevel([], 'workflow', e.lifelines);
+    const rootLev = levels.get(pathKey([]));
+    if (rootLev) {
+      rootLev.events = [];  // reset events on new run
+      rootLev.childActs = new Map();
+    }
+    clearDiagram();
+    const rb = document.getElementById('replay-btn');
+    if (rb) rb.remove();
+    initDiagram(e.lifelines);
+    statusEl.textContent = 'running…';
+    statusEl.className = 'running';
+    bufferEvent([], e);
+    renderBreadcrumb();
+    return;
+  }
+
+  if (e.type === 'level_push') {
+    handleLevelPush(e);
+    return;
+  }
+
+  if (e.type === 'level_pop') {
+    return;  // nothing needed
+  }
+
+  if (e.type === 'done') {
+    if (evKey === currentKey() || evPath.length === 0) {
+      actRow = null;
+      statusEl.textContent = 'done ✓';
+      statusEl.className = 'done';
+      showReplayButton();
+    }
+    // Buffer at root level too so replay works
+    bufferEvent(evPath, e);
+    return;
+  }
+
+  if (e.type === 'close') {
+    if (eventSrc) { eventSrc.close(); eventSrc = null; }
+    statusEl.textContent = 'stopped';
+    statusEl.className = '';
+    return;
+  }
+
+  // Normal diagram event (act_start, act, send, recv)
+  // Buffer in the appropriate level
+  bufferEvent(evPath, e);
+  // Only render if we're currently viewing that level
+  if (evKey === currentKey()) {
+    renderDiagramEvent(e);
+  }
+}
+
 // ── Act rows ───────────────────────────────────────────────────────────
 function handleActStart(ev) {
   const i = lifelineIdx(ev.lifeline);
@@ -859,6 +1099,7 @@ function handleActStart(ev) {
     diagram.appendChild(wrapper);
   }
   r.occupied.add(i);
+  r.seq = ev.seq;
 
   const box = document.createElement('div');
   box.className = 'act-box running';
@@ -1063,32 +1304,7 @@ function connect() {
 
   src.onmessage = (e) => {
     const ev = JSON.parse(e.data);
-    switch (ev.type) {
-      case 'init':
-        clearDiagram();
-        const rb = document.getElementById('replay-btn');
-        if (rb) rb.remove();
-        initDiagram(ev.lifelines);
-        statusEl.textContent = 'running…';
-        statusEl.className = 'running';
-        break;
-      case 'act_start': handleActStart(ev); break;
-      case 'act':       handleAct(ev);      break;
-      case 'send':      handleSend(ev);     break;
-      case 'recv':      handleRecv(ev);     break;
-      case 'done':
-        actRow = null;
-        statusEl.textContent = 'done ✓';
-        statusEl.className = 'done';
-        showReplayButton();
-        break;
-      case 'close':
-        src.close();
-        eventSrc = null;
-        statusEl.textContent = 'stopped';
-        statusEl.className = '';
-        break;
-    }
+    dispatchEvent(ev);
   };
 
   src.onerror = () => {

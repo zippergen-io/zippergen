@@ -37,11 +37,13 @@ import threading
 import time
 import textwrap
 
+_planner_path: threading.local = threading.local()
+
 from zippergen.syntax import (
     EmptyStmt, SendStmt, RecvStmt, ActStmt, SkipStmt,
     SeqStmt, IfStmt, WhileStmt, IfRecvStmt, WhileRecvStmt,
     VarExpr, LitExpr, Var,
-    PureAction,
+    LLMAction, PureAction, PlannerAction,
     Lifeline, Workflow, LocalStmt,
     kappa_ctrl,
 )
@@ -326,6 +328,526 @@ def _bound_dict(bindings: tuple, values: tuple) -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Planner helpers
+# ---------------------------------------------------------------------------
+
+_PLANNER_DSL_RULES = """\
+- Name the function exactly `generated_workflow`.
+- Declare inputs as `name: str @ {caller}`; return type is `-> str`.
+- Send variables between lifelines: `A(x, y) >> B(x, y)`.
+- Single-output action: `A: var = action(arg1, arg2)`.
+- Multi-output action: `A: (var1, var2) = action(arg1, arg2)` — use tuple unpacking,
+  never subscript (`var["key"]` is invalid).
+- REQUIRED: the last statement before `return` MUST send the final result back to {caller}:
+  `LastWorker(result) >> {caller}(result)`.
+- Return: `return var @ {caller}`.
+- Do NOT include any import statements or Var/Lifeline declarations.
+
+Example — sequential (summarise then critique):
+
+@workflow
+def generated_workflow(text: str @ {caller}, focus: str @ {caller}, criteria: str @ {caller}) -> str:
+    {caller}(text, focus, criteria) >> Worker1(text, focus, criteria)
+    Worker1: summary = summarise(text, focus)
+    Worker1: feedback = critique(summary, criteria)
+    Worker1(feedback) >> {caller}(feedback)
+    return feedback @ {caller}
+
+Example — parallel then aggregate:
+
+@workflow
+def generated_workflow(text: str @ {caller}, focus: str @ {caller}, language: str @ {caller}) -> str:
+    {caller}(text, focus, language) >> Worker1(text, focus)
+    {caller}(text, focus, language) >> Worker2(text, language)
+    Worker1: summary = summarise(text, focus)
+    Worker2: result = translate(text, language)
+    Worker1(summary) >> Aggregator(summary)
+    Worker2(result) >> Aggregator(result)
+    Aggregator: comparison = compare(summary, result)
+    Aggregator(comparison) >> {caller}(comparison)
+    return comparison @ {caller}
+"""
+
+
+_PLANNER_ALLOW_PURE = """\
+You may define @pure helper functions before the workflow.  Pure functions are
+plain Python — no LLM calls, no side effects, no imports.  Use them for
+formatting, parsing, or combining strings.
+
+    @pure
+    def join_results(a: str, b: str) -> str:
+        return a + "\\n\\n" + b
+
+Supported parameter and return types: str, int, float, bool.
+"""
+
+_PLANNER_ALLOW_LLM = """\
+You may define new @llm actions before the workflow.  Use custom prompts
+when no pre-defined action fits the task.
+
+Single output (parse="text"):
+
+    @llm(
+        system="Your system prompt here.",
+        user="Prompt template with {var_name} placeholders.",
+        parse="text",
+        outputs=(("output_name", str),),
+    )
+    def my_action(input1: str, input2: str): ...
+
+    # Used in workflow as:
+    # A: result = my_action(input1, input2)
+
+Multiple outputs (parse="json") — use tuple unpacking, never subscript:
+
+    @llm(
+        system="Your system prompt here.",
+        user="...",
+        parse="json",
+        outputs=(("out1", str), ("out2", str)),
+    )
+    def split_action(input1: str): ...
+
+    # Used in workflow as:
+    # A: (out1, out2) = split_action(input1)
+    # NOT: A: result = split_action(input1)  then result["out1"]  ← invalid
+
+ALL four keyword arguments are REQUIRED for every @llm definition:
+  system=  (str)   — the system prompt
+  user=    (str)   — the user prompt template, with {var} placeholders
+  parse=   (str)   — exactly one of: "text", "json", "bool"
+  outputs= (tuple) — MUST be present; one or more (name, type) pairs
+
+parse rules:
+- parse="text" → outputs must have exactly one str entry.
+- parse="json" → outputs has one or more entries; use tuple unpacking in the workflow.
+- parse="bool" → outputs must have exactly one bool entry.
+- The function body must be exactly `...`.
+- Prefer fewer outputs per action — split responsibilities across actions rather
+  than returning many fields from one.
+"""
+
+
+def _llm_action_to_source(action: LLMAction) -> str:
+    """Reconstruct @llm(...) source code from a LLMAction node."""
+    params = ", ".join(f"{n}: {t.__name__}" for n, t in action.inputs)
+    outputs_repr = (
+        "(" + ", ".join(f'("{n}", {t.__name__})' for n, t in action.outputs) + ",)"
+    )
+    return (
+        f"@llm(\n"
+        f"    system={action.system_prompt!r},\n"
+        f"    user={action.user_prompt!r},\n"
+        f"    parse={action.parse_format!r},\n"
+        f"    outputs={outputs_repr},\n"
+        f")\n"
+        f"def {action.name}({params}): ...\n"
+    )
+
+
+def _pure_action_to_source(action: PureAction) -> str:
+    """Return the source of a PureAction's underlying function (with @pure decorator)."""
+    import inspect as _inspect
+    import textwrap as _textwrap
+    try:
+        return _textwrap.dedent(_inspect.getsource(action.fn))
+    except (OSError, TypeError):
+        # Fallback: stub with correct signature
+        params = ", ".join(f"{n}: {t.__name__}" for n, t in action.inputs)
+        _, out_type = action.outputs[0]
+        return f"@pure\ndef {action.name}({params}) -> {out_type.__name__}: ...\n"
+
+
+def _extract_intermediate_var_names(spec: str) -> set[str]:
+    """Extract variable names used as outputs in annotated assignments.
+
+    In ``Worker1: summary = summarise(text, focus)``, the annotation is
+    ``summary`` — this is the intermediate variable that needs to be declared
+    as a Var in the preamble so the builder can resolve it.
+    """
+    import ast as _ast
+    var_names: set[str] = set()
+    try:
+        tree = _ast.parse(spec)
+    except SyntaxError:
+        return var_names
+    for fn_node in _ast.walk(tree):
+        if not (isinstance(fn_node, _ast.FunctionDef) and fn_node.name == "generated_workflow"):
+            continue
+        for node in _ast.walk(fn_node):
+            if not isinstance(node, _ast.AnnAssign):
+                continue
+            ann = node.annotation
+            if isinstance(ann, _ast.Tuple):
+                for elt in ann.elts:
+                    if isinstance(elt, _ast.Name):
+                        var_names.add(elt.id)
+            elif isinstance(ann, _ast.Name):
+                var_names.add(ann.id)
+    return var_names
+
+
+def _validate_planner_spec(spec: str, caller: str) -> str | None:
+    """Check the three structural invariants on a generated workflow.
+
+    Returns None if the spec is valid, or a human-readable error string
+    describing the first violation found.
+
+    Invariants:
+    1. First statement sends FROM the caller:  ``caller(...) >> X(...)``
+    2. Second-to-last statement sends TO the caller:  ``X(...) >> caller(...)``
+    3. Last statement returns owned by the caller:  ``return var @ caller``
+
+    The DSL is expressed as Python with custom ``>>`` and ``@`` operators, so
+    we check the AST structure rather than evaluating the code.
+    """
+    import ast as _ast
+
+    try:
+        tree = _ast.parse(spec)
+    except SyntaxError as exc:
+        return f"SyntaxError in generated spec: {exc}"
+
+    # Find the generated_workflow function
+    fn_node = None
+    for node in _ast.walk(tree):
+        if isinstance(node, _ast.FunctionDef) and node.name == "generated_workflow":
+            fn_node = node
+            break
+    if fn_node is None:
+        return "No `generated_workflow` function found."
+
+    body = fn_node.body
+    # Filter to just expression/return statements (skip docstrings etc.)
+    stmts = [s for s in body if isinstance(s, (_ast.Expr, _ast.Return))]
+    if len(stmts) < 2:
+        return "Workflow body is too short to contain both a send and a return."
+
+    # Helper: does an AST expression represent `Name(...)` i.e. a Call on a Name?
+    def call_name(node) -> str | None:
+        if isinstance(node, _ast.Call) and isinstance(node.func, _ast.Name):
+            return node.func.id
+        return None
+
+    # Helper: for `A >> B`, returns (left_name, right_name) or None
+    def binop_rshift(node) -> tuple[str, str] | None:
+        if (isinstance(node, _ast.BinOp)
+                and isinstance(node.op, _ast.RShift)):
+            l = call_name(node.left)
+            r = call_name(node.right)
+            if l and r:
+                return (l, r)
+        return None
+
+    # Helper: for `return expr @ Name`, returns the Name or None
+    def return_at_name(node) -> str | None:
+        if not isinstance(node, _ast.Return):
+            return None
+        val = node.value
+        if (isinstance(val, _ast.BinOp)
+                and isinstance(val.op, _ast.MatMult)
+                and isinstance(val.right, _ast.Name)):
+            return val.right.id
+        return None
+
+    # --- Invariant 3: last statement is `return ... @ caller` ---
+    last = stmts[-1]
+    ret_owner = return_at_name(last)
+    if ret_owner is None:
+        return "Last statement must be `return var @ {caller}` (no `return` found or wrong form).".replace("{caller}", caller)
+    if ret_owner != caller:
+        return (
+            f"Last statement returns to `{ret_owner}` but must return to `{caller}`. "
+            f"Use `return var @ {caller}`."
+        )
+
+    # --- Invariant 1: first statement sends FROM caller ---
+    first_expr = stmts[0]
+    if not isinstance(first_expr, _ast.Expr):
+        return f"First statement must be `{caller}(...) >> SomeWorker(...)`, got a non-expression."
+    pair = binop_rshift(first_expr.value)
+    if pair is None:
+        return f"First statement must be `{caller}(...) >> SomeWorker(...)` (>> send), got something else."
+    if pair[0] != caller:
+        return (
+            f"First statement sends from `{pair[0]}` but must send from `{caller}`. "
+            f"Start with `{caller}(inputs) >> SomeWorker(inputs)`."
+        )
+
+    # --- Invariant 2: second-to-last statement sends TO caller ---
+    second_last = stmts[-2]
+    if not isinstance(second_last, _ast.Expr):
+        return f"Statement before `return` must be `SomeWorker(...) >> {caller}(...)`, got a non-expression."
+    pair2 = binop_rshift(second_last.value)
+    if pair2 is None:
+        return (
+            f"Statement before `return` must be `SomeWorker(...) >> {caller}(...)` (>> send), "
+            f"got something else."
+        )
+    if pair2[1] != caller:
+        return (
+            f"Statement before `return` sends to `{pair2[1]}` but must send to `{caller}`. "
+            f"End with `SomeWorker(result) >> {caller}(result)` before the return."
+        )
+
+    return None  # all good
+
+
+def _strip_fences(spec: str) -> str:
+    """Remove markdown code fences if the LLM wrapped the output."""
+    spec = spec.strip()
+    if spec.startswith("```"):
+        spec = "\n".join(spec.split("\n")[1:]).strip()
+    if spec.endswith("```"):
+        spec = "\n".join(spec.split("\n")[:-1]).strip()
+    return spec
+
+
+def _exec_planner(action: PlannerAction, named_inputs: dict, llm_backend, trace=None, parent_seq: int = 0) -> str:
+    """Execute a PlannerAction: generate a workflow spec via LLM, then run it."""
+    import ast as _ast
+    import importlib.util as _ilu
+    import json as _json
+    import os as _os
+    import sys as _sys
+    import tempfile as _tmpfile
+    import threading as _threading
+
+    # The outer lifeline name (e.g. "Planner") is this thread's name.
+    # It becomes the "caller" in the inner workflow — supplying inputs and
+    # receiving the final result — so we compute it before building any prompts.
+    outer_lifeline_name = _threading.current_thread().name
+
+    # --- 1. Build vocabulary descriptions ---
+    action_lines: list[str] = []
+    for a in action.actions:
+        params = ", ".join(f"{n}: {t.__name__}" for n, t in a.inputs)
+        out_parts = ", ".join(f"{n}: {t.__name__}" for n, t in a.outputs)
+        action_lines.append(f"{a.name}({params}) -> {out_parts}")
+
+    lifeline_lines = [f"{outer_lifeline_name}    provides inputs, receives the final result"]
+    for ll in action.lifelines:
+        lifeline_lines.append(ll.name)
+
+    allow_sections: list[str] = []
+    if "pure" in action.allow:
+        allow_sections.append("Defining @pure actions:\n" + _PLANNER_ALLOW_PURE)
+    if "llm" in action.allow:
+        allow_sections.append("Defining @llm actions:\n" + _PLANNER_ALLOW_LLM)
+
+    system_parts = [
+        action.system_prompt,
+        "DSL rules:\n" + _PLANNER_DSL_RULES.format(caller=outer_lifeline_name),
+    ]
+    if action.actions and allow_sections:
+        # Both pre-defined vocab and the ability to define new actions.
+        system_parts.append("Pre-defined actions (ready to use):\n" + "\n".join(action_lines))
+        system_parts.append(
+            "In addition, you may define new actions before the workflow:\n\n"
+            + "\n".join(allow_sections)
+        )
+    elif action.actions:
+        # Fixed vocabulary only.
+        system_parts.append("Pre-defined actions (ready to use):\n" + "\n".join(action_lines))
+    elif allow_sections:
+        # No pre-defined vocab — LLM must write everything.
+        system_parts.append(
+            "No pre-defined actions are provided. "
+            "Define all actions you need before the workflow:\n\n"
+            + "\n".join(allow_sections)
+        )
+    system_parts.append("Available lifelines:\n" + "\n".join(lifeline_lines))
+    system_parts.append(
+        "Return only the Python code. No markdown fences, no explanations, no imports."
+    )
+    system = "\n\n".join(system_parts)
+
+    # --- 2. Parse inputs_json to describe available data variables ---
+    inputs_json_str = str(named_inputs.get("inputs_json", "{}"))
+    try:
+        inputs_data: dict = _json.loads(inputs_json_str)
+    except _json.JSONDecodeError:
+        inputs_data = {}
+
+    inputs_desc = ", ".join(f"{k}: str" for k in inputs_data.keys())
+    request_text = str(named_inputs.get("request", ""))
+
+    # --- 3. Call LLM to generate workflow spec ---
+    # Pre-format the user content so .format() receives no template variables
+    # (avoids breakage if request_text or inputs_desc contains literal braces).
+    user_content = (
+        f"Request: {request_text}\n\n"
+        f"Input variables available: {inputs_desc}\n\n"
+        "Generate the workflow."
+    )
+    user_content_safe = user_content.replace("{", "{{").replace("}", "}}")
+
+    spec_action = LLMAction(
+        name="_generate_spec",
+        inputs=(),
+        outputs=(("workflow_spec", str),),
+        system_prompt=system,
+        user_prompt=user_content_safe,
+        parse_format="text",
+    )
+    spec_result = llm_backend(spec_action, {})
+    spec = _strip_fences(str(spec_result.get("workflow_spec", "")))
+
+    # --- Validate structural invariants; re-prompt once on failure ---
+    validation_error = _validate_planner_spec(spec, outer_lifeline_name)
+    if validation_error:
+        correction_prompt = (
+            f"The workflow you generated has a structural error:\n\n"
+            f"  {validation_error}\n\n"
+            f"Fix ONLY the structural issue and return the corrected workflow. "
+            f"Rules:\n"
+            f"  1. First statement: `{outer_lifeline_name}(inputs) >> SomeWorker(inputs)`\n"
+            f"  2. Second-to-last: `SomeWorker(result) >> {outer_lifeline_name}(result)`\n"
+            f"  3. Last statement: `return result @ {outer_lifeline_name}`\n\n"
+            f"Current workflow:\n{spec}"
+        )
+        correction_prompt_safe = correction_prompt.replace("{", "{{").replace("}", "}}")
+        retry_action = LLMAction(
+            name="_generate_spec_retry",
+            inputs=(),
+            outputs=(("workflow_spec", str),),
+            system_prompt=system,
+            user_prompt=correction_prompt_safe,
+            parse_format="text",
+        )
+        spec_result2 = llm_backend(retry_action, {})
+        spec = _strip_fences(str(spec_result2.get("workflow_spec", "")))
+        validation_error2 = _validate_planner_spec(spec, outer_lifeline_name)
+        if validation_error2:
+            raise RuntimeError(
+                f"Planner generated an invalid workflow after correction attempt.\n"
+                f"Error: {validation_error2}\n\n"
+                f"Workflow:\n{spec}"
+            )
+
+    print(f"\n{'='*60}")
+    print("GENERATED WORKFLOW")
+    print("=" * 60)
+    print(spec)
+    print("=" * 60 + "\n")
+
+    # --- 4. Build preamble for temp file ---
+    intermediate_vars = _extract_intermediate_var_names(spec)
+
+    preamble_lines = [
+        "from zippergen.syntax import Lifeline, Var",
+        "from zippergen.actions import llm, pure",
+        "from zippergen.builder import workflow",
+        "",
+        "# Lifelines",
+        f'{outer_lifeline_name} = Lifeline("{outer_lifeline_name}")',
+    ]
+    for ll in action.lifelines:
+        preamble_lines.append(f'{ll.name} = Lifeline("{ll.name}")')
+    preamble_lines.append("")
+    preamble_lines.append("# Intermediate variables")
+    for var_name in sorted(intermediate_vars):
+        preamble_lines.append(f'{var_name} = Var("{var_name}", str)')
+    preamble_lines.append("")
+    preamble_lines.append("# Action library")
+    for a in action.actions:
+        if isinstance(a, LLMAction):
+            preamble_lines.append(_llm_action_to_source(a))
+        elif isinstance(a, PureAction):
+            preamble_lines.append(_pure_action_to_source(a))
+
+    preamble = "\n".join(preamble_lines) + "\n"
+    full_source = preamble + "\n" + spec + "\n"
+
+    # --- 5. Write to temp file, import, and run ---
+    fd, tmp_path = _tmpfile.mkstemp(suffix=".py", prefix="zippergen_planner_")
+    mod_name = f"_zippergen_plan_{_os.getpid()}_{id(spec)}"
+    try:
+        with _os.fdopen(fd, "w") as f:
+            f.write(full_source)
+
+        spec_obj = _ilu.spec_from_file_location(mod_name, tmp_path)
+        if spec_obj is None or spec_obj.loader is None:
+            raise RuntimeError("Could not create module spec for generated workflow.")
+        mod = _ilu.module_from_spec(spec_obj)
+        _sys.modules[mod_name] = mod
+        spec_obj.loader.exec_module(mod)
+
+        from zippergen.syntax import Workflow as _Workflow
+        wf = getattr(mod, "generated_workflow", None)
+        if not isinstance(wf, _Workflow):
+            raise RuntimeError("Planner did not produce a valid `generated_workflow`.")
+
+        # Determine path for this planner level
+        parent_path: list[str] = list(getattr(_planner_path, 'path', []))
+        my_path = parent_path + [action.name]
+        _planner_path.path = my_path
+
+        # Collect inner lifeline names from the loaded workflow
+        from zippergen.syntax import _ordered_workflow_lifelines
+        inner_lifeline_names = [ll.name for ll in _ordered_workflow_lifelines(wf)]
+
+        # Emit level_push so the frontend can create the child level view
+        if trace:
+            trace({
+                "type": "level_push",
+                "name": action.name,
+                "path": my_path,
+                "lifelines": inner_lifeline_names,
+                "parent_seq": parent_seq,
+            })
+
+        # Wrap trace to tag all inner events with my_path
+        def _inner_trace(event: dict) -> None:
+            if trace:
+                trace({**event, "path": my_path})
+        wf._trace = _inner_trace
+
+        # Extract inner workflow input names from the generated spec
+        inner_param_names: list[str] = []
+        try:
+            tree = _ast.parse(spec)
+            for fn_node in _ast.walk(tree):
+                if isinstance(fn_node, _ast.FunctionDef) and fn_node.name == "generated_workflow":
+                    inner_param_names = [arg.arg for arg in fn_node.args.args]
+                    break
+        except SyntaxError:
+            pass
+
+        inputs_for_wf = {name: inputs_data[name] for name in inner_param_names if name in inputs_data}
+
+        # Wrap the outer backend so inner lifeline threads route through the
+        # Planner's provider.  The outer router is keyed by thread name, and
+        # _exec_planner is always called from the Planner thread, so we capture
+        # that name here and temporarily restore it inside each inner-thread call.
+        def _inner_backend(act_node, inp):
+            t = _threading.current_thread()
+            saved = t.name
+            t.name = outer_lifeline_name
+            try:
+                return llm_backend(act_node, inp)
+            finally:
+                t.name = saved
+
+        wf._backend = _inner_backend
+        wf._timeout = 180
+        try:
+            result = str(wf._run_once(inputs_for_wf))
+        finally:
+            _planner_path.path = parent_path
+            if trace:
+                trace({"type": "level_pop", "path": my_path})
+        return result
+
+    finally:
+        _sys.modules.pop(mod_name, None)
+        try:
+            _os.unlink(tmp_path)
+        except OSError:
+            pass
+
+
+# ---------------------------------------------------------------------------
 # Local-program interpreter
 # ---------------------------------------------------------------------------
 
@@ -378,6 +900,8 @@ def _exec(stmt: LocalStmt, env: Env, ch: Channels, ns: dict, llm_backend, trace,
                 out_map = {outs[0].name: raw} if len(outs) == 1 else {
                     var.name: val for var, val in zip(outs, raw)
                 }
+            elif isinstance(action, PlannerAction):
+                out_map = {outs[0].name: _exec_planner(action, named_inputs, llm_backend, trace, seq)}
             else:
                 named_outputs = llm_backend(action, named_inputs)
                 out_map = {

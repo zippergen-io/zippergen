@@ -58,11 +58,12 @@ ZipperGen projects this global protocol onto each agent and runs them in paralle
 
 ## See it in action
 
-Two examples ship with the repo. Both work out of the box with the built-in mock backend — no API key needed.
+Three examples ship with the repo. The first two work out of the box with the built-in mock backend — no API key needed.
 
 ```bash
 python examples/diagnosis.py       # two LLMs reach consensus iteratively
 python examples/contract_review.py # four agents review a contract in parallel
+python examples/planner.py         # LLM designs and runs its own sub-workflow (needs OPENAI_API_KEY)
 ```
 
 Open **http://localhost:8765** to watch the agents exchange messages in real time as a message sequence chart.
@@ -153,6 +154,48 @@ def contractReview(contract: str @ User) -> str:
 ```
 
 The `@ Orchestrator` annotation tells ZipperGen which agent evaluates the condition and broadcasts the decision to the others. The escalation path is explicit in the protocol — the `if critical_found` branch is the only way a deep review can be triggered.
+
+### Dynamic planning — `@planner`
+
+For tasks where the coordination structure itself isn't known in advance, ZipperGen provides `@planner`: a decorator that delegates workflow design to an LLM at runtime. The planner LLM receives the task description and available lifelines, generates a complete sub-workflow, and ZipperGen validates and executes it — all transparently visible in ZipperChat as a drillable nested MSC.
+
+```python
+from zippergen.actions import planner
+
+@planner(
+    system=(
+        "You are a workflow planner for professional writing tasks. "
+        "Given a user request and available input data, design a multi-agent "
+        "workflow and write all the LLM actions it needs from scratch."
+    ),
+    actions=[],          # pre-defined action vocabulary (empty = LLM writes everything)
+    lifelines=[Worker1, Worker2],
+    allow=["llm"],       # permit the LLM to define new @llm actions
+)
+def write_document(request: str, inputs_json: str) -> str: ...
+```
+
+The decorated function is used inside a `@workflow` exactly like any other action:
+
+```python
+@workflow
+def openPlannerAgent(request: str @ User, inputs_json: str @ User) -> str:
+    User(request, inputs_json) >> Planner(request, inputs_json)
+    Planner: result = write_document(request, inputs_json)
+    Planner(result) >> User(result)
+    return result @ User
+```
+
+At runtime, the planner LLM synthesises a sub-workflow tailored to the request — for example, assigning Worker1 to write a first draft, Worker2 to critique it, and Worker1 to revise. The generated sub-workflow is structurally validated before execution: it must start with the Planner sending inputs to its workers, and end with a worker returning the result to the Planner. ZipperChat lets you drill into the sub-workflow to see its MSC alongside the outer one.
+
+**`allow` controls what the planner LLM may define:**
+
+| `allow` value | Effect |
+|---|---|
+| `[]` (default) | LLM may only use the pre-defined `actions` vocabulary |
+| `["pure"]` | LLM may also define `@pure` Python helper functions |
+| `["llm"]` | LLM may also define new `@llm` actions with custom prompts |
+| `["pure", "llm"]` | Both |
 
 ## Defining LLM actions
 
