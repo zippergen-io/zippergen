@@ -58,7 +58,7 @@ ZipperGen projects this global protocol onto each agent and runs them in paralle
 
 ## See it in action
 
-Three examples ship with the repo. The first two work out of the box with the built-in mock backend — no API key needed.
+Examples ship with the repo. The first two work out of the box with the built-in mock backend — no API key needed.
 
 ```bash
 python examples/diagnosis.py       # two LLMs reach consensus iteratively
@@ -74,7 +74,7 @@ Open **http://localhost:8765** to watch the agents exchange messages in real tim
 
 ZipperGen programs are *global coordination protocols*: you describe what messages flow between which agents and who owns each decision. ZipperGen projects the global protocol onto per-agent local programs and executes them in parallel threads with FIFO message queues.
 
-### While loop — diagnosis consensus
+### Diagnosis consensus
 
 Two LLMs independently assess a case, then iterate until they agree or a round limit is reached:
 
@@ -106,58 +106,11 @@ def diagnosisConsensus(notes: str @ User, diagnosis: str @ User) -> str:
     return result @ User
 ```
 
-### Conditional escalation — contract review
+`while cond @ LLM1` means LLM1 owns the loop guard and broadcasts the decision each iteration. `if cond @ Owner` works the same way for conditionals. ZipperGen figures out which other agents need to receive the decision and generates the control messages automatically.
 
-Three specialists analyse a contract in parallel; an Orchestrator consolidates and decides whether to escalate to a deeper review:
+## Dynamic planning
 
-```python
-@workflow
-def contractReview(contract: str @ User) -> str:
-    # Phase 1: distribute contract to all specialists
-    User(contract) >> Jurisdiction(contract)
-    User(contract) >> Liability(contract)
-    User(contract) >> Confidentiality(contract)
-
-    # Phase 2: independent specialist analysis (concurrent)
-    Jurisdiction:    (j_issues, j_critical)   = analyze_jurisdiction(contract)
-    Liability:       (l_issues, l_critical)   = analyze_liability(contract)
-    Confidentiality: (cf_issues, cf_critical) = analyze_confidentiality(contract)
-
-    # Phase 3: specialists report to Orchestrator
-    Jurisdiction(j_issues, j_critical)      >> Orchestrator(j_issues, j_critical)
-    Liability(l_issues, l_critical)         >> Orchestrator(l_issues, l_critical)
-    Confidentiality(cf_issues, cf_critical) >> Orchestrator(cf_issues, cf_critical)
-
-    # Phase 4: consolidate and decide whether to escalate
-    Orchestrator: (critical_found, summary) = consolidate(...)
-
-    # Phase 5: conditional deep review
-    if critical_found @ Orchestrator:
-        Orchestrator(summary) >> Jurisdiction(context)
-        Orchestrator(summary) >> Liability(context)
-        Orchestrator(summary) >> Confidentiality(context)
-
-        Jurisdiction:    j_deep  = deep_review(contract, j_issues, context)
-        Liability:       l_deep  = deep_review(contract, l_issues, context)
-        Confidentiality: cf_deep = deep_review(contract, cf_issues, context)
-
-        Jurisdiction(j_deep)     >> Orchestrator(j_deep)
-        Liability(l_deep)        >> Orchestrator(l_deep)
-        Confidentiality(cf_deep) >> Orchestrator(cf_deep)
-
-        Orchestrator: report = final_report_critical(summary, j_deep, l_deep, cf_deep)
-    else:
-        Orchestrator: report = standard_report(summary)
-
-    Orchestrator(report) >> User(report)
-    return report @ User
-```
-
-The `@ Orchestrator` annotation tells ZipperGen which agent evaluates the condition and broadcasts the decision to the others. The escalation path is explicit in the protocol — the `if critical_found` branch is the only way a deep review can be triggered.
-
-### Dynamic planning — `@planner`
-
-For tasks where the coordination structure itself isn't known in advance, ZipperGen provides `@planner`: a decorator that delegates workflow design to an LLM at runtime. The planner LLM receives the task description and available lifelines, generates a complete sub-workflow, and ZipperGen validates and executes it — all transparently visible in ZipperChat as a drillable nested MSC.
+For tasks where the coordination structure itself isn't known in advance, `@planner` delegates workflow design to an LLM at runtime. The planner LLM receives the task description and available lifelines, generates a complete sub-workflow, and ZipperGen validates and executes it.
 
 ```python
 from zippergen.actions import planner
@@ -175,7 +128,7 @@ from zippergen.actions import planner
 def write_document(request: str, inputs_json: str) -> str: ...
 ```
 
-The decorated function is used inside a `@workflow` exactly like any other action:
+The decorated function slots into a `@workflow` exactly like any other action:
 
 ```python
 @workflow
@@ -186,7 +139,7 @@ def openPlannerAgent(request: str @ User, inputs_json: str @ User) -> str:
     return result @ User
 ```
 
-At runtime, the planner LLM synthesises a sub-workflow tailored to the request — for example, assigning Worker1 to write a first draft, Worker2 to critique it, and Worker1 to revise. The generated sub-workflow is structurally validated before execution: it must start with the Planner sending inputs to its workers, and end with a worker returning the result to the Planner. ZipperChat lets you drill into the sub-workflow to see its MSC alongside the outer one.
+At runtime, the planner LLM synthesises a sub-workflow tailored to the request — for example, assigning Worker1 to write a first draft, Worker2 to critique it, and Worker1 to revise. The generated sub-workflow is structurally validated before execution: it must start with the Planner sending inputs to its workers and end with a worker returning the result to the Planner. ZipperChat lets you drill into the sub-workflow to see its MSC alongside the outer one.
 
 **`allow` controls what the planner LLM may define:**
 
