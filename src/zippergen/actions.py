@@ -59,10 +59,10 @@ import inspect
 from collections.abc import Callable
 
 from zippergen.syntax import (
-    ZType, LLMAction, PureAction, is_ztype,
+    ZType, LLMAction, PureAction, PlannerAction, is_ztype,
 )
 
-__all__ = ["llm", "pure"]
+__all__ = ["llm", "pure", "planner"]
 
 # Type alias for an output spec list/tuple (used by @llm)
 OutputSpec = list[tuple[str, ZType]] | tuple[tuple[str, ZType], ...]
@@ -147,6 +147,84 @@ def llm(
             system_prompt=system,
             user_prompt=user,
             parse_format=parse,
+        )
+    return decorator
+
+
+# ---------------------------------------------------------------------------
+# @planner decorator
+# ---------------------------------------------------------------------------
+
+def planner(
+    *,
+    system: str,
+    actions: list,
+    lifelines: list,
+    allow: list[str] | None = None,
+) -> Callable[[Callable], PlannerAction]:
+    """
+    Decorator that produces a PlannerAction node.
+
+    The decorated function's body must be ``...``.  Its parameter annotations
+    declare the inputs passed to the LLM planner (``request: str``) and the
+    JSON-encoded data payload (``inputs_json: str``).  The return annotation
+    must be ``str``.
+
+    At runtime the action:
+    1. Calls the LLM with a system prompt built from ``system``, the declared
+       ``actions`` vocabulary, DSL rules, and any ``allow`` extensions.
+    2. Writes the generated workflow spec to a temp file and imports it.
+    3. Runs the generated workflow and returns its result as a ``str``.
+
+    Parameters
+    ----------
+    system : str
+        Base system prompt describing the planner's role.
+    actions : list
+        Pre-defined action vocabulary (``LLMAction`` / ``PureAction`` nodes).
+        The LLM may use these directly.  Pass ``[]`` to start from scratch.
+    lifelines : list
+        ``Lifeline`` objects available to the generated workflow.
+    allow : list of str, optional
+        Action kinds the LLM is permitted to *define* in the generated spec.
+        Supported values: ``"pure"`` (plain Python helpers),
+        ``"llm"`` (new ``@llm``-decorated actions with custom prompts).
+        Defaults to no additional kinds (fixed vocabulary only).
+
+    Example::
+
+        @planner(
+            system="You are a workflow planner for text processing tasks.",
+            actions=[summarise, translate],       # base vocabulary
+            lifelines=[Worker1, Worker2, Aggregator],
+            allow=["pure", "llm"],                # LLM may also define its own
+        )
+        def run_task(request: str, inputs_json: str) -> str: ...
+    """
+    def decorator(fn: Callable) -> PlannerAction:
+        inputs = _extract_inputs(fn)
+        ret = fn.__annotations__.get("return")
+        if ret is not str:
+            raise TypeError(
+                f"@planner '{fn.__name__}': return annotation must be str."
+            )
+        outputs = ((fn.__name__, str),)
+        _allow = tuple(allow) if allow else ()
+        _valid = {"pure", "llm"}
+        for kind in _allow:
+            if kind not in _valid:
+                raise ValueError(
+                    f"@planner '{fn.__name__}': unsupported allow value {kind!r}. "
+                    f"Supported: {sorted(_valid)}"
+                )
+        return PlannerAction(
+            name=fn.__name__,
+            inputs=inputs,
+            outputs=outputs,
+            system_prompt=system,
+            actions=tuple(actions),
+            lifelines=tuple(lifelines),
+            allow=_allow,
         )
     return decorator
 

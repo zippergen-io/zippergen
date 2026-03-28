@@ -74,7 +74,7 @@ from zippergen.syntax import (
     ZTypeAtLifeline,
     Expr, VarExpr, LitExpr,
     Stmt, MsgStmt, ActStmt, SkipStmt, IfStmt, WhileStmt,
-    LLMAction, PureAction,
+    LLMAction, PureAction, PlannerAction,
     Workflow,
     seq, is_ztype,
 )
@@ -159,7 +159,7 @@ def msg(
 
 def act(
     lifeline: Lifeline,
-    action: LLMAction | PureAction,
+    action: LLMAction | PureAction | PlannerAction,
     inputs: tuple,
     outputs: tuple[Var, ...],
 ) -> None:

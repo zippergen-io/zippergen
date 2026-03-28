@@ -51,7 +51,7 @@ __all__ = [
     "Expr",
     "VarExpr", "LitExpr",
     # Actions
-    "LLMAction", "PureAction",
+    "LLMAction", "PureAction", "PlannerAction",
     # Type + lifeline annotation helper
     "ZTypeAtLifeline",
     # Statements
@@ -192,6 +192,29 @@ class PureAction:
         return f"PureAction({self.name!r}, ({ins}) -> ({outs}))"
 
 
+@dataclass(frozen=True)
+class PlannerAction:
+    """IR node for an LLM-generated sub-workflow action.
+
+    The runtime generates a ZipperGen workflow spec via LLM (using
+    ``system_prompt`` and the declared ``actions``/``lifelines`` vocabulary),
+    writes it to a temp file, imports it, and runs it.  The single ``str``
+    output is the result returned by the generated workflow.
+    """
+    name: str
+    inputs: tuple[tuple[str, ZType], ...]   # always includes "request" and "inputs_json"
+    outputs: tuple[tuple[str, ZType], ...]  # always single (name, str)
+    system_prompt: str
+    actions: tuple        # tuple of LLMAction | PureAction  (base vocabulary)
+    lifelines: tuple      # tuple of Lifeline used in inner workflows
+    allow: tuple[str, ...] = ()  # action kinds the LLM may define: "pure", "llm"
+
+    def __repr__(self) -> str:
+        ins = ", ".join(f"{n}: {t.__name__}" for n, t in self.inputs)
+        outs = ", ".join(f"{n}: {t.__name__}" for n, t in self.outputs)
+        return f"PlannerAction({self.name!r}, ({ins}) -> ({outs}))"
+
+
 # ---------------------------------------------------------------------------
 # Statements
 # ---------------------------------------------------------------------------
@@ -227,7 +250,7 @@ class MsgStmt:
 class ActStmt:
     """act lifeline: outputs := action(inputs)"""
     lifeline: Lifeline
-    action: Union[LLMAction, PureAction]
+    action: Union[LLMAction, PureAction, "PlannerAction"]
     inputs: tuple[Expr, ...]
     outputs: tuple[Var, ...]
 
@@ -546,7 +569,7 @@ class Workflow:
 @dataclass
 class Program:
     lifelines: tuple[Lifeline, ...]
-    actions: tuple[Union[LLMAction, PureAction], ...]
+    actions: tuple[Union[LLMAction, PureAction, PlannerAction], ...]
     procs: tuple[Workflow, ...]
 
     def __repr__(self) -> str:
