@@ -125,16 +125,16 @@ from zippergen.actions import planner
     lifelines=[Worker1, Worker2],
     allow=["llm"],       # permit the LLM to define new @llm actions
 )
-def write_document(request: str, inputs_json: str) -> str: ...
+def write_document(request: str, job_desc: str, cv_sketch: str) -> str: ...
 ```
 
 The decorated function slots into a `@workflow` exactly like any other action:
 
 ```python
 @workflow
-def openPlannerAgent(request: str @ User, inputs_json: str @ User) -> str:
-    User(request, inputs_json) >> Planner(request, inputs_json)
-    Planner: result = write_document(request, inputs_json)
+def openPlannerAgent(request: str @ User, job_desc: str @ User, cv_sketch: str @ User) -> str:
+    User(request, job_desc, cv_sketch) >> Planner(request, job_desc, cv_sketch)
+    Planner: result = write_document(request, job_desc, cv_sketch)
     Planner(result) >> User(result)
     return result @ User
 ```
