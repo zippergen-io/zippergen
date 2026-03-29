@@ -74,11 +74,7 @@ if __name__ == "__main__":
     )
 
     result_val = openPlannerAgent(
-        request=(
-            "Draft a cover letter. Worker1 should write the initial draft; "
-            "Worker2 should critique it for tone, conciseness, and fit with the job; "
-            "then Worker1 should revise the draft based on the critique."
-        ),
+        request="Draft a polished cover letter using the available workers.",
         job_desc=(
             "Senior Software Engineer — distributed systems team at a fintech startup. "
             "We build high-throughput payment infrastructure. "
