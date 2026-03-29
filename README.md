@@ -119,9 +119,9 @@ from zippergen.actions import planner
     description="A workflow planner for professional writing tasks.",
     actions=[],                          # pre-defined vocabulary (empty = LLM writes everything)
     lifelines=[Worker1, Worker2],
-    allow=["llm"],                       # permit the LLM to define new @llm actions
-    instructions="Use Worker1 to write a first draft and Worker2 to critique it, "
-                 "then Worker1 to revise based on the critique.",  # optional
+    allow=["llm", "if"],                 # permit new @llm actions and conditional branching
+    instructions="Worker1 drafts, Worker2 assesses quality against all original inputs; "
+                 "use an if to route back to Worker1 for revision if needed.",  # optional
 )
 def write_document(request: str, job_desc: str, cv_sketch: str) -> str: ...
 ```
