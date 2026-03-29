@@ -624,6 +624,14 @@ def _exec_planner(action: PlannerAction, named_inputs: dict, llm_backend, trace=
         out_parts = ", ".join(f"{n}: {t.__name__}" for n, t in a.outputs)
         action_lines.append(f"{a.name}({params}) -> {out_parts}")
 
+    worker_names = [ll.name for ll in action.lifelines]
+    worker_list  = ", ".join(worker_names)
+    worker_desc  = (
+        f"You have {len(worker_names)} worker{'s' if len(worker_names) != 1 else ''} "
+        f"available: {worker_list}. "
+        f"Assign them to parallel or sequential subtasks as the task requires."
+    )
+
     lifeline_lines = [f"{outer_lifeline_name}    provides inputs, receives the final result"]
     for ll in action.lifelines:
         lifeline_lines.append(ll.name)
@@ -636,6 +644,7 @@ def _exec_planner(action: PlannerAction, named_inputs: dict, llm_backend, trace=
 
     system_parts = [
         action.system_prompt,
+        worker_desc,
         "DSL rules:\n" + _PLANNER_DSL_RULES.format(caller=outer_lifeline_name),
     ]
     if action.actions and allow_sections:
