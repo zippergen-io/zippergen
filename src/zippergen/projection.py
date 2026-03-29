@@ -43,7 +43,7 @@ from __future__ import annotations
 from zippergen.syntax import (
     EmptyStmt, MsgStmt, ActStmt, SkipStmt, SeqStmt, IfStmt, WhileStmt,
     SendStmt, RecvStmt, IfRecvStmt, WhileRecvStmt,
-    Lifeline, LocalStmt, Stmt, Var, VarExpr, LitExpr,
+    Lifeline, LocalStmt, AnyStmt, Var, VarExpr, LitExpr,
     kappa_ctrl, participation_set, seq,
     Workflow,
 )
@@ -55,7 +55,7 @@ __all__ = ["project"]
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-def _receivers(p_left: Stmt, p_right: Stmt, owner: Lifeline) -> list[Lifeline]:
+def _receivers(p_left: AnyStmt, p_right: AnyStmt, owner: Lifeline) -> list[Lifeline]:
     """
     Compute R = (L(p_left) ∪ L(p_right)) - {owner}, sorted by name (the ≺ order).
     """
@@ -82,7 +82,7 @@ def _fresh_ctrl(counter: list[int]) -> Var:
 # Core projection — structural recursion on Stmt
 # ---------------------------------------------------------------------------
 
-def _project(stmt: Stmt, A: Lifeline, counter: list[int]) -> LocalStmt:
+def _project(stmt: AnyStmt, A: Lifeline, counter: list[int]) -> AnyStmt:
     """π_A(stmt) — one step of the structural recursion."""
 
     match stmt:
@@ -182,7 +182,7 @@ def _project(stmt: Stmt, A: Lifeline, counter: list[int]) -> LocalStmt:
 # Public API
 # ---------------------------------------------------------------------------
 
-def project(wf: Workflow, lifeline: Lifeline) -> LocalStmt:
+def project(wf: Workflow, lifeline: Lifeline) -> AnyStmt:
     """
     Project a global Workflow onto a single lifeline.
 

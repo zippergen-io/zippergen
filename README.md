@@ -141,14 +141,17 @@ def openPlannerAgent(request: str @ User, job_desc: str @ User, cv_sketch: str @
 
 The generated sub-workflow is structurally validated before execution: it must start with the Planner sending inputs to its workers and end with a worker returning the result to the Planner. ZipperChat lets you drill into the sub-workflow to see its MSC alongside the outer one.
 
-**`allow` controls what the planner LLM may define:**
+**`allow` controls what the planner LLM may use or define:**
 
 | `allow` value | Effect |
 |---|---|
-| `[]` (default) | LLM may only use the pre-defined `actions` vocabulary |
+| `[]` (default) | LLM may only use the pre-defined `actions` vocabulary, linear workflows only |
 | `["pure"]` | LLM may also define `@pure` Python helper functions |
 | `["llm"]` | LLM may also define new `@llm` actions with custom prompts |
-| `["pure", "llm"]` | Both |
+| `["if"]` | LLM may use `if cond @ Owner:` conditional branching |
+| `["while"]` | LLM may use `while cond @ Owner:` loops |
+| `["pure", "llm"]` | Both action kinds |
+| `["llm", "if", "while"]` | Full flexibility — custom actions plus control flow |
 
 ## Defining LLM actions
 

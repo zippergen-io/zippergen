@@ -185,10 +185,12 @@ def planner(
     lifelines : list
         ``Lifeline`` objects available to the generated workflow.
     allow : list of str, optional
-        Action kinds the LLM is permitted to *define* in the generated spec.
-        Supported values: ``"pure"`` (plain Python helpers),
-        ``"llm"`` (new ``@llm``-decorated actions with custom prompts).
-        Defaults to no additional kinds (fixed vocabulary only).
+        What the LLM is permitted to use or define in the generated spec.
+        ``"pure"`` — may define ``@pure`` Python helper functions.
+        ``"llm"``  — may define new ``@llm`` actions with custom prompts.
+        ``"if"``   — may use ``if cond @ Owner:`` conditional branching.
+        ``"while"``— may use ``while cond @ Owner:`` loops.
+        Defaults to no extensions (fixed vocabulary, linear workflows only).
     instructions : str, optional
         Additional coordination guidance, e.g. how to assign roles to workers.
         When omitted the runtime encourages the planner to use as many workers
@@ -214,7 +216,7 @@ def planner(
             )
         outputs = ((fn.__name__, str),)
         _allow = tuple(allow) if allow else ()
-        _valid = {"pure", "llm"}
+        _valid = {"pure", "llm", "if", "while"}
         for kind in _allow:
             if kind not in _valid:
                 raise ValueError(

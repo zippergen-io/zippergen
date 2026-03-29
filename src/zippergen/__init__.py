@@ -9,4 +9,4 @@ from zippergen.projection import * # noqa: F401, F403
 from zippergen.runtime import *    # noqa: F401, F403
 from zippergen import syntax, actions, backends, demo, builder, projection, runtime
 
-__all__ = syntax.__all__ + actions.__all__ + backends.__all__ + demo.__all__ + builder.__all__ + projection.__all__ + runtime.__all__
+__all__: list[str] = syntax.__all__ + actions.__all__ + backends.__all__ + demo.__all__ + builder.__all__ + projection.__all__ + runtime.__all__  # type: ignore[assignment]

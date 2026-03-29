@@ -38,7 +38,10 @@ from __future__ import annotations
 import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from typing import Union
+from typing import TYPE_CHECKING, Union
+
+if TYPE_CHECKING:
+    from zipperchat import WebTrace as _WebTrace
 
 __all__ = [
     # Types
@@ -59,7 +62,7 @@ __all__ = [
     "EmptyStmt", "MsgStmt", "ActStmt", "SkipStmt",
     "SeqStmt", "IfStmt", "WhileStmt",
     # Local-only statements (produced by projection)
-    "LocalStmt",
+    "LocalStmt", "AnyStmt",
     "SendStmt", "RecvStmt", "IfRecvStmt", "WhileRecvStmt",
     # Workflow and Program
     "Workflow", "Program",
@@ -184,7 +187,7 @@ class PureAction:
     name: str
     inputs: tuple[tuple[str, ZType], ...]
     outputs: tuple[tuple[str, ZType], ...]
-    fn: object  # the actual Python callable
+    fn: Callable[..., object]
 
     def __repr__(self) -> str:
         ins = ", ".join(f"{n}: {t.__name__}" for n, t in self.inputs)
@@ -273,8 +276,8 @@ class SkipStmt:
 @dataclass(frozen=True)
 class SeqStmt:
     """P1 ; P2 — sequential composition."""
-    first: Stmt
-    second: Stmt
+    first: AnyStmt
+    second: AnyStmt
 
     def __repr__(self) -> str:
         return f"({self.first!r} ; {self.second!r})"
@@ -283,10 +286,10 @@ class SeqStmt:
 @dataclass(frozen=True)
 class IfStmt:
     """if condition@owner then branch_true else branch_false"""
-    condition: object  # Callable[[dict, dict], bool]
+    condition: Callable[..., bool]
     owner: Lifeline
-    branch_true: Stmt
-    branch_false: Stmt
+    branch_true: AnyStmt
+    branch_false: AnyStmt
 
     def __repr__(self) -> str:
         return (
@@ -299,10 +302,10 @@ class IfStmt:
 @dataclass(frozen=True)
 class WhileStmt:
     """while condition@owner do { body } exit { exit_body }"""
-    condition: object  # Callable[[dict, dict], bool]
+    condition: Callable[..., bool]
     owner: Lifeline
-    body: Stmt
-    exit_body: Stmt
+    body: AnyStmt
+    exit_body: AnyStmt
 
     def __repr__(self) -> str:
         return (
@@ -353,8 +356,8 @@ class IfRecvStmt:
     lifeline: Lifeline
     bindings: tuple[Expr, ...]   # bindings[0] is the bool control variable
     sender: Lifeline
-    branch_true: LocalStmt
-    branch_false: LocalStmt
+    branch_true: AnyStmt
+    branch_false: AnyStmt
 
     def __repr__(self) -> str:
         ys = ", ".join(repr(e) for e in self.bindings)
@@ -375,8 +378,8 @@ class WhileRecvStmt:
     lifeline: Lifeline
     bindings: tuple[Expr, ...]   # bindings[0] is the bool control variable
     sender: Lifeline
-    body: LocalStmt
-    exit_body: LocalStmt
+    body: AnyStmt
+    exit_body: AnyStmt
 
     def __repr__(self) -> str:
         ys = ", ".join(repr(e) for e in self.bindings)
@@ -389,6 +392,14 @@ class WhileRecvStmt:
 
 LocalStmt = Union[
     EmptyStmt, SendStmt, RecvStmt, ActStmt, SkipStmt,
+    SeqStmt, IfStmt, WhileStmt, IfRecvStmt, WhileRecvStmt,
+]
+
+# Union covering both global (Stmt) and local (LocalStmt) programs.
+# Used for recursive child positions in shared nodes (SeqStmt, IfStmt, WhileStmt)
+# and for functions that operate on either kind of program.
+AnyStmt = Union[
+    EmptyStmt, MsgStmt, SendStmt, RecvStmt, ActStmt, SkipStmt,
     SeqStmt, IfStmt, WhileStmt, IfRecvStmt, WhileRecvStmt,
 ]
 
@@ -423,16 +434,16 @@ class Workflow:
     inputs: tuple[tuple[str, ZType, Lifeline | None], ...]  # (name, type, lifeline)
     output_type: ZType
     vars: tuple[Var, ...]       # locally declared variables
-    body: Stmt
+    body: AnyStmt
     output_var: Var | None = None           # declared via ``return var @ Lifeline``
     output_lifeline: Lifeline | None = None
     ns: dict = field(default_factory=dict)  # workflow's global namespace (for condition lambdas)
     _backend: object = field(default=None, init=False, repr=False)
     _trace: object   = field(default=None, init=False, repr=False)
     _timeout: float  = field(default=60.0, init=False, repr=False)
-    _webtrace: object = field(default=None, init=False, repr=False)
+    _webtrace: _WebTrace | None = field(default=None, init=False, repr=False)
     _ui_enabled: bool = field(default=False, init=False, repr=False)
-    _run_lock: object = field(default_factory=threading.Lock, init=False, repr=False)
+    _run_lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
     _replay_thread: object = field(default=None, init=False, repr=False)
     _last_kwargs: dict[str, object] = field(default_factory=dict, init=False, repr=False)
 
@@ -465,7 +476,7 @@ class Workflow:
             from zippergen.runtime import mock_llm
 
             if llms == "mock":
-                routes: dict[str, object] = {}
+                routes: dict[str, str | Callable[..., object]] = {}
             elif isinstance(llms, str):
                 routes = {lifeline.name: llms for lifeline in lifelines}
             else:
@@ -518,7 +529,7 @@ class Workflow:
             try:
                 return run(
                     self,
-                    lifelines,
+                    list(lifelines),
                     initial_envs,
                     llm_backend=backend,
                     trace=self._trace,
@@ -533,6 +544,7 @@ class Workflow:
             return
 
         def _worker() -> None:
+            assert self._webtrace is not None
             while True:
                 self._webtrace.wait_for_replay()
                 if not self._last_kwargs:
@@ -583,7 +595,7 @@ class Program:
 # seq — right-associative fold with EmptyStmt identity
 # ---------------------------------------------------------------------------
 
-def seq(*stmts: Stmt) -> Stmt:
+def seq(*stmts: AnyStmt) -> AnyStmt:
     """
     Right-associative sequential composition.
 
@@ -604,7 +616,7 @@ def seq(*stmts: Stmt) -> Stmt:
 # participation_set — L(P) from the paper (Definition 8)
 # ---------------------------------------------------------------------------
 
-def participation_set(stmt: Stmt) -> frozenset[Lifeline]:
+def participation_set(stmt: AnyStmt) -> frozenset[Lifeline]:
     """
     Compute the set of lifelines that appear in a statement.
 
@@ -647,7 +659,7 @@ def participation_set(stmt: Stmt) -> frozenset[Lifeline]:
 # pp — indented pretty-printer
 # ---------------------------------------------------------------------------
 
-def pp(node: Stmt, indent: int = 0) -> str:
+def pp(node: AnyStmt, indent: int = 0) -> str:
     """
     Return an indented string representation of a statement tree.
     More readable than __repr__ for deeply nested programs.

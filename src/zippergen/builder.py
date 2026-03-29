@@ -73,7 +73,7 @@ from zippergen.syntax import (
     ZType, Lifeline, Var,
     ZTypeAtLifeline,
     Expr, VarExpr, LitExpr,
-    Stmt, MsgStmt, ActStmt, SkipStmt, IfStmt, WhileStmt,
+    Stmt, AnyStmt, MsgStmt, ActStmt, SkipStmt, IfStmt, WhileStmt,
     LLMAction, PureAction, PlannerAction,
     Workflow,
     seq, is_ztype,
@@ -105,7 +105,7 @@ def _record(stmt: Stmt) -> None:
     _stack[-1].append(stmt)
 
 
-def _collect(fn: Callable) -> Stmt:
+def _collect(fn: Callable) -> AnyStmt:
     """
     Open a new scope, run fn(), close the scope, and return the
     collected statements folded into a single Stmt via seq().
@@ -182,7 +182,7 @@ def skip(lifeline: Lifeline) -> None:
 
 
 def if_(
-    condition: object,
+    condition: Callable[..., bool],
     owner: Lifeline,
     *,
     then: Callable,
@@ -203,7 +203,7 @@ def if_(
 
 
 def while_(
-    condition: object,
+    condition: Callable[..., bool],
     owner: Lifeline,
     *,
     body: Callable,
