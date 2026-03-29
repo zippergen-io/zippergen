@@ -117,9 +117,11 @@ from zippergen.actions import planner
 
 @planner(
     description="A workflow planner for professional writing tasks.",
-    actions=[],          # pre-defined action vocabulary (empty = LLM writes everything)
+    actions=[],                          # pre-defined vocabulary (empty = LLM writes everything)
     lifelines=[Worker1, Worker2],
-    allow=["llm"],       # permit the LLM to define new @llm actions
+    allow=["llm"],                       # permit the LLM to define new @llm actions
+    instructions="Use Worker1 to write a first draft and Worker2 to critique it, "
+                 "then Worker1 to revise based on the critique.",  # optional
 )
 def write_document(request: str, job_desc: str, cv_sketch: str) -> str: ...
 ```
@@ -135,7 +137,9 @@ def openPlannerAgent(request: str @ User, job_desc: str @ User, cv_sketch: str @
     return result @ User
 ```
 
-The `description` is all the user provides. The runtime builds the full hidden system prompt automatically: it describes the available workers, injects the DSL rules, and lists the allow extensions. At runtime, the planner LLM receives the request, the available workers, and the actual values of all input variables (truncated for brevity) — so it sees what it is working with, not just variable names. It then synthesises a sub-workflow tailored to the request — for example, assigning Worker1 to write a first draft, Worker2 to critique it, and Worker1 to revise. The generated sub-workflow is structurally validated before execution: it must start with the Planner sending inputs to its workers and end with a worker returning the result to the Planner. ZipperChat lets you drill into the sub-workflow to see its MSC alongside the outer one.
+`description` and `lifelines` are all the user needs to provide. The runtime builds the full system prompt automatically: it lists the available workers, injects DSL rules, and adds the allow extensions. The planner LLM receives the request and the actual values of all input variables — so it sees what it is working with, not just variable names. The optional `instructions` parameter lets the user guide how workers are assigned; without it, the planner is asked to use as many workers as reasonable, each with a distinct role.
+
+The generated sub-workflow is structurally validated before execution: it must start with the Planner sending inputs to its workers and end with a worker returning the result to the Planner. ZipperChat lets you drill into the sub-workflow to see its MSC alongside the outer one.
 
 **`allow` controls what the planner LLM may define:**
 
