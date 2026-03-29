@@ -22,6 +22,8 @@ User    = Lifeline("User")
 Planner = Lifeline("Planner")
 Worker1 = Lifeline("Worker1")
 Worker2 = Lifeline("Worker2")
+Worker3 = Lifeline("Worker3")
+Worker4 = Lifeline("Worker4")
 
 # ---------------------------------------------------------------------------
 # Outer workflow variables
@@ -40,7 +42,8 @@ result    = Var("result",    str)
     description="A workflow planner for professional writing tasks.",
     actions=[],
     lifelines=[Worker1, Worker2],
-    allow=["llm"],
+    allow=["llm", "if", "while"],
+    instructions="If possible, use an if to iterate based on the quality of a draft."  # overrides default instruction
 )
 def write_document(request: str, job_desc: str, cv_sketch: str) -> str: ...
 

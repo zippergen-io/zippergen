@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import queue
 import threading
+from typing import cast
 import time
 import textwrap
 
@@ -44,7 +45,7 @@ from zippergen.syntax import (
     SeqStmt, IfStmt, WhileStmt, IfRecvStmt, WhileRecvStmt,
     VarExpr, LitExpr, Var,
     LLMAction, PureAction, PlannerAction,
-    Lifeline, Workflow, LocalStmt,
+    Lifeline, Workflow, LocalStmt, AnyStmt,
     kappa_ctrl,
 )
 from zippergen.projection import project
@@ -343,15 +344,42 @@ _PLANNER_DSL_RULES = """\
 - Return: `return var @ {caller}`.
 - Do NOT include any import statements or Var/Lifeline declarations.
 
-Example — sequential (summarise then critique):
+Example — sequential with handoff (Worker1 drafts, Worker2 refines):
 
 @workflow
-def generated_workflow(text: str @ {caller}, focus: str @ {caller}, criteria: str @ {caller}) -> str:
-    {caller}(text, focus, criteria) >> Worker1(text, focus, criteria)
-    Worker1: summary = summarise(text, focus)
-    Worker1: feedback = critique(summary, criteria)
-    Worker1(feedback) >> {caller}(feedback)
-    return feedback @ {caller}
+def generated_workflow(text: str @ {caller}, instructions: str @ {caller}) -> str:
+    {caller}(text, instructions) >> Worker1(text, instructions)
+    Worker1: draft = write(text, instructions)
+    Worker1(draft) >> Worker2(draft)
+    Worker2: final = refine(draft, instructions)
+    Worker2(final) >> {caller}(final)
+    return final @ {caller}
+
+Example — three-worker chain (Worker1 drafts, Worker2 critiques, Worker3 polishes):
+
+@workflow
+def generated_workflow(text: str @ {caller}, instructions: str @ {caller}) -> str:
+    {caller}(text, instructions) >> Worker1(text, instructions)
+    Worker1: draft = write(text, instructions)
+    Worker1(draft) >> Worker2(draft)
+    Worker2: feedback = critique(draft, instructions)
+    Worker2(draft, feedback) >> Worker3(draft, feedback)
+    Worker3: final = polish(draft, feedback)
+    Worker3(final) >> {caller}(final)
+    return final @ {caller}
+
+Example — back-and-forth (Worker1 drafts, Worker2 critiques, Worker1 revises):
+
+@workflow
+def generated_workflow(text: str @ {caller}, instructions: str @ {caller}) -> str:
+    {caller}(text, instructions) >> Worker1(text, instructions)
+    Worker1: draft = write(text, instructions)
+    Worker1(draft) >> Worker2(draft)
+    Worker2: feedback = critique(draft, instructions)
+    Worker2(feedback) >> Worker1(feedback)
+    Worker1: final = revise(draft, feedback)
+    Worker1(final) >> {caller}(final)
+    return final @ {caller}
 
 Example — parallel then aggregate:
 
@@ -427,6 +455,56 @@ parse rules:
   than returning many fields from one.
 """
 
+_PLANNER_ALLOW_IF = """\
+You may use conditional branching. The owner lifeline evaluates the condition and
+controls which branch executes; other lifelines receive the decision automatically.
+
+Syntax:
+    if condition @ Owner:
+        # true branch
+    else:
+        # false branch — use `pass` if empty
+
+The condition is a Python boolean expression over variables already bound on Owner.
+Supported operators: ==, !=, <, >, <=, >=, not, and, or.
+
+Example — route to a second worker only if the draft needs revision:
+
+    Worker1: (draft, needs_revision) = write_and_assess(text, instructions)
+    if needs_revision @ Worker1:
+        Worker1(draft) >> Worker2(draft)
+        Worker2: draft = revise(draft, instructions)
+        Worker2(draft) >> {caller}(draft)
+    else:
+        Worker1(draft) >> {caller}(draft)
+"""
+
+_PLANNER_ALLOW_WHILE = """\
+You may use loops. The owner lifeline evaluates the loop condition each iteration.
+
+Syntax:
+    while condition @ Owner:
+        # loop body — executes while condition is True
+    else:
+        # exit body — executes once when condition becomes False (REQUIRED, use `pass` if empty)
+
+The condition must reference variables bound on Owner. Loop state (a counter or
+convergence flag) must be returned by an action and updated each iteration.
+Use parse="json" on an @llm action to return both content and a bool control flag,
+or use a @pure counter (if @pure is also allowed).
+
+Example — iterate draft/critique until done or 3 rounds:
+
+    Worker1: (draft, round, done) = start(text, instructions)
+    while (not done and round < 3) @ Worker1:
+        Worker1(draft) >> Worker2(draft)
+        Worker2: feedback = critique(draft)
+        Worker2(feedback) >> Worker1(feedback)
+        Worker1: (draft, round, done) = revise_and_check(draft, feedback, round)
+    else:
+        Worker1(draft) >> {caller}(draft)
+"""
+
 
 def _llm_action_to_source(action: LLMAction) -> str:
     """Reconstruct @llm(...) source code from a LLMAction node."""
@@ -487,8 +565,10 @@ def _extract_intermediate_var_names(spec: str) -> set[str]:
     return var_names
 
 
-def _validate_planner_spec(spec: str, caller: str) -> str | None:
-    """Check the three structural invariants on a generated workflow.
+def _validate_planner_spec(
+    spec: str, caller: str, known_actions: set[str] | None = None
+) -> str | None:
+    """Check structural invariants on a generated workflow.
 
     Returns None if the spec is valid, or a human-readable error string
     describing the first violation found.
@@ -575,19 +655,38 @@ def _validate_planner_spec(spec: str, caller: str) -> str | None:
         )
 
     # --- Invariant 2: second-to-last statement sends TO caller ---
-    second_last = stmts[-2]
-    if not isinstance(second_last, _ast.Expr):
-        return f"Statement before `return` must be `SomeWorker(...) >> {caller}(...)`, got a non-expression."
-    pair2 = binop_rshift(second_last.value)
-    if pair2 is None:
+    # Use the full body (not just Expr/Return) so control flow nodes are visible.
+    non_doc_body = [s for s in body if not (isinstance(s, _ast.Expr)
+                                            and isinstance(s.value, _ast.Constant))]
+    second_last = non_doc_body[-2] if len(non_doc_body) >= 2 else None
+    if second_last is not None and not isinstance(second_last, (_ast.If, _ast.While)):
+        # Only check for linear send when the preceding statement is not control flow.
+        if not isinstance(second_last, _ast.Expr):
+            return f"Statement before `return` must be `SomeWorker(...) >> {caller}(...)`, got a non-expression."
+        pair2 = binop_rshift(second_last.value)
+        if pair2 is None:
+            return (
+                f"Statement before `return` must be `SomeWorker(...) >> {caller}(...)` (>> send), "
+                f"got something else."
+            )
+        if pair2[1] != caller:
+            return (
+                f"Statement before `return` sends to `{pair2[1]}` but must send to `{caller}`. "
+                f"End with `SomeWorker(result) >> {caller}(result)` before the return."
+            )
+
+    # --- Invariant 4: all action calls are defined or pre-defined ---
+    # Collect names called as actions: `A: var = name(...)` or `A: (v1, v2) = name(...)`
+    import re as _re
+    called_names = set(_re.findall(
+        r':\s+(?:\w+|\([^)]+\))\s*=\s*(\w+)\s*\(', spec
+    ))
+    defined_names = set(_re.findall(r'^def\s+(\w+)', spec, _re.MULTILINE))
+    undefined = called_names - defined_names - (known_actions or set())
+    if undefined:
         return (
-            f"Statement before `return` must be `SomeWorker(...) >> {caller}(...)` (>> send), "
-            f"got something else."
-        )
-    if pair2[1] != caller:
-        return (
-            f"Statement before `return` sends to `{pair2[1]}` but must send to `{caller}`. "
-            f"End with `SomeWorker(result) >> {caller}(result)` before the return."
+            f"The workflow calls actions that are not defined: {', '.join(sorted(undefined))}. "
+            f"Each must be defined as an @llm or @pure action before the workflow function."
         )
 
     return None  # all good
@@ -628,11 +727,7 @@ def _exec_planner(action: PlannerAction, named_inputs: dict, llm_backend, trace=
     worker_list  = ", ".join(worker_names)
     worker_desc  = (
         f"You have {len(worker_names)} worker{'s' if len(worker_names) != 1 else ''} "
-        f"available: {worker_list}. "
-        + (
-            action.instructions if action.instructions
-            else "Use as many of them as reasonable, giving each a distinct role."
-        )
+        f"available: {worker_list}."
     )
 
     lifeline_lines = [f"{outer_lifeline_name}    provides inputs, receives the final result"]
@@ -645,11 +740,25 @@ def _exec_planner(action: PlannerAction, named_inputs: dict, llm_backend, trace=
     if "llm" in action.allow:
         allow_sections.append("Defining @llm actions:\n" + _PLANNER_ALLOW_LLM)
 
+    control_flow_sections: list[str] = []
+    if "if" in action.allow:
+        control_flow_sections.append(
+            "Conditional branching:\n"
+            + _PLANNER_ALLOW_IF.format(caller=outer_lifeline_name)
+        )
+    if "while" in action.allow:
+        control_flow_sections.append(
+            "Loops:\n"
+            + _PLANNER_ALLOW_WHILE.format(caller=outer_lifeline_name)
+        )
+
     system_parts = [
         action.system_prompt,
         worker_desc,
         "DSL rules:\n" + _PLANNER_DSL_RULES.format(caller=outer_lifeline_name),
     ]
+    if control_flow_sections:
+        system_parts.append("Control flow (available for use in the workflow):\n\n" + "\n\n".join(control_flow_sections))
     if action.actions and allow_sections:
         # Both pre-defined vocab and the ability to define new actions.
         system_parts.append("Pre-defined actions (ready to use):\n" + "\n".join(action_lines))
@@ -668,6 +777,12 @@ def _exec_planner(action: PlannerAction, named_inputs: dict, llm_backend, trace=
             + "\n".join(allow_sections)
         )
     system_parts.append("Available lifelines:\n" + "\n".join(lifeline_lines))
+    coordination_instruction = (
+        action.instructions
+        if action.instructions
+        else "Use as many workers as reasonable, giving each a distinct role."
+    )
+    system_parts.append(f"Coordination requirement (follow exactly):\n{coordination_instruction}")
     system_parts.append(
         "Return only the Python code. No markdown fences, no explanations, no imports."
     )
@@ -705,17 +820,18 @@ def _exec_planner(action: PlannerAction, named_inputs: dict, llm_backend, trace=
     spec = _strip_fences(str(spec_result.get("workflow_spec", "")))
 
     # --- Validate structural invariants; re-prompt once on failure ---
-    validation_error = _validate_planner_spec(spec, outer_lifeline_name)
+    validation_error = _validate_planner_spec(spec, outer_lifeline_name, {a.name for a in action.actions})
     if validation_error:
         correction_prompt = (
-            f"The workflow you generated has a structural error:\n\n"
+            f"The workflow you generated has an error:\n\n"
             f"  {validation_error}\n\n"
-            f"Fix ONLY the structural issue and return the corrected workflow. "
-            f"Rules:\n"
+            f"Return the complete corrected output — including all @llm and @pure "
+            f"action definitions followed by the @workflow function. "
+            f"Structural rules:\n"
             f"  1. First statement: `{outer_lifeline_name}(inputs) >> SomeWorker(inputs)`\n"
             f"  2. Second-to-last: `SomeWorker(result) >> {outer_lifeline_name}(result)`\n"
             f"  3. Last statement: `return result @ {outer_lifeline_name}`\n\n"
-            f"Current workflow:\n{spec}"
+            f"Current (broken) workflow:\n{spec}"
         )
         correction_prompt_safe = correction_prompt.replace("{", "{{").replace("}", "}}")
         retry_action = LLMAction(
@@ -728,7 +844,7 @@ def _exec_planner(action: PlannerAction, named_inputs: dict, llm_backend, trace=
         )
         spec_result2 = llm_backend(retry_action, {})
         spec = _strip_fences(str(spec_result2.get("workflow_spec", "")))
-        validation_error2 = _validate_planner_spec(spec, outer_lifeline_name)
+        validation_error2 = _validate_planner_spec(spec, outer_lifeline_name, {a.name for a in action.actions})
         if validation_error2:
             raise RuntimeError(
                 f"Planner generated an invalid workflow after correction attempt.\n"
@@ -862,7 +978,7 @@ def _exec_planner(action: PlannerAction, named_inputs: dict, llm_backend, trace=
 # Local-program interpreter
 # ---------------------------------------------------------------------------
 
-def _exec(stmt: LocalStmt, env: Env, ch: Channels, ns: dict, llm_backend, trace,
+def _exec(stmt: AnyStmt, env: Env, ch: Channels, ns: dict, llm_backend, trace,
           stop: threading.Event | None = None) -> None:
     """Execute a LocalStmt, updating env in place."""
     match stmt:
@@ -909,7 +1025,7 @@ def _exec(stmt: LocalStmt, env: Env, ch: Channels, ns: dict, llm_backend, trace,
             if isinstance(action, PureAction):
                 raw = action.fn(*in_vals)
                 out_map = {outs[0].name: raw} if len(outs) == 1 else {
-                    var.name: val for var, val in zip(outs, raw)
+                    var.name: val for var, val in zip(outs, cast(tuple, raw))
                 }
             elif isinstance(action, PlannerAction):
                 out_map = {outs[0].name: _exec_planner(action, named_inputs, llm_backend, trace, seq)}
@@ -1100,7 +1216,7 @@ def run(
         name, exc = error
         raise RuntimeError(f"Lifeline '{name}' raised: {exc}") from exc
 
-    if wf.output_var is not None:
+    if wf.output_var is not None and wf.output_lifeline is not None:
         return final_envs[wf.output_lifeline.name][wf.output_var.name]
 
     return final_envs
