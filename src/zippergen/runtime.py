@@ -335,7 +335,8 @@ def _bound_dict(bindings: tuple, values: tuple) -> dict:
 _PLANNER_DSL_RULES = """\
 - Name the function exactly `generated_workflow`.
 - Declare inputs as `name: str @ {caller}`; return type is `-> str`.
-- Send variables between lifelines: `A(x, y) >> B(x, y)`.
+- Send variables between lifelines: `A(x, y) >> B(x, y)`. Both sides MUST list
+  the same variables in the same order — the left side sends, the right side binds.
 - Single-output action: `A: var = action(arg1, arg2)`.
 - Multi-output action: `A: (var1, var2) = action(arg1, arg2)` — use tuple unpacking,
   never subscript (`var["key"]` is invalid).
@@ -343,6 +344,8 @@ _PLANNER_DSL_RULES = """\
   `LastWorker(result) >> {caller}(result)`.
 - Return: `return var @ {caller}`.
 - Do NOT include any import statements or Var/Lifeline declarations.
+- A lifeline can only use variables it has explicitly received. To give a downstream
+  worker access to original inputs, forward them: `Worker1(result, var) >> Worker2(result, var)`.
 
 Example — sequential with handoff (Worker1 drafts, Worker2 refines):
 
@@ -688,6 +691,22 @@ def _validate_planner_spec(
             f"The workflow calls actions that are not defined: {', '.join(sorted(undefined))}. "
             f"Each must be defined as an @llm or @pure action before the workflow function."
         )
+
+    # --- Invariant 5: both sides of every >> send have the same argument count ---
+    for node in _ast.walk(tree):
+        if not (isinstance(node, _ast.Expr) and isinstance(node.value, _ast.BinOp)
+                and isinstance(node.value.op, _ast.RShift)):
+            continue
+        lhs, rhs = node.value.left, node.value.right
+        if (isinstance(lhs, _ast.Call) and isinstance(rhs, _ast.Call)):
+            if len(lhs.args) != len(rhs.args):
+                lname = lhs.func.id if isinstance(lhs.func, _ast.Name) else "?"
+                rname = rhs.func.id if isinstance(rhs.func, _ast.Name) else "?"
+                return (
+                    f"`{lname}(...)  >> {rname}(...)` has mismatched argument counts "
+                    f"({len(lhs.args)} vs {len(rhs.args)}). "
+                    f"Both sides must list the same variables: `{lname}(x, y) >> {rname}(x, y)`."
+                )
 
     return None  # all good
 
