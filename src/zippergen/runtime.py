@@ -674,14 +674,18 @@ def _exec_planner(action: PlannerAction, named_inputs: dict, llm_backend, trace=
     request_text = str(named_inputs.get("request", ""))
     # All named inputs except "request" are domain data variables passed to workers
     inputs_data = {k: v for k, v in named_inputs.items() if k != "request"}
-    inputs_desc = ", ".join(f"{k}: str" for k in inputs_data.keys())
+    _PREVIEW_LEN = 120
+    def _preview(v: object) -> str:
+        s = str(v)
+        return s if len(s) <= _PREVIEW_LEN else s[:_PREVIEW_LEN] + "…"
+    inputs_desc = "\n".join(f"- {k}: {_preview(v)}" for k, v in inputs_data.items())
 
     # --- 3. Call LLM to generate workflow spec ---
     # Pre-format the user content so .format() receives no template variables
     # (avoids breakage if request_text or inputs_desc contains literal braces).
     user_content = (
         f"Request: {request_text}\n\n"
-        f"Input variables available: {inputs_desc}\n\n"
+        f"Input variables available:\n{inputs_desc}\n\n"
         "Generate the workflow."
     )
     user_content_safe = user_content.replace("{", "{{").replace("}", "}}")
