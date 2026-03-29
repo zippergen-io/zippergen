@@ -161,6 +161,7 @@ def planner(
     actions: list,
     lifelines: list,
     allow: list[str] | None = None,
+    instructions: str | None = None,
 ) -> Callable[[Callable], PlannerAction]:
     """
     Decorator that produces a PlannerAction node.
@@ -170,15 +171,14 @@ def planner(
     must be ``str``.
 
     At runtime the action builds a full hidden system prompt from ``description``,
-    an auto-generated worker summary, DSL rules, and any ``allow`` extensions,
-    then calls the LLM to generate a sub-workflow, validates it, and runs it.
+    an auto-generated worker summary, optional ``instructions``, DSL rules, and
+    any ``allow`` extensions, then calls the LLM to generate a sub-workflow,
+    validates it, and runs it.
 
     Parameters
     ----------
     description : str
-        One or two sentences describing the planner's task domain.  The runtime
-        builds the full system prompt from this; the user never writes DSL rules
-        or worker descriptions manually.
+        One sentence describing the planner's task domain.
     actions : list
         Pre-defined action vocabulary (``LLMAction`` / ``PureAction`` nodes).
         The LLM may use these directly.  Pass ``[]`` to start from scratch.
@@ -189,14 +189,19 @@ def planner(
         Supported values: ``"pure"`` (plain Python helpers),
         ``"llm"`` (new ``@llm``-decorated actions with custom prompts).
         Defaults to no additional kinds (fixed vocabulary only).
+    instructions : str, optional
+        Additional coordination guidance, e.g. how to assign roles to workers.
+        When omitted the runtime encourages the planner to use as many workers
+        as reasonable.
 
     Example::
 
         @planner(
             description="A workflow planner for text processing tasks.",
-            actions=[summarise, translate],       # base vocabulary
+            actions=[summarise, translate],
             lifelines=[Worker1, Worker2, Aggregator],
-            allow=["pure", "llm"],                # LLM may also define its own
+            allow=["pure", "llm"],
+            instructions="Use Worker1 and Worker2 in parallel, then Aggregator to combine.",
         )
         def run_task(request: str, inputs_json: str) -> str: ...
     """
@@ -224,6 +229,7 @@ def planner(
             actions=tuple(actions),
             lifelines=tuple(lifelines),
             allow=_allow,
+            instructions=instructions,
         )
     return decorator
 
