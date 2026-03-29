@@ -708,6 +708,92 @@ def _validate_planner_spec(
                     f"Both sides must list the same variables: `{lname}(x, y) >> {rname}(x, y)`."
                 )
 
+    # --- Invariant 6: per-lifeline variable scope ---
+    # Each lifeline may only use variables it has explicitly received (via >> or as
+    # function outputs).  Seed caller's scope from the declared function parameters.
+    scope: dict[str, set[str]] = {}
+    for arg in fn_node.args.args:
+        scope.setdefault(caller, set()).add(arg.arg)
+
+    def _check_scopes(stmts: list, sc: dict[str, set[str]]) -> str | None:
+        for stmt in stmts:
+            # `LifelineName: output = action(args)`  →  AnnAssign
+            if isinstance(stmt, _ast.AnnAssign) and isinstance(stmt.target, _ast.Name):
+                ll = stmt.target.id
+                ann = stmt.annotation
+                if isinstance(ann, _ast.Name):
+                    outputs: list[str] = [ann.id]
+                elif isinstance(ann, _ast.Tuple):
+                    outputs = [e.id for e in ann.elts if isinstance(e, _ast.Name)]
+                else:
+                    outputs = []
+                if isinstance(stmt.value, _ast.Call):
+                    for arg in stmt.value.args:
+                        if isinstance(arg, _ast.Name) and arg.id not in sc.get(ll, set()):
+                            fn_name = (stmt.value.func.id
+                                       if isinstance(stmt.value.func, _ast.Name) else "?")
+                            return (
+                                f"`{ll}: ... = {fn_name}(...)` uses `{arg.id}` "
+                                f"but `{ll}` has not received it. "
+                                f"Forward it explicitly: "
+                                f"`Sender({arg.id}, ...) >> {ll}({arg.id}, ...)`."
+                            )
+                sc.setdefault(ll, set()).update(outputs)
+
+            # `A(vars) >> B(vars)`  →  Expr with RShift BinOp
+            elif (isinstance(stmt, _ast.Expr)
+                  and isinstance(stmt.value, _ast.BinOp)
+                  and isinstance(stmt.value.op, _ast.RShift)):
+                lhs2, rhs2 = stmt.value.left, stmt.value.right
+                if isinstance(lhs2, _ast.Call) and isinstance(lhs2.func, _ast.Name):
+                    sender = lhs2.func.id
+                    for arg in lhs2.args:
+                        if isinstance(arg, _ast.Name) and arg.id not in sc.get(sender, set()):
+                            recv_name = (rhs2.func.id
+                                         if isinstance(rhs2, _ast.Call)
+                                         and isinstance(rhs2.func, _ast.Name) else "?")
+                            return (
+                                f"`{sender}({arg.id}) >> {recv_name}(...)` sends `{arg.id}` "
+                                f"but `{sender}` has not received it."
+                            )
+                if isinstance(rhs2, _ast.Call) and isinstance(rhs2.func, _ast.Name):
+                    receiver = rhs2.func.id
+                    for arg in rhs2.args:
+                        if isinstance(arg, _ast.Name):
+                            sc.setdefault(receiver, set()).add(arg.id)
+
+            # `if cond @ Owner:`
+            elif isinstance(stmt, _ast.If):
+                sc_true  = {k: set(v) for k, v in sc.items()}
+                sc_false = {k: set(v) for k, v in sc.items()}
+                err = _check_scopes(stmt.body,   sc_true)
+                if err:
+                    return err
+                err = _check_scopes(stmt.orelse, sc_false)
+                if err:
+                    return err
+                # Conservative merge: vars available in either branch
+                for ll in set(sc_true) | set(sc_false):
+                    sc[ll] = sc_true.get(ll, set()) | sc_false.get(ll, set())
+
+            # `while cond @ Owner:`
+            elif isinstance(stmt, _ast.While):
+                sc_body = {k: set(v) for k, v in sc.items()}
+                err = _check_scopes(stmt.body,   sc_body)
+                if err:
+                    return err
+                err = _check_scopes(stmt.orelse, sc_body)
+                if err:
+                    return err
+                for ll in set(sc) | set(sc_body):
+                    sc[ll] = sc.get(ll, set()) | sc_body.get(ll, set())
+
+        return None
+
+    scope_err = _check_scopes(fn_node.body, scope)
+    if scope_err:
+        return scope_err
+
     return None  # all good
 
 
