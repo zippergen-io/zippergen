@@ -116,11 +116,7 @@ For tasks where the coordination structure itself isn't known in advance, `@plan
 from zippergen.actions import planner
 
 @planner(
-    system=(
-        "You are a workflow planner for professional writing tasks. "
-        "Given a user request and available input data, design a multi-agent "
-        "workflow and write all the LLM actions it needs from scratch."
-    ),
+    description="A workflow planner for professional writing tasks.",
     actions=[],          # pre-defined action vocabulary (empty = LLM writes everything)
     lifelines=[Worker1, Worker2],
     allow=["llm"],       # permit the LLM to define new @llm actions
@@ -139,7 +135,7 @@ def openPlannerAgent(request: str @ User, job_desc: str @ User, cv_sketch: str @
     return result @ User
 ```
 
-At runtime, the planner LLM synthesises a sub-workflow tailored to the request — for example, assigning Worker1 to write a first draft, Worker2 to critique it, and Worker1 to revise. The generated sub-workflow is structurally validated before execution: it must start with the Planner sending inputs to its workers and end with a worker returning the result to the Planner. ZipperChat lets you drill into the sub-workflow to see its MSC alongside the outer one.
+The `description` is all the user provides. The runtime builds the full hidden system prompt automatically: it describes the available workers, injects the DSL rules, and lists the allow extensions. At runtime, the planner LLM synthesises a sub-workflow tailored to the request — for example, assigning Worker1 to write a first draft, Worker2 to critique it, and Worker1 to revise. The generated sub-workflow is structurally validated before execution: it must start with the Planner sending inputs to its workers and end with a worker returning the result to the Planner. ZipperChat lets you drill into the sub-workflow to see its MSC alongside the outer one.
 
 **`allow` controls what the planner LLM may define:**
 

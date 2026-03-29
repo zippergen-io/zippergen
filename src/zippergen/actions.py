@@ -157,7 +157,7 @@ def llm(
 
 def planner(
     *,
-    system: str,
+    description: str,
     actions: list,
     lifelines: list,
     allow: list[str] | None = None,
@@ -166,20 +166,19 @@ def planner(
     Decorator that produces a PlannerAction node.
 
     The decorated function's body must be ``...``.  Its parameter annotations
-    declare the inputs passed to the LLM planner (``request: str``) and the
-    JSON-encoded data payload (``inputs_json: str``).  The return annotation
+    declare the inputs passed to the LLM planner.  The return annotation
     must be ``str``.
 
-    At runtime the action:
-    1. Calls the LLM with a system prompt built from ``system``, the declared
-       ``actions`` vocabulary, DSL rules, and any ``allow`` extensions.
-    2. Writes the generated workflow spec to a temp file and imports it.
-    3. Runs the generated workflow and returns its result as a ``str``.
+    At runtime the action builds a full hidden system prompt from ``description``,
+    an auto-generated worker summary, DSL rules, and any ``allow`` extensions,
+    then calls the LLM to generate a sub-workflow, validates it, and runs it.
 
     Parameters
     ----------
-    system : str
-        Base system prompt describing the planner's role.
+    description : str
+        One or two sentences describing the planner's task domain.  The runtime
+        builds the full system prompt from this; the user never writes DSL rules
+        or worker descriptions manually.
     actions : list
         Pre-defined action vocabulary (``LLMAction`` / ``PureAction`` nodes).
         The LLM may use these directly.  Pass ``[]`` to start from scratch.
@@ -194,7 +193,7 @@ def planner(
     Example::
 
         @planner(
-            system="You are a workflow planner for text processing tasks.",
+            description="A workflow planner for text processing tasks.",
             actions=[summarise, translate],       # base vocabulary
             lifelines=[Worker1, Worker2, Aggregator],
             allow=["pure", "llm"],                # LLM may also define its own
@@ -221,7 +220,7 @@ def planner(
             name=fn.__name__,
             inputs=inputs,
             outputs=outputs,
-            system_prompt=system,
+            system_prompt=description,
             actions=tuple(actions),
             lifelines=tuple(lifelines),
             allow=_allow,

@@ -37,12 +37,7 @@ result    = Var("result",    str)
 # ---------------------------------------------------------------------------
 
 @planner(
-    system=(
-        "You are a workflow planner for professional writing tasks. "
-        "Given a user request and available input data, design a multi-agent "
-        "workflow and write all the LLM actions it needs from scratch. "
-        "Tailor every system prompt and user prompt precisely to the task."
-    ),
+    description="A workflow planner for professional writing tasks.",
     actions=[],
     lifelines=[Worker1, Worker2],
     allow=["llm"],
