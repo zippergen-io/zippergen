@@ -43,7 +43,8 @@ result    = Var("result",    str)
     actions=[],
     lifelines=[Worker1, Worker2],
     allow=["llm", "if", "while"],
-    instructions="If possible, use an if to iterate based on the quality of a draft."  # overrides default instruction
+    instructions="Worker1 drafts, Worker2 assesses quality against all original inputs; "
+                 "use an if to route back to Worker1 for revision if needed."
 )
 def write_document(request: str, job_desc: str, cv_sketch: str) -> str: ...
 
