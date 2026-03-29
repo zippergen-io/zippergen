@@ -323,13 +323,13 @@ if __name__ == "__main__":
     USE_UI = True
 
     contractReview.configure(
-        # llms="mock",
-        llms={
-            "Jurisdiction":    make_openai_backend(api_key=os.environ["OPENAI_API_KEY_J"]),
-            "Liability":       make_openai_backend(api_key=os.environ["OPENAI_API_KEY_L"]),
-            "Confidentiality": make_openai_backend(api_key=os.environ["OPENAI_API_KEY_C"]),
-            "Orchestrator":    "mistral",
-        },
+        llms="mistral",
+        # llms={
+        #     "Jurisdiction":    make_openai_backend(api_key=os.environ["OPENAI_API_KEY_J"]),
+        #     "Liability":       make_openai_backend(api_key=os.environ["OPENAI_API_KEY_L"]),
+        #     "Confidentiality": make_openai_backend(api_key=os.environ["OPENAI_API_KEY_C"]),
+        #     "Orchestrator":    "mistral",
+        # },
         ui=USE_UI,
         timeout=600,
     )
