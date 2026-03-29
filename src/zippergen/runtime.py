@@ -364,7 +364,7 @@ Example — three-worker chain (Worker1 drafts, Worker2 critiques, Worker3 polis
 def generated_workflow(text: str @ {caller}, instructions: str @ {caller}) -> str:
     {caller}(text, instructions) >> Worker1(text, instructions)
     Worker1: draft = write(text, instructions)
-    Worker1(draft) >> Worker2(draft)
+    Worker1(draft, instructions) >> Worker2(draft, instructions)
     Worker2: feedback = critique(draft, instructions)
     Worker2(draft, feedback) >> Worker3(draft, feedback)
     Worker3: final = polish(draft, feedback)
@@ -377,10 +377,10 @@ Example — back-and-forth (Worker1 drafts, Worker2 critiques, Worker1 revises):
 def generated_workflow(text: str @ {caller}, instructions: str @ {caller}) -> str:
     {caller}(text, instructions) >> Worker1(text, instructions)
     Worker1: draft = write(text, instructions)
-    Worker1(draft) >> Worker2(draft)
+    Worker1(draft, instructions) >> Worker2(draft, instructions)
     Worker2: feedback = critique(draft, instructions)
     Worker2(feedback) >> Worker1(feedback)
-    Worker1: final = revise(draft, feedback)
+    Worker1: final = revise(draft, feedback, instructions)
     Worker1(final) >> {caller}(final)
     return final @ {caller}
 
@@ -475,7 +475,7 @@ Example — route to a second worker only if the draft needs revision:
 
     Worker1: (draft, needs_revision) = write_and_assess(text, instructions)
     if needs_revision @ Worker1:
-        Worker1(draft) >> Worker2(draft)
+        Worker1(draft, instructions) >> Worker2(draft, instructions)
         Worker2: draft = revise(draft, instructions)
         Worker2(draft) >> {caller}(draft)
     else:
