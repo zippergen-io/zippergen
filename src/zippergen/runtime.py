@@ -629,8 +629,10 @@ def _exec_planner(action: PlannerAction, named_inputs: dict, llm_backend, trace=
     worker_desc  = (
         f"You have {len(worker_names)} worker{'s' if len(worker_names) != 1 else ''} "
         f"available: {worker_list}. "
-        f"You MUST use all of them — each must have a distinct, meaningful role in the workflow. "
-        f"Distribute the work across workers using parallel or sequential steps as appropriate."
+        + (
+            action.instructions if action.instructions
+            else "Use as many of them as reasonable, giving each a distinct role."
+        )
     )
 
     lifeline_lines = [f"{outer_lifeline_name}    provides inputs, receives the final result"]
