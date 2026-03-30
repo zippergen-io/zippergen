@@ -166,6 +166,16 @@ def console_trace(event: dict) -> None:
         else:
             lines.append("  output")
             lines.append("    (none)")
+    elif t == "decision":
+        kind = event.get("kind", "if")
+        val  = event.get("value")
+        cond = event.get("condition")
+        if kind == "if":
+            label = "⊤ true" if val else "⊥ false"
+        else:
+            label = "↻ continue" if val else "⊥ exit"
+        suffix = f" ({cond})" if cond else ""
+        lines = [f"[{lifeline}] {kind}{suffix}: {label}"]
 
     if not lines:
         return
@@ -285,13 +295,6 @@ def _jsonify(value: object) -> object:
     return str(value)
 
 
-def _fmt_vals(values) -> str:
-    """Short string for console trace."""
-    if isinstance(values, list):
-        return str(tuple(values))
-    return str(values)
-
-
 def _bound_dict(bindings: tuple, values: tuple) -> dict:
     """Build a {var_name: value} dict from a binding/value pair, skipping kappa."""
     return {
@@ -379,9 +382,12 @@ def _exec(stmt: LocalStmt, env: Env, ch: Channels, ns: dict, llm_backend, trace,
             _exec(cast(LocalStmt, p1), env, ch, ns, llm_backend, trace, stop)
             _exec(cast(LocalStmt, p2), env, ch, ns, llm_backend, trace, stop)
 
-        case IfStmt(condition=c, owner=_, branch_true=t, branch_false=f):
-            branch = cast(LocalStmt, t if c(_CondEnv(env, ns)) else f)
-            _exec(branch, env, ch, ns, llm_backend, trace, stop)
+        case IfStmt(condition=c, owner=B, branch_true=t, branch_false=f):
+            flag = c(_CondEnv(env, ns))
+            if trace:
+                trace({"type": "decision", "lifeline": B.name, "kind": "if", "value": flag,
+                       "condition": getattr(c, "_src", None)})
+            _exec(cast(LocalStmt, t if flag else f), env, ch, ns, llm_backend, trace, stop)
 
         case IfRecvStmt(lifeline=A, bindings=ys, sender=B, branch_true=t, branch_false=f):
             seq, values = ch[(B.name, A.name)].get(stop=stop)
@@ -396,8 +402,14 @@ def _exec(stmt: LocalStmt, env: Env, ch: Channels, ns: dict, llm_backend, trace,
                 })
             _exec(cast(LocalStmt, t if flag else f), env, ch, ns, llm_backend, trace, stop)
 
-        case WhileStmt(condition=c, owner=_, body=body, exit_body=exit_b):
-            while c(_CondEnv(env, ns)):
+        case WhileStmt(condition=c, owner=B, body=body, exit_body=exit_b):
+            while True:
+                flag = c(_CondEnv(env, ns))
+                if trace:
+                    trace({"type": "decision", "lifeline": B.name, "kind": "while", "value": flag,
+                           "condition": getattr(c, "_src", None)})
+                if not flag:
+                    break
                 _exec(cast(LocalStmt, body), env, ch, ns, llm_backend, trace, stop)
             _exec(cast(LocalStmt, exit_b), env, ch, ns, llm_backend, trace, stop)
 
