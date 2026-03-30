@@ -37,6 +37,20 @@ _PLANNER_DSL_RULES = """\
 - Do NOT include any import statements or Var/Lifeline declarations.
 - A lifeline can only use variables it has explicitly received. To give a downstream
   worker access to original inputs, forward them: `Worker1(result, var) >> Worker2(result, var)`.
+- Every branch of an `if` must send the final result to {caller} under the SAME
+  binding name. The name on the RIGHT side of `>>` is what {caller} will use in
+  `return`. Example — CORRECT (both branches bind to `result`):
+      if cond @ Worker1:
+          Worker1(final) >> {caller}(result)   # binds as `result`
+      else:
+          Worker1(draft) >> {caller}(result)   # also binds as `result`
+      return result @ {caller}
+  WRONG (different names → `return` cannot refer to both):
+      if cond @ Worker1:
+          Worker1(final) >> {caller}(final)    # ← final
+      else:
+          Worker1(draft) >> {caller}(draft)    # ← draft (different!)
+      return draft @ {caller}                  # ← fails: draft not on all paths
 
 Example — sequential with handoff (Worker1 drafts, Worker2 refines):
 
@@ -163,14 +177,16 @@ The condition is a Python boolean expression over variables already bound on Own
 Supported operators: ==, !=, <, >, <=, >=, not, and, or.
 
 Example — route to a second worker only if the draft needs revision:
+(Both branches bind the result to `result` on the {caller} side so the return works.)
 
     Worker1: (draft, needs_revision) = write_and_assess(text, instructions)
     if needs_revision @ Worker1:
         Worker1(draft, instructions) >> Worker2(draft, instructions)
-        Worker2: draft = revise(draft, instructions)
-        Worker2(draft) >> {caller}(draft)
+        Worker2: revised = revise(draft, instructions)
+        Worker2(revised) >> {caller}(result)   # bind as `result`
     else:
-        Worker1(draft) >> {caller}(draft)
+        Worker1(draft) >> {caller}(result)     # also bind as `result`
+    return result @ {caller}
 """
 
 _PLANNER_ALLOW_WHILE = """\

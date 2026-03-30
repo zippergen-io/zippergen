@@ -9,6 +9,7 @@ import ast
 import inspect
 import textwrap
 from collections.abc import Callable
+from typing import cast
 
 from zippergen.syntax import (
     ZType, Lifeline, Var,
@@ -580,7 +581,7 @@ def workflow(fn: Callable) -> Workflow:
         inputs=inputs,
         output_type=output_type,
         vars=(),    # variable declarations populated by verifier (Layer 5)
-        body=body,
+        body=cast(Stmt, body),
         output_var=output_var,
         output_lifeline=output_lifeline,
         ns=fn.__globals__,
