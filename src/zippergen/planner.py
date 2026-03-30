@@ -262,11 +262,13 @@ def _pure_action_to_source(action: PureAction) -> str:
 # ---------------------------------------------------------------------------
 
 def _extract_intermediate_var_names(spec: str) -> set[str]:
-    """Extract variable names used as outputs in annotated assignments.
+    """Extract variable names that need to be declared as Var in the preamble.
 
-    In ``Worker1: summary = summarise(text, focus)``, the annotation is
-    ``summary`` — this is the intermediate variable that needs to be declared
-    as a Var in the preamble so the builder can resolve it.
+    Two sources:
+    - AnnAssign annotations: ``Worker1: summary = f(x)`` → ``summary``
+    - RHS bindings of >> sends: ``A(x) >> B(result)`` → ``result``
+      These may differ from the sender's variable name and would not appear
+      in any annotation, so they must be collected separately.
     """
     import ast as _ast
     var_names: set[str] = set()
@@ -278,15 +280,24 @@ def _extract_intermediate_var_names(spec: str) -> set[str]:
         if not (isinstance(fn_node, _ast.FunctionDef) and fn_node.name == "generated_workflow"):
             continue
         for node in _ast.walk(fn_node):
-            if not isinstance(node, _ast.AnnAssign):
-                continue
-            ann = node.annotation
-            if isinstance(ann, _ast.Tuple):
-                for elt in ann.elts:
-                    if isinstance(elt, _ast.Name):
-                        var_names.add(elt.id)
-            elif isinstance(ann, _ast.Name):
-                var_names.add(ann.id)
+            # Action output annotations: Worker1: (a, b) = f(x)
+            if isinstance(node, _ast.AnnAssign):
+                ann = node.annotation
+                if isinstance(ann, _ast.Tuple):
+                    for elt in ann.elts:
+                        if isinstance(elt, _ast.Name):
+                            var_names.add(elt.id)
+                elif isinstance(ann, _ast.Name):
+                    var_names.add(ann.id)
+            # RHS bindings of >> sends: A(x) >> B(result)
+            elif (isinstance(node, _ast.Expr)
+                  and isinstance(node.value, _ast.BinOp)
+                  and isinstance(node.value.op, _ast.RShift)):
+                rhs = node.value.right
+                if isinstance(rhs, _ast.Call):
+                    for arg in rhs.args:
+                        if isinstance(arg, _ast.Name):
+                            var_names.add(arg.id)
     return var_names
 
 
