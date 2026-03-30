@@ -1,56 +1,6 @@
 """
-ZipperGen — Layer 2: Action decorators.
-
-Design notes
-------------
-**What this module is.**
-This module provides ``@llm`` and ``@pure``, two decorators that let you define
-actions using ordinary Python function syntax. They read the function's
-parameter annotations to extract input types, and produce a ``LLMAction`` or
-``PureAction`` IR node (from Layer 1). The function itself is not called by
-the decorator — it is stored inside the IR node for later use by the executor.
-
-**Why decorators instead of constructing IR nodes directly?**
-Decorators keep the action definition close to normal Python style and avoid
-repeating the parameter names (once in the signature, once in an inputs tuple).
-They also enforce that every parameter has a ZipperGen type annotation, which
-prevents silent mistakes.
-
-**Why do the decorators return an IR node, not a callable?**
-An action in ZipperGen is a declaration, not a function call. Returning an IR
-node makes this explicit: after ``@pure``, the name refers to a ``PureAction``
-object that belongs to a program. If you need to call the underlying Python
-function directly (e.g. in tests), use ``action.fn(...)``.
-
-**Why does @llm always require outputs= explicitly?**
-An LLM action's body is ``...`` — there is no Python code to inspect for
-return information. Output names and types must therefore be stated explicitly.
-For ``@pure``, the single output name and type are inferred from the function
-name and return annotation.
-
-**Type annotations use ordinary Python built-ins.**
-ZipperGen coordination types are expressed with built-in Python types like
-``str``, ``bool``, ``int``, and ``float``. The decorators read these runtime
-annotations directly via ``inspect.signature``.
-
-Usage
------
-    @llm(
-        system="You are a medical expert ...",
-        user="Notes: {notes}\\nDiagnosis: {diag}",
-        parse="json",
-        outputs=(("verdict", bool), ("reason", str)),
-    )
-    def assess(notes: str, diag: str) -> None: ...
-
-    @pure
-    def check_agreement(v1: bool, v2: bool) -> bool:
-        return v1 == v2
-
-Notes
------
-The decorated name becomes a LLMAction / PureAction IR node, not a callable.
-To call the underlying Python function directly, use ``action.fn(...)``.
+Layer 2: @llm, @pure, and @planner decorators. Read Python annotations to
+produce LLMAction, PureAction, and PlannerAction IR nodes.
 """
 
 from __future__ import annotations

@@ -1,36 +1,6 @@
 """
-ZipperGen — Layer 1: Abstract syntax (IR).
-
-Design notes
-------------
-**What this module is.**
-This module defines the internal representation (IR) of ZipperGen coordination
-programs as plain Python dataclasses. Every class here corresponds one-to-one
-to a construct in the formal grammar of the paper. Nothing in this module
-does anything — it only *describes* programs as data.
-
-**Why frozen dataclasses?**
-All IR nodes use ``frozen=True``, which makes them immutable and hashable.
-This means two nodes with identical contents are considered equal and can be
-used as dictionary keys or set members. It also prevents accidental mutation,
-which matters because the same node (e.g. a shared Var or Lifeline) can appear
-in many places in a program tree.
-
-**Why tuples instead of lists?**
-Tuples are immutable, consistent with the frozen philosophy. A ``MsgStmt``
-that looks the same always *is* the same.
-
-**Why is Stmt a type alias rather than a base class?**
-The formal grammar defines statements by cases, not by inheritance. Using a
-``Union`` type alias keeps the structure flat and matches the paper directly.
-The ``match``/``case`` pattern (used in ``participation_set`` and ``pp``) then
-mirrors a mathematical case analysis, which makes it easy to check against the
-paper's definitions.
-
-**Types.**
-ZipperGen uses Python's built-in types as coordination types: ``str``, ``int``,
-``bool``, ``float``, and ``tuple``. ``ZType`` is an alias for ``type`` used in
-annotations to make this intent explicit.
+Layer 1: IR dataclasses. One class per grammar construct from the paper.
+Frozen so nodes are immutable and hashable.
 """
 
 from __future__ import annotations
@@ -405,6 +375,10 @@ AnyStmt = Union[
 
 
 def _ordered_workflow_lifelines(wf: "Workflow") -> tuple[Lifeline, ...]:
+    # Ordering policy: lifelines appear in the order they were declared in the
+    # workflow's namespace (e.g. module-level Lifeline(...) variables), then any
+    # that appear only in input annotations, then any remaining participants sorted
+    # alphabetically. This gives a stable, predictable display order.
     participants = participation_set(wf.body)
     ordered: list[Lifeline] = []
     seen: set[Lifeline] = set()
@@ -429,23 +403,69 @@ def _ordered_workflow_lifelines(wf: "Workflow") -> tuple[Lifeline, ...]:
 # ---------------------------------------------------------------------------
 
 @dataclass
+class _WorkflowRuntime:
+    """Mutable runtime state for a Workflow, kept separate from the IR fields."""
+    _backend: object = field(default=None, repr=False)
+    _trace: object = field(default=None, repr=False)
+    _timeout: float = field(default=60.0, repr=False)
+    _webtrace: _WebTrace | None = field(default=None, repr=False)
+    _ui_enabled: bool = field(default=False, repr=False)
+    _run_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    _replay_thread: object = field(default=None, repr=False)
+    _last_kwargs: dict[str, object] = field(default_factory=dict, repr=False)
+
+
+@dataclass
 class Workflow:
     name: str
     inputs: tuple[tuple[str, ZType, Lifeline | None], ...]  # (name, type, lifeline)
     output_type: ZType
     vars: tuple[Var, ...]       # locally declared variables
-    body: AnyStmt
+    body: Stmt
     output_var: Var | None = None           # declared via ``return var @ Lifeline``
     output_lifeline: Lifeline | None = None
     ns: dict = field(default_factory=dict)  # workflow's global namespace (for condition lambdas)
-    _backend: object = field(default=None, init=False, repr=False)
-    _trace: object   = field(default=None, init=False, repr=False)
-    _timeout: float  = field(default=60.0, init=False, repr=False)
-    _webtrace: _WebTrace | None = field(default=None, init=False, repr=False)
-    _ui_enabled: bool = field(default=False, init=False, repr=False)
-    _run_lock: threading.Lock = field(default_factory=threading.Lock, init=False, repr=False)
-    _replay_thread: object = field(default=None, init=False, repr=False)
-    _last_kwargs: dict[str, object] = field(default_factory=dict, init=False, repr=False)
+    _rt: _WorkflowRuntime = field(default_factory=_WorkflowRuntime, init=False, repr=False)
+
+    # Convenience property shims so planner.py and tests can still write
+    # wf._backend = x, wf._trace = x, wf._timeout = x without changes.
+    @property
+    def _backend(self): return self._rt._backend
+    @_backend.setter
+    def _backend(self, v): self._rt._backend = v
+
+    @property
+    def _trace(self): return self._rt._trace
+    @_trace.setter
+    def _trace(self, v): self._rt._trace = v
+
+    @property
+    def _timeout(self): return self._rt._timeout
+    @_timeout.setter
+    def _timeout(self, v): self._rt._timeout = v
+
+    @property
+    def _webtrace(self): return self._rt._webtrace
+    @_webtrace.setter
+    def _webtrace(self, v): self._rt._webtrace = v
+
+    @property
+    def _ui_enabled(self): return self._rt._ui_enabled
+    @_ui_enabled.setter
+    def _ui_enabled(self, v): self._rt._ui_enabled = v
+
+    @property
+    def _run_lock(self): return self._rt._run_lock
+
+    @property
+    def _replay_thread(self): return self._rt._replay_thread
+    @_replay_thread.setter
+    def _replay_thread(self, v): self._rt._replay_thread = v
+
+    @property
+    def _last_kwargs(self): return self._rt._last_kwargs
+    @_last_kwargs.setter
+    def _last_kwargs(self, v): self._rt._last_kwargs = v
 
     def configure(self, *,
                   backend: object = None,
@@ -487,24 +507,24 @@ class Workflow:
                 routes,
                 fallback=lambda a, i: mock_llm(a, i, min_delay=mock_delay[0], max_delay=mock_delay[1]),
             )
-            self._backend = built_backend
+            self._rt._backend = built_backend
         if backend is not None:
-            self._backend = backend
+            self._rt._backend = backend
 
         if ui is not None:
-            self._ui_enabled = ui
-        if self._ui_enabled:
+            self._rt._ui_enabled = ui
+        if self._rt._ui_enabled:
             from zippergen.runtime import console_trace, tee_traces
             from zipperchat import WebTrace
 
-            if self._webtrace is None:
-                self._webtrace = WebTrace(lifelines).start()
+            if self._rt._webtrace is None:
+                self._rt._webtrace = WebTrace(lifelines).start()
             base_trace = trace if trace is not None else console_trace
-            self._trace = tee_traces(self._webtrace, base_trace)
+            self._rt._trace = tee_traces(self._rt._webtrace, base_trace)
         elif trace is not None:
-            self._trace = trace
+            self._rt._trace = trace
 
-        self._timeout = timeout
+        self._rt._timeout = timeout
         return self
 
     def _run_once(self, kwargs: dict[str, object]) -> object:
@@ -522,41 +542,41 @@ class Workflow:
             initial_envs.setdefault(lifeline.name, {})[name] = kwargs[name]
 
         lifelines = _ordered_workflow_lifelines(self)
-        backend = self._backend if self._backend is not None else mock_llm
-        with self._run_lock:
-            if self._webtrace is not None and self._ui_enabled:
-                self._webtrace.reset()
+        backend = self._rt._backend if self._rt._backend is not None else mock_llm
+        with self._rt._run_lock:
+            if self._rt._webtrace is not None and self._rt._ui_enabled:
+                self._rt._webtrace.reset()
             try:
                 return run(
                     self,
                     list(lifelines),
                     initial_envs,
                     llm_backend=backend,
-                    trace=self._trace,
-                    timeout=self._timeout,
+                    trace=self._rt._trace,
+                    timeout=self._rt._timeout,
                 )
             finally:
-                if self._webtrace is not None and self._ui_enabled:
-                    self._webtrace.done()
+                if self._rt._webtrace is not None and self._rt._ui_enabled:
+                    self._rt._webtrace.done()
 
     def _ensure_replay_loop(self) -> None:
-        if not self._ui_enabled or self._webtrace is None or self._replay_thread is not None:
+        if not self._rt._ui_enabled or self._rt._webtrace is None or self._rt._replay_thread is not None:
             return
 
         def _worker() -> None:
-            assert self._webtrace is not None
+            assert self._rt._webtrace is not None
             while True:
-                self._webtrace.wait_for_replay()
-                if not self._last_kwargs:
+                self._rt._webtrace.wait_for_replay()
+                if not self._rt._last_kwargs:
                     continue
                 try:
-                    result = self._run_once(dict(self._last_kwargs))
+                    result = self._run_once(dict(self._rt._last_kwargs))
                     print(f"\nResult → {result}")
                 except Exception as exc:
                     print(f"\nReplay failed: {exc}")
 
-        self._replay_thread = threading.Thread(target=_worker, daemon=True)
-        self._replay_thread.start()
+        self._rt._replay_thread = threading.Thread(target=_worker, daemon=True)
+        self._rt._replay_thread.start()
 
     def __call__(self, **kwargs: object) -> object:
         """Run this workflow like a regular Python function.
@@ -565,7 +585,7 @@ class Workflow:
         parameter in the ``@workflow`` signature).  Call ``configure()`` first to
         set the LLM backend, trace, and timeout.
         """
-        self._last_kwargs = dict(kwargs)
+        self._rt._last_kwargs = dict(kwargs)
         self._ensure_replay_loop()
         return self._run_once(dict(kwargs))
 
