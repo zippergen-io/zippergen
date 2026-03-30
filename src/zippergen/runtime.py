@@ -5,6 +5,7 @@ thread per lifeline, wires FIFO queues, and drives execution to completion.
 
 from __future__ import annotations
 
+import copy
 import queue
 import threading
 from typing import cast
@@ -315,7 +316,7 @@ def _exec(stmt: LocalStmt, env: Env, ch: Channels, ns: dict, llm_backend, trace,
             return
 
         case SendStmt(lifeline=A, payload=xs, receiver=B):
-            values = tuple(_eval(x, env) for x in xs)
+            values = tuple(copy.deepcopy(_eval(x, env)) for x in xs)
             seq = ch[(A.name, B.name)].put(values)
             if trace:
                 names = [x.var.name if isinstance(x, VarExpr) else f"_{i}" for i, x in enumerate(xs)]
