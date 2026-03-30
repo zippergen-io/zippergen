@@ -21,6 +21,10 @@ __all__ = ["_exec_planner", "_validate_planner_spec"]
 
 # ---------------------------------------------------------------------------
 # Planner DSL prompt templates
+#
+# Each constant is a plain string injected into the LLM system prompt.
+# Use {caller} wherever the coordinating lifeline's name should appear —
+# it is filled in at runtime via .format(caller=outer_lifeline_name).
 # ---------------------------------------------------------------------------
 
 _PLANNER_DSL_RULES = """\
