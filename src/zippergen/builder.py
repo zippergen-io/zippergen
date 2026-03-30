@@ -218,6 +218,12 @@ def _make_cond_lambda(cond_node: ast.expr) -> ast.expr:
     )
 
 
+def _tag_cond(fn: Callable, src: str) -> Callable:
+    """Attach a human-readable source string to a condition lambda."""
+    fn._src = src  # type: ignore[attr-defined]
+    return fn
+
+
 def _make_fn(name: str, body: list[ast.stmt]) -> ast.FunctionDef:
     """Build a no-argument FunctionDef AST node."""
     return ast.FunctionDef(
@@ -376,7 +382,12 @@ class _ProcTransformer(ast.NodeTransformer):
         if not self._is_at(node.test):
             return node
 
-        cond = _make_cond_lambda(node.test.left)   # type: ignore[arg-type]
+        cond_src = ast.unparse(node.test.left)      # type: ignore[arg-type]
+        cond = ast.Call(
+            func=ast.Name(id="_tag_cond", ctx=ast.Load()),
+            args=[_make_cond_lambda(node.test.left), ast.Constant(value=cond_src)],  # type: ignore[arg-type]
+            keywords=[],
+        )
         owner = node.test.right                     # type: ignore[union-attr]
 
         then_name = _fresh("then")
@@ -401,7 +412,12 @@ class _ProcTransformer(ast.NodeTransformer):
         if not self._is_at(node.test):
             return node
 
-        cond = _make_cond_lambda(node.test.left)   # type: ignore[arg-type]
+        cond_src = ast.unparse(node.test.left)      # type: ignore[arg-type]
+        cond = ast.Call(
+            func=ast.Name(id="_tag_cond", ctx=ast.Load()),
+            args=[_make_cond_lambda(node.test.left), ast.Constant(value=cond_src)],  # type: ignore[arg-type]
+            keywords=[],
+        )
         owner = node.test.right                     # type: ignore[union-attr]
 
         body_name = _fresh("body")
@@ -467,10 +483,11 @@ def _transform_proc_source(fn: Callable) -> tuple[Callable, str | None, str | No
     # Inject builder helpers so users don't need to import them explicitly.
     exec_globals = fn.__globals__.copy()
     exec_globals.update({
-        "msg":    msg,
-        "act":    act,
-        "if_":    if_,
-        "while_": while_,
+        "msg":       msg,
+        "act":       act,
+        "if_":       if_,
+        "while_":    while_,
+        "_tag_cond": _tag_cond,
     })
 
     local_ns: dict = {}

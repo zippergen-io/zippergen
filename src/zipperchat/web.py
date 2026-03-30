@@ -519,6 +519,55 @@ body {
   overflow: visible;
 }
 
+/* ── Decision row wrapper ─────────────────────────────────────────────── */
+.dec-row {
+  display: grid;
+  column-gap: 0;
+  /* grid-template-columns set dynamically */
+}
+
+/* ── Decision cell ────────────────────────────────────────────────────── */
+.dec-cell {
+  padding: 3px 6px;
+  min-height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  margin: 0 3px;
+}
+
+/* ── Decision box ─────────────────────────────────────────────────────── */
+.dec-box {
+  width: 100%;
+  max-width: 160px;
+  background: #FFFFFF;
+  border: 1px solid #D9E2EC;
+  border-radius: 5px;
+  padding: 5px 10px;
+  animation: fadein 0.18s ease;
+  box-shadow: 0 4px 14px rgba(23, 50, 77, 0.06);
+  text-align: center;
+}
+.dec-box.dec-true  { border-left: 2px solid #5A8E6E; }
+.dec-box.dec-false { border-left: 2px solid #8E5A5A; }
+.dec-label {
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  opacity: 0.8;
+}
+.dec-box.dec-true  .dec-label { color: #5A8E6E; }
+.dec-box.dec-false .dec-label { color: #8E5A5A; }
+.dec-value {
+  font-size: 12px;
+  font-weight: 700;
+  margin-top: 2px;
+}
+.dec-box.dec-true  .dec-value { color: #3A6050; }
+.dec-box.dec-false .dec-value { color: #603838; }
+
 /* ── Animations ──────────────────────────────────────────────────────── */
 @keyframes fadein {
   from { opacity: 0; transform: translateY(5px); }
@@ -1003,12 +1052,55 @@ function handleLevelPush(e) {
   }
 }
 
+// ── Decision rows ──────────────────────────────────────────────────────
+function handleDecision(ev) {
+  const i = lifelineIdx(ev.lifeline);
+
+  const r = newCgRow('decision');
+  const wrapper = document.createElement('div');
+  wrapper.className = 'dec-row';
+  wrapper.style.gridTemplateColumns = `repeat(${N}, 1fr)`;
+  r.wrapper = wrapper;
+  r.cells = lifelines.map((_, k) => {
+    const cell = document.createElement('div');
+    cell.className = 'dec-cell';
+    cell.style.background = col(k).bg;
+    wrapper.appendChild(cell);
+    return cell;
+  });
+
+  materializeOnLifeline(ev.lifeline, r);
+
+  const box = document.createElement('div');
+  box.className = 'dec-box ' + (ev.value ? 'dec-true' : 'dec-false');
+
+  const label = document.createElement('div');
+  label.className = 'dec-label';
+  label.textContent = (ev.kind === 'if' ? 'if' : 'while') + (ev.condition ? ` (${ev.condition})` : '');
+  box.appendChild(label);
+
+  const val = document.createElement('div');
+  val.className = 'dec-value';
+  if (ev.kind === 'if') {
+    val.textContent = ev.value ? '⊤ true' : '⊥ false';
+  } else {
+    val.textContent = ev.value ? '↻ continue' : '⊥ exit';
+  }
+  box.appendChild(val);
+
+  r.cells[i].appendChild(box);
+  diagram.appendChild(wrapper);
+  syncOrder();
+  scrollDown();
+}
+
 // ── Render a single diagram event ──────────────────────────────────────
 function renderDiagramEvent(e) {
   if (e.type === 'act_start') handleActStart(e);
   else if (e.type === 'act') handleAct(e);
   else if (e.type === 'send') handleSend(e);
   else if (e.type === 'recv') handleRecv(e);
+  else if (e.type === 'decision') handleDecision(e);
 }
 
 // ── Central event dispatch ─────────────────────────────────────────────
