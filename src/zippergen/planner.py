@@ -471,27 +471,47 @@ def _validate_planner_spec(
                 err = _check_scopes(stmt.orelse, sc_false)
                 if err:
                     return err
-                # Conservative merge: vars available in either branch
+                # Intersection: a var is only guaranteed available after the if
+                # if it was sent to that lifeline in EVERY branch.
                 for ll in set(sc_true) | set(sc_false):
-                    sc[ll] = sc_true.get(ll, set()) | sc_false.get(ll, set())
+                    sc[ll] = sc_true.get(ll, set()) & sc_false.get(ll, set())
 
             # `while cond @ Owner:`
             elif isinstance(stmt, _ast.While):
+                # Check body for correctness (body vars are reachable from sc_before).
                 sc_body = {k: set(v) for k, v in sc.items()}
-                err = _check_scopes(stmt.body,   sc_body)
+                err = _check_scopes(stmt.body, sc_body)
                 if err:
                     return err
-                err = _check_scopes(stmt.orelse, sc_body)
+                # Exit body always runs with scope-before-loop (loop may execute
+                # 0 times), so body-only vars are NOT guaranteed available inside it.
+                sc_exit = {k: set(v) for k, v in sc.items()}
+                err = _check_scopes(stmt.orelse, sc_exit)
                 if err:
                     return err
-                for ll in set(sc) | set(sc_body):
-                    sc[ll] = sc.get(ll, set()) | sc_body.get(ll, set())
+                # After the while: only exit-body additions are guaranteed.
+                for ll in set(sc_exit):
+                    sc[ll] = sc_exit.get(ll, set())
 
         return None
 
     scope_err = _check_scopes(fn_node.body, scope)
     if scope_err:
         return scope_err
+
+    # --- Invariant 6b: return variable must be in caller's scope on ALL paths ---
+    ret_node = stmts[-1]
+    if (isinstance(ret_node, _ast.Return)
+            and isinstance(ret_node.value, _ast.BinOp)
+            and isinstance(ret_node.value.left, _ast.Name)):
+        ret_var = ret_node.value.left.id
+        if ret_var not in scope.get(caller, set()):
+            return (
+                f"`return {ret_var} @ {caller}`: `{ret_var}` is not available on "
+                f"all control-flow paths. Every branch of every `if` must send the "
+                f"same variable name to `{caller}` before the return, e.g.: "
+                f"`Worker(result) >> {caller}(result)` in every branch."
+            )
 
     return None  # all good
 
