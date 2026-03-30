@@ -35,8 +35,12 @@ _PLANNER_DSL_RULES = """\
   `LastWorker(result) >> {caller}(result)`.
 - Return: `return var @ {caller}`.
 - Do NOT include any import statements or Var/Lifeline declarations.
-- A lifeline can only use variables it has explicitly received. To give a downstream
-  worker access to original inputs, forward them: `Worker1(result, var) >> Worker2(result, var)`.
+- A lifeline can only use variables it has explicitly received or that an action
+  on that lifeline produced. Plan action outputs first: if a lifeline needs to
+  send `feedback`, it must run an action whose `outputs=` includes `("feedback", str)`
+  before the send. Do not invent variable names — every variable must have a clear source.
+- To give a downstream worker access to original inputs, forward them explicitly:
+  `Worker1(result, var) >> Worker2(result, var)`.
 - Every branch of an `if` must send the final result to {caller} under the SAME
   binding name. The name on the RIGHT side of `>>` is what {caller} will use in
   `return`. Example — CORRECT (both branches bind to `result`):
@@ -176,16 +180,19 @@ Syntax:
 The condition is a Python boolean expression over variables already bound on Owner.
 Supported operators: ==, !=, <, >, <=, >=, not, and, or.
 
-Example — route to a second worker only if the draft needs revision:
-(Both branches bind the result to `result` on the {caller} side so the return works.)
+Example — Worker1 drafts, Worker2 assesses and optionally sends feedback for revision:
+(Worker2 produces BOTH the bool flag AND the feedback string in one action.
+ Both branches bind the final value to `result` on the {caller} side.)
 
-    Worker1: (draft, needs_revision) = write_and_assess(text, instructions)
-    if needs_revision @ Worker1:
-        Worker1(draft, instructions) >> Worker2(draft, instructions)
-        Worker2: revised = revise(draft, instructions)
-        Worker2(revised) >> {caller}(result)   # bind as `result`
+    Worker1: draft = write(text, instructions)
+    Worker1(draft, instructions) >> Worker2(draft, instructions)
+    Worker2: (needs_revision, feedback) = assess(draft, instructions)
+    if needs_revision @ Worker2:
+        Worker2(draft, feedback) >> Worker1(draft, feedback)
+        Worker1: revised = revise(draft, feedback)
+        Worker1(revised) >> {caller}(result)   # bind as `result`
     else:
-        Worker1(draft) >> {caller}(result)     # also bind as `result`
+        Worker2(draft) >> {caller}(result)     # also bind as `result`
     return result @ {caller}
 """
 
