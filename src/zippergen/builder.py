@@ -1,65 +1,6 @@
 """
-ZipperGen — Layer 3: Program builder.
-
-Design notes
-------------
-**What this module is.**
-This module provides helper functions that let you write a coordination program
-as a normal Python function (decorated with ``@workflow``) instead of constructing
-IR nodes by hand. The helpers ``msg()``, ``act()``, ``skip()`` are the primary
-user-facing API. Control structures (``if``/``while``) are written as native
-Python — no special builder functions needed.
-
-**How the recording context works.**
-There is a global stack of statement lists (``_stack``). Entering a scope
-(a ``@workflow`` body or a nested branch) pushes a new empty list onto the stack.
-Every call to ``msg()``, ``act()``, etc. appends one IR node to the top list.
-Leaving the scope pops the list and folds it into a ``Stmt`` tree using
-``seq()``. This is the only "magic" in this module.
-
-**Native if/while syntax.**
-The ``@workflow`` decorator rewrites the function's AST before executing it.
-Any ``if`` or ``while`` whose condition is of the form ``expr @ Lifeline``
-is rewritten into the equivalent ``if_()`` / ``while_()`` call, where the
-``@ Lifeline`` part identifies the owner of the control decision.
-
-  .. code-block:: python
-
-      @workflow
-      def myWorkflow(task: str) -> str:
-          if planNeedsReview @ Planner:
-              Planner(plan) >> Reviewer(tR)
-          else:
-              skip(Planner)
-
-          while (not agreed) @ LLM1:
-              LLM1(v1) >> LLM2(v2)
-              ...
-          else:              # while...else = exit body
-              LLM1(v1) >> User(result)
-
-The condition (left of ``@``) can be any Python boolean expression — it is
-captured as a ``lambda _e: <condition>`` at rewrite time and evaluated at
-runtime against the lifeline's local env. Names in the condition (variables,
-constants) are resolved via a ``_CondEnv`` proxy that looks in the lifeline's
-env first, then falls back to the workflow's global namespace.
-
-**Operator precedence note.**
-Because Python gives ``@`` higher precedence than ``not``/``and``/``or``,
-wrap compound conditions in parentheses when they start with ``not``:
-
-  - ``if (not agreed) @ LLM1:``   ✓  — condition is ``not agreed``
-  - ``if not agreed @ LLM1:``     ✗  — parsed as ``not (agreed @ LLM1)``
-
-**Backward compatibility.**
-The old ``if_()`` and ``while_()`` builder functions still work; existing
-programs need no changes.
-
-**Thread safety.**
-The stack is a plain module-level list. This works correctly for sequential
-(single-threaded) use, which covers all normal cases. If concurrent workflow
-definitions are ever needed, replace ``_stack`` with a ``threading.local()``
-object — a one-line change.
+Layer 3: @workflow decorator and DSL helpers. Rewrites native if/while/>> syntax
+into IR builder calls via AST transformation.
 """
 
 from __future__ import annotations
@@ -326,6 +267,20 @@ class _ProcTransformer(ast.NodeTransformer):
             )
         return node.func, list(node.args)
 
+    @staticmethod
+    def _make_act_call(lifeline_ast, action_ast, args, outputs):
+        """Build an ``ast.Expr`` for ``act(lifeline, action, inputs, outputs)``."""
+        return ast.Expr(ast.Call(
+            func=ast.Name(id="act", ctx=ast.Load()),
+            args=[
+                lifeline_ast,
+                action_ast,
+                ast.Tuple(elts=list(args), ctx=ast.Load()),
+                ast.Tuple(elts=list(outputs), ctx=ast.Load()),
+            ],
+            keywords=[],
+        ))
+
     def visit_Return(self, node: ast.Return) -> ast.stmt:
         """Strip ``return var @ Lifeline`` and record both names as the workflow output."""
         val = node.value
@@ -354,16 +309,7 @@ class _ProcTransformer(ast.NodeTransformer):
         action_call = node.value
         ann = node.annotation
         outputs = list(ann.elts) if isinstance(ann, ast.Tuple) else [ann]
-        return ast.Expr(ast.Call(
-            func=ast.Name(id="act", ctx=ast.Load()),
-            args=[
-                lifeline_ast,
-                action_call.func,
-                ast.Tuple(elts=list(action_call.args), ctx=ast.Load()),
-                ast.Tuple(elts=outputs,                ctx=ast.Load()),
-            ],
-            keywords=[],
-        ))
+        return self._make_act_call(lifeline_ast, action_call.func, action_call.args, outputs)
 
     def visit_With(self, node: ast.With) -> ast.stmt | list[ast.stmt]:
         """
@@ -399,16 +345,7 @@ class _ProcTransformer(ast.NodeTransformer):
                     return ast.Name(id=n.id, ctx=ast.Load())
                 return n
             outputs = [_to_load(e) for e in target.elts] if isinstance(target, ast.Tuple) else [_to_load(target)]
-            result.append(ast.Expr(ast.Call(
-                func=ast.Name(id="act", ctx=ast.Load()),
-                args=[
-                    lifeline_ast,
-                    action_call.func,
-                    ast.Tuple(elts=list(action_call.args), ctx=ast.Load()),
-                    ast.Tuple(elts=outputs,               ctx=ast.Load()),
-                ],
-                keywords=[],
-            )))
+            result.append(self._make_act_call(lifeline_ast, action_call.func, action_call.args, outputs))
 
         return result if result else [ast.Pass()]
 

@@ -1,41 +1,6 @@
 """
-ZipperGen — Layer 4: Projection engine.
-
-Design notes
-------------
-**What this module is.**
-This module implements the syntax-directed projection  π_A(P)  from the paper
-(Tables tab:projection-base, tab:projection-if, tab:projection-while).
-Given a global Workflow and a lifeline A, it returns the local program (a
-LocalStmt) that A must execute.
-
-**The three cases for if/while.**
-Every if/while has an owner B (the decider).  For each other lifeline A:
-  - A = B      → owner case: B broadcasts the branch decision to all
-                 participants, then executes its own projected branch.
-  - A ∈ R      → receiver case: A waits for B's decision and branches
-                 accordingly (IfRecvStmt / WhileRecvStmt).
-  - A ∉ R ∪{B} → bystander: A does not participate at all → ε.
-
-R_if    = (L(P_top) ∪ L(P_bot)) - {B}
-R_while = (L(P_body) ∪ L(P_exit)) - {B}
-
-**Control broadcasts.**
-The owner sends  (⊤/⊥, κ_ctrl)  to every C ∈ R in a fixed total order ≺
-(here: alphabetical by lifeline name).  κ_ctrl is the reserved literal that
-tags these sends so receivers can filter them from data messages.
-
-**Fresh control variables.**
-Each IfRecvStmt / WhileRecvStmt on a non-owner lifeline needs a fresh local
-Bool variable to bind the received branch decision.  A single-element list
-[counter] is threaded through the recursion to generate unique names
-_ctrl1, _ctrl2, …  These names are local to each lifeline's program and
-never clash with user-declared variables (which must not start with _ctrl).
-
-**Reuse of global nodes.**
-ActStmt and SkipStmt nodes for the owning lifeline are returned unchanged
-(frozen dataclasses are safe to share).  SeqStmt nodes are reconstructed
-via seq() so that ε-elimination is applied automatically.
+Layer 4: Projection engine. π_A(P) — given a global Workflow and a lifeline A,
+returns the LocalStmt A must execute. See paper Tables for the projection rules.
 """
 
 from __future__ import annotations
@@ -82,7 +47,7 @@ def _fresh_ctrl(counter: list[int]) -> Var:
 # Core projection — structural recursion on Stmt
 # ---------------------------------------------------------------------------
 
-def _project(stmt: AnyStmt, A: Lifeline, counter: list[int]) -> AnyStmt:
+def _project(stmt: AnyStmt, A: Lifeline, counter: list[int]) -> LocalStmt:
     """π_A(stmt) — one step of the structural recursion."""
 
     match stmt:
@@ -182,7 +147,7 @@ def _project(stmt: AnyStmt, A: Lifeline, counter: list[int]) -> AnyStmt:
 # Public API
 # ---------------------------------------------------------------------------
 
-def project(wf: Workflow, lifeline: Lifeline) -> AnyStmt:
+def project(wf: Workflow, lifeline: Lifeline) -> LocalStmt:
     """
     Project a global Workflow onto a single lifeline.
 
