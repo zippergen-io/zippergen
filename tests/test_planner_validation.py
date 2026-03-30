@@ -23,6 +23,8 @@ def generated_workflow(text: str @ Planner, instructions: str @ Planner) -> str:
 
 
 def _if_spec():
+    # Both branches send a value to Planner under the same name (`result`),
+    # so `result` is guaranteed available on all paths.
     return """\
 @workflow
 def generated_workflow(text: str @ Planner) -> str:
@@ -30,11 +32,11 @@ def generated_workflow(text: str @ Planner) -> str:
     Worker1: (draft, needs_revision) = write(text)
     if needs_revision @ Worker1:
         Worker1(draft) >> Worker2(draft)
-        Worker2: final = critique(draft)
-        Worker2(final) >> Planner(final)
+        Worker2: result = critique(draft)
+        Worker2(result) >> Planner(result)
     else:
-        Worker1(draft) >> Planner(draft)
-    return draft @ Planner
+        Worker1(draft) >> Planner(result)
+    return result @ Planner
 """
 
 
@@ -215,6 +217,27 @@ def generated_workflow(text: str @ Planner, instructions: str @ Planner) -> str:
 def test_if_branch_correct_scoping():
     result = _validate_planner_spec(_if_spec(), CALLER, {"write", "critique"})
     assert result is None
+
+
+def test_return_var_only_in_one_branch():
+    # True branch sends `final`, false branch sends `draft` — different names.
+    # `draft` is not available on all paths, so `return draft @ Planner` must fail.
+    spec = """\
+@workflow
+def generated_workflow(text: str @ Planner) -> str:
+    Planner(text) >> Worker1(text)
+    Worker1: (draft, needs_revision) = write(text)
+    if needs_revision @ Worker1:
+        Worker1(draft) >> Worker2(draft)
+        Worker2: final = critique(draft)
+        Worker2(final) >> Planner(final)
+    else:
+        Worker1(draft) >> Planner(draft)
+    return draft @ Planner
+"""
+    result = _validate_planner_spec(spec, CALLER, {"write", "critique"})
+    assert result is not None
+    assert "draft" in result or "path" in result.lower() or "branch" in result.lower()
 
 
 def test_if_branch_inner_lifeline_uses_unreceived_var():

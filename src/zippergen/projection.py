@@ -5,6 +5,8 @@ returns the LocalStmt A must execute. See paper Tables for the projection rules.
 
 from __future__ import annotations
 
+from typing import cast
+
 from zippergen.syntax import (
     EmptyStmt, MsgStmt, ActStmt, SkipStmt, SeqStmt, IfStmt, WhileStmt,
     SendStmt, RecvStmt, IfRecvStmt, WhileRecvStmt,
@@ -75,7 +77,7 @@ def _project(stmt: AnyStmt, A: Lifeline, counter: list[int]) -> LocalStmt:
 
         # P1 ; P2
         case SeqStmt(first=p1, second=p2):
-            return seq(_project(p1, A, counter), _project(p2, A, counter))
+            return cast(LocalStmt, seq(_project(p1, A, counter), _project(p2, A, counter)))
 
         # if c@B then P_⊤ else P_⊥
         case IfStmt(condition=c, owner=B, branch_true=p_true, branch_false=p_false):
