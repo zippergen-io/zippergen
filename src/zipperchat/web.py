@@ -554,15 +554,13 @@ body {
 .dec-label {
   font-size: 10px;
   font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.6px;
+  letter-spacing: 0.3px;
   opacity: 0.8;
 }
 .dec-box.dec-true  .dec-label { color: #5A8E6E; }
 .dec-box.dec-false .dec-label { color: #8E5A5A; }
 .dec-value {
   font-size: 12px;
-  font-weight: 700;
   margin-top: 2px;
 }
 .dec-box.dec-true  .dec-value { color: #3A6050; }
@@ -1081,11 +1079,17 @@ function handleDecision(ev) {
 
   const val = document.createElement('div');
   val.className = 'dec-value';
-  if (ev.kind === 'if') {
-    val.textContent = ev.value ? '⊤ true' : '⊥ false';
-  } else {
-    val.textContent = ev.value ? '↻ continue' : '⊥ exit';
-  }
+  const [sym, word] = ev.kind === 'if'
+    ? (ev.value ? ['⊤', 'true'] : ['⊥', 'false'])
+    : (ev.value ? ['↻', 'continue'] : ['⊥', 'exit']);
+  const symSpan = document.createElement('span');
+  symSpan.style.fontWeight = '700';
+  symSpan.textContent = sym + ' ';
+  const wordSpan = document.createElement('span');
+  wordSpan.style.fontWeight = '400';
+  wordSpan.textContent = word;
+  val.appendChild(symSpan);
+  val.appendChild(wordSpan);
   box.appendChild(val);
 
   r.cells[i].appendChild(box);

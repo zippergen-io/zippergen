@@ -61,9 +61,11 @@ ZipperGen projects this global protocol onto each agent and runs them in paralle
 Examples ship with the repo. The first two work out of the box with the built-in mock backend — no API key needed.
 
 ```bash
-python examples/diagnosis.py       # two LLMs reach consensus iteratively
-python examples/contract_review.py # four agents review a contract in parallel
-python examples/planner.py         # LLM designs and runs its own sub-workflow (needs OPENAI_API_KEY)
+python examples/diagnosis.py          # two LLMs reach consensus iteratively
+python examples/contract_review.py    # four agents review a contract in parallel
+python examples/morning_digest.py     # inbox triage: parallel analysis, owned branching (needs MISTRAL_API_KEY)
+python examples/arithmetic_planner.py # LLM decomposes and evaluates an arithmetic expression in parallel (needs OPENAI_API_KEY)
+python examples/planner.py            # LLM designs and runs its own sub-workflow (needs OPENAI_API_KEY)
 ```
 
 Open **http://localhost:8765** to watch the agents exchange messages in real time as a message sequence chart.
@@ -141,17 +143,53 @@ def openPlannerAgent(request: str @ User, job_desc: str @ User, cv_sketch: str @
 
 The generated sub-workflow is structurally validated before execution: it must start with the Planner sending inputs to its workers and end with a worker returning the result to the Planner. ZipperChat lets you drill into the sub-workflow to see its MSC alongside the outer one.
 
-**`allow` controls what the planner LLM may use or define:**
+### Arithmetic planner
 
-| `allow` value | Effect |
-|---|---|
-| `[]` (default) | LLM may only use the pre-defined `actions` vocabulary, linear workflows only |
-| `["pure"]` | LLM may also define `@pure` Python helper functions |
-| `["llm"]` | LLM may also define new `@llm` actions with custom prompts |
-| `["if"]` | LLM may use `if cond @ Owner:` conditional branching |
-| `["while"]` | LLM may use `while cond @ Owner:` loops |
-| `["pure", "llm"]` | Both action kinds |
-| `["llm", "if", "while"]` | Full flexibility — custom actions plus control flow |
+A concrete example: the planner receives an arithmetic expression such as `(2 - 4) * (2 + 3) + (3 / (3 - 2))` and must evaluate it using two Calculator lifelines with maximum parallelism, guarding against division by zero. No instructions are given — the LLM figures out the structure on its own.
+
+```python
+@planner(
+    description="Evaluate an arithmetic expression with maximum parallelism. "
+                "Identify independent subexpressions and evaluate them concurrently. "
+                "If the expression is undefined (division by zero), return 0.",
+    actions=[add, subtract, multiply, divide, identity, is_zero],
+    lifelines=[Calculator1, Calculator2],
+    allow=["if"],
+)
+def evaluate(expression: str) -> str: ...
+```
+
+Given `(2 - 4) * (2 + 3) + (3 / (3 - 2))`, a capable model (GPT-4o) generates:
+
+```python
+@workflow
+def generated_workflow(expression: str @ Planner) -> str:
+    Planner(expression) >> Calculator1(expression)
+    Planner(expression) >> Calculator2(expression)
+
+    Calculator1: sub1 = subtract("2", "4")       # (2 - 4) = -2  ─┐ parallel
+    Calculator2: sub2 = add("2", "3")            # (2 + 3) =  5  ─┘
+
+    Calculator1(sub1) >> Calculator2(sub1)
+    Calculator2: mult = multiply(sub1, sub2)     # -2 * 5 = -10
+
+    Calculator1: denom = subtract("3", "2")      # denominator = 1
+    Calculator1: zero  = is_zero(denom)          # check before dividing
+
+    if zero @ Calculator1:
+        Calculator1("0") >> Planner(result)      # guard: return 0
+    else:
+        Calculator1: div = divide("3", denom)    # 3 / 1 = 3
+        Calculator1(div)  >> Calculator2(div)
+        Calculator2: result = add(mult, div)     # -10 + 3 = -7
+        Calculator2(result) >> Planner(result)
+
+    return result @ Planner
+```
+
+The LLM parsed the expression, identified that `(2 - 4)` and `(2 + 3)` are independent, evaluated them in parallel, checked the denominator before dividing, and wired the join correctly — all from the description and action vocabulary alone.
+
+**`allow`** controls extensions: `"pure"` (define helper functions), `"llm"` (define new LLM actions), `"if"` (conditional branching), `"while"` (loops). Default is `[]` — pre-defined vocabulary only, linear workflows.
 
 ## Defining LLM actions
 

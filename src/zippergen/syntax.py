@@ -182,6 +182,7 @@ class PlannerAction:
     lifelines: tuple      # tuple of Lifeline used in inner workflows
     allow: tuple[str, ...] = ()          # action kinds the LLM may define: "pure", "llm"
     instructions: str | None = None      # optional user guidance on worker roles
+    max_retries: int = 3                 # max correction attempts on invalid generated spec
 
     def __repr__(self) -> str:
         ins = ", ".join(f"{n}: {t.__name__}" for n, t in self.inputs)
