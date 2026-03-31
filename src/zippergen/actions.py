@@ -112,6 +112,7 @@ def planner(
     lifelines: list,
     allow: list[str] | None = None,
     instructions: str | None = None,
+    max_retries: int = 3,
 ) -> Callable[[Callable], PlannerAction]:
     """
     Decorator that produces a PlannerAction node.
@@ -182,6 +183,7 @@ def planner(
             lifelines=tuple(lifelines),
             allow=_allow,
             instructions=instructions,
+            max_retries=max_retries,
         )
     return decorator
 

@@ -345,13 +345,18 @@ def _exec(stmt: LocalStmt, env: Env, ch: Channels, ns: dict, llm_backend, trace,
         case ActStmt(lifeline=_, action=action, inputs=ins, outputs=outs):
             in_vals = tuple(_eval(x, env) for x in ins)
             named_inputs = {name: val for (name, _), val in zip(action.inputs, in_vals)}
+            # For display, prefer the argument variable name over the formal parameter name.
+            display_inputs = {
+                (expr.var.name if isinstance(expr, VarExpr) else formal): val
+                for (formal, _), expr, val in zip(action.inputs, ins, in_vals)
+            }
             seq = _next_act_seq()
             if trace:
                 trace({
                     "type": "act_start",
                     "lifeline": threading.current_thread().name,
                     "action": action.name,
-                    "inputs": {k: _jsonify(v) for k, v in named_inputs.items()},
+                    "inputs": {k: _jsonify(v) for k, v in display_inputs.items()},
                     "seq": seq,
                 })
             if isinstance(action, PureAction):
@@ -373,7 +378,7 @@ def _exec(stmt: LocalStmt, env: Env, ch: Channels, ns: dict, llm_backend, trace,
                     "type": "act",
                     "lifeline": threading.current_thread().name,
                     "action": action.name,
-                    "inputs": {k: _jsonify(v) for k, v in named_inputs.items()},
+                    "inputs": {k: _jsonify(v) for k, v in display_inputs.items()},
                     "outputs": {k: _jsonify(v) for k, v in out_map.items()},
                     "seq": seq,
                 })

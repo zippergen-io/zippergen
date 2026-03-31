@@ -35,9 +35,22 @@ _PLANNER_DSL_RULES = """\
 - Single-output action: `A: var = action(arg1, arg2)`.
 - Multi-output action: `A: (var1, var2) = action(arg1, arg2)` — use tuple unpacking,
   never subscript (`var["key"]` is invalid).
+- Action arguments may be variable names OR string literals: `A: r = add(x, "3.14")`.
+  Use literals to inject known constants directly without a preceding action call.
 - REQUIRED: the last statement before `return` MUST send the final result back to {caller}:
   `LastWorker(result) >> {caller}(result)`.
 - Return: `return var @ {caller}`.
+- The right-hand side of every `Lifeline: var = ...` must be a function call.
+  Never write `Lifeline: result = some_var` — use `identity(some_var)` to pass
+  a variable through unchanged.
+- A lifeline cannot send a message to itself. `A(...) >> A(...)` is invalid.
+  When joining results from multiple lifelines onto one, only forward variables
+  that the joining lifeline has NOT itself produced. Its own action outputs are
+  already in scope. Example: if Worker2 ran `Worker2: y = action(...)`,
+  then `Worker2(y) >> Worker2(y)` is wrong — `y` is already there.
+  Only send variables from OTHER lifelines: `Worker1(x) >> Worker2(x)`.
+- Every action call must use the `Lifeline: var = action(...)` syntax.
+  Never write a bare assignment like `var = action(...)` without the lifeline prefix.
 - Do NOT include any import statements or Var/Lifeline declarations.
 - A lifeline can only use variables it has explicitly received or that an action
   on that lifeline produced. Plan action outputs first: if a lifeline needs to
@@ -429,20 +442,60 @@ def _validate_planner_spec(
             f"Each must be defined as an @llm or @pure action before the workflow function."
         )
 
-    # --- Invariant 5: both sides of every >> send have the same argument count ---
+    # --- Invariant 5: both sides of every >> send have the same argument count,
+    #                  and no lifeline sends to itself ---
     for node in _ast.walk(tree):
         if not (isinstance(node, _ast.Expr) and isinstance(node.value, _ast.BinOp)
                 and isinstance(node.value.op, _ast.RShift)):
             continue
         lhs, rhs = node.value.left, node.value.right
         if (isinstance(lhs, _ast.Call) and isinstance(rhs, _ast.Call)):
+            lname = lhs.func.id if isinstance(lhs.func, _ast.Name) else "?"
+            rname = rhs.func.id if isinstance(rhs.func, _ast.Name) else "?"
+            if lname == rname:
+                return (
+                    f"`{lname}(...) >> {rname}(...)` is a self-send — a lifeline cannot "
+                    f"send messages to itself. Variables produced by actions on `{lname}` "
+                    f"are already in scope and can be used directly in subsequent steps."
+                )
             if len(lhs.args) != len(rhs.args):
-                lname = lhs.func.id if isinstance(lhs.func, _ast.Name) else "?"
-                rname = rhs.func.id if isinstance(rhs.func, _ast.Name) else "?"
                 return (
                     f"`{lname}(...)  >> {rname}(...)` has mismatched argument counts "
                     f"({len(lhs.args)} vs {len(rhs.args)}). "
                     f"Both sides must list the same variables: `{lname}(x, y) >> {rname}(x, y)`."
+                )
+
+    # --- Invariant 5b: no bare or non-action assignments ---
+    # AnnAssign with non-Call RHS (e.g. `Calculator: result = product`) compiles
+    # as an assignment to the lifeline name, making it a local variable and
+    # causing UnboundLocalError.  Plain Assign (e.g. `result = action(...)`)
+    # silently drops the lifeline context.
+    for node in _ast.walk(tree):
+        if isinstance(node, _ast.AnnAssign) and node.value is not None:
+            if not isinstance(node.value, _ast.Call):
+                target = node.target.id if isinstance(node.target, _ast.Name) else "?"
+                ann    = node.annotation.id if isinstance(node.annotation, _ast.Name) else "?"
+                return (
+                    f"`{target}: {ann} = <non-call>` is not a valid action call. "
+                    f"The right-hand side must always be a function call like `action(args)`. "
+                    f"To pass a variable under a different name use binding sides of >>: "
+                    f"`{target}({ann}) >> OtherLifeline(new_name)`."
+                )
+
+    # --- Invariant 5d: no bare assignments (missing Lifeline: prefix) ---
+    import ast as _ast2
+    for node in _ast.walk(tree):
+        if isinstance(node, _ast.Assign):
+            # Plain `x = expr(...)` inside the workflow body — missing lifeline prefix
+            if isinstance(node.value, _ast.Call):
+                fn = node.value.func
+                fn_name = fn.id if isinstance(fn, _ast.Name) else "?"
+                targets = ", ".join(
+                    t.id for t in node.targets if isinstance(t, _ast.Name)
+                )
+                return (
+                    f"Bare assignment `{targets} = {fn_name}(...)` found — "
+                    f"every action call must use the `Lifeline: {targets} = {fn_name}(...)` syntax."
                 )
 
     # --- Invariant 6: per-lifeline variable scope ---
@@ -692,12 +745,22 @@ def _exec_planner(action: PlannerAction, named_inputs: dict, llm_backend, trace=
     spec_result = llm_backend(spec_action, {})
     spec = _strip_fences(str(spec_result.get("workflow_spec", "")))
 
-    # --- Validate structural invariants; re-prompt once on failure ---
-    validation_error = _validate_planner_spec(spec, outer_lifeline_name, {a.name for a in action.actions})
-    if validation_error:
+    # --- Validate structural invariants; re-prompt up to max_retries times ---
+    known_actions = {a.name for a in action.actions}
+    for attempt in range(action.max_retries):
+        validation_error = _validate_planner_spec(spec, outer_lifeline_name, known_actions)
+        if validation_error is None:
+            break
+        self_send_hint = (
+            "\nHint for self-send errors: a lifeline already has every variable it "
+            "produced via its own actions — do NOT forward those back to itself. "
+            "Only send variables that originated on a DIFFERENT lifeline.\n"
+            if "self-send" in validation_error else ""
+        )
         correction_prompt = (
             f"The workflow you generated has an error:\n\n"
-            f"  {validation_error}\n\n"
+            f"  {validation_error}\n"
+            f"{self_send_hint}\n"
             f"Return the complete corrected output — including all @llm and @pure "
             f"action definitions followed by the @workflow function. "
             f"Structural rules:\n"
@@ -708,20 +771,21 @@ def _exec_planner(action: PlannerAction, named_inputs: dict, llm_backend, trace=
         )
         correction_prompt_safe = correction_prompt.replace("{", "{{").replace("}", "}}")
         retry_action = LLMAction(
-            name="_generate_spec_retry",
+            name=f"_generate_spec_retry{attempt + 1}",
             inputs=(),
             outputs=(("workflow_spec", str),),
             system_prompt=system,
             user_prompt=correction_prompt_safe,
             parse_format="text",
         )
-        spec_result2 = llm_backend(retry_action, {})
-        spec = _strip_fences(str(spec_result2.get("workflow_spec", "")))
-        validation_error2 = _validate_planner_spec(spec, outer_lifeline_name, {a.name for a in action.actions})
-        if validation_error2:
+        spec_result = llm_backend(retry_action, {})
+        spec = _strip_fences(str(spec_result.get("workflow_spec", "")))
+    else:
+        validation_error = _validate_planner_spec(spec, outer_lifeline_name, known_actions)
+        if validation_error:
             raise RuntimeError(
-                f"Planner generated an invalid workflow after correction attempt.\n"
-                f"Error: {validation_error2}\n\n"
+                f"Planner generated an invalid workflow after {action.max_retries} correction attempts.\n"
+                f"Error: {validation_error}\n\n"
                 f"Workflow:\n{spec}"
             )
 
