@@ -114,24 +114,43 @@ def diagnosisConsensus(notes: str @ User, diagnosis: str @ User) -> str:
 
 ## Defining LLM actions
 
-Prompts are defined directly on Python functions with `@llm`:
+Prompts are defined directly on Python functions with `@llm`. The `parse` parameter controls how the response is interpreted, and determines what `outputs` must look like:
+
+**`parse="json"`** — multiple typed outputs; ZipperGen appends a JSON instruction and validates the response:
 
 ```python
 @llm(
-    system=(
-        "You are a medical expert. Analyze the notes and determine "
-        "if the diagnosis applies."
-    ),
+    system="You are a medical expert. Analyze the notes and determine if the diagnosis applies.",
     user="Notes: {notes}\nDiagnosis: {diag}",
     parse="json",
-    outputs=(("verdict", bool), ("reason", str)),
+    outputs=(("verdict", bool), ("reason", str)),   # one or more (name, type) pairs
 )
 def assess(notes: str, diag: str) -> None: ...
 ```
 
-- `parse="json"` — ZipperGen appends a type-annotated JSON instruction to the prompt and validates the response against the declared output types.
-- `parse="text"` — single `str` output, returned as plain text.
-- `parse="bool"` — single `bool` output, model replies `true` or `false`.
+**`parse="text"`** — exactly one `str` output; the model's raw response is returned as-is:
+
+```python
+@llm(
+    system="You are a medical writer. Summarise the following notes in one paragraph.",
+    user="{notes}",
+    parse="text",
+    outputs=(("summary", str),),                    # exactly one str entry
+)
+def summarise(notes: str) -> None: ...
+```
+
+**`parse="bool"`** — exactly one `bool` output; the model is asked to reply `true` or `false`:
+
+```python
+@llm(
+    system="Do the two verdicts agree?",
+    user="Verdict A: {v1}\nVerdict B: {v2}",
+    parse="bool",
+    outputs=(("agreed", bool),),                    # exactly one bool entry
+)
+def check_agreement(v1: str, v2: str) -> None: ...
+```
 
 ## Dynamic planning
 
