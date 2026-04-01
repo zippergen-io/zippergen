@@ -35,8 +35,9 @@ _PLANNER_DSL_RULES = """\
 - Single-output action: `A: var = action(arg1, arg2)`.
 - Multi-output action: `A: (var1, var2) = action(arg1, arg2)` — use tuple unpacking,
   never subscript (`var["key"]` is invalid).
-- Action arguments may be variable names OR string literals: `A: r = add(x, "3.14")`.
+- Action arguments may be variable names OR literals (string, int, or float): `A: r = add(x, 3.14)`.
   Use literals to inject known constants directly without a preceding action call.
+  Match the literal type to the action's parameter type: use `2` or `2.0` for float parameters, `"text"` for str parameters.
 - REQUIRED: the last statement before `return` MUST send the final result back to {caller}:
   `LastWorker(result) >> {caller}(result)`.
 - Return: `return var @ {caller}`.
