@@ -4,6 +4,8 @@
 
 ZipperGen is a Python DSL and runtime for structured multi-agent LLM coordination. You write a single **global protocol** — who sends what to whom, who runs which LLM, who owns each decision. ZipperGen projects it onto each agent automatically and runs them concurrently.
 
+ZipperGen separates **what agents do** (LLM calls and pure actions) from **how they coordinate** (the protocol). Unlike tool-calling frameworks where agents decide the control flow themselves, ZipperGen makes coordination explicit and verifiable at the protocol level.
+
 Because coordination is derived by projection rather than left to each agent, the global protocol is also a complete audit trail — and **deadlock is impossible by construction**.
 
 ## Quick start
@@ -14,7 +16,7 @@ cd zippergen
 pip install -e .
 ```
 
-Python 3.11 or later required. No external dependencies — stdlib only.
+Python 3.11 or later required. No external dependencies — stdlib only (LLM backends optional).
 
 ## Hello, World!
 
@@ -110,87 +112,6 @@ def diagnosisConsensus(notes: str @ User, diagnosis: str @ User) -> str:
 
 `while cond @ LLM1` means LLM1 owns the loop guard and broadcasts the decision each iteration. `if cond @ Owner` works the same way for conditionals. ZipperGen figures out which other agents need to receive the decision and generates the control messages automatically.
 
-## Dynamic planning
-
-For tasks where the coordination structure itself isn't known in advance, `@planner` delegates workflow design to an LLM at runtime. The planner LLM receives the task description and available lifelines, generates a complete sub-workflow, and ZipperGen validates and executes it.
-
-```python
-from zippergen.actions import planner
-
-@planner(
-    description="A workflow planner for professional writing tasks.",
-    actions=[],                          # pre-defined vocabulary (empty = LLM writes everything)
-    lifelines=[Worker1, Worker2],
-    allow=["llm", "if"],                 # permit new @llm actions and conditional branching
-    instructions="Worker1 drafts, Worker2 assesses quality against all original inputs; "
-                 "use an if to route back to Worker1 for revision if needed.",  # optional
-)
-def write_document(request: str, job_desc: str, cv_sketch: str) -> str: ...
-```
-
-The decorated function slots into a `@workflow` exactly like any other action:
-
-```python
-@workflow
-def openPlannerAgent(request: str @ User, job_desc: str @ User, cv_sketch: str @ User) -> str:
-    User(request, job_desc, cv_sketch) >> Planner(request, job_desc, cv_sketch)
-    Planner: result = write_document(request, job_desc, cv_sketch)
-    Planner(result) >> User(result)
-    return result @ User
-```
-
-`description` and `lifelines` are all the user needs to provide. The runtime builds the full system prompt automatically: it lists the available workers, injects DSL rules, and adds the allow extensions. The planner LLM receives the request and the actual values of all input variables — so it sees what it is working with, not just variable names. The optional `instructions` parameter lets the user guide how workers are assigned; without it, the planner is asked to use as many workers as reasonable, each with a distinct role.
-
-The generated sub-workflow is structurally validated before execution: it must start with the Planner sending inputs to its workers and end with a worker returning the result to the Planner. ZipperChat lets you drill into the sub-workflow to see its MSC alongside the outer one.
-
-### Arithmetic planner
-
-A concrete example: the planner receives an arithmetic expression such as `(2 - 4) * (2 + 3) + (3 / (3 - 2))` and must evaluate it using two Calculator lifelines with maximum parallelism, guarding against division by zero. No instructions are given — the LLM figures out the structure on its own.
-
-```python
-@planner(
-    description="Evaluate an arithmetic expression with maximum parallelism. "
-                "Identify independent subexpressions and evaluate them concurrently. "
-                "If the expression is undefined (division by zero), return 0.",
-    actions=[add, subtract, multiply, divide, identity, is_zero],
-    lifelines=[Calculator1, Calculator2],
-    allow=["if"],
-)
-def evaluate(expression: str) -> str: ...
-```
-
-Given `(2 - 4) * (2 + 3) + (3 / (3 - 2))`, a capable model (GPT-4o) generates:
-
-```python
-@workflow
-def generated_workflow(expression: str @ Planner) -> str:
-    Planner(expression) >> Calculator1(expression)
-    Planner(expression) >> Calculator2(expression)
-
-    Calculator1: sub1 = subtract("2", "4")       # (2 - 4) = -2  ─┐ parallel
-    Calculator2: sub2 = add("2", "3")            # (2 + 3) =  5  ─┘
-
-    Calculator1(sub1) >> Calculator2(sub1)
-    Calculator2: mult = multiply(sub1, sub2)     # -2 * 5 = -10
-
-    Calculator1: denom = subtract("3", "2")      # denominator = 1
-    Calculator1: zero  = is_zero(denom)          # check before dividing
-
-    if zero @ Calculator1:
-        Calculator1("0") >> Planner(result)      # guard: return 0
-    else:
-        Calculator1: div = divide("3", denom)    # 3 / 1 = 3
-        Calculator1(div)  >> Calculator2(div)
-        Calculator2: result = add(mult, div)     # -10 + 3 = -7
-        Calculator2(result) >> Planner(result)
-
-    return result @ Planner
-```
-
-The LLM parsed the expression, identified that `(2 - 4)` and `(2 + 3)` are independent, evaluated them in parallel, checked the denominator before dividing, and wired the join correctly — all from the description and action vocabulary alone.
-
-**`allow`** controls extensions: `"pure"` (define helper functions), `"llm"` (define new LLM actions), `"if"` (conditional branching), `"while"` (loops). Default is `[]` — pre-defined vocabulary only, linear workflows.
-
 ## Defining LLM actions
 
 Prompts are defined directly on Python functions with `@llm`:
@@ -211,6 +132,59 @@ def assess(notes: str, diag: str) -> None: ...
 - `parse="json"` — ZipperGen appends a type-annotated JSON instruction to the prompt and validates the response against the declared output types.
 - `parse="text"` — single `str` output, returned as plain text.
 - `parse="bool"` — single `bool` output, model replies `true` or `false`.
+
+## Dynamic planning
+
+For tasks where the coordination structure itself isn't known in advance, `@planner` lets an LLM design the workflow at runtime. Give it a description, an action vocabulary, and a set of lifelines — it generates a complete sub-workflow, which ZipperGen validates and executes.
+
+Here the planner receives an arithmetic expression and must evaluate it using three Calculator lifelines with maximum parallelism, guarding against division by zero:
+
+```python
+@planner(
+    description="Evaluate an arithmetic expression with maximum parallelism. "
+                "Identify independent subexpressions and evaluate them concurrently. "
+                "If the expression is undefined (division by zero), return 0.",
+    actions=[add, subtract, multiply, divide, identity, is_zero],
+    lifelines=[Calculator1, Calculator2, Calculator3],
+    allow=["if"],
+)
+def evaluate(expression: str) -> str: ...
+```
+
+The decorated function slots into a `@workflow` like any other action. Given `(2 - 4) * (2 + 3) + (3 / (3 - 2))`, GPT-4o generates:
+
+```python
+@workflow
+def generated_workflow(expression: str @ Planner) -> str:
+    Planner(expression) >> Calculator1(expression)
+    Planner(expression) >> Calculator2(expression)
+    Planner(expression) >> Calculator3(expression)
+
+    Calculator1: subtract_result = subtract("2", "4")          # (2 - 4) = -2  ─┐
+    Calculator2: add_result      = add("2", "3")               # (2 + 3) =  5  ─┤ parallel
+    Calculator3: denom           = subtract("3", "2")          # denominator = 1─┘
+    Calculator3: zero            = is_zero(denom)              # check before dividing
+
+    if zero @ Calculator3:
+        Calculator3: zero_result = identity("0")
+        Calculator3(zero_result) >> Planner(result)            # guard: return 0
+    else:
+        Calculator1(subtract_result) >> Calculator2(subtract_result)
+        Calculator2(add_result)      >> Calculator1(add_result)
+        Calculator1: multiply_result = multiply(subtract_result, add_result)  # -2 * 5 = -10
+        Calculator3: divide_result   = divide("3", denom)                     # 3 / 1 = 3
+
+        Calculator1(multiply_result) >> Calculator2(multiply_result)
+        Calculator3(divide_result)   >> Calculator2(divide_result)
+        Calculator2: final_result = add(multiply_result, divide_result)       # -10 + 3 = -7
+        Calculator2(final_result) >> Planner(result)
+
+    return result @ Planner
+```
+
+The LLM parsed the expression, identified that `(2 - 4)`, `(2 + 3)`, and the denominator `(3 - 2)` are all independent, evaluated them in parallel across three calculators, checked the denominator before dividing, and wired the join correctly — all from the description and action vocabulary alone. ZipperGen validates the generated workflow structurally before running it.
+
+**`allow`** controls extensions: `"pure"` (define helper functions), `"llm"` (define new LLM actions), `"if"` (conditional branching), `"while"` (loops). Default is `[]` — pre-defined vocabulary only, linear workflows.
 
 ## Using real LLMs
 
