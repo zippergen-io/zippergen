@@ -156,6 +156,8 @@ def check_agreement(v1: str, v2: str) -> None: ...
 
 For tasks where the coordination structure itself isn't known in advance, `@planner` lets an LLM design the workflow at runtime. Give it a description, an action vocabulary, and a set of lifelines — it generates a complete sub-workflow, which ZipperGen validates and executes.
 
+Actions in the vocabulary can be atomic tools (`@pure` functions or `@llm` calls) or full skills — entire `@workflow`s that appear to the planner as a single typed action but internally run their own verified coordination protocol.
+
 Here the planner receives an arithmetic expression and must evaluate it using three Calculator lifelines with maximum parallelism, guarding against division by zero:
 
 ```python
@@ -175,33 +177,31 @@ The decorated function slots into a `@workflow` like any other action. Given `(2
 ```python
 @workflow
 def generated_workflow(expression: str @ Planner) -> str:
-    Planner(expression) >> Calculator1(expression)
-    Planner(expression) >> Calculator2(expression)
-    Planner(expression) >> Calculator3(expression)
+    Planner() >> Calculator1()
+    Planner() >> Calculator2()
+    Planner() >> Calculator3()
 
-    Calculator1: subtract_result = subtract("2", "4")          # (2 - 4) = -2    ─┐
-    Calculator2: add_result      = add("2", "3")               # (2 + 3) =  5    ─┤ parallel
-    Calculator3: denom           = subtract("3", "2")          # denominator = 1 ─┘
-    Calculator3: zero            = is_zero(denom)              # check before dividing
+    Calculator1: subtract1 = subtract(2.0, 4.0)          # (2 - 4) = -2  ─┐
+    Calculator2: add1      = add(2.0, 3.0)               # (2 + 3) =  5  ─┤ parallel
+    Calculator3: subtract2 = subtract(3.0, 2.0)          # (3 - 2) =  1  ─┘
+    Calculator3: zero      = is_zero(subtract2)          # check before dividing
 
     if zero @ Calculator3:
-        Calculator3: zero_result = identity("0")
-        Calculator3(zero_result) >> Planner(result)            # guard: return 0
+        Calculator3(0.0) >> Planner(result)              # guard: return 0
     else:
-        Calculator1(subtract_result) >> Calculator2(subtract_result)
-        Calculator2(add_result)      >> Calculator1(add_result)
-        Calculator1: multiply_result = multiply(subtract_result, add_result)  # -2 * 5 = -10
-        Calculator3: divide_result   = divide("3", denom)                     # 3 / 1 = 3
+        Calculator3: divide1   = divide(3.0, subtract2) # 3 / 1 = 3
 
-        Calculator1(multiply_result) >> Calculator2(multiply_result)
-        Calculator3(divide_result)   >> Calculator2(divide_result)
-        Calculator2: final_result = add(multiply_result, divide_result)       # -10 + 3 = -7
-        Calculator2(final_result) >> Planner(result)
+        Calculator2(add1)    >> Calculator1(add1)
+        Calculator3(divide1) >> Calculator1(divide1)
+
+        Calculator1: multiply1 = multiply(subtract1, add1)   # -2 * 5 = -10
+        Calculator1: result    = add(multiply1, divide1)      # -10 + 3 = -7
+        Calculator1(result) >> Planner(result)
 
     return result @ Planner
 ```
 
-The LLM parsed the expression, identified that `(2 - 4)`, `(2 + 3)`, and the denominator `(3 - 2)` are all independent, evaluated them in parallel across three calculators, checked the denominator before dividing, and wired the join correctly — all from the description and action vocabulary alone. ZipperGen validates the generated workflow structurally before running it.
+The LLM parsed the expression, identified that `(2 - 4)`, `(2 + 3)`, and `(3 - 2)` are all independent, evaluated them in parallel across three calculators, checked the denominator before dividing, and wired the join correctly — all from the description and action vocabulary alone. ZipperGen validates the generated workflow structurally before running it.
 
 **`allow`** controls extensions: `"pure"` (define helper functions), `"llm"` (define new LLM actions), `"if"` (conditional branching), `"while"` (loops). Default is `[]` — pre-defined vocabulary only, linear workflows.
 

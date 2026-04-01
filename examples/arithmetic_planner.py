@@ -34,37 +34,37 @@ expression = Var("expression", str)
 result     = Var("result",     str)
 
 # ---------------------------------------------------------------------------
-# Calculator actions — pure arithmetic on string-encoded numbers
+# Calculator actions — pure arithmetic on floats
 # ---------------------------------------------------------------------------
 
 @pure
-def add(a: str, b: str) -> str:
-    return str(float(a) + float(b))
+def add(a: float, b: float) -> float:
+    return a + b
 
 
 @pure
-def subtract(a: str, b: str) -> str:
-    return str(float(a) - float(b))
+def subtract(a: float, b: float) -> float:
+    return a - b
 
 
 @pure
-def multiply(a: str, b: str) -> str:
-    return str(float(a) * float(b))
+def multiply(a: float, b: float) -> float:
+    return a * b
 
 
 @pure
-def divide(a: str, b: str) -> str:
-    return str(float(a) / float(b))
+def divide(a: float, b: float) -> float:
+    return a / b
 
 
 @pure
-def identity(x: str) -> str:
+def identity(x: float) -> float:
     return x
 
 
 @pure
-def is_zero(x: str) -> bool:
-    return float(x) == 0.0
+def is_zero(x: float) -> bool:
+    return x == 0.0
 
 
 
