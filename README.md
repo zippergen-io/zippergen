@@ -179,9 +179,9 @@ def generated_workflow(expression: str @ Planner) -> str:
     Planner(expression) >> Calculator2(expression)
     Planner(expression) >> Calculator3(expression)
 
-    Calculator1: subtract_result = subtract("2", "4")          # (2 - 4) = -2  ─┐
-    Calculator2: add_result      = add("2", "3")               # (2 + 3) =  5  ─┤ parallel
-    Calculator3: denom           = subtract("3", "2")          # denominator = 1─┘
+    Calculator1: subtract_result = subtract("2", "4")          # (2 - 4) = -2    ─┐
+    Calculator2: add_result      = add("2", "3")               # (2 + 3) =  5    ─┤ parallel
+    Calculator3: denom           = subtract("3", "2")          # denominator = 1 ─┘
     Calculator3: zero            = is_zero(denom)              # check before dividing
 
     if zero @ Calculator3:
