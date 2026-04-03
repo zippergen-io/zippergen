@@ -54,7 +54,7 @@ def write_document(request: str, job_desc: str, cv_sketch: str) -> str: ...
 # ---------------------------------------------------------------------------
 
 @workflow
-def openPlannerAgent(request: str @ User, job_desc: str @ User, cv_sketch: str @ User) -> str:
+def open_planner_agent(request: str @ User, job_desc: str @ User, cv_sketch: str @ User) -> str:
     User(request, job_desc, cv_sketch) >> Planner(request, job_desc, cv_sketch)
     Planner: result = write_document(request, job_desc, cv_sketch)
     Planner(result) >> User(result)
@@ -66,13 +66,13 @@ def openPlannerAgent(request: str @ User, job_desc: str @ User, cv_sketch: str @
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    openPlannerAgent.configure(
+    open_planner_agent.configure(
         llms={"Planner": "openai"},
         ui=True,
         timeout=300,
     )
 
-    result_val = openPlannerAgent(
+    result_val = open_planner_agent(
         request="Draft a polished cover letter using the available workers.",
         job_desc=(
             "Senior Software Engineer — distributed systems team at a fintech startup. "

@@ -130,7 +130,7 @@ def archive(summary: str) -> str:
 # ---------------------------------------------------------------------------
 
 @workflow
-def inboxTriage(query: str @ User) -> str:
+def inbox_triage(query: str @ User) -> str:
     User(query) >> Decider(query)
     Decider(query) >> Reader(query)
     Reader: email = fetch_email(query)
@@ -176,13 +176,13 @@ def inboxTriage(query: str @ User) -> str:
 if __name__ == "__main__":
     USE_UI = True
 
-    inboxTriage.configure(
+    inbox_triage.configure(
         llms="mistral",
         # llms="mock",
         ui=USE_UI,
         timeout=120,
     )
-    result = inboxTriage(query="latest unread email")
+    result = inbox_triage(query="latest unread email")
     print(f"\n{'='*60}")
     print("TRIAGE RESULT")
     print('='*60)

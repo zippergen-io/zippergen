@@ -92,7 +92,7 @@ def evaluate(expression: str) -> str: ...
 # ---------------------------------------------------------------------------
 
 @workflow
-def arithmeticPlanner(expression: str @ User) -> str:
+def arithmetic_planner(expression: str @ User) -> str:
     User(expression) >> Planner(expression)
     Planner: result = evaluate(expression)
     Planner(result) >> User(result)
@@ -109,7 +109,7 @@ if __name__ == "__main__":
 
     import os
     from zippergen.backends import make_openai_backend
-    arithmeticPlanner.configure(
+    arithmetic_planner.configure(
         llms={"Planner": make_openai_backend(api_key=os.environ["OPENAI_API_KEY"], model="gpt-4o")},
         ui=USE_UI,
         timeout=120,
@@ -117,7 +117,7 @@ if __name__ == "__main__":
 
     expr = sys.argv[1] if len(sys.argv) > 1 else "(2 - 4) * (2 + 3) + (3 / (3 - 2))"
     print(f"Expression: {expr}")
-    result = arithmeticPlanner(expression=expr)
+    result = arithmetic_planner(expression=expr)
     print(f"\nResult: {result}")
     if USE_UI:
         input("\nZipperChat is running at http://localhost:8765 . Press Enter to close. ")
