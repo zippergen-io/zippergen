@@ -1,12 +1,8 @@
 # ZipperGen
 
-**Zip** (our mascot) literally keeps your agents in line.
+ZipperGen is a Python framework for multi-agent LLM coordination. You write a single global protocol — who sends what to whom, who runs which LLM, who owns each decision — and ZipperGen projects it onto each agent automatically. If the protocol compiles, it cannot deadlock. This is not a runtime check; it follows from how the projection works.
 
-ZipperGen is a Python DSL and runtime for structured multi-agent LLM coordination. You write a single **global protocol** — who sends what to whom, who runs which LLM, who owns each decision. ZipperGen projects it onto each agent automatically and runs them concurrently.
-
-ZipperGen separates **what agents do** (LLM calls and pure actions) from **how they coordinate** (the protocol). Unlike tool-calling frameworks where agents decide the control flow themselves, ZipperGen makes coordination explicit and verifiable at the protocol level.
-
-Because coordination is derived by projection rather than left to each agent, the global protocol is also a complete audit trail — and **deadlock is impossible by construction**.
+ZipperGen separates **what agents do** (LLM calls and pure functions) from **how they coordinate** (the protocol). Unlike tool-calling frameworks where agents decide the control flow themselves, coordination in ZipperGen is explicit, written once, and verified by construction.
 
 ## Quick start
 
@@ -18,53 +14,80 @@ pip install -e .
 
 Python 3.11 or later required. No external dependencies — stdlib only (LLM backends optional).
 
-## Hello, World!
+## Hello, World
 
-`User` sends a number to `Compute`, which increments and doubles it:
+Three agents collaborate: `Writer` drafts a tweet, `Editor` decides whether it's good enough, and ZipperGen handles the coordination. No API key needed — the built-in mock backend runs instantly.
 
 ```python
-from zippergen.syntax import Lifeline, Var
-from zippergen.actions import pure
+from zippergen.syntax import Lifeline
+from zippergen.actions import llm
 from zippergen.builder import workflow
 
-User    = Lifeline("User")
-Compute = Lifeline("Compute")
+User   = Lifeline("User")
+Writer = Lifeline("Writer")
+Editor = Lifeline("Editor")
 
-number = Var("number", int)
+@llm(system="Write a one-sentence tweet about the topic.",
+     user="{topic}", parse="text", outputs=(("tweet", str),))
+def draft(topic: str) -> None: ...
 
-@pure
-def inc(x: int) -> int:
-    return x + 1
+@llm(system="Is this tweet engaging and under 280 chars? Reply true or false.",
+     user="{tweet}", parse="bool", outputs=(("approved", bool),))
+def approve(tweet: str) -> None: ...
 
-@pure
-def double(x: int) -> int:
-    return x * 2
+@llm(system="Improve this tweet: shorter and punchier.",
+     user="{tweet}", parse="text", outputs=(("tweet", str),))
+def revise(tweet: str) -> None: ...
 
 @workflow
-def increment(number: int @ User) -> int:
-    User(number) >> Compute(number)
-    with Compute:
-        number = inc(number)
-        number = double(number)
-    Compute(number) >> User(number)
-    return number @ User
+def write_tweet(topic: str @ User) -> str:
+    User(topic) >> Writer(topic)
+    Writer: tweet = draft(topic)
+    Writer(tweet) >> Editor(tweet)
+    Editor: approved = approve(tweet)
+    if approved @ Editor:
+        Editor(tweet) >> User(tweet)
+    else:
+        Editor(tweet) >> Writer(tweet)
+        Writer: tweet = revise(tweet)
+        Writer(tweet) >> User(tweet)
+    return tweet @ User
 
-result = increment(number=1)   # → 4
+# No API key needed — runs with the built-in mock backend.
+# Switch to a real LLM: write_tweet.configure(llms="openai")
+result = write_tweet(topic="a git commit message that tells the truth")
+print(result)
 ```
 
-- `User(number) >> Compute(number)` — `User` sends `number` to `Compute`.
-- `with Compute:` — a block of consecutive local actions on `Compute`.
-- `return number @ User` — declares `User` as the lifeline that owns the result.
+`if approved @ Editor` is the key line. `Editor` owns the branching decision — ZipperGen automatically determines which agents need to receive that decision and generates the coordination messages. You don't write any routing code.
 
-ZipperGen projects this global protocol onto each agent and runs them in parallel threads.
+The mock backend produces placeholder output (`[draft:tweet]`, `[revise:tweet]`). Add one line to switch to a real LLM:
+
+```python
+write_tweet.configure(llms="openai")   # or "mistral", "claude"
+result = write_tweet(topic="a git commit message that tells the truth")
+```
+
+The full example is at `examples/write_tweet.py`.
+
+## Why it can't deadlock
+
+In most multi-agent frameworks, control flow lives inside each agent. Agents call tools, decide what to do next, and rely on the other agents being ready to receive. This works until a subtle ordering problem causes two agents to wait on each other indefinitely.
+
+ZipperGen works differently. You write the control flow once, as a global protocol. ZipperGen then *projects* that protocol onto each agent — each agent receives exactly the local view of the global plan that it needs. Because every send has a corresponding receive by construction, deadlock cannot occur. This is a structural property, not something checked at runtime.
+
+The formal statement is in the paper (Theorem 3.1, Corollary 3.1): the projected programs produce exactly the same behaviors as the global program, and deadlock-freedom follows by structural induction. <!-- paper link: arxiv coming -->
+
+The practical consequence: the global protocol is also a complete audit trail of what your agents are allowed to do. You can read it, reason about it, and submit it to anyone who needs to understand how the system works.
 
 ## See it in action
 
-Examples ship with the repo. The first two work out of the box with the built-in mock backend — no API key needed.
+Examples ship with the repo. The first two run without an API key.
 
 ```bash
-python examples/diagnosis.py          # two LLMs reach consensus iteratively
-python examples/contract_review.py    # four agents review a contract in parallel
+python examples/write_tweet.py        # draft-and-approve with mock LLM (no key needed)
+python examples/diagnosis.py          # two LLMs reach consensus iteratively (no key needed with mock)
+python examples/contract_review.py    # four agents review a contract in parallel (needs MISTRAL_API_KEY)
 python examples/morning_digest.py     # inbox triage: parallel analysis, owned branching (needs MISTRAL_API_KEY)
 python examples/arithmetic_planner.py # LLM decomposes and evaluates an arithmetic expression in parallel (needs OPENAI_API_KEY)
 python examples/planner.py            # LLM designs and runs its own sub-workflow (needs OPENAI_API_KEY)
@@ -76,7 +99,7 @@ Open **http://localhost:8765** to watch the agents exchange messages in real tim
 
 ## How it works
 
-ZipperGen programs are *global coordination protocols*: you describe what messages flow between which agents and who owns each decision. ZipperGen projects the global protocol onto per-agent local programs and executes them in parallel threads with FIFO message queues.
+ZipperGen programs are global coordination protocols: you describe what messages flow between which agents and who owns each decision. ZipperGen projects the global protocol onto per-agent local programs and executes them in parallel threads with FIFO message queues.
 
 ### Diagnosis consensus
 
@@ -154,7 +177,7 @@ def check_agreement(v1: str, v2: str) -> None: ...
 
 ## Dynamic planning
 
-For tasks where the coordination structure itself isn't known in advance, `@planner` lets an LLM design the workflow at runtime. Give it a description, an action vocabulary, and a set of lifelines — it generates a complete sub-workflow, which ZipperGen validates and executes.
+For tasks where the coordination structure isn't known in advance, `@planner` lets an LLM design the workflow at runtime. Give it a description, an action vocabulary, and a set of lifelines — it generates a complete sub-workflow, which ZipperGen validates and executes.
 
 Actions in the vocabulary can be atomic tools (`@pure` functions or `@llm` calls) or full skills — entire `@workflow`s that appear to the planner as a single typed action but internally run their own verified coordination protocol.
 
@@ -273,9 +296,23 @@ def my_backend(action, inputs):
 my_workflow.configure(backend=my_backend, timeout=60)
 ```
 
+## Why not LangGraph / CrewAI / AutoGen?
+
+The short answer: those frameworks leave coordination up to the agents or the graph structure. ZipperGen makes coordination explicit and proves it correct.
+
+**LangGraph** uses a graph of nodes and edges. Conditional branching requires a router function that returns the name of the next node. The graph structure implies an execution order, but deadlock avoidance and correctness are your responsibility. It's a good fit when you need fine-grained control over an irregular flow and are comfortable reasoning about the graph yourself.
+
+**CrewAI and AutoGen** are conversation-based: agents exchange messages and decide what to do next. The coordination is mostly emergent from the agent prompts. This works well for open-ended tasks where you can't or don't want to specify the coordination structure in advance. The tradeoff is that the system's behavior is hard to audit and impossible to prove correct.
+
+**ZipperGen** requires you to write the coordination structure explicitly. That's a constraint. In return, you get a protocol that can be read by a person, checked by a tool, and submitted to anyone who needs to understand how the system behaves — and a proof that it terminates without deadlock. If your use case involves a fixed or semi-fixed coordination structure (which most production systems do), the explicitness is an asset.
+
+If the structure genuinely isn't known in advance, use `@planner` — the LLM generates the sub-workflow, ZipperGen validates it structurally, and the guarantee still holds.
+
 ## Formal foundation
 
 The implementation is grounded in the theory of Message Sequence Charts. The key properties:
 
 - **Correctness** — The distributed projected programs produce exactly the same behaviors as the global program.
 - **Deadlock-freedom** — Follows by structural induction; no runtime checking required.
+
+The formal proofs are in the paper. <!-- arxiv link coming -->
