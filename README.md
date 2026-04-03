@@ -76,7 +76,7 @@ In most multi-agent frameworks, control flow lives inside each agent. Agents cal
 
 ZipperGen works differently. You write the control flow once, as a global protocol. ZipperGen then *projects* that protocol onto each agent — each agent receives exactly the local view of the global plan that it needs. Because every send has a corresponding receive by construction, deadlock cannot occur. This is a structural property, not something checked at runtime.
 
-The formal statement is in the paper (Theorem 3.1, Corollary 3.1): the projected programs produce exactly the same behaviors as the global program, and deadlock-freedom follows by structural induction. <!-- paper link: arxiv coming -->
+The formal statement is in a forthcoming paper: the projected programs produce exactly the same behaviors as the global program, and deadlock-freedom follows by structural induction.
 
 The practical consequence: the global protocol is also a complete audit trail of what your agents are allowed to do. You can read it, reason about it, and submit it to anyone who needs to understand how the system works.
 
@@ -315,4 +315,4 @@ The implementation is grounded in the theory of Message Sequence Charts. The key
 - **Correctness** — The distributed projected programs produce exactly the same behaviors as the global program.
 - **Deadlock-freedom** — Follows by structural induction; no runtime checking required.
 
-The formal proofs are in the paper. <!-- arxiv link coming -->
+The formal proofs are in a forthcoming paper.
