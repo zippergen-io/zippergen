@@ -211,7 +211,7 @@ def standard_report(summary: str) -> None: ...
 # ---------------------------------------------------------------------------
 
 @workflow
-def contractReview(contract: str @ User) -> str:
+def contract_review(contract: str @ User) -> str:
     # --- Phase 1: distribute contract to all specialists ---
     User(contract) >> Jurisdiction(contract)
     User(contract) >> Liability(contract)
@@ -322,7 +322,7 @@ GmbH, a company incorporated in Munich, Germany ("Receiving Party").
 if __name__ == "__main__":
     USE_UI = True
 
-    contractReview.configure(
+    contract_review.configure(
         llms="mistral",
         # llms={
         #     "Jurisdiction":    make_openai_backend(api_key=os.environ["OPENAI_API_KEY_J"]),
@@ -334,7 +334,7 @@ if __name__ == "__main__":
         timeout=600,
     )
 
-    result = contractReview(contract=SAMPLE_CONTRACT)
+    result = contract_review(contract=SAMPLE_CONTRACT)
     print(f"\n{'='*60}")
     print("CONTRACT REVIEW REPORT")
     print('='*60)

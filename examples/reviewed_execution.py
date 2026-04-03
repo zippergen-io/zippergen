@@ -31,14 +31,14 @@ Executor     = Lifeline("Executor")
 # Variables
 # ---------------------------------------------------------------------------
 
-task            = Var("task",            str)
-plan            = Var("plan",            str)
-planNeedsReview = Var("planNeedsReview", bool, default=False)
-tR              = Var("tR",              str)
-critique        = Var("critique",        str, default="")
-tE              = Var("tE",              str)
-result          = Var("result",          str)
-final           = Var("final",           str)
+task             = Var("task",             str)
+plan             = Var("plan",             str)
+plan_needs_review = Var("plan_needs_review", bool, default=False)
+tR               = Var("tR",               str)
+critique         = Var("critique",         str, default="")
+tE               = Var("tE",               str)
+result           = Var("result",           str)
+final            = Var("final",            str)
 
 # ---------------------------------------------------------------------------
 # Actions
@@ -51,9 +51,9 @@ final           = Var("final",           str)
     ),
     user="Task: {task}",
     parse="json",
-    outputs=(("plan", str), ("planNeedsReview", bool)),
+    outputs=(("plan", str), ("plan_needs_review", bool)),
 )
-def makePlan(task: str) -> None: ...
+def make_plan(task: str) -> None: ...
 
 
 @llm(
@@ -64,7 +64,7 @@ def makePlan(task: str) -> None: ...
     parse="json",
     outputs=(("critique", str),),
 )
-def reviewPlan(plan: str) -> None: ...
+def review_plan(plan: str) -> None: ...
 
 
 @llm(
@@ -75,7 +75,7 @@ def reviewPlan(plan: str) -> None: ...
     parse="json",
     outputs=(("result", str),),
 )
-def executePlan(plan: str) -> None: ...
+def execute_plan(plan: str) -> None: ...
 
 
 @llm(
@@ -87,41 +87,41 @@ def executePlan(plan: str) -> None: ...
     parse="json",
     outputs=(("final", str),),
 )
-def finalizeWithReview(result: str, critique: str) -> None: ...
+def finalize_with_review(result: str, critique: str) -> None: ...
 
 
 # ---------------------------------------------------------------------------
-# Proc — direct translation of the paper's reviewedExecution
+# Proc — direct translation of the paper's reviewed_execution
 # ---------------------------------------------------------------------------
 
 @workflow
-def reviewedExecution(task: str @ Planner) -> str:
-    Planner: (plan, planNeedsReview) = makePlan(task)
+def reviewed_execution(task: str @ Planner) -> str:
+    Planner: (plan, plan_needs_review) = make_plan(task)
 
-    if planNeedsReview @ Planner:
+    if plan_needs_review @ Planner:
         Planner(plan) >> Reviewer(tR)
-        Reviewer: critique = reviewPlan(tR)
+        Reviewer: critique = review_plan(tR)
         Reviewer(critique) >> Orchestrator(critique)
     else:
         skip(Planner)
 
     Planner(plan) >> Executor(tE)
-    Executor: result = executePlan(tE)
+    Executor: result = execute_plan(tE)
     Executor(result) >> Orchestrator(result)
-    Orchestrator: final = finalizeWithReview(critique, result)
+    Orchestrator: final = finalize_with_review(critique, result)
     return final @ Orchestrator
 
 
 if __name__ == "__main__":
     USE_UI = True
 
-    reviewedExecution.configure(
+    reviewed_execution.configure(
         llms="mock",
         ui=USE_UI,
         timeout=60,
         mock_delay=(5.0, 10.0),
     )
-    final = reviewedExecution(task="Build a REST API for a to-do list application.")
+    final = reviewed_execution(task="Build a REST API for a to-do list application.")
     print(f"\nResult → {final}")
     if USE_UI:
         input("ZipperChat is running at http://localhost:8765 . Press Enter to close. ")

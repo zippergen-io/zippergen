@@ -84,7 +84,7 @@ Two LLMs independently assess a case, then iterate until they agree or a round l
 
 ```python
 @workflow
-def diagnosisConsensus(notes: str @ User, diagnosis: str @ User) -> str:
+def diagnosis_consensus(notes: str @ User, diagnosis: str @ User) -> str:
     # Distribute inputs to both LLMs
     User(notes, diagnosis) >> LLM1(notes, diagnosis)
     User(notes, diagnosis) >> LLM2(notes, diagnosis)
@@ -101,11 +101,11 @@ def diagnosisConsensus(notes: str @ User, diagnosis: str @ User) -> str:
         LLM2: (verdict, reason) = reconsider(notes, diagnosis, verdict, reason, other_verdict, other_reason)
         LLM2(verdict) >> LLM1(other_verdict)
         with LLM1:
-            agreed = checkAgreement(verdict, other_verdict)
-            trials = incTrials(trials)
+            agreed = check_agreement(verdict, other_verdict)
+            trials = inc_trials(trials)
 
     # Final result computed by LLM1, returned to User
-    LLM1: result = chooseResult(verdict, agreed)
+    LLM1: result = choose_result(verdict, agreed)
     LLM1(result) >> User(result)
     return result @ User
 ```
@@ -216,7 +216,7 @@ export OPENAI_API_KEY=...
 ```
 
 ```python
-diagnosisConsensus.configure(llms="openai", ui=True, timeout=600)
+diagnosis_consensus.configure(llms="openai", ui=True, timeout=600)
 ```
 
 **Different providers per agent:**
@@ -227,7 +227,7 @@ export OPENAI_API_KEY=...
 ```
 
 ```python
-diagnosisConsensus.configure(
+diagnosis_consensus.configure(
     llms={"LLM1": "mistral", "LLM2": "openai"},
     ui=True,
     timeout=600,

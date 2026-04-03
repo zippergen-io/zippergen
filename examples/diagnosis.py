@@ -9,7 +9,7 @@ Two independent LLMs analyze patient notes and iterate until they agree
 on a diagnosis verdict, or until MAX_ROUNDS is reached. LLM1 owns the
 consensus loop.
 
-Set the provider choice in ``__main__`` via ``diagnosisConsensus.configure``.
+Set the provider choice in ``__main__`` via ``diagnosis_consensus.configure``.
 """
 
 from zippergen.syntax import (
@@ -78,29 +78,29 @@ def assess(notes: str, diag: str) -> None: ...
     ),
     user=(
         "Notes: {notes}\nDiagnosis: {diag}\n"
-        "Your verdict: {myVerdict} because {myReason}\n"
-        "Colleague: {otherVerdict} because {otherReason}"
+        "Your verdict: {my_verdict} because {my_reason}\n"
+        "Colleague: {other_verdict} because {other_reason}"
     ),
     parse="json",   # expects {"verdict": true/false, "reason": "..."}
     outputs=(("verdict", bool), ("reason", str)),
 )
-def reconsider(notes: str, diag: str, 
-               myVerdict: bool, myReason: str,
-               otherVerdict: bool, otherReason: str) -> None: ...
+def reconsider(notes: str, diag: str,
+               my_verdict: bool, my_reason: str,
+               other_verdict: bool, other_reason: str) -> None: ...
 
 
 @pure
-def incTrials(t: int) -> int:
+def inc_trials(t: int) -> int:
     return t + 1
 
 
 @pure
-def checkAgreement(v1: bool, v2: bool) -> bool:
+def check_agreement(v1: bool, v2: bool) -> bool:
     return v1 == v2
 
 
 @pure
-def chooseResult(v: bool, agreed: bool) -> str:
+def choose_result(v: bool, agreed: bool) -> str:
     return ("true" if v else "false") if agreed else "unknown"
 
 
@@ -109,7 +109,7 @@ def chooseResult(v: bool, agreed: bool) -> str:
 # ---------------------------------------------------------------------------
 
 @workflow
-def diagnosisConsensus(notes: str @ User, diagnosis: str @ User) -> str:
+def diagnosis_consensus(notes: str @ User, diagnosis: str @ User) -> str:
     # Distribute notes to both LLMs
     User(notes, diagnosis) >> LLM1(notes, diagnosis)
     User(notes, diagnosis) >> LLM2(notes, diagnosis)
@@ -118,7 +118,7 @@ def diagnosisConsensus(notes: str @ User, diagnosis: str @ User) -> str:
     LLM1: (verdict, reason) = assess(notes, diagnosis)
     LLM2: (verdict, reason) = assess(notes, diagnosis)
     LLM2(verdict) >> LLM1(other_verdict)
-    LLM1: agreed = checkAgreement(verdict, other_verdict)
+    LLM1: agreed = check_agreement(verdict, other_verdict)
 
     # Consensus loop — owned by LLM1 (at most MAX_ROUNDS rounds)
     while (not agreed and trials < MAX_ROUNDS) @ LLM1:
@@ -128,11 +128,11 @@ def diagnosisConsensus(notes: str @ User, diagnosis: str @ User) -> str:
         LLM2: (verdict, reason) = reconsider(notes, diagnosis, verdict, reason, other_verdict, other_reason)
         LLM2(verdict) >> LLM1(other_verdict)
         with LLM1:
-            agreed = checkAgreement(verdict, other_verdict)
-            trials = incTrials(trials)
+            agreed = check_agreement(verdict, other_verdict)
+            trials = inc_trials(trials)
 
     # Final result computed by LLM1, sent to User
-    LLM1: result = chooseResult(verdict, agreed)
+    LLM1: result = choose_result(verdict, agreed)
     LLM1(result) >> User(result)
     return result @ User
 
@@ -140,13 +140,13 @@ def diagnosisConsensus(notes: str @ User, diagnosis: str @ User) -> str:
 if __name__ == "__main__":
     USE_UI = True
 
-    diagnosisConsensus.configure(
-        llms={"LLM1": "mistral", "LLM2": "mistral"},
+    diagnosis_consensus.configure(
+        llms={"LLM1": "openai", "LLM2": "mistral"},
         # llms="mock",
         ui=USE_UI,
         timeout=600,
     )
-    result = diagnosisConsensus(
+    result = diagnosis_consensus(
         notes=(
             "56-year-old woman presents with sudden shortness of breath and right-sided "
             "pleuritic chest pain for 8 hours. Heart rate 112, blood pressure 128/76, "
