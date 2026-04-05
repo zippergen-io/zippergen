@@ -137,6 +137,8 @@ def diagnosis_consensus(notes: str @ User, diagnosis: str @ User) -> str:
 
 `while cond @ LLM1` means LLM1 owns the loop guard and broadcasts the decision each iteration. `if cond @ Owner` works the same way for conditionals. ZipperGen figures out which other agents need to receive the decision and generates the control messages automatically.
 
+Every workflow has exactly one `return var @ Lifeline`, at the end. This declares which lifeline owns the result once all agents have finished — it is a declaration, not a control flow statement. No matter which branches executed, the result always lands in the same place.
+
 ## Defining LLM actions
 
 Prompts are defined directly on Python functions with `@llm`. The `parse` parameter controls how the response is interpreted, and determines what `outputs` must look like:
