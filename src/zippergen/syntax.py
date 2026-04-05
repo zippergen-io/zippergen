@@ -295,7 +295,7 @@ Stmt = Union[EmptyStmt, MsgStmt, ActStmt, SkipStmt, SeqStmt, IfStmt, WhileStmt]
 
 @dataclass(frozen=True)
 class SendStmt:
-    """send A(x⃗) → B — sender's local view of a message."""
+    """send A(xs) → B — sender's local view of a message."""
     lifeline: Lifeline
     payload: tuple[Expr, ...]
     receiver: Lifeline
@@ -307,7 +307,7 @@ class SendStmt:
 
 @dataclass(frozen=True)
 class RecvStmt:
-    """recv A(y⃗) ← B — receiver's local view of a message."""
+    """recv A(ys) ← B — receiver's local view of a message."""
     lifeline: Lifeline
     bindings: tuple[Expr, ...]
     sender: Lifeline
@@ -319,9 +319,9 @@ class RecvStmt:
 
 @dataclass(frozen=True)
 class IfRecvStmt:
-    """if A(y⃗) ← B then branch_true else branch_false
+    """if A(ys) ← B then branch_true else branch_false
 
-    A receives y⃗ from B.  bindings[0] is a bool variable; its runtime value
+    A receives ys from B.  bindings[0] is a bool variable; its runtime value
     determines which branch is taken.
     """
     lifeline: Lifeline
@@ -341,9 +341,9 @@ class IfRecvStmt:
 
 @dataclass(frozen=True)
 class WhileRecvStmt:
-    """while A(y⃗) ← B do body exit exit_body
+    """while A(ys) ← B do body exit exit_body
 
-    Each iteration A receives y⃗ from B.  bindings[0] is a bool variable;
+    Each iteration A receives ys from B.  bindings[0] is a bool variable;
     True means continue the body, False means take the exit.
     """
     lifeline: Lifeline

@@ -58,7 +58,7 @@ def _project(stmt: AnyStmt, A: Lifeline, counter: list[int]) -> LocalStmt:
         case EmptyStmt():
             return EmptyStmt()
 
-        # msg X(x⃗) → Y(y⃗)
+        # msg X(xs) → Y(ys)
         case MsgStmt(sender=X, payload=xs, receiver=Y, bindings=ys):
             if A == X:
                 return SendStmt(A, xs, Y)
@@ -67,7 +67,7 @@ def _project(stmt: AnyStmt, A: Lifeline, counter: list[int]) -> LocalStmt:
             else:
                 return EmptyStmt()
 
-        # act X(y⃗) := f(x⃗)
+        # act X(ys) := f(xs)
         case ActStmt(lifeline=X):
             return stmt if A == X else EmptyStmt()
 
