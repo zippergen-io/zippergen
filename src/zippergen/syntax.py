@@ -34,8 +34,8 @@ __all__ = [
     # Local-only statements (produced by projection)
     "LocalStmt", "AnyStmt",
     "SendStmt", "RecvStmt", "IfRecvStmt", "WhileRecvStmt",
-    # Workflow and Program
-    "Workflow", "Program",
+    # Workflow
+    "Workflow",
     # Reserved literals
     "kappa_ctrl",
     # Helpers
@@ -598,18 +598,6 @@ class Workflow:
         out = (f" → {self.output_var.name}@{self.output_lifeline.name}"
                if self.output_var and self.output_lifeline else "")
         return f"Workflow({self.name!r}, ({ins}) -> {self.output_type.__name__}{out})"
-
-
-@dataclass
-class Program:
-    lifelines: tuple[Lifeline, ...]
-    actions: tuple[Union[LLMAction, PureAction, PlannerAction], ...]
-    procs: tuple[Workflow, ...]
-
-    def __repr__(self) -> str:
-        ls = ", ".join(repr(l) for l in self.lifelines)
-        ps = ", ".join(p.name for p in self.procs)
-        return f"Program(lifelines=[{ls}], procs=[{ps}])"
 
 
 # ---------------------------------------------------------------------------
