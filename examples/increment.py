@@ -6,7 +6,7 @@ User sends a number to Compute, Compute increments it by one and then doubles it
 and sends the result back.
 """
 
-from zippergen.syntax import Lifeline, Var, Program
+from zippergen.syntax import Lifeline, Var
 from zippergen.actions import pure
 from zippergen.builder import workflow
 
