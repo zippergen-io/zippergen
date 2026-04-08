@@ -320,3 +320,4 @@ The implementation is grounded in the theory of Message Sequence Charts. The key
 - **Deadlock-freedom** — Follows by structural induction; no runtime checking required.
 
 The formal proofs are in a forthcoming paper.
+
