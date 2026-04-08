@@ -41,11 +41,11 @@ notes           = Var("notes",         str)
 diagnosis       = Var("diagnosis",     str)
 
 # Own verdict and reasoning (local to each LLM)
-verdict         = Var("verdict",       bool)
+verdict         = Var("verdict",       str)
 reason          = Var("reason",        str)
 
 # Received verdict and reasoning (from the other LLM)
-other_verdict   = Var("other_verdict", bool)
+other_verdict   = Var("other_verdict", str)
 other_reason    = Var("other_reason",  str)
 
 # Control and output
@@ -64,8 +64,8 @@ result = Var("result", str)
         "and your reasoning."
     ),
     user="Notes: {notes}\nDiagnosis: {diag}",
-    parse="json",   # expects {"verdict": "...", "reason": "..."}
-    outputs=(("verdict", bool), ("reason", str)),
+    parse="json",   # expects {"verdict": "true"/"false"/"unknown", "reason": "..."}
+    outputs=(("verdict", str), ("reason", str)),
 )
 def assess(notes: str, diag: str) -> None: ...
 
@@ -81,12 +81,12 @@ def assess(notes: str, diag: str) -> None: ...
         "Your verdict: {my_verdict} because {my_reason}\n"
         "Colleague: {other_verdict} because {other_reason}"
     ),
-    parse="json",   # expects {"verdict": true/false, "reason": "..."}
-    outputs=(("verdict", bool), ("reason", str)),
+    parse="json",   # expects {"verdict": "true"/"false"/"unknown", "reason": "..."}
+    outputs=(("verdict", str), ("reason", str)),
 )
 def reconsider(notes: str, diag: str,
-               my_verdict: bool, my_reason: str,
-               other_verdict: bool, other_reason: str) -> None: ...
+               my_verdict: str, my_reason: str,
+               other_verdict: str, other_reason: str) -> None: ...
 
 
 @pure
@@ -95,13 +95,13 @@ def inc_trials(t: int) -> int:
 
 
 @pure
-def check_agreement(v1: bool, v2: bool) -> bool:
-    return v1 == v2
+def check_agreement(v1: str, v2: str) -> bool:
+    return v1.strip().lower() == v2.strip().lower() and v1.strip().lower() != "unknown"
 
 
 @pure
-def choose_result(v: bool, agreed: bool) -> str:
-    return ("true" if v else "false") if agreed else "unknown"
+def choose_result(v: str, agreed: bool) -> str:
+    return v.strip().lower() if agreed else "unknown"
 
 
 # ---------------------------------------------------------------------------

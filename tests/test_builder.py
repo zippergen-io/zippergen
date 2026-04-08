@@ -66,6 +66,13 @@ def test_pure_bad_return_type_raises():
             return [x]
 
 
+def test_pure_union_return_type_raises():
+    with pytest.raises(TypeError):
+        @pure
+        def bad(x: str) -> bool | None:
+            return None
+
+
 # ---------------------------------------------------------------------------
 # @workflow produces a Workflow node
 # ---------------------------------------------------------------------------
