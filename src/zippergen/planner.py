@@ -748,9 +748,11 @@ def _exec_planner(action: PlannerAction, named_inputs: dict, llm_backend, trace=
 
     # --- Validate structural invariants; re-prompt up to max_retries times ---
     known_actions = {a.name for a in action.actions}
+    attempts_used = 1
     for attempt in range(action.max_retries):
         validation_error = _validate_planner_spec(spec, outer_lifeline_name, known_actions)
         if validation_error is None:
+            attempts_used = attempt + 1
             break
         self_send_hint = (
             "\nHint for self-send errors: a lifeline already has every variable it "
@@ -790,8 +792,9 @@ def _exec_planner(action: PlannerAction, named_inputs: dict, llm_backend, trace=
                 f"Workflow:\n{spec}"
             )
 
+    attempt_str = f"{attempts_used} attempt{'s' if attempts_used > 1 else ''}"
     print(f"\n{'='*60}")
-    print("GENERATED WORKFLOW")
+    print(f"GENERATED WORKFLOW  ({attempt_str})")
     print("=" * 60)
     print(spec)
     print("=" * 60 + "\n")
