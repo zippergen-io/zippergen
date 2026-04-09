@@ -216,13 +216,13 @@ def generated_workflow(expression: str @ Planner) -> str:
     if zero @ Calculator3:
         Calculator3(0.0) >> Planner(result)              # guard: return 0
     else:
-        Calculator3: divide1   = divide(3.0, subtract2) # 3 / 1 = 3
+        Calculator3: divide1   = divide(3.0, subtract2)  # 3 / 1 = 3
 
         Calculator2(add1)    >> Calculator1(add1)
         Calculator3(divide1) >> Calculator1(divide1)
 
         Calculator1: multiply1 = multiply(subtract1, add1)   # -2 * 5 = -10
-        Calculator1: result    = add(multiply1, divide1)      # -10 + 3 = -7
+        Calculator1: result    = add(multiply1, divide1)     # -10 + 3 = -7
         Calculator1(result) >> Planner(result)
 
     return result @ Planner
