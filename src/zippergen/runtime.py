@@ -345,6 +345,25 @@ def _exec(stmt: LocalStmt, env: Env, ch: Channels, ns: dict, llm_backend, trace,
         case SelfAssignStmt(lifeline=A, payload=xs, bindings=ys):
             values = tuple(_eval(x, env) for x in xs)
             _bind(ys, values, env)
+            if trace:
+                x_names = [x.var.name if isinstance(x, VarExpr) else f"_{i}" for i, x in enumerate(xs)]
+                y_names = [y.var.name if isinstance(y, VarExpr) else f"_{i}" for i, y in enumerate(ys)]
+                seq = _next_act_seq()
+                trace({
+                    "type": "act_start",
+                    "lifeline": A.name,
+                    "action": "assign",
+                    "inputs": {k: _jsonify(v) for k, v in zip(x_names, values)},
+                    "seq": seq,
+                })
+                trace({
+                    "type": "act",
+                    "lifeline": A.name,
+                    "action": "assign",
+                    "inputs": {k: _jsonify(v) for k, v in zip(x_names, values)},
+                    "outputs": {k: _jsonify(v) for k, v in zip(y_names, values)},
+                    "seq": seq,
+                })
 
         case ActStmt(lifeline=_, action=action, inputs=ins, outputs=outs):
             in_vals = tuple(_eval(x, env) for x in ins)
