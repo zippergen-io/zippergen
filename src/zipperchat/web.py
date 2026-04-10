@@ -415,7 +415,7 @@ body {
 .expandable + .expandable {
   margin-top: 5px;
   padding-top: 5px;
-  border-top: 1px solid #EEF2F7;
+  border-top: 2px solid #EEF2F7;
 }
 .expandable-text {
   position: relative;
