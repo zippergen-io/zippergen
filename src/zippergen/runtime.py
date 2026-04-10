@@ -15,7 +15,7 @@ import textwrap
 from zippergen.planner import _exec_planner, _validate_planner_spec
 
 from zippergen.syntax import (
-    EmptyStmt, SendStmt, RecvStmt, ActStmt, SkipStmt,
+    EmptyStmt, SendStmt, RecvStmt, SelfAssignStmt, ActStmt, SkipStmt,
     SeqStmt, IfStmt, WhileStmt, IfRecvStmt, WhileRecvStmt,
     VarExpr, LitExpr, Var,
     LLMAction, PureAction, PlannerAction,
@@ -341,6 +341,10 @@ def _exec(stmt: LocalStmt, env: Env, ch: Channels, ns: dict, llm_backend, trace,
                     "bindings": _bound_dict(ys, values),
                     "seq": seq,
                 })
+
+        case SelfAssignStmt(lifeline=A, payload=xs, bindings=ys):
+            values = tuple(_eval(x, env) for x in xs)
+            _bind(ys, values, env)
 
         case ActStmt(lifeline=_, action=action, inputs=ins, outputs=outs):
             in_vals = tuple(_eval(x, env) for x in ins)

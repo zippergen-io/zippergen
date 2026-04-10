@@ -44,12 +44,11 @@ _PLANNER_DSL_RULES = """\
 - The right-hand side of every `Lifeline: var = ...` must be a function call.
   Never write `Lifeline: result = some_var` — use `identity(some_var)` to pass
   a variable through unchanged.
-- A lifeline cannot send a message to itself. `A(...) >> A(...)` is invalid.
-  When joining results from multiple lifelines onto one, only forward variables
-  that the joining lifeline has NOT itself produced. Its own action outputs are
-  already in scope. Example: if Worker2 ran `Worker2: y = action(...)`,
-  then `Worker2(y) >> Worker2(y)` is wrong — `y` is already there.
-  Only send variables from OTHER lifelines: `Worker1(x) >> Worker2(x)`.
+- Self-sends `A(x) >> A(y)` are allowed and act as local variable assignments (y := x).
+  The left-side and right-side variable names must be distinct — `A(x) >> A(x)` is
+  a no-op and invalid. Use self-sends to rename a variable: `Worker1(result) >> Worker1(renamed)`.
+  When joining results from multiple workers, only forward variables from OTHER lifelines:
+  if Worker2 already produced `y`, use `Worker1(x) >> Worker2(x)` not `Worker2(y) >> Worker2(y)`.
 - Every action call must use the `Lifeline: var = action(...)` syntax.
   Never write a bare assignment like `var = action(...)` without the lifeline prefix.
 - Do NOT include any import statements or Var/Lifeline declarations.
@@ -328,9 +327,12 @@ def _validate_planner_spec(
     describing the first violation found.
 
     Invariants:
-    1. First statement sends FROM the caller:  ``caller(...) >> X(...)``
-    2. Second-to-last statement sends TO the caller:  ``X(...) >> caller(...)``
-    3. Last statement returns owned by the caller:  ``return var @ caller``
+    1. Second-to-last statement sends TO the caller:  ``X(...) >> caller(...)``
+    2. Last statement returns owned by the caller:  ``return var @ caller``
+    3. All called actions are defined.
+    4. Every >> send has matching argument counts; self-sends have disjoint variable names.
+    5. No bare assignments; every action call uses ``Lifeline: var = action(...)`` syntax.
+    6. Per-lifeline variable scope is respected.
 
     The DSL is expressed as Python with custom ``>>`` and ``@`` operators, so
     we check the AST structure rather than evaluating the code.
@@ -384,7 +386,7 @@ def _validate_planner_spec(
             return val.right.id
         return None
 
-    # --- Invariant 3: last statement is `return ... @ caller` ---
+    # --- Invariant: last statement is `return ... @ caller` ---
     last = stmts[-1]
     ret_owner = return_at_name(last)
     if ret_owner is None:
@@ -395,20 +397,7 @@ def _validate_planner_spec(
             f"Use `return var @ {caller}`."
         )
 
-    # --- Invariant 1: first statement sends FROM caller ---
-    first_expr = stmts[0]
-    if not isinstance(first_expr, _ast.Expr):
-        return f"First statement must be `{caller}(...) >> SomeWorker(...)`, got a non-expression."
-    pair = binop_rshift(first_expr.value)
-    if pair is None:
-        return f"First statement must be `{caller}(...) >> SomeWorker(...)` (>> send), got something else."
-    if pair[0] != caller:
-        return (
-            f"First statement sends from `{pair[0]}` but must send from `{caller}`. "
-            f"Start with `{caller}(inputs) >> SomeWorker(inputs)`."
-        )
-
-    # --- Invariant 2: second-to-last statement sends TO caller ---
+    # --- Invariant: second-to-last statement sends TO caller ---
     # Use the full body (not just Expr/Return) so control flow nodes are visible.
     non_doc_body = [s for s in body if not (isinstance(s, _ast.Expr)
                                             and isinstance(s.value, _ast.Constant))]
@@ -454,11 +443,17 @@ def _validate_planner_spec(
             lname = lhs.func.id if isinstance(lhs.func, _ast.Name) else "?"
             rname = rhs.func.id if isinstance(rhs.func, _ast.Name) else "?"
             if lname == rname:
-                return (
-                    f"`{lname}(...) >> {rname}(...)` is a self-send — a lifeline cannot "
-                    f"send messages to itself. Variables produced by actions on `{lname}` "
-                    f"are already in scope and can be used directly in subsequent steps."
-                )
+                # Self-send: check that left-side and right-side var names are disjoint.
+                lhs_vars = {arg.id for arg in lhs.args if isinstance(arg, _ast.Name)}
+                rhs_vars = {arg.id for arg in rhs.args if isinstance(arg, _ast.Name)}
+                overlap = lhs_vars & rhs_vars
+                if overlap:
+                    return (
+                        f"`{lname}({', '.join(sorted(overlap))}) >> {rname}({', '.join(sorted(overlap))})` "
+                        f"is a no-op self-send: the same variable appears on both sides. "
+                        f"Use distinct names — `{lname}(x) >> {lname}(y)` assigns x to y — "
+                        f"or remove it if the variable is already in scope."
+                    )
             if len(lhs.args) != len(rhs.args):
                 return (
                     f"`{lname}(...)  >> {rname}(...)` has mismatched argument counts "
@@ -754,6 +749,7 @@ def _exec_planner(action: PlannerAction, named_inputs: dict, llm_backend, trace=
         if validation_error is None:
             attempts_used = attempt + 1
             break
+        print(f"[planner] attempt {attempt + 1} failed: {validation_error}")
         self_send_hint = (
             "\nHint for self-send errors: a lifeline already has every variable it "
             "produced via its own actions — do NOT forward those back to itself. "

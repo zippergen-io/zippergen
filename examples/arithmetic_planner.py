@@ -115,6 +115,7 @@ if __name__ == "__main__":
         timeout=120,
     )
 
+
     expr = sys.argv[1] if len(sys.argv) > 1 else "(2 - 4) * (2 + 3) + (3 / (3 - 2))"
     print(f"Expression: {expr}")
     result = arithmetic_planner(expression=expr)
