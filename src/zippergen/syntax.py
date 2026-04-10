@@ -33,7 +33,7 @@ __all__ = [
     "SeqStmt", "IfStmt", "WhileStmt",
     # Local-only statements (produced by projection)
     "LocalStmt", "AnyStmt",
-    "SendStmt", "RecvStmt", "IfRecvStmt", "WhileRecvStmt",
+    "SendStmt", "RecvStmt", "SelfAssignStmt", "IfRecvStmt", "WhileRecvStmt",
     # Workflow
     "Workflow",
     # Reserved literals
@@ -318,6 +318,24 @@ class RecvStmt:
 
 
 @dataclass(frozen=True)
+class SelfAssignStmt:
+    """A(xs) >> A(ys) — self-send desugared to local variable assignments ys := xs.
+
+    No message is sent; the payload expressions are evaluated in the lifeline's
+    local environment and the results are bound to the corresponding binding
+    variables.  The left-side and right-side variable names must be disjoint.
+    """
+    lifeline: Lifeline
+    payload: tuple[Expr, ...]   # source expressions (left side of >>)
+    bindings: tuple[Expr, ...]  # destination variable exprs (right side of >>)
+
+    def __repr__(self) -> str:
+        xs = ", ".join(repr(e) for e in self.payload)
+        ys = ", ".join(repr(e) for e in self.bindings)
+        return f"assign {self.lifeline.name}({xs}) := ({ys})"
+
+
+@dataclass(frozen=True)
 class IfRecvStmt:
     """if A(ys) ← B then branch_true else branch_false
 
@@ -362,7 +380,7 @@ class WhileRecvStmt:
 
 
 LocalStmt = Union[
-    EmptyStmt, SendStmt, RecvStmt, ActStmt, SkipStmt,
+    EmptyStmt, SendStmt, RecvStmt, SelfAssignStmt, ActStmt, SkipStmt,
     SeqStmt, IfStmt, WhileStmt, IfRecvStmt, WhileRecvStmt,
 ]
 
@@ -370,7 +388,7 @@ LocalStmt = Union[
 # Used for recursive child positions in shared nodes (SeqStmt, IfStmt, WhileStmt)
 # and for functions that operate on either kind of program.
 AnyStmt = Union[
-    EmptyStmt, MsgStmt, SendStmt, RecvStmt, ActStmt, SkipStmt,
+    EmptyStmt, MsgStmt, SendStmt, RecvStmt, SelfAssignStmt, ActStmt, SkipStmt,
     SeqStmt, IfStmt, WhileStmt, IfRecvStmt, WhileRecvStmt,
 ]
 
@@ -656,6 +674,8 @@ def participation_set(stmt: AnyStmt) -> frozenset[Lifeline]:
             return frozenset({a})
         case RecvStmt(lifeline=a):
             return frozenset({a})
+        case SelfAssignStmt(lifeline=a):
+            return frozenset({a})
         case IfRecvStmt(lifeline=a, sender=b, branch_true=p1, branch_false=p2):
             return frozenset({a, b}) | participation_set(p1) | participation_set(p2)
         case WhileRecvStmt(lifeline=a, sender=b, body=p, exit_body=q):
@@ -709,6 +729,10 @@ def pp(node: AnyStmt, indent: int = 0) -> str:
         case RecvStmt(lifeline=a, bindings=ys, sender=b):
             y_str = ", ".join(repr(e) for e in ys)
             return f"{pad}recv {a.name}({y_str}) ← {b.name}"
+        case SelfAssignStmt(lifeline=a, payload=xs, bindings=ys):
+            x_str = ", ".join(repr(e) for e in xs)
+            y_str = ", ".join(repr(e) for e in ys)
+            return f"{pad}assign {a.name}: ({y_str}) := ({x_str})"
         case IfRecvStmt(lifeline=a, bindings=ys, sender=b, branch_true=t, branch_false=f):
             y_str = ", ".join(repr(e) for e in ys)
             return "\n".join([

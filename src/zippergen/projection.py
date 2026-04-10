@@ -9,7 +9,7 @@ from typing import cast
 
 from zippergen.syntax import (
     EmptyStmt, MsgStmt, ActStmt, SkipStmt, SeqStmt, IfStmt, WhileStmt,
-    SendStmt, RecvStmt, IfRecvStmt, WhileRecvStmt,
+    SendStmt, RecvStmt, SelfAssignStmt, IfRecvStmt, WhileRecvStmt,
     Lifeline, LocalStmt, AnyStmt, Var, VarExpr, LitExpr,
     kappa_ctrl, participation_set, seq,
     Workflow,
@@ -60,7 +60,10 @@ def _project(stmt: AnyStmt, A: Lifeline, counter: list[int]) -> LocalStmt:
 
         # msg X(xs) → Y(ys)
         case MsgStmt(sender=X, payload=xs, receiver=Y, bindings=ys):
-            if A == X:
+            if X == Y:
+                # Self-send: no channel needed — project as local assignment for X.
+                return SelfAssignStmt(X, xs, ys) if A == X else EmptyStmt()
+            elif A == X:
                 return SendStmt(A, xs, Y)
             elif A == Y:
                 return RecvStmt(A, ys, X)

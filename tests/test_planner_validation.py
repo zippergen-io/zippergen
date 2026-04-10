@@ -73,10 +73,11 @@ def some_other_function(text: str @ Planner) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Invariant 1: first statement must send FROM caller
+# Scope: lifeline cannot use variables it has not received
 # ---------------------------------------------------------------------------
 
-def test_first_statement_not_from_caller():
+def test_worker_uses_unreceived_variable():
+    # Worker1 tries to send `text` but has never received it — scope error.
     spec = """\
 @workflow
 def generated_workflow(text: str @ Planner) -> str:
@@ -87,7 +88,7 @@ def generated_workflow(text: str @ Planner) -> str:
 """
     result = _validate_planner_spec(spec, CALLER, KNOWN)
     assert result is not None
-    assert CALLER in result
+    assert "Worker1" in result
 
 
 # ---------------------------------------------------------------------------
@@ -258,3 +259,38 @@ def generated_workflow(text: str @ Planner, secret: str @ Planner) -> str:
     assert result is not None
     # Worker2 used `secret` but never received it
     assert "secret" in result or "Worker2" in result
+
+
+# ---------------------------------------------------------------------------
+# Self-sends
+# ---------------------------------------------------------------------------
+
+def test_self_send_valid():
+    # Worker1 renames `draft` to `result` via self-send — distinct names, valid.
+    spec = """\
+@workflow
+def generated_workflow(text: str @ Planner) -> str:
+    Planner(text) >> Worker1(text)
+    Worker1: draft = write(text)
+    Worker1(draft) >> Worker1(result)
+    Worker1(result) >> Planner(result)
+    return result @ Planner
+"""
+    result = _validate_planner_spec(spec, CALLER, KNOWN)
+    assert result is None
+
+
+def test_self_send_overlap_rejected():
+    # Worker1(draft) >> Worker1(draft) is a no-op — same name on both sides.
+    spec = """\
+@workflow
+def generated_workflow(text: str @ Planner) -> str:
+    Planner(text) >> Worker1(text)
+    Worker1: draft = write(text)
+    Worker1(draft) >> Worker1(draft)
+    Worker1(draft) >> Planner(draft)
+    return draft @ Planner
+"""
+    result = _validate_planner_spec(spec, CALLER, KNOWN)
+    assert result is not None
+    assert "no-op" in result or "same variable" in result or "overlap" in result.lower()
