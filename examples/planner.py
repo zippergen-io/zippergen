@@ -20,10 +20,6 @@ from zippergen.builder import workflow
 
 User    = Lifeline("User")
 Planner = Lifeline("Planner")
-Worker1 = Lifeline("Worker1")
-Worker2 = Lifeline("Worker2")
-Worker3 = Lifeline("Worker3")
-Worker4 = Lifeline("Worker4")
 
 # ---------------------------------------------------------------------------
 # Outer workflow variables
@@ -41,7 +37,7 @@ result    = Var("result",    str)
 @planner(
     description="A workflow planner for professional writing tasks.",
     actions=[],
-    lifelines=[Worker1, Worker2],
+    lifelines=["Worker1", "Worker2"],
     allow=["llm", "if", "while"],
     instructions="Worker1 drafts, Worker2 assesses quality against all original inputs; "
                  "use an if to route back to Worker1 for revision if needed."

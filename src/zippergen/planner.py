@@ -241,40 +241,6 @@ Example — iterate draft/critique until done or 3 rounds:
 
 
 # ---------------------------------------------------------------------------
-# Source reconstruction helpers
-# ---------------------------------------------------------------------------
-
-def _llm_action_to_source(action: LLMAction) -> str:
-    """Reconstruct @llm(...) source code from a LLMAction node."""
-    params = ", ".join(f"{n}: {t.__name__}" for n, t in action.inputs)
-    outputs_repr = (
-        "(" + ", ".join(f'("{n}", {t.__name__})' for n, t in action.outputs) + ",)"
-    )
-    return (
-        f"@llm(\n"
-        f"    system={action.system_prompt!r},\n"
-        f"    user={action.user_prompt!r},\n"
-        f"    parse={action.parse_format!r},\n"
-        f"    outputs={outputs_repr},\n"
-        f")\n"
-        f"def {action.name}({params}): ...\n"
-    )
-
-
-def _pure_action_to_source(action: PureAction) -> str:
-    """Return the source of a PureAction's underlying function (with @pure decorator)."""
-    import inspect as _inspect
-    import textwrap as _textwrap
-    try:
-        return _textwrap.dedent(_inspect.getsource(action.fn))
-    except (OSError, TypeError):
-        # Fallback: stub with correct signature
-        params = ", ".join(f"{n}: {t.__name__}" for n, t in action.inputs)
-        _, out_type = action.outputs[0]
-        return f"@pure\ndef {action.name}({params}) -> {out_type.__name__}: ...\n"
-
-
-# ---------------------------------------------------------------------------
 # Spec helpers
 # ---------------------------------------------------------------------------
 
@@ -319,7 +285,7 @@ def _extract_intermediate_var_names(spec: str) -> set[str]:
 
 
 def _validate_planner_spec(
-    spec: str, caller: str, known_actions: set[str] | None = None
+    spec: str, caller: str, known_actions: dict[str, int] | None = None
 ) -> str | None:
     """Check structural invariants on a generated workflow.
 
@@ -330,6 +296,7 @@ def _validate_planner_spec(
     1. Second-to-last statement sends TO the caller:  ``X(...) >> caller(...)``
     2. Last statement returns owned by the caller:  ``return var @ caller``
     3. All called actions are defined.
+    3b. Output count of each call matches the action's declaration.
     4. Every >> send has matching argument counts; self-sends have disjoint variable names.
     5. No bare assignments; every action call uses ``Lifeline: var = action(...)`` syntax.
     6. Per-lifeline variable scope is respected.
@@ -425,12 +392,44 @@ def _validate_planner_spec(
         r':\s+(?:\w+|\([^)]+\))\s*=\s*(\w+)\s*\(', spec
     ))
     defined_names = set(_re.findall(r'^def\s+(\w+)', spec, _re.MULTILINE))
-    undefined = called_names - defined_names - (known_actions or set())
+    undefined = called_names - defined_names - set(known_actions or {})
     if undefined:
         return (
             f"The workflow calls actions that are not defined: {', '.join(sorted(undefined))}. "
             f"Each must be defined as an @llm or @pure action before the workflow function."
         )
+
+    # --- Invariant 3b: output count matches action declaration ---
+    if known_actions:
+        for node in _ast.walk(tree):
+            if not isinstance(node, _ast.AnnAssign):
+                continue
+            if not isinstance(node.value, _ast.Call):
+                continue
+            fn = node.value.func
+            if not isinstance(fn, _ast.Name) or fn.id not in known_actions:
+                continue
+            fn_name = fn.id
+            expected = known_actions[fn_name]
+            ann = node.annotation
+            if isinstance(ann, _ast.Name):
+                actual = 1
+            elif isinstance(ann, _ast.Tuple):
+                actual = len([e for e in ann.elts if isinstance(e, _ast.Name)])
+            else:
+                continue
+            if actual != expected:
+                lifeline = node.target.id if isinstance(node.target, _ast.Name) else "?"
+                lhs_example = (
+                    "result" if expected == 1
+                    else "(" + ", ".join(f"out{i+1}" for i in range(expected)) + ")"
+                )
+                return (
+                    f"`{lifeline}: {_ast.unparse(ann)} = {fn_name}(...)` "
+                    f"unpacks {actual} output{'s' if actual != 1 else ''} "
+                    f"but `{fn_name}` returns {expected}. "
+                    f"Use: `{lifeline}: {lhs_example} = {fn_name}(...)`."
+                )
 
     # --- Invariant 5: both sides of every >> send have the same argument count,
     #                  and no lifeline sends to itself ---
@@ -741,8 +740,18 @@ def _exec_planner(action: PlannerAction, named_inputs: dict, llm_backend, trace=
     spec_result = llm_backend(spec_action, {})
     spec = _strip_fences(str(spec_result.get("workflow_spec", "")))
 
+    # --- Check that no worker shares the caller's name ---
+    caller_conflicts = [n for n in worker_names if n == outer_lifeline_name]
+    if caller_conflicts:
+        raise ValueError(
+            f"Planner worker lifeline(s) {caller_conflicts} share the name of the "
+            f"calling lifeline '{outer_lifeline_name}'. Worker names must be distinct "
+            f"from the caller."
+        )
+
     # --- Validate structural invariants; re-prompt up to max_retries times ---
-    known_actions = {a.name for a in action.actions}
+    known_actions = {a.name: len(a.outputs) for a in action.actions
+                     if isinstance(a, (LLMAction, PureAction, PlannerAction))}
     attempts_used = 1
     for attempt in range(action.max_retries):
         validation_error = _validate_planner_spec(spec, outer_lifeline_name, known_actions)
@@ -796,12 +805,16 @@ def _exec_planner(action: PlannerAction, named_inputs: dict, llm_backend, trace=
     print("=" * 60 + "\n")
 
     # --- 4. Build preamble for temp file ---
+    # Action objects are injected directly into the module namespace after
+    # import, so the preamble only needs Lifeline/Var declarations.
+    # This supports arbitrary action types (llm, pure, planner, workflow)
+    # without any serialisation.
     intermediate_vars = _extract_intermediate_var_names(spec)
 
     preamble_lines = [
         "from zippergen.syntax import Lifeline, Var",
-        "from zippergen.actions import llm, pure",
         "from zippergen.builder import workflow",
+        "from zippergen.actions import llm, pure, planner",
         "",
         "# Lifelines",
         f'{outer_lifeline_name} = Lifeline("{outer_lifeline_name}")',
@@ -812,18 +825,11 @@ def _exec_planner(action: PlannerAction, named_inputs: dict, llm_backend, trace=
     preamble_lines.append("# Intermediate variables")
     for var_name in sorted(intermediate_vars):
         preamble_lines.append(f'{var_name} = Var("{var_name}", str)')
-    preamble_lines.append("")
-    preamble_lines.append("# Action library")
-    for a in action.actions:
-        if isinstance(a, LLMAction):
-            preamble_lines.append(_llm_action_to_source(a))
-        elif isinstance(a, PureAction):
-            preamble_lines.append(_pure_action_to_source(a))
 
     preamble = "\n".join(preamble_lines) + "\n"
     full_source = preamble + "\n" + spec + "\n"
 
-    # --- 5. Write to temp file, import, and run ---
+    # --- 5. Write to temp file, import, and inject action objects ---
     fd, tmp_path = _tmpfile.mkstemp(suffix=".py", prefix="zippergen_planner_")
     mod_name = f"_zippergen_plan_{_os.getpid()}_{id(spec)}"
     try:
@@ -835,6 +841,10 @@ def _exec_planner(action: PlannerAction, named_inputs: dict, llm_backend, trace=
             raise RuntimeError("Could not create module spec for generated workflow.")
         mod = _ilu.module_from_spec(spec_obj)
         _sys.modules[mod_name] = mod
+        # Inject action objects directly — no serialisation needed, any action
+        # type (including @workflow and nested @planner) works automatically.
+        for a in action.actions:
+            mod.__dict__[a.name] = a
         spec_obj.loader.exec_module(mod)
 
         from zippergen.syntax import Workflow as _Workflow
