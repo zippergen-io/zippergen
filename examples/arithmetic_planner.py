@@ -22,9 +22,6 @@ from zippergen.builder import workflow
 
 User        = Lifeline("User")
 Planner     = Lifeline("Planner")
-Calculator1 = Lifeline("Calculator1")
-Calculator2 = Lifeline("Calculator2")
-Calculator3 = Lifeline("Calculator3")
 
 # ---------------------------------------------------------------------------
 # Variables
@@ -80,7 +77,7 @@ def is_zero(x: float) -> bool:
         "If the expression is not defined (division by 0 somewhere), return 0 as result."
     ),
     actions=[add, subtract, multiply, divide, identity, is_zero],
-    lifelines=[Calculator1, Calculator2, Calculator3],
+    lifelines=["Calculator1", "Calculator2", "Calculator3"],
     allow=["if"],
     max_retries=8,
 )

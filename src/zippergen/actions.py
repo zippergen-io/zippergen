@@ -9,7 +9,7 @@ import inspect
 from collections.abc import Callable
 
 from zippergen.syntax import (
-    ZType, LLMAction, PureAction, PlannerAction, is_ztype,
+    ZType, LLMAction, PureAction, PlannerAction, Lifeline, is_ztype,
 )
 
 __all__ = ["llm", "pure", "planner"]
@@ -134,7 +134,10 @@ def planner(
         Pre-defined action vocabulary (``LLMAction`` / ``PureAction`` nodes).
         The LLM may use these directly.  Pass ``[]`` to start from scratch.
     lifelines : list
-        ``Lifeline`` objects available to the generated workflow.
+        Workers available to the generated workflow.  Each entry may be a
+        ``Lifeline`` object or a plain string; strings are converted to
+        ``Lifeline`` objects automatically.  Worker names must be distinct
+        from the calling lifeline's name.
     allow : list of str, optional
         What the LLM is permitted to use or define in the generated spec.
         ``"pure"`` — may define ``@pure`` Python helper functions.
@@ -152,7 +155,7 @@ def planner(
         @planner(
             description="A workflow planner for text processing tasks.",
             actions=[summarise, translate],
-            lifelines=[Worker1, Worker2, Aggregator],
+            lifelines=["Worker1", "Worker2", "Aggregator"],
             allow=["pure", "llm"],
             instructions="Use Worker1 and Worker2 in parallel, then Aggregator to combine.",
         )
@@ -174,13 +177,18 @@ def planner(
                     f"@planner '{fn.__name__}': unsupported allow value {kind!r}. "
                     f"Supported: {sorted(_valid)}"
                 )
+        # Normalise: accept Lifeline objects or plain strings.
+        _lifelines = tuple(
+            ll if isinstance(ll, Lifeline) else Lifeline(ll)
+            for ll in lifelines
+        )
         return PlannerAction(
             name=fn.__name__,
             inputs=inputs,
             outputs=outputs,
             system_prompt=description,
             actions=tuple(actions),
-            lifelines=tuple(lifelines),
+            lifelines=_lifelines,
             allow=_allow,
             instructions=instructions,
             max_retries=max_retries,
