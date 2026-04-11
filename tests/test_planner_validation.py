@@ -8,7 +8,7 @@ from zippergen.runtime import _validate_planner_spec
 # ---------------------------------------------------------------------------
 
 CALLER = "Planner"
-KNOWN = {"write", "critique", "refine"}
+KNOWN = {"write": 1, "critique": 1, "refine": 1}
 
 
 def _linear_spec():
@@ -50,7 +50,7 @@ def test_valid_linear():
 
 
 def test_valid_if_branch():
-    result = _validate_planner_spec(_if_spec(), CALLER, {"write", "critique"})
+    result = _validate_planner_spec(_if_spec(), CALLER, {"write": 2, "critique": 1})
     assert result is None
 
 
@@ -191,7 +191,7 @@ def generated_workflow(text: str @ Planner, instructions: str @ Planner) -> str:
     Worker2(final) >> Planner(final)
     return final @ Planner
 """
-    result = _validate_planner_spec(spec, CALLER, {"write", "refine"})
+    result = _validate_planner_spec(spec, CALLER, {"write": 1, "refine": 1})
     assert result is not None
     assert "text" in result or "Worker2" in result
 
@@ -216,7 +216,7 @@ def generated_workflow(text: str @ Planner, instructions: str @ Planner) -> str:
 # ---------------------------------------------------------------------------
 
 def test_if_branch_correct_scoping():
-    result = _validate_planner_spec(_if_spec(), CALLER, {"write", "critique"})
+    result = _validate_planner_spec(_if_spec(), CALLER, {"write": 2, "critique": 1})
     assert result is None
 
 
@@ -236,7 +236,7 @@ def generated_workflow(text: str @ Planner) -> str:
         Worker1(draft) >> Planner(draft)
     return draft @ Planner
 """
-    result = _validate_planner_spec(spec, CALLER, {"write", "critique"})
+    result = _validate_planner_spec(spec, CALLER, {"write": 2, "critique": 1})
     assert result is not None
     assert "draft" in result or "path" in result.lower() or "branch" in result.lower()
 
@@ -255,7 +255,7 @@ def generated_workflow(text: str @ Planner, secret: str @ Planner) -> str:
         Worker1(draft) >> Planner(draft)
     return draft @ Planner
 """
-    result = _validate_planner_spec(spec, CALLER, {"write", "critique"})
+    result = _validate_planner_spec(spec, CALLER, {"write": 2, "critique": 1})
     assert result is not None
     # Worker2 used `secret` but never received it
     assert "secret" in result or "Worker2" in result
