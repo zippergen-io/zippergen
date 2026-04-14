@@ -29,7 +29,8 @@ __all__ = ["_exec_planner", "_validate_planner_spec"]
 
 _PLANNER_DSL_RULES = """\
 - Name the function exactly `generated_workflow`.
-- Declare inputs as `name: str @ {caller}`; return type is `-> str`.
+- Declare the function signature exactly as: `def generated_workflow({input_sig}) -> str:`
+  Do not add, remove, or rename any parameter, and do not change any type.
 - Send variables between lifelines: `A(x, y) >> B(x, y)`. Both sides MUST list
   the same variables in the same order — the left side sends, the right side binds.
 - Single-output action: `A: var = action(arg1, arg2)`.
@@ -285,7 +286,8 @@ def _extract_intermediate_var_names(spec: str) -> set[str]:
 
 
 def _validate_planner_spec(
-    spec: str, caller: str, known_actions: dict[str, int] | None = None
+    spec: str, caller: str, known_actions: dict[str, int] | None = None,
+    expected_input_types: dict[str, type] | None = None,
 ) -> str | None:
     """Check structural invariants on a generated workflow.
 
@@ -300,6 +302,7 @@ def _validate_planner_spec(
     4. Every >> send has matching argument counts; self-sends have disjoint variable names.
     5. No bare assignments; every action call uses ``Lifeline: var = action(...)`` syntax.
     6. Per-lifeline variable scope is respected.
+    7. Parameter types in generated_workflow signature match expected input types.
 
     The DSL is expressed as Python with custom ``>>`` and ``@`` operators, so
     we check the AST structure rather than evaluating the code.
@@ -319,6 +322,53 @@ def _validate_planner_spec(
             break
     if fn_node is None:
         return "No `generated_workflow` function found."
+
+    # --- Invariant 7: parameter names and types match expected inputs exactly ---
+    if expected_input_types:
+        _TYPE_MAP = {"str": str, "int": int, "bool": bool, "float": float, "tuple": tuple}
+        declared_params = {arg.arg for arg in fn_node.args.args}
+        expected_params = set(expected_input_types.keys())
+
+        missing = expected_params - declared_params
+        if missing:
+            expected_sig = ", ".join(
+                f"{n}: {t.__name__} @ {caller}"
+                for n, t in expected_input_types.items()
+            )
+            return (
+                f"Generated workflow is missing parameter(s): {', '.join(sorted(missing))}. "
+                f"The signature must be exactly: def generated_workflow({expected_sig}) -> str:"
+            )
+
+        extra = declared_params - expected_params
+        if extra:
+            expected_sig = ", ".join(
+                f"{n}: {t.__name__} @ {caller}"
+                for n, t in expected_input_types.items()
+            )
+            return (
+                f"Generated workflow has unexpected parameter(s): {', '.join(sorted(extra))}. "
+                f"The signature must be exactly: def generated_workflow({expected_sig}) -> str:"
+            )
+
+        for arg in fn_node.args.args:
+            name = arg.arg
+            ann = arg.annotation
+            # Annotations have the form `type @ Lifeline` (BinOp MatMult) or plain `type`
+            if isinstance(ann, _ast.BinOp) and isinstance(ann.op, _ast.MatMult):
+                type_node = ann.left
+            else:
+                type_node = ann
+            if not isinstance(type_node, _ast.Name):
+                continue
+            declared = _TYPE_MAP.get(type_node.id)
+            expected = expected_input_types[name]
+            if declared is not None and declared is not expected:
+                return (
+                    f"Parameter `{name}` is declared as `{type_node.id}` but the actual "
+                    f"input type is `{expected.__name__}`. "
+                    f"Use `{name}: {expected.__name__} @ {caller}`."
+                )
 
     body = fn_node.body
     # Filter to just expression/return statements (skip docstrings etc.)
@@ -676,7 +726,14 @@ def _exec_planner(action: PlannerAction, named_inputs: dict, llm_backend, trace=
     system_parts = [
         action.system_prompt,
         worker_desc,
-        "DSL rules:\n" + _PLANNER_DSL_RULES.format(caller=outer_lifeline_name),
+        "DSL rules:\n" + _PLANNER_DSL_RULES.format(
+            caller=outer_lifeline_name,
+            input_sig=", ".join(
+                f"{name}: {t.__name__} @ {outer_lifeline_name}"
+                for name, t in action.inputs
+                if name != "request"
+            ),
+        ),
     ]
     if control_flow_sections:
         system_parts.append("Control flow (available for use in the workflow):\n\n" + "\n\n".join(control_flow_sections))
@@ -713,11 +770,15 @@ def _exec_planner(action: PlannerAction, named_inputs: dict, llm_backend, trace=
     request_text = str(named_inputs.get("request", ""))
     # All named inputs except "request" are domain data variables passed to workers
     inputs_data = {k: v for k, v in named_inputs.items() if k != "request"}
+    input_types = {name: t for name, t in action.inputs if name != "request"}
     _PREVIEW_LEN = 120
     def _preview(v: object) -> str:
         s = str(v)
         return s if len(s) <= _PREVIEW_LEN else s[:_PREVIEW_LEN] + "…"
-    inputs_desc = "\n".join(f"- {k}: {_preview(v)}" for k, v in inputs_data.items())
+    inputs_desc = "\n".join(
+        f"- {k} ({input_types.get(k, type(v)).__name__}): {_preview(v)}"
+        for k, v in inputs_data.items()
+    )
 
     # --- 3. Call LLM to generate workflow spec ---
     # Pre-format the user content so .format() receives no template variables
@@ -754,7 +815,7 @@ def _exec_planner(action: PlannerAction, named_inputs: dict, llm_backend, trace=
                      if isinstance(a, (LLMAction, PureAction, PlannerAction))}
     attempts_used = 1
     for attempt in range(action.max_retries):
-        validation_error = _validate_planner_spec(spec, outer_lifeline_name, known_actions)
+        validation_error = _validate_planner_spec(spec, outer_lifeline_name, known_actions, input_types)
         if validation_error is None:
             attempts_used = attempt + 1
             break
@@ -789,7 +850,7 @@ def _exec_planner(action: PlannerAction, named_inputs: dict, llm_backend, trace=
         spec_result = llm_backend(retry_action, {})
         spec = _strip_fences(str(spec_result.get("workflow_spec", "")))
     else:
-        validation_error = _validate_planner_spec(spec, outer_lifeline_name, known_actions)
+        validation_error = _validate_planner_spec(spec, outer_lifeline_name, known_actions, input_types)
         if validation_error:
             raise RuntimeError(
                 f"Planner generated an invalid workflow after {action.max_retries} correction attempts.\n"
