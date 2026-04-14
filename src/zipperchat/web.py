@@ -736,7 +736,7 @@ function scrollDown() { container.scrollTop = container.scrollHeight; }
 
 function fmt(v, truncateStrings = true) {
   if (v === null || v === undefined) return 'null';
-  if (v === 'κ_ctrl') return null;
+  if (typeof v === 'string' && v.startsWith('κ_ctrl_')) return null;
   if (typeof v === 'boolean') return v ? 'true' : 'false';
   if (typeof v === 'string') {
     return truncateStrings && v.length > 32 ? v.slice(0, 30) + '…' : v;
@@ -782,7 +782,7 @@ function fmtListHtml(arr) {
 }
 
 function isCtrlVals(vals) {
-  return Array.isArray(vals) && vals.includes('κ_ctrl');
+  return Array.isArray(vals) && vals.some(v => typeof v === 'string' && v.startsWith('κ_ctrl_'));
 }
 
 function makeExpandableText(className, text) {
