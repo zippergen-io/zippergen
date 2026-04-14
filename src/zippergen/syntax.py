@@ -36,8 +36,8 @@ __all__ = [
     "SendStmt", "RecvStmt", "SelfAssignStmt", "IfRecvStmt", "WhileRecvStmt",
     # Workflow
     "Workflow",
-    # Reserved literals
-    "kappa_ctrl",
+    # Control-tag helpers
+    "make_kappa_ctrl", "is_kappa_ctrl",
     # Helpers
     "seq", "participation_set", "pp",
 ]
@@ -128,9 +128,20 @@ class LitExpr:
 
 Expr = Union[VarExpr, LitExpr]
 
-# Reserved control tag — used only by the projection engine in control-broadcast
-# messages (send B(⊤, κ_ctrl) → C).  Must not appear in user-written programs.
-kappa_ctrl: LitExpr = LitExpr("κ_ctrl", str)
+# Per-construct control tags — used only by the projection engine in control-broadcast
+# messages (send B(⊤, κ_ctrl_<id>) → C).  Must not appear in user-written programs.
+# Each if/while construct gets its own tag via make_kappa_ctrl(id(stmt)).
+_KAPPA_PREFIX = "κ_ctrl_"
+
+
+def make_kappa_ctrl(construct_id: int) -> LitExpr:
+    """Return the dedicated control tag for the construct with the given Python object id."""
+    return LitExpr(f"{_KAPPA_PREFIX}{construct_id}", str)
+
+
+def is_kappa_ctrl(expr) -> bool:
+    """Return True for any per-construct control tag produced by make_kappa_ctrl."""
+    return isinstance(expr, LitExpr) and isinstance(expr.value, str) and expr.value.startswith(_KAPPA_PREFIX)
 
 
 # ---------------------------------------------------------------------------
@@ -207,8 +218,8 @@ class MsgStmt:
     """msg sender(payload) → receiver(bindings)
 
     Both payload and bindings may contain variables (VarExpr) or concrete
-    values (LitExpr).  In projection-generated control messages the reserved
-    literal kappa_ctrl appears in both positions.
+    values (LitExpr).  In projection-generated control messages a per-construct
+    control tag (see make_kappa_ctrl) appears in both positions.
     """
     sender: Lifeline
     payload: tuple[Expr, ...]   # variables or literals sent by sender
