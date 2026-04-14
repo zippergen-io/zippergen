@@ -45,9 +45,17 @@ _PLANNER_DSL_RULES = """\
 - The right-hand side of every `Lifeline: var = ...` must be a function call.
   Never write `Lifeline: result = some_var` — use `identity(some_var)` to pass
   a variable through unchanged.
+- A lifeline's own action outputs are immediately available for subsequent actions on
+  that same lifeline — no self-send needed. Example: after
+      Calculator1: x = add(a, b)
+      Calculator1: y = subtract(c, d)
+  you can directly write `Calculator1: z = multiply(x, y)` — both `x` and `y` are
+  already in Calculator1's scope. Never write `Calculator1(x, y) >> Calculator1(x, y)`
+  to "collect" variables the lifeline already has.
 - Self-sends `A(x) >> A(y)` are allowed and act as local variable assignments (y := x).
   The left-side and right-side variable names must be distinct — `A(x) >> A(x)` is
-  a no-op and invalid. Use self-sends to rename a variable: `Worker1(result) >> Worker1(renamed)`.
+  a no-op and invalid. Use self-sends only to rename a variable from another lifeline:
+  `Worker1(result) >> Worker1(renamed)`.
   When joining results from multiple workers, only forward variables from OTHER lifelines:
   if Worker2 already produced `y`, use `Worker1(x) >> Worker2(x)` not `Worker2(y) >> Worker2(y)`.
 - Every action call must use the `Lifeline: var = action(...)` syntax.
