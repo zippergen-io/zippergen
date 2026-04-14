@@ -10,7 +10,7 @@ from zippergen.syntax import (
     EmptyStmt, MsgStmt, ActStmt, SkipStmt, SeqStmt, IfStmt, WhileStmt,
     SendStmt, RecvStmt, IfRecvStmt, WhileRecvStmt,
     Lifeline, Var, VarExpr, LitExpr,
-    Workflow, seq, kappa_ctrl,
+    Workflow, seq, is_kappa_ctrl,
 )
 from zippergen.actions import pure
 from zippergen.projection import project
@@ -158,7 +158,7 @@ def test_project_if_owner_gets_ifstmt():
 
 
 def test_project_if_owner_broadcasts_to_receivers():
-    """Owner's true/false branches start with a SendStmt(kappa_ctrl) to each receiver."""
+    """Owner's true/false branches start with a SendStmt(kappa_ctrl^P) to each receiver."""
     cond = lambda _e: True
     # B and C both appear in branches → both are receivers
     body_true  = MsgStmt(A, (VarExpr(x),), B, (VarExpr(y),))
@@ -181,7 +181,7 @@ def test_project_if_owner_broadcasts_to_receivers():
         return stmts
 
     true_stmts = _collect_seq(true_branch)
-    ctrl_sends = [s for s in true_stmts if isinstance(s, SendStmt) and kappa_ctrl in s.payload]
+    ctrl_sends = [s for s in true_stmts if isinstance(s, SendStmt) and any(is_kappa_ctrl(e) for e in s.payload)]
     assert len(ctrl_sends) == 2  # one for B, one for C
     receivers = {s.receiver for s in ctrl_sends}
     assert receivers == {B, C}
