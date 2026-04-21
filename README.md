@@ -1,6 +1,7 @@
 # ZipperGen
 
 [![Tests](https://github.com/zippergen-io/zippergen/actions/workflows/test.yml/badge.svg)](https://github.com/zippergen-io/zippergen/actions/workflows/test.yml)
+[![arXiv](https://img.shields.io/badge/arXiv-2604.17612-b31b1b.svg)](https://arxiv.org/abs/2604.17612)
 
 ZipperGen is a Python framework for multi-agent LLM coordination. You write a single global protocol — who sends what to whom, who runs which LLM, who owns each decision — and ZipperGen projects it onto each agent automatically. If the protocol compiles, it cannot deadlock. This is not a runtime check; it follows from how the projection works.
 
@@ -78,7 +79,7 @@ In most multi-agent frameworks, control flow lives inside each agent. Agents cal
 
 ZipperGen works differently. You write the control flow once, as a global protocol. ZipperGen then *projects* that protocol onto each agent — each agent receives exactly the local view of the global plan that it needs. Because every send has a corresponding receive by construction, deadlock cannot occur. This is a structural property, not something checked at runtime.
 
-The formal statement is in a forthcoming paper: the projected programs produce exactly the same behaviors as the global program, and deadlock-freedom follows by structural induction.
+The formal statement is in [our paper](https://arxiv.org/abs/2604.17612): the projected programs produce exactly the same behaviors as the global program, and deadlock-freedom follows by structural induction.
 
 The practical consequence: the global protocol is also a complete audit trail of what your agents are allowed to do. You can read it, reason about it, and submit it to anyone who needs to understand how the system works.
 
@@ -319,4 +320,4 @@ The implementation is grounded in the theory of Message Sequence Charts. The key
 - **Correctness** — The distributed projected programs produce exactly the same behaviors as the global program.
 - **Deadlock-freedom** — Follows by structural induction; no runtime checking required.
 
-The formal proofs are in a forthcoming paper.
+The formal proofs are in [our paper](https://arxiv.org/abs/2604.17612).
