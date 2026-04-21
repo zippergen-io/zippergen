@@ -60,11 +60,11 @@ result = Var("result", str)
 @llm(
     system=(
         "You are a medical expert. Analyze the notes and determine "
-        "if the diagnosis applies. Return verdict (true/false/unknown) "
+        "if the diagnosis applies. Return verdict (yes/no/unknown) "
         "and your reasoning."
     ),
     user="Notes: {notes}\nDiagnosis: {diag}",
-    parse="json",   # expects {"verdict": "true"/"false"/"unknown", "reason": "..."}
+    parse="json",   # expects {"verdict": "yes"/"no"/"unknown", "reason": "..."}
     outputs=(("verdict", str), ("reason", str)),
 )
 def assess(notes: str, diag: str) -> None: ...
@@ -81,7 +81,7 @@ def assess(notes: str, diag: str) -> None: ...
         "Your verdict: {my_verdict} because {my_reason}\n"
         "Colleague: {other_verdict} because {other_reason}"
     ),
-    parse="json",   # expects {"verdict": "true"/"false"/"unknown", "reason": "..."}
+    parse="json",   # expects {"verdict": "yes"/"no"/"unknown", "reason": "..."}
     outputs=(("verdict", str), ("reason", str)),
 )
 def reconsider(notes: str, diag: str,
