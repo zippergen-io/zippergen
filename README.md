@@ -175,12 +175,12 @@ def summarise(notes: str) -> None: ...
 
 ```python
 @llm(
-    system="Do the two verdicts agree?",
-    user="Verdict A: {v1}\nVerdict B: {v2}",
+    system="Is this tweet engaging, original, and under 180 chars? Reply true or false.",
+    user="{tweet}",
     parse="bool",
-    outputs=(("agreed", bool),),                    # exactly one bool entry
+    outputs=(("approved", bool),),                  # exactly one bool entry
 )
-def check_agreement(v1: str, v2: str) -> None: ...
+def approve(tweet: str) -> None: ...
 ```
 
 ## Dynamic planning
