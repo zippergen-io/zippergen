@@ -5,7 +5,7 @@
 
 ZipperGen is a Python framework for multi-agent LLM coordination. You write a single global protocol (who sends what to whom, who runs which LLM, who owns each decision), and ZipperGen projects it onto each agent automatically. If the protocol compiles, it cannot deadlock. This is not a runtime check; it follows from how the projection works.
 
-ZipperGen separates **what agents do** (LLM calls and pure functions) from **how they coordinate** (the protocol). Unlike tool-calling frameworks where agents decide the control flow themselves, coordination in ZipperGen is explicit, written once, and verified by construction.
+ZipperGen separates **what agents do** (LLM calls and pure functions) from **how they coordinate** (the protocol). Unlike tool-calling frameworks, ZipperGen provides formal guarantees: coordination is provably deadlock-free by construction, whether the protocol is written by hand or generated at runtime.
 
 ## Quick start
 
