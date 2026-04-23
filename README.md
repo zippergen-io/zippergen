@@ -105,7 +105,9 @@ Open **http://localhost:8765** to watch the agents exchange messages in real tim
 
 ## How it works
 
-ZipperGen programs are global coordination protocols: you describe what messages flow between which agents and who owns each decision. ZipperGen projects the global protocol onto per-agent local programs and executes them in parallel threads with FIFO message queues.
+The code is organized as a pipeline of layers that mirror the paper almost literally. A user writes a global workflow in Python DSL syntax; `@workflow` rewrites it into an immutable IR; the projection layer turns that global IR into one local program per lifeline; the runtime starts one thread per lifeline and connects them with FIFO queues. The optional `@planner` primitive asks an LLM to generate a new global workflow at runtime, then runs it through the exact same pipeline — so the guarantee holds there too.
+
+### Diagnosis consensus
 
 ### Diagnosis consensus
 
