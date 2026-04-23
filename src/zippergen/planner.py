@@ -536,7 +536,6 @@ def _validate_planner_spec(
                 )
 
     # --- Invariant 5d: no bare assignments (missing Lifeline: prefix) ---
-    import ast as _ast2
     for node in _ast.walk(tree):
         if isinstance(node, _ast.Assign):
             # Plain `x = expr(...)` inside the workflow body — missing lifeline prefix

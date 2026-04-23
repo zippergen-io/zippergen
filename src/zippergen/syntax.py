@@ -343,7 +343,7 @@ class SelfAssignStmt:
     def __repr__(self) -> str:
         xs = ", ".join(repr(e) for e in self.payload)
         ys = ", ".join(repr(e) for e in self.bindings)
-        return f"assign {self.lifeline.name}({xs}) := ({ys})"
+        return f"assign {self.lifeline.name}: ({ys}) := ({xs})"
 
 
 @dataclass(frozen=True)

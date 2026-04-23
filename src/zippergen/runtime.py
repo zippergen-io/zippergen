@@ -186,10 +186,6 @@ def console_trace(event: dict) -> None:
             print()
 
 
-def _default_trace(event: dict) -> None:
-    console_trace(event)
-
-
 def tee_traces(*traces):
     active = [trace for trace in traces if trace is not None]
 
@@ -274,13 +270,9 @@ def _eval(expr, env: Env) -> object:
             raise TypeError(f"Unknown expr: {type(expr).__name__}")
 
 
-def _is_kappa(expr) -> bool:
-    return is_kappa_ctrl(expr)
-
-
 def _bind(bindings: tuple, values: tuple, env: Env) -> None:
     for binding, value in zip(bindings, values):
-        if _is_kappa(binding):
+        if is_kappa_ctrl(binding):
             continue
         if isinstance(binding, VarExpr):
             env[binding.var.name] = value
@@ -300,9 +292,8 @@ def _bound_dict(bindings: tuple, values: tuple) -> dict:
     return {
         b.var.name: _jsonify(v)
         for b, v in zip(bindings, values)
-        if isinstance(b, VarExpr) and not _is_kappa(b)
+        if isinstance(b, VarExpr) and not is_kappa_ctrl(b)
     }
-
 
 
 
@@ -512,7 +503,7 @@ def run(
         llm_backend = mock_llm
 
     if trace is None and verbose:
-        trace = _default_trace
+        trace = console_trace
 
     stop = threading.Event()
 
