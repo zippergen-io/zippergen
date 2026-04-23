@@ -109,8 +109,6 @@ The code is organized as a pipeline of layers that mirror the paper almost liter
 
 ### Diagnosis consensus
 
-### Diagnosis consensus
-
 Two LLMs independently assess a case, then iterate until they agree or a round limit is reached:
 
 ```python
