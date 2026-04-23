@@ -274,14 +274,19 @@ def make_anthropic_backend(
 
     def backend(action, inputs: dict[str, object]) -> dict[str, object]:
         user_prompt = action.user_prompt.format(**inputs)
+        parse = getattr(action, "parse_format", "json") or "json"
+        if parse == "json":
+            content = f"{user_prompt}\n\n{_json_instruction(action)}"
+        elif parse == "bool" and len(action.outputs) == 1:
+            content = f"{user_prompt}\n\nReply with exactly one word: true or false."
+        else:
+            content = user_prompt
         payload: dict = {
             "model": model,
             "max_tokens": max_tokens,
             "system": action.system_prompt,
-            "messages": [{"role": "user", "content": user_prompt}],
+            "messages": [{"role": "user", "content": content}],
         }
-        if getattr(action, "parse_format", "json") == "json":
-            payload["messages"][0]["content"] = f"{user_prompt}\n\n{_json_instruction(action)}"
 
         req = request.Request(
             "https://api.anthropic.com/v1/messages",
