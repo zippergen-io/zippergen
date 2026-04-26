@@ -107,7 +107,8 @@ def generated_workflow(text: str @ Planner) -> str:
     assert result is not None
 
 
-def test_last_return_wrong_lifeline():
+def test_return_to_non_caller_lifeline_is_valid():
+    # Returning from any lifeline is allowed — `draft` is in scope on Worker2.
     spec = """\
 @workflow
 def generated_workflow(text: str @ Planner) -> str:
@@ -117,8 +118,7 @@ def generated_workflow(text: str @ Planner) -> str:
     return draft @ Worker2
 """
     result = _validate_planner_spec(spec, CALLER, KNOWN)
-    assert result is not None
-    assert CALLER in result
+    assert result is None
 
 
 # ---------------------------------------------------------------------------
