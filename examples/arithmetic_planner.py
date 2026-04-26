@@ -81,7 +81,7 @@ def is_zero(x: float) -> bool:
     allow=["if"],
     max_retries=8,
 )
-def evaluate(expression: str) -> str: ...
+def evaluate(request: str) -> str: ...
 
 
 # ---------------------------------------------------------------------------

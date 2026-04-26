@@ -23,14 +23,15 @@ __all__ = ["_exec_planner", "_validate_planner_spec"]
 # Planner DSL prompt templates
 #
 # Each constant is a plain string injected into the LLM system prompt.
-# Use {caller} wherever the coordinating lifeline's name should appear —
-# it is filled in at runtime via .format(caller=outer_lifeline_name).
+# _PLANNER_DSL_RULES uses {input_sig} (filled at runtime) for the signature template.
 # ---------------------------------------------------------------------------
 
 _PLANNER_DSL_RULES = """\
 - Name the function exactly `generated_workflow`.
-- Declare the function signature exactly as: `def generated_workflow({input_sig}) -> str:`
-  Do not add, remove, or rename any parameter, and do not change any type.
+- Declare the function signature as: `def generated_workflow({input_sig}) -> str:`
+  The parameter names and types are fixed. Annotate each parameter with the lifeline
+  that should hold it at workflow start: `name: type @ Lifeline`. Inputs may be
+  distributed across different lifelines — no initial forwarding step is needed.
 - Send variables between lifelines: `A(x, y) >> B(x, y)`. Both sides MUST list
   the same variables in the same order — the left side sends, the right side binds.
 - Single-output action: `A: var = action(arg1, arg2)`.
@@ -39,9 +40,8 @@ _PLANNER_DSL_RULES = """\
 - Action arguments may be variable names OR literals (string, int, or float): `A: r = add(x, 3.14)`.
   Use literals to inject known constants directly without a preceding action call.
   Match the literal type to the action's parameter type: use `2` or `2.0` for float parameters, `"text"` for str parameters.
-- REQUIRED: the last statement before `return` MUST send the final result back to {caller}:
-  `LastWorker(result) >> {caller}(result)`.
-- Return: `return var @ {caller}`.
+- Return: `return var @ Lifeline` where `var` is in `Lifeline`'s scope at that point.
+  The result may live on any lifeline.
 - The right-hand side of every `Lifeline: var = ...` must be a function call.
   Never write `Lifeline: result = some_var` — use `identity(some_var)` to pass
   a variable through unchanged.
@@ -67,71 +67,75 @@ _PLANNER_DSL_RULES = """\
   before the send. Do not invent variable names — every variable must have a clear source.
 - To give a downstream worker access to original inputs, forward them explicitly:
   `Worker1(result, var) >> Worker2(result, var)`.
-- Every branch of an `if` must send the final result to {caller} under the SAME
-  binding name. The name on the RIGHT side of `>>` is what {caller} will use in
-  `return`. Example — CORRECT (both branches bind to `result`):
-      if cond @ Worker1:
-          Worker1(final) >> {caller}(result)   # binds as `result`
+- Output variable names (left of `=`) must NOT match any action name. Rename to avoid
+  the collision: e.g. `is_zero_result` instead of `is_zero`, `add_result` instead of `add`.
+- Every input parameter MUST appear in at least one action call or send. A parameter
+  that is never used is an error.
+- There is NO early return. `return` may only appear as the very last statement of the
+  workflow, never inside an `if` or `while` branch. If you want to short-circuit on an
+  error condition, put ALL subsequent computation inside the `else` branch:
+      if error_condition @ Owner:
+          Owner: result = error_value()   # produce a sentinel result
       else:
-          Worker1(draft) >> {caller}(result)   # also binds as `result`
-      return result @ {caller}
-  WRONG (different names → `return` cannot refer to both):
+          # ALL remaining work goes here
+          ...
+          # result must be forwarded/produced on the same lifeline as in the true branch
+      return result @ Owner
+- Every branch of an `if` must produce the return variable under the SAME name on the
+  SAME lifeline, so that `return` can refer to it on all paths. Example — CORRECT:
       if cond @ Worker1:
-          Worker1(final) >> {caller}(final)    # ← final
+          Worker1: result = option_a(draft)
       else:
-          Worker1(draft) >> {caller}(draft)    # ← draft (different!)
-      return draft @ {caller}                  # ← fails: draft not on all paths
+          Worker1: result = option_b(draft)
+      return result @ Worker1
+  WRONG (different names — `return` cannot refer to both):
+      if cond @ Worker1:
+          Worker1: final = option_a(draft)   # ← final
+      else:
+          Worker1: summary = option_b(draft) # ← summary (different!)
+      return ???                              # ← fails: no single name on all paths
 
 Example — sequential with handoff (Worker1 drafts, Worker2 refines):
 
 @workflow
-def generated_workflow(text: str @ {caller}, instructions: str @ {caller}) -> str:
-    {caller}(text, instructions) >> Worker1(text, instructions)
+def generated_workflow(text: str @ Worker1, instructions: str @ Worker1) -> str:
     Worker1: draft = write(text, instructions)
     Worker1(draft) >> Worker2(draft)
     Worker2: final = refine(draft, instructions)
-    Worker2(final) >> {caller}(final)
-    return final @ {caller}
+    return final @ Worker2
 
 Example — three-worker chain (Worker1 drafts, Worker2 critiques, Worker3 polishes):
 
 @workflow
-def generated_workflow(text: str @ {caller}, instructions: str @ {caller}) -> str:
-    {caller}(text, instructions) >> Worker1(text, instructions)
+def generated_workflow(text: str @ Worker1, instructions: str @ Worker1) -> str:
     Worker1: draft = write(text, instructions)
     Worker1(draft, instructions) >> Worker2(draft, instructions)
     Worker2: feedback = critique(draft, instructions)
     Worker2(draft, feedback) >> Worker3(draft, feedback)
     Worker3: final = polish(draft, feedback)
-    Worker3(final) >> {caller}(final)
-    return final @ {caller}
+    return final @ Worker3
 
 Example — back-and-forth (Worker1 drafts, Worker2 critiques, Worker1 revises):
 
 @workflow
-def generated_workflow(text: str @ {caller}, instructions: str @ {caller}) -> str:
-    {caller}(text, instructions) >> Worker1(text, instructions)
+def generated_workflow(text: str @ Worker1, instructions: str @ Worker1) -> str:
     Worker1: draft = write(text, instructions)
     Worker1(draft, instructions) >> Worker2(draft, instructions)
     Worker2: feedback = critique(draft, instructions)
     Worker2(feedback) >> Worker1(feedback)
     Worker1: final = revise(draft, feedback, instructions)
-    Worker1(final) >> {caller}(final)
-    return final @ {caller}
+    return final @ Worker1
 
-Example — parallel then aggregate:
+Example — parallel then aggregate (each worker gets its own input directly):
 
 @workflow
-def generated_workflow(text: str @ {caller}, focus: str @ {caller}, language: str @ {caller}) -> str:
-    {caller}(text, focus, language) >> Worker1(text, focus)
-    {caller}(text, focus, language) >> Worker2(text, language)
-    Worker1: summary = summarise(text, focus)
-    Worker2: result = translate(text, language)
-    Worker1(summary) >> Aggregator(summary)
-    Worker2(result) >> Aggregator(result)
-    Aggregator: comparison = compare(summary, result)
-    Aggregator(comparison) >> {caller}(comparison)
-    return comparison @ {caller}
+def generated_workflow(doc1: str @ Worker1, doc2: str @ Worker2) -> str:
+    Worker1: summary1 = summarise(doc1)
+    Worker2: summary2 = summarise(doc2)
+    Worker1(summary1) >> Aggregator(summary1)
+    Worker2(summary2) >> Aggregator(summary2)
+    Aggregator: merged = merge(summary1, summary2)
+    return merged @ Aggregator
 """
 
 
@@ -206,9 +210,23 @@ Syntax:
 The condition is a Python boolean expression over variables already bound on Owner.
 Supported operators: ==, !=, <, >, <=, >=, not, and, or.
 
+IMPORTANT — no early return: `return` is always the last statement of the whole workflow.
+If a branch detects an error and you want to skip remaining computation, put ALL
+downstream computation inside the `else` branch, and produce a sentinel result in the
+`if` branch. Example — divide by zero guard:
+
+    Worker: denominator = compute_denominator(x)
+    Worker: is_zero = is_zero(denominator)
+    if is_zero @ Worker:
+        Worker: result = error_value()   # sentinel; all further work is skipped
+    else:
+        Worker: result = divide(y, denominator)
+        # ... any further computation on other lifelines goes HERE inside else
+    return result @ Worker
+
 Example — Worker1 drafts, Worker2 assesses and optionally sends feedback for revision:
 (Worker2 produces BOTH the bool flag AND the feedback string in one action.
- Both branches bind the final value to `result` on the {caller} side.)
+ Both branches produce `result` on Worker2.)
 
     Worker1: draft = write(text, instructions)
     Worker1(draft, instructions) >> Worker2(draft, instructions)
@@ -216,10 +234,10 @@ Example — Worker1 drafts, Worker2 assesses and optionally sends feedback for r
     if needs_revision @ Worker2:
         Worker2(draft, feedback) >> Worker1(draft, feedback)
         Worker1: revised = revise(draft, feedback)
-        Worker1(revised) >> {caller}(result)   # bind as `result`
+        Worker1(revised) >> Worker2(result)
     else:
-        Worker2(draft) >> {caller}(result)     # also bind as `result`
-    return result @ {caller}
+        Worker2: result = refine(draft, instructions)
+    return result @ Worker2
 """
 
 _PLANNER_ALLOW_WHILE = """\
@@ -245,7 +263,8 @@ Example — iterate draft/critique until done or 3 rounds:
         Worker2(feedback) >> Worker1(feedback)
         Worker1: (draft, round, done) = revise_and_check(draft, feedback, round)
     else:
-        Worker1(draft) >> {caller}(draft)
+        pass
+    return draft @ Worker1
 """
 
 
@@ -303,14 +322,13 @@ def _validate_planner_spec(
     describing the first violation found.
 
     Invariants:
-    1. Second-to-last statement sends TO the caller:  ``X(...) >> caller(...)``
-    2. Last statement returns owned by the caller:  ``return var @ caller``
-    3. All called actions are defined.
-    3b. Output count of each call matches the action's declaration.
-    4. Every >> send has matching argument counts; self-sends have disjoint variable names.
-    5. No bare assignments; every action call uses ``Lifeline: var = action(...)`` syntax.
-    6. Per-lifeline variable scope is respected.
-    7. Parameter types in generated_workflow signature match expected input types.
+    1. Last statement is ``return var @ Lifeline``.
+    2. All called actions are defined.
+    2b. Output count of each call matches the action's declaration.
+    3. Every >> send has matching argument counts; self-sends have disjoint variable names.
+    4. No bare assignments; every action call uses ``Lifeline: var = action(...)`` syntax.
+    5. Per-lifeline variable scope is respected (seeded from signature annotations).
+    6. Parameter types in generated_workflow signature match expected input types.
 
     The DSL is expressed as Python with custom ``>>`` and ``@`` operators, so
     we check the AST structure rather than evaluating the code.
@@ -340,23 +358,23 @@ def _validate_planner_spec(
         missing = expected_params - declared_params
         if missing:
             expected_sig = ", ".join(
-                f"{n}: {t.__name__} @ {caller}"
+                f"{n}: {t.__name__} @ <Lifeline>"
                 for n, t in expected_input_types.items()
             )
             return (
                 f"Generated workflow is missing parameter(s): {', '.join(sorted(missing))}. "
-                f"The signature must be exactly: def generated_workflow({expected_sig}) -> str:"
+                f"The signature must include: def generated_workflow({expected_sig}) -> str:"
             )
 
         extra = declared_params - expected_params
         if extra:
             expected_sig = ", ".join(
-                f"{n}: {t.__name__} @ {caller}"
+                f"{n}: {t.__name__} @ <Lifeline>"
                 for n, t in expected_input_types.items()
             )
             return (
                 f"Generated workflow has unexpected parameter(s): {', '.join(sorted(extra))}. "
-                f"The signature must be exactly: def generated_workflow({expected_sig}) -> str:"
+                f"The signature must include: def generated_workflow({expected_sig}) -> str:"
             )
 
         for arg in fn_node.args.args:
@@ -375,14 +393,14 @@ def _validate_planner_spec(
                 return (
                     f"Parameter `{name}` is declared as `{type_node.id}` but the actual "
                     f"input type is `{expected.__name__}`. "
-                    f"Use `{name}: {expected.__name__} @ {caller}`."
+                    f"Use `{name}: {expected.__name__} @ <Lifeline>`."
                 )
 
     body = fn_node.body
     # Filter to just expression/return statements (skip docstrings etc.)
     stmts = [s for s in body if isinstance(s, (_ast.Expr, _ast.Return))]
-    if len(stmts) < 2:
-        return "Workflow body is too short to contain both a send and a return."
+    if not stmts:
+        return "Workflow body is empty — must contain at least one action and a return statement."
 
     # Helper: does an AST expression represent `Name(...)` i.e. a Call on a Name?
     def call_name(node) -> str | None:
@@ -411,37 +429,11 @@ def _validate_planner_spec(
             return val.right.id
         return None
 
-    # --- Invariant: last statement is `return ... @ caller` ---
+    # --- Invariant: last statement is `return var @ SomeLifeline` ---
     last = stmts[-1]
     ret_owner = return_at_name(last)
     if ret_owner is None:
-        return "Last statement must be `return var @ {caller}` (no `return` found or wrong form).".replace("{caller}", caller)
-    if ret_owner != caller:
-        return (
-            f"Last statement returns to `{ret_owner}` but must return to `{caller}`. "
-            f"Use `return var @ {caller}`."
-        )
-
-    # --- Invariant: second-to-last statement sends TO caller ---
-    # Use the full body (not just Expr/Return) so control flow nodes are visible.
-    non_doc_body = [s for s in body if not (isinstance(s, _ast.Expr)
-                                            and isinstance(s.value, _ast.Constant))]
-    second_last = non_doc_body[-2] if len(non_doc_body) >= 2 else None
-    if second_last is not None and not isinstance(second_last, (_ast.If, _ast.While)):
-        # Only check for linear send when the preceding statement is not control flow.
-        if not isinstance(second_last, _ast.Expr):
-            return f"Statement before `return` must be `SomeWorker(...) >> {caller}(...)`, got a non-expression."
-        pair2 = binop_rshift(second_last.value)
-        if pair2 is None:
-            return (
-                f"Statement before `return` must be `SomeWorker(...) >> {caller}(...)` (>> send), "
-                f"got something else."
-            )
-        if pair2[1] != caller:
-            return (
-                f"Statement before `return` sends to `{pair2[1]}` but must send to `{caller}`. "
-                f"End with `SomeWorker(result) >> {caller}(result)` before the return."
-            )
+        return "Last statement must be `return var @ Lifeline` (no `return` found or wrong form)."
 
     # --- Invariant 4: all action calls are defined or pre-defined ---
     # Collect names called as actions: `A: var = name(...)` or `A: (v1, v2) = name(...)`
@@ -456,6 +448,27 @@ def _validate_planner_spec(
             f"The workflow calls actions that are not defined: {', '.join(sorted(undefined))}. "
             f"Each must be defined as an @llm or @pure action before the workflow function."
         )
+
+    # --- Invariant 4b: output variable names must not collide with action names ---
+    # A collision causes the Var declaration in the preamble to shadow the action,
+    # making the action reference resolve to a Var object at builder time.
+    all_action_names = (set(known_actions or {})) | (defined_names - {"generated_workflow"})
+    for node in _ast.walk(fn_node):
+        if not isinstance(node, _ast.AnnAssign):
+            continue
+        ann = node.annotation
+        clashing = []
+        if isinstance(ann, _ast.Name) and ann.id in all_action_names:
+            clashing.append(ann.id)
+        elif isinstance(ann, _ast.Tuple):
+            clashing = [e.id for e in ann.elts
+                        if isinstance(e, _ast.Name) and e.id in all_action_names]
+        for name in clashing:
+            return (
+                f"Output variable `{name}` has the same name as action `{name}`. "
+                f"Rename the output variable to avoid the collision — "
+                f"e.g. use `{name}_result` or `{name}_val` instead."
+            )
 
     # --- Invariant 3b: output count matches action declaration ---
     if known_actions:
@@ -555,7 +568,13 @@ def _validate_planner_spec(
     # function outputs).  Seed caller's scope from the declared function parameters.
     scope: dict[str, set[str]] = {}
     for arg in fn_node.args.args:
-        scope.setdefault(caller, set()).add(arg.arg)
+        ann = arg.annotation
+        if (isinstance(ann, _ast.BinOp) and isinstance(ann.op, _ast.MatMult)
+                and isinstance(ann.right, _ast.Name)):
+            owner = ann.right.id
+        else:
+            owner = caller  # fallback if annotation has no lifeline
+        scope.setdefault(owner, set()).add(arg.arg)
 
     def _check_scopes(stmts: list, sc: dict[str, set[str]]) -> str | None:
         for stmt in stmts:
@@ -642,18 +661,44 @@ def _validate_planner_spec(
     if scope_err:
         return scope_err
 
-    # --- Invariant 6b: return variable must be in caller's scope on ALL paths ---
+    # --- Invariant 6b: return variable must be in the return lifeline's scope on ALL paths ---
     ret_node = stmts[-1]
     if (isinstance(ret_node, _ast.Return)
             and isinstance(ret_node.value, _ast.BinOp)
-            and isinstance(ret_node.value.left, _ast.Name)):
+            and isinstance(ret_node.value.left, _ast.Name)
+            and isinstance(ret_node.value.right, _ast.Name)):
         ret_var = ret_node.value.left.id
-        if ret_var not in scope.get(caller, set()):
+        ret_ll  = ret_node.value.right.id
+        if ret_var not in scope.get(ret_ll, set()):
             return (
-                f"`return {ret_var} @ {caller}`: `{ret_var}` is not available on "
-                f"all control-flow paths. Every branch of every `if` must send the "
-                f"same variable name to `{caller}` before the return, e.g.: "
-                f"`Worker(result) >> {caller}(result)` in every branch."
+                f"`return {ret_var} @ {ret_ll}`: `{ret_var}` is not available on "
+                f"`{ret_ll}` on all control-flow paths. Every branch of every `if` "
+                f"must produce or forward `{ret_var}` to `{ret_ll}` before the return."
+            )
+
+    # --- Invariant 7: every input parameter must be used at least once ---
+    # Collect variable names that appear as arguments in action calls or sends.
+    used_in_body: set[str] = set()
+    for node in _ast.walk(fn_node):
+        if isinstance(node, _ast.AnnAssign) and isinstance(node.value, _ast.Call):
+            for arg in node.value.args:
+                if isinstance(arg, _ast.Name):
+                    used_in_body.add(arg.id)
+        elif (isinstance(node, _ast.Expr)
+              and isinstance(node.value, _ast.BinOp)
+              and isinstance(node.value.op, _ast.RShift)):
+            lhs = node.value.left
+            if isinstance(lhs, _ast.Call):
+                for arg in lhs.args:
+                    if isinstance(arg, _ast.Name):
+                        used_in_body.add(arg.id)
+    for arg in fn_node.args.args:
+        if arg.arg not in used_in_body:
+            return (
+                f"Input parameter `{arg.arg}` is declared but never used. "
+                f"Every input must appear in at least one action call or send. "
+                f"Pass it to an action: `Lifeline: out = action({arg.arg}, ...)`, "
+                f"or forward it: `Lifeline({arg.arg}) >> Other({arg.arg})`."
             )
 
     return None  # all good
@@ -708,7 +753,7 @@ def _exec_planner(action: PlannerAction, named_inputs: dict, llm_backend, trace=
         f"available: {worker_list}."
     )
 
-    lifeline_lines = [f"{outer_lifeline_name}    provides inputs, receives the final result"]
+    lifeline_lines = []
     for ll in action.lifelines:
         lifeline_lines.append(ll.name)
 
@@ -721,13 +766,11 @@ def _exec_planner(action: PlannerAction, named_inputs: dict, llm_backend, trace=
     control_flow_sections: list[str] = []
     if "if" in action.allow:
         control_flow_sections.append(
-            "Conditional branching:\n"
-            + _PLANNER_ALLOW_IF.format(caller=outer_lifeline_name)
+            "Conditional branching:\n" + _PLANNER_ALLOW_IF
         )
     if "while" in action.allow:
         control_flow_sections.append(
-            "Loops:\n"
-            + _PLANNER_ALLOW_WHILE.format(caller=outer_lifeline_name)
+            "Loops:\n" + _PLANNER_ALLOW_WHILE
         )
 
     system_parts = [
@@ -736,7 +779,7 @@ def _exec_planner(action: PlannerAction, named_inputs: dict, llm_backend, trace=
         "DSL rules:\n" + _PLANNER_DSL_RULES.format(
             caller=outer_lifeline_name,
             input_sig=", ".join(
-                f"{name}: {t.__name__} @ {outer_lifeline_name}"
+                f"{name}: {t.__name__}"
                 for name, t in action.inputs
                 if name != "request"
             ),
@@ -790,9 +833,10 @@ def _exec_planner(action: PlannerAction, named_inputs: dict, llm_backend, trace=
     # --- 3. Call LLM to generate workflow spec ---
     # Pre-format the user content so .format() receives no template variables
     # (avoids breakage if request_text or inputs_desc contains literal braces).
+    inputs_section = f"Input variables available:\n{inputs_desc}\n\n" if inputs_data else ""
     user_content = (
         f"Request: {request_text}\n\n"
-        f"Input variables available:\n{inputs_desc}\n\n"
+        f"{inputs_section}"
         "Generate the workflow."
     )
     user_content_safe = user_content.replace("{", "{{").replace("}", "}}")
@@ -840,9 +884,8 @@ def _exec_planner(action: PlannerAction, named_inputs: dict, llm_backend, trace=
             f"Return the complete corrected output — including all @llm and @pure "
             f"action definitions followed by the @workflow function. "
             f"Structural rules:\n"
-            f"  1. First statement: `{outer_lifeline_name}(inputs) >> SomeWorker(inputs)`\n"
-            f"  2. Second-to-last: `SomeWorker(result) >> {outer_lifeline_name}(result)`\n"
-            f"  3. Last statement: `return result @ {outer_lifeline_name}`\n\n"
+            f"  1. Each parameter annotated with its owner lifeline: `name: type @ Lifeline`\n"
+            f"  2. Last statement: `return var @ Lifeline` where var is in Lifeline's scope\n\n"
             f"Current (broken) workflow:\n{spec}"
         )
         correction_prompt_safe = correction_prompt.replace("{", "{{").replace("}", "}}")

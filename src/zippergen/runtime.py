@@ -18,9 +18,10 @@ from zippergen.syntax import (
     EmptyStmt, SendStmt, RecvStmt, SelfAssignStmt, ActStmt, SkipStmt,
     SeqStmt, IfStmt, WhileStmt, IfRecvStmt, WhileRecvStmt,
     VarExpr, LitExpr, Var,
-    LLMAction, PureAction, PlannerAction,
+    LLMAction, PureAction, PlannerAction, WorkflowAction,
     Lifeline, Workflow, LocalStmt, AnyStmt,
     is_kappa_ctrl,
+    _ordered_workflow_lifelines,
 )
 from zippergen.projection import project
 
@@ -358,6 +359,70 @@ def _exec(stmt: LocalStmt, env: Env, ch: Channels, ns: dict, llm_backend, trace,
 
         case ActStmt(lifeline=_, action=action, inputs=ins, outputs=outs):
             in_vals = tuple(_eval(x, env) for x in ins)
+
+            if isinstance(action, WorkflowAction):
+                inner_initial_envs: dict[str, dict[str, object]] = {}
+                for (inner_name, _, inner_ll), val in zip(action.inputs, in_vals):
+                    inner_initial_envs.setdefault(inner_ll.name, {})[inner_name] = val
+                inner_wf = action.workflow
+                inner_lifelines = list(_ordered_workflow_lifelines(inner_wf))
+                seq = _next_act_seq()
+                display_inputs = {
+                    expr.var.name if isinstance(expr, VarExpr) else n: val
+                    for (n, _, _), expr, val in zip(action.inputs, ins, in_vals)
+                }
+                if trace:
+                    trace({
+                        "type": "act_start",
+                        "lifeline": threading.current_thread().name,
+                        "action": action.name,
+                        "inputs": {k: _jsonify(v) for k, v in display_inputs.items()},
+                        "seq": seq,
+                    })
+                my_path = [action.name]
+                if trace:
+                    trace({
+                        "type": "level_push",
+                        "name": action.name,
+                        "path": my_path,
+                        "lifelines": [ll.name for ll in inner_lifelines],
+                        "parent_seq": seq,
+                    })
+                def _inner_trace(event: dict) -> None:
+                    if trace:
+                        trace({**event, "path": my_path})
+                result = run(
+                    inner_wf, inner_lifelines, inner_initial_envs,
+                    llm_backend=llm_backend, trace=_inner_trace,
+                    timeout=inner_wf._rt._timeout,
+                )
+                if trace:
+                    trace({"type": "level_pop", "path": my_path})
+                n_out = len(inner_wf.outputs)
+                if n_out == 0:
+                    out_map: dict[str, object] = {}
+                elif n_out == 1:
+                    out_map = {outs[0].name: result}
+                else:
+                    out_map = {out_var.name: val for out_var, val in zip(outs, cast(tuple, result))}
+                env.update(out_map)
+                if trace:
+                    trace({
+                        "type": "act",
+                        "lifeline": threading.current_thread().name,
+                        "action": action.name,
+                        "inputs": {k: _jsonify(v) for k, v in display_inputs.items()},
+                        "outputs": {k: _jsonify(v) for k, v in out_map.items()},
+                        "seq": seq,
+                    })
+                return
+
+            if not hasattr(action, 'inputs'):
+                raise RuntimeError(
+                    f"Action lookup failed: expected an action object but got "
+                    f"{type(action).__name__} '{getattr(action, 'name', repr(action))}'. "
+                    f"An output variable likely has the same name as an action — rename it."
+                )
             named_inputs = {name: val for (name, _), val in zip(action.inputs, in_vals)}
             # For display, prefer the argument variable name over the formal parameter name.
             display_inputs = {
@@ -577,7 +642,9 @@ def run(
         name, exc = error
         raise RuntimeError(f"Lifeline '{name}' raised: {exc}") from exc
 
-    if wf.output_var is not None and wf.output_lifeline is not None:
-        return final_envs[wf.output_lifeline.name][wf.output_var.name]
-
-    return final_envs
+    if len(wf.outputs) == 0:
+        return final_envs
+    if len(wf.outputs) == 1:
+        var, ll = wf.outputs[0]
+        return final_envs[ll.name][var.name]
+    return tuple(final_envs[ll.name][var.name] for var, ll in wf.outputs)
