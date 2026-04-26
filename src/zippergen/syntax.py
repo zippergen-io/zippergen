@@ -23,8 +23,10 @@ __all__ = [
     # Expressions
     "Expr",
     "VarExpr", "LitExpr",
+    # Located argument (var @ inner_lifeline at a workflow-action call site)
+    "LocatedArg",
     # Actions
-    "LLMAction", "PureAction", "PlannerAction",
+    "LLMAction", "PureAction", "PlannerAction", "WorkflowAction",
     # Type + lifeline annotation helper
     "ZTypeAtLifeline",
     # Statements
@@ -70,9 +72,28 @@ class Lifeline:
     def __repr__(self) -> str:
         return self.name
 
-    def __rmatmul__(self, ztype: object) -> ZTypeAtLifeline:
-        """Support ``str @ Planner`` as a parameter annotation."""
-        return ZTypeAtLifeline(ztype, self)  # type: ignore[arg-type]
+    def __rmatmul__(self, other: object) -> "ZTypeAtLifeline | LocatedArg":
+        """Support ``str @ Planner`` (annotation) and ``var @ Planner`` (call site)."""
+        if isinstance(other, Var):
+            return LocatedArg(VarExpr(other), self)
+        if is_ztype(other):
+            return ZTypeAtLifeline(other, self)  # type: ignore[arg-type]
+        raise TypeError(
+            f"Unsupported use of '@': {other!r} @ {self.name}. "
+            f"Use  ZType @ Lifeline  for annotations (e.g. str @ Doctor) "
+            f"or  var @ Lifeline  for workflow-action call sites."
+        )
+
+
+@dataclass(frozen=True)
+class LocatedArg:
+    """A value expression tagged with an inner lifeline destination.
+
+    Produced by  ``var @ InnerLifeline``  at a workflow-action call site.
+    Consumed by ``act()`` when the action is a ``Workflow``.
+    """
+    expr: "Expr"
+    lifeline: "Lifeline"
 
 
 @dataclass(frozen=True)
@@ -201,6 +222,24 @@ class PlannerAction:
         return f"PlannerAction({self.name!r}, ({ins}) -> ({outs}))"
 
 
+@dataclass(frozen=True)
+class WorkflowAction:
+    """IR node for a nested workflow used as a black-box action.
+
+    The outer caller lifeline owns the call.  Each input carries the inner
+    lifeline that should receive it.  All outputs land on the caller.
+    """
+    name: str
+    workflow: "Workflow"
+    inputs: tuple[tuple[str, ZType, "Lifeline"], ...]   # (inner_name, type, inner_lifeline)
+    outputs: tuple[tuple[str, ZType], ...]              # (name, type) — land on caller
+
+    def __repr__(self) -> str:
+        ins = ", ".join(f"{n}: {t.__name__} @ {ll.name}" for n, t, ll in self.inputs)
+        outs = ", ".join(f"{n}: {t.__name__}" for n, t in self.outputs)
+        return f"WorkflowAction({self.name!r}, ({ins}) -> ({outs}))"
+
+
 # ---------------------------------------------------------------------------
 # Statements
 # ---------------------------------------------------------------------------
@@ -236,7 +275,7 @@ class MsgStmt:
 class ActStmt:
     """act lifeline: outputs := action(inputs)"""
     lifeline: Lifeline
-    action: Union[LLMAction, PureAction, "PlannerAction"]
+    action: Union[LLMAction, PureAction, "PlannerAction", "WorkflowAction"]
     inputs: tuple[Expr, ...]
     outputs: tuple[Var, ...]
 
@@ -452,8 +491,7 @@ class Workflow:
     output_type: ZType
     vars: tuple[Var, ...]       # locally declared variables
     body: Stmt
-    output_var: Var | None = None           # declared via ``return var @ Lifeline``
-    output_lifeline: Lifeline | None = None
+    outputs: tuple[tuple[Var, Lifeline], ...] = field(default_factory=tuple)  # (var, lifeline) pairs
     ns: dict = field(default_factory=dict)  # workflow's global namespace (for condition lambdas)
     _rt: _WorkflowRuntime = field(default_factory=_WorkflowRuntime, init=False, repr=False)
 
@@ -624,8 +662,13 @@ class Workflow:
         for n, t, ll in self.inputs:
             parts.append(f"{n}: {t.__name__} @ {ll.name}" if ll else f"{n}: {t.__name__}")
         ins = ", ".join(parts)
-        out = (f" → {self.output_var.name}@{self.output_lifeline.name}"
-               if self.output_var and self.output_lifeline else "")
+        if len(self.outputs) == 1:
+            var, ll = self.outputs[0]
+            out = f" → {var.name}@{ll.name}"
+        elif len(self.outputs) > 1:
+            out = " → (" + ", ".join(f"{v.name}@{ll.name}" for v, ll in self.outputs) + ")"
+        else:
+            out = ""
         return f"Workflow({self.name!r}, ({ins}) -> {self.output_type.__name__}{out})"
 
 

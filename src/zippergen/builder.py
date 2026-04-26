@@ -13,10 +13,10 @@ from typing import cast
 
 from zippergen.syntax import (
     ZType, Lifeline, Var,
-    ZTypeAtLifeline,
+    ZTypeAtLifeline, LocatedArg,
     Expr, VarExpr, LitExpr,
     Stmt, AnyStmt, MsgStmt, ActStmt, SkipStmt, IfStmt, WhileStmt,
-    LLMAction, PureAction, PlannerAction,
+    LLMAction, PureAction, PlannerAction, WorkflowAction,
     Workflow,
     seq, is_ztype,
 )
@@ -101,7 +101,7 @@ def msg(
 
 def act(
     lifeline: Lifeline,
-    action: LLMAction | PureAction | PlannerAction,
+    action: LLMAction | PureAction | PlannerAction | WorkflowAction | Workflow,
     inputs: tuple,
     outputs: tuple[Var, ...],
 ) -> None:
@@ -109,13 +109,37 @@ def act(
     act lifeline: outputs := action(inputs)
 
     Vars in inputs are automatically wrapped in VarExpr.
+    When action is a Workflow, inputs must be LocatedArg objects (var @ inner_lifeline).
     """
-    _record(ActStmt(
-        lifeline,
-        action,
-        tuple(_to_expr(x) for x in inputs),
-        tuple(outputs),
-    ))
+    if isinstance(action, Workflow):
+        located = tuple(inputs)
+        for i, la in enumerate(located):
+            if not isinstance(la, LocatedArg):
+                raise TypeError(
+                    f"Workflow action '{action.name}': argument {i} must be  var @ InnerLifeline, "
+                    f"got {la!r}. Every input to a nested workflow must declare its inner lifeline."
+                )
+        plain_exprs = tuple(la.expr for la in located)
+        wa_inputs = tuple(
+            (wf_name, wf_type, la.lifeline)
+            for (wf_name, wf_type, _), la in zip(action.inputs, located)
+        )
+        wa_outputs = tuple(
+            (var.name, var.type) for var, _ in action.outputs
+        )
+        _record(ActStmt(
+            lifeline,
+            WorkflowAction(name=action.name, workflow=action, inputs=wa_inputs, outputs=wa_outputs),
+            plain_exprs,
+            tuple(outputs),
+        ))
+    else:
+        _record(ActStmt(
+            lifeline,
+            action,
+            tuple(_to_expr(x) for x in inputs),
+            tuple(outputs),
+        ))
 
 
 def skip(lifeline: Lifeline) -> None:
@@ -255,8 +279,7 @@ class _ProcTransformer(ast.NodeTransformer):
 
     def __init__(self) -> None:
         super().__init__()
-        self.return_var_name: str | None = None
-        self.return_lifeline_name: str | None = None
+        self.return_outputs: list[tuple[str, str]] = []  # [(var_name, lifeline_name), ...]
 
     @staticmethod
     def _is_at(node: ast.expr) -> bool:
@@ -289,16 +312,22 @@ class _ProcTransformer(ast.NodeTransformer):
         ))
 
     def visit_Return(self, node: ast.Return) -> ast.stmt:
-        """Strip ``return var @ Lifeline`` and record both names as the workflow output."""
+        """Strip ``return var @ Lifeline`` or ``return (v1 @ L1, v2 @ L2, ...)``."""
         val = node.value
-        if (isinstance(val, ast.BinOp) and isinstance(val.op, ast.MatMult)
-                and isinstance(val.left, ast.Name) and isinstance(val.right, ast.Name)):
-            self.return_var_name = val.left.id
-            self.return_lifeline_name = val.right.id
-        else:
+
+        def _parse_one(elt: ast.expr) -> tuple[str, str]:
+            if (isinstance(elt, ast.BinOp) and isinstance(elt.op, ast.MatMult)
+                    and isinstance(elt.left, ast.Name) and isinstance(elt.right, ast.Name)):
+                return elt.left.id, elt.right.id
             raise SyntaxError(
-                "return in @workflow must have the form  return var @ Lifeline"
+                "return in @workflow must have the form  return var @ Lifeline  "
+                "or  return (var1 @ Lifeline1, var2 @ Lifeline2, ...)"
             )
+
+        if isinstance(val, ast.Tuple):
+            self.return_outputs = [_parse_one(elt) for elt in val.elts]
+        else:
+            self.return_outputs = [_parse_one(val)]
         return ast.Pass()
 
     def visit_AnnAssign(self, node: ast.AnnAssign) -> ast.stmt:
@@ -493,7 +522,7 @@ def _transform_proc_source(fn: Callable) -> tuple[Callable, str | None, str | No
     local_ns: dict = {}
     exec(code, exec_globals, local_ns)   # noqa: S102
 
-    return local_ns[fn.__name__], transformer.return_var_name, transformer.return_lifeline_name
+    return local_ns[fn.__name__], transformer.return_outputs
 
 
 # ---------------------------------------------------------------------------
@@ -529,12 +558,16 @@ def _workflow_inputs(fn: Callable) -> tuple[tuple[str, ZType, Lifeline | None], 
 
 
 def _workflow_output(fn: Callable) -> ZType:
-    """Extract output ZType from return annotation."""
+    """Extract output ZType from return annotation.
+
+    For single-output workflows use the concrete type (str, int, …).
+    For multi-output workflows use ``tuple`` as the return annotation.
+    """
     ret = fn.__annotations__.get("return")
     if ret is None or not is_ztype(ret):
         raise TypeError(
             f"@workflow '{fn.__name__}': return annotation must be a supported "
-            f"coordination type (e.g. -> str)."
+            f"coordination type (e.g. -> str) or tuple for multi-output."
         )
     return ret
 
@@ -564,34 +597,30 @@ def workflow(fn: Callable) -> Workflow:
     output_type = _workflow_output(fn)
 
     # Rewrite native if/while/>> into builder-function calls.
-    transformed, return_var_name, return_lifeline_name = _transform_proc_source(fn)
+    transformed, return_outputs = _transform_proc_source(fn)
 
     # Execute the transformed body once to record all statements.
     kwargs = {name: Var(name, ztype) for name, ztype, _ll in inputs}
     body = _collect(lambda: transformed(**kwargs))
 
-    # Resolve return var @ Lifeline if declared.
-    output_var: Var | None = None
-    output_lifeline: Lifeline | None = None
-    if return_var_name is not None:
-        if return_lifeline_name is None:
-            raise RuntimeError(
-                f"@workflow '{fn.__name__}': internal error: return lifeline missing "
-                f"for return variable '{return_var_name}'."
-            )
+    # Resolve each return (var_name, lifeline_name) pair.
+    resolved_outputs: list[tuple[Var, Lifeline]] = []
+    if return_outputs:
         namespace = {**fn.__globals__, **kwargs}
-        output_var = namespace.get(return_var_name)
-        if not isinstance(output_var, Var):
-            raise NameError(
-                f"@workflow '{fn.__name__}': return variable '{return_var_name}' "
-                f"is not a declared Var."
-            )
-        output_lifeline = namespace.get(return_lifeline_name)
-        if not isinstance(output_lifeline, Lifeline):
-            raise NameError(
-                f"@workflow '{fn.__name__}': return lifeline '{return_lifeline_name}' "
-                f"is not a declared Lifeline."
-            )
+        for var_name, ll_name in return_outputs:
+            output_var = namespace.get(var_name)
+            if not isinstance(output_var, Var):
+                raise NameError(
+                    f"@workflow '{fn.__name__}': return variable '{var_name}' "
+                    f"is not a declared Var."
+                )
+            output_lifeline = namespace.get(ll_name)
+            if not isinstance(output_lifeline, Lifeline):
+                raise NameError(
+                    f"@workflow '{fn.__name__}': return lifeline '{ll_name}' "
+                    f"is not a declared Lifeline."
+                )
+            resolved_outputs.append((output_var, output_lifeline))
 
     return Workflow(
         name=fn.__name__,
@@ -599,7 +628,6 @@ def workflow(fn: Callable) -> Workflow:
         output_type=output_type,
         vars=(),    # variable declarations populated by verifier (Layer 5)
         body=cast(Stmt, body),
-        output_var=output_var,
-        output_lifeline=output_lifeline,
+        outputs=tuple(resolved_outputs),
         ns=fn.__globals__,
     )
