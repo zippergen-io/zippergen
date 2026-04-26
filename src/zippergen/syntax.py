@@ -535,6 +535,14 @@ class Workflow:
     @_last_kwargs.setter
     def _last_kwargs(self, v): self._rt._last_kwargs = v
 
+    @property
+    def output_var(self) -> "Var | None":
+        return self.outputs[0][0] if self.outputs else None
+
+    @property
+    def output_lifeline(self) -> "Lifeline | None":
+        return self.outputs[0][1] if self.outputs else None
+
     def configure(self, *,
                   backend: object = None,
                   trace:   object = None,
