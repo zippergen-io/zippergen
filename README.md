@@ -2,8 +2,8 @@
 
 [![Tests](https://github.com/zippergen-io/zippergen/actions/workflows/test.yml/badge.svg)](https://github.com/zippergen-io/zippergen/actions/workflows/test.yml)
 [![arXiv](https://img.shields.io/badge/arXiv-2604.17612-b31b1b.svg)](https://arxiv.org/abs/2604.17612)
-[![Lean verified](assets/lean.svg)](https://github.com/zippergen-io/paper-isola/tree/main/Lean)
 [![Lean formalized](assets/lean-formalized.svg)](https://github.com/zippergen-io/paper-isola/tree/main/Lean)
+[![Lean verified](assets/lean.svg)](https://github.com/zippergen-io/paper-isola/tree/main/Lean)
 
 ZipperGen is a Python framework for multi-agent LLM coordination. You write a single global protocol (who sends what to whom, who runs which LLM, who owns each decision), and ZipperGen projects it onto each agent automatically. If the protocol compiles, it cannot deadlock. This is not a runtime check; it follows from how the projection works.
 
