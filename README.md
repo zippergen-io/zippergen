@@ -2,6 +2,7 @@
 
 [![Tests](https://github.com/zippergen-io/zippergen/actions/workflows/test.yml/badge.svg)](https://github.com/zippergen-io/zippergen/actions/workflows/test.yml)
 [![arXiv](https://img.shields.io/badge/arXiv-2604.17612-b31b1b.svg)](https://arxiv.org/abs/2604.17612)
+[![Lean formalized](https://raw.githubusercontent.com/zippergen-io/paper-isola/main/paper/badges/lean-formalized.svg)](https://github.com/zippergen-io/paper-isola/tree/main/Lean)
 
 ZipperGen is a Python framework for multi-agent LLM coordination. You write a single global protocol (who sends what to whom, who runs which LLM, who owns each decision), and ZipperGen projects it onto each agent automatically. If the protocol compiles, it cannot deadlock. This is not a runtime check; it follows from how the projection works.
 
@@ -323,4 +324,4 @@ The implementation is grounded in the theory of Message Sequence Charts. The key
 - **Correctness**: The distributed projected programs produce exactly the same behaviors as the global program.
 - **Deadlock-freedom**: Follows by structural induction; no runtime checking required.
 
-The formal proofs are in [our paper](https://arxiv.org/abs/2604.17612).
+The formal proofs are in [our paper](https://arxiv.org/abs/2604.17612). The main theorems (Theorem 3.1 and Corollary 3.1) have been machine-checked in Lean 4 — see the [formalization](https://github.com/zippergen-io/paper-isola/tree/main/Lean).
