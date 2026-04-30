@@ -156,7 +156,7 @@ Prompts are defined directly on Python functions with `@llm`. The `parse` parame
     system="You are a medical expert. Analyze the notes and determine if the diagnosis applies.",
     user="Notes: {notes}\nDiagnosis: {diag}",
     parse="json",
-    outputs=(("verdict", bool), ("reason", str)),   # one or more (name, type) pairs
+    outputs=(("verdict", str), ("reason", str)),    # one or more (name, type) pairs
 )
 def assess(notes: str, diag: str) -> None: ...
 ```
