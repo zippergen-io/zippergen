@@ -273,10 +273,12 @@ def _eval(expr, env: Env) -> object:
 
 def _bind(bindings: tuple, values: tuple, env: Env) -> None:
     for binding, value in zip(bindings, values):
-        if is_kappa_ctrl(binding):
-            continue
         if isinstance(binding, VarExpr):
             env[binding.var.name] = value
+        elif isinstance(binding, LitExpr) and value != binding.value:
+            raise RuntimeError(
+                f"received value {value!r} does not match literal binding {binding.value!r}"
+            )
 
 
 def _jsonify(value: object) -> object:
@@ -544,7 +546,7 @@ def run(
     verbose: bool = False,
     trace=None,
     timeout: float = 60.0,
-) -> dict[str, dict[str, object]]:
+) -> object:
     """
     Project ``wf`` onto every lifeline and run all of them concurrently.
 
@@ -648,3 +650,100 @@ def run(
         var, ll = wf.outputs[0]
         return final_envs[ll.name][var.name]
     return tuple(final_envs[ll.name][var.name] for var, ll in wf.outputs)
+
+
+# ---------------------------------------------------------------------------
+# Workflow execution helpers — called from Workflow methods via lazy import
+# ---------------------------------------------------------------------------
+
+def _workflow_configure(
+    wf: Workflow, *,
+    backend: object = None,
+    trace: object = None,
+    timeout: float = 60.0,
+    llms=None,
+    ui: bool | None = None,
+    mock_delay: tuple[float, float] = (1.0, 2.0),
+) -> Workflow:
+    lifelines = _ordered_workflow_lifelines(wf)
+
+    if llms is not None:
+        from zippergen.backends import router_from_env
+        if llms == "mock":
+            routes: dict = {}
+        elif isinstance(llms, str):
+            routes = {lifeline.name: llms for lifeline in lifelines}
+        else:
+            routes = {str(k): v for k, v in llms.items()}
+        built_backend, _label = router_from_env(
+            routes,
+            fallback=lambda a, i: mock_llm(a, i, min_delay=mock_delay[0], max_delay=mock_delay[1]),
+        )
+        wf._rt._backend = built_backend
+    if backend is not None:
+        wf._rt._backend = backend
+
+    if ui is not None:
+        wf._rt._ui_enabled = ui
+    if wf._rt._ui_enabled:
+        from zipperchat import WebTrace
+        if wf._rt._webtrace is None:
+            wf._rt._webtrace = WebTrace(lifelines).start()
+        base_trace = trace if trace is not None else console_trace
+        wf._rt._trace = tee_traces(wf._rt._webtrace, base_trace)
+    elif trace is not None:
+        wf._rt._trace = trace
+
+    wf._rt._timeout = timeout
+    return wf
+
+
+def _workflow_run_once(wf: Workflow, kwargs: dict[str, object]) -> object:
+    initial_envs: dict[str, dict[str, object]] = {}
+    for name, _ztype, lifeline in wf.inputs:
+        if lifeline is None:
+            raise TypeError(
+                f"{wf.name}(): input '{name}' has no lifeline declared. "
+                f"Use 'name: type @ Lifeline' in the @workflow signature."
+            )
+        if name not in kwargs:
+            raise TypeError(f"{wf.name}() missing argument: '{name}'")
+        initial_envs.setdefault(lifeline.name, {})[name] = kwargs[name]
+
+    lifelines = _ordered_workflow_lifelines(wf)
+    backend = wf._rt._backend if wf._rt._backend is not None else mock_llm
+    with wf._rt._run_lock:
+        if wf._rt._webtrace is not None and wf._rt._ui_enabled:
+            wf._rt._webtrace.reset()
+        try:
+            return run(wf, list(lifelines), initial_envs,
+                       llm_backend=backend, trace=wf._rt._trace, timeout=wf._rt._timeout)
+        finally:
+            if wf._rt._webtrace is not None and wf._rt._ui_enabled:
+                wf._rt._webtrace.done()
+
+
+def _workflow_ensure_replay_loop(wf: Workflow) -> None:
+    if not wf._rt._ui_enabled or wf._rt._webtrace is None or wf._rt._replay_thread is not None:
+        return
+
+    def _worker() -> None:
+        assert wf._rt._webtrace is not None
+        while True:
+            wf._rt._webtrace.wait_for_replay()
+            if not wf._rt._last_kwargs:
+                continue
+            try:
+                result = _workflow_run_once(wf, dict(wf._rt._last_kwargs))
+                print(f"\nResult → {result}")
+            except Exception as exc:
+                print(f"\nReplay failed: {exc}")
+
+    wf._rt._replay_thread = threading.Thread(target=_worker, daemon=True)
+    wf._rt._replay_thread.start()
+
+
+def _workflow_call(wf: Workflow, kwargs: dict[str, object]) -> object:
+    wf._rt._last_kwargs = dict(kwargs)
+    _workflow_ensure_replay_loop(wf)
+    return _workflow_run_once(wf, dict(kwargs))

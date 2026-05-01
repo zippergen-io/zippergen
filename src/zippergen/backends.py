@@ -223,6 +223,12 @@ def make_mistral_backend(
     return backend
 
 
+def _openai_uses_completion_tokens(model: str) -> bool:
+    """Return True for models that require max_completion_tokens and reject temperature."""
+    import re as _re
+    return bool(_re.match(r'^o\d', model)) or model.startswith("gpt-5")
+
+
 def make_openai_backend(
     *,
     api_key: str,
@@ -236,12 +242,12 @@ def make_openai_backend(
 
     def backend(action, inputs: dict[str, object]) -> dict[str, object]:
         messages, use_json = _build_messages(action, inputs)
-        payload: dict = {
-            "model": model,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-            "messages": messages,
-        }
+        payload: dict = {"model": model, "messages": messages}
+        if _openai_uses_completion_tokens(model):
+            payload["max_completion_tokens"] = max_tokens
+        else:
+            payload["temperature"] = temperature
+            payload["max_tokens"] = max_tokens
         if use_json:
             payload["response_format"] = {"type": "json_object"}
         req = request.Request(

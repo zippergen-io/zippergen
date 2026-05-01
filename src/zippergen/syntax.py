@@ -549,7 +549,7 @@ class Workflow:
                   timeout: float  = 60.0,
                   llms: str | Mapping[str, str | Callable] | None = None,
                   ui: bool | None = None,
-                  mock_delay: tuple[float, float] = (1.0, 2.0)) -> Workflow:
+                  mock_delay: tuple[float, float] = (1.0, 2.0)) -> "Workflow":
         """Configure runtime parameters and return self for chaining.
 
         Parameters
@@ -559,111 +559,26 @@ class Workflow:
         trace   : trace callable passed to ``run()``.
         timeout : per-thread timeout in seconds (default 60).
         llms    : ``"mock"``, a provider name like ``"openai"`` / ``"mistral"``,
-                  or a mapping ``lifeline_name -> provider``. This is a simple
-                  convenience layer for examples and demos.
+                  or a mapping ``lifeline_name -> provider``.
         ui      : if true, start ZipperChat and mirror the execution there.
-        mock_delay : delay range used by the mock backend when ``llms="mock"``
-                     or when no provider route is configured.
+        mock_delay : delay range used by the mock backend when ``llms="mock"``.
         """
-        lifelines = _ordered_workflow_lifelines(self)
-
-        if llms is not None:
-            from zippergen.backends import router_from_env
-            from zippergen.runtime import mock_llm
-
-            if llms == "mock":
-                routes: dict[str, str | Callable[..., object]] = {}
-            elif isinstance(llms, str):
-                routes = {lifeline.name: llms for lifeline in lifelines}
-            else:
-                # Values may be provider name strings OR pre-built backend callables.
-                routes = {str(k): v for k, v in llms.items()}
-
-            built_backend, _label = router_from_env(
-                routes,
-                fallback=lambda a, i: mock_llm(a, i, min_delay=mock_delay[0], max_delay=mock_delay[1]),
-            )
-            self._rt._backend = built_backend
-        if backend is not None:
-            self._rt._backend = backend
-
-        if ui is not None:
-            self._rt._ui_enabled = ui
-        if self._rt._ui_enabled:
-            from zippergen.runtime import console_trace, tee_traces
-            from zipperchat import WebTrace
-
-            if self._rt._webtrace is None:
-                self._rt._webtrace = WebTrace(lifelines).start()
-            base_trace = trace if trace is not None else console_trace
-            self._rt._trace = tee_traces(self._rt._webtrace, base_trace)
-        elif trace is not None:
-            self._rt._trace = trace
-
-        self._rt._timeout = timeout
-        return self
+        from zippergen.runtime import _workflow_configure
+        return _workflow_configure(self, backend=backend, trace=trace, timeout=timeout,
+                                   llms=llms, ui=ui, mock_delay=mock_delay)
 
     def _run_once(self, kwargs: dict[str, object]) -> object:
-        from zippergen.runtime import run, mock_llm  # lazy to avoid circular import
-
-        initial_envs: dict[str, dict[str, object]] = {}
-        for name, _ztype, lifeline in self.inputs:
-            if lifeline is None:
-                raise TypeError(
-                    f"{self.name}(): input '{name}' has no lifeline declared. "
-                    f"Use 'name: type @ Lifeline' in the @workflow signature."
-                )
-            if name not in kwargs:
-                raise TypeError(f"{self.name}() missing argument: '{name}'")
-            initial_envs.setdefault(lifeline.name, {})[name] = kwargs[name]
-
-        lifelines = _ordered_workflow_lifelines(self)
-        backend = self._rt._backend if self._rt._backend is not None else mock_llm
-        with self._rt._run_lock:
-            if self._rt._webtrace is not None and self._rt._ui_enabled:
-                self._rt._webtrace.reset()
-            try:
-                return run(
-                    self,
-                    list(lifelines),
-                    initial_envs,
-                    llm_backend=backend,
-                    trace=self._rt._trace,
-                    timeout=self._rt._timeout,
-                )
-            finally:
-                if self._rt._webtrace is not None and self._rt._ui_enabled:
-                    self._rt._webtrace.done()
+        from zippergen.runtime import _workflow_run_once
+        return _workflow_run_once(self, kwargs)
 
     def _ensure_replay_loop(self) -> None:
-        if not self._rt._ui_enabled or self._rt._webtrace is None or self._rt._replay_thread is not None:
-            return
-
-        def _worker() -> None:
-            assert self._rt._webtrace is not None
-            while True:
-                self._rt._webtrace.wait_for_replay()
-                if not self._rt._last_kwargs:
-                    continue
-                try:
-                    result = self._run_once(dict(self._rt._last_kwargs))
-                    print(f"\nResult → {result}")
-                except Exception as exc:
-                    print(f"\nReplay failed: {exc}")
-
-        self._rt._replay_thread = threading.Thread(target=_worker, daemon=True)
-        self._rt._replay_thread.start()
+        from zippergen.runtime import _workflow_ensure_replay_loop
+        _workflow_ensure_replay_loop(self)
 
     def __call__(self, **kwargs: object) -> object:
-        """Run this workflow like a regular Python function.
-
-        Keyword arguments must match the workflow's declared inputs (one per
-        parameter in the ``@workflow`` signature).  Call ``configure()`` first to
-        set the LLM backend, trace, and timeout.
-        """
-        self._rt._last_kwargs = dict(kwargs)
-        self._ensure_replay_loop()
-        return self._run_once(dict(kwargs))
+        """Run this workflow like a regular Python function."""
+        from zippergen.runtime import _workflow_call
+        return _workflow_call(self, kwargs)
 
     def __repr__(self) -> str:
         parts = []
