@@ -314,6 +314,10 @@ class _ProcTransformer(ast.NodeTransformer):
     def visit_Return(self, node: ast.Return) -> ast.stmt:
         """Strip ``return var @ Lifeline`` or ``return (v1 @ L1, v2 @ L2, ...)``."""
         val = node.value
+        if val is None:
+            raise SyntaxError(
+                "return in @workflow must have the form  return var @ Lifeline"
+            )
 
         def _parse_one(elt: ast.expr) -> tuple[str, str]:
             if (isinstance(elt, ast.BinOp) and isinstance(elt.op, ast.MatMult)
@@ -465,7 +469,7 @@ class _ProcTransformer(ast.NodeTransformer):
         return [body_fn, exit_fn, call]
 
 
-def _transform_proc_source(fn: Callable) -> tuple[Callable, str | None, str | None]:
+def _transform_proc_source(fn: Callable) -> tuple[Callable, list[tuple[str, str]]]:
     """
     Obtain the source of *fn*, apply ``_ProcTransformer``, compile and exec
     the result in *fn*'s global namespace, and return the rewritten function.

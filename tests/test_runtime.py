@@ -60,6 +60,30 @@ def test_message_passing():
     assert pass_int(n=42) == 42
 
 
+def test_literal_receive_binding_mismatch_raises():
+    from zippergen.syntax import LitExpr, MsgStmt, Workflow
+
+    Sender = Lifeline("LiteralSender")
+    Receiver = Lifeline("LiteralReceiver")
+    body = MsgStmt(
+        Sender,
+        (LitExpr("actual", str),),
+        Receiver,
+        (LitExpr("expected", str),),
+    )
+    wf = Workflow(
+        name="literal_mismatch",
+        inputs=(),
+        output_type=object,
+        vars=(),
+        body=body,
+        ns={},
+    )
+
+    with pytest.raises(RuntimeError, match="does not match literal binding"):
+        run(wf, [Sender, Receiver], {}, timeout=1.0)
+
+
 @workflow
 def pass_and_transform(n: int @ User) -> int:
     User(n) >> Compute(n)

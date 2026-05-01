@@ -301,6 +301,13 @@ def _validate_planner_spec(
     if fn_node is None:
         return "No `generated_workflow` function found."
 
+    has_workflow_deco = any(
+        (isinstance(d, _ast.Name) and d.id == "workflow")
+        for d in fn_node.decorator_list
+    )
+    if not has_workflow_deco:
+        return "Function `generated_workflow` must be decorated with `@workflow`."
+
     # Visible expression/return statements in the function body (excludes AnnAssign).
     stmts = [s for s in fn_node.body if isinstance(s, (_ast.Expr, _ast.Return))]
     if not stmts:
