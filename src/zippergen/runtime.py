@@ -390,9 +390,9 @@ def _exec(stmt: LocalStmt, env: Env, ch: Channels, ns: dict, llm_backend, trace,
                         "lifelines": [ll.name for ll in inner_lifelines],
                         "parent_seq": seq,
                     })
-                def _inner_trace(event: dict) -> None:
+                def _inner_trace(event: dict, _p: list = my_path) -> None:
                     if trace:
-                        trace({**event, "path": my_path})
+                        trace({**event, "path": _p + event.get("path", [])})
                 result = run(
                     inner_wf, inner_lifelines, inner_initial_envs,
                     llm_backend=llm_backend, trace=_inner_trace,
