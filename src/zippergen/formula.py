@@ -25,6 +25,7 @@ __all__ = [
     "Formula",
     "AtomicFormula", "OnFormula", "YFormula", "YAFormula",
     "AndFormula", "OrFormula", "NotFormula",
+    "AnyFormula",
     "atom", "Y", "on", "subformulas",
 ]
 
@@ -161,7 +162,7 @@ class _YAPartial:
 
     def __call__(self, phi: AnyFormula | Callable) -> YAFormula:
         if callable(phi) and not isinstance(phi, Formula):
-            phi = AtomicFormula(fn=phi)
+            phi = atom(phi)
         return YAFormula(lifeline_name=self._name, subformula=phi)
 
 
@@ -176,7 +177,7 @@ class _YOperator:
 
     def __call__(self, phi: AnyFormula | Callable) -> YFormula:
         if callable(phi) and not isinstance(phi, Formula):
-            phi = AtomicFormula(fn=phi)
+            phi = atom(phi)
         return YFormula(subformula=phi)
 
     def __getitem__(self, lifeline: object) -> _YAPartial:

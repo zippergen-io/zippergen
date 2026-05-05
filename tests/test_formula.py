@@ -146,8 +146,10 @@ def test_atomic_formula_hash_is_identity():
     fn = lambda env: True
     f1 = atom(fn)
     f2 = atom(fn)
-    assert f1 != f2           # different objects, different identity
-    assert hash(f1) != hash(f2) or True  # hash may collide but eq won't
+    assert f1 != f2           # different objects
+    d = {f1: 1, f2: 2}
+    assert d[f1] == 1         # f1 and f2 are distinct keys
+    assert d[f2] == 2
 
 
 def test_formula_is_formula_instance():
