@@ -6,13 +6,14 @@ produce LLMAction, PureAction, and PlannerAction IR nodes.
 from __future__ import annotations
 
 import inspect
+import re
 from collections.abc import Callable
 
 from zippergen.syntax import (
     ZType, LLMAction, PureAction, PlannerAction, Lifeline, is_ztype,
 )
 
-__all__ = ["llm", "pure", "planner"]
+__all__ = ["llm", "pure", "planner", "human"]
 
 # Type alias for an output spec list/tuple (used by @llm)
 OutputSpec = list[tuple[str, ZType]] | tuple[tuple[str, ZType], ...]
@@ -219,3 +220,89 @@ def pure(fn: Callable) -> PureAction:
         outputs=outputs,
         fn=fn,
     )
+
+
+# ---------------------------------------------------------------------------
+# @human decorator
+# ---------------------------------------------------------------------------
+
+def _parse_human_output(spec: str, fn_name: str) -> tuple[str, type]:
+    """Parse "name: type" output spec string into (name, type) pair."""
+    parts = [p.strip() for p in spec.split(":")]
+    if len(parts) != 2:
+        raise TypeError(
+            f"@human '{fn_name}': output spec must be 'name: type', got {spec!r}"
+        )
+    name, type_str = parts
+    type_map: dict[str, type] = {"bool": bool, "str": str}
+    if type_str not in type_map:
+        raise TypeError(
+            f"@human '{fn_name}': output type must be 'bool' or 'str', "
+            f"got {type_str!r}"
+        )
+    return name, type_map[type_str]
+
+
+def human(
+    *,
+    prompt: str,
+    outputs: list[str],
+    options: list[str] | None = None,
+):
+    """
+    Decorator that produces a HumanAction node.
+
+    Parameters
+    ----------
+    prompt : str
+        Prompt shown to the human. May contain ``{var_name}`` placeholders
+        matching the function's parameter names.
+    outputs : list of str
+        Single-element list with ``"name: type"`` spec, e.g. ``["approved: bool"]``.
+        Supported types: ``bool``, ``str``.
+    options : list of str, optional
+        Fixed choices for the human to select from. Only valid when output
+        type is ``str``. Renders as buttons in ZipperChat.
+    """
+    from zippergen.syntax import HumanAction
+
+    def decorator(fn: Callable) -> HumanAction:
+        fn_name = fn.__name__
+        inputs = _extract_inputs(fn)
+
+        if len(outputs) != 1:
+            raise TypeError(
+                f"@human '{fn_name}': exactly one output required, "
+                f"got {len(outputs)}"
+            )
+        output_name, output_type = _parse_human_output(outputs[0], fn_name)
+
+        # Validate prompt placeholders
+        placeholders = set(re.findall(r'\{(\w+)\}', prompt))
+        input_names = {name for name, _ in inputs}
+        unknown = placeholders - input_names
+        if unknown:
+            raise TypeError(
+                f"@human '{fn_name}': prompt references unknown variables "
+                f"{unknown}. Declared inputs: {input_names}"
+            )
+
+        # options only valid for str output
+        if options is not None and output_type is not str:
+            raise TypeError(
+                f"@human '{fn_name}': options are only valid when output "
+                f"type is 'str', got '{output_type.__name__}'"
+            )
+
+        _options = tuple(options) if options is not None else None
+
+        return HumanAction(
+            name=fn_name,
+            inputs=inputs,
+            output=output_name,
+            output_type=output_type,
+            prompt=prompt,
+            options=_options,
+        )
+
+    return decorator
