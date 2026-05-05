@@ -1,6 +1,6 @@
 """
-Layer 2: @llm, @pure, and @planner decorators. Read Python annotations to
-produce LLMAction, PureAction, and PlannerAction IR nodes.
+Layer 2: @llm, @pure, @planner, and @human decorators. Read Python annotations to
+produce LLMAction, PureAction, PlannerAction, and HumanAction IR nodes.
 """
 
 from __future__ import annotations
@@ -10,7 +10,7 @@ import re
 from collections.abc import Callable
 
 from zippergen.syntax import (
-    ZType, LLMAction, PureAction, PlannerAction, Lifeline, is_ztype,
+    ZType, LLMAction, PureAction, PlannerAction, HumanAction, Lifeline, is_ztype,
 )
 
 __all__ = ["llm", "pure", "planner", "human"]
@@ -234,6 +234,10 @@ def _parse_human_output(spec: str, fn_name: str) -> tuple[str, type]:
             f"@human '{fn_name}': output spec must be 'name: type', got {spec!r}"
         )
     name, type_str = parts
+    if not name:
+        raise TypeError(
+            f"@human '{fn_name}': output name must not be empty in spec {spec!r}"
+        )
     type_map: dict[str, type] = {"bool": bool, "str": str}
     if type_str not in type_map:
         raise TypeError(
@@ -264,8 +268,6 @@ def human(
         Fixed choices for the human to select from. Only valid when output
         type is ``str``. Renders as buttons in ZipperChat.
     """
-    from zippergen.syntax import HumanAction
-
     def decorator(fn: Callable) -> HumanAction:
         fn_name = fn.__name__
         inputs = _extract_inputs(fn)
