@@ -25,6 +25,7 @@ import json
 import pathlib
 import queue
 import threading
+import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 _ASSETS = pathlib.Path(__file__).parent / "assets"
@@ -76,7 +77,8 @@ class _EventBus:
 
 def _make_handler(bus: _EventBus, lifelines: list[str],
                   replay_event: threading.Event,
-                  init_event: dict):
+                  init_event: dict,
+                  pending_human_inputs: dict):
     class _Handler(BaseHTTPRequestHandler):
 
         def do_GET(self):
@@ -136,6 +138,20 @@ def _make_handler(bus: _EventBus, lifelines: list[str],
                 replay_event.set()
                 self.send_response(204)
                 self.end_headers()
+            elif self.path == "/human-input":
+                length = int(self.headers.get("Content-Length", 0))
+                body = json.loads(self.rfile.read(length).decode())
+                req_id = body.get("id")
+                raw_value = str(body.get("value", ""))
+                if req_id and req_id in pending_human_inputs:
+                    evt, result_box = pending_human_inputs[req_id]
+                    result_box.append(raw_value)
+                    evt.set()
+                    self.send_response(204)
+                    self.end_headers()
+                else:
+                    self.send_response(404)
+                    self.end_headers()
             else:
                 self.send_response(404)
                 self.end_headers()
@@ -182,10 +198,14 @@ class WebTrace:
         self._bus = _EventBus()
         self._server: ThreadingHTTPServer | None = None
         self._replay_event = threading.Event()
+        self._pending_human_inputs: dict[str, tuple[threading.Event, list]] = {}
 
     def start(self) -> "WebTrace":
         init_ev = {"type": "init", "lifelines": self._lifelines}
-        handler = _make_handler(self._bus, self._lifelines, self._replay_event, init_ev)
+        handler = _make_handler(
+            self._bus, self._lifelines, self._replay_event, init_ev,
+            self._pending_human_inputs,
+        )
         self._server = _Server(("", self._port), handler)
         t = threading.Thread(target=self._server.serve_forever, daemon=True)
         t.start()
@@ -215,6 +235,54 @@ class WebTrace:
         self._bus.publish({"type": "close"})
         if self._server:
             self._server.shutdown()
+
+    def make_human_backend(self):
+        """Return a human backend callable that blocks until ZipperChat provides input."""
+        pending = self._pending_human_inputs
+
+        def backend(action, inputs: dict) -> dict:
+            req_id = str(uuid.uuid4())
+            evt = threading.Event()
+            result_box: list = []
+            pending[req_id] = (evt, result_box)
+
+            prompt = action.prompt.format(**inputs)
+            if action.output_type is bool:
+                input_type = "bool"
+            elif action.options is not None:
+                input_type = "choice"
+            else:
+                input_type = "text"
+
+            lifeline_name = threading.current_thread().name
+            self._bus.publish({
+                "type": "human_input_required",
+                "id": req_id,
+                "lifeline": lifeline_name,
+                "prompt": prompt,
+                "input_type": input_type,
+                "options": list(action.options) if action.options else None,
+            })
+
+            evt.wait()
+            del pending[req_id]
+            raw = result_box[0]
+
+            if action.output_type is bool:
+                value: object = str(raw).lower() in ("true", "yes", "1", "y")
+            else:
+                value = str(raw)
+
+            self._bus.publish({
+                "type": "human_input",
+                "id": req_id,
+                "lifeline": lifeline_name,
+                "value": str(value),
+            })
+
+            return {action.output: value}
+
+        return backend
 
 
 # ---------------------------------------------------------------------------
@@ -877,6 +945,43 @@ body.dark #replay-btn:not([disabled]):hover {
   50%      { box-shadow: 0 0 0 4px rgba(105,166,224,0.20); }
 }
 
+.ev-box.human-box {
+  --bar-fill: #e08a00;
+}
+.ev-box.human-box.human-pending {
+  border: 2px solid #e08a00;
+  animation: human-pulse 1.2s ease-in-out infinite;
+}
+@keyframes human-pulse {
+  0%, 100% { border-color: #e08a00; }
+  50%       { border-color: transparent; }
+}
+.human-pending-widgets {
+  margin-top: 6px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.human-pending-btn {
+  padding: 3px 10px;
+  border-radius: 4px;
+  border: 1px solid #e08a00;
+  background: transparent;
+  color: var(--ink);
+  cursor: pointer;
+  font-size: 12px;
+}
+.human-pending-btn:hover { background: rgba(224, 138, 0, 0.15); }
+.human-pending-input {
+  width: 100%;
+  font-size: 12px;
+  padding: 3px 6px;
+  border-radius: 3px;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  color: var(--ink);
+  resize: none;
+}
 
 /* ─── Detail panel (push, not overlay) ──────────────────────────────────── */
 #detail-panel {
@@ -1123,6 +1228,15 @@ const levels = new Map();          // pathKey → Level
 let selectedBox = null;
 let eventSrc = null;
 let focusedLevelKey = null;
+const pendingHumanCards = new Map(); // request id → {box, row, lev, lifelineIdx}
+
+function submitHumanInput(id, value) {
+  fetch('/human-input', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({id, value}),
+  });
+}
 
 // ─── DOM refs ─────────────────────────────────────────────────────────────
 const diagramRoot   = document.getElementById('diagram-root');
@@ -1704,6 +1818,111 @@ function handleAct(lev, ev) {
   }
 }
 
+// ─── Human input rendering ────────────────────────────────────────────────
+function handleHumanInputRequired(ev) {
+  // Find the root level (path=[])
+  const lev = levels.get(pathKey([]));
+  if (!lev) return;
+  const i = lev.lifelineNames.indexOf(ev.lifeline);
+  if (i < 0) return;
+
+  setLLStatusInLevel(lev, ev.lifeline, 'thinking');
+
+  const r = newCgRow(lev, 'action');
+  const wrapper = document.createElement('div');
+  wrapper.className = 'ev-col act-col';
+  wrapper.style.setProperty('--rows', `repeat(${lev.N}, ${ROW_HEIGHT}px)`);
+  r.wrapper = wrapper;
+  r.cells = lev.lifelineNames.map((_, k) => {
+    const cell = document.createElement('div');
+    cell.className = 'ev-cell';
+    cell.dataset.row = String(k);
+    cell.style.setProperty('--rail-color', hexToRgba(agentColor(k), 0.55));
+    wrapper.appendChild(cell);
+    return cell;
+  });
+  materializeOnLifeline(lev, ev.lifeline, r);
+  lev.eventsEl.appendChild(wrapper);
+  r.occupied.add(i);
+
+  const box = document.createElement('div');
+  box.className = 'ev-box human-box human-pending';
+
+  // Header
+  const tag = document.createElement('div');
+  tag.className = 'ev-box-tag';
+  tag.textContent = 'HUMAN';
+  box.appendChild(tag);
+
+  const name = document.createElement('div');
+  name.className = 'ev-box-name';
+  name.textContent = ev.input_type === 'bool' ? 'Approval' : 'Input';
+  box.appendChild(name);
+
+  // Prompt text
+  const promptEl = document.createElement('div');
+  promptEl.style.cssText = 'font-size:11px;color:var(--ink-faint);margin-top:4px;white-space:pre-wrap;';
+  promptEl.textContent = ev.prompt;
+  box.appendChild(promptEl);
+
+  // Widget
+  const widgets = document.createElement('div');
+  widgets.className = 'human-pending-widgets';
+
+  if (ev.input_type === 'bool') {
+    ['Yes', 'No'].forEach(label => {
+      const btn = document.createElement('button');
+      btn.className = 'human-pending-btn';
+      btn.textContent = label;
+      btn.onclick = () => submitHumanInput(ev.id, label.toLowerCase() === 'yes' ? 'true' : 'false');
+      widgets.appendChild(btn);
+    });
+  } else if (ev.input_type === 'choice' && ev.options) {
+    ev.options.forEach(opt => {
+      const btn = document.createElement('button');
+      btn.className = 'human-pending-btn';
+      btn.textContent = opt;
+      btn.onclick = () => submitHumanInput(ev.id, opt);
+      widgets.appendChild(btn);
+    });
+  } else {
+    const textarea = document.createElement('textarea');
+    textarea.className = 'human-pending-input';
+    textarea.rows = 2;
+    widgets.appendChild(textarea);
+    const submitBtn = document.createElement('button');
+    submitBtn.className = 'human-pending-btn';
+    submitBtn.textContent = 'Submit';
+    submitBtn.onclick = () => submitHumanInput(ev.id, textarea.value);
+    widgets.appendChild(submitBtn);
+  }
+
+  box.appendChild(widgets);
+  r.cells[i].appendChild(box);
+  pendingHumanCards.set(ev.id, {box, lev, lifeline: ev.lifeline});
+  syncOrder(lev);
+  scrollLevelToEnd(lev);
+}
+
+function handleHumanInput(ev) {
+  const entry = pendingHumanCards.get(ev.id);
+  if (!entry) return;
+  pendingHumanCards.delete(ev.id);
+
+  const {box, lev, lifeline} = entry;
+  box.classList.remove('human-pending');
+
+  // Remove widget area, show submitted value
+  const widgets = box.querySelector('.human-pending-widgets');
+  if (widgets) {
+    const result = document.createElement('div');
+    result.style.cssText = 'font-size:11px;color:var(--ink-faint);margin-top:4px;';
+    result.textContent = `→ ${ev.value}`;
+    widgets.replaceWith(result);
+  }
+  setLLStatusInLevel(lev, lifeline, '');
+}
+
 // ─── Decision rendering ───────────────────────────────────────────────────
 function handleDecision(lev, ev) {
   const i = lev.lifelineNames.indexOf(ev.lifeline);
@@ -1948,6 +2167,9 @@ function dispatchEvent(e) {
     setStatus('error', 'stopped');
     return;
   }
+
+  if (e.type === 'human_input_required') { handleHumanInputRequired(e); return; }
+  if (e.type === 'human_input')          { handleHumanInput(e); return; }
 
   const path = e.path || [];
   const lev = levels.get(pathKey(path));
