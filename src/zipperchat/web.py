@@ -337,6 +337,7 @@ _HTML = r"""<!DOCTYPE html>
   --k-recv:      #BFD9D8;   /* light teal — inbound (lighter sibling)     */
   --k-decision:  #E06B8A;   /* hot pink — if/while diamonds                */
   --k-ctrl:      #C4CCD4;   /* muted gray — control messages              */
+  --k-human:     #F1B07A;   /* peach — human input actions                */
 
   /* Functional status (single-color semantics across the UI) */
   --status-run:   var(--k-action);    /* periwinkle = running               */
@@ -497,7 +498,8 @@ body.dark #dark-toggle .icon-sun  { display: none;  }
 body.dark #dark-toggle .icon-moon { display: block; }
 
 /* Event boxes keep dark text in dark mode (sherbet fills are light) */
-body.dark .ev-box { --ink: #143146; --ink-mute: #4D6479; --ink-faint: #8195A6; }
+body.dark .ev-box   { --ink: #143146; --ink-mute: #4D6479; --ink-faint: #8195A6; }
+body.dark .detail-type { color: #143146; }
 
 /* ─── Body ───────────────────────────────────────────────────────────────── */
 #body {
@@ -946,14 +948,14 @@ body.dark #replay-btn:not([disabled]):hover {
 }
 
 .ev-box.human-box {
-  --bar-fill: #e08a00;
+  --bar-fill: var(--k-human);
 }
 .ev-box.human-box.human-pending {
-  border: 2px solid #e08a00;
+  border: 2px solid var(--k-human);
   animation: human-pulse 1.2s ease-in-out infinite;
 }
 @keyframes human-pulse {
-  0%, 100% { border-color: #e08a00; }
+  0%, 100% { border-color: var(--k-human); }
   50%       { border-color: transparent; }
 }
 .human-pending-widgets {
@@ -965,22 +967,28 @@ body.dark #replay-btn:not([disabled]):hover {
 .human-pending-btn {
   padding: 3px 10px;
   border-radius: 4px;
-  border: 1px solid #e08a00;
+  border: 1px solid var(--k-human);
   background: transparent;
   color: var(--ink);
   cursor: pointer;
   font-size: 12px;
 }
-.human-pending-btn:hover { background: rgba(224, 138, 0, 0.15); }
+.human-pending-btn:hover { background: rgba(241, 176, 122, 0.18); }
 .human-pending-input {
   width: 100%;
   font-size: 12px;
-  padding: 3px 6px;
+  padding: 4px 7px;
   border-radius: 3px;
   border: 1px solid var(--border);
   background: var(--bg-card);
   color: var(--ink);
   resize: none;
+  box-sizing: border-box;
+  outline: none;
+}
+.human-pending-input:focus {
+  border-color: var(--k-human);
+  box-shadow: 0 0 0 2px rgba(241, 176, 122, 0.20);
 }
 
 /* ─── Detail panel (push, not overlay) ──────────────────────────────────── */
@@ -1221,6 +1229,7 @@ const KIND = {
   recv:     '#BFD9D8',
   ctrl:     '#C4CCD4',
   decision: '#E06B8A',
+  human:    '#F1B07A',
 };
 
 // ─── State ────────────────────────────────────────────────────────────────
@@ -1819,8 +1828,53 @@ function handleAct(lev, ev) {
 }
 
 // ─── Human input rendering ────────────────────────────────────────────────
+function _makeHumanWidget(ev) {
+  // Build the interactive widget section shown in the detail panel.
+  const section = document.createElement('div');
+  section.className = 'detail-section';
+  const lbl = document.createElement('div');
+  lbl.className = 'detail-section-label';
+  lbl.textContent = ev.input_type === 'bool' ? 'Decision'
+                  : ev.input_type === 'choice' ? 'Select option'
+                  : 'Enter text';
+  section.appendChild(lbl);
+  const inner = document.createElement('div');
+  inner.className = 'human-pending-widgets';
+  if (ev.input_type === 'bool') {
+    ['Yes', 'No'].forEach(label => {
+      const btn = document.createElement('button');
+      btn.className = 'human-pending-btn';
+      btn.textContent = label;
+      btn.onclick = () => submitHumanInput(ev.id, label.toLowerCase() === 'yes' ? 'true' : 'false');
+      inner.appendChild(btn);
+    });
+  } else if (ev.input_type === 'choice' && ev.options) {
+    ev.options.forEach(opt => {
+      const btn = document.createElement('button');
+      btn.className = 'human-pending-btn';
+      btn.textContent = opt;
+      btn.onclick = () => submitHumanInput(ev.id, opt);
+      inner.appendChild(btn);
+    });
+  } else {
+    const textCol = document.createElement('div');
+    textCol.style.cssText = 'display:flex;flex-direction:column;gap:10px;width:100%;';
+    const textarea = document.createElement('textarea');
+    textarea.className = 'human-pending-input';
+    textarea.rows = 3;
+    textCol.appendChild(textarea);
+    const submitBtn = document.createElement('button');
+    submitBtn.className = 'human-pending-btn';
+    submitBtn.textContent = 'Submit';
+    submitBtn.onclick = () => submitHumanInput(ev.id, textarea.value);
+    textCol.appendChild(submitBtn);
+    inner.appendChild(textCol);
+  }
+  section.appendChild(inner);
+  return section;
+}
+
 function handleHumanInputRequired(ev) {
-  // Find the root level (path=[])
   const lev = levels.get(pathKey([]));
   if (!lev) return;
   const i = lev.lifelineNames.indexOf(ev.lifeline);
@@ -1845,61 +1899,41 @@ function handleHumanInputRequired(ev) {
   lev.eventsEl.appendChild(wrapper);
   r.occupied.add(i);
 
-  const box = document.createElement('div');
-  box.className = 'ev-box human-box human-pending';
+  const actionName = ev.input_type === 'bool' ? 'Approval' : 'Input';
+  const box = makeBox({
+    kind: 'human-box',
+    extraClass: 'human-pending',
+    tag: 'HUMAN',
+    name: actionName,
+    dataBuilder: () => ({
+      type: 'HUMAN',
+      name: actionName,
+      lifeline: ev.lifeline,
+      accent: KIND.human,
+      sections: [
+        { label: 'Prompt',   entries: { prompt: ev.prompt }, emptyText: '' },
+        { label: 'Response', entries: box._humanResult || {}, emptyText: '(awaiting input…)' },
+      ],
+    }),
+  });
+  box._level = lev;
+  box._humanResult = null;
+  box._widgetEl = _makeHumanWidget(ev);
 
-  // Header
-  const tag = document.createElement('div');
-  tag.className = 'ev-box-tag';
-  tag.textContent = 'HUMAN';
-  box.appendChild(tag);
+  // When the box is clicked (re-opened), re-inject the widget if still pending
+  box.addEventListener('click', () => {
+    if (box._widgetEl && selectedBox === box && !detailPanel.hidden) {
+      detailBody.appendChild(box._widgetEl);
+    }
+  });
 
-  const name = document.createElement('div');
-  name.className = 'ev-box-name';
-  name.textContent = ev.input_type === 'bool' ? 'Approval' : 'Input';
-  box.appendChild(name);
-
-  // Prompt text
-  const promptEl = document.createElement('div');
-  promptEl.style.cssText = 'font-size:11px;color:var(--ink-faint);margin-top:4px;white-space:pre-wrap;';
-  promptEl.textContent = ev.prompt;
-  box.appendChild(promptEl);
-
-  // Widget
-  const widgets = document.createElement('div');
-  widgets.className = 'human-pending-widgets';
-
-  if (ev.input_type === 'bool') {
-    ['Yes', 'No'].forEach(label => {
-      const btn = document.createElement('button');
-      btn.className = 'human-pending-btn';
-      btn.textContent = label;
-      btn.onclick = () => submitHumanInput(ev.id, label.toLowerCase() === 'yes' ? 'true' : 'false');
-      widgets.appendChild(btn);
-    });
-  } else if (ev.input_type === 'choice' && ev.options) {
-    ev.options.forEach(opt => {
-      const btn = document.createElement('button');
-      btn.className = 'human-pending-btn';
-      btn.textContent = opt;
-      btn.onclick = () => submitHumanInput(ev.id, opt);
-      widgets.appendChild(btn);
-    });
-  } else {
-    const textarea = document.createElement('textarea');
-    textarea.className = 'human-pending-input';
-    textarea.rows = 2;
-    widgets.appendChild(textarea);
-    const submitBtn = document.createElement('button');
-    submitBtn.className = 'human-pending-btn';
-    submitBtn.textContent = 'Submit';
-    submitBtn.onclick = () => submitHumanInput(ev.id, textarea.value);
-    widgets.appendChild(submitBtn);
-  }
-
-  box.appendChild(widgets);
   r.cells[i].appendChild(box);
   pendingHumanCards.set(ev.id, {box, lev, lifeline: ev.lifeline});
+
+  // Auto-open detail panel and inject widget at the bottom
+  fillDetailPanel(box, box._dataBuilder());
+  detailBody.appendChild(box._widgetEl);
+
   syncOrder(lev);
   scrollLevelToEnd(lev);
 }
@@ -1911,15 +1945,17 @@ function handleHumanInput(ev) {
 
   const {box, lev, lifeline} = entry;
   box.classList.remove('human-pending');
+  box._humanResult = { response: ev.value };
 
-  // Remove widget area, show submitted value
-  const widgets = box.querySelector('.human-pending-widgets');
-  if (widgets) {
-    const result = document.createElement('div');
-    result.style.cssText = 'font-size:11px;color:var(--ink-faint);margin-top:4px;';
-    result.textContent = `→ ${ev.value}`;
-    widgets.replaceWith(result);
+  // Remove the widget (it lives in detailBody while panel is open, or is detached)
+  if (box._widgetEl) {
+    box._widgetEl.remove();
+    box._widgetEl = null;
   }
+
+  // Refresh detail panel to show the submitted response
+  if (selectedBox === box) fillDetailPanel(box, box._dataBuilder());
+
   setLLStatusInLevel(lev, lifeline, '');
 }
 

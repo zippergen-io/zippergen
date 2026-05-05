@@ -561,6 +561,8 @@ def run(
     initial_envs  : mapping lifeline_name → {var_name: value}
     llm_backend   : optional callable(action, inputs_dict) → outputs_dict
                     Defaults to ``mock_llm``.
+    human_backend : optional callable(action, inputs_dict) → outputs_dict
+                    Defaults to ``make_cli_human_backend()``.
     verbose       : if True, print each event to stdout as it happens
     trace         : custom trace callable(event_dict) — overrides verbose
     timeout       : seconds to wait for each thread (default 60 s)
