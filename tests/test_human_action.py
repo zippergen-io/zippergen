@@ -166,3 +166,58 @@ def test_cli_backend_choice():
     with patch("builtins.input", side_effect=["99", "2"]):
         result = backend(action, {"plan": "do something"})
     assert result == {"result": "reject"}
+
+
+# Runtime integration tests
+from zippergen.syntax import Lifeline, Var
+from zippergen.actions import human, pure
+from zippergen.builder import workflow
+from zippergen.runtime import run
+
+_Human = Lifeline("Human")
+_Planner = Lifeline("Planner")
+
+# Intermediate variables must be declared as Var objects in module scope
+# so the @workflow DSL can resolve them by name during AST execution.
+_plan = Var("plan", str)
+_approved = Var("approved", bool)
+
+@pure
+def make_task(n: int) -> str:
+    return f"task-{n}"
+
+@human(prompt="Approve: {plan}?", outputs=["approved: bool"])
+def review_plan(plan: str): pass
+
+@workflow
+def approval_flow(n: int @ _Planner) -> bool:
+    with _Planner:
+        _plan = make_task(n)
+    _Planner(_plan) >> _Human(_plan)
+    with _Human:
+        _approved = review_plan(_plan)
+    return _approved @ _Human
+
+def test_runtime_human_action():
+    def mock_human_backend(action, inputs):
+        return {action.output: True}
+
+    result = run(
+        approval_flow,
+        [_Planner, _Human],
+        {"Planner": {"n": 42}},
+        human_backend=mock_human_backend,
+    )
+    assert result is True
+
+def test_runtime_human_action_reject():
+    def mock_human_backend(action, inputs):
+        return {action.output: False}
+
+    result = run(
+        approval_flow,
+        [_Planner, _Human],
+        {"Planner": {"n": 1}},
+        human_backend=mock_human_backend,
+    )
+    assert result is False

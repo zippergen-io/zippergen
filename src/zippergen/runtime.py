@@ -304,7 +304,7 @@ def _bound_dict(bindings: tuple, values: tuple) -> dict:
 # Local-program interpreter
 # ---------------------------------------------------------------------------
 
-def _exec(stmt: LocalStmt, env: Env, ch: Channels, ns: dict, llm_backend, trace,
+def _exec(stmt: LocalStmt, env: Env, ch: Channels, ns: dict, llm_backend, human_backend, trace,
           stop: threading.Event | None = None) -> None:
     """Execute a LocalStmt, updating env in place."""
     match stmt:
@@ -395,8 +395,8 @@ def _exec(stmt: LocalStmt, env: Env, ch: Channels, ns: dict, llm_backend, trace,
                         trace({**event, "path": _p + event.get("path", [])})
                 result = run(
                     inner_wf, inner_lifelines, inner_initial_envs,
-                    llm_backend=llm_backend, trace=_inner_trace,
-                    timeout=inner_wf._rt._timeout,
+                    llm_backend=llm_backend, human_backend=human_backend,
+                    trace=_inner_trace, timeout=inner_wf._rt._timeout,
                 )
                 if trace:
                     trace({"type": "level_pop", "path": my_path})
@@ -448,10 +448,8 @@ def _exec(stmt: LocalStmt, env: Env, ch: Channels, ns: dict, llm_backend, trace,
             elif isinstance(action, PlannerAction):
                 out_map = {outs[0].name: _exec_planner(action, named_inputs, llm_backend, trace, seq)}
             elif isinstance(action, HumanAction):
-                raise NotImplementedError(
-                    "HumanAction dispatch is not yet wired — "
-                    "pass a human_backend to run() (implemented in the next task)"
-                )
+                named_outputs = human_backend(action, named_inputs)
+                out_map = {outs[0].name: named_outputs[action.output]}
             else:
                 named_outputs = llm_backend(action, named_inputs)
                 out_map = {
@@ -470,15 +468,15 @@ def _exec(stmt: LocalStmt, env: Env, ch: Channels, ns: dict, llm_backend, trace,
                 })
 
         case SeqStmt(first=p1, second=p2):
-            _exec(cast(LocalStmt, p1), env, ch, ns, llm_backend, trace, stop)
-            _exec(cast(LocalStmt, p2), env, ch, ns, llm_backend, trace, stop)
+            _exec(cast(LocalStmt, p1), env, ch, ns, llm_backend, human_backend, trace, stop)
+            _exec(cast(LocalStmt, p2), env, ch, ns, llm_backend, human_backend, trace, stop)
 
         case IfStmt(condition=c, owner=B, branch_true=t, branch_false=f):
             flag = c(_CondEnv(env, ns))
             if trace:
                 trace({"type": "decision", "lifeline": B.name, "kind": "if", "value": flag,
                        "condition": getattr(c, "_src", None)})
-            _exec(cast(LocalStmt, t if flag else f), env, ch, ns, llm_backend, trace, stop)
+            _exec(cast(LocalStmt, t if flag else f), env, ch, ns, llm_backend, human_backend, trace, stop)
 
         case IfRecvStmt(lifeline=A, bindings=ys, sender=B, branch_true=t, branch_false=f):
             seq, values = ch[(B.name, A.name)].get(stop=stop)
@@ -491,7 +489,7 @@ def _exec(stmt: LocalStmt, env: Env, ch: Channels, ns: dict, llm_backend, trace,
                     "bindings": {"branch": "true" if flag else "false"},
                     "seq": seq, "ctrl": True,
                 })
-            _exec(cast(LocalStmt, t if flag else f), env, ch, ns, llm_backend, trace, stop)
+            _exec(cast(LocalStmt, t if flag else f), env, ch, ns, llm_backend, human_backend, trace, stop)
 
         case WhileStmt(condition=c, owner=B, body=body, exit_body=exit_b):
             while True:
@@ -501,8 +499,8 @@ def _exec(stmt: LocalStmt, env: Env, ch: Channels, ns: dict, llm_backend, trace,
                            "condition": getattr(c, "_src", None)})
                 if not flag:
                     break
-                _exec(cast(LocalStmt, body), env, ch, ns, llm_backend, trace, stop)
-            _exec(cast(LocalStmt, exit_b), env, ch, ns, llm_backend, trace, stop)
+                _exec(cast(LocalStmt, body), env, ch, ns, llm_backend, human_backend, trace, stop)
+            _exec(cast(LocalStmt, exit_b), env, ch, ns, llm_backend, human_backend, trace, stop)
 
         case WhileRecvStmt(lifeline=A, bindings=ys, sender=B, body=body, exit_body=exit_b):
             while True:
@@ -518,8 +516,8 @@ def _exec(stmt: LocalStmt, env: Env, ch: Channels, ns: dict, llm_backend, trace,
                     })
                 if not flag:
                     break
-                _exec(cast(LocalStmt, body), env, ch, ns, llm_backend, trace, stop)
-            _exec(cast(LocalStmt, exit_b), env, ch, ns, llm_backend, trace, stop)
+                _exec(cast(LocalStmt, body), env, ch, ns, llm_backend, human_backend, trace, stop)
+            _exec(cast(LocalStmt, exit_b), env, ch, ns, llm_backend, human_backend, trace, stop)
 
         case _:
             raise TypeError(f"Unknown local stmt: {type(stmt).__name__}")
@@ -529,9 +527,9 @@ def _exec(stmt: LocalStmt, env: Env, ch: Channels, ns: dict, llm_backend, trace,
 # Per-lifeline thread body
 # ---------------------------------------------------------------------------
 
-def _thread_body(local_stmt, env, ch, ns, result_box, llm_backend, trace, stop):
+def _thread_body(local_stmt, env, ch, ns, result_box, llm_backend, human_backend, trace, stop):
     try:
-        _exec(local_stmt, env, ch, ns, llm_backend, trace, stop)
+        _exec(local_stmt, env, ch, ns, llm_backend, human_backend, trace, stop)
         result_box.append(env)
     except Exception as exc:
         stop.set()  # unblock any threads waiting on queue.get()
@@ -548,6 +546,7 @@ def run(
     initial_envs: dict[str, dict[str, object]],
     *,
     llm_backend=None,
+    human_backend=None,
     verbose: bool = False,
     trace=None,
     timeout: float = 60.0,
@@ -574,6 +573,10 @@ def run(
     if llm_backend is None:
         llm_backend = mock_llm
 
+    if human_backend is None:
+        from zippergen.human_backends import make_cli_human_backend
+        human_backend = make_cli_human_backend()
+
     if trace is None and verbose:
         trace = console_trace
 
@@ -599,7 +602,7 @@ def run(
 
         def make_target(stmt, e, b):
             def target():
-                _thread_body(stmt, e, channels, wf.ns, b, llm_backend, trace, stop)
+                _thread_body(stmt, e, channels, wf.ns, b, llm_backend, human_backend, trace, stop)
             return target
 
         t = threading.Thread(
@@ -699,6 +702,13 @@ def _workflow_configure(
     elif trace is not None:
         wf._rt._trace = trace
 
+    # Human backend: web if UI is enabled, CLI otherwise.
+    if wf._rt._ui_enabled and wf._rt._webtrace is not None:
+        wf._rt._human_backend = wf._rt._webtrace.make_human_backend()
+    else:
+        from zippergen.human_backends import make_cli_human_backend
+        wf._rt._human_backend = make_cli_human_backend()
+
     wf._rt._timeout = timeout
     return wf
 
@@ -722,7 +732,9 @@ def _workflow_run_once(wf: Workflow, kwargs: dict[str, object]) -> object:
             wf._rt._webtrace.reset()
         try:
             return run(wf, list(lifelines), initial_envs,
-                       llm_backend=backend, trace=wf._rt._trace, timeout=wf._rt._timeout)
+                       llm_backend=backend,
+                       human_backend=wf._rt._human_backend,
+                       trace=wf._rt._trace, timeout=wf._rt._timeout)
         finally:
             if wf._rt._webtrace is not None and wf._rt._ui_enabled:
                 wf._rt._webtrace.done()

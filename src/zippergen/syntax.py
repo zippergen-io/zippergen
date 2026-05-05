@@ -506,6 +506,7 @@ class _WorkflowRuntime:
     _run_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     _replay_thread: object = field(default=None, repr=False)
     _last_kwargs: dict[str, object] = field(default_factory=dict, repr=False)
+    _human_backend: object = field(default=None, repr=False)
 
 
 @dataclass
@@ -558,6 +559,11 @@ class Workflow:
     def _last_kwargs(self): return self._rt._last_kwargs
     @_last_kwargs.setter
     def _last_kwargs(self, v): self._rt._last_kwargs = v
+
+    @property
+    def _human_backend(self): return self._rt._human_backend
+    @_human_backend.setter
+    def _human_backend(self, v): self._rt._human_backend = v
 
     @property
     def output_var(self) -> "Var | None":
