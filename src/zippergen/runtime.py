@@ -18,7 +18,7 @@ from zippergen.syntax import (
     EmptyStmt, SendStmt, RecvStmt, SelfAssignStmt, ActStmt, SkipStmt,
     SeqStmt, IfStmt, WhileStmt, IfRecvStmt, WhileRecvStmt,
     VarExpr, LitExpr, Var,
-    LLMAction, PureAction, PlannerAction, WorkflowAction,
+    LLMAction, PureAction, PlannerAction, WorkflowAction, HumanAction,
     Lifeline, Workflow, LocalStmt, AnyStmt,
     is_kappa_ctrl,
     _ordered_workflow_lifelines,
@@ -447,6 +447,11 @@ def _exec(stmt: LocalStmt, env: Env, ch: Channels, ns: dict, llm_backend, trace,
                 }
             elif isinstance(action, PlannerAction):
                 out_map = {outs[0].name: _exec_planner(action, named_inputs, llm_backend, trace, seq)}
+            elif isinstance(action, HumanAction):
+                raise NotImplementedError(
+                    "HumanAction dispatch is not yet wired — "
+                    "pass a human_backend to run() (implemented in the next task)"
+                )
             else:
                 named_outputs = llm_backend(action, named_inputs)
                 out_map = {

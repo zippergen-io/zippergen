@@ -245,9 +245,16 @@ class HumanAction:
     name: str
     inputs: tuple[tuple[str, ZType], ...]   # (param_name, type) pairs
     output: str                             # single output variable name
-    output_type: type                       # bool or str
+    output_type: ZType                      # bool or str
     prompt: str                             # template with {var} placeholders
-    options: tuple[str, ...] | None         # None → bool/text; tuple → choice
+    options: tuple[str, ...] | None = None  # None → bool/text; tuple → choice
+
+    def __post_init__(self) -> None:
+        if self.output_type not in (bool, str):
+            raise ValueError(
+                f"HumanAction '{self.name}': output_type must be bool or str, "
+                f"got {self.output_type!r}"
+            )
 
     def __repr__(self) -> str:
         ins = ", ".join(f"{n}: {t.__name__}" for n, t in self.inputs)

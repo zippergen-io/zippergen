@@ -1,4 +1,5 @@
 from zippergen.syntax import HumanAction
+import pytest
 
 def test_human_action_fields():
     action = HumanAction(
@@ -27,3 +28,37 @@ def test_human_action_choice():
     )
     assert action.options == ("approve", "reject", "escalate")
     assert action.output_type is str
+
+def test_human_action_repr():
+    action = HumanAction(
+        name="review_plan",
+        inputs=(("plan", str),),
+        output="approved",
+        output_type=bool,
+        prompt="Approve? {plan}",
+    )
+    r = repr(action)
+    assert r.startswith("HumanAction(")
+    assert "review_plan" in r
+    assert "approved: bool" in r
+
+def test_human_action_immutable():
+    action = HumanAction(
+        name="review_plan",
+        inputs=(("plan", str),),
+        output="approved",
+        output_type=bool,
+        prompt="Approve? {plan}",
+    )
+    with pytest.raises((AttributeError, TypeError)):
+        action.name = "changed"  # type: ignore
+
+def test_human_action_invalid_output_type():
+    with pytest.raises(ValueError, match="output_type must be bool or str"):
+        HumanAction(
+            name="bad",
+            inputs=(),
+            output="result",
+            output_type=int,
+            prompt="Hello",
+        )
