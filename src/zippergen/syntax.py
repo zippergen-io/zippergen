@@ -26,7 +26,7 @@ __all__ = [
     # Located argument (var @ inner_lifeline at a workflow-action call site)
     "LocatedArg",
     # Actions
-    "LLMAction", "PureAction", "PlannerAction", "WorkflowAction",
+    "LLMAction", "PureAction", "PlannerAction", "WorkflowAction", "HumanAction",
     # Type + lifeline annotation helper
     "ZTypeAtLifeline",
     # Statements
@@ -240,6 +240,23 @@ class WorkflowAction:
         return f"WorkflowAction({self.name!r}, ({ins}) -> ({outs}))"
 
 
+@dataclass(frozen=True)
+class HumanAction:
+    name: str
+    inputs: tuple[tuple[str, ZType], ...]   # (param_name, type) pairs
+    output: str                             # single output variable name
+    output_type: type                       # bool or str
+    prompt: str                             # template with {var} placeholders
+    options: tuple[str, ...] | None         # None → bool/text; tuple → choice
+
+    def __repr__(self) -> str:
+        ins = ", ".join(f"{n}: {t.__name__}" for n, t in self.inputs)
+        return (
+            f"HumanAction({self.name!r}, ({ins}) -> "
+            f"{self.output}: {self.output_type.__name__})"
+        )
+
+
 # ---------------------------------------------------------------------------
 # Statements
 # ---------------------------------------------------------------------------
@@ -275,7 +292,7 @@ class MsgStmt:
 class ActStmt:
     """act lifeline: outputs := action(inputs)"""
     lifeline: Lifeline
-    action: Union[LLMAction, PureAction, "PlannerAction", "WorkflowAction"]
+    action: Union[LLMAction, PureAction, "PlannerAction", "WorkflowAction", "HumanAction"]
     inputs: tuple[Expr, ...]
     outputs: tuple[Var, ...]
 
