@@ -11,6 +11,14 @@ from zippergen.actions import pure
 from zippergen.builder import workflow
 from zippergen.runtime import run, mock_llm
 
+# Module-level Var declarations for output variables used in CPL tests.
+# Annotated-assignment DSL syntax (Lifeline: out = action()) requires output
+# variable names to be Var objects in the module's global namespace.
+verdict = Var("verdict", str)
+flag    = Var("flag",    bool)
+out     = Var("out",     str)
+nh_out  = Var("nh_out",  str)
+
 
 # ---------------------------------------------------------------------------
 # Lifelines
@@ -277,3 +285,100 @@ def test_failed_thread_unblocks_waiters():
             llm_backend=failing_backend, timeout=10.0)
     elapsed = time.monotonic() - t0
     assert elapsed < 2.0, f"Cancellation took {elapsed:.1f}s — expected < 2s"
+
+
+# ---------------------------------------------------------------------------
+# Causal Past Logic guard integration tests
+# ---------------------------------------------------------------------------
+
+from zippergen.formula import atom, Y
+
+
+_CPLPlanner2  = Lifeline("CPLPlanner2")
+_CPLExecutor2 = Lifeline("CPLExecutor2")
+
+_approved_atom2 = atom(lambda env: env.get("approved", False))
+_ya_guard2      = Y[_CPLPlanner2](_approved_atom2)
+
+
+@pure
+def _approved_str() -> str:
+    return "approved"
+
+
+@pure
+def _rejected_str() -> str:
+    return "rejected"
+
+
+@workflow
+def _ya_workflow2(approved: bool @ _CPLPlanner2) -> str:
+    _CPLPlanner2(approved) >> _CPLExecutor2(approved)
+    if _ya_guard2 @ _CPLExecutor2:
+        _CPLExecutor2: verdict = _approved_str()
+    else:
+        _CPLExecutor2: verdict = _rejected_str()
+    return verdict @ _CPLExecutor2
+
+
+def test_ya_guard_routes_true():
+    assert _ya_workflow2(approved=True) == "approved"
+
+
+def test_ya_guard_routes_false():
+    assert _ya_workflow2(approved=False) == "rejected"
+
+
+# --- Y (previous local event) ---
+
+_YOwner = Lifeline("YLocalOwner")
+_flag_atom = atom(lambda env: env.get("flag", False))
+_prev_flag = Y(_flag_atom)
+
+
+@pure
+def _set_flag_true() -> bool:
+    return True
+
+
+@pure
+def _yes_str(x: bool) -> str:
+    return "yes"
+
+
+@pure
+def _no_str(x: bool) -> str:
+    return "no"
+
+
+@workflow
+def _y_local_workflow(dummy: bool @ _YOwner) -> str:
+    _YOwner: flag = _set_flag_true()
+    if _prev_flag @ _YOwner:
+        _YOwner: out = _yes_str(flag)
+    else:
+        _YOwner: out = _no_str(flag)
+    return out @ _YOwner
+
+
+def test_y_local_guard_true_after_prior_act():
+    assert _y_local_workflow(dummy=True) == "yes"
+
+
+# --- Y false when no prior event ---
+
+_NoHistOwner = Lifeline("NoHistOwner")
+_nh_guard = Y(atom(lambda env: True))
+
+
+@workflow
+def _no_history_workflow(x: bool @ _NoHistOwner) -> str:
+    if _nh_guard @ _NoHistOwner:
+        _NoHistOwner: nh_out = _yes_str(x)
+    else:
+        _NoHistOwner: nh_out = _no_str(x)
+    return nh_out @ _NoHistOwner
+
+
+def test_y_guard_false_with_no_prior_event():
+    assert _no_history_workflow(x=True) == "no"

@@ -198,3 +198,35 @@ def test_guard_value_returns_latest_val():
     m = make_monitor("A", ["A"], phi)
     m.on_event("act", {"ok": True})
     assert m.guard_value(phi) is True
+
+
+# ---------------------------------------------------------------------------
+# Compound formula tests
+# ---------------------------------------------------------------------------
+
+def test_compound_formula_and_both_true():
+    phi1 = atom(lambda env: env.get("a", False))
+    phi2 = atom(lambda env: env.get("b", False))
+    conj = phi1 & phi2
+    m = make_monitor("A", ["A"], conj)
+    m.on_event("act", {"a": True, "b": True})
+    assert m.view["A"][id(conj)] is True
+
+
+def test_compound_formula_and_one_false():
+    phi1 = atom(lambda env: env.get("a", False))
+    phi2 = atom(lambda env: env.get("b", False))
+    conj = phi1 & phi2
+    m = make_monitor("A", ["A"], conj)
+    m.on_event("act", {"a": True, "b": False})
+    assert m.view["A"][id(conj)] is False
+
+
+def test_compound_formula_not():
+    phi = atom(lambda env: env.get("x", False))
+    neg = ~phi
+    m = make_monitor("A", ["A"], neg)
+    m.on_event("act", {"x": True})
+    assert m.view["A"][id(neg)] is False
+    m.on_event("act", {"x": False})
+    assert m.view["A"][id(neg)] is True
