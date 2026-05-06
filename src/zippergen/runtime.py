@@ -516,7 +516,7 @@ def _exec(stmt: LocalStmt, env: Env, ch: Channels, ns: dict, llm_backend, human_
                 formula_repr = repr(cond_formula)
             elif cond_formula is not None:
                 raise RuntimeError(
-                    f"CPL Formula guard {cond_formula!r} used in workflow '{threading.current_thread().name}' "
+                    f"CPL Formula guard {cond_formula!r} on lifeline '{threading.current_thread().name}' "
                     f"but no monitor was built. Assign the Formula to a module-level variable so it is "
                     f"visible in the workflow namespace."
                 )
@@ -563,7 +563,7 @@ def _exec(stmt: LocalStmt, env: Env, ch: Channels, ns: dict, llm_backend, human_
                     formula_repr = repr(wc_formula)
                 elif wc_formula is not None:
                     raise RuntimeError(
-                        f"CPL Formula guard {wc_formula!r} used in workflow '{threading.current_thread().name}' "
+                        f"CPL Formula guard {wc_formula!r} on lifeline '{threading.current_thread().name}' "
                         f"but no monitor was built. Assign the Formula to a module-level variable so it is "
                         f"visible in the workflow namespace."
                     )
