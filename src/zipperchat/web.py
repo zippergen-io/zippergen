@@ -336,6 +336,8 @@ _HTML = r"""<!DOCTYPE html>
   --k-send:      #7FB1B0;   /* teal — outbound messages                   */
   --k-recv:      #BFD9D8;   /* light teal — inbound (lighter sibling)     */
   --k-decision:  #E06B8A;   /* hot pink — if/while diamonds                */
+  --k-guard-true:  #69A6E0;   /* action blue — affirmative guard verdict     */
+  --k-guard-false: #D4BA88;   /* wheat — neutral false                       */
   --k-ctrl:      #C4CCD4;   /* muted gray — control messages              */
   --k-human:     #F1B07A;   /* peach — human input actions                */
 
@@ -937,6 +939,24 @@ body.dark #replay-btn:not([disabled]):hover {
   font-family: 'JetBrains Mono', monospace;
   color: var(--ink);
 }
+.guard-badge {
+  display: inline-block;
+  padding: 1px 5px;
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 700;
+  margin-left: 4px;
+  vertical-align: middle;
+}
+.guard-badge.verdict-true  {
+  background: rgba(105, 166, 224, 0.16);
+  color: var(--k-guard-true);
+}
+.guard-badge.verdict-false {
+  background: rgba(212, 186, 136, 0.16);
+  color: #8B7548;
+}
+body.dark .guard-badge.verdict-false { color: var(--k-guard-false); }
 
 /* Action box pulse while running */
 .ev-box.act-box.running {
@@ -1993,11 +2013,14 @@ function handleDecision(lev, ev) {
   const box = document.createElement('div');
   box.className = 'ev-box dec-box';
   box._level = lev;
+  const badgeCls = isTrue ? 'verdict-true' : 'verdict-false';
+  const badgeSym = isTrue ? '✓' : '✗';
   box.innerHTML = `
     <div class="ev-box-tag">${tag}</div>
     <div class="ev-box-name">
       <span class="dec-symbol">${sym}</span>
       <span>${escHtml(word)}</span>
+      <span class="guard-badge ${badgeCls}">${badgeSym}</span>
     </div>
   `;
   box.addEventListener('click', (e) => {
@@ -2006,14 +2029,19 @@ function handleDecision(lev, ev) {
       closeDetail();
       return;
     }
+    const condSections = [];
+    if (ev.formula) {
+      condSections.push({ label: 'Formula', entries: { guard: ev.formula } });
+    } else if (ev.condition) {
+      condSections.push({ label: 'Condition', entries: { expr: ev.condition } });
+    }
     fillDetailPanel(box, {
       type: tag,
       name: word,
       lifeline: ev.lifeline,
       accent: KIND.decision,
       sections: [
-        { label: 'Condition', entries: ev.condition ? { expr: ev.condition } : {},
-          emptyText: '(no condition expression)' },
+        ...condSections,
         { label: 'Verdict', entries: { value: isTrue } },
       ],
     });
