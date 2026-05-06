@@ -172,7 +172,7 @@ def console_trace(event: dict) -> None:
     elif t == "decision":
         kind = event.get("kind", "if")
         val  = event.get("value")
-        cond = event.get("condition")
+        cond = event.get("formula") or event.get("condition")
         if kind == "if":
             label = "⊤ true" if val else "⊥ false"
         else:
@@ -312,14 +312,30 @@ def _bound_dict(bindings: tuple, values: tuple) -> dict:
     }
 
 
+def _monitor_trace_fields(monitor) -> dict[str, object]:
+    if not monitor:
+        return {}
+    return {"vc": monitor.snapshot_vc()}
+
+
+def _recv_trace_fields(monitor, message_vc: dict | None) -> dict[str, object]:
+    fields = _monitor_trace_fields(monitor)
+    if monitor and message_vc is not None:
+        fields["message_vc"] = dict(message_vc)
+    return fields
+
+
 
 # ---------------------------------------------------------------------------
 # Local-program interpreter
 # ---------------------------------------------------------------------------
 
 def _exec(stmt: LocalStmt, env: Env, ch: Channels, ns: dict, llm_backend, human_backend, monitor, trace,
+          formula_conditions: dict[int, _Formula] | None = None,
           stop: threading.Event | None = None) -> None:
     """Execute a LocalStmt, updating env in place."""
+    if formula_conditions is None:
+        formula_conditions = {}
     match stmt:
 
         case EmptyStmt() | SkipStmt():
@@ -340,6 +356,7 @@ def _exec(stmt: LocalStmt, env: Env, ch: Channels, ns: dict, llm_backend, human_
                     "values": [_jsonify(v) for v in values],
                     "bindings": {name: _jsonify(v) for name, v in zip(names, values)},
                     "seq": seq,
+                    **_monitor_trace_fields(monitor),
                 })
 
         case RecvStmt(lifeline=A, bindings=ys, sender=B):
@@ -353,6 +370,7 @@ def _exec(stmt: LocalStmt, env: Env, ch: Channels, ns: dict, llm_backend, human_
                     "to": A.name, "from": B.name,
                     "bindings": _bound_dict(ys, values),
                     "seq": seq,
+                    **_recv_trace_fields(monitor, recv_vc),
                 })
 
         case SelfAssignStmt(lifeline=A, payload=xs, bindings=ys):
@@ -378,6 +396,7 @@ def _exec(stmt: LocalStmt, env: Env, ch: Channels, ns: dict, llm_backend, human_
                     "inputs": {k: _jsonify(v) for k, v in zip(x_names, values)},
                     "outputs": {k: _jsonify(v) for k, v in zip(y_names, values)},
                     "seq": seq,
+                    **_monitor_trace_fields(monitor),
                 })
 
         case ActStmt(lifeline=_, action=action, inputs=ins, outputs=outs):
@@ -439,6 +458,7 @@ def _exec(stmt: LocalStmt, env: Env, ch: Channels, ns: dict, llm_backend, human_
                         "inputs": {k: _jsonify(v) for k, v in display_inputs.items()},
                         "outputs": {k: _jsonify(v) for k, v in out_map.items()},
                         "seq": seq,
+                        **_monitor_trace_fields(monitor),
                     })
                 return
 
@@ -490,16 +510,21 @@ def _exec(stmt: LocalStmt, env: Env, ch: Channels, ns: dict, llm_backend, human_
                     "inputs": {k: _jsonify(v) for k, v in display_inputs.items()},
                     "outputs": {k: _jsonify(v) for k, v in out_map.items()},
                     "seq": seq,
+                    **_monitor_trace_fields(monitor),
                 })
 
         case SeqStmt(first=p1, second=p2):
-            _exec(cast(LocalStmt, p1), env, ch, ns, llm_backend, human_backend, monitor, trace, stop)
-            _exec(cast(LocalStmt, p2), env, ch, ns, llm_backend, human_backend, monitor, trace, stop)
+            _exec(cast(LocalStmt, p1), env, ch, ns, llm_backend, human_backend, monitor, trace, formula_conditions, stop)
+            _exec(cast(LocalStmt, p2), env, ch, ns, llm_backend, human_backend, monitor, trace, formula_conditions, stop)
 
         case IfStmt(condition=c, owner=B, branch_true=t, branch_false=f):
             # c may be a Formula (direct) or a lambda (builder-rewritten native syntax).
-            # Lambdas that reference a module-level Formula variable return the Formula object.
-            if isinstance(c, _Formula):
+            # Formula-valued lambdas are resolved once before execution when possible.
+            cached_formula = formula_conditions.get(id(c))
+            if cached_formula is not None:
+                cond_formula = cached_formula
+                cond_value = None
+            elif isinstance(c, _Formula):
                 cond_formula: _Formula | None = c
                 cond_value = None
             else:
@@ -510,23 +535,25 @@ def _exec(stmt: LocalStmt, env: Env, ch: Channels, ns: dict, llm_backend, human_
                 else:
                     cond_formula = None
                     cond_value = raw
-            if monitor and cond_formula is not None:
-                monitor.on_event("choice", env)
-                flag = monitor.guard_value(cond_formula)
-                formula_repr = repr(cond_formula)
-            elif cond_formula is not None:
+            if cond_formula is not None and monitor is None:
                 raise RuntimeError(
                     f"CPL Formula guard {cond_formula!r} on lifeline '{threading.current_thread().name}' "
-                    f"but no monitor was built. Assign the Formula to a module-level variable so it is "
-                    f"visible in the workflow namespace."
+                    "but no monitor was built. Make the Formula guard discoverable before execution."
                 )
+            if monitor:
+                monitor.on_event("choice", env)
+            if cond_formula is not None:
+                assert monitor is not None
+                flag = monitor.guard_value(cond_formula)
+                formula_repr = repr(cond_formula)
             else:
                 flag = bool(cond_value)
                 formula_repr = None
             if trace:
                 trace({"type": "decision", "lifeline": B.name, "kind": "if", "value": flag,
-                       "condition": getattr(c, "_src", None), "formula": formula_repr})
-            _exec(cast(LocalStmt, t if flag else f), env, ch, ns, llm_backend, human_backend, monitor, trace, stop)
+                       "condition": getattr(c, "_src", None), "formula": formula_repr,
+                       **_monitor_trace_fields(monitor)})
+            _exec(cast(LocalStmt, t if flag else f), env, ch, ns, llm_backend, human_backend, monitor, trace, formula_conditions, stop)
 
         case IfRecvStmt(lifeline=A, bindings=ys, sender=B, branch_true=t, branch_false=f):
             seq, values, recv_vc, recv_view = ch[(B.name, A.name)].get(stop=stop)
@@ -540,13 +567,18 @@ def _exec(stmt: LocalStmt, env: Env, ch: Channels, ns: dict, llm_backend, human_
                     "to": A.name, "from": B.name,
                     "bindings": {"branch": "true" if flag else "false"},
                     "seq": seq, "ctrl": True,
+                    **_recv_trace_fields(monitor, recv_vc),
                 })
-            _exec(cast(LocalStmt, t if flag else f), env, ch, ns, llm_backend, human_backend, monitor, trace, stop)
+            _exec(cast(LocalStmt, t if flag else f), env, ch, ns, llm_backend, human_backend, monitor, trace, formula_conditions, stop)
 
         case WhileStmt(condition=c, owner=B, body=body, exit_body=exit_b):
             # Same Formula-dispatch logic as IfStmt — see comment there.
             while True:
-                if isinstance(c, _Formula):
+                cached_formula = formula_conditions.get(id(c))
+                if cached_formula is not None:
+                    wc_formula = cached_formula
+                    wc_value = None
+                elif isinstance(c, _Formula):
                     wc_formula: _Formula | None = c
                     wc_value = None
                 else:
@@ -557,26 +589,28 @@ def _exec(stmt: LocalStmt, env: Env, ch: Channels, ns: dict, llm_backend, human_
                     else:
                         wc_formula = None
                         wc_value = wraw
-                if monitor and wc_formula is not None:
-                    monitor.on_event("choice", env)
-                    flag = monitor.guard_value(wc_formula)
-                    formula_repr = repr(wc_formula)
-                elif wc_formula is not None:
+                if wc_formula is not None and monitor is None:
                     raise RuntimeError(
                         f"CPL Formula guard {wc_formula!r} on lifeline '{threading.current_thread().name}' "
-                        f"but no monitor was built. Assign the Formula to a module-level variable so it is "
-                        f"visible in the workflow namespace."
+                        "but no monitor was built. Make the Formula guard discoverable before execution."
                     )
+                if monitor:
+                    monitor.on_event("choice", env)
+                if wc_formula is not None:
+                    assert monitor is not None
+                    flag = monitor.guard_value(wc_formula)
+                    formula_repr = repr(wc_formula)
                 else:
                     flag = bool(wc_value)
                     formula_repr = None
                 if trace:
                     trace({"type": "decision", "lifeline": B.name, "kind": "while", "value": flag,
-                           "condition": getattr(c, "_src", None), "formula": formula_repr})
+                           "condition": getattr(c, "_src", None), "formula": formula_repr,
+                           **_monitor_trace_fields(monitor)})
                 if not flag:
                     break
-                _exec(cast(LocalStmt, body), env, ch, ns, llm_backend, human_backend, monitor, trace, stop)
-            _exec(cast(LocalStmt, exit_b), env, ch, ns, llm_backend, human_backend, monitor, trace, stop)
+                _exec(cast(LocalStmt, body), env, ch, ns, llm_backend, human_backend, monitor, trace, formula_conditions, stop)
+            _exec(cast(LocalStmt, exit_b), env, ch, ns, llm_backend, human_backend, monitor, trace, formula_conditions, stop)
 
         case WhileRecvStmt(lifeline=A, bindings=ys, sender=B, body=body, exit_body=exit_b):
             while True:
@@ -591,11 +625,12 @@ def _exec(stmt: LocalStmt, env: Env, ch: Channels, ns: dict, llm_backend, human_
                         "to": A.name, "from": B.name,
                         "bindings": {"loop": "continue" if flag else "exit"},
                         "seq": seq, "ctrl": True,
+                        **_recv_trace_fields(monitor, recv_vc),
                     })
                 if not flag:
                     break
-                _exec(cast(LocalStmt, body), env, ch, ns, llm_backend, human_backend, monitor, trace, stop)
-            _exec(cast(LocalStmt, exit_b), env, ch, ns, llm_backend, human_backend, monitor, trace, stop)
+                _exec(cast(LocalStmt, body), env, ch, ns, llm_backend, human_backend, monitor, trace, formula_conditions, stop)
+            _exec(cast(LocalStmt, exit_b), env, ch, ns, llm_backend, human_backend, monitor, trace, formula_conditions, stop)
 
         case _:
             raise TypeError(f"Unknown local stmt: {type(stmt).__name__}")
@@ -605,9 +640,10 @@ def _exec(stmt: LocalStmt, env: Env, ch: Channels, ns: dict, llm_backend, human_
 # Per-lifeline thread body
 # ---------------------------------------------------------------------------
 
-def _thread_body(local_stmt, env, ch, ns, result_box, llm_backend, human_backend, monitor, trace, stop):
+def _thread_body(local_stmt, env, ch, ns, result_box, llm_backend, human_backend,
+                 monitor, trace, formula_conditions, stop):
     try:
-        _exec(local_stmt, env, ch, ns, llm_backend, human_backend, monitor, trace, stop)
+        _exec(local_stmt, env, ch, ns, llm_backend, human_backend, monitor, trace, formula_conditions, stop)
         result_box.append(env)
     except Exception as exc:
         stop.set()  # unblock any threads waiting on queue.get()
@@ -618,19 +654,36 @@ def _thread_body(local_stmt, env, ch, ns, result_box, llm_backend, human_backend
 # Formula guard collection
 # ---------------------------------------------------------------------------
 
-def _collect_formula_guards(stmt) -> list:
+def _condition_formula(condition, ns: dict) -> _Formula | None:
+    if isinstance(condition, _Formula):
+        return condition
+    if not callable(condition):
+        return None
+    try:
+        raw = condition(_CondEnv({}, ns))
+    except Exception:
+        return None
+    return raw if isinstance(raw, _Formula) else None
+
+
+def _collect_formula_guards(stmt, ns: dict) -> tuple[list, dict[int, _Formula]]:
     guards: list = []
+    condition_formulas: dict[int, _Formula] = {}
     # Walks the global program only; IfRecvStmt/WhileRecvStmt never appear in wf.body.
     def walk(s) -> None:
         match s:
             case IfStmt(condition=c, branch_true=t, branch_false=f):
-                if isinstance(c, _Formula):
-                    guards.append(c)
+                formula = _condition_formula(c, ns)
+                if formula is not None:
+                    guards.append(formula)
+                    condition_formulas[id(c)] = formula
                 walk(t)
                 walk(f)
             case WhileStmt(condition=c, body=b, exit_body=x):
-                if isinstance(c, _Formula):
-                    guards.append(c)
+                formula = _condition_formula(c, ns)
+                if formula is not None:
+                    guards.append(formula)
+                    condition_formulas[id(c)] = formula
                 walk(b)
                 walk(x)
             case SeqStmt(first=p1, second=p2):
@@ -639,21 +692,7 @@ def _collect_formula_guards(stmt) -> list:
             case _:
                 pass
     walk(stmt)
-    return guards
-
-
-def _collect_ns_formulas(ns: dict) -> list:
-    """Collect Formula instances from the workflow's global namespace.
-
-    Necessary because the @workflow AST rewriter wraps conditions as lambdas,
-    so _collect_formula_guards cannot find Formulas stored in module-level vars.
-
-    Limitation: Formulas constructed inline inside a @workflow body (not assigned
-    to a module-level variable) will not be found here and will raise RuntimeError
-    at runtime when used as a guard.
-    """
-    return [v for v in ns.values() if isinstance(v, _Formula)]
-
+    return guards, condition_formulas
 
 # ---------------------------------------------------------------------------
 # Public entry point
@@ -712,7 +751,7 @@ def run(
     threads: list[threading.Thread] = []
     result_boxes: dict[str, list] = {}
 
-    formula_guards = _collect_formula_guards(wf.body) + _collect_ns_formulas(wf.ns)
+    formula_guards, formula_conditions = _collect_formula_guards(wf.body, wf.ns)
     if formula_guards:
         all_subs: list = []
         seen_ids: set[int] = set()
@@ -739,7 +778,8 @@ def run(
 
         def make_target(stmt, e, b, mon):
             def target():
-                _thread_body(stmt, e, channels, wf.ns, b, llm_backend, human_backend, mon, trace, stop)
+                _thread_body(stmt, e, channels, wf.ns, b, llm_backend, human_backend,
+                             mon, trace, formula_conditions, stop)
             return target
 
         t = threading.Thread(

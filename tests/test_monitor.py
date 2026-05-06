@@ -1,6 +1,6 @@
 """Tests for per-lifeline CPL monitor state (Algorithms 1 and 2 from the paper)."""
 import pytest
-from zippergen.formula import atom, Y, on, subformulas, YAFormula
+from zippergen.formula import atom, Y, P, since, on, subformulas, YAFormula
 from zippergen.monitor import MonitorState
 
 
@@ -200,6 +200,15 @@ def test_guard_value_returns_latest_val():
     assert m.guard_value(phi) is True
 
 
+def test_guard_value_rejects_unregistered_formula():
+    registered = atom(lambda env: True)
+    missing = atom(lambda env: True)
+    m = make_monitor("A", ["A"], registered)
+    m.on_event("act", {})
+    with pytest.raises(RuntimeError, match="not registered"):
+        m.guard_value(missing)
+
+
 # ---------------------------------------------------------------------------
 # Compound formula tests
 # ---------------------------------------------------------------------------
@@ -230,3 +239,60 @@ def test_compound_formula_not():
     assert m.view["A"][id(neg)] is False
     m.on_event("act", {"x": False})
     assert m.view["A"][id(neg)] is True
+
+
+# ---------------------------------------------------------------------------
+# Since and strict causal past
+# ---------------------------------------------------------------------------
+
+def test_since_is_non_strict_and_local():
+    keep = atom(lambda env: env.get("keep", False))
+    start = atom(lambda env: env.get("start", False))
+    f = since(keep, start)
+    m = make_monitor("A", ["A"], f)
+
+    m.on_event("act", {"keep": False, "start": True})
+    assert m.view["A"][id(f)] is True
+
+    m.on_event("act", {"keep": True, "start": False})
+    assert m.view["A"][id(f)] is True
+
+    m.on_event("act", {"keep": False, "start": False})
+    assert m.view["A"][id(f)] is False
+
+
+def test_past_is_strict_on_same_lifeline():
+    phi = atom(lambda env: env.get("x", False))
+    f = P(phi)
+    m = make_monitor("A", ["A"], f)
+
+    m.on_event("act", {"x": True})
+    assert m.view["A"][id(f)] is False
+
+    m.on_event("act", {"x": False})
+    assert m.view["A"][id(f)] is True
+
+
+def test_past_sees_remote_causal_history_after_receive():
+    phi = atom(lambda env: env.get("x", False))
+    f = P(phi)
+    m = make_monitor("B", ["A", "B"], f)
+
+    recv_vc = {"A": 1, "B": 0}
+    recv_view = {
+        "A": {
+            id(phi): True,
+            id(f.witness.left): True,
+            id(f.witness): True,
+        },
+        "B": {},
+    }
+    m.on_event("recv", {}, recv_vc=recv_vc, recv_view=recv_view)
+    assert m.view["B"][id(f)] is True
+
+
+def test_atom_can_read_event_context_metadata():
+    phi = atom(lambda env, event: event.kind == "recv" and event.message_vc["A"] == 1)
+    m = make_monitor("B", ["A", "B"], phi)
+    m.on_event("recv", {}, recv_vc={"A": 1, "B": 0}, recv_view={"A": {}, "B": {}})
+    assert m.view["B"][id(phi)] is True

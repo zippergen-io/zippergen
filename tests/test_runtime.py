@@ -291,7 +291,7 @@ def test_failed_thread_unblocks_waiters():
 # Causal Past Logic guard integration tests
 # ---------------------------------------------------------------------------
 
-from zippergen.formula import atom, Y
+from zippergen.formula import atom, Y, P
 
 
 _CPLPlanner2  = Lifeline("CPLPlanner2")
@@ -382,3 +382,87 @@ def _no_history_workflow(x: bool @ _NoHistOwner) -> str:
 
 def test_y_guard_false_with_no_prior_event():
     assert _no_history_workflow(x=True) == "no"
+
+
+# --- Inline formula discovery ---
+
+_InlinePlanner = Lifeline("InlinePlanner")
+_InlineExecutor = Lifeline("InlineExecutor")
+
+
+@workflow
+def _inline_formula_workflow(approved: bool @ _InlinePlanner) -> str:
+    _InlinePlanner(approved) >> _InlineExecutor(approved)
+    if Y[_InlinePlanner](atom(lambda env: env.get("approved", False))) @ _InlineExecutor:
+        _InlineExecutor: out = _yes_str(approved)
+    else:
+        _InlineExecutor: out = _no_str(approved)
+    return out @ _InlineExecutor
+
+
+def test_inline_formula_guard_is_discovered_before_execution():
+    assert _inline_formula_workflow(approved=True) == "yes"
+
+
+# --- P (strict causal past) ---
+
+_PastOwner = Lifeline("PastOwner")
+_past_guard = P(atom(lambda env: env.get("flag", False)))
+
+
+@workflow
+def _past_workflow(dummy: bool @ _PastOwner) -> str:
+    _PastOwner: flag = _set_flag_true()
+    if _past_guard @ _PastOwner:
+        _PastOwner: out = _yes_str(flag)
+    else:
+        _PastOwner: out = _no_str(flag)
+    return out @ _PastOwner
+
+
+def test_past_guard_sees_prior_local_event():
+    assert _past_workflow(dummy=True) == "yes"
+
+
+# --- Event metadata atoms ---
+
+_MetaPlanner = Lifeline("MetaPlanner")
+_MetaExecutor = Lifeline("MetaExecutor")
+_fresh_receive = Y(atom(
+    lambda env, event: (
+        event.kind == "recv"
+        and event.message_vc is not None
+        and event.message_vc["MetaPlanner"] == event.vc["MetaPlanner"]
+    ),
+    src="fresh_receive",
+))
+
+
+@workflow
+def _metadata_formula_workflow(approved: bool @ _MetaPlanner) -> str:
+    _MetaPlanner(approved) >> _MetaExecutor(approved)
+    if _fresh_receive @ _MetaExecutor:
+        _MetaExecutor: out = _yes_str(approved)
+    else:
+        _MetaExecutor: out = _no_str(approved)
+    return out @ _MetaExecutor
+
+
+def test_atom_can_use_receive_metadata_in_guard_history():
+    assert _metadata_formula_workflow(approved=True) == "yes"
+
+
+def test_monitor_trace_includes_vector_clock_metadata():
+    events = []
+    result = run(
+        _metadata_formula_workflow,
+        [_MetaPlanner, _MetaExecutor],
+        {"MetaPlanner": {"approved": True}},
+        trace=events.append,
+    )
+    assert result == "yes"
+    recv_event = next(e for e in events if e["type"] == "recv")
+    decision_event = next(e for e in events if e["type"] == "decision")
+    assert recv_event["vc"]["MetaPlanner"] == 1
+    assert recv_event["message_vc"]["MetaPlanner"] == 1
+    assert decision_event["vc"]["MetaExecutor"] == 2

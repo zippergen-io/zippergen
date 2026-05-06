@@ -2,8 +2,9 @@
 import pytest
 from zippergen.formula import (
     AtomicFormula, OnFormula, YFormula, YAFormula,
+    SinceFormula, PastFormula, ConstFormula,
     AndFormula, OrFormula, NotFormula,
-    atom, Y, on, subformulas,
+    atom, Y, on, since, P, true, false, subformulas,
 )
 from zippergen.syntax import Lifeline
 
@@ -91,6 +92,38 @@ def test_or_creates_or_formula():
     assert isinstance(f, OrFormula)
 
 
+def test_since_creates_since_formula():
+    left = atom(lambda env: env.get("ok", False))
+    right = atom(lambda env: env.get("start", False))
+    f = since(left, right)
+    assert isinstance(f, SinceFormula)
+    assert f.left is left
+    assert f.right is right
+
+
+def test_formula_since_method():
+    left = atom(lambda env: True)
+    right = atom(lambda env: False)
+    f = left.since(right)
+    assert isinstance(f, SinceFormula)
+    assert f.left is left
+    assert f.right is right
+
+
+def test_p_creates_past_formula_with_since_witness():
+    phi = atom(lambda env: env.get("x", False))
+    f = P(phi)
+    assert isinstance(f, PastFormula)
+    assert f.subformula is phi
+    assert isinstance(f.witness, SinceFormula)
+
+
+def test_true_false_create_const_formulas():
+    assert isinstance(true(), ConstFormula)
+    assert true().value is True
+    assert false().value is False
+
+
 # --- Subformulas ---
 
 def test_subformulas_atomic_is_just_itself():
@@ -132,6 +165,24 @@ def test_subformulas_ya_formula():
     assert result == [phi, yaf]
 
 
+def test_subformulas_since_formula():
+    left = atom(lambda env: True)
+    right = atom(lambda env: False)
+    f = since(left, right)
+    result = subformulas(f)
+    assert result == [left, right, f]
+
+
+def test_subformulas_past_formula_includes_since_witness():
+    phi = atom(lambda env: True)
+    f = P(phi)
+    result = subformulas(f)
+    assert phi in result
+    assert f.witness in result
+    assert f in result
+    assert result.index(f.witness) < result.index(f)
+
+
 def test_subformulas_deduplicates_shared_nodes():
     phi = atom(lambda env: True)
     conj = phi & phi   # phi used twice
@@ -162,9 +213,13 @@ def test_formula_is_formula_instance():
     assert isinstance(~phi, Formula)
     assert isinstance(phi & phi, Formula)
     assert isinstance(phi | phi, Formula)
+    assert isinstance(since(phi, phi), Formula)
+    assert isinstance(P(phi), Formula)
 
 
 def test_public_api_importable_from_zippergen():
-    from zippergen import Y, atom, on, subformulas, Formula
+    from zippergen import Y, P, atom, on, since, subformulas, Formula
     phi = atom(lambda env: True)
     assert isinstance(phi, Formula)
+    assert isinstance(since(phi, phi), Formula)
+    assert isinstance(P(phi), Formula)

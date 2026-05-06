@@ -1315,6 +1315,16 @@ function fmtValue(v, maxLen) {
   }
   return String(v);
 }
+function causalSections(ev) {
+  const sections = [];
+  if (ev && ev.vc) {
+    sections.push({ label: 'Vector clock', entries: ev.vc });
+  }
+  if (ev && ev.message_vc) {
+    sections.push({ label: 'Message clock', entries: ev.message_vc });
+  }
+  return sections;
+}
 
 // ─── Status indicator ─────────────────────────────────────────────────────
 function setStatus(state, text) {
@@ -1792,10 +1802,12 @@ function handleActStart(lev, ev) {
       sections: [
         { label: 'Inputs',  entries: inputs,           emptyText: '(no inputs)' },
         { label: 'Outputs', entries: box._outputs || {}, emptyText: '(awaiting outputs…)' },
+        ...causalSections({vc: box._vc}),
       ],
     }),
   });
   box._outputs = {};
+  box._vc = null;
   box._level = lev;
   r.cells[i].appendChild(box);
   lev.pendingActBoxes[`${ev.lifeline}:${ev.seq}`] = box;
@@ -1811,6 +1823,7 @@ function handleAct(lev, ev) {
   delete lev.pendingActBoxes[key];
   box.classList.remove('running');
   box._outputs = ev.outputs || {};
+  box._vc = ev.vc || null;
   setLLStatusInLevel(lev, ev.lifeline, '');
 
   if (selectedBox === box) {
@@ -1824,6 +1837,7 @@ function handleAct(lev, ev) {
       sections: [
         { label: 'Inputs',  entries: ev.inputs || {},  emptyText: '(no inputs)' },
         { label: 'Outputs', entries: ev.outputs || {}, emptyText: '(no outputs)' },
+        ...causalSections(ev),
       ],
     });
   }
@@ -2022,6 +2036,7 @@ function handleDecision(lev, ev) {
       sections: [
         ...condSections,
         { label: 'Verdict', entries: { value: isTrue } },
+        ...causalSections(ev),
       ],
     });
   });
@@ -2069,6 +2084,7 @@ function handleSend(lev, ev) {
       accent: ctrl ? KIND.ctrl : KIND.send,
       sections: [
         { label: 'Values', entries: sendBindings, emptyText: '(no values)' },
+        ...causalSections(ev),
       ],
     }),
   });
@@ -2120,6 +2136,7 @@ function handleRecv(lev, ev) {
       accent: ctrl ? KIND.ctrl : KIND.recv,
       sections: [
         { label: 'Bindings', entries: recvBindings, emptyText: '(no bindings)' },
+        ...causalSections(ev),
       ],
     }),
   });

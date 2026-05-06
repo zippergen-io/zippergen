@@ -27,9 +27,12 @@ Outgoing messages carry a vc/view snapshot:
 """
 from __future__ import annotations
 
+import inspect
+
 from zippergen.formula import (
-    AnyFormula,
+    AnyFormula, EventContext,
     AtomicFormula, OnFormula, YFormula, YAFormula,
+    ConstFormula, SinceFormula, PastFormula,
     AndFormula, OrFormula, NotFormula,
 )
 
@@ -48,6 +51,7 @@ class MonitorState:
         self.name = lifeline_name
         self.lifelines = list(all_lifelines)
         self.subformulas = list(all_subformulas)  # bottom-up order (leaves first)
+        self._formula_ids: set[int] = {id(phi) for phi in self.subformulas}
 
         # vc[B] = number of events of B causally visible to self (inclusive, 1-based).
         self.vc: dict[str, int] = {b: 0 for b in all_lifelines}
@@ -84,7 +88,11 @@ class MonitorState:
         A = self.name
 
         # --- Lines 2-9: merge incoming vc and view (recv only) ---
-        if kind == "recv" and recv_vc is not None and recv_view is not None:
+        if kind == "recv":
+            if recv_vc is None or recv_view is None:
+                raise RuntimeError(
+                    f"monitored receive on lifeline '{A}' is missing vector-clock metadata"
+                )
             for B in self.lifelines:
                 if recv_vc.get(B, 0) > self.vc[B]:
                     for phi_id, val in recv_view.get(B, {}).items():
@@ -99,11 +107,18 @@ class MonitorState:
         self.vc[A] += 1
 
         # env is already post-effect (caller applies effect before calling on_event)
+        event = EventContext(
+            kind=kind,
+            lifeline=A,
+            vc=dict(self.vc),
+            message_vc=dict(recv_vc) if recv_vc is not None else None,
+            message_view={b: dict(v) for b, v in recv_view.items()} if recv_view is not None else None,
+        )
 
         # --- Lines 19-21: evaluate subformulas in bottom-up order ---
         self._val = {}
         for phi in self.subformulas:
-            self._val[id(phi)] = self._eval_one(phi, A, env, old)
+            self._val[id(phi)] = self._eval_one(phi, A, env, old, event)
 
         # --- Lines 22-23: write back view_A(A, ·) ---
         for phi in self.subformulas:
@@ -119,6 +134,7 @@ class MonitorState:
         A: str,
         env: dict,
         old: dict[int, bool],
+        event: EventContext,
     ) -> bool:
         """Evaluate one formula node.
 
@@ -126,8 +142,11 @@ class MonitorState:
         self._val, which is populated bottom-up by on_event().
         """
         match phi:
+            case ConstFormula(value=value):
+                return value
+
             case AtomicFormula(fn=fn):
-                return bool(fn(env))
+                return bool(_call_atom(fn, env, event))
 
             case OnFormula(lifeline_name=B):
                 return A == B
@@ -143,6 +162,22 @@ class MonitorState:
                 else:
                     # Cross-lifeline: check the latest causally visible event of B.
                     return (self.vc.get(B, 0) > 0) and self.view[B].get(id(theta), False)
+
+            case SinceFormula(left=l, right=r):
+                # Non-strict local since:
+                # r holds now, or l holds now and l S r held at the previous local event.
+                return self._val[id(r)] or (self._val[id(l)] and old.get(id(phi), False))
+
+            case PastFormula(witness=witness):
+                # Strict causal past: ∨_B Y_B(witness).  Same-lifeline uses the
+                # old local view so the current event is not counted.
+                for B in self.lifelines:
+                    if B == A:
+                        if self.vc[A] > 1 and old.get(id(witness), False):
+                            return True
+                    elif self.vc.get(B, 0) > 0 and self.view[B].get(id(witness), False):
+                        return True
+                return False
 
             case AndFormula(left=l, right=r):
                 return self._val[id(l)] and self._val[id(r)]
@@ -162,7 +197,14 @@ class MonitorState:
 
     def guard_value(self, formula: AnyFormula) -> bool:
         """Return the truth value of formula at the most recent event."""
-        return self._val.get(id(formula), False)
+        if id(formula) not in self._formula_ids:
+            raise RuntimeError(
+                f"CPL Formula guard {formula!r} was not registered with the monitor. "
+                "Formula guards must be discoverable before workflow execution."
+            )
+        if id(formula) not in self._val:
+            raise RuntimeError("No monitor event has been processed yet.")
+        return self._val[id(formula)]
 
     # ------------------------------------------------------------------
     # Snapshot for message piggybacking
@@ -175,3 +217,26 @@ class MonitorState:
     def snapshot_view(self) -> dict[str, dict[int, bool]]:
         """Deep copy of the current view table (one level of dicts)."""
         return {b: dict(v) for b, v in self.view.items()}
+
+
+def _call_atom(fn, env: dict, event: EventContext) -> bool:
+    if _accepts_event_context(fn):
+        return fn(env, event)
+    return fn(env)
+
+
+def _accepts_event_context(fn) -> bool:
+    try:
+        sig = inspect.signature(fn)
+    except (TypeError, ValueError):
+        return False
+    positional = 0
+    for param in sig.parameters.values():
+        if param.kind is inspect.Parameter.VAR_POSITIONAL:
+            return True
+        if param.kind in {
+            inspect.Parameter.POSITIONAL_ONLY,
+            inspect.Parameter.POSITIONAL_OR_KEYWORD,
+        }:
+            positional += 1
+    return positional >= 2

@@ -5,29 +5,48 @@ workflow constructs.  The online monitor (monitor.py) evaluates them at runtime
 using vector clocks and latest-value views.
 
 Supported operators:
-    atom(fn)       — atomic predicate; fn: dict -> bool over the local env
+    atom(fn)       — atomic predicate; fn: dict -> bool, or fn: (dict, EventContext) -> bool
     on(A)          — true iff the current event is on lifeline A
     Y(phi)         — previous local event satisfies phi
     Y[A](phi)      — latest causally visible event on A satisfies phi
+    since(a, b)    — local non-strict since: a S b
+    P(phi)         — strict causal-past modality
     ~phi           — negation
     phi1 & phi2    — conjunction
     phi1 | phi2    — disjunction
-
-The Since operator (S) and derived P (causal past) are deferred to a future plan.
 """
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Union
 
 __all__ = [
+    "EventContext",
     "Formula",
     "AtomicFormula", "OnFormula", "YFormula", "YAFormula",
+    "SinceFormula", "PastFormula", "ConstFormula",
     "AndFormula", "OrFormula", "NotFormula",
     "AnyFormula",
-    "atom", "Y", "on", "subformulas",
+    "atom", "Y", "on", "since", "P", "true", "false", "subformulas",
 ]
+
+
+@dataclass(frozen=True)
+class EventContext:
+    """Metadata for the event currently being monitored.
+
+    Atomic predicates may accept this as an optional second argument.  For
+    receive events, message_vc/message_view are the metadata carried by the
+    incoming message; vc is the monitor's vector clock after merging and
+    counting the current event.
+    """
+
+    kind: str
+    lifeline: str
+    vc: Mapping[str, int]
+    message_vc: Mapping[str, int] | None = None
+    message_view: Mapping[str, Mapping[int, bool]] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -52,15 +71,30 @@ class Formula:
     def __invert__(self) -> NotFormula:
         return NotFormula(self)
 
+    def since(self, other: AnyFormula | Callable) -> SinceFormula:
+        """Return ``self S other``."""
+        return since(self, other)
+
 
 # ---------------------------------------------------------------------------
 # Formula IR nodes
 # ---------------------------------------------------------------------------
 
 @dataclass(frozen=True)
+class ConstFormula(Formula):
+    value: bool
+
+    def __repr__(self) -> str:
+        return "true" if self.value else "false"
+
+
+@dataclass(frozen=True)
 class AtomicFormula(Formula):
-    """Atomic predicate: fn(env) -> bool evaluated at the current event."""
-    fn: Callable[[dict], bool]
+    """Atomic predicate evaluated at the current event.
+
+    fn may be either ``fn(env)`` or ``fn(env, event_context)``.
+    """
+    fn: Callable[..., bool]
     src: str = ""
 
     # Use object identity so that two separately-created atom() calls are
@@ -104,6 +138,26 @@ class YAFormula(Formula):
 
 
 @dataclass(frozen=True)
+class SinceFormula(Formula):
+    """left S right: right held now, or left has held since a previous right."""
+    left: AnyFormula
+    right: AnyFormula
+
+    def __repr__(self) -> str:
+        return f"({self.left!r} S {self.right!r})"
+
+
+@dataclass(frozen=True)
+class PastFormula(Formula):
+    """Strict causal past, implemented as an internal ``true S phi`` witness."""
+    subformula: AnyFormula
+    witness: SinceFormula
+
+    def __repr__(self) -> str:
+        return f"P({self.subformula!r})"
+
+
+@dataclass(frozen=True)
 class AndFormula(Formula):
     left: AnyFormula
     right: AnyFormula
@@ -130,7 +184,8 @@ class NotFormula(Formula):
 
 
 AnyFormula = Union[
-    AtomicFormula, OnFormula, YFormula, YAFormula,
+    ConstFormula, AtomicFormula, OnFormula, YFormula, YAFormula,
+    SinceFormula, PastFormula,
     AndFormula, OrFormula, NotFormula,
 ]
 
@@ -139,10 +194,10 @@ AnyFormula = Union[
 # User-facing API
 # ---------------------------------------------------------------------------
 
-def atom(fn: Callable[[dict], bool], src: str = "") -> AtomicFormula:
+def atom(fn: Callable[..., bool], src: str = "") -> AtomicFormula:
     """Wrap a Python callable as an atomic CPL predicate.
 
-    fn  : dict -> bool, called with the lifeline's local env at each event.
+    fn  : dict -> bool, or (dict, EventContext) -> bool.
     src : optional display string for ZipperChat; defaults to fn.__name__.
     """
     return AtomicFormula(fn=fn, src=src or getattr(fn, "__name__", ""))
@@ -154,6 +209,33 @@ def on(lifeline: object) -> OnFormula:
     return OnFormula(lifeline_name=name)
 
 
+def true() -> ConstFormula:
+    """Formula that is true at every event."""
+    return ConstFormula(True)
+
+
+def false() -> ConstFormula:
+    """Formula that is false at every event."""
+    return ConstFormula(False)
+
+
+def _as_formula(phi: AnyFormula | Callable) -> AnyFormula:
+    if callable(phi) and not isinstance(phi, Formula):
+        return atom(phi)
+    return phi
+
+
+def since(left: AnyFormula | Callable, right: AnyFormula | Callable) -> SinceFormula:
+    """Return the local non-strict since formula ``left S right``."""
+    return SinceFormula(_as_formula(left), _as_formula(right))
+
+
+def P(phi: AnyFormula | Callable) -> PastFormula:
+    """Return the strict causal-past formula for ``phi``."""
+    sub = _as_formula(phi)
+    return PastFormula(subformula=sub, witness=SinceFormula(true(), sub))
+
+
 class _YAPartial:
     """Partial application of Y[A]: call with a formula or callable to get YAFormula."""
 
@@ -161,9 +243,7 @@ class _YAPartial:
         self._name = name
 
     def __call__(self, phi: AnyFormula | Callable) -> YAFormula:
-        if callable(phi) and not isinstance(phi, Formula):
-            phi = atom(phi)
-        return YAFormula(lifeline_name=self._name, subformula=phi)
+        return YAFormula(lifeline_name=self._name, subformula=_as_formula(phi))
 
 
 class _YOperator:
@@ -176,9 +256,7 @@ class _YOperator:
     """
 
     def __call__(self, phi: AnyFormula | Callable) -> YFormula:
-        if callable(phi) and not isinstance(phi, Formula):
-            phi = atom(phi)
-        return YFormula(subformula=phi)
+        return YFormula(subformula=_as_formula(phi))
 
     def __getitem__(self, lifeline: object) -> _YAPartial:
         name = lifeline.name if hasattr(lifeline, "name") else str(lifeline)  # type: ignore[union-attr]
@@ -205,12 +283,17 @@ def subformulas(formula: AnyFormula) -> list[AnyFormula]:
         if id(f) in seen:
             return
         seen.add(id(f))
-        if isinstance(f, (AtomicFormula, OnFormula)):
+        if isinstance(f, (ConstFormula, AtomicFormula, OnFormula)):
             pass  # leaves — no children
         elif isinstance(f, (YFormula, NotFormula)):
             visit(f.subformula)
         elif isinstance(f, YAFormula):
             visit(f.subformula)
+        elif isinstance(f, SinceFormula):
+            visit(f.left)
+            visit(f.right)
+        elif isinstance(f, PastFormula):
+            visit(f.witness)
         elif isinstance(f, (AndFormula, OrFormula)):
             visit(f.left)
             visit(f.right)
