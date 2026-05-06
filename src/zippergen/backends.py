@@ -57,7 +57,7 @@ def _retry_json_request(req: request.Request, *, timeout: float, max_retries: in
             if exc.code in {429, 500, 502, 503, 504} and attempt < max_retries:
                 retry_after = exc.headers.get("Retry-After") if exc.headers else None
                 try:
-                    delay = float(retry_after) if retry_after else (1.0 + attempt)
+                    delay = float(retry_after) if retry_after else (2.0 ** attempt * 2)
                 except ValueError:
                     delay = 1.0 + attempt
                 time.sleep(delay)
