@@ -515,9 +515,11 @@ def _exec(stmt: LocalStmt, env: Env, ch: Channels, ns: dict, llm_backend, human_
                 flag = monitor.guard_value(cond_formula)
                 formula_repr = repr(cond_formula)
             elif cond_formula is not None:
-                # Formula condition but no monitor active — treat as truthy
-                flag = True
-                formula_repr = repr(cond_formula)
+                raise RuntimeError(
+                    f"CPL Formula guard {cond_formula!r} used in workflow '{threading.current_thread().name}' "
+                    f"but no monitor was built. Assign the Formula to a module-level variable so it is "
+                    f"visible in the workflow namespace."
+                )
             else:
                 flag = bool(cond_value)
                 formula_repr = None
@@ -560,9 +562,11 @@ def _exec(stmt: LocalStmt, env: Env, ch: Channels, ns: dict, llm_backend, human_
                     flag = monitor.guard_value(wc_formula)
                     formula_repr = repr(wc_formula)
                 elif wc_formula is not None:
-                    # Formula condition but no monitor active — treat as truthy
-                    flag = True
-                    formula_repr = repr(wc_formula)
+                    raise RuntimeError(
+                        f"CPL Formula guard {wc_formula!r} used in workflow '{threading.current_thread().name}' "
+                        f"but no monitor was built. Assign the Formula to a module-level variable so it is "
+                        f"visible in the workflow namespace."
+                    )
                 else:
                     flag = bool(wc_value)
                     formula_repr = None
@@ -616,6 +620,7 @@ def _thread_body(local_stmt, env, ch, ns, result_box, llm_backend, human_backend
 
 def _collect_formula_guards(stmt) -> list:
     guards: list = []
+    # Walks the global program only; IfRecvStmt/WhileRecvStmt never appear in wf.body.
     def walk(s) -> None:
         match s:
             case IfStmt(condition=c, branch_true=t, branch_false=f):
@@ -640,8 +645,12 @@ def _collect_formula_guards(stmt) -> list:
 def _collect_ns_formulas(ns: dict) -> list:
     """Collect Formula instances from the workflow's global namespace.
 
-    Necessary because the @workflow AST rewriter wraps conditions in lambdas,
+    Necessary because the @workflow AST rewriter wraps conditions as lambdas,
     so _collect_formula_guards cannot find Formulas stored in module-level vars.
+
+    Limitation: Formulas constructed inline inside a @workflow body (not assigned
+    to a module-level variable) will not be found here and will raise RuntimeError
+    at runtime when used as a guard.
     """
     return [v for v in ns.values() if isinstance(v, _Formula)]
 
