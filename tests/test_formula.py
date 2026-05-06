@@ -165,8 +165,6 @@ def test_formula_is_formula_instance():
 
 
 def test_public_api_importable_from_zippergen():
-    # NOTE: This test will pass only after Task 4 (__init__.py is updated).
-    # For now, just verify the formula module is importable directly.
-    from zippergen.formula import Y, atom, on, subformulas, Formula
+    from zippergen import Y, atom, on, subformulas, Formula
     phi = atom(lambda env: True)
     assert isinstance(phi, Formula)
