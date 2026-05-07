@@ -39,6 +39,7 @@ Thumbs.db
 
 # Docs build
 docs/_build/
+texput.log
 CLAUDE.md
 
 # Work in progress examples

@@ -291,7 +291,7 @@ def test_failed_thread_unblocks_waiters():
 # Causal Past Logic guard integration tests
 # ---------------------------------------------------------------------------
 
-from zippergen.formula import atom, Y, P
+from zippergen.formula import atom, Y, P, on
 
 
 _CPLPlanner2  = Lifeline("CPLPlanner2")
@@ -339,6 +339,11 @@ _prev_flag = Y(_flag_atom)
 @pure
 def _set_flag_true() -> bool:
     return True
+
+
+@pure
+def _set_flag_false() -> bool:
+    return False
 
 
 @pure
@@ -422,6 +427,73 @@ def _past_workflow(dummy: bool @ _PastOwner) -> str:
 
 def test_past_guard_sees_prior_local_event():
     assert _past_workflow(dummy=True) == "yes"
+
+
+# --- Cross-lifeline P ---
+
+_RemotePastPlanner = Lifeline("RemotePastPlanner")
+_RemotePastExecutor = Lifeline("RemotePastExecutor")
+_remote_approved = on(_RemotePastPlanner) & atom(lambda env: env.get("approved", False))
+_remote_past_guard = P(_remote_approved)
+
+
+@workflow
+def _remote_past_workflow(approved: bool @ _RemotePastPlanner) -> str:
+    _RemotePastPlanner(approved) >> _RemotePastExecutor(approved)
+    if _remote_past_guard @ _RemotePastExecutor:
+        _RemotePastExecutor: out = _yes_str(approved)
+    else:
+        _RemotePastExecutor: out = _no_str(approved)
+    return out @ _RemotePastExecutor
+
+
+def test_past_guard_sees_remote_causal_past():
+    assert _remote_past_workflow(approved=True) == "yes"
+    assert _remote_past_workflow(approved=False) == "no"
+
+
+# --- Stale relay status ---
+
+_RelayDevice = Lifeline("RelayDevice")
+_Relay1 = Lifeline("Relay1")
+_Relay2 = Lifeline("Relay2")
+_Indicator = Lifeline("Indicator")
+_latest_device_on = Y[_RelayDevice](atom(lambda env: env.get("flag", False), src="flag"))
+
+
+@workflow
+def _stale_relay_workflow() -> tuple:
+    _RelayDevice: flag = _set_flag_true()
+    _RelayDevice(flag) >> _Relay1(flag)
+    _Relay1(flag) >> _Indicator(flag)
+    if _latest_device_on @ _Indicator:
+        pass
+    else:
+        pass
+
+    _RelayDevice: flag = _set_flag_false()
+    _RelayDevice(flag) >> _Relay1(flag)
+    _RelayDevice: flag = _set_flag_true()
+    _RelayDevice(flag) >> _Relay2(flag)
+    _Relay2(flag) >> _Indicator(flag)
+    if _latest_device_on @ _Indicator:
+        pass
+    else:
+        pass
+
+    _Relay1(flag) >> _Indicator(flag)
+    if _latest_device_on @ _Indicator:
+        pass
+    else:
+        pass
+
+
+def test_causal_guard_ignores_stale_relay_status():
+    events = []
+    final_envs = run(_stale_relay_workflow, [_RelayDevice, _Relay1, _Relay2, _Indicator], {}, trace=events.append)
+    decisions = [e["value"] for e in events if e["type"] == "decision"]
+    assert decisions == [True, True, True]
+    assert final_envs["Indicator"]["flag"] is False
 
 
 # --- Event metadata atoms ---

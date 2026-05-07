@@ -88,11 +88,27 @@ The formal statement is in [our paper](https://arxiv.org/abs/2604.17612): the pr
 
 The practical consequence: the global protocol is also a complete audit trail of what your agents are allowed to do. You can read it, reason about it, and submit it to anyone who needs to understand how the system works.
 
+## Causal runtime guards
+
+ZipperGen also supports causal-past guards for workflows where the latest locally received value may be stale. In `examples/cpl_test.py`, a device reports its status through two relays. The indicator receives a newer `on=True` update before an older delayed `on=False` update. A local guard on `on` would follow the delayed stale message, but a causal guard reads the latest causally visible device state:
+
+```python
+latest_device_on = Y[Device](
+    atom(lambda env: env.get("on", False), src="on")
+)
+
+if latest_device_on @ Indicator:
+    ...
+```
+
+The result is determined entirely from the asynchronous communication structure: vector clocks record which events are causally visible, and message-carried views provide the latest guard values at those visible events.
+
 ## See it in action
 
 Examples ship with the repo. The first two run without an API key.
 
 ```bash
+python examples/cpl_test.py           # causal guard ignores stale relay status (no key needed)
 python examples/write_tweet.py        # draft-and-approve with mock LLM (no key needed)
 python examples/diagnosis.py          # two LLMs reach consensus iteratively (no key needed with mock)
 python examples/contract_review.py    # four agents review a contract in parallel (needs MISTRAL_API_KEY)
@@ -143,7 +159,7 @@ def diagnosis_consensus(notes: str @ User, diagnosis: str @ User) -> str:
 
 `while cond @ LLM1` means LLM1 owns the loop guard and broadcasts the decision each iteration. `if cond @ Owner` works the same way for conditionals. ZipperGen figures out which other agents need to receive the decision and generates the control messages automatically.
 
-Every workflow has exactly one `return var @ Lifeline`, at the end. This declares which lifeline owns the result once all agents have finished: it is a declaration, not a control flow statement. No matter which branches executed, the result always lands in the same place.
+Workflows that return a value end with `return var @ Lifeline`. This declares which lifeline owns the result once all agents have finished: it is a declaration, not a control flow statement. No matter which branches executed, the result always lands in the same place. Output-free workflows can use `-> tuple` and omit the return.
 
 ## Defining LLM actions
 
@@ -310,9 +326,9 @@ my_workflow.configure(backend=my_backend, timeout=60)
 
 The short answer: those frameworks leave coordination up to the agents or the graph structure. ZipperGen makes coordination explicit and proves it correct.
 
-**LangGraph** uses a graph of nodes and edges. Conditional branching requires a router function that returns the name of the next node. The graph structure implies an execution order, but deadlock avoidance and correctness are your responsibility. It's a good fit when you need fine-grained control over an irregular flow and are comfortable reasoning about the graph yourself.
+**LangGraph** uses a graph of nodes and edges. Conditional branching requires a router function that returns the name of the next node. The graph structure implies an execution order, but protocol-level deadlock-freedom and projection correctness are not the focus of the framework. It's a good fit when you need fine-grained control over an irregular flow and are comfortable reasoning about the graph yourself.
 
-**CrewAI and AutoGen** are conversation-based: agents exchange messages and decide what to do next. The coordination is mostly emergent from the agent prompts. This works well for open-ended tasks where you can't or don't want to specify the coordination structure in advance. The tradeoff is that the system's behavior is hard to audit and impossible to prove correct.
+**CrewAI and AutoGen** are conversation-based: agents exchange messages and decide what to do next. The coordination is mostly emergent from the agent prompts. This works well for open-ended tasks where you can't or don't want to specify the coordination structure in advance. The tradeoff is that protocol behavior is harder to audit and outside the scope of those frameworks to prove correct.
 
 **ZipperGen** requires you to write the coordination structure explicitly. That's a constraint. In return, you get a protocol that can be read by a person, checked by a tool, and submitted to anyone who needs to understand how the system behaves, along with a proof that it terminates without deadlock. If your use case involves a fixed or semi-fixed coordination structure (which most production systems do), the explicitness is an asset.
 
