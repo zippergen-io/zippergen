@@ -336,7 +336,7 @@ If the structure genuinely isn't known in advance, use `@planner`; the LLM gener
 
 ## Formal foundation
 
-The implementation is grounded in the theory of Message Sequence Charts. The key properties:
+The implementation is based on the theory of Message Sequence Charts. The key properties:
 
 - **Correctness**: The distributed projected programs produce exactly the same behaviors as the global program.
 - **Deadlock-freedom**: Follows by structural induction; no runtime checking required.
