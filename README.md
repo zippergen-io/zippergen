@@ -69,6 +69,8 @@ print(result)
 
 `if approved @ Editor` is the key line. `Editor` owns the branching decision; ZipperGen automatically determines which agents need to receive that decision and generates the coordination messages. You don't write any routing code.
 
+Human control points can be inserted directly into a lifeline, too. A workflow may pause for approval, review, correction, or data entry exactly where the global protocol requires it; the interaction remains explicit in the projected program and visible in ZipperChat.
+
 The mock backend produces placeholder output (`[draft:tweet]`, `[revise:tweet]`). Add one line to switch to a real LLM:
 
 ```python
@@ -127,6 +129,7 @@ Examples ship with the repo. The first two run without an API key.
 python examples/coregion.py           # unordered receives from independent analysts (no key needed)
 python examples/cpl_test.py           # causal guard ignores stale relay status (no key needed)
 python examples/write_tweet.py        # draft-and-approve with mock LLM (no key needed)
+python examples/human_approval.py     # human priority, notes, and approval in ZipperChat (no key needed)
 python examples/diagnosis.py          # two LLMs reach consensus iteratively (no key needed with mock)
 python examples/contract_review.py    # four agents review a contract in parallel (needs MISTRAL_API_KEY)
 python examples/morning_digest.py     # inbox triage: parallel analysis, owned branching (needs MISTRAL_API_KEY)
