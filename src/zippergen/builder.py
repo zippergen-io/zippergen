@@ -15,7 +15,7 @@ from zippergen.syntax import (
     ZType, Lifeline, Var,
     ZTypeAtLifeline, LocatedArg,
     Expr, VarExpr, LitExpr,
-    Stmt, AnyStmt, MsgStmt, ActStmt, SkipStmt, IfStmt, WhileStmt,
+    Stmt, AnyStmt, EmptyStmt, MsgStmt, CoregionStmt, ActStmt, SkipStmt, SeqStmt, IfStmt, WhileStmt,
     LLMAction, PureAction, PlannerAction, WorkflowAction,
     Workflow,
     seq, is_ztype,
@@ -25,7 +25,7 @@ __all__ = [
     # Workflow decorator
     "workflow",
     # Statement builders
-    "msg", "act", "skip",
+    "msg", "act", "skip", "coregion",
     "if_", "while_",
 ]
 
@@ -35,6 +35,14 @@ __all__ = [
 # ---------------------------------------------------------------------------
 
 _stack: list[list[Stmt]] = []
+
+
+class _CoregionMarker:
+    def __repr__(self) -> str:
+        return "coregion"
+
+
+coregion = _CoregionMarker()
 
 
 def _record(stmt: Stmt) -> None:
@@ -56,6 +64,14 @@ def _collect(fn: Callable) -> AnyStmt:
     fn()
     stmts = _stack.pop()
     return seq(*stmts)
+
+
+def _flatten_seq(stmt: AnyStmt) -> list[AnyStmt]:
+    if isinstance(stmt, EmptyStmt):
+        return []
+    if isinstance(stmt, SeqStmt):
+        return [*_flatten_seq(stmt.first), *_flatten_seq(stmt.second)]
+    return [stmt]
 
 
 # ---------------------------------------------------------------------------
@@ -145,6 +161,21 @@ def act(
 def skip(lifeline: Lifeline) -> None:
     """skip lifeline — local no-op."""
     _record(SkipStmt(lifeline))
+
+
+def coregion_(body: Callable) -> None:
+    """Record a restricted co-region of unordered messages."""
+    collected = _collect(body)
+    stmts = _flatten_seq(collected)
+    messages: list[MsgStmt] = []
+    for stmt in stmts:
+        if not isinstance(stmt, MsgStmt):
+            raise TypeError(
+                "coregion body may contain only message statements "
+                f"(Sender(...) >> Receiver(...)), got {type(stmt).__name__}"
+            )
+        messages.append(stmt)
+    _record(CoregionStmt(tuple(messages)))
 
 
 def if_(
@@ -269,6 +300,7 @@ class _ProcTransformer(ast.NodeTransformer):
 
     - ``Lifeline: outputs = action(inputs)``  →  ``act(Lifeline, action, inputs, outputs)``
     - ``with Lifeline:\n    y = f(x)\n    ...``  →  one ``act(...)`` call per body line
+    - ``with coregion:\n    A(x) >> R(x)\n    ...`` → unordered messages to one receiver
     - ``Sender(x, y) >> Receiver(a, b)``      →  ``msg(Sender, (x, y), Receiver, (a, b))``
     - ``if cond @ owner: ...``                →  ``if_(cond, owner, then=..., else_=...)``
     - ``while cond @ owner: ...``             →  ``while_(cond, owner, body=..., exit_body=...)``
@@ -355,6 +387,8 @@ class _ProcTransformer(ast.NodeTransformer):
         """
         Rewrite a ``with Lifeline:`` block into one ``act(...)`` call per line.
 
+        Rewrite ``with coregion:`` into a restricted unordered message block.
+
         Only single-item ``with`` blocks without an ``as`` clause whose every
         body statement has the form ``outputs = action(inputs)`` are matched.
         Anything else passes through unchanged (let Python handle it normally).
@@ -365,6 +399,17 @@ class _ProcTransformer(ast.NodeTransformer):
             return node
 
         lifeline_ast = node.items[0].context_expr
+        if isinstance(lifeline_ast, ast.Name) and lifeline_ast.id == "coregion":
+            self.generic_visit(node)
+            body_name = _fresh("coregion")
+            body_fn = _make_fn(body_name, node.body)
+            call = ast.Expr(ast.Call(
+                func=ast.Name(id="coregion_", ctx=ast.Load()),
+                args=[ast.Name(id=body_name, ctx=ast.Load())],
+                keywords=[],
+            ))
+            return [body_fn, call]
+
         result: list[ast.stmt] = []
 
         for stmt in node.body:
@@ -520,6 +565,7 @@ def _transform_proc_source(fn: Callable) -> tuple[Callable, list[tuple[str, str]
         "act":       act,
         "if_":       if_,
         "while_":    while_,
+        "coregion_": coregion_,
         "_tag_cond": _tag_cond,
     })
 
@@ -586,6 +632,7 @@ def workflow(fn: Callable) -> Workflow:
     Inside the body use:
 
     - ``Sender(x, y) >> Receiver(a, b)`` — message passing
+    - ``with coregion: ...`` — unordered messages to one receiver
     - ``Lifeline: outputs = action(inputs)`` — single local action
     - ``with Lifeline:\n        y1 = f1(x)\n        y2 = f2(y1)`` — block of consecutive local actions on one lifeline
     - ``skip()`` — local no-op

@@ -7,8 +7,8 @@ independent of Layer 3 and test projection semantics in isolation.
 import pytest
 
 from zippergen.syntax import (
-    EmptyStmt, MsgStmt, ActStmt, SkipStmt, SeqStmt, IfStmt, WhileStmt,
-    SendStmt, RecvStmt, IfRecvStmt, WhileRecvStmt,
+    EmptyStmt, MsgStmt, CoregionStmt, ActStmt, SkipStmt, SeqStmt, IfStmt, WhileStmt,
+    SendStmt, RecvStmt, ReceiveAnyStmt, IfRecvStmt, WhileRecvStmt,
     Lifeline, Var, VarExpr, LitExpr,
     Workflow, seq, is_kappa_ctrl,
 )
@@ -73,6 +73,44 @@ def test_project_msg_bystander():
     stmt = MsgStmt(A, (VarExpr(x),), B, (VarExpr(y),))
     wf = _make_workflow(stmt)
     assert project(wf, C) == EmptyStmt()
+
+
+def test_project_coregion_sender_gets_send():
+    stmt = CoregionStmt((
+        MsgStmt(A, (VarExpr(x),), C, (VarExpr(y),)),
+        MsgStmt(B, (VarExpr(z),), C, (VarExpr(z),)),
+    ))
+    wf = _make_workflow(stmt)
+
+    result = project(wf, A)
+    assert isinstance(result, SendStmt)
+    assert result.lifeline == A
+    assert result.receiver == C
+    assert result.payload == (VarExpr(x),)
+
+
+def test_project_coregion_receiver_gets_receive_any():
+    stmt = CoregionStmt((
+        MsgStmt(A, (VarExpr(x),), C, (VarExpr(y),)),
+        MsgStmt(B, (VarExpr(z),), C, (VarExpr(z),)),
+    ))
+    wf = _make_workflow(stmt)
+
+    result = project(wf, C)
+    assert isinstance(result, ReceiveAnyStmt)
+    assert result.lifeline == C
+    assert result.receives == ((A, (VarExpr(y),)), (B, (VarExpr(z),)))
+
+
+def test_project_coregion_bystander():
+    D = Lifeline("D")
+    stmt = CoregionStmt((
+        MsgStmt(A, (VarExpr(x),), C, (VarExpr(y),)),
+        MsgStmt(B, (VarExpr(z),), C, (VarExpr(z),)),
+    ))
+    wf = _make_workflow(stmt)
+
+    assert project(wf, D) == EmptyStmt()
 
 
 def test_project_act_owner():

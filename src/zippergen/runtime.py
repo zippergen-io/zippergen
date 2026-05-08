@@ -15,7 +15,7 @@ import textwrap
 from zippergen.planner import _exec_planner, _validate_planner_spec
 
 from zippergen.syntax import (
-    EmptyStmt, SendStmt, RecvStmt, SelfAssignStmt, ActStmt, SkipStmt,
+    EmptyStmt, SendStmt, RecvStmt, ReceiveAnyStmt, SelfAssignStmt, ActStmt, SkipStmt,
     SeqStmt, IfStmt, WhileStmt, IfRecvStmt, WhileRecvStmt,
     VarExpr, LitExpr, Var,
     LLMAction, PureAction, PlannerAction, WorkflowAction, HumanAction,
@@ -238,6 +238,9 @@ class _SeqQueue:
                 if stop.is_set():
                     raise RuntimeError("Workflow cancelled: another lifeline failed")
 
+    def get_nowait(self) -> tuple[int, tuple, dict | None, dict | None]:
+        return self._q.get_nowait()
+
 
 Channels = dict[tuple[str, str], _SeqQueue]
 
@@ -325,6 +328,24 @@ def _recv_trace_fields(monitor, message_vc: dict | None) -> dict[str, object]:
     return fields
 
 
+def _receive_any(
+    ch: Channels,
+    receiver: str,
+    pending_senders: set[str],
+    *,
+    stop: threading.Event | None = None,
+) -> tuple[str, tuple[int, tuple, dict | None, dict | None]]:
+    while True:
+        for sender in sorted(pending_senders):
+            try:
+                return sender, ch[(sender, receiver)].get_nowait()
+            except queue.Empty:
+                pass
+        if stop is not None and stop.is_set():
+            raise RuntimeError("Workflow cancelled: another lifeline failed")
+        time.sleep(0.01)
+
+
 
 # ---------------------------------------------------------------------------
 # Local-program interpreter
@@ -372,6 +393,27 @@ def _exec(stmt: LocalStmt, env: Env, ch: Channels, ns: dict, llm_backend, human_
                     "seq": seq,
                     **_recv_trace_fields(monitor, recv_vc),
                 })
+
+        case ReceiveAnyStmt(lifeline=A, receives=receives):
+            pending = {
+                sender.name: (sender, bindings)
+                for sender, bindings in receives
+            }
+            while pending:
+                sender_name, item = _receive_any(ch, A.name, set(pending), stop=stop)
+                seq, values, recv_vc, recv_view = item
+                sender, ys = pending.pop(sender_name)
+                _bind(ys, values, env)
+                if monitor:
+                    monitor.on_event("recv", env, recv_vc=recv_vc, recv_view=recv_view)
+                if trace:
+                    trace({
+                        "type": "recv",
+                        "to": A.name, "from": sender.name,
+                        "bindings": _bound_dict(ys, values),
+                        "seq": seq,
+                        **_recv_trace_fields(monitor, recv_vc),
+                    })
 
         case SelfAssignStmt(lifeline=A, payload=xs, bindings=ys):
             values = tuple(_eval(x, env) for x in xs)

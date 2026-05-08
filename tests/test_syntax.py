@@ -3,8 +3,8 @@
 import pytest
 
 from zippergen.syntax import (
-    EmptyStmt, MsgStmt, ActStmt, SkipStmt, SeqStmt, IfStmt, WhileStmt,
-    SendStmt, RecvStmt, IfRecvStmt, WhileRecvStmt,
+    EmptyStmt, MsgStmt, CoregionStmt, ActStmt, SkipStmt, SeqStmt, IfStmt, WhileStmt,
+    SendStmt, RecvStmt, ReceiveAnyStmt, IfRecvStmt, WhileRecvStmt,
     Lifeline, Var, VarExpr, LitExpr,
     participation_set, seq,
 )
@@ -103,6 +103,30 @@ def test_participation_msg():
     assert participation_set(stmt) == frozenset({A, B})
 
 
+def test_participation_coregion():
+    stmt = CoregionStmt((
+        MsgStmt(A, (VarExpr(x),), C, (VarExpr(x),)),
+        MsgStmt(B, (LitExpr("ok", str),), C, (VarExpr(y),)),
+    ))
+    assert participation_set(stmt) == frozenset({A, B, C})
+
+
+def test_coregion_rejects_repeated_sender():
+    with pytest.raises(ValueError, match="distinct senders"):
+        CoregionStmt((
+            MsgStmt(A, (VarExpr(x),), C, (VarExpr(x),)),
+            MsgStmt(A, (LitExpr("ok", str),), C, (VarExpr(y),)),
+        ))
+
+
+def test_coregion_rejects_overlapping_receive_variables():
+    with pytest.raises(ValueError, match="receive variables must be disjoint"):
+        CoregionStmt((
+            MsgStmt(A, (VarExpr(x),), C, (VarExpr(x),)),
+            MsgStmt(B, (LitExpr("ok", str),), C, (VarExpr(x),)),
+        ))
+
+
 def test_participation_act():
     from zippergen.actions import pure
     @pure
@@ -160,4 +184,9 @@ def test_participation_send():
 
 def test_participation_recv():
     stmt = RecvStmt(A, (VarExpr(y),), B)
+    assert participation_set(stmt) == frozenset({A})
+
+
+def test_participation_receive_any():
+    stmt = ReceiveAnyStmt(A, ((B, (VarExpr(x),)), (C, (VarExpr(y),))))
     assert participation_set(stmt) == frozenset({A})

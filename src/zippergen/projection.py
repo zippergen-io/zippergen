@@ -8,8 +8,8 @@ from __future__ import annotations
 from typing import cast
 
 from zippergen.syntax import (
-    EmptyStmt, MsgStmt, ActStmt, SkipStmt, SeqStmt, IfStmt, WhileStmt,
-    SendStmt, RecvStmt, SelfAssignStmt, IfRecvStmt, WhileRecvStmt,
+    EmptyStmt, MsgStmt, CoregionStmt, ActStmt, SkipStmt, SeqStmt, IfStmt, WhileStmt,
+    SendStmt, RecvStmt, ReceiveAnyStmt, SelfAssignStmt, IfRecvStmt, WhileRecvStmt,
     Lifeline, LocalStmt, AnyStmt, Var, VarExpr, LitExpr,
     make_kappa_ctrl, participation_set, seq,
     Workflow,
@@ -70,6 +70,16 @@ def _project(stmt: AnyStmt, A: Lifeline, counter: list[int]) -> LocalStmt:
                 return RecvStmt(A, ys, X)
             else:
                 return EmptyStmt()
+
+        # coregion { msg X_i(xs_i) → Y(ys_i) }_i
+        case CoregionStmt(messages=messages):
+            receiver = messages[0].receiver
+            if A == receiver:
+                return ReceiveAnyStmt(
+                    lifeline=A,
+                    receives=tuple((msg.sender, msg.bindings) for msg in messages),
+                )
+            return cast(LocalStmt, seq(*(_project(msg, A, counter) for msg in messages)))
 
         # act X(ys) := f(xs)
         case ActStmt(lifeline=X):

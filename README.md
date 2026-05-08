@@ -103,11 +103,26 @@ if latest_device_on @ Indicator:
 
 The result is determined entirely from the asynchronous communication structure: vector clocks record which events are causally visible, and message-carried views provide the latest guard values at those visible events.
 
+## Unordered receives with co-regions
+
+Sometimes a receiver needs one message from each of several agents, but does not want to impose an artificial receive order. A co-region expresses exactly that:
+
+```python
+with coregion:
+    Analyst_A(a) >> Collector(a_report)
+    Analyst_B(b) >> Collector(b_report)
+```
+
+ZipperGen accepts the expected messages in whichever order they arrive, while preserving FIFO order on each channel.
+
+The current construct is deliberately restricted: all messages in the block must have the same receiver, distinct senders, and disjoint receive variables. See `examples/coregion.py` for a minimal example with randomized local delays before the unordered receives.
+
 ## See it in action
 
 Examples ship with the repo. The first two run without an API key.
 
 ```bash
+python examples/coregion.py           # unordered receives from independent analysts (no key needed)
 python examples/cpl_test.py           # causal guard ignores stale relay status (no key needed)
 python examples/write_tweet.py        # draft-and-approve with mock LLM (no key needed)
 python examples/diagnosis.py          # two LLMs reach consensus iteratively (no key needed with mock)

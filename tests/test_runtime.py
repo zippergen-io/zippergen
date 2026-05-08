@@ -28,6 +28,9 @@ User    = Lifeline("User")
 Compute = Lifeline("Compute")
 Owner   = Lifeline("Owner")
 Worker  = Lifeline("Worker")
+CoreA   = Lifeline("CoreA")
+CoreB   = Lifeline("CoreB")
+CoreR   = Lifeline("CoreR")
 
 
 # ---------------------------------------------------------------------------
@@ -47,6 +50,13 @@ def double(v: int) -> int:
 @pure
 def add(a: int, b: int) -> int:
     return a + b
+
+
+@pure
+def slow_identity(v: int) -> int:
+    import time
+    time.sleep(0.05)
+    return v
 
 
 @pure
@@ -102,6 +112,28 @@ def pass_and_transform(n: int @ User) -> int:
 
 def test_pass_and_transform():
     assert pass_and_transform(n=10) == 11
+
+
+# ---------------------------------------------------------------------------
+# Co-region receive-any
+# ---------------------------------------------------------------------------
+
+@workflow
+def coregion_collect(a: int @ CoreA, b: int @ CoreB) -> tuple:
+    with CoreA:
+        a = slow_identity(a)
+    with coregion:
+        CoreA(a) >> CoreR(a)
+        CoreB(b) >> CoreR(b)
+    return (a @ CoreR, b @ CoreR)
+
+
+def test_coregion_receiver_accepts_messages_in_arrival_order():
+    events = []
+    result = run(coregion_collect, [CoreA, CoreB, CoreR], {"CoreA": {"a": 1}, "CoreB": {"b": 2}}, trace=events.append)
+    recv_events = [event for event in events if event["type"] == "recv" and event["to"] == "CoreR"]
+    assert result == (1, 2)
+    assert [event["from"] for event in recv_events] == ["CoreB", "CoreA"]
 
 
 # ---------------------------------------------------------------------------
