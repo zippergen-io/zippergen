@@ -21,7 +21,7 @@ Python 3.11 or later required. No external dependencies: stdlib only (LLM backen
 
 ## Hello, World
 
-Three agents collaborate: `Writer` drafts a tweet, `Editor` decides whether it's good enough, and ZipperGen handles the coordination. No API key needed; the built-in mock backend runs instantly.
+Three agents collaborate: `Writer` drafts a tweet, `Editor` decides whether it's good enough, and ZipperGen handles the coordination. No API key needed; the built-in mock backend returns placeholder model outputs.
 
 ```python
 from zippergen.syntax import Lifeline, Var
@@ -61,7 +61,7 @@ def write_tweet(topic: str @ User) -> str:
         Writer(tweet) >> User(tweet)
     return tweet @ User
 
-# No API key needed; runs with the built-in mock backend.
+# No API key needed; the built-in mock backend returns placeholder model outputs.
 # Switch to a real LLM: write_tweet.configure(llms="openai")
 result = write_tweet(topic="a git commit message that tells the truth")
 print(result)
