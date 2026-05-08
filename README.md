@@ -115,6 +115,8 @@ with coregion:
 
 ZipperGen accepts the expected messages in whichever order they arrive, while preserving FIFO order on each channel.
 
+Co-regions are a lightweight implementation extension beyond the currently formalized core; they only relax artificial receive ordering between independent messages.
+
 The current construct is deliberately restricted: all messages in the block must have the same receiver, distinct senders, and disjoint receive variables. See `examples/coregion.py` for a minimal example with randomized local delays before the unordered receives.
 
 ## See it in action
