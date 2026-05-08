@@ -359,3 +359,7 @@ The implementation is based on the theory of Message Sequence Charts. The key pr
 - **Deadlock-freedom**: Follows by structural induction; no runtime checking required.
 
 The formal proofs are in [our paper](https://arxiv.org/abs/2604.17612). The main theorems (Theorem 3.1 and Corollary 3.1) have been machine-checked in Lean 4 — see the [formalization](https://github.com/zippergen-io/paper-isola/tree/main/Lean).
+
+## License
+
+ZipperGen is released under the Apache License 2.0. See [`LICENSE`](LICENSE) for the full terms.
