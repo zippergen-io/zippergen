@@ -145,15 +145,12 @@ def main_pipeline(topic: str @ User) -> str:
 
 
 if __name__ == "__main__":
-    USE_UI = True
-
     main_pipeline.configure(
         llms="mock",
-        ui=USE_UI,
+        ui=True,
         timeout=120,
     )
 
     result_val = main_pipeline(topic="quantum computing")
     print(f"\nResult → {result_val}")
-    if USE_UI:
-        input("ZipperChat running at http://localhost:8765 — press Enter to close.")
+    input("ZipperChat running at http://localhost:8765 — press Enter to close.")

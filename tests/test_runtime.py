@@ -152,6 +152,20 @@ def test_pure_action_sequence():
     assert double_then_increment(n=3) == 7  # 3*2 + 1
 
 
+def test_trace_includes_pure_action_kind():
+    events = []
+    result = run(
+        double_then_increment,
+        [Compute],
+        {"Compute": {"n": 3}},
+        trace=events.append,
+    )
+    assert result == 7
+    act_events = [event for event in events if event["type"] in {"act_start", "act"}]
+    assert act_events
+    assert {event["action_kind"] for event in act_events} == {"pure"}
+
+
 # ---------------------------------------------------------------------------
 # Increment example from README (end-to-end)
 # ---------------------------------------------------------------------------

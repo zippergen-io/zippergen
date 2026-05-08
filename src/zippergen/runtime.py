@@ -328,6 +328,20 @@ def _recv_trace_fields(monitor, message_vc: dict | None) -> dict[str, object]:
     return fields
 
 
+def _action_kind(action: object) -> str:
+    if isinstance(action, PureAction):
+        return "pure"
+    if isinstance(action, PlannerAction):
+        return "planner"
+    if isinstance(action, WorkflowAction):
+        return "workflow"
+    if isinstance(action, HumanAction):
+        return "human"
+    if isinstance(action, LLMAction):
+        return "llm"
+    return "act"
+
+
 def _receive_any(
     ch: Channels,
     receiver: str,
@@ -428,6 +442,7 @@ def _exec(stmt: LocalStmt, env: Env, ch: Channels, ns: dict, llm_backend, human_
                     "type": "act_start",
                     "lifeline": A.name,
                     "action": "assign",
+                    "action_kind": "pure",
                     "inputs": {k: _jsonify(v) for k, v in zip(x_names, values)},
                     "seq": seq,
                 })
@@ -435,6 +450,7 @@ def _exec(stmt: LocalStmt, env: Env, ch: Channels, ns: dict, llm_backend, human_
                     "type": "act",
                     "lifeline": A.name,
                     "action": "assign",
+                    "action_kind": "pure",
                     "inputs": {k: _jsonify(v) for k, v in zip(x_names, values)},
                     "outputs": {k: _jsonify(v) for k, v in zip(y_names, values)},
                     "seq": seq,
@@ -460,6 +476,7 @@ def _exec(stmt: LocalStmt, env: Env, ch: Channels, ns: dict, llm_backend, human_
                         "type": "act_start",
                         "lifeline": threading.current_thread().name,
                         "action": action.name,
+                        "action_kind": _action_kind(action),
                         "inputs": {k: _jsonify(v) for k, v in display_inputs.items()},
                         "seq": seq,
                     })
@@ -497,6 +514,7 @@ def _exec(stmt: LocalStmt, env: Env, ch: Channels, ns: dict, llm_backend, human_
                         "type": "act",
                         "lifeline": threading.current_thread().name,
                         "action": action.name,
+                        "action_kind": _action_kind(action),
                         "inputs": {k: _jsonify(v) for k, v in display_inputs.items()},
                         "outputs": {k: _jsonify(v) for k, v in out_map.items()},
                         "seq": seq,
@@ -522,6 +540,7 @@ def _exec(stmt: LocalStmt, env: Env, ch: Channels, ns: dict, llm_backend, human_
                     "type": "act_start",
                     "lifeline": threading.current_thread().name,
                     "action": action.name,
+                    "action_kind": _action_kind(action),
                     "inputs": {k: _jsonify(v) for k, v in display_inputs.items()},
                     "seq": seq,
                 })
@@ -549,6 +568,7 @@ def _exec(stmt: LocalStmt, env: Env, ch: Channels, ns: dict, llm_backend, human_
                     "type": "act",
                     "lifeline": threading.current_thread().name,
                     "action": action.name,
+                    "action_kind": _action_kind(action),
                     "inputs": {k: _jsonify(v) for k, v in display_inputs.items()},
                     "outputs": {k: _jsonify(v) for k, v in out_map.items()},
                     "seq": seq,

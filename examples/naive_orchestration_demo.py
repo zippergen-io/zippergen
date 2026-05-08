@@ -2,24 +2,16 @@
 """
 Naive orchestration demo — no frameworks, pure Python.
 
-Shows how a simple coordination bug causes a deadlock between agents.
-
-Modes:
-  good   — correct protocol: Orchestrator sends review_request, waits
-            for review_result, then sends execute_plan
-  bad    — bug: Orchestrator polls for review_result before sending
-            review_request → circular wait → all agents stuck
-  random — random choice between good and bad each run
+Shows how a simple coordination bug causes a deadlock between agents. The script
+runs both the correct protocol and the buggy protocol.
 
 Usage:
-  python naive_orchestration_demo.py [good|bad|random]
+  python examples/naive_orchestration_demo.py
 """
 
 import threading
 import queue
 import time
-import random
-import sys
 
 TIMEOUT = 2.0  # seconds before an agent declares itself stuck
 
@@ -83,12 +75,8 @@ def orchestrator(q_in, q_rev_out, q_rev_in, q_exec, buggy):
 # ── Runner ────────────────────────────────────────────────────────────────────
 
 def run(mode: str):
-    if mode == "random":
-        buggy = random.random() < 0.5
-        label = "random → " + ("BUG" if buggy else "OK")
-    else:
-        buggy = mode == "bad"
-        label = mode.upper()
+    buggy = mode == "bad"
+    label = mode.upper()
 
     print(f"\n{'─' * 52}")
     print(f"  {label}")
@@ -119,18 +107,9 @@ def run(mode: str):
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
-    mode = sys.argv[1] if len(sys.argv) > 1 else "random"
-    if mode not in ("good", "bad", "random"):
-        print(f"Usage: {sys.argv[0]} [good|bad|random]")
-        sys.exit(1)
-
-    if mode == "random":
-        for i in range(1, 6):
-            print(f"\nRun {i}/5", end="")
-            run("random")
-            time.sleep(0.1)
-    else:
-        run(mode)
+    run("good")
+    time.sleep(0.1)
+    run("bad")
 
 
 if __name__ == "__main__":

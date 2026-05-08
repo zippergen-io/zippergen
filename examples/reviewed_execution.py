@@ -113,15 +113,12 @@ def reviewed_execution(task: str @ Planner) -> str:
 
 
 if __name__ == "__main__":
-    USE_UI = True
-
     reviewed_execution.configure(
         llms="mock",
-        ui=USE_UI,
+        ui=True,
         timeout=60,
         mock_delay=(5.0, 10.0),
     )
     final = reviewed_execution(task="Build a REST API for a to-do list application.")
     print(f"\nResult → {final}")
-    if USE_UI:
-        input("ZipperChat is running at http://localhost:8765 . Press Enter to close. ")
+    input("ZipperChat is running at http://localhost:8765 . Press Enter to close. ")

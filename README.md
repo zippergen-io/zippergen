@@ -129,6 +129,7 @@ Examples ship with the repo. The first two run without an API key.
 python examples/coregion.py           # unordered receives from independent analysts (no key needed)
 python examples/cpl_test.py           # causal guard ignores stale relay status (no key needed)
 python examples/write_tweet.py        # draft-and-approve with mock LLM (no key needed)
+python examples/write_tweet_local.py  # same workflow through a local OpenAI-compatible server
 python examples/human_approval.py     # human priority, notes, and approval in ZipperChat (no key needed)
 python examples/diagnosis.py          # two LLMs reach consensus iteratively (no key needed with mock)
 python examples/contract_review.py    # four agents review a contract in parallel (needs MISTRAL_API_KEY)
@@ -321,12 +322,32 @@ contractReview.configure(
 
 Built-in provider names: `"openai"`, `"mistral"`, `"claude"` (alias: `"anthropic"`).
 
+OpenAI-compatible local servers, such as vLLM, can be used through the same backend:
+
+```python
+from zippergen.backends import make_openai_backend
+
+local_llm = make_openai_backend(
+    api_key="EMPTY",
+    model="Qwen/Qwen2.5-7B-Instruct",
+    base_url="http://127.0.0.1:8000/v1",
+)
+
+write_tweet.configure(backend=local_llm, ui=True)
+```
+
+For a remote GPU server, run the model server on the remote machine with a local
+bind address and use SSH port forwarding, for example
+`ssh -L 8000:127.0.0.1:8000 lmf-gpu`. See `examples/write_tweet_local.py`
+for a complete local-model variant of the hello-world workflow.
+
 The built-in backends read these environment variables:
 
 | Variable | Default |
 |---|---|
 | `OPENAI_API_KEY` | (required) |
 | `OPENAI_MODEL` | `gpt-4o-mini` |
+| `OPENAI_BASE_URL` | `https://api.openai.com/v1` |
 | `MISTRAL_API_KEY` | (required) |
 | `MISTRAL_MODEL` | `mistral-small-latest` |
 | `ANTHROPIC_API_KEY` | (required) |

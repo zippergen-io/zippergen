@@ -921,8 +921,8 @@ body.dark #replay-btn:not([disabled]):hover {
 
 /* Type-specific bar fills */
 .ev-box.act-box { --bar-fill: var(--k-action); }
-.ev-box.act-box.planner-act {
-  --bar-fill: var(--k-model);
+.ev-box.act-box.human-act {
+  --bar-fill: var(--k-human);
 }
 .ev-box.msg-box.send  { --bar-fill: var(--k-send);  }
 .ev-box.msg-box.recv  { --bar-fill: var(--k-recv);  }
@@ -1740,7 +1740,9 @@ document.addEventListener('keydown', (e) => {
 function makeBox(opts) {
   const box = document.createElement('div');
   box.className = `ev-box ${opts.kind || ''}`;
-  if (opts.extraClass) box.classList.add(opts.extraClass);
+  if (opts.extraClass) {
+    String(opts.extraClass).split(/\s+/).filter(Boolean).forEach(c => box.classList.add(c));
+  }
   box.innerHTML = `
     <div class="ev-box-tag">${opts.tag}</div>
     <div class="ev-box-name">${escHtml(opts.name)}</div>
@@ -1758,7 +1760,24 @@ function makeBox(opts) {
 }
 
 // ─── Action rendering ─────────────────────────────────────────────────────
+function actionMeta(ev, box) {
+  const kind = String(ev.action_kind || '').toLowerCase();
+  if (kind === 'llm')      return { tag: 'LLM',      type: 'LLM',      cls: 'llm-act',          accent: KIND.action };
+  if (kind === 'pure')     return { tag: 'PURE',     type: 'PURE',     cls: 'pure-act',         accent: KIND.action };
+  if (kind === 'planner')  return { tag: 'PLANNER',  type: 'PLANNER',  cls: 'planner-kind-act', accent: KIND.action };
+  if (kind === 'workflow') return { tag: 'WORKFLOW', type: 'WORKFLOW', cls: 'workflow-act',     accent: KIND.action };
+  if (kind === 'human')    return { tag: 'HUMAN',    type: 'HUMAN',    cls: 'human-act',        accent: KIND.human };
+  if (box && box.classList.contains('planner-act')) {
+    return { tag: 'WORKFLOW', type: 'WORKFLOW', cls: 'workflow-act', accent: KIND.action };
+  }
+  return { tag: 'ACT', type: 'ACT', cls: '', accent: KIND.action };
+}
+
 function handleActStart(lev, ev) {
+  // Human actions are rendered by the dedicated pending-input path below.
+  // Rendering the generic act_start/act pair as well would duplicate them.
+  if (String(ev.action_kind || '').toLowerCase() === 'human') return;
+
   const i = lev.lifelineNames.indexOf(ev.lifeline);
   if (i < 0) return;
 
@@ -1788,17 +1807,18 @@ function handleActStart(lev, ev) {
   r.seq = ev.seq;
 
   const inputs = ev.inputs || {};
+  const meta = actionMeta(ev);
   const box = makeBox({
     kind: 'act-box',
-    extraClass: 'running',
-    tag: 'ACT',
+    extraClass: `running ${meta.cls}`,
+    tag: meta.tag,
     name: ev.action,
     dataBuilder: () => ({
-      type: 'ACT',
+      type: actionMeta(ev, box).type,
       name: ev.action,
       lifeline: ev.lifeline,
       seq: ev.seq,
-      accent: box.classList.contains('planner-act') ? KIND.model : KIND.action,
+      accent: actionMeta(ev, box).accent,
       sections: [
         { label: 'Inputs',  entries: inputs,           emptyText: '(no inputs)' },
         { label: 'Outputs', entries: box._outputs || {}, emptyText: '(awaiting outputs…)' },
@@ -1817,6 +1837,8 @@ function handleActStart(lev, ev) {
 }
 
 function handleAct(lev, ev) {
+  if (String(ev.action_kind || '').toLowerCase() === 'human') return;
+
   const key = `${ev.lifeline}:${ev.seq}`;
   const box = lev.pendingActBoxes[key];
   if (!box) return;
@@ -1827,13 +1849,13 @@ function handleAct(lev, ev) {
   setLLStatusInLevel(lev, ev.lifeline, '');
 
   if (selectedBox === box) {
-    const accent = box.classList.contains('planner-act') ? KIND.model : KIND.action;
+    const meta = actionMeta(ev, box);
     fillDetailPanel(box, {
-      type: box.classList.contains('planner-act') ? 'PLANNER ACT' : 'ACT',
+      type: meta.type,
       name: ev.action,
       lifeline: ev.lifeline,
       seq: ev.seq,
-      accent,
+      accent: meta.accent,
       sections: [
         { label: 'Inputs',  entries: ev.inputs || {},  emptyText: '(no inputs)' },
         { label: 'Outputs', entries: ev.outputs || {}, emptyText: '(no outputs)' },

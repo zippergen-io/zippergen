@@ -233,12 +233,15 @@ def make_openai_backend(
     *,
     api_key: str,
     model: str = "gpt-4o-mini",
+    base_url: str = "https://api.openai.com/v1",
     temperature: float = 0.2,
     max_tokens: int = 2048,
     timeout: float = 90.0,
     max_retries: int = 3,
 ) -> Callable:
-    """Return an OpenAI backend callable compatible with ``Workflow.configure``."""
+    """Return an OpenAI-compatible backend callable for ``Workflow.configure``."""
+
+    endpoint = base_url.rstrip("/") + "/chat/completions"
 
     def backend(action, inputs: dict[str, object]) -> dict[str, object]:
         messages, use_json = _build_messages(action, inputs)
@@ -251,7 +254,7 @@ def make_openai_backend(
         if use_json:
             payload["response_format"] = {"type": "json_object"}
         req = request.Request(
-            "https://api.openai.com/v1/chat/completions",
+            endpoint,
             data=json.dumps(payload).encode("utf-8"),
             headers={
                 "Authorization": f"Bearer {api_key}",
@@ -347,9 +350,10 @@ def _backend_from_env(provider: str) -> tuple[Callable, str]:
     if provider == "openai":
         api_key = os.environ.get("OPENAI_API_KEY")
         model = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+        base_url = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
         if not api_key:
             raise RuntimeError("OPENAI_API_KEY is not set.")
-        return make_openai_backend(api_key=api_key, model=model), f"OpenAI ({model})"
+        return make_openai_backend(api_key=api_key, model=model, base_url=base_url), f"OpenAI-compatible ({model})"
     if provider in {"anthropic", "claude"}:
         api_key = os.environ.get("ANTHROPIC_API_KEY")
         model = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-6")

@@ -221,3 +221,25 @@ def test_runtime_human_action_reject():
         human_backend=mock_human_backend,
     )
     assert result is False
+
+
+def test_runtime_human_trace_kind():
+    events = []
+
+    def mock_human_backend(action, inputs):
+        return {action.output: True}
+
+    result = run(
+        approval_flow,
+        [_Planner, _Human],
+        {"Planner": {"n": 7}},
+        human_backend=mock_human_backend,
+        trace=events.append,
+    )
+    assert result is True
+    human_events = [
+        event for event in events
+        if event["type"] in {"act_start", "act"} and event["action"] == "review_plan"
+    ]
+    assert len(human_events) == 2
+    assert {event["action_kind"] for event in human_events} == {"human"}

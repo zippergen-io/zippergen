@@ -13,11 +13,9 @@ ZipperGen's deadlock-free coordination guarantee across a non-trivial
 three-party loop with cross-lifeline message exchange.
 
 Usage:
-  python debate.py "AI should replace human judges in courtrooms"
-  python debate.py          # prompts for a topic at runtime
+  python examples/debate.py
 """
 
-import sys
 from zippergen.syntax import Lifeline, Var
 from zippergen.actions import llm, pure
 from zippergen.builder import workflow
@@ -213,22 +211,12 @@ def debate(topic: str @ Host) -> str:
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    if len(sys.argv) > 1:
-        topic_text = " ".join(sys.argv[1:])
-    else:
-        topic_text = input("Debate topic: ").strip()
-        if not topic_text:
-            topic_text = "AI will make human judges obsolete"
-
-    USE_UI = True
-
     debate.configure(
         llms={"Pro": "openai", "Con": "openai", "Judge": "openai"},
         # llms="mock",
-        ui=USE_UI,
+        ui=True,
         timeout=600,
     )
-    result = debate(topic=topic_text)
+    result = debate(topic="AI should replace human judges in courtrooms")
     print(f"\nVerdict → {result}")
-    if USE_UI:
-        input("ZipperChat is running at http://localhost:8765 . Press Enter to close. ")
+    input("ZipperChat is running at http://localhost:8765 . Press Enter to close. ")

@@ -101,21 +101,17 @@ def arithmetic_planner(expression: str @ User) -> str:
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    import sys
-    USE_UI = True
-
     import os
     from zippergen.backends import make_openai_backend
+
     arithmetic_planner.configure(
         llms={"Planner": make_openai_backend(api_key=os.environ["OPENAI_API_KEY"], model="gpt-4o")},
-        ui=USE_UI,
+        ui=True,
         timeout=120,
     )
 
-
-    expr = sys.argv[1] if len(sys.argv) > 1 else "(2 - 4) * (2 + 3) + (3 / (3 - 2))"
+    expr = "(2 - 4) * (2 + 3) + (3 / (3 - 2))"
     print(f"Expression: {expr}")
     result = arithmetic_planner(expression=expr)
     print(f"\nResult: {result}")
-    if USE_UI:
-        input("\nZipperChat is running at http://localhost:8765 . Press Enter to close. ")
+    input("\nZipperChat is running at http://localhost:8765 . Press Enter to close. ")

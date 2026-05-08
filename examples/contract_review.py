@@ -320,8 +320,6 @@ GmbH, a company incorporated in Munich, Germany ("Receiving Party").
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    USE_UI = True
-
     contract_review.configure(
         llms="mistral",
         # llms={
@@ -330,7 +328,7 @@ if __name__ == "__main__":
         #     "Confidentiality": make_openai_backend(api_key=os.environ["OPENAI_API_KEY_C"]),
         #     "Orchestrator":    "mistral",
         # },
-        ui=USE_UI,
+        ui=True,
         timeout=600,
     )
 
@@ -340,5 +338,4 @@ if __name__ == "__main__":
     print('='*60)
     print(result)
 
-    if USE_UI:
-        input("\nZipperChat is running at http://localhost:8765 . Press Enter to close. ")
+    input("\nZipperChat is running at http://localhost:8765 . Press Enter to close. ")
