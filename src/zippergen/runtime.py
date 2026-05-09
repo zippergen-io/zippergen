@@ -934,15 +934,23 @@ def _workflow_configure(
         wf._rt._ui_enabled = ui
     if wf._rt._ui_enabled:
         from zipperchat import WebTrace
-        if wf._rt._webtrace is None:
-            wf._rt._webtrace = WebTrace(lifelines).start()
-        base_trace = trace if trace is not None else console_trace
-        wf._rt._trace = tee_traces(wf._rt._webtrace, base_trace)
+        if isinstance(trace, WebTrace):
+            wf._rt._webtrace = trace.start()
+            wf._rt._trace = console_trace
+        else:
+            if wf._rt._webtrace is None:
+                wf._rt._webtrace = WebTrace(lifelines).start()
+            base_trace = trace if trace is not None else console_trace
+            wf._rt._trace = tee_traces(wf._rt._webtrace, base_trace)
     elif trace is not None:
         wf._rt._trace = trace
 
     # Human backend: web if UI is enabled, CLI otherwise.
-    if wf._rt._ui_enabled and wf._rt._webtrace is not None:
+    if (
+        wf._rt._ui_enabled
+        and wf._rt._webtrace is not None
+        and not wf._rt._webtrace.is_dashboard
+    ):
         wf._rt._human_backend = wf._rt._webtrace.make_human_backend()
     else:
         from zippergen.human_backends import make_cli_human_backend
@@ -967,20 +975,33 @@ def _workflow_run_once(wf: Workflow, kwargs: dict[str, object]) -> object:
     lifelines = _ordered_workflow_lifelines(wf)
     backend = wf._rt._backend if wf._rt._backend is not None else mock_llm
     with wf._rt._run_lock:
+        run_trace = None
+        trace = wf._rt._trace
+        human_backend = wf._rt._human_backend
         if wf._rt._webtrace is not None and wf._rt._ui_enabled:
-            wf._rt._webtrace.reset()
+            if wf._rt._webtrace.is_dashboard:
+                run_trace = wf._rt._webtrace.start_run(wf.name, lifelines)
+                trace = tee_traces(run_trace, wf._rt._trace)
+                human_backend = run_trace.make_human_backend()
+            else:
+                wf._rt._webtrace.reset()
         try:
             return run(wf, list(lifelines), initial_envs,
                        llm_backend=backend,
-                       human_backend=wf._rt._human_backend,
-                       trace=wf._rt._trace, timeout=wf._rt._timeout)
+                       human_backend=human_backend,
+                       trace=trace, timeout=wf._rt._timeout)
         finally:
             if wf._rt._webtrace is not None and wf._rt._ui_enabled:
-                wf._rt._webtrace.done()
+                if run_trace is not None:
+                    run_trace.done()
+                else:
+                    wf._rt._webtrace.done()
 
 
 def _workflow_ensure_replay_loop(wf: Workflow) -> None:
     if not wf._rt._ui_enabled or wf._rt._webtrace is None or wf._rt._replay_thread is not None:
+        return
+    if wf._rt._webtrace.is_dashboard:
         return
 
     def _worker() -> None:

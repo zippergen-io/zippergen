@@ -17,6 +17,14 @@ Usage
         run(wf, list(program.lifelines), initial, trace=wt)
         wt.done()
         wt.wait_for_replay()   # blocks until the ▶ button is clicked
+
+For several independent workflow runs in the same page, use dashboard mode::
+
+    wt = WebTrace.dashboard().start()
+    first.configure(ui=True, trace=wt)
+    second.configure(ui=True, trace=wt)
+    first(...)
+    second(...)
 """
 
 from __future__ import annotations
@@ -31,6 +39,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 _ASSETS = pathlib.Path(__file__).parent / "assets"
 
 __all__ = ["WebTrace"]
+
+
+def _lifeline_names(lifelines) -> list[str]:
+    return [l.name if hasattr(l, "name") else str(l) for l in lifelines]
 
 
 # ---------------------------------------------------------------------------
@@ -176,6 +188,36 @@ class _Server(ThreadingHTTPServer):
 # Public API
 # ---------------------------------------------------------------------------
 
+class _ScopedWebTrace:
+    def __init__(self, parent: "WebTrace", name: str, lifelines):
+        self._parent = parent
+        self._run_id = uuid.uuid4().hex[:8]
+        self._path = [self._run_id]
+        self._lifelines = _lifeline_names(lifelines)
+        parent._bus.publish({
+            "type": "run_start",
+            "run_id": self._run_id,
+            "path": self._path,
+            "name": name,
+            "lifelines": self._lifelines,
+        })
+
+    @property
+    def path(self) -> list[str]:
+        return list(self._path)
+
+    def __call__(self, event: dict) -> None:
+        scoped = dict(event)
+        scoped["path"] = self._path + list(event.get("path") or [])
+        self._parent._bus.publish(scoped)
+
+    def done(self) -> None:
+        self._parent._bus.publish({"type": "done", "path": self.path})
+
+    def make_human_backend(self):
+        return self._parent._make_human_backend(path=self._path)
+
+
 class WebTrace:
     """
     Callable trace that feeds events to the browser viewer via SSE.
@@ -192,21 +234,40 @@ class WebTrace:
             wt.wait_for_replay()
     """
 
-    def __init__(self, lifelines, port: int = 8765):
-        self._lifelines = [l.name if hasattr(l, "name") else str(l) for l in lifelines]
+    def __init__(self, lifelines, port: int = 8765, *, dashboard: bool = False):
+        self._dashboard = dashboard
+        self._lifelines = _lifeline_names(lifelines)
         self._port = port
         self._bus = _EventBus()
         self._server: ThreadingHTTPServer | None = None
         self._replay_event = threading.Event()
         self._pending_human_inputs: dict[str, tuple[threading.Event, list]] = {}
 
+    @classmethod
+    def dashboard(cls, port: int = 8765) -> "WebTrace":
+        """Create a ZipperChat dashboard for several independent workflow runs."""
+        return cls([], port=port, dashboard=True)
+
+    @property
+    def is_dashboard(self) -> bool:
+        return self._dashboard
+
+    def _init_event(self) -> dict:
+        if self._dashboard:
+            return {"type": "init", "dashboard": True}
+        return {"type": "init", "lifelines": self._lifelines}
+
     def start(self) -> "WebTrace":
-        init_ev = {"type": "init", "lifelines": self._lifelines}
+        if self._server is not None:
+            return self
+
+        init_ev = self._init_event()
         handler = _make_handler(
             self._bus, self._lifelines, self._replay_event, init_ev,
             self._pending_human_inputs,
         )
         self._server = _Server(("", self._port), handler)
+        self._port = self._server.server_address[1]
         t = threading.Thread(target=self._server.serve_forever, daemon=True)
         t.start()
         print(f"ZipperChat → http://localhost:{self._port}")
@@ -217,7 +278,7 @@ class WebTrace:
         """Clear the diagram and prepare for a new run."""
         self._replay_event.clear()
         self._bus.reset()
-        self._bus.publish({"type": "init", "lifelines": self._lifelines})
+        self._bus.publish(self._init_event())
         return self
 
     def wait_for_replay(self) -> None:
@@ -231,12 +292,22 @@ class WebTrace:
     def done(self) -> None:
         self._bus.publish({"type": "done"})
 
+    def start_run(self, name: str, lifelines) -> _ScopedWebTrace:
+        """Start one workflow run inside a dashboard trace."""
+        if not self._dashboard:
+            raise RuntimeError("start_run() is only available on WebTrace.dashboard().")
+        return _ScopedWebTrace(self, name, lifelines)
+
+    def trace_run(self, name: str, lifelines) -> _ScopedWebTrace:
+        """Alias for start_run(), kept close to the trace= use case."""
+        return self.start_run(name, lifelines)
+
     def stop(self) -> None:
         self._bus.publish({"type": "close"})
         if self._server:
             self._server.shutdown()
 
-    def make_human_backend(self):
+    def _make_human_backend(self, path: list[str] | None = None):
         """Return a human backend callable that blocks until ZipperChat provides input."""
         pending = self._pending_human_inputs
 
@@ -255,14 +326,17 @@ class WebTrace:
                 input_type = "text"
 
             lifeline_name = threading.current_thread().name
-            self._bus.publish({
+            request_event: dict[str, object] = {
                 "type": "human_input_required",
                 "id": req_id,
                 "lifeline": lifeline_name,
                 "prompt": prompt,
                 "input_type": input_type,
                 "options": list(action.options) if action.options else None,
-            })
+            }
+            if path is not None:
+                request_event["path"] = list(path)
+            self._bus.publish(request_event)
 
             evt.wait()
             del pending[req_id]
@@ -273,16 +347,22 @@ class WebTrace:
             else:
                 value = str(raw)
 
-            self._bus.publish({
+            input_event: dict[str, object] = {
                 "type": "human_input",
                 "id": req_id,
                 "lifeline": lifeline_name,
                 "value": str(value),
-            })
+            }
+            if path is not None:
+                input_event["path"] = list(path)
+            self._bus.publish(input_event)
 
             return {action.output: value}
 
         return backend
+
+    def make_human_backend(self):
+        return self._make_human_backend()
 
 
 # ---------------------------------------------------------------------------
@@ -692,8 +772,8 @@ body.dark #replay-btn:not([disabled]):hover {
 .wf-children {
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 8px 0 0 36px;
+  gap: 18px;
+  padding: 18px 0 0 36px;
 }
 .wf-children:empty { display: none; }
 /* All group labels are clickable */
@@ -1334,9 +1414,9 @@ function setStatus(state, text) {
 // ─── Workflow tree ────────────────────────────────────────────────────────
 function renderTree() {
   wfTreeEl.innerHTML = '';
-  const root = levels.get(pathKey([]));
-  if (!root) return;
-  wfTreeEl.appendChild(renderTreeNode(root));
+  const roots = Array.from(levels.values()).filter(lev => !lev.parentLevel);
+  if (roots.length === 0) return;
+  roots.forEach(root => wfTreeEl.appendChild(renderTreeNode(root)));
 }
 function renderTreeNode(lev) {
   const li = document.createElement('li');
@@ -1445,7 +1525,7 @@ function markCallerAsPlanner(parentLev, parentSeq, childLevel) {
 }
 
 function buildLevelDom(lev) {
-  const isNested = lev.path.length > 0;
+  const isNested = !!lev.parentLevel;
 
   const group = document.createElement('section');
   group.className = 'wf-group' + (isNested ? ' nested' : '');
@@ -1459,7 +1539,7 @@ function buildLevelDom(lev) {
   const ctxHtml = (isNested && lev.parentLifeline)
     ? `<span class="wf-label-context">spawned by <strong>${escHtml(lev.parentLifeline)}</strong></span>`
     : '';
-  const llHtml = isNested
+  const llHtml = (isNested || lev.path.length > 0)
     ? `<span class="wf-label-lifelines">${lev.lifelineNames.map(escHtml).join(' · ')}</span>`
     : '';
   label.innerHTML = `
@@ -1531,6 +1611,8 @@ function buildLevelDom(lev) {
   if (isNested && lev.parentLevel && lev.parentLevel.childrenEl) {
     lev.parentLevel.childrenEl.appendChild(group);
   } else {
+    const empty = diagramRoot.querySelector('.empty-msg');
+    if (empty) empty.remove();
     diagramRoot.appendChild(group);
   }
 }
@@ -1915,7 +1997,7 @@ function _focusHumanWidget(widget) {
 }
 
 function handleHumanInputRequired(ev) {
-  const lev = levels.get(pathKey([]));
+  const lev = levels.get(pathKey(ev.path || []));
   if (!lev) return;
   const i = lev.lifelineNames.indexOf(ev.lifeline);
   if (i < 0) return;
@@ -2235,6 +2317,7 @@ window.addEventListener('resize', redrawAllArrows);
 // ─── Event dispatch ───────────────────────────────────────────────────────
 function dispatchEvent(e) {
   if (e.type === 'init') { handleInit(e); return; }
+  if (e.type === 'run_start') { handleRunStart(e); return; }
   if (e.type === 'level_push') { handleLevelPush(e); return; }
   if (e.type === 'level_pop') {
     const lev = levels.get(pathKey(e.path || []));
@@ -2242,10 +2325,20 @@ function dispatchEvent(e) {
     return;
   }
   if (e.type === 'done') {
-    setStatus('done', 'done');
-    replayBtn.disabled = false;
-    const root = levels.get(pathKey([]));
-    if (root) setLevelStatus(root, 'done');
+    const path = e.path || [];
+    if (path.length > 0) {
+      const lev = levels.get(pathKey(path));
+      if (lev) setLevelStatus(lev, 'done');
+      const roots = Array.from(levels.values()).filter(level => !level.parentLevel);
+      if (roots.length > 0 && roots.every(level => level.status === 'done')) {
+        setStatus('done', 'done');
+      }
+    } else {
+      setStatus('done', 'done');
+      replayBtn.disabled = false;
+      const root = levels.get(pathKey([]));
+      if (root) setLevelStatus(root, 'done');
+    }
     return;
   }
   if (e.type === 'close') {
@@ -2275,7 +2368,21 @@ function handleInit(e) {
   replayBtn.disabled = true;
   focusedLevelKey = null;
 
-  makeLevel([], 'workflow', e.lifelines);
+  if (e.dashboard) {
+    diagramRoot.innerHTML = '<div class="empty-msg">Awaiting workflow runs…</div>';
+    setStatus('connected', 'connected');
+    renderTree();
+    return;
+  }
+
+  makeLevel([], 'workflow', e.lifelines || []);
+  setStatus('running', 'running');
+}
+
+function handleRunStart(e) {
+  const path = e.path || [e.run_id || String(levels.size)];
+  makeLevel(path, e.name || 'workflow', e.lifelines || []);
+  replayBtn.disabled = true;
   setStatus('running', 'running');
 }
 

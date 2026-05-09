@@ -17,6 +17,17 @@ ZipperChat visualizes a run as a message sequence chart, including actions, mess
 
 ![ZipperChat screenshot](assets/zipperchat-screenshot.png)
 
+An application can also send several independent workflow calls to the same
+ZipperChat page:
+
+```python
+from zipperchat import WebTrace
+
+dashboard = WebTrace.dashboard().start()
+first_workflow.configure(ui=True, trace=dashboard)
+second_workflow.configure(ui=True, trace=dashboard)
+```
+
 ## Quick start
 
 ```bash
@@ -136,6 +147,8 @@ Examples ship with the repo. The first two run without an API key.
 ```bash
 python examples/coregion.py           # unordered receives from independent analysts (no key needed)
 python examples/cpl_test.py           # causal guard ignores stale relay status (no key needed)
+python examples/dashboard.py          # several top-level workflow runs in one ZipperChat page
+python examples/nested_dashboard.py   # several dashboard runs, each with nested subworkflows
 python examples/write_tweet.py        # draft-and-approve with mock LLM (no key needed)
 python examples/write_tweet_local.py  # same workflow through a local OpenAI-compatible server
 python examples/human_approval.py     # human priority, notes, and approval in ZipperChat (no key needed)
