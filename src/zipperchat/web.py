@@ -1174,7 +1174,7 @@ svg.msg-arrow.ctrl line {
 <header id="topbar">
   <div class="brand">
     <img class="brand-logo" src="/assets/zippergen-mark-chartreuse.svg" alt="" aria-hidden="true">
-    <div class="brand-name">Zipper<span class="brand-name-accent">Chat</span></div>
+    <div class="brand-name">Zipper<span class="brand-name-accent">Gen</span></div>
   </div>
   <div id="topbar-meta">
     <div id="status-indicator">
