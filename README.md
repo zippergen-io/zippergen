@@ -9,6 +9,10 @@ ZipperGen is a Python framework for multi-agent LLM coordination. You write a si
 
 ZipperGen separates **what agents do** (LLM calls and pure functions) from **how they coordinate** (the protocol). Unlike tool-calling frameworks, ZipperGen provides formal guarantees: coordination is provably deadlock-free by construction, whether the protocol is written by hand or generated at runtime.
 
+ZipperChat visualizes a run as a message sequence chart, including actions, messages, decisions, and human control points.
+
+![ZipperChat screenshot](assets/zipperchat-screenshot.png)
+
 ## Quick start
 
 ```bash
@@ -139,8 +143,6 @@ python examples/planner.py            # LLM designs and runs its own sub-workflo
 ```
 
 Open **http://localhost:8765** to watch the agents exchange messages in real time as a message sequence chart.
-
-![ZipperChat screenshot](assets/zipperchat-screenshot.png)
 
 ## How it works
 
