@@ -1228,7 +1228,7 @@ const KIND = {
   recv:     '#BFD9D8',
   ctrl:     '#C4CCD4',
   decision: '#D4BA88',
-  human:    '#F1B07A',
+  human:    '#E7A0A5',
 };
 
 // ─── State ────────────────────────────────────────────────────────────────
