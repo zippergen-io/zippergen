@@ -339,7 +339,7 @@ _HTML = r"""<!DOCTYPE html>
   --k-guard-true:  #69A6E0;   /* action blue — affirmative guard verdict     */
   --k-guard-false: #D4BA88;   /* wheat — neutral false                       */
   --k-ctrl:      #C4CCD4;   /* muted gray — control messages              */
-  --k-human:     #F1B07A;   /* peach — human input actions                */
+  --k-human:     #E7A0A5;   /* soft rose — human input actions            */
 
   /* Functional status (single-color semantics across the UI) */
   --status-run:   var(--k-action);    /* periwinkle = running               */
@@ -968,22 +968,27 @@ body.dark #replay-btn:not([disabled]):hover {
   cursor: pointer;
   font-size: 12px;
 }
-.human-pending-btn:hover { background: rgba(241, 176, 122, 0.18); }
+.human-pending-btn:hover { background: rgba(231, 160, 165, 0.18); }
 .human-pending-input {
   width: 100%;
   font-size: 12px;
-  padding: 4px 7px;
-  border-radius: 3px;
-  border: 1px solid var(--border);
+  min-height: 80px;
+  padding: 7px 9px;
+  border-radius: 6px;
+  border: 1px solid var(--hairline-strong);
   background: var(--bg-card);
   color: var(--ink);
   resize: none;
   box-sizing: border-box;
   outline: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
+}
+.human-pending-input:hover {
+  border-color: var(--ink-faint);
 }
 .human-pending-input:focus {
   border-color: var(--k-human);
-  box-shadow: 0 0 0 2px rgba(241, 176, 122, 0.20);
+  box-shadow: 0 0 0 2px rgba(231, 160, 165, 0.22);
 }
 
 /* ─── Detail panel (push, not overlay) ──────────────────────────────────── */
@@ -1904,6 +1909,11 @@ function _makeHumanWidget(ev) {
   return section;
 }
 
+function _focusHumanWidget(widget) {
+  const input = widget && widget.querySelector('.human-pending-input');
+  if (input) setTimeout(() => input.focus(), 0);
+}
+
 function handleHumanInputRequired(ev) {
   const lev = levels.get(pathKey([]));
   if (!lev) return;
@@ -1954,6 +1964,7 @@ function handleHumanInputRequired(ev) {
   box.addEventListener('click', () => {
     if (box._widgetEl && selectedBox === box && !detailPanel.hidden) {
       detailBody.appendChild(box._widgetEl);
+      _focusHumanWidget(box._widgetEl);
     }
   });
 
@@ -1963,6 +1974,7 @@ function handleHumanInputRequired(ev) {
   // Auto-open detail panel and inject widget at the bottom
   fillDetailPanel(box, box._dataBuilder());
   detailBody.appendChild(box._widgetEl);
+  _focusHumanWidget(box._widgetEl);
 
   syncOrder(lev);
   scrollLevelToEnd(lev);
