@@ -406,24 +406,16 @@ button { font-family: inherit; }
   display: flex;
   align-items: center;
   padding: 0 20px;
-  gap: 11px;
   border-right: 1px solid var(--hairline-frame);
 }
 .brand-logo {
-  width: 22px;
-  height: 30px;
+  width: 124px;
+  height: auto;
   display: block;
   object-fit: contain;
   border-radius: 0;
   flex-shrink: 0;
 }
-.brand-name {
-  font-size: 13px;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-  color: var(--frame-fg);
-}
-.brand-name-accent { color: var(--brand-accent); }
 
 #topbar-meta {
   display: flex;
@@ -1173,8 +1165,7 @@ svg.msg-arrow.ctrl line {
 
 <header id="topbar">
   <div class="brand">
-    <img class="brand-logo" src="/assets/zippergen-mark-chartreuse.svg" alt="" aria-hidden="true">
-    <div class="brand-name">Zipper<span class="brand-name-accent">Gen</span></div>
+    <img class="brand-logo" src="/assets/zippergen-lockup-chartreuse.svg" alt="ZipperGen">
   </div>
   <div id="topbar-meta">
     <div id="status-indicator">
