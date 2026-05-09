@@ -1,9 +1,13 @@
-# ZipperGen
+<p align="center">
+  <img src="assets/zippergen-lockup-ink.svg" alt="ZipperGen" width="420">
+</p>
 
-[![Tests](https://github.com/zippergen-io/zippergen/actions/workflows/test.yml/badge.svg)](https://github.com/zippergen-io/zippergen/actions/workflows/test.yml)
-[![arXiv](https://img.shields.io/badge/arXiv-2604.17612-b31b1b.svg)](https://arxiv.org/abs/2604.17612)
-[![Lean formalized](assets/lean-formalized.svg)](https://github.com/zippergen-io/paper-isola/tree/main/Lean)
-[![Lean verified](assets/lean.svg)](https://github.com/zippergen-io/paper-isola/tree/main/Lean)
+<p align="center">
+  <a href="https://github.com/zippergen-io/zippergen/actions/workflows/test.yml"><img src="https://github.com/zippergen-io/zippergen/actions/workflows/test.yml/badge.svg" alt="Tests"></a>
+  <a href="https://arxiv.org/abs/2604.17612"><img src="https://img.shields.io/badge/arXiv-2604.17612-b31b1b.svg" alt="arXiv"></a>
+  <a href="https://github.com/zippergen-io/paper-isola/tree/main/Lean"><img src="assets/lean-formalized.svg" alt="Lean formalized"></a>
+  <a href="https://github.com/zippergen-io/paper-isola/tree/main/Lean"><img src="assets/lean.svg" alt="Lean verified"></a>
+</p>
 
 ZipperGen is a Python framework for multi-agent LLM coordination. You write a single global protocol (who sends what to whom, who runs which LLM, who owns each decision), and ZipperGen projects it onto each agent automatically. If the protocol compiles, it cannot deadlock. This is not a runtime check; it follows from how the projection works.
 
@@ -311,7 +315,7 @@ diagnosis_consensus.configure(
 ```python
 from zippergen.backends import make_openai_backend
 
-contractReview.configure(
+contract_review.configure(
     llms={
         "Jurisdiction":    make_openai_backend(api_key="sk-..."),
         "Liability":       make_openai_backend(api_key="sk-..."),

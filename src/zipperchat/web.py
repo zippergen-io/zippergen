@@ -330,6 +330,8 @@ _HTML = r"""<!DOCTYPE html>
   --a-5: #8E96A2;
 
   /* Event-kind fills (sherbet) — bar fills, calibrated for navy ink */
+  --brand-accent: #C8DD2C;
+  --brand-coral: #E94F2E;
   --k-action:    #69A6E0;   /* periwinkle — actions / send-only           */
   --k-model:     #9C8FD9;   /* lavender — planner / workflow-spawning act */
   --k-tool:      #F1B07A;   /* peach — (reserved)                          */
@@ -407,11 +409,12 @@ button { font-family: inherit; }
   gap: 11px;
   border-right: 1px solid var(--hairline-frame);
 }
-.brand-mark {
-  width: 12px;
-  height: 12px;
-  background: var(--k-action);
-  border-radius: 2px;
+.brand-logo {
+  width: 22px;
+  height: 30px;
+  display: block;
+  object-fit: contain;
+  border-radius: 0;
   flex-shrink: 0;
 }
 .brand-name {
@@ -420,7 +423,7 @@ button { font-family: inherit; }
   letter-spacing: 0.02em;
   color: var(--frame-fg);
 }
-.brand-name-accent { color: var(--k-action); }
+.brand-name-accent { color: var(--brand-accent); }
 
 #topbar-meta {
   display: flex;
@@ -1170,7 +1173,7 @@ svg.msg-arrow.ctrl line {
 
 <header id="topbar">
   <div class="brand">
-    <div class="brand-mark"></div>
+    <img class="brand-logo" src="/assets/zippergen-mark-chartreuse.svg" alt="" aria-hidden="true">
     <div class="brand-name">Zipper<span class="brand-name-accent">Chat</span></div>
   </div>
   <div id="topbar-meta">
