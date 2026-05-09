@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/zippergen-lockup-ink.svg" alt="ZipperGen" width="420">
+  <img src="assets/zippergen-lockup.svg" alt="ZipperGen" width="420">
 </p>
 
 <p align="center">

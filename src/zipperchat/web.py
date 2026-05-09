@@ -330,8 +330,6 @@ _HTML = r"""<!DOCTYPE html>
   --a-5: #8E96A2;
 
   /* Event-kind fills (sherbet) — bar fills, calibrated for navy ink */
-  --brand-accent: #C8DD2C;
-  --brand-coral: #E94F2E;
   --k-action:    #69A6E0;   /* periwinkle — actions / send-only           */
   --k-model:     #9C8FD9;   /* lavender — planner / workflow-spawning act */
   --k-tool:      #F1B07A;   /* peach — (reserved)                          */
@@ -1165,7 +1163,7 @@ svg.msg-arrow.ctrl line {
 
 <header id="topbar">
   <div class="brand">
-    <img class="brand-logo" src="/assets/zippergen-lockup-chartreuse.svg" alt="ZipperGen">
+    <img class="brand-logo" src="/assets/zippergen-lockup-white.svg" alt="ZipperGen">
   </div>
   <div id="topbar-meta">
     <div id="status-indicator">
