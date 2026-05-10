@@ -17,17 +17,6 @@ ZipperChat visualizes a run as a message sequence chart, including actions, mess
 
 ![ZipperChat screenshot](assets/zipperchat-screenshot.png)
 
-An application can also send several independent workflow calls to the same
-ZipperChat page:
-
-```python
-from zipperchat import WebTrace
-
-dashboard = WebTrace.dashboard().start()
-first_workflow.configure(ui=True, trace=dashboard)
-second_workflow.configure(ui=True, trace=dashboard)
-```
-
 ## Quick start
 
 ```bash
@@ -160,6 +149,17 @@ python examples/planner.py            # LLM designs and runs its own sub-workflo
 ```
 
 Open **http://localhost:8765** to watch the agents exchange messages in real time as a message sequence chart.
+
+For applications that call several workflows from ordinary Python code, ZipperChat
+can show multiple independent runs on the same page:
+
+```python
+from zipperchat import WebTrace
+
+dashboard = WebTrace.dashboard().start()
+first_workflow.configure(ui=True, trace=dashboard)
+second_workflow.configure(ui=True, trace=dashboard)
+```
 
 ## How it works
 
