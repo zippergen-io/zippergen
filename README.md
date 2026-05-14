@@ -105,15 +105,11 @@ The practical consequence: the global protocol is also a complete audit trail of
 ZipperGen also supports causal-past guards for workflows where the latest locally received value may be stale. In `examples/cpl_test.py`, a device reports its status through two relays. The indicator receives a newer `on=True` update before an older delayed `on=False` update. A local guard on `on` would follow the delayed stale message, but a causal guard reads the latest causally visible device state:
 
 ```python
-latest_device_on = At[Device](
-    atom(lambda env: env.on, src="on")
-)
+latest_device_on = At[Device].on == True
 
 if latest_device_on @ Indicator:
     ...
 ```
-
-The `env` argument is the lifeline's local variable store; attribute access (`env.on`) is equivalent to a dict lookup.
 
 **Field terms** let a guard compare its local variables with another lifeline's latest causally visible variables. Every message automatically piggybacks the sender's latest variable snapshot, so the receiving lifeline's monitor has it for free:
 

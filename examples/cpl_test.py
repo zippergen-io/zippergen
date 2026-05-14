@@ -9,9 +9,8 @@ indicator's ``on`` variable would be stale after the delayed message; the
 causal guard below keeps reading the latest causally visible Device status.
 """
 
-from zippergen import Lifeline, Var, workflow
+from zippergen import At, Lifeline, Var, workflow
 from zippergen.actions import pure
-from zippergen import At, atom
 
 Device = Lifeline("Device")
 Relay_1 = Lifeline("Relay_1")
@@ -20,9 +19,7 @@ Indicator = Lifeline("Indicator")
 
 on = Var("on",  bool)
 
-latest_device_on = At[Device](
-    atom(lambda env: env.on, src="on")
-)
+latest_device_on = At[Device].on == True
 
 @pure
 def set_status(status: bool) -> bool:
