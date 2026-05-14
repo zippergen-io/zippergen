@@ -13,7 +13,7 @@ ZipperGen is a Python framework for multi-agent LLM coordination. You write a si
 
 ZipperGen separates **what agents do** (LLM calls and pure functions) from **how they coordinate** (the protocol). Unlike tool-calling frameworks, ZipperGen provides formal guarantees: coordination is provably deadlock-free by construction, whether the protocol is written by hand or generated at runtime.
 
-Each participant in a workflow is called a **lifeline** — the standard term from Message Sequence Charts (MSCs), the formalism ZipperGen is based on. In practice a lifeline is simply an agent: one sequential thread of execution that sends and receives messages.
+Each participant in a workflow is called a **lifeline**, which is the standard term from Message Sequence Charts (MSCs), the formalism ZipperGen is based on. In practice a lifeline is simply an agent: one sequential thread of execution that sends and receives messages.
 
 ZipperChat visualizes a run as a message sequence chart, including actions, messages, decisions, and human control points.
 
@@ -115,16 +115,13 @@ if latest_device_on @ Indicator:
 
 The `env` argument is the lifeline's local variable store; attribute access (`env.on`) is equivalent to a dict lookup.
 
-**Field terms** let a guard on one lifeline read another lifeline's variables without an explicit message. Every message automatically piggybacks the sender's latest variable snapshot, so the receiving lifeline's monitor has it for free:
+**Field terms** let a guard compare its local variables with another lifeline's latest causally visible variables. Every message automatically piggybacks the sender's latest variable snapshot, so the receiving lifeline's monitor has it for free:
 
 ```python
-version_matches = atom(
-    lambda env, ctx: ctx.field_view.Reviewer.rev_version == env.version,
-    src="@Reviewer.rev_version = version",
-)
+version_matches = At[Reviewer].rev_version == Here.version
 ```
 
-Here `ctx.field_view.Reviewer` is the Reviewer's variable store at its latest causally visible event. The Reviewer's version was never explicitly sent to the Gatekeeper — it arrives implicitly on the verdict message.
+Here `At[Reviewer].rev_version` is the Reviewer's `rev_version` at its latest causally visible event, while `Here.version` is the deciding lifeline's current `version`. The Reviewer's version was never explicitly sent to the Gatekeeper; it arrives implicitly on the verdict message.
 
 The result is determined entirely from the asynchronous communication structure: vector clocks record which events are causally visible, and message-carried views provide the latest guard values at those visible events.
 

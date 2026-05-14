@@ -3,8 +3,8 @@ import pytest
 from zippergen.formula import (
     AtomicFormula, OnFormula, YFormula, YAFormula,
     SinceFormula, PastFormula, ConstFormula,
-    AndFormula, OrFormula, NotFormula,
-    atom, Y, on, since, P, true, false, subformulas,
+    AndFormula, OrFormula, NotFormula, FieldTerm,
+    atom, At, Here, Y, on, since, P, true, false, subformulas,
 )
 from zippergen.syntax import Lifeline
 
@@ -67,6 +67,26 @@ def test_Y_getitem_auto_wraps_callable():
     f = Y[A](fn)
     assert isinstance(f, YAFormula)
     assert isinstance(f.subformula, AtomicFormula)
+
+
+def test_at_field_access_creates_field_term():
+    term = At[A].version
+    assert isinstance(term, FieldTerm)
+    assert term.lifeline_name == "A"
+    assert term.field_name == "version"
+
+
+def test_here_field_access_creates_field_term():
+    term = Here.version
+    assert isinstance(term, FieldTerm)
+    assert term.lifeline_name is None
+    assert term.field_name == "version"
+
+
+def test_field_term_comparison_creates_atomic_formula():
+    f = At[A].version == Here.version
+    assert isinstance(f, AtomicFormula)
+    assert f.src == "At[A].version == Here.version"
 
 
 def test_invert_creates_not_formula():
@@ -218,8 +238,9 @@ def test_formula_is_formula_instance():
 
 
 def test_public_api_importable_from_zippergen():
-    from zippergen import Y, P, atom, on, since, subformulas, Formula
+    from zippergen import At, Here, Y, P, atom, on, since, subformulas, Formula
     phi = atom(lambda env: True)
     assert isinstance(phi, Formula)
+    assert isinstance(At[A].version == Here.version, Formula)
     assert isinstance(since(phi, phi), Formula)
     assert isinstance(P(phi), Formula)

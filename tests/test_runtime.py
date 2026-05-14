@@ -416,7 +416,7 @@ def test_failed_thread_unblocks_waiters():
 # Causal Past Logic guard integration tests
 # ---------------------------------------------------------------------------
 
-from zippergen.formula import atom, Y, P, on
+from zippergen.formula import atom, At, Here, Y, P, on
 
 
 _CPLPlanner2  = Lifeline("CPLPlanner2")
@@ -452,6 +452,31 @@ def test_ya_guard_routes_true():
 
 def test_ya_guard_routes_false():
     assert _ya_workflow2(approved=False) == "rejected"
+
+
+# --- Field terms ---
+
+_FieldSource = Lifeline("FieldSource")
+_FieldGate = Lifeline("FieldGate")
+_field_match_guard = At[_FieldSource].src == Here.gate
+
+
+@workflow
+def _field_term_workflow(src: str @ _FieldSource, gate: str @ _FieldSource) -> str:
+    _FieldSource(gate) >> _FieldGate(gate)
+    if _field_match_guard @ _FieldGate:
+        _FieldGate: out = _approved_str()
+    else:
+        _FieldGate: out = _rejected_str()
+    return out @ _FieldGate
+
+
+def test_field_term_guard_routes_true():
+    assert _field_term_workflow(src="v1", gate="v1") == "approved"
+
+
+def test_field_term_guard_routes_false():
+    assert _field_term_workflow(src="v1", gate="v2") == "rejected"
 
 
 # --- Y (previous local event) ---

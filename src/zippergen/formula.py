@@ -8,6 +8,8 @@ Supported operators:
     atom(fn)       — atomic predicate; fn: dict -> bool, or fn: (dict, EventContext) -> bool
     on(A)          — true iff the current event is on lifeline A
     At[A](phi)     — @A(phi): latest causally visible event on A satisfies phi (non-strict)
+    At[A].x        — field x at the latest causally visible event on A
+    Here.x         — field x at the current event
     Y(phi)         — Prev phi: previous local event satisfies phi (strict)
     since(a, b)    — local non-strict since: a S b
     P(phi)         — strict causal-past modality
@@ -15,13 +17,17 @@ Supported operators:
     phi1 & phi2    — conjunction
     phi1 | phi2    — disjunction
 
-Field terms — read a remote lifeline's latest accessible variable value inside atom():
+Field terms — compare latest visible field values directly:
+    At["A"].x == Here.y
+
+The lower-level atom() escape hatch can still inspect the full event context:
     atom(lambda env, ctx: ctx.field_view["A"]["x"] == env["y"])
 """
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+import operator
 from typing import Union
 
 __all__ = [
@@ -30,8 +36,9 @@ __all__ = [
     "AtomicFormula", "OnFormula", "YFormula", "AtFormula", "YAFormula",
     "SinceFormula", "PastFormula", "ConstFormula",
     "AndFormula", "OrFormula", "NotFormula",
+    "FieldTerm",
     "AnyFormula",
-    "atom", "At", "Y", "Prev", "on", "since", "P", "true", "false", "subformulas",
+    "atom", "At", "Here", "Y", "Prev", "on", "since", "P", "true", "false", "subformulas",
 ]
 
 
@@ -82,6 +89,89 @@ class Formula:
     def since(self, other: AnyFormula | Callable) -> SinceFormula:
         """Return ``self S other``."""
         return since(self, other)
+
+
+# ---------------------------------------------------------------------------
+# Field terms
+# ---------------------------------------------------------------------------
+
+def _lookup_field(store: object, field_name: str) -> object:
+    if isinstance(store, Mapping):
+        return store.get(field_name)
+    return getattr(store, field_name, None)
+
+
+def _eval_term(term: object, env: Mapping[str, object], event: EventContext) -> object:
+    if not isinstance(term, FieldTerm):
+        return term
+    if term.lifeline_name is None:
+        return _lookup_field(env, term.field_name)
+    if event.field_view is None:
+        return None
+    fields = _lookup_field(event.field_view, term.lifeline_name)
+    return _lookup_field(fields, term.field_name)
+
+
+def _term_src(term: object) -> str:
+    if isinstance(term, FieldTerm):
+        return repr(term)
+    return repr(term)
+
+
+@dataclass(frozen=True, eq=False)
+class FieldTerm:
+    """A value read from the current event or from a latest visible lifeline.
+
+    ``Here.x`` reads field ``x`` at the event where the guard is evaluated.
+    ``At[A].x`` reads field ``x`` at the latest event of ``A`` that is
+    causally visible at the guard event.
+
+    Comparisons between terms, or between a term and a literal, produce
+    AtomicFormula objects.
+    """
+
+    lifeline_name: str | None
+    field_name: str
+
+    def __repr__(self) -> str:
+        if self.lifeline_name is None:
+            return f"Here.{self.field_name}"
+        return f"At[{self.lifeline_name}].{self.field_name}"
+
+    def _compare(self, other: object, symbol: str, op: Callable[[object, object], bool]) -> AtomicFormula:
+        src = f"{_term_src(self)} {symbol} {_term_src(other)}"
+
+        def predicate(env, ctx) -> bool:
+            return op(_eval_term(self, env, ctx), _eval_term(other, env, ctx))
+
+        return atom(predicate, src=src)
+
+    def __eq__(self, other: object) -> AtomicFormula:  # type: ignore[override]
+        return self._compare(other, "==", operator.eq)
+
+    def __ne__(self, other: object) -> AtomicFormula:  # type: ignore[override]
+        return self._compare(other, "!=", operator.ne)
+
+    def __lt__(self, other: object) -> AtomicFormula:
+        return self._compare(other, "<", operator.lt)
+
+    def __le__(self, other: object) -> AtomicFormula:
+        return self._compare(other, "<=", operator.le)
+
+    def __gt__(self, other: object) -> AtomicFormula:
+        return self._compare(other, ">", operator.gt)
+
+    def __ge__(self, other: object) -> AtomicFormula:
+        return self._compare(other, ">=", operator.ge)
+
+
+class _HereOperator:
+    """Field-term root for the current guard event: Here.x."""
+
+    def __getattr__(self, field_name: str) -> FieldTerm:
+        if field_name.startswith("_"):
+            raise AttributeError(field_name)
+        return FieldTerm(lifeline_name=None, field_name=field_name)
 
 
 # ---------------------------------------------------------------------------
@@ -254,13 +344,22 @@ def P(phi: AnyFormula | Callable) -> PastFormula:
 
 
 class _AtPartial:
-    """Partial application of At[A]: call with a formula or callable to get AtFormula."""
+    """Partial application of At[A].
+
+    Call with a formula/callable to get an AtFormula, or access a field with
+    At[A].x to get a latest-visible field term.
+    """
 
     def __init__(self, name: str) -> None:
         self._name = name
 
     def __call__(self, phi: AnyFormula | Callable) -> AtFormula:
         return AtFormula(lifeline_name=self._name, subformula=_as_formula(phi))
+
+    def __getattr__(self, field_name: str) -> FieldTerm:
+        if field_name.startswith("_"):
+            raise AttributeError(field_name)
+        return FieldTerm(lifeline_name=self._name, field_name=field_name)
 
 
 class _AtOperator:
@@ -277,6 +376,9 @@ class _AtOperator:
 
 At = _AtOperator()
 """The @A causal operator.  Use At[A](phi)."""
+
+Here = _HereOperator()
+"""The current-event field-term root.  Use Here.x in comparisons."""
 
 
 class _YOperator:

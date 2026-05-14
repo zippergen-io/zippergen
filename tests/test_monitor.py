@@ -1,6 +1,6 @@
 """Tests for per-lifeline CPL monitor state (Algorithms 1 and 2 from the paper)."""
 import pytest
-from zippergen.formula import atom, Y, P, since, on, subformulas, YAFormula
+from zippergen.formula import atom, At, Here, Y, P, since, on, subformulas, YAFormula
 from zippergen.monitor import MonitorState
 
 
@@ -187,6 +187,72 @@ def test_snapshot_view_is_deep_copy():
     snap = m.snapshot_view()
     snap["A"][id(phi)] = False
     assert m.view["A"][id(phi)] is True
+
+
+def test_field_view_snapshots_mutable_local_values():
+    phi = atom(lambda env: True)
+    m = make_monitor("A", ["A"], phi)
+    env = {"items": ["old"]}
+
+    m.on_event("act", env)
+    snap = m.snapshot_field_view()
+
+    env["items"].append("env")
+    snap["A"]["items"].append("snap")
+
+    assert m.field_view["A"]["items"] == ["old"]
+
+
+def test_recv_deep_copies_incoming_field_view_when_ahead():
+    phi = atom(lambda env: True)
+    m = make_monitor("B", ["A", "B"], phi)
+    recv_field_view = {"A": {"items": ["remote"]}, "B": {}}
+
+    m.on_event(
+        "recv",
+        {},
+        recv_vc={"A": 1, "B": 0},
+        recv_view={"A": {}, "B": {}},
+        recv_field_view=recv_field_view,
+    )
+
+    recv_field_view["A"]["items"].append("mutated")
+
+    assert m.field_view["A"]["items"] == ["remote"]
+
+
+def test_field_term_formula_compares_latest_visible_values():
+    guard = At["A"].version == Here.version
+    a = make_monitor("A", ["A", "B"], guard)
+    b = make_monitor("B", ["A", "B"], guard)
+
+    a.on_event("act", {"version": "v1"})
+    b.on_event(
+        "recv",
+        {"version": "v1"},
+        recv_vc=a.snapshot_vc(),
+        recv_view=a.snapshot_view(),
+        recv_field_view=a.snapshot_field_view(),
+    )
+
+    assert b.view["B"][id(guard)] is True
+
+
+def test_field_term_formula_rejects_mismatched_latest_visible_value():
+    guard = At["A"].version == Here.version
+    a = make_monitor("A", ["A", "B"], guard)
+    b = make_monitor("B", ["A", "B"], guard)
+
+    a.on_event("act", {"version": "v1"})
+    b.on_event(
+        "recv",
+        {"version": "v2"},
+        recv_vc=a.snapshot_vc(),
+        recv_view=a.snapshot_view(),
+        recv_field_view=a.snapshot_field_view(),
+    )
+
+    assert b.view["B"][id(guard)] is False
 
 
 # ---------------------------------------------------------------------------

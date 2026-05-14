@@ -27,6 +27,7 @@ Outgoing messages carry a vc/view snapshot:
 """
 from __future__ import annotations
 
+import copy
 import inspect
 
 from zippergen.formula import (
@@ -37,6 +38,16 @@ from zippergen.formula import (
 )
 
 __all__ = ["MonitorState"]
+
+
+def _copy_field_map(fields: dict) -> dict[str, object]:
+    """Copy one lifeline's field store as an event snapshot."""
+    return {str(name): copy.deepcopy(value) for name, value in fields.items()}
+
+
+def _copy_field_view(field_view: dict[str, dict[str, object]]) -> dict[str, dict[str, object]]:
+    """Copy the full field-view table, including mutable field values."""
+    return {lifeline: _copy_field_map(fields) for lifeline, fields in field_view.items()}
 
 
 class MonitorState:
@@ -101,7 +112,7 @@ class MonitorState:
                     for phi_id, val in recv_view.get(B, {}).items():
                         self.view[B][phi_id] = val
                     if recv_field_view and B in recv_field_view:
-                        self.field_view[B] = dict(recv_field_view[B])
+                        self.field_view[B] = _copy_field_map(recv_field_view[B])
             for B in self.lifelines:
                 self.vc[B] = max(self.vc[B], recv_vc.get(B, 0))
 
@@ -112,7 +123,7 @@ class MonitorState:
         self.vc[A] += 1
 
         # Snapshot current env into field_view[A] (implements field-term tracking).
-        self.field_view[A] = dict(env)
+        self.field_view[A] = _copy_field_map(env)
 
         # env is already post-effect (caller applies effect before calling on_event)
         event = EventContext(
@@ -121,7 +132,7 @@ class MonitorState:
             vc=dict(self.vc),
             message_vc=dict(recv_vc) if recv_vc is not None else None,
             message_view={b: dict(v) for b, v in recv_view.items()} if recv_view is not None else None,
-            field_view={b: dict(v) for b, v in self.field_view.items()},
+            field_view=_copy_field_view(self.field_view),
         )
 
         # --- Lines 19-21: evaluate subformulas in bottom-up order ---
@@ -230,7 +241,7 @@ class MonitorState:
 
     def snapshot_field_view(self) -> dict[str, dict[str, object]]:
         """Deep copy of the current field-view table."""
-        return {b: dict(v) for b, v in self.field_view.items()}
+        return _copy_field_view(self.field_view)
 
 
 class _AttrProxy(dict):

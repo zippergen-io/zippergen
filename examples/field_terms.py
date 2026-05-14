@@ -8,12 +8,12 @@ the Gatekeeper — but NOT the version.
 
 The Gatekeeper's guard combines:
 
-  verdict_ok      — Reviewer approved the content  (plain atom on local env)
+  verdict_ok      — Reviewer approved the content
   version_matches — Reviewer held the same version as the Gatekeeper
 
-Point (2) uses a *field term*:
+Point (2) uses a field-term comparison:
 
-    ctx.field_view["Reviewer"]["rev_version"] == env["version"]
+    At[Reviewer].rev_version == Here.version
 
 The Reviewer's version arrives at the Gatekeeper implicitly: the monitor
 piggybacks each lifeline's field_view onto every message, so the verdict
@@ -31,7 +31,7 @@ Run with:
     python examples/field_terms.py
 """
 
-from zippergen import Lifeline, Var, workflow, atom
+from zippergen import At, Here, Lifeline, Var, workflow
 from zippergen.actions import pure
 
 Publisher  = Lifeline("Publisher")
@@ -65,20 +65,15 @@ def reject_version(version: str) -> str:
     return f"Rejected: version mismatch (Gatekeeper holds {version})"
 
 
-# Guard 1 — plain atom: the Reviewer approved.
-verdict_ok = atom(
-    lambda env: env.verdict == "approved",
-    src="verdict=approved",
-)
+# Guard 1 — local field term: the received verdict is approved.
+verdict_ok = Here.verdict == "approved"
 
 # Guard 2 — field term: the Reviewer's version matches the Gatekeeper's.
-# ctx.field_view.Reviewer.rev_version is the value of rev_version at the
-# Reviewer's latest causally visible event, piggybacked automatically on
-# the verdict message — the version is never explicitly sent to the Gatekeeper.
-version_matches = atom(
-    lambda env, ctx: ctx.field_view.Reviewer.rev_version == env.version,
-    src="@Reviewer.rev_version = version",
-)
+# At[Reviewer].rev_version is the value of rev_version at the Reviewer's
+# latest causally visible event.  Here.version is the Gatekeeper's current
+# local version at the guard event.  The version is never explicitly sent
+# from Reviewer to Gatekeeper.
+version_matches = At[Reviewer].rev_version == Here.version
 
 publish_guard = verdict_ok & version_matches
 
