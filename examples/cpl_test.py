@@ -11,7 +11,7 @@ causal guard below keeps reading the latest causally visible Device status.
 
 from zippergen import Lifeline, Var, workflow
 from zippergen.actions import pure
-from zippergen import Y, atom
+from zippergen import At, atom
 
 Device = Lifeline("Device")
 Relay_1 = Lifeline("Relay_1")
@@ -20,8 +20,8 @@ Indicator = Lifeline("Indicator")
 
 on = Var("on",  bool)
 
-latest_device_on = Y[Device](
-    atom(lambda env: env.get("on", False), src="on")
+latest_device_on = At[Device](
+    atom(lambda env: env.on, src="on")
 )
 
 @pure
