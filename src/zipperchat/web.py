@@ -484,7 +484,6 @@ button { font-family: inherit; }
   display: flex;
   align-items: center;
   padding: 0 20px;
-  border-right: 1px solid var(--hairline-frame);
 }
 .brand-logo {
   width: 124px;
