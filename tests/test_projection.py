@@ -8,7 +8,8 @@ import pytest
 
 from zippergen.syntax import (
     EmptyStmt, MsgStmt, CoregionStmt, ActStmt, SkipStmt, SeqStmt, IfStmt, WhileStmt,
-    SendStmt, RecvStmt, ReceiveAnyStmt, IfRecvStmt, WhileRecvStmt,
+    ParallelStmt,
+    SendStmt, RecvStmt, ReceiveAnyStmt, IfRecvStmt, WhileRecvStmt, ParallelLocalStmt,
     Lifeline, Var, VarExpr, LitExpr,
     Workflow, seq, is_kappa_ctrl,
 )
@@ -175,6 +176,54 @@ def test_project_seq_epsilon_elimination():
     # A is only in s1 — s2 projects to ε for A, result should be just SendStmt
     result = project(wf, A)
     assert isinstance(result, SendStmt)
+
+
+# ---------------------------------------------------------------------------
+# Parallel composition
+# ---------------------------------------------------------------------------
+
+def test_project_parallel_uses_branch_channels():
+    stmt = ParallelStmt((
+        MsgStmt(A, (VarExpr(x),), B, (VarExpr(y),)),
+        MsgStmt(A, (VarExpr(x),), C, (VarExpr(z),)),
+    ))
+    wf = _make_workflow(stmt)
+
+    result = project(wf, A)
+    assert isinstance(result, ParallelLocalStmt)
+    assert len(result.branches) == 2
+    assert result.branch_indices == (0, 1)
+    sends = [branch for branch in result.branches if isinstance(branch, SendStmt)]
+    assert len(sends) == 2
+    assert sends[0].channel != sends[1].channel
+    assert all(send.channel != "main" for send in sends)
+
+
+def test_project_parallel_shared_receiver_gets_local_parallel():
+    stmt = ParallelStmt((
+        MsgStmt(A, (VarExpr(x),), B, (VarExpr(y),)),
+        MsgStmt(C, (VarExpr(z),), B, (VarExpr(z),)),
+    ))
+    wf = _make_workflow(stmt)
+
+    result = project(wf, B)
+    assert isinstance(result, ParallelLocalStmt)
+    assert len(result.branches) == 2
+    assert result.branch_indices == (0, 1)
+    assert all(isinstance(branch, RecvStmt) for branch in result.branches)
+
+
+def test_project_parallel_preserves_global_branch_index_for_single_branch_participant():
+    stmt = ParallelStmt((
+        MsgStmt(A, (VarExpr(x),), B, (VarExpr(y),)),
+        MsgStmt(C, (VarExpr(z),), B, (VarExpr(z),)),
+    ))
+    wf = _make_workflow(stmt)
+
+    result = project(wf, C)
+    assert isinstance(result, ParallelLocalStmt)
+    assert result.branch_indices == (1,)
+    assert len(result.branches) == 1
 
 
 # ---------------------------------------------------------------------------

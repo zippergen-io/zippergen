@@ -8,6 +8,7 @@ from __future__ import annotations
 import copy
 import queue
 import threading
+from collections import defaultdict
 from typing import cast
 import time
 import textwrap
@@ -17,11 +18,13 @@ from zippergen.planner import _exec_planner, _validate_planner_spec
 from zippergen.syntax import (
     EmptyStmt, SendStmt, RecvStmt, ReceiveAnyStmt, SelfAssignStmt, ActStmt, SkipStmt,
     SeqStmt, IfStmt, WhileStmt, IfRecvStmt, WhileRecvStmt,
+    ParallelStmt, ParallelLocalStmt,
     VarExpr, LitExpr, Var,
     LLMAction, PureAction, PlannerAction, WorkflowAction, HumanAction,
     Lifeline, Workflow, LocalStmt, AnyStmt,
     is_kappa_ctrl,
     _ordered_workflow_lifelines,
+    seq,
 )
 from zippergen.projection import project
 from zippergen.formula import Formula as _Formula, subformulas as _subformulas
@@ -242,7 +245,7 @@ class _SeqQueue:
         return self._q.get_nowait()
 
 
-Channels = dict[tuple[str, str], _SeqQueue]
+Channels = defaultdict[tuple[str, str, str], _SeqQueue]
 
 
 # ---------------------------------------------------------------------------
@@ -346,13 +349,14 @@ def _receive_any(
     ch: Channels,
     receiver: str,
     pending_senders: set[str],
+    channel: str,
     *,
     stop: threading.Event | None = None,
 ) -> tuple[str, tuple[int, tuple, dict | None, dict | None]]:
     while True:
         for sender in sorted(pending_senders):
             try:
-                return sender, ch[(sender, receiver)].get_nowait()
+                return sender, ch[(sender, receiver, channel)].get_nowait()
             except queue.Empty:
                 pass
         if stop is not None and stop.is_set():
@@ -365,6 +369,239 @@ def _receive_any(
 # Local-program interpreter
 # ---------------------------------------------------------------------------
 
+def _try_channel_get(
+    ch: Channels,
+    sender: str,
+    receiver: str,
+    channel: str,
+) -> tuple[int, tuple, dict | None, dict | None] | None:
+    try:
+        return ch[(sender, receiver, channel)].get_nowait()
+    except queue.Empty:
+        return None
+
+
+def _with_parallel_branch(trace, label: str):
+    if trace is None:
+        return None
+
+    def wrapped(event: dict) -> None:
+        if "parallel_branch" not in event:
+            event = {**event, "parallel_branch": label}
+        trace(event)
+
+    return wrapped
+
+
+def _step(
+    stmt: LocalStmt,
+    env: Env,
+    ch: Channels,
+    ns: dict,
+    llm_backend,
+    human_backend,
+    monitor,
+    trace,
+    formula_conditions: dict[int, _Formula],
+    stop: threading.Event | None,
+) -> tuple[LocalStmt, bool]:
+    """Execute at most one enabled local step.
+
+    Returns ``(residual, progressed)``. Blocking receives return the original
+    residual with ``progressed=False`` so the local parallel scheduler can try
+    another branch.
+    """
+    match stmt:
+        case EmptyStmt():
+            return EmptyStmt(), False
+
+        case SkipStmt():
+            return EmptyStmt(), True
+
+        case SendStmt() | SelfAssignStmt() | ActStmt():
+            _exec(stmt, env, ch, ns, llm_backend, human_backend, monitor, trace, formula_conditions, stop)
+            return EmptyStmt(), True
+
+        case RecvStmt(lifeline=A, bindings=ys, sender=B, channel=channel):
+            item = _try_channel_get(ch, B.name, A.name, channel)
+            if item is None:
+                return stmt, False
+            seq_no, values, recv_vc, recv_view = item
+            _bind(ys, values, env)
+            if monitor:
+                monitor.on_event("recv", env, recv_vc=recv_vc, recv_view=recv_view)
+            if trace:
+                trace({
+                    "type": "recv",
+                    "to": A.name, "from": B.name,
+                    "channel": channel,
+                    "bindings": _bound_dict(ys, values),
+                    "seq": seq_no,
+                    **_recv_trace_fields(monitor, recv_vc),
+                })
+            return EmptyStmt(), True
+
+        case ReceiveAnyStmt(lifeline=A, receives=receives, channel=channel):
+            for sender, ys in receives:
+                item = _try_channel_get(ch, sender.name, A.name, channel)
+                if item is None:
+                    continue
+                seq_no, values, recv_vc, recv_view = item
+                _bind(ys, values, env)
+                if monitor:
+                    monitor.on_event("recv", env, recv_vc=recv_vc, recv_view=recv_view)
+                if trace:
+                    trace({
+                        "type": "recv",
+                        "to": A.name, "from": sender.name,
+                        "channel": channel,
+                        "bindings": _bound_dict(ys, values),
+                        "seq": seq_no,
+                        **_recv_trace_fields(monitor, recv_vc),
+                    })
+                remaining = tuple((s, b) for s, b in receives if s != sender)
+                if not remaining:
+                    return EmptyStmt(), True
+                return ReceiveAnyStmt(A, remaining, channel), True
+            return stmt, False
+
+        case SeqStmt(first=p1, second=p2):
+            first = cast(LocalStmt, p1)
+            second = cast(LocalStmt, p2)
+            if isinstance(first, EmptyStmt):
+                return second, True
+            new_first, progressed = _step(
+                first, env, ch, ns, llm_backend, human_backend, monitor, trace,
+                formula_conditions, stop,
+            )
+            if not progressed:
+                return stmt, False
+            return cast(LocalStmt, seq(new_first, second)), True
+
+        case IfStmt(condition=c, owner=B, branch_true=t, branch_false=f):
+            cached_formula = formula_conditions.get(id(c))
+            if cached_formula is not None:
+                cond_formula = cached_formula
+                cond_value = None
+            elif isinstance(c, _Formula):
+                cond_formula: _Formula | None = c
+                cond_value = None
+            else:
+                raw = c(_CondEnv(env, ns))
+                if isinstance(raw, _Formula):
+                    cond_formula = raw
+                    cond_value = None
+                else:
+                    cond_formula = None
+                    cond_value = raw
+            if cond_formula is not None and monitor is None:
+                raise RuntimeError(
+                    f"CPL Formula guard {cond_formula!r} on lifeline '{threading.current_thread().name}' "
+                    "but no monitor was built. Make the Formula guard discoverable before execution."
+                )
+            if monitor:
+                monitor.on_event("choice", env)
+            if cond_formula is not None:
+                assert monitor is not None
+                flag = monitor.guard_value(cond_formula)
+                formula_repr = repr(cond_formula)
+            else:
+                flag = bool(cond_value)
+                formula_repr = None
+            if trace:
+                trace({"type": "decision", "lifeline": B.name, "kind": "if", "value": flag,
+                       "condition": getattr(c, "_src", None), "formula": formula_repr,
+                       **_monitor_trace_fields(monitor)})
+            return cast(LocalStmt, t if flag else f), True
+
+        case IfRecvStmt(lifeline=A, bindings=ys, sender=B, branch_true=t, branch_false=f, channel=channel):
+            item = _try_channel_get(ch, B.name, A.name, channel)
+            if item is None:
+                return stmt, False
+            seq_no, values, recv_vc, recv_view = item
+            _bind(ys, values, env)
+            if monitor:
+                monitor.on_event("recv", env, recv_vc=recv_vc, recv_view=recv_view)
+            flag = _eval(ys[0], env) if isinstance(ys[0], VarExpr) else values[0]
+            if trace:
+                trace({
+                    "type": "recv",
+                    "to": A.name, "from": B.name,
+                    "channel": channel,
+                    "bindings": {"branch": "true" if flag else "false"},
+                    "seq": seq_no, "ctrl": True,
+                    **_recv_trace_fields(monitor, recv_vc),
+                })
+            return cast(LocalStmt, t if flag else f), True
+
+        case WhileStmt(condition=c, owner=B, body=body, exit_body=exit_b):
+            cached_formula = formula_conditions.get(id(c))
+            if cached_formula is not None:
+                wc_formula = cached_formula
+                wc_value = None
+            elif isinstance(c, _Formula):
+                wc_formula: _Formula | None = c
+                wc_value = None
+            else:
+                wraw = c(_CondEnv(env, ns))
+                if isinstance(wraw, _Formula):
+                    wc_formula = wraw
+                    wc_value = None
+                else:
+                    wc_formula = None
+                    wc_value = wraw
+            if wc_formula is not None and monitor is None:
+                raise RuntimeError(
+                    f"CPL Formula guard {wc_formula!r} on lifeline '{threading.current_thread().name}' "
+                    "but no monitor was built. Make the Formula guard discoverable before execution."
+                )
+            if monitor:
+                monitor.on_event("choice", env)
+            if wc_formula is not None:
+                assert monitor is not None
+                flag = monitor.guard_value(wc_formula)
+                formula_repr = repr(wc_formula)
+            else:
+                flag = bool(wc_value)
+                formula_repr = None
+            if trace:
+                trace({"type": "decision", "lifeline": B.name, "kind": "while", "value": flag,
+                       "condition": getattr(c, "_src", None), "formula": formula_repr,
+                       **_monitor_trace_fields(monitor)})
+            if flag:
+                return cast(LocalStmt, seq(body, stmt)), True
+            return cast(LocalStmt, exit_b), True
+
+        case WhileRecvStmt(lifeline=A, bindings=ys, sender=B, body=body, exit_body=exit_b, channel=channel):
+            item = _try_channel_get(ch, B.name, A.name, channel)
+            if item is None:
+                return stmt, False
+            seq_no, values, recv_vc, recv_view = item
+            _bind(ys, values, env)
+            if monitor:
+                monitor.on_event("recv", env, recv_vc=recv_vc, recv_view=recv_view)
+            flag = _eval(ys[0], env) if isinstance(ys[0], VarExpr) else values[0]
+            if trace:
+                trace({
+                    "type": "recv",
+                    "to": A.name, "from": B.name,
+                    "channel": channel,
+                    "bindings": {"loop": "continue" if flag else "exit"},
+                    "seq": seq_no, "ctrl": True,
+                    **_recv_trace_fields(monitor, recv_vc),
+                })
+            if flag:
+                return cast(LocalStmt, seq(body, stmt)), True
+            return cast(LocalStmt, exit_b), True
+
+        case ParallelLocalStmt():
+            _exec(stmt, env, ch, ns, llm_backend, human_backend, monitor, trace, formula_conditions, stop)
+            return EmptyStmt(), True
+
+        case _:
+            raise TypeError(f"Unknown local stmt: {type(stmt).__name__}")
+
+
 def _exec(stmt: LocalStmt, env: Env, ch: Channels, ns: dict, llm_backend, human_backend, monitor, trace,
           formula_conditions: dict[int, _Formula] | None = None,
           stop: threading.Event | None = None) -> None:
@@ -376,26 +613,27 @@ def _exec(stmt: LocalStmt, env: Env, ch: Channels, ns: dict, llm_backend, human_
         case EmptyStmt() | SkipStmt():
             return
 
-        case SendStmt(lifeline=A, payload=xs, receiver=B):
+        case SendStmt(lifeline=A, payload=xs, receiver=B, channel=channel):
             values = tuple(copy.deepcopy(_eval(x, env)) for x in xs)
             if monitor:
                 monitor.on_event("send", env)
-                seq = ch[(A.name, B.name)].put(values, monitor.snapshot_vc(), monitor.snapshot_view())
+                seq = ch[(A.name, B.name, channel)].put(values, monitor.snapshot_vc(), monitor.snapshot_view())
             else:
-                seq = ch[(A.name, B.name)].put(values)
+                seq = ch[(A.name, B.name, channel)].put(values)
             if trace:
                 names = [x.var.name if isinstance(x, VarExpr) else f"_{i}" for i, x in enumerate(xs)]
                 trace({
                     "type": "send",
                     "from": A.name, "to": B.name,
+                    "channel": channel,
                     "values": [_jsonify(v) for v in values],
                     "bindings": {name: _jsonify(v) for name, v in zip(names, values)},
                     "seq": seq,
                     **_monitor_trace_fields(monitor),
                 })
 
-        case RecvStmt(lifeline=A, bindings=ys, sender=B):
-            seq, values, recv_vc, recv_view = ch[(B.name, A.name)].get(stop=stop)
+        case RecvStmt(lifeline=A, bindings=ys, sender=B, channel=channel):
+            seq, values, recv_vc, recv_view = ch[(B.name, A.name, channel)].get(stop=stop)
             _bind(ys, values, env)
             if monitor:
                 monitor.on_event("recv", env, recv_vc=recv_vc, recv_view=recv_view)
@@ -403,18 +641,19 @@ def _exec(stmt: LocalStmt, env: Env, ch: Channels, ns: dict, llm_backend, human_
                 trace({
                     "type": "recv",
                     "to": A.name, "from": B.name,
+                    "channel": channel,
                     "bindings": _bound_dict(ys, values),
                     "seq": seq,
                     **_recv_trace_fields(monitor, recv_vc),
                 })
 
-        case ReceiveAnyStmt(lifeline=A, receives=receives):
+        case ReceiveAnyStmt(lifeline=A, receives=receives, channel=channel):
             pending = {
                 sender.name: (sender, bindings)
                 for sender, bindings in receives
             }
             while pending:
-                sender_name, item = _receive_any(ch, A.name, set(pending), stop=stop)
+                sender_name, item = _receive_any(ch, A.name, set(pending), channel, stop=stop)
                 seq, values, recv_vc, recv_view = item
                 sender, ys = pending.pop(sender_name)
                 _bind(ys, values, env)
@@ -424,6 +663,7 @@ def _exec(stmt: LocalStmt, env: Env, ch: Channels, ns: dict, llm_backend, human_
                     trace({
                         "type": "recv",
                         "to": A.name, "from": sender.name,
+                        "channel": channel,
                         "bindings": _bound_dict(ys, values),
                         "seq": seq,
                         **_recv_trace_fields(monitor, recv_vc),
@@ -579,6 +819,35 @@ def _exec(stmt: LocalStmt, env: Env, ch: Channels, ns: dict, llm_backend, human_
             _exec(cast(LocalStmt, p1), env, ch, ns, llm_backend, human_backend, monitor, trace, formula_conditions, stop)
             _exec(cast(LocalStmt, p2), env, ch, ns, llm_backend, human_backend, monitor, trace, formula_conditions, stop)
 
+        case ParallelLocalStmt(branches=branches, branch_indices=branch_indices):
+            residuals = list(branches)
+            labels = branch_indices or tuple(range(len(branches)))
+            cursor = 0
+
+            while any(not isinstance(branch, EmptyStmt) for branch in residuals):
+                if stop is not None and stop.is_set():
+                    raise RuntimeError("Workflow cancelled: another lifeline failed")
+
+                progressed = False
+                for _ in range(len(residuals)):
+                    i = cursor % len(residuals)
+                    cursor = (i + 1) % len(residuals)
+                    branch = residuals[i]
+                    if isinstance(branch, EmptyStmt):
+                        continue
+                    branch_trace = _with_parallel_branch(trace, f"P{labels[i] + 1}")
+                    next_branch, did_step = _step(
+                        branch, env, ch, ns, llm_backend, human_backend, monitor,
+                        branch_trace, formula_conditions, stop,
+                    )
+                    residuals[i] = next_branch
+                    if did_step:
+                        progressed = True
+                        break
+
+                if not progressed:
+                    time.sleep(0.01)
+
         case IfStmt(condition=c, owner=B, branch_true=t, branch_false=f):
             # c may be a Formula (direct) or a lambda (builder-rewritten native syntax).
             # Formula-valued lambdas are resolved once before execution when possible.
@@ -617,8 +886,8 @@ def _exec(stmt: LocalStmt, env: Env, ch: Channels, ns: dict, llm_backend, human_
                        **_monitor_trace_fields(monitor)})
             _exec(cast(LocalStmt, t if flag else f), env, ch, ns, llm_backend, human_backend, monitor, trace, formula_conditions, stop)
 
-        case IfRecvStmt(lifeline=A, bindings=ys, sender=B, branch_true=t, branch_false=f):
-            seq, values, recv_vc, recv_view = ch[(B.name, A.name)].get(stop=stop)
+        case IfRecvStmt(lifeline=A, bindings=ys, sender=B, branch_true=t, branch_false=f, channel=channel):
+            seq, values, recv_vc, recv_view = ch[(B.name, A.name, channel)].get(stop=stop)
             _bind(ys, values, env)
             if monitor:
                 monitor.on_event("recv", env, recv_vc=recv_vc, recv_view=recv_view)
@@ -627,6 +896,7 @@ def _exec(stmt: LocalStmt, env: Env, ch: Channels, ns: dict, llm_backend, human_
                 trace({
                     "type": "recv",
                     "to": A.name, "from": B.name,
+                    "channel": channel,
                     "bindings": {"branch": "true" if flag else "false"},
                     "seq": seq, "ctrl": True,
                     **_recv_trace_fields(monitor, recv_vc),
@@ -674,9 +944,9 @@ def _exec(stmt: LocalStmt, env: Env, ch: Channels, ns: dict, llm_backend, human_
                 _exec(cast(LocalStmt, body), env, ch, ns, llm_backend, human_backend, monitor, trace, formula_conditions, stop)
             _exec(cast(LocalStmt, exit_b), env, ch, ns, llm_backend, human_backend, monitor, trace, formula_conditions, stop)
 
-        case WhileRecvStmt(lifeline=A, bindings=ys, sender=B, body=body, exit_body=exit_b):
+        case WhileRecvStmt(lifeline=A, bindings=ys, sender=B, body=body, exit_body=exit_b, channel=channel):
             while True:
-                seq, values, recv_vc, recv_view = ch[(B.name, A.name)].get(stop=stop)
+                seq, values, recv_vc, recv_view = ch[(B.name, A.name, channel)].get(stop=stop)
                 _bind(ys, values, env)
                 if monitor:
                     monitor.on_event("recv", env, recv_vc=recv_vc, recv_view=recv_view)
@@ -685,6 +955,7 @@ def _exec(stmt: LocalStmt, env: Env, ch: Channels, ns: dict, llm_backend, human_
                     trace({
                         "type": "recv",
                         "to": A.name, "from": B.name,
+                        "channel": channel,
                         "bindings": {"loop": "continue" if flag else "exit"},
                         "seq": seq, "ctrl": True,
                         **_recv_trace_fields(monitor, recv_vc),
@@ -751,6 +1022,9 @@ def _collect_formula_guards(stmt, ns: dict) -> tuple[list, dict[int, _Formula]]:
             case SeqStmt(first=p1, second=p2):
                 walk(p1)
                 walk(p2)
+            case ParallelStmt(branches=branches):
+                for branch in branches:
+                    walk(branch)
             case _:
                 pass
     walk(stmt)
@@ -805,10 +1079,7 @@ def run(
     stop = threading.Event()
 
     names = [l.name for l in lifelines]
-    channels: Channels = {
-        (a, b): _SeqQueue()
-        for a in names for b in names if a != b
-    }
+    channels: Channels = defaultdict(_SeqQueue)
 
     threads: list[threading.Thread] = []
     result_boxes: dict[str, list] = {}

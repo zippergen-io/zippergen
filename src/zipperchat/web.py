@@ -897,6 +897,15 @@ body.dark #replay-btn:not([disabled]):hover {
   height: 100%;
   position: relative;
 }
+.msg-overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  overflow: visible;
+  z-index: 1;
+}
 
 /* ─── Event column ──────────────────────────────────────────────────────── */
 .ev-col {
@@ -907,6 +916,7 @@ body.dark #replay-btn:not([disabled]):hover {
   position: relative;
   padding: 0;
   animation: col-enter 0.18s ease-out;
+  z-index: 2;
 }
 @keyframes col-enter {
   from { opacity: 0; transform: translateX(8px); }
@@ -1402,6 +1412,19 @@ function causalSections(ev) {
   }
   return sections;
 }
+function parallelSections(ev) {
+  const entries = {};
+  if (ev && ev.parallel_branch) entries.branch = ev.parallel_branch;
+  return Object.keys(entries).length
+    ? [{ label: 'Parallel region', entries }]
+    : [];
+}
+function tagWithBranch(tag, ev) {
+  return ev && ev.parallel_branch ? `${tag} · ${ev.parallel_branch}` : tag;
+}
+function channelKey(from, to, channel) {
+  return `${from}->${to}#${channel || 'main'}`;
+}
 
 // ─── Status indicator ─────────────────────────────────────────────────────
 function setStatus(state, text) {
@@ -1496,7 +1519,7 @@ function makeLevel(path, name, lifelineNames, parentLevel = null,
     accent,
     status: 'running',
     children: new Map(),
-    groupEl: null, bodyEl: null, stripEl: null, scrollEl: null, eventsEl: null, childrenEl: null,
+    groupEl: null, bodyEl: null, stripEl: null, scrollEl: null, eventsEl: null, overlayEl: null, childrenEl: null,
     cgRows: {},
     cgIdSeq: 0,
     cgLast: {},
@@ -1589,6 +1612,9 @@ function buildLevelDom(lev) {
   const events = document.createElement('div');
   events.className = 'wf-events';
   events.style.setProperty('--rows', `repeat(${lev.N}, ${ROW_HEIGHT}px)`);
+  const overlay = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+  overlay.setAttribute('class', 'msg-overlay');
+  events.appendChild(overlay);
   scroll.appendChild(events);
 
   body.appendChild(strip);
@@ -1605,6 +1631,7 @@ function buildLevelDom(lev) {
   lev.stripEl = strip;
   lev.scrollEl = scroll;
   lev.eventsEl = events;
+  lev.overlayEl = overlay;
   lev.childrenEl = childrenEl;
 
   // Insert into DOM: nested groups go into their parent's children container
@@ -1674,7 +1701,10 @@ function canReuseActRow(lev, lifeline, r) {
   }
   return true;
 }
-function findReusableActRow(lev, lifeline) {
+function findReusableActRow(lev, lifeline, ev = null) {
+  // In a parallel region, keep each branch event on its own row. This preserves
+  // the concrete shuffled order while the small P1/P2 labels identify branches.
+  if (ev && ev.parallel_branch) return null;
   return Object.values(lev.cgRows)
     .filter(r => canReuseActRow(lev, lifeline, r))
     .sort((a, b) => b.level !== a.level ? b.level - a.level : b.id - a.id)[0] || null;
@@ -1862,7 +1892,7 @@ function handleActStart(lev, ev) {
 
   setLLStatusInLevel(lev, ev.lifeline, 'thinking');
 
-  let r = findReusableActRow(lev, ev.lifeline);
+  let r = findReusableActRow(lev, ev.lifeline, ev);
   if (r) {
     materializeOnLifeline(lev, ev.lifeline, r);
   } else {
@@ -1890,7 +1920,7 @@ function handleActStart(lev, ev) {
   const box = makeBox({
     kind: 'act-box',
     extraClass: `running ${meta.cls}`,
-    tag: meta.tag,
+    tag: tagWithBranch(meta.tag, ev),
     name: ev.action,
     dataBuilder: () => ({
       type: actionMeta(ev, box).type,
@@ -1899,6 +1929,7 @@ function handleActStart(lev, ev) {
       seq: ev.seq,
       accent: actionMeta(ev, box).accent,
       sections: [
+        ...parallelSections(ev),
         { label: 'Inputs',  entries: inputs,           emptyText: '(no inputs)' },
         { label: 'Outputs', entries: box._outputs || {}, emptyText: '(awaiting outputs…)' },
         ...causalSections({vc: box._vc}),
@@ -1936,6 +1967,7 @@ function handleAct(lev, ev) {
       seq: ev.seq,
       accent: meta.accent,
       sections: [
+        ...parallelSections(ev),
         { label: 'Inputs',  entries: ev.inputs || {},  emptyText: '(no inputs)' },
         { label: 'Outputs', entries: ev.outputs || {}, emptyText: '(no outputs)' },
         ...causalSections(ev),
@@ -2154,33 +2186,41 @@ function handleDecision(lev, ev) {
 }
 
 // ─── Message rendering ────────────────────────────────────────────────────
-function handleSend(lev, ev) {
-  const fromIdx = lev.lifelineNames.indexOf(ev.from);
-  const toIdx   = lev.lifelineNames.indexOf(ev.to);
-  if (fromIdx < 0 || toIdx < 0) return;
-  const ctrl = isCtrlVals(ev.values);
-
-  const r = newCgRow(lev, 'message');
-  r.fromIdx = fromIdx; r.toIdx = toIdx; r.ctrl = ctrl;
-  r.color = ctrl ? KIND.ctrl : KIND.send;
-
+function makeEventWrapper(lev, className) {
   const wrapper = document.createElement('div');
-  wrapper.className = 'ev-col msg-col';
+  wrapper.className = className;
   wrapper.style.setProperty('--rows', `repeat(${lev.N}, ${ROW_HEIGHT}px)`);
-  r.wrapper = wrapper;
-  r.cells = lev.lifelineNames.map((_, k) => {
+  const cells = lev.lifelineNames.map((_, k) => {
     const cell = document.createElement('div');
     cell.className = 'ev-cell';
     cell.style.setProperty('--rail-color', hexToRgba(agentColor(k), 0.55));
     wrapper.appendChild(cell);
     return cell;
   });
+  return {wrapper, cells};
+}
+
+function handleSend(lev, ev) {
+  const fromIdx = lev.lifelineNames.indexOf(ev.from);
+  const toIdx   = lev.lifelineNames.indexOf(ev.to);
+  if (fromIdx < 0 || toIdx < 0) return;
+  const ctrl = isCtrlVals(ev.values);
+  const crossColumn = !!ev.parallel_branch;
+
+  const r = newCgRow(lev, 'message');
+  r.fromIdx = fromIdx; r.toIdx = toIdx; r.ctrl = ctrl;
+  r.color = ctrl ? KIND.ctrl : KIND.send;
+  r.crossColumn = crossColumn;
+
+  const {wrapper, cells} = makeEventWrapper(lev, 'ev-col msg-col');
+  r.wrapper = wrapper;
+  r.cells = cells;
 
   const sendBindings = ctrl ? { branch: ev.values[0] } : (ev.bindings || {});
   const sendBox = makeBox({
     kind: 'msg-box send',
     extraClass: ctrl ? 'ctrl' : '',
-    tag: ctrl ? 'CTRL' : 'SEND',
+    tag: tagWithBranch(ctrl ? 'CTRL' : 'SEND', ev),
     name: '→ ' + ev.to,
     dataBuilder: () => ({
       type: ctrl ? 'CTRL SEND' : 'SEND',
@@ -2191,26 +2231,32 @@ function handleSend(lev, ev) {
       seq: ev.seq,
       accent: ctrl ? KIND.ctrl : KIND.send,
       sections: [
+        ...parallelSections(ev),
         { label: 'Values', entries: sendBindings, emptyText: '(no values)' },
         ...causalSections(ev),
       ],
     }),
   });
   sendBox._level = lev;
+  r.sendBox = sendBox;
   r.cells[fromIdx].appendChild(sendBox);
 
-  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-  svg.setAttribute('class', ctrl ? 'msg-arrow ctrl' : 'msg-arrow');
-  wrapper.appendChild(svg);
-  r.svg = svg;
+  if (!crossColumn) {
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('class', ctrl ? 'msg-arrow ctrl' : 'msg-arrow');
+    wrapper.appendChild(svg);
+    r.svg = svg;
+  }
 
   materializeOnLifeline(lev, ev.from, r);
 
-  const chanKey = `${ev.from}->${ev.to}`;
+  const chanKey = channelKey(ev.from, ev.to, ev.channel);
   if (!lev.cgOpen[chanKey]) lev.cgOpen[chanKey] = [];
   lev.cgOpen[chanKey].push(r);
-  if (!lev.cgPending[ev.to]) lev.cgPending[ev.to] = new Set();
-  lev.cgPending[ev.to].add(r);
+  if (!crossColumn) {
+    if (!lev.cgPending[ev.to]) lev.cgPending[ev.to] = new Set();
+    lev.cgPending[ev.to].add(r);
+  }
 
   lev.completed.push(r);
   lev.eventsEl.appendChild(wrapper);
@@ -2219,11 +2265,11 @@ function handleSend(lev, ev) {
 }
 
 function handleRecv(lev, ev) {
-  const chanKey = `${ev.from}->${ev.to}`;
+  const chanKey = channelKey(ev.from, ev.to, ev.channel);
   const queue   = lev.cgOpen[chanKey];
   if (!queue || !queue.length) return;
   const r = queue.shift();
-  lev.cgPending[ev.to]?.delete(r);
+  if (!r.crossColumn) lev.cgPending[ev.to]?.delete(r);
 
   const ctrl = r.ctrl;
   const toIdx = r.toIdx;
@@ -2232,7 +2278,7 @@ function handleRecv(lev, ev) {
   const recvBox = makeBox({
     kind: 'msg-box recv',
     extraClass: ctrl ? 'ctrl' : '',
-    tag: ctrl ? 'CTRL' : 'RECV',
+    tag: tagWithBranch(ctrl ? 'CTRL' : 'RECV', ev),
     name: '← ' + ev.from,
     dataBuilder: () => ({
       type: ctrl ? 'CTRL RECV' : 'RECV',
@@ -2243,20 +2289,83 @@ function handleRecv(lev, ev) {
       seq: ev.seq,
       accent: ctrl ? KIND.ctrl : KIND.recv,
       sections: [
+        ...parallelSections(ev),
         { label: 'Bindings', entries: recvBindings, emptyText: '(no bindings)' },
         ...causalSections(ev),
       ],
     }),
   });
   recvBox._level = lev;
-  r.cells[toIdx].appendChild(recvBox);
-  materializeOnLifeline(lev, ev.to, r);
+  r.recvBox = recvBox;
+
+  if (r.crossColumn) {
+    const rr = newCgRow(lev, 'message-recv');
+    rr.wrapper = makeEventWrapper(lev, 'ev-col msg-col').wrapper;
+    rr.cells = Array.from(rr.wrapper.children);
+    rr.fromIdx = r.fromIdx;
+    rr.toIdx = r.toIdx;
+    rr.ctrl = r.ctrl;
+    rr.color = r.color;
+    rr.occupied.add(toIdx);
+    rr.cells[toIdx].appendChild(recvBox);
+    r.recvRow = rr;
+    r.recvWrapper = rr.wrapper;
+    cgAddEdge(lev, r, rr);
+    materializeOnLifeline(lev, ev.to, rr);
+    lev.eventsEl.appendChild(rr.wrapper);
+  } else {
+    r.cells[toIdx].appendChild(recvBox);
+    materializeOnLifeline(lev, ev.to, r);
+  }
+
   syncOrder(lev);
   scrollLevelToEnd(lev);
 }
 
 // ─── Vertical arrow drawing ───────────────────────────────────────────────
+function drawOverlayArrow(lev, r) {
+  const overlay = lev.overlayEl;
+  if (!overlay || !r.sendBox || !r.recvBox) return;
+
+  const eventsRect = lev.eventsEl.getBoundingClientRect();
+  const sendRect = r.sendBox.getBoundingClientRect();
+  const recvRect = r.recvBox.getBoundingClientRect();
+  const dir = r.toIdx > r.fromIdx ? 1 : -1;
+
+  const x1 = sendRect.left + sendRect.width / 2 - eventsRect.left;
+  const y1 = (dir > 0 ? sendRect.bottom : sendRect.top) - eventsRect.top;
+  const x2 = recvRect.left + recvRect.width / 2 - eventsRect.left;
+  const y2 = (dir > 0 ? recvRect.top : recvRect.bottom) - eventsRect.top;
+
+  const color = r.color;
+  const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+  line.setAttribute('x1', x1); line.setAttribute('y1', y1);
+  line.setAttribute('x2', x2); line.setAttribute('y2', y2);
+  line.setAttribute('stroke', color);
+  line.setAttribute('stroke-width', '1.5');
+  if (r.ctrl) line.setAttribute('stroke-dasharray', '4 3');
+  overlay.appendChild(line);
+
+  const angle = Math.atan2(y2 - y1, x2 - x1);
+  const arrowLen = 9;
+  const arrowHalf = 5;
+  const bx = x2 - arrowLen * Math.cos(angle);
+  const by = y2 - arrowLen * Math.sin(angle);
+  const px = arrowHalf * Math.sin(angle);
+  const py = -arrowHalf * Math.cos(angle);
+  const pts = `${x2},${y2} ${bx + px},${by + py} ${bx - px},${by - py}`;
+  const arrow = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
+  arrow.setAttribute('points', pts);
+  arrow.setAttribute('fill', color);
+  overlay.appendChild(arrow);
+}
+
 function drawArrow(lev, r) {
+  if (r.crossColumn) {
+    drawOverlayArrow(lev, r);
+    return;
+  }
+
   const wrap = r.wrapper;
   const svg  = r.svg;
   if (!wrap || !svg) return;
@@ -2306,6 +2415,14 @@ function drawArrow(lev, r) {
   svg.appendChild(arrow);
 }
 function redrawArrowsForLevel(lev) {
+  if (lev.overlayEl && lev.eventsEl) {
+    const w = Math.max(lev.eventsEl.scrollWidth, lev.eventsEl.clientWidth || 0);
+    const h = Math.max(lev.eventsEl.scrollHeight, lev.eventsEl.clientHeight || 0);
+    lev.overlayEl.setAttribute('viewBox', `0 0 ${w} ${h}`);
+    lev.overlayEl.style.width = `${w}px`;
+    lev.overlayEl.style.height = `${h}px`;
+    lev.overlayEl.innerHTML = '';
+  }
   for (const r of lev.completed) drawArrow(lev, r);
 }
 function redrawAllArrows() {

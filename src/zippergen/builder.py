@@ -16,6 +16,7 @@ from zippergen.syntax import (
     ZTypeAtLifeline, LocatedArg,
     Expr, VarExpr, LitExpr,
     Stmt, AnyStmt, EmptyStmt, MsgStmt, CoregionStmt, ActStmt, SkipStmt, SeqStmt, IfStmt, WhileStmt,
+    ParallelStmt,
     LLMAction, PureAction, PlannerAction, WorkflowAction,
     Workflow,
     seq, is_ztype,
@@ -25,7 +26,7 @@ __all__ = [
     # Workflow decorator
     "workflow",
     # Statement builders
-    "msg", "act", "skip", "coregion",
+    "msg", "act", "skip", "coregion", "parallel", "branch",
     "if_", "while_",
 ]
 
@@ -42,7 +43,19 @@ class _CoregionMarker:
         return "coregion"
 
 
+class _ParallelMarker:
+    def __repr__(self) -> str:
+        return "parallel"
+
+
+class _BranchMarker:
+    def __repr__(self) -> str:
+        return "branch"
+
+
 coregion = _CoregionMarker()
+parallel = _ParallelMarker()
+branch = _BranchMarker()
 
 
 def _record(stmt: Stmt) -> None:
@@ -178,6 +191,18 @@ def coregion_(body: Callable) -> None:
     _record(CoregionStmt(tuple(messages)))
 
 
+def parallel_(*branches: Callable) -> None:
+    """Record a first-class parallel region.
+
+    Each argument is a zero-argument function whose body contains ordinary
+    ZipperGen statements. The branches start together and the continuation runs
+    after all branches have finished.
+    """
+    if not branches:
+        raise ValueError("parallel requires at least one branch")
+    _record(ParallelStmt(tuple(_collect(branch) for branch in branches)))
+
+
 def if_(
     condition: Callable[..., bool],
     owner: Lifeline,
@@ -301,6 +326,7 @@ class _ProcTransformer(ast.NodeTransformer):
     - ``Lifeline: outputs = action(inputs)``  →  ``act(Lifeline, action, inputs, outputs)``
     - ``with Lifeline:\n    y = f(x)\n    ...``  →  one ``act(...)`` call per body line
     - ``with coregion:\n    A(x) >> R(x)\n    ...`` → unordered messages to one receiver
+    - ``with parallel:\n    with branch: ...`` → first-class parallel region
     - ``Sender(x, y) >> Receiver(a, b)``      →  ``msg(Sender, (x, y), Receiver, (a, b))``
     - ``if cond @ owner: ...``                →  ``if_(cond, owner, then=..., else_=...)``
     - ``while cond @ owner: ...``             →  ``while_(cond, owner, body=..., exit_body=...)``
@@ -409,6 +435,34 @@ class _ProcTransformer(ast.NodeTransformer):
                 keywords=[],
             ))
             return [body_fn, call]
+
+        if isinstance(lifeline_ast, ast.Name) and lifeline_ast.id == "parallel":
+            branch_fns: list[ast.FunctionDef] = []
+            branch_names: list[str] = []
+            for stmt in node.body:
+                if not (
+                    isinstance(stmt, ast.With)
+                    and len(stmt.items) == 1
+                    and stmt.items[0].optional_vars is None
+                    and isinstance(stmt.items[0].context_expr, ast.Name)
+                    and stmt.items[0].context_expr.id == "branch"
+                ):
+                    raise SyntaxError(
+                        "with parallel: body may contain only with branch: blocks"
+                    )
+                branch_name = _fresh("branch")
+                branch_names.append(branch_name)
+                branch_fns.append(_make_fn(branch_name, stmt.body))
+
+            for branch_fn in branch_fns:
+                self.generic_visit(branch_fn)
+
+            call = ast.Expr(ast.Call(
+                func=ast.Name(id="parallel_", ctx=ast.Load()),
+                args=[ast.Name(id=name, ctx=ast.Load()) for name in branch_names],
+                keywords=[],
+            ))
+            return [*branch_fns, call]
 
         result: list[ast.stmt] = []
 
@@ -566,6 +620,7 @@ def _transform_proc_source(fn: Callable) -> tuple[Callable, list[tuple[str, str]
         "if_":       if_,
         "while_":    while_,
         "coregion_": coregion_,
+        "parallel_": parallel_,
         "_tag_cond": _tag_cond,
     })
 
@@ -633,6 +688,7 @@ def workflow(fn: Callable) -> Workflow:
 
     - ``Sender(x, y) >> Receiver(a, b)`` — message passing
     - ``with coregion: ...`` — unordered messages to one receiver
+    - ``with parallel:\n        with branch: ...`` — first-class parallel region
     - ``Lifeline: outputs = action(inputs)`` — single local action
     - ``with Lifeline:\n        y1 = f1(x)\n        y2 = f2(y1)`` — block of consecutive local actions on one lifeline
     - ``skip()`` — local no-op

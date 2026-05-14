@@ -18,6 +18,9 @@ verdict = Var("verdict", str)
 flag    = Var("flag",    bool)
 out     = Var("out",     str)
 nh_out  = Var("nh_out",  str)
+sum_out = Var("sum_out", int)
+left_out = Var("left_out", str)
+right_out = Var("right_out", str)
 
 
 # ---------------------------------------------------------------------------
@@ -50,6 +53,18 @@ def double(v: int) -> int:
 @pure
 def add(a: int, b: int) -> int:
     return a + b
+
+
+_parallel_action_order: list[str] = []
+
+
+@pure
+def record_parallel_action(label: str) -> str:
+    import time
+    _parallel_action_order.append(f"start {label}")
+    time.sleep(0.02)
+    _parallel_action_order.append(f"end {label}")
+    return label
 
 
 @pure
@@ -134,6 +149,70 @@ def test_coregion_receiver_accepts_messages_in_arrival_order():
     recv_events = [event for event in events if event["type"] == "recv" and event["to"] == "CoreR"]
     assert result == (1, 2)
     assert [event["from"] for event in recv_events] == ["CoreB", "CoreA"]
+
+
+# ---------------------------------------------------------------------------
+# Parallel regions
+# ---------------------------------------------------------------------------
+
+@workflow
+def parallel_sum(a: int @ User, b: int @ Owner) -> int:
+    with parallel:
+        with branch:
+            User(a) >> Compute(a)
+
+        with branch:
+            Owner(b) >> Compute(b)
+    with Compute:
+        sum_out = add(a, b)
+    return sum_out @ Compute
+
+
+def test_parallel_runtime_shared_receiver():
+    events = []
+    result = run(
+        parallel_sum,
+        [User, Owner, Compute],
+        {"User": {"a": 2}, "Owner": {"b": 5}},
+        trace=events.append,
+        timeout=1.0,
+    )
+    assert result == 7
+    message_channels = {
+        event["channel"]
+        for event in events
+        if event["type"] in {"send", "recv"}
+    }
+    assert len(message_channels) == 2
+    assert all(channel != "main" for channel in message_channels)
+    assert any(event.get("parallel_branch") == "P1" for event in events)
+    assert any(event.get("parallel_branch") == "P2" for event in events)
+    assert any(
+        event["type"] == "send"
+        and event["from"] == "Owner"
+        and event.get("parallel_branch") == "P2"
+        for event in events
+    )
+
+
+@workflow
+def parallel_same_lifeline_actions(n: int @ Compute) -> str:
+    with parallel:
+        with branch:
+            Compute: (left_out,) = record_parallel_action("left")
+
+        with branch:
+            Compute: (right_out,) = record_parallel_action("right")
+    return right_out @ Compute
+
+
+def test_parallel_scheduler_keeps_lifeline_sequential():
+    _parallel_action_order.clear()
+    assert parallel_same_lifeline_actions(n=0) == "right"
+    assert _parallel_action_order == [
+        "start left", "end left",
+        "start right", "end right",
+    ]
 
 
 # ---------------------------------------------------------------------------

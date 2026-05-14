@@ -32,10 +32,11 @@ __all__ = [
     # Statements
     "Stmt",
     "EmptyStmt", "MsgStmt", "CoregionStmt", "ActStmt", "SkipStmt",
-    "SeqStmt", "IfStmt", "WhileStmt",
+    "SeqStmt", "IfStmt", "WhileStmt", "ParallelStmt",
     # Local-only statements (produced by projection)
     "LocalStmt", "AnyStmt",
     "SendStmt", "RecvStmt", "ReceiveAnyStmt", "SelfAssignStmt", "IfRecvStmt", "WhileRecvStmt",
+    "ParallelLocalStmt",
     # Workflow
     "Workflow",
     # Control-tag helpers
@@ -400,7 +401,21 @@ class WhileStmt:
         )
 
 
-Stmt = Union[EmptyStmt, MsgStmt, CoregionStmt, ActStmt, SkipStmt, SeqStmt, IfStmt, WhileStmt]
+@dataclass(frozen=True)
+class ParallelStmt:
+    """parallel { P1 } || ... || { Pn } — first-class parallel region."""
+    branches: tuple[AnyStmt, ...]
+
+    def __post_init__(self) -> None:
+        if not self.branches:
+            raise ValueError("parallel requires at least one branch")
+
+    def __repr__(self) -> str:
+        body = " || ".join(repr(branch) for branch in self.branches)
+        return f"parallel {{ {body} }}"
+
+
+Stmt = Union[EmptyStmt, MsgStmt, CoregionStmt, ActStmt, SkipStmt, SeqStmt, IfStmt, WhileStmt, ParallelStmt]
 
 
 # ---------------------------------------------------------------------------
@@ -413,10 +428,12 @@ class SendStmt:
     lifeline: Lifeline
     payload: tuple[Expr, ...]
     receiver: Lifeline
+    channel: str = "main"
 
     def __repr__(self) -> str:
         xs = ", ".join(repr(e) for e in self.payload)
-        return f"send {self.lifeline.name}({xs}) → {self.receiver.name}"
+        suffix = "" if self.channel == "main" else f" [{self.channel}]"
+        return f"send {self.lifeline.name}({xs}) → {self.receiver.name}{suffix}"
 
 
 @dataclass(frozen=True)
@@ -425,10 +442,12 @@ class RecvStmt:
     lifeline: Lifeline
     bindings: tuple[Expr, ...]
     sender: Lifeline
+    channel: str = "main"
 
     def __repr__(self) -> str:
         ys = ", ".join(repr(e) for e in self.bindings)
-        return f"recv {self.lifeline.name}({ys}) ← {self.sender.name}"
+        suffix = "" if self.channel == "main" else f" [{self.channel}]"
+        return f"recv {self.lifeline.name}({ys}) ← {self.sender.name}{suffix}"
 
 
 @dataclass(frozen=True)
@@ -436,6 +455,7 @@ class ReceiveAnyStmt:
     """recv-any A from one of several distinct senders."""
     lifeline: Lifeline
     receives: tuple[tuple[Lifeline, tuple[Expr, ...]], ...]
+    channel: str = "main"
 
     def __post_init__(self) -> None:
         if not self.receives:
@@ -455,7 +475,8 @@ class ReceiveAnyStmt:
             f"{sender.name}({', '.join(repr(e) for e in bindings)})"
             for sender, bindings in self.receives
         )
-        return f"recv_any {self.lifeline.name} ← {{{options}}}"
+        suffix = "" if self.channel == "main" else f" [{self.channel}]"
+        return f"recv_any {self.lifeline.name} ← {{{options}}}{suffix}"
 
 
 @dataclass(frozen=True)
@@ -488,11 +509,13 @@ class IfRecvStmt:
     sender: Lifeline
     branch_true: AnyStmt
     branch_false: AnyStmt
+    channel: str = "main"
 
     def __repr__(self) -> str:
         ys = ", ".join(repr(e) for e in self.bindings)
+        suffix = "" if self.channel == "main" else f" [{self.channel}]"
         return (
-            f"if {self.lifeline.name}({ys}) ← {self.sender.name} "
+            f"if {self.lifeline.name}({ys}) ← {self.sender.name}{suffix} "
             f"then {self.branch_true!r} "
             f"else {self.branch_false!r}"
         )
@@ -510,19 +533,42 @@ class WhileRecvStmt:
     sender: Lifeline
     body: AnyStmt
     exit_body: AnyStmt
+    channel: str = "main"
 
     def __repr__(self) -> str:
         ys = ", ".join(repr(e) for e in self.bindings)
+        suffix = "" if self.channel == "main" else f" [{self.channel}]"
         return (
-            f"while {self.lifeline.name}({ys}) ← {self.sender.name} "
+            f"while {self.lifeline.name}({ys}) ← {self.sender.name}{suffix} "
             f"{{ {self.body!r} }} "
             f"exit {{ {self.exit_body!r} }}"
         )
 
 
+@dataclass(frozen=True)
+class ParallelLocalStmt:
+    """Local projection of a parallel region."""
+    branches: tuple[LocalStmt, ...]
+    branch_indices: tuple[int, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not self.branches:
+            raise ValueError("local parallel requires at least one branch")
+        if self.branch_indices and len(self.branch_indices) != len(self.branches):
+            raise ValueError("local parallel branch indices must match branches")
+
+    def __repr__(self) -> str:
+        indices = self.branch_indices or tuple(range(len(self.branches)))
+        body = " || ".join(
+            f"P{index + 1}: {branch!r}"
+            for index, branch in zip(indices, self.branches)
+        )
+        return f"local_parallel {{ {body} }}"
+
+
 LocalStmt = Union[
     EmptyStmt, SendStmt, RecvStmt, ReceiveAnyStmt, SelfAssignStmt, ActStmt, SkipStmt,
-    SeqStmt, IfStmt, WhileStmt, IfRecvStmt, WhileRecvStmt,
+    SeqStmt, IfStmt, WhileStmt, IfRecvStmt, WhileRecvStmt, ParallelLocalStmt,
 ]
 
 # Union covering both global (Stmt) and local (LocalStmt) programs.
@@ -530,7 +576,7 @@ LocalStmt = Union[
 # and for functions that operate on either kind of program.
 AnyStmt = Union[
     EmptyStmt, MsgStmt, CoregionStmt, SendStmt, RecvStmt, ReceiveAnyStmt, SelfAssignStmt, ActStmt, SkipStmt,
-    SeqStmt, IfStmt, WhileStmt, IfRecvStmt, WhileRecvStmt,
+    SeqStmt, IfStmt, WhileStmt, IfRecvStmt, WhileRecvStmt, ParallelStmt, ParallelLocalStmt,
 ]
 
 
@@ -751,6 +797,11 @@ def participation_set(stmt: AnyStmt) -> frozenset[Lifeline]:
             return frozenset({b}) | participation_set(p1) | participation_set(p2)
         case WhileStmt(owner=b, body=p, exit_body=q):
             return frozenset({b}) | participation_set(p) | participation_set(q)
+        case ParallelStmt(branches=branches) | ParallelLocalStmt(branches=branches):
+            participants: frozenset[Lifeline] = frozenset()
+            for branch in branches:
+                participants |= participation_set(branch)
+            return participants
         case SendStmt(lifeline=a):
             return frozenset({a})
         case RecvStmt(lifeline=a):
@@ -812,12 +863,15 @@ def pp(node: AnyStmt, indent: int = 0) -> str:
             ])
         case SendStmt(lifeline=a, payload=xs, receiver=b):
             x_str = ", ".join(repr(e) for e in xs)
-            return f"{pad}send {a.name}({x_str}) → {b.name}"
+            suffix = "" if node.channel == "main" else f" [{node.channel}]"
+            return f"{pad}send {a.name}({x_str}) → {b.name}{suffix}"
         case RecvStmt(lifeline=a, bindings=ys, sender=b):
             y_str = ", ".join(repr(e) for e in ys)
-            return f"{pad}recv {a.name}({y_str}) ← {b.name}"
+            suffix = "" if node.channel == "main" else f" [{node.channel}]"
+            return f"{pad}recv {a.name}({y_str}) ← {b.name}{suffix}"
         case ReceiveAnyStmt(lifeline=a, receives=receives):
-            lines = [f"{pad}recv_any {a.name}:"]
+            suffix = "" if node.channel == "main" else f" [{node.channel}]"
+            lines = [f"{pad}recv_any {a.name}{suffix}:"]
             for sender, bindings in receives:
                 y_str = ", ".join(repr(e) for e in bindings)
                 lines.append(f"{pad}  from {sender.name}({y_str})")
@@ -828,19 +882,28 @@ def pp(node: AnyStmt, indent: int = 0) -> str:
             return f"{pad}assign {a.name}: ({y_str}) := ({x_str})"
         case IfRecvStmt(lifeline=a, bindings=ys, sender=b, branch_true=t, branch_false=f):
             y_str = ", ".join(repr(e) for e in ys)
+            suffix = "" if node.channel == "main" else f" [{node.channel}]"
             return "\n".join([
-                f"{pad}if {a.name}({y_str}) ← {b.name}:",
+                f"{pad}if {a.name}({y_str}) ← {b.name}{suffix}:",
                 pp(t, indent + 1),
                 f"{pad}else:",
                 pp(f, indent + 1),
             ])
         case WhileRecvStmt(lifeline=a, bindings=ys, sender=b, body=body, exit_body=exit_b):
             y_str = ", ".join(repr(e) for e in ys)
+            suffix = "" if node.channel == "main" else f" [{node.channel}]"
             return "\n".join([
-                f"{pad}while {a.name}({y_str}) ← {b.name}:",
+                f"{pad}while {a.name}({y_str}) ← {b.name}{suffix}:",
                 pp(body, indent + 1),
                 f"{pad}exit:",
                 pp(exit_b, indent + 1),
             ])
+        case ParallelStmt(branches=branches) | ParallelLocalStmt(branches=branches):
+            lines = [f"{pad}parallel:"]
+            indices = node.branch_indices if isinstance(node, ParallelLocalStmt) and node.branch_indices else tuple(range(len(branches)))
+            for index, branch in zip(indices, branches):
+                lines.append(f"{pad}  branch {index + 1}:")
+                lines.append(pp(branch, indent + 2))
+            return "\n".join(lines)
         case _:
             raise TypeError(f"Unknown statement type: {type(node).__name__}")

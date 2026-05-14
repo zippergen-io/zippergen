@@ -113,29 +113,43 @@ if latest_device_on @ Indicator:
 
 The result is determined entirely from the asynchronous communication structure: vector clocks record which events are causally visible, and message-carried views provide the latest guard values at those visible events.
 
-## Unordered receives with co-regions
+## Parallel regions
 
-Sometimes a receiver needs one message from each of several agents, but does not want to impose an artificial receive order. A co-region expresses exactly that:
+A `parallel` region runs several full sub-programs concurrently. Branches are structurally independent: each send/receive action carries a channel name derived from its syntactic position, so FIFO order is maintained per branch without any programmer-visible bookkeeping.
 
 ```python
-with coregion:
-    Analyst_A(a) >> Collector(a_report)
-    Analyst_B(b) >> Collector(b_report)
+@workflow
+def merge_candidate(candidate: str @ Orchestrator) -> str:
+    Orchestrator(candidate) >> Committer(candidate)
+
+    with parallel:
+        with branch:
+            Orchestrator(candidate) >> TestRunner(candidate)
+            TestRunner: (test_status,) = run_tests(candidate)
+            TestRunner(test_status) >> Committer(test_status)
+
+        with branch:
+            Orchestrator(candidate) >> Security(candidate)
+            Security: (security_status,) = scan_security(candidate)
+            Security(security_status) >> Committer(security_status)
+
+    Committer: (decision,) = decide_merge(candidate, test_status, security_status)
+    return decision @ Committer
 ```
 
-ZipperGen accepts the expected messages in whichever order they arrive, while preserving FIFO order on each channel.
+`Orchestrator` and `Committer` are *shared lifelines*: each appears in both branches. ZipperGen statically checks that shared lifelines do not form a dependency cycle — if they did, projection would be rejected before the workflow ever runs. The projection of a shared lifeline interleaves its branch-local programs while preserving their internal order.
 
-Co-regions are a lightweight implementation extension beyond the currently formalized core; they only relax artificial receive ordering between independent messages.
-
-The current construct is deliberately restricted: all messages in the block must have the same receiver, distinct senders, and disjoint receive variables. See `examples/coregion.py` for a minimal example with randomized local delays before the unordered receives.
+See `examples/parallel.py` for the full example and `examples/parallel_cyclic.py` for a rejected cyclic case.
 
 ## See it in action
 
 Examples ship with the repo. The first two run without an API key.
 
 ```bash
-python examples/coregion.py           # unordered receives from independent analysts (no key needed)
+python examples/parallel.py           # fan-out/fan-in with static acyclicity check (no key needed)
+python examples/parallel_cyclic.py    # rejected cyclic dependency — shows the error (no key needed)
 python examples/cpl_test.py           # causal guard ignores stale relay status (no key needed)
+python examples/coregion.py           # unordered receives from independent analysts (no key needed)
 python examples/dashboard.py          # several top-level workflow runs in one ZipperChat page
 python examples/nested_dashboard.py   # several dashboard runs, each with nested subworkflows
 python examples/write_tweet.py        # draft-and-approve with mock LLM (no key needed)

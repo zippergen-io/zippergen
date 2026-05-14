@@ -8,6 +8,7 @@ import pytest
 
 from zippergen.syntax import (
     EmptyStmt, MsgStmt, CoregionStmt, ActStmt, SkipStmt, SeqStmt, IfStmt, WhileStmt,
+    ParallelStmt,
     SendStmt, RecvStmt,
     Lifeline, Var, VarExpr, LitExpr,
     Workflow, participation_set,
@@ -129,6 +130,26 @@ def test_arrow_produces_msg_in_body():
     assert msg is not None
     assert msg.sender == P
     assert msg.receiver == Q
+
+
+# ---------------------------------------------------------------------------
+# DSL syntax → IR: parallel
+# ---------------------------------------------------------------------------
+
+@workflow
+def parallel_send(n: int @ P) -> int:
+    with parallel:
+        with branch:
+            P(n) >> Q(n)
+
+        with branch:
+            P(n) >> R(n)
+    return n @ Q
+
+
+def test_parallel_builder_records_parallel_stmt():
+    assert isinstance(parallel_send.body, ParallelStmt)
+    assert len(parallel_send.body.branches) == 2
 
 
 # ---------------------------------------------------------------------------
