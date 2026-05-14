@@ -7,13 +7,16 @@ using vector clocks and latest-value views.
 Supported operators:
     atom(fn)       — atomic predicate; fn: dict -> bool, or fn: (dict, EventContext) -> bool
     on(A)          — true iff the current event is on lifeline A
-    Y(phi)         — previous local event satisfies phi
-    Y[A](phi)      — latest causally visible event on A satisfies phi
+    At[A](phi)     — @A(phi): latest causally visible event on A satisfies phi (non-strict)
+    Y(phi)         — Prev phi: previous local event satisfies phi (strict)
     since(a, b)    — local non-strict since: a S b
     P(phi)         — strict causal-past modality
     ~phi           — negation
     phi1 & phi2    — conjunction
     phi1 | phi2    — disjunction
+
+Field terms — read a remote lifeline's latest accessible variable value inside atom():
+    atom(lambda env, ctx: ctx.field_view["A"]["x"] == env["y"])
 """
 from __future__ import annotations
 
@@ -24,11 +27,11 @@ from typing import Union
 __all__ = [
     "EventContext",
     "Formula",
-    "AtomicFormula", "OnFormula", "YFormula", "YAFormula",
+    "AtomicFormula", "OnFormula", "YFormula", "AtFormula", "YAFormula",
     "SinceFormula", "PastFormula", "ConstFormula",
     "AndFormula", "OrFormula", "NotFormula",
     "AnyFormula",
-    "atom", "Y", "on", "since", "P", "true", "false", "subformulas",
+    "atom", "At", "Y", "Prev", "on", "since", "P", "true", "false", "subformulas",
 ]
 
 
@@ -40,6 +43,10 @@ class EventContext:
     receive events, message_vc/message_view are the metadata carried by the
     incoming message; vc is the monitor's vector clock after merging and
     counting the current event.
+
+    field_view[B][x] is the value of variable x at the latest event of
+    lifeline B causally visible to the current event.  Use this inside
+    atom() to implement field terms: @B.x in the paper notation.
     """
 
     kind: str
@@ -47,6 +54,7 @@ class EventContext:
     vc: Mapping[str, int]
     message_vc: Mapping[str, int] | None = None
     message_view: Mapping[str, Mapping[int, bool]] | None = None
+    field_view: Mapping[str, Mapping[str, object]] | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -128,13 +136,22 @@ class YFormula(Formula):
 
 
 @dataclass(frozen=True)
-class YAFormula(Formula):
-    """Y_A phi: true iff the latest causally visible event on lifeline A satisfies phi."""
+class AtFormula(Formula):
+    """@A(phi): latest causally visible event on lifeline A satisfies phi.
+
+    Non-strict: when the current event is on A, last_A = current event,
+    so phi is evaluated there (not at the strictly previous A-event).
+    Use Y(phi) for the strict local previous.
+    """
     lifeline_name: str
     subformula: AnyFormula
 
     def __repr__(self) -> str:
-        return f"Y[{self.lifeline_name!r}]({self.subformula!r})"
+        return f"@{self.lifeline_name!r}({self.subformula!r})"
+
+
+# Backward-compatible alias.
+YAFormula = AtFormula
 
 
 @dataclass(frozen=True)
@@ -184,7 +201,7 @@ class NotFormula(Formula):
 
 
 AnyFormula = Union[
-    ConstFormula, AtomicFormula, OnFormula, YFormula, YAFormula,
+    ConstFormula, AtomicFormula, OnFormula, YFormula, AtFormula,
     SinceFormula, PastFormula,
     AndFormula, OrFormula, NotFormula,
 ]
@@ -236,35 +253,53 @@ def P(phi: AnyFormula | Callable) -> PastFormula:
     return PastFormula(subformula=sub, witness=SinceFormula(true(), sub))
 
 
-class _YAPartial:
-    """Partial application of Y[A]: call with a formula or callable to get YAFormula."""
+class _AtPartial:
+    """Partial application of At[A]: call with a formula or callable to get AtFormula."""
 
     def __init__(self, name: str) -> None:
         self._name = name
 
-    def __call__(self, phi: AnyFormula | Callable) -> YAFormula:
-        return YAFormula(lifeline_name=self._name, subformula=_as_formula(phi))
+    def __call__(self, phi: AnyFormula | Callable) -> AtFormula:
+        return AtFormula(lifeline_name=self._name, subformula=_as_formula(phi))
+
+
+class _AtOperator:
+    """At[A](phi) — @A(phi) in the paper: latest causally visible event of A satisfies phi.
+
+    Non-strict: when the current event is itself on A, phi is evaluated at
+    the current event.  For the strict previous use Y(phi).
+    """
+
+    def __getitem__(self, lifeline: object) -> _AtPartial:
+        name = lifeline.name if hasattr(lifeline, "name") else str(lifeline)  # type: ignore[union-attr]
+        return _AtPartial(name)
+
+
+At = _AtOperator()
+"""The @A causal operator.  Use At[A](phi)."""
 
 
 class _YOperator:
     """
-    Y operator with two forms:
-        Y(phi)    — previous local event (YFormula)
-        Y[A](phi) — latest causally visible event of A (YAFormula)
+    Y / Prev operator: Y(phi) — previous local event satisfies phi (strict).
 
-    In both forms, passing a plain callable auto-wraps it in atom().
+    Y[A](phi) is kept for backward compatibility and produces AtFormula
+    with non-strict semantics (same as At[A](phi)).
     """
 
     def __call__(self, phi: AnyFormula | Callable) -> YFormula:
         return YFormula(subformula=_as_formula(phi))
 
-    def __getitem__(self, lifeline: object) -> _YAPartial:
+    def __getitem__(self, lifeline: object) -> _AtPartial:
         name = lifeline.name if hasattr(lifeline, "name") else str(lifeline)  # type: ignore[union-attr]
-        return _YAPartial(name)
+        return _AtPartial(name)
 
 
 Y = _YOperator()
-"""The Y temporal operator.  Use Y(phi) or Y[A](phi)."""
+"""The Y / Prev temporal operator.  Use Y(phi) for the strict local previous."""
+
+Prev = Y
+"""Alias for Y: Prev(phi) is the strict local-previous operator."""
 
 
 # ---------------------------------------------------------------------------
@@ -287,7 +322,7 @@ def subformulas(formula: AnyFormula) -> list[AnyFormula]:
             pass  # leaves — no children
         elif isinstance(f, (YFormula, NotFormula)):
             visit(f.subformula)
-        elif isinstance(f, YAFormula):
+        elif isinstance(f, AtFormula):
             visit(f.subformula)
         elif isinstance(f, SinceFormula):
             visit(f.left)

@@ -31,7 +31,7 @@ import inspect
 
 from zippergen.formula import (
     AnyFormula, EventContext,
-    AtomicFormula, OnFormula, YFormula, YAFormula,
+    AtomicFormula, OnFormula, YFormula, AtFormula,
     ConstFormula, SinceFormula, PastFormula,
     AndFormula, OrFormula, NotFormula,
 )
@@ -59,6 +59,9 @@ class MonitorState:
         # view[B][id(phi)] = truth of phi at the latest event of B visible to self.
         self.view: dict[str, dict[int, bool]] = {b: {} for b in all_lifelines}
 
+        # field_view[B][x] = value of variable x at the latest event of B visible to self.
+        self.field_view: dict[str, dict[str, object]] = {b: {} for b in all_lifelines}
+
         # _val: computed values for the current event (cleared and refilled by on_event)
         self._val: dict[int, bool] = {}
 
@@ -73,21 +76,21 @@ class MonitorState:
         *,
         recv_vc: dict[str, int] | None = None,
         recv_view: dict[str, dict[int, bool]] | None = None,
+        recv_field_view: dict[str, dict[str, object]] | None = None,
     ) -> None:
         """Process one event on this lifeline.
 
         Parameters
         ----------
-        kind      : "send" | "recv" | "act" | "choice"
-        env       : the local variable store AFTER the event's effect has been applied.
-                    For sends and choices the store is unchanged; for recvs and acts
-                    it reflects the newly delivered/computed values.
-        recv_vc   : vector clock piggybacked on the incoming message (recv only).
-        recv_view : view table piggybacked on the incoming message (recv only).
+        kind            : "send" | "recv" | "act" | "choice"
+        env             : the local variable store AFTER the event's effect has been applied.
+        recv_vc         : vector clock piggybacked on the incoming message (recv only).
+        recv_view       : boolean-view table piggybacked on the incoming message (recv only).
+        recv_field_view : field-view table piggybacked on the incoming message (recv only).
         """
         A = self.name
 
-        # --- Lines 2-9: merge incoming vc and view (recv only) ---
+        # --- Lines 2-9: merge incoming vc, view, and field_view (recv only) ---
         if kind == "recv":
             if recv_vc is None or recv_view is None:
                 raise RuntimeError(
@@ -97,6 +100,8 @@ class MonitorState:
                 if recv_vc.get(B, 0) > self.vc[B]:
                     for phi_id, val in recv_view.get(B, {}).items():
                         self.view[B][phi_id] = val
+                    if recv_field_view and B in recv_field_view:
+                        self.field_view[B] = dict(recv_field_view[B])
             for B in self.lifelines:
                 self.vc[B] = max(self.vc[B], recv_vc.get(B, 0))
 
@@ -106,6 +111,9 @@ class MonitorState:
         # --- Line 16: increment own vc ---
         self.vc[A] += 1
 
+        # Snapshot current env into field_view[A] (implements field-term tracking).
+        self.field_view[A] = dict(env)
+
         # env is already post-effect (caller applies effect before calling on_event)
         event = EventContext(
             kind=kind,
@@ -113,6 +121,7 @@ class MonitorState:
             vc=dict(self.vc),
             message_vc=dict(recv_vc) if recv_vc is not None else None,
             message_view={b: dict(v) for b, v in recv_view.items()} if recv_view is not None else None,
+            field_view={b: dict(v) for b, v in self.field_view.items()},
         )
 
         # --- Lines 19-21: evaluate subformulas in bottom-up order ---
@@ -155,10 +164,11 @@ class MonitorState:
                 # Y θ: true iff there is a previous local event AND θ held there.
                 return (self.vc[A] > 1) and old.get(id(theta), False)
 
-            case YAFormula(lifeline_name=B, subformula=theta):
+            case AtFormula(lifeline_name=B, subformula=theta):
                 if B == A:
-                    # Same-lifeline case: same as Y θ.
-                    return (self.vc[A] > 1) and old.get(id(theta), False)
+                    # Non-strict: last_A(e) = e when e is on A, so evaluate θ at
+                    # the current event.  vc[A] > 0 always holds after increment.
+                    return self._val[id(theta)]
                 else:
                     # Cross-lifeline: check the latest causally visible event of B.
                     return (self.vc.get(B, 0) > 0) and self.view[B].get(id(theta), False)
@@ -217,6 +227,10 @@ class MonitorState:
     def snapshot_view(self) -> dict[str, dict[int, bool]]:
         """Deep copy of the current view table (one level of dicts)."""
         return {b: dict(v) for b, v in self.view.items()}
+
+    def snapshot_field_view(self) -> dict[str, dict[str, object]]:
+        """Deep copy of the current field-view table."""
+        return {b: dict(v) for b, v in self.field_view.items()}
 
 
 def _call_atom(fn, env: dict, event: EventContext) -> bool:

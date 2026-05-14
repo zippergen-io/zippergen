@@ -137,7 +137,7 @@ def merge_candidate(candidate: str @ Orchestrator) -> str:
     return decision @ Committer
 ```
 
-`Orchestrator` and `Committer` are *shared lifelines*: each appears in both branches. ZipperGen statically checks that shared lifelines do not form a dependency cycle — if they did, projection would be rejected before the workflow ever runs. The projection of a shared lifeline interleaves its branch-local programs while preserving their internal order.
+`Orchestrator` and `Committer` are *shared lifelines*: each appears in both branches. ZipperGen statically checks that shared lifelines do not form a dependency cycle. If they did, projection would be rejected before the workflow ever runs. The projection of a shared lifeline interleaves its branch-local programs while preserving their internal order.
 
 See `examples/parallel.py` for the full example and `examples/parallel_cyclic.py` for a rejected cyclic case.
 
@@ -147,8 +147,9 @@ Examples ship with the repo. The first two run without an API key.
 
 ```bash
 python examples/parallel.py           # fan-out/fan-in with static acyclicity check (no key needed)
-python examples/parallel_cyclic.py    # rejected cyclic dependency — shows the error (no key needed)
+python examples/parallel_cyclic.py    # rejected cyclic dependency; shows the error (no key needed)
 python examples/cpl_test.py           # causal guard ignores stale relay status (no key needed)
+python examples/field_terms.py        # field-term guard: cross-lifeline version check (no key needed)
 python examples/coregion.py           # unordered receives from independent analysts (no key needed)
 python examples/dashboard.py          # several top-level workflow runs in one ZipperChat page
 python examples/nested_dashboard.py   # several dashboard runs, each with nested subworkflows
@@ -177,7 +178,7 @@ second_workflow.configure(ui=True, trace=dashboard)
 
 ## How it works
 
-The code is organized as a pipeline of layers that mirror the paper almost literally. A user writes a global workflow in Python DSL syntax; `@workflow` rewrites it into an immutable IR; the projection layer turns that global IR into one local program per lifeline; the runtime starts one thread per lifeline and connects them with FIFO queues. The optional `@planner` primitive asks an LLM to generate a new global workflow at runtime, then runs it through the exact same pipeline — so the guarantee holds there too.
+The code is organized as a pipeline of layers that mirror the paper almost literally. A user writes a global workflow in Python DSL syntax; `@workflow` rewrites it into an immutable IR; the projection layer turns that global IR into one local program per lifeline; the runtime starts one thread per lifeline and connects them with FIFO queues. The optional `@planner` primitive asks an LLM to generate a new global workflow at runtime, then runs it through the exact same pipeline, so the guarantee holds there too.
 
 ### Diagnosis consensus
 
@@ -415,7 +416,7 @@ The implementation is based on the theory of Message Sequence Charts. The key pr
 - **Correctness**: The distributed projected programs produce exactly the same behaviors as the global program.
 - **Deadlock-freedom**: Follows by structural induction; no runtime checking required.
 
-The formal proofs are in [our paper](https://arxiv.org/abs/2604.17612). The main theorems (Theorem 3.1 and Corollary 3.1) have been machine-checked in Lean 4 — see the [formalization](https://github.com/zippergen-io/paper-isola/tree/main/Lean).
+The formal proofs are in [our paper](https://arxiv.org/abs/2604.17612). The main theorems (Theorem 3.1 and Corollary 3.1) have been machine-checked in Lean 4; see the [formalization](https://github.com/zippergen-io/paper-isola/tree/main/Lean).
 
 ## License
 

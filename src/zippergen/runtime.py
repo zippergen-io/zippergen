@@ -210,8 +210,9 @@ def tee_traces(*traces):
 class _SeqQueue:
     """FIFO queue that auto-stamps each item with a per-channel sequence number.
 
-    Items are stored as (seq, values, vc, view). vc and view are the sender's
-    monitor snapshot, or None when monitoring is inactive.
+    Items are stored as (seq, values, vc, view, field_view). vc, view, and
+    field_view are the sender's monitor snapshot, or None when monitoring is
+    inactive.
     """
 
     def __init__(self):
@@ -223,15 +224,16 @@ class _SeqQueue:
         values: tuple,
         vc: dict | None = None,
         view: dict | None = None,
+        field_view: dict | None = None,
     ) -> int:
         seq = self._next
         self._next += 1
-        self._q.put((seq, values, vc, view))
+        self._q.put((seq, values, vc, view, field_view))
         return seq
 
     def get(
         self, *, stop: threading.Event | None = None
-    ) -> tuple[int, tuple, dict | None, dict | None]:
+    ) -> tuple[int, tuple, dict | None, dict | None, dict | None]:
         if stop is None:
             return self._q.get()
         while True:
@@ -241,7 +243,7 @@ class _SeqQueue:
                 if stop.is_set():
                     raise RuntimeError("Workflow cancelled: another lifeline failed")
 
-    def get_nowait(self) -> tuple[int, tuple, dict | None, dict | None]:
+    def get_nowait(self) -> tuple[int, tuple, dict | None, dict | None, dict | None]:
         return self._q.get_nowait()
 
 
@@ -352,7 +354,7 @@ def _receive_any(
     channel: str,
     *,
     stop: threading.Event | None = None,
-) -> tuple[str, tuple[int, tuple, dict | None, dict | None]]:
+) -> tuple[str, tuple[int, tuple, dict | None, dict | None, dict | None]]:
     while True:
         for sender in sorted(pending_senders):
             try:
@@ -374,7 +376,7 @@ def _try_channel_get(
     sender: str,
     receiver: str,
     channel: str,
-) -> tuple[int, tuple, dict | None, dict | None] | None:
+) -> tuple[int, tuple, dict | None, dict | None, dict | None] | None:
     try:
         return ch[(sender, receiver, channel)].get_nowait()
     except queue.Empty:
@@ -426,10 +428,10 @@ def _step(
             item = _try_channel_get(ch, B.name, A.name, channel)
             if item is None:
                 return stmt, False
-            seq_no, values, recv_vc, recv_view = item
+            seq_no, values, recv_vc, recv_view, recv_field_view = item
             _bind(ys, values, env)
             if monitor:
-                monitor.on_event("recv", env, recv_vc=recv_vc, recv_view=recv_view)
+                monitor.on_event("recv", env, recv_vc=recv_vc, recv_view=recv_view, recv_field_view=recv_field_view)
             if trace:
                 trace({
                     "type": "recv",
@@ -446,10 +448,10 @@ def _step(
                 item = _try_channel_get(ch, sender.name, A.name, channel)
                 if item is None:
                     continue
-                seq_no, values, recv_vc, recv_view = item
+                seq_no, values, recv_vc, recv_view, recv_field_view = item
                 _bind(ys, values, env)
                 if monitor:
-                    monitor.on_event("recv", env, recv_vc=recv_vc, recv_view=recv_view)
+                    monitor.on_event("recv", env, recv_vc=recv_vc, recv_view=recv_view, recv_field_view=recv_field_view)
                 if trace:
                     trace({
                         "type": "recv",
@@ -518,10 +520,10 @@ def _step(
             item = _try_channel_get(ch, B.name, A.name, channel)
             if item is None:
                 return stmt, False
-            seq_no, values, recv_vc, recv_view = item
+            seq_no, values, recv_vc, recv_view, recv_field_view = item
             _bind(ys, values, env)
             if monitor:
-                monitor.on_event("recv", env, recv_vc=recv_vc, recv_view=recv_view)
+                monitor.on_event("recv", env, recv_vc=recv_vc, recv_view=recv_view, recv_field_view=recv_field_view)
             flag = _eval(ys[0], env) if isinstance(ys[0], VarExpr) else values[0]
             if trace:
                 trace({
@@ -576,10 +578,10 @@ def _step(
             item = _try_channel_get(ch, B.name, A.name, channel)
             if item is None:
                 return stmt, False
-            seq_no, values, recv_vc, recv_view = item
+            seq_no, values, recv_vc, recv_view, recv_field_view = item
             _bind(ys, values, env)
             if monitor:
-                monitor.on_event("recv", env, recv_vc=recv_vc, recv_view=recv_view)
+                monitor.on_event("recv", env, recv_vc=recv_vc, recv_view=recv_view, recv_field_view=recv_field_view)
             flag = _eval(ys[0], env) if isinstance(ys[0], VarExpr) else values[0]
             if trace:
                 trace({
@@ -617,7 +619,7 @@ def _exec(stmt: LocalStmt, env: Env, ch: Channels, ns: dict, llm_backend, human_
             values = tuple(copy.deepcopy(_eval(x, env)) for x in xs)
             if monitor:
                 monitor.on_event("send", env)
-                seq = ch[(A.name, B.name, channel)].put(values, monitor.snapshot_vc(), monitor.snapshot_view())
+                seq = ch[(A.name, B.name, channel)].put(values, monitor.snapshot_vc(), monitor.snapshot_view(), monitor.snapshot_field_view())
             else:
                 seq = ch[(A.name, B.name, channel)].put(values)
             if trace:
@@ -633,10 +635,10 @@ def _exec(stmt: LocalStmt, env: Env, ch: Channels, ns: dict, llm_backend, human_
                 })
 
         case RecvStmt(lifeline=A, bindings=ys, sender=B, channel=channel):
-            seq, values, recv_vc, recv_view = ch[(B.name, A.name, channel)].get(stop=stop)
+            seq, values, recv_vc, recv_view, recv_field_view = ch[(B.name, A.name, channel)].get(stop=stop)
             _bind(ys, values, env)
             if monitor:
-                monitor.on_event("recv", env, recv_vc=recv_vc, recv_view=recv_view)
+                monitor.on_event("recv", env, recv_vc=recv_vc, recv_view=recv_view, recv_field_view=recv_field_view)
             if trace:
                 trace({
                     "type": "recv",
@@ -654,11 +656,11 @@ def _exec(stmt: LocalStmt, env: Env, ch: Channels, ns: dict, llm_backend, human_
             }
             while pending:
                 sender_name, item = _receive_any(ch, A.name, set(pending), channel, stop=stop)
-                seq, values, recv_vc, recv_view = item
+                seq, values, recv_vc, recv_view, recv_field_view = item
                 sender, ys = pending.pop(sender_name)
                 _bind(ys, values, env)
                 if monitor:
-                    monitor.on_event("recv", env, recv_vc=recv_vc, recv_view=recv_view)
+                    monitor.on_event("recv", env, recv_vc=recv_vc, recv_view=recv_view, recv_field_view=recv_field_view)
                 if trace:
                     trace({
                         "type": "recv",
@@ -887,10 +889,10 @@ def _exec(stmt: LocalStmt, env: Env, ch: Channels, ns: dict, llm_backend, human_
             _exec(cast(LocalStmt, t if flag else f), env, ch, ns, llm_backend, human_backend, monitor, trace, formula_conditions, stop)
 
         case IfRecvStmt(lifeline=A, bindings=ys, sender=B, branch_true=t, branch_false=f, channel=channel):
-            seq, values, recv_vc, recv_view = ch[(B.name, A.name, channel)].get(stop=stop)
+            seq, values, recv_vc, recv_view, recv_field_view = ch[(B.name, A.name, channel)].get(stop=stop)
             _bind(ys, values, env)
             if monitor:
-                monitor.on_event("recv", env, recv_vc=recv_vc, recv_view=recv_view)
+                monitor.on_event("recv", env, recv_vc=recv_vc, recv_view=recv_view, recv_field_view=recv_field_view)
             flag = _eval(ys[0], env) if isinstance(ys[0], VarExpr) else values[0]
             if trace:
                 trace({
@@ -946,10 +948,10 @@ def _exec(stmt: LocalStmt, env: Env, ch: Channels, ns: dict, llm_backend, human_
 
         case WhileRecvStmt(lifeline=A, bindings=ys, sender=B, body=body, exit_body=exit_b, channel=channel):
             while True:
-                seq, values, recv_vc, recv_view = ch[(B.name, A.name, channel)].get(stop=stop)
+                seq, values, recv_vc, recv_view, recv_field_view = ch[(B.name, A.name, channel)].get(stop=stop)
                 _bind(ys, values, env)
                 if monitor:
-                    monitor.on_event("recv", env, recv_vc=recv_vc, recv_view=recv_view)
+                    monitor.on_event("recv", env, recv_vc=recv_vc, recv_view=recv_view, recv_field_view=recv_field_view)
                 flag = _eval(ys[0], env) if isinstance(ys[0], VarExpr) else values[0]
                 if trace:
                     trace({
