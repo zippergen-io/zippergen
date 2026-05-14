@@ -233,10 +233,61 @@ class MonitorState:
         return {b: dict(v) for b, v in self.field_view.items()}
 
 
+class _AttrProxy(dict):
+    """Dict subclass that also supports attribute-style access.
+
+    ``env.verdict`` is equivalent to ``env.get("verdict")``.  All normal dict
+    methods (get, items, …) continue to work unchanged for backward compat.
+    """
+
+    def __getattr__(self, name: str):
+        try:
+            return self[name]
+        except KeyError:
+            return None
+
+
+class _FieldProxy:
+    """Proxy for ``EventContext.field_view`` that supports attribute access.
+
+    ``ctx.field_view.Reviewer.rev_version``  is equivalent to
+    ``(ctx.field_view or {}).get("Reviewer", {}).get("rev_version")``.
+    """
+
+    def __init__(self, fv: dict | None) -> None:
+        object.__setattr__(self, "_fv", fv or {})
+
+    def __getattr__(self, name: str) -> _AttrProxy:
+        return _AttrProxy(object.__getattribute__(self, "_fv").get(name) or {})
+
+    def __getitem__(self, name: str) -> _AttrProxy:
+        return _AttrProxy(object.__getattribute__(self, "_fv").get(name) or {})
+
+    def get(self, name: str, default=None):
+        v = object.__getattribute__(self, "_fv").get(name)
+        return _AttrProxy(v) if v is not None else (
+            _AttrProxy(default) if isinstance(default, dict) else default
+        )
+
+
+class _CtxProxy:
+    """Thin wrapper around EventContext that serves field_view as a _FieldProxy."""
+
+    def __init__(self, ctx: EventContext) -> None:
+        object.__setattr__(self, "_ctx", ctx)
+
+    def __getattr__(self, name: str):
+        val = getattr(object.__getattribute__(self, "_ctx"), name)
+        if name == "field_view":
+            return _FieldProxy(val)
+        return val
+
+
 def _call_atom(fn, env: dict, event: EventContext) -> bool:
+    proxy_env = _AttrProxy(env)
     if _accepts_event_context(fn):
-        return fn(env, event)
-    return fn(env)
+        return fn(proxy_env, _CtxProxy(event))
+    return fn(proxy_env)
 
 
 def _accepts_event_context(fn) -> bool:

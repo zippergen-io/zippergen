@@ -67,19 +67,16 @@ def reject_version(version: str) -> str:
 
 # Guard 1 — plain atom: the Reviewer approved.
 verdict_ok = atom(
-    lambda env: env.get("verdict") == "approved",
+    lambda env: env.verdict == "approved",
     src="verdict=approved",
 )
 
 # Guard 2 — field term: the Reviewer's version matches the Gatekeeper's.
-# ctx.field_view["Reviewer"]["rev_version"] is the value of rev_version at
-# the Reviewer's latest causally visible event, piggybacked automatically on
+# ctx.field_view.Reviewer.rev_version is the value of rev_version at the
+# Reviewer's latest causally visible event, piggybacked automatically on
 # the verdict message — the version is never explicitly sent to the Gatekeeper.
 version_matches = atom(
-    lambda env, ctx: (
-        (ctx.field_view or {}).get("Reviewer", {}).get("rev_version")
-        == env.get("version")
-    ),
+    lambda env, ctx: ctx.field_view.Reviewer.rev_version == env.version,
     src="@Reviewer.rev_version = version",
 )
 

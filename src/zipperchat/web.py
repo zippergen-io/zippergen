@@ -1702,9 +1702,6 @@ function canReuseActRow(lev, lifeline, r) {
   return true;
 }
 function findReusableActRow(lev, lifeline, ev = null) {
-  // In a parallel region, keep each branch event on its own row. This preserves
-  // the concrete shuffled order while the small P1/P2 labels identify branches.
-  if (ev && ev.parallel_branch) return null;
   return Object.values(lev.cgRows)
     .filter(r => canReuseActRow(lev, lifeline, r))
     .sort((a, b) => b.level !== a.level ? b.level - a.level : b.id - a.id)[0] || null;
