@@ -1258,7 +1258,7 @@ svg.msg-arrow.ctrl line {
 
 <header id="topbar">
   <div class="brand">
-    <img class="brand-logo" src="/assets/zippergen-lockup-white.svg" alt="ZipperGen">
+    <img class="brand-logo" src="/assets/zippergen-lockup-dark.svg" alt="ZipperGen">
   </div>
   <div id="topbar-meta">
     <div id="status-indicator">
