@@ -24,6 +24,7 @@ from zippergen.projection import project
 A = Lifeline("A")
 B = Lifeline("B")
 C = Lifeline("C")
+D = Lifeline("D")
 
 x = Var("x", int)
 y = Var("y", int)
@@ -224,6 +225,41 @@ def test_project_parallel_preserves_global_branch_index_for_single_branch_partic
     assert isinstance(result, ParallelLocalStmt)
     assert result.branch_indices == (1,)
     assert len(result.branches) == 1
+
+
+def test_project_parallel_rejects_shared_reachability_cycle_through_nested_private_lifelines():
+    nested = ParallelStmt((
+        MsgStmt(A, (VarExpr(x),), C, (VarExpr(y),)),
+        MsgStmt(C, (VarExpr(y),), D, (VarExpr(z),)),
+        MsgStmt(D, (VarExpr(z),), B, (VarExpr(y),)),
+    ))
+    stmt = ParallelStmt((
+        nested,
+        MsgStmt(B, (VarExpr(y),), A, (VarExpr(x),)),
+    ))
+    wf = _make_workflow(stmt)
+
+    with pytest.raises(ValueError, match="shared reachability graph"):
+        project(wf, A)
+
+
+def test_project_parallel_allows_private_intra_branch_request_response_cycle():
+    branch_with_private_cycle = seq(
+        seq(
+            MsgStmt(A, (VarExpr(x),), C, (VarExpr(y),)),
+            MsgStmt(C, (VarExpr(y),), A, (VarExpr(x),)),
+        ),
+        MsgStmt(A, (VarExpr(x),), B, (VarExpr(y),)),
+    )
+    stmt = ParallelStmt((
+        branch_with_private_cycle,
+        MsgStmt(A, (VarExpr(x),), B, (VarExpr(y),)),
+    ))
+    wf = _make_workflow(stmt)
+
+    result = project(wf, A)
+    assert isinstance(result, ParallelLocalStmt)
+    assert len(result.branches) == 2
 
 
 # ---------------------------------------------------------------------------

@@ -61,7 +61,7 @@ def _parallel_channel(stmt: ParallelStmt, branch_index: int, parent_channel: str
 
 def _dep_graph(stmt: AnyStmt) -> set[tuple[Lifeline, Lifeline]]:
     """
-    DG(stmt) — dependency graph as a set of (A, B) pairs with A ≠ B.
+    DG(stmt) — dependency graph as a set of (A, B) pairs.
     Follows the inductive definition from the paper.
     """
     match stmt:
@@ -88,6 +88,43 @@ def _dep_graph(stmt: AnyStmt) -> set[tuple[Lifeline, Lifeline]]:
             raise TypeError(f"_dep_graph: unknown statement type {type(stmt).__name__}")
 
 
+def _shared_reachability_edges(
+    edges: set[tuple[Lifeline, Lifeline]],
+    shared: frozenset[Lifeline],
+) -> set[tuple[Lifeline, Lifeline]]:
+    """
+    DG(P)^+ restricted to shared lifelines.
+
+    There is an edge A -> B in the returned graph when A and B are shared,
+    A != B, and DG(P) has a directed path from A to B, possibly through
+    private lifelines.
+    """
+    nodes = set(shared)
+    for a, b in edges:
+        nodes.add(a)
+        nodes.add(b)
+
+    adj: dict[Lifeline, list[Lifeline]] = {n: [] for n in nodes}
+    for a, b in edges:
+        adj.setdefault(a, []).append(b)
+        adj.setdefault(b, [])
+
+    reachable_shared: set[tuple[Lifeline, Lifeline]] = set()
+    for start in shared:
+        seen: set[Lifeline] = set()
+        stack = list(adj.get(start, ()))
+        while stack:
+            node = stack.pop()
+            if node in seen:
+                continue
+            seen.add(node)
+            if node in shared and node != start:
+                reachable_shared.add((start, node))
+            stack.extend(adj.get(node, ()))
+
+    return reachable_shared
+
+
 def _has_cycle(edges: set[tuple[Lifeline, Lifeline]], nodes: frozenset[Lifeline]) -> bool:
     """DFS cycle detection on the subgraph of edges induced by nodes."""
     adj: dict[Lifeline, list[Lifeline]] = {n: [] for n in nodes}
@@ -111,8 +148,8 @@ def _has_cycle(edges: set[tuple[Lifeline, Lifeline]], nodes: frozenset[Lifeline]
 
 def _check_acyclicity(stmt: ParallelStmt) -> None:
     """
-    Raise ValueError if the subgraph of DG(stmt) induced by shared lifelines
-    contains a directed cycle (ill-formed parallel region per Definition 3).
+    Raise ValueError if DG(stmt)^+ restricted to shared lifelines contains
+    a directed cycle.
     """
     seen: set[Lifeline] = set()
     shared: set[Lifeline] = set()
@@ -122,13 +159,15 @@ def _check_acyclicity(stmt: ParallelStmt) -> None:
         seen |= ps
     if len(shared) < 2:
         return
-    edges = _dep_graph(stmt)
-    if _has_cycle(edges, frozenset(shared)):
+    shared_nodes = frozenset(shared)
+    edges = _shared_reachability_edges(_dep_graph(stmt), shared_nodes)
+    if _has_cycle(edges, shared_nodes):
         names = ", ".join(sorted(l.name for l in shared))
         raise ValueError(
             f"Ill-formed parallel region: shared lifelines [{names}] form a "
-            f"dependency cycle in DG(P). Move the cyclic messages outside the "
-            f"parallel region or restructure the branches."
+            f"dependency cycle in the shared reachability graph. Move the "
+            f"cyclic messages outside the parallel region or restructure the "
+            f"branches."
         )
 
 

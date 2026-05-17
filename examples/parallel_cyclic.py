@@ -8,7 +8,7 @@ shared lifelines have a circular message dependency:
   Branch 1:  Analyst  →  Reviewer   (Analyst sends to Reviewer)
   Branch 2:  Reviewer →  Analyst    (Reviewer sends to Analyst)
 
-The dependency graph restricted to the shared lifelines {Analyst, Reviewer}
+The reachability graph induced by the shared lifelines {Analyst, Reviewer}
 contains the cycle Analyst → Reviewer → Analyst, so the region is rejected at
 projection time with a ValueError.
 

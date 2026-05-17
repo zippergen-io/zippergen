@@ -145,7 +145,7 @@ def merge_candidate(candidate: str @ Orchestrator) -> str:
     return decision @ Committer
 ```
 
-`Orchestrator` and `Committer` are *shared lifelines*: each appears in both branches. ZipperGen statically checks that shared lifelines do not form a dependency cycle. If they did, projection would be rejected before the workflow ever runs. The projection of a shared lifeline interleaves its branch-local programs while preserving their internal order.
+`Orchestrator` and `Committer` are *shared lifelines*: each appears in both branches. ZipperGen statically checks that the reachability graph induced by shared lifelines is acyclic. If it is not, projection is rejected before the workflow ever runs. The projection of a shared lifeline interleaves its branch-local programs while preserving their internal order.
 
 See `examples/parallel.py` for the full example and `examples/parallel_cyclic.py` for a rejected cyclic case.
 
