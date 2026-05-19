@@ -559,15 +559,14 @@ def test_inline_formula_guard_is_discovered_before_execution():
     assert _inline_formula_workflow(approved=True) == "yes"
 
 
-# --- P (strict causal past) ---
+# --- P (non-strict causal past) ---
 
 _PastOwner = Lifeline("PastOwner")
 _past_guard = P(atom(lambda env: env.get("flag", False)))
 
 
 @workflow
-def _past_workflow(dummy: bool @ _PastOwner) -> str:
-    _PastOwner: flag = _set_flag_true()
+def _past_workflow(flag: bool @ _PastOwner) -> str:
     if _past_guard @ _PastOwner:
         _PastOwner: out = _yes_str(flag)
     else:
@@ -575,8 +574,9 @@ def _past_workflow(dummy: bool @ _PastOwner) -> str:
     return out @ _PastOwner
 
 
-def test_past_guard_sees_prior_local_event():
-    assert _past_workflow(dummy=True) == "yes"
+def test_past_guard_sees_current_local_event():
+    assert _past_workflow(flag=True) == "yes"
+    assert _past_workflow(flag=False) == "no"
 
 
 # --- Cross-lifeline P ---

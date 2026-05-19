@@ -190,11 +190,11 @@ class MonitorState:
                 return self._val[id(r)] or (self._val[id(l)] and old.get(id(phi), False))
 
             case PastFormula(witness=witness):
-                # Strict causal past: ∨_B Y_B(witness).  Same-lifeline uses the
-                # old local view so the current event is not counted.
+                # Non-strict causal past: ∨_B @B(witness).  Same-lifeline uses
+                # the current witness value because last_A(e) = e.
                 for B in self.lifelines:
                     if B == A:
-                        if self.vc[A] > 1 and old.get(id(witness), False):
+                        if self._val[id(witness)]:
                             return True
                     elif self.vc.get(B, 0) > 0 and self.view[B].get(id(witness), False):
                         return True

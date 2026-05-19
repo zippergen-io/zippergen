@@ -12,7 +12,7 @@ Supported operators:
     Here.x         — field x at the current event
     Y(phi)         — Prev phi: previous local event satisfies phi (strict)
     since(a, b)    — local non-strict since: a S b
-    P(phi)         — strict causal-past modality
+    P(phi)         — non-strict causal-past modality
     ~phi           — negation
     phi1 & phi2    — conjunction
     phi1 | phi2    — disjunction
@@ -95,10 +95,13 @@ class Formula:
 # Field terms
 # ---------------------------------------------------------------------------
 
+_MISSING = object()
+
+
 def _lookup_field(store: object, field_name: str) -> object:
     if isinstance(store, Mapping):
-        return store.get(field_name)
-    return getattr(store, field_name, None)
+        return store.get(field_name, _MISSING)
+    return getattr(store, field_name, _MISSING)
 
 
 def _eval_term(term: object, env: Mapping[str, object], event: EventContext) -> object:
@@ -142,7 +145,11 @@ class FieldTerm:
         src = f"{_term_src(self)} {symbol} {_term_src(other)}"
 
         def predicate(env, ctx) -> bool:
-            return op(_eval_term(self, env, ctx), _eval_term(other, env, ctx))
+            left = _eval_term(self, env, ctx)
+            right = _eval_term(other, env, ctx)
+            if left is _MISSING or right is _MISSING:
+                return False
+            return op(left, right)
 
         return atom(predicate, src=src)
 
@@ -256,7 +263,7 @@ class SinceFormula(Formula):
 
 @dataclass(frozen=True)
 class PastFormula(Formula):
-    """Strict causal past, implemented as an internal ``true S phi`` witness."""
+    """Non-strict causal past, implemented as an internal ``true S phi`` witness."""
     subformula: AnyFormula
     witness: SinceFormula
 
@@ -338,7 +345,7 @@ def since(left: AnyFormula | Callable, right: AnyFormula | Callable) -> SinceFor
 
 
 def P(phi: AnyFormula | Callable) -> PastFormula:
-    """Return the strict causal-past formula for ``phi``."""
+    """Return the non-strict causal-past formula for ``phi``."""
     sub = _as_formula(phi)
     return PastFormula(subformula=sub, witness=SinceFormula(true(), sub))
 

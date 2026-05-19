@@ -255,6 +255,23 @@ def test_field_term_formula_rejects_mismatched_latest_visible_value():
     assert b.view["B"][id(guard)] is False
 
 
+def test_field_term_formula_rejects_absent_latest_value_for_disequality():
+    guard = At["A"].version != Here.version
+    a = make_monitor("A", ["A", "B"], guard)
+    b = make_monitor("B", ["A", "B"], guard)
+
+    a.on_event("act", {"other": "v1"})
+    b.on_event(
+        "recv",
+        {"version": "v2"},
+        recv_vc=a.snapshot_vc(),
+        recv_view=a.snapshot_view(),
+        recv_field_view=a.snapshot_field_view(),
+    )
+
+    assert b.view["B"][id(guard)] is False
+
+
 # ---------------------------------------------------------------------------
 # guard_value
 # ---------------------------------------------------------------------------
@@ -308,7 +325,7 @@ def test_compound_formula_not():
 
 
 # ---------------------------------------------------------------------------
-# Since and strict causal past
+# Since and causal past
 # ---------------------------------------------------------------------------
 
 def test_since_is_non_strict_and_local():
@@ -327,13 +344,13 @@ def test_since_is_non_strict_and_local():
     assert m.view["A"][id(f)] is False
 
 
-def test_past_is_strict_on_same_lifeline():
+def test_past_is_non_strict_on_same_lifeline():
     phi = atom(lambda env: env.get("x", False))
     f = P(phi)
     m = make_monitor("A", ["A"], f)
 
     m.on_event("act", {"x": True})
-    assert m.view["A"][id(f)] is False
+    assert m.view["A"][id(f)] is True
 
     m.on_event("act", {"x": False})
     assert m.view["A"][id(f)] is True
