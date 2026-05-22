@@ -59,118 +59,6 @@ def _parallel_channel(stmt: ParallelStmt, branch_index: int, parent_channel: str
     return f"{parent_channel}/par-{id(stmt)}-{branch_index + 1}"
 
 
-def _dep_graph(stmt: AnyStmt) -> set[tuple[Lifeline, Lifeline]]:
-    """
-    DG(stmt) — dependency graph as a set of (A, B) pairs.
-    Follows the inductive definition from the paper.
-    """
-    match stmt:
-        case EmptyStmt() | SkipStmt() | ActStmt():
-            return set()
-        case MsgStmt(sender=A, receiver=B):
-            return set() if A == B else {(A, B)}
-        case CoregionStmt(messages=messages):
-            return set().union(*(_dep_graph(m) for m in messages))
-        case SeqStmt(first=p1, second=p2):
-            d1 = _dep_graph(p1)
-            d2 = _dep_graph(p2)
-            composed = {(a, b) for (a, c) in d1 for (c2, b) in d2 if c == c2}
-            return d1 | d2 | composed
-        case IfStmt(owner=A, branch_true=p_true, branch_false=p_false):
-            rec = (participation_set(p_true) | participation_set(p_false)) - {A}
-            return {(A, C) for C in rec} | _dep_graph(p_true) | _dep_graph(p_false)
-        case WhileStmt(owner=A, body=p_body, exit_body=p_exit):
-            rec = (participation_set(p_body) | participation_set(p_exit)) - {A}
-            return {(A, C) for C in rec} | _dep_graph(p_body) | _dep_graph(p_exit)
-        case ParallelStmt(branches=branches):
-            return set().union(*(_dep_graph(b) for b in branches))
-        case _:
-            raise TypeError(f"_dep_graph: unknown statement type {type(stmt).__name__}")
-
-
-def _shared_reachability_edges(
-    edges: set[tuple[Lifeline, Lifeline]],
-    shared: frozenset[Lifeline],
-) -> set[tuple[Lifeline, Lifeline]]:
-    """
-    DG(P)^+ restricted to shared lifelines.
-
-    There is an edge A -> B in the returned graph when A and B are shared,
-    A != B, and DG(P) has a directed path from A to B, possibly through
-    private lifelines.
-    """
-    nodes = set(shared)
-    for a, b in edges:
-        nodes.add(a)
-        nodes.add(b)
-
-    adj: dict[Lifeline, list[Lifeline]] = {n: [] for n in nodes}
-    for a, b in edges:
-        adj.setdefault(a, []).append(b)
-        adj.setdefault(b, [])
-
-    reachable_shared: set[tuple[Lifeline, Lifeline]] = set()
-    for start in shared:
-        seen: set[Lifeline] = set()
-        stack = list(adj.get(start, ()))
-        while stack:
-            node = stack.pop()
-            if node in seen:
-                continue
-            seen.add(node)
-            if node in shared and node != start:
-                reachable_shared.add((start, node))
-            stack.extend(adj.get(node, ()))
-
-    return reachable_shared
-
-
-def _has_cycle(edges: set[tuple[Lifeline, Lifeline]], nodes: frozenset[Lifeline]) -> bool:
-    """DFS cycle detection on the subgraph of edges induced by nodes."""
-    adj: dict[Lifeline, list[Lifeline]] = {n: [] for n in nodes}
-    for a, b in edges:
-        if a in nodes and b in nodes and a != b:
-            adj[a].append(b)
-
-    WHITE, GRAY, BLACK = 0, 1, 2
-    color: dict[Lifeline, int] = {n: WHITE for n in nodes}
-
-    def dfs(u: Lifeline) -> bool:
-        color[u] = GRAY
-        for v in adj[u]:
-            if color[v] == GRAY or (color[v] == WHITE and dfs(v)):
-                return True
-        color[u] = BLACK
-        return False
-
-    return any(color[n] == WHITE and dfs(n) for n in nodes)
-
-
-def _check_acyclicity(stmt: ParallelStmt) -> None:
-    """
-    Raise ValueError if DG(stmt)^+ restricted to shared lifelines contains
-    a directed cycle.
-    """
-    seen: set[Lifeline] = set()
-    shared: set[Lifeline] = set()
-    for branch in stmt.branches:
-        ps = participation_set(branch)
-        shared |= seen & ps
-        seen |= ps
-    if len(shared) < 2:
-        return
-    shared_nodes = frozenset(shared)
-    edges = _shared_reachability_edges(_dep_graph(stmt), shared_nodes)
-    if _has_cycle(edges, shared_nodes):
-        names = ", ".join(sorted(l.name for l in shared))
-        raise ValueError(
-            f"Ill-formed parallel region: shared lifelines [{names}] form a "
-            f"dependency cycle in the shared reachability graph. Move the "
-            f"cyclic messages outside the parallel region or restructure the "
-            f"branches."
-        )
-
-
 # ---------------------------------------------------------------------------
 # Core projection — structural recursion on Stmt
 # ---------------------------------------------------------------------------
@@ -221,7 +109,6 @@ def _project(stmt: AnyStmt, A: Lifeline, counter: list[int], channel: str = "mai
 
         # parallel { P_i }_i
         case ParallelStmt(branches=branches):
-            _check_acyclicity(stmt)
             local_branches: list[LocalStmt] = []
             branch_indices: list[int] = []
             for i, branch in enumerate(branches):

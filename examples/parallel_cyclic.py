@@ -1,18 +1,18 @@
 # pyright: reportInvalidTypeForm=false, reportGeneralTypeIssues=false, reportOperatorIssue=false, reportCallIssue=false, reportAttributeAccessIssue=false, reportUnusedExpression=false, reportUnboundVariable=false, reportReturnType=false
 
-"""Cyclic dependency rejection example.
+"""Feedback example: parallel region with a shared-lifeline message cycle.
 
-This file deliberately constructs an ill-formed parallel region where two
-shared lifelines have a circular message dependency:
+Two branches exchange messages between the same pair of shared lifelines:
 
-  Branch 1:  Analyst  →  Reviewer   (Analyst sends to Reviewer)
-  Branch 2:  Reviewer →  Analyst    (Reviewer sends to Analyst)
+  Branch 1:  Analyst   ->  Reviewer    (Analyst sends to Reviewer)
+  Branch 2:  Reviewer  ->  Analyst     (Reviewer sends back to Analyst)
 
-The reachability graph induced by the shared lifelines {Analyst, Reviewer}
-contains the cycle Analyst → Reviewer → Analyst, so the region is rejected at
-projection time with a ValueError.
+The dependency graph induced by the shared lifelines {Analyst, Reviewer} is
+cyclic. Under the filtered shuffle semantics, the program is admissible:
+the source semantics keeps shuffled tuples that are complete MSCs, and at
+least one valid interleaving exists (each side sends before receiving).
 
-Run this file to see the error:
+Run this file to execute the workflow with the mock backend:
 
   python examples/parallel_cyclic.py
 """
@@ -27,22 +27,18 @@ feedback = Var("feedback", str)
 
 
 @workflow
-def cyclic_exchange(text: str @ Analyst) -> str:
+def feedback_exchange(text: str @ Analyst) -> str:
     with parallel:
         with branch:
-            # Analyst sends to Reviewer
             Analyst(text) >> Reviewer(draft)
 
         with branch:
-            # Reviewer sends back to Analyst — creates cycle with branch 1
             Reviewer(draft) >> Analyst(feedback)
 
     return feedback @ Analyst
 
 
 if __name__ == "__main__":
-    try:
-        cyclic_exchange.configure(llms="mock")
-        cyclic_exchange(text="hello")
-    except ValueError as e:
-        print(f"Rejected (as expected):\n  {e}")
+    feedback_exchange.configure(llms="mock")
+    result = feedback_exchange(text="hello")
+    print(f"feedback: {result}")

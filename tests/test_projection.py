@@ -4,8 +4,6 @@ IR nodes are constructed directly — no builder — so these tests are
 independent of Layer 3 and test projection semantics in isolation.
 """
 
-import pytest
-
 from zippergen.syntax import (
     EmptyStmt, MsgStmt, CoregionStmt, ActStmt, SkipStmt, SeqStmt, IfStmt, WhileStmt,
     ParallelStmt,
@@ -227,20 +225,19 @@ def test_project_parallel_preserves_global_branch_index_for_single_branch_partic
     assert len(result.branches) == 1
 
 
-def test_project_parallel_rejects_shared_reachability_cycle_through_nested_private_lifelines():
-    nested = ParallelStmt((
-        MsgStmt(A, (VarExpr(x),), C, (VarExpr(y),)),
-        MsgStmt(C, (VarExpr(y),), D, (VarExpr(z),)),
-        MsgStmt(D, (VarExpr(z),), B, (VarExpr(y),)),
-    ))
+def test_project_parallel_accepts_shared_reachability_cycle():
+    """Under the filtered shuffle semantics, programs with cyclic SRG are
+    admissible: only the cyclic shuffled executions are filtered out at the
+    semantic level, not the program itself."""
     stmt = ParallelStmt((
-        nested,
+        MsgStmt(A, (VarExpr(x),), B, (VarExpr(y),)),
         MsgStmt(B, (VarExpr(y),), A, (VarExpr(x),)),
     ))
     wf = _make_workflow(stmt)
 
-    with pytest.raises(ValueError, match="shared reachability graph"):
-        project(wf, A)
+    result = project(wf, A)
+    assert isinstance(result, ParallelLocalStmt)
+    assert len(result.branches) == 2
 
 
 def test_project_parallel_allows_private_intra_branch_request_response_cycle():

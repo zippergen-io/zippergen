@@ -145,17 +145,17 @@ def merge_candidate(candidate: str @ Orchestrator) -> str:
     return decision @ Committer
 ```
 
-`Orchestrator` and `Committer` are *shared lifelines*: each appears in both branches. ZipperGen statically checks that the reachability graph induced by shared lifelines is acyclic. If it is not, projection is rejected before the workflow ever runs. The projection of a shared lifeline interleaves its branch-local programs while preserving their internal order.
+`Orchestrator` and `Committer` are *shared lifelines*: each appears in both branches. The projection of a shared lifeline interleaves its branch-local programs while preserving their internal order. The source semantics keeps only those branch shuffles that form a complete MSC, so cyclic interleavings are filtered out at the semantic level without rejecting the program itself; this admits realistic feedback patterns where two branches exchange messages between the same pair of shared lifelines.
 
-See `examples/parallel.py` for the full example and `examples/parallel_cyclic.py` for a rejected cyclic case.
+See `examples/parallel.py` for fan-out/fan-in and `examples/parallel_cyclic.py` for a feedback pattern between shared lifelines.
 
 ## See it in action
 
 Examples ship with the repo. The first two run without an API key.
 
 ```bash
-python examples/parallel.py           # fan-out/fan-in with static acyclicity check (no key needed)
-python examples/parallel_cyclic.py    # rejected cyclic dependency; shows the error (no key needed)
+python examples/parallel.py           # fan-out/fan-in across parallel branches (no key needed)
+python examples/parallel_cyclic.py    # feedback pattern between shared lifelines (no key needed)
 python examples/cpl_test.py           # causal guard ignores stale relay status (no key needed)
 python examples/field_terms.py        # field-term guard: cross-lifeline version check (no key needed)
 python examples/coregion.py           # unordered receives from independent analysts (no key needed)
