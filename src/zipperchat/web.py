@@ -463,7 +463,7 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); font
 .sg-row:focus { outline: none; background: rgba(0,0,0,0.05); }
 .sg-row.sg-sel { background: var(--accent-bg); border-left-color: var(--accent); color: var(--text); }
 .sg-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
-.dot-done    { background: transparent; border: 1.5px solid var(--done-clr); }
+.dot-done    { background: transparent; border: 1.5px solid var(--text-faint); }
 .dot-running { background: var(--text-faint); }
 .dot-pending { background: var(--accent-attn); animation: pulse 1.2s ease-in-out infinite; }
 .sg-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -513,8 +513,9 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); font
   background: rgba(20,18,12,0.035); border-radius: 6px; padding: 12px 14px;
   font-size: 15px; line-height: 1.6;
 }
-.ctx-hdr  { font-weight: 600; color: var(--text); }
-.ctx-hint { font-style: italic; color: var(--text-mute); }
+.ctx-hdr       { font-weight: 600; color: var(--text); }
+.ctx-hint      { font-style: italic; color: var(--text-mute); }
+.ins-ctx-mono  { font-family: var(--mono); font-size: 13px; }
 
 /* Resolved */
 .ins-resolved-val { color: var(--done-clr); font-style: italic; }
@@ -833,24 +834,35 @@ function renderPendingForm(req, parts){
 
 function renderHumanDone(req){
   const shown=req.value===''?'(approved as-is)':req.value;
-  return '<div class="ins-section"><div class="ins-sec-label">Response</div><div class="ins-sec-body ins-resolved-val">'+esc(shown)+'</div></div>';
+  return '<div class="ins-section"><div class="ins-sec-label">Response</div>'
+    +'<div class="ins-ctx">'+esc(shown)+'</div></div>';
+}
+
+function ctxBox(v){
+  const val=fmtV(v);
+  if(typeof v==='boolean'){
+    const cls=v?'kv-val-true':'kv-val-false';
+    return '<div class="ins-ctx ins-ctx-mono"><span class="'+cls+'">'+esc(val)+'</span></div>';
+  }
+  return '<div class="ins-ctx">'+esc(val)+'</div>';
 }
 
 function renderDoneSection(a){
-  const inE=Object.entries(a.inputs||{}).filter(([,v])=>!isCtrl(v));
+  const inE=Object.entries(a.inputs||{}).filter(([,v])=>!isCtrl(v)&&fmtV(v));
   const outE=Object.entries(a.outputs||{}).filter(([,v])=>!isCtrl(v));
   let h='';
-  if(inE.length) h+='<div class="ins-section"><div class="ins-sec-label">Input</div><div class="ins-sec-body">'+kvBlock(inE)+'</div></div>';
-  h+='<div class="ins-section"><div class="ins-sec-label">Output</div><div class="ins-sec-body">'+(outE.length?kvBlock(outE):'<span class="kv-empty">(empty)</span>')+'</div></div>';
+  inE.forEach(function([k,v]){
+    h+='<div class="ins-section"><div class="ins-sec-label">'+esc(k)+'</div>'+ctxBox(v)+'</div>';
+  });
+  if(outE.length){
+    outE.forEach(function([k,v]){
+      h+='<div class="ins-section"><div class="ins-sec-label">'+esc(k)+'</div>'+ctxBox(v)+'</div>';
+    });
+  } else {
+    h+='<div class="ins-section"><div class="ins-sec-label">output</div>'
+      +'<div class="ins-ctx"><span class="kv-empty">(empty)</span></div></div>';
+  }
   return h;
-}
-
-function kvBlock(entries){
-  return entries.map(function(e){
-    const k=e[0], v=e[1], val=fmtV(v);
-    const vc=typeof v==='boolean'?(v?'kv-val kv-val-true':'kv-val kv-val-false'):'kv-val';
-    return '<div class="kv-row"><span class="kv-key">'+esc(k)+'</span><span class="'+vc+'">'+esc(val)+'</span></div>';
-  }).join('');
 }
 
 // Wire inputs
