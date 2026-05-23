@@ -382,22 +382,26 @@ _HTML = r"""<!DOCTYPE html>
 <title>ZipperChat</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:ital,wght@0,400;0,500;0,600;1,400&family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:ital,wght@0,400;0,500;0,600;1,400&family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500&family=Space+Grotesk:wght@400;500;600&family=Space+Mono:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet">
 <style>
 :root {
-  --bg:         #faf8f3;
-  --panel:      #ffffff;
-  --rule:       rgba(20,18,12,0.08);
-  --text:       #1a1812;
-  --text-soft:  #54514a;
-  --text-mute:  #8e8a80;
-  --text-faint: #b8b4a8;
-  --accent:     #a06a2c;
-  --accent-bg:  #fdf4e4;
-  --done-clr:   #9aa28e;
+  --bg:              #F5F2EC;
+  --panel:           #ffffff;
+  --rule:            rgba(20,20,40,0.08);
+  --text:            #14141A;
+  --text-soft:       #3a3a5a;
+  --text-mute:       #6e6e92;
+  --text-faint:      #a8a8c4;
+  --accent:          #2148FF;
+  --accent-bg:       #e8edff;
+  --accent-attn:     #E94F2E;
+  --accent-attn-bg:  #fde8e3;
+  --btn-bg:          #14141A;
+  --btn-text:        #F5F2EC;
+  --done-clr:        #9aaa2a;
   --serif:      'Instrument Serif', Georgia, serif;
-  --sans:       'Instrument Sans', system-ui, sans-serif;
-  --mono:       'JetBrains Mono', 'Courier New', monospace;
+  --sans:       'Space Grotesk', system-ui, sans-serif;
+  --mono:       'Space Mono', 'Courier New', monospace;
 }
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 html, body { height: 100%; overflow: hidden; }
@@ -408,41 +412,45 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); font
 #app  { display: flex; flex-direction: column; height: 100vh; }
 #hdr  {
   display: flex; align-items: center; gap: 20px;
-  padding: 0 40px; height: 70px; flex-shrink: 0;
+  padding: 0 40px 0 25px; height: 70px; flex-shrink: 0;
   border-bottom: 1px solid var(--rule); background: var(--bg);
 }
 #body {
-  display: grid; grid-template-columns: 320px 1fr;
+  display: grid; grid-template-columns: 350px 1fr;
   flex: 1; min-height: 0; overflow: hidden;
 }
 
 /* ── Header ─────────────────────────────────────────────────────────────── */
-.hdr-logo { height: 26px; display: block; }
-.hdr-sep  { width: 1px; height: 22px; background: var(--rule); flex-shrink: 0; }
-#wf-name  { font-size: 14px; color: var(--text-mute); font-weight: 400; }
+.hdr-logo { height: 28px; display: block; }
+
 .hdr-gap  { flex: 1; }
 #your-turn {
   display: none; align-items: center; gap: 8px;
-  font-size: 13px; color: var(--accent); font-weight: 500;
+  font-size: 13px; color: var(--accent-attn); font-weight: 500;
 }
 #your-turn.on { display: flex; }
 @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
 .yt-dot {
-  width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex-shrink: 0;
+  width: 7px; height: 7px; border-radius: 50%; background: var(--accent-attn); flex-shrink: 0;
   animation: pulse 1.2s ease-in-out infinite;
 }
 #yt-count {
   font-family: var(--mono); font-size: 11px;
-  background: var(--accent-bg); color: var(--accent); border-radius: 10px; padding: 1px 7px;
+  background: var(--accent-attn-bg); color: var(--accent-attn); border-radius: 10px; padding: 1px 7px;
 }
 
 /* ── Sidebar ─────────────────────────────────────────────────────────────── */
 #sidebar { overflow-y: auto; border-right: 1px solid var(--rule); padding: 16px 0 32px; }
 .sg-group { margin-bottom: 24px; }
+.sg-group-inbox {
+  border-bottom: 1px solid var(--rule);
+  padding-bottom: 16px; margin-bottom: 16px;
+}
 .sg-hdr {
   display: flex; align-items: baseline; justify-content: space-between;
   padding: 0 28px 8px; font-size: 13px; font-weight: 500; color: var(--text);
 }
+.sg-hdr-inbox { font-weight: 600; }
 .sg-count { font-family: var(--mono); font-size: 11px; color: var(--text-faint); }
 .sg-row {
   display: flex; align-items: center; gap: 10px;
@@ -451,20 +459,20 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); font
   font-size: 13px; color: var(--text-soft);
   user-select: none; transition: background .1s;
 }
-.sg-row:hover { background: rgba(160,106,44,0.04); }
-.sg-row:focus { outline: none; background: rgba(160,106,44,0.06); }
+.sg-row:hover { background: rgba(0,0,0,0.03); }
+.sg-row:focus { outline: none; background: rgba(0,0,0,0.05); }
 .sg-row.sg-sel { background: var(--accent-bg); border-left-color: var(--accent); color: var(--text); }
 .sg-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
 .dot-done    { background: transparent; border: 1.5px solid var(--done-clr); }
 .dot-running { background: var(--text-faint); }
-.dot-pending { background: var(--accent); animation: pulse 1.2s ease-in-out infinite; }
+.dot-pending { background: var(--accent-attn); animation: pulse 1.2s ease-in-out infinite; }
 .sg-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.sg-you  { font-size: 12px; font-style: italic; color: var(--accent); flex-shrink: 0; }
+.sg-you  { font-size: 11px; font-style: italic; color: var(--accent-attn); flex-shrink: 0; }
 .sb-empty { padding: 40px 28px; font-size: 13px; color: var(--text-faint); }
 
 /* ── Inspector ─────────────────────────────────────────────────────────────── */
 #inspector { overflow-y: auto; }
-#ins-body  { padding: 32px 56px; max-width: 760px; min-height: 100%; }
+#ins-body  { padding: 32px 56px; max-width: 820px; min-height: 100%; }
 .ins-empty-state {
   display: flex; align-items: center; justify-content: center;
   min-height: 300px; font-size: 14px; color: var(--text-faint);
@@ -473,46 +481,49 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); font
 /* Meta */
 .ins-meta {
   display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-  margin-bottom: 12px; font-size: 13px; color: var(--text-mute);
+  margin-bottom: 12px; font-size: 14px; color: var(--text-mute);
 }
 .ins-meta-ll   { font-weight: 500; color: var(--text-soft); }
 .ins-meta-dot  { color: var(--text-faint); }
-.ins-meta-kind { font-family: var(--mono); font-size: 11px; }
-.ins-meta-time { font-family: var(--mono); font-size: 11px; color: var(--text-faint); }
-.ins-meta-await { margin-left: auto; font-size: 13px; color: var(--accent); font-weight: 500; font-style: italic; }
+.ins-meta-kind { font-family: var(--mono); font-size: 12px; }
+.ins-meta-time { font-family: var(--mono); font-size: 12px; color: var(--text-faint); }
+.ins-meta-fn   { font-family: var(--mono); font-size: 12px; color: var(--text-faint); }
+.ins-meta-await { margin-left: auto; font-size: 13px; color: var(--accent-attn); font-weight: 500; font-style: italic; }
 
 /* Title */
 .ins-title {
-  font-family: var(--serif); font-size: 36px; font-weight: 400;
-  letter-spacing: -0.01em; line-height: 1.1; color: var(--text); margin-bottom: 28px;
+  font-family: var(--sans); font-size: 24px; font-weight: 600;
+  letter-spacing: -0.01em; line-height: 1.2; color: var(--text); margin-bottom: 24px;
 }
 
 /* Sections */
 .ins-section { margin-bottom: 24px; }
 .ins-sec-label {
-  font-size: 11px; font-weight: 500; letter-spacing: 0.1em;
+  font-size: 11px; font-weight: 600; letter-spacing: 0.07em;
   text-transform: uppercase; color: var(--text-mute); margin-bottom: 10px;
 }
-.ins-sec-body { font-size: 14px; line-height: 1.6; color: var(--text); }
-
-/* Proposed reply */
-.ins-proposed {
-  background: var(--panel); border: 1px solid var(--rule); border-radius: 6px;
-  padding: 14px 16px; font-size: 14px; line-height: 1.6;
-  white-space: pre-wrap; word-break: break-word; max-height: 200px; overflow-y: auto;
+.ins-instr-label {
+  font-size: 14px; font-style: italic; color: var(--text-mute); margin-bottom: 10px;
 }
+.ins-sec-body { font-size: 15px; line-height: 1.6; color: var(--text); }
 
 /* Prompt context */
-.ins-ctx { white-space: pre-wrap; word-break: break-word; color: var(--text-soft); }
+.ins-ctx {
+  white-space: pre-wrap; word-break: break-word; color: var(--text-soft);
+  background: rgba(20,18,12,0.035); border-radius: 6px; padding: 12px 14px;
+  font-size: 15px; line-height: 1.6;
+}
+.ctx-hdr  { font-weight: 600; color: var(--text); }
+.ctx-hint { font-style: italic; color: var(--text-mute); }
 
 /* Resolved */
 .ins-resolved-val { color: var(--done-clr); font-style: italic; }
 
 /* Textarea */
 .ins-ta {
-  width: 100%; font-family: var(--sans); font-size: 14px; line-height: 1.55;
+  width: 100%; font-family: var(--sans); font-size: 15px; line-height: 1.55;
   padding: 12px 14px; border: 1px dashed var(--text-faint); border-radius: 6px;
-  background: var(--bg); color: var(--text); resize: vertical; min-height: 90px;
+  background: var(--bg); color: var(--text); resize: vertical; min-height: 120px;
   outline: none; transition: border-color .15s, border-style .15s;
 }
 .ins-ta::placeholder { color: var(--text-faint); font-style: italic; }
@@ -522,8 +533,9 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); font
 .ins-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 20px; }
 .btn-approve {
   font-family: var(--sans); font-size: 14px; font-weight: 500;
-  padding: 10px 24px; border-radius: 6px;
-  background: var(--accent); color: #fff; border: none; cursor: pointer; transition: opacity .15s;
+  padding: 10px 28px; border-radius: 6px;
+  background: var(--btn-bg); color: var(--btn-text);
+  border: none; cursor: pointer; transition: opacity .15s;
 }
 .btn-approve:hover:not(:disabled) { opacity: .85; }
 .btn-approve:disabled { opacity: .35; cursor: default; }
@@ -534,12 +546,20 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); font
 }
 .btn-decline:hover:not(:disabled) { color: var(--text); }
 .btn-decline:disabled { opacity: .3; cursor: default; }
+.btn-secondary {
+  font-family: var(--sans); font-size: 14px; font-weight: 500;
+  padding: 10px 28px; border-radius: 6px;
+  background: transparent; color: var(--text-soft);
+  border: 1px solid rgba(20,18,12,0.15); cursor: pointer; transition: all .15s;
+}
+.btn-secondary:hover:not(:disabled) { border-color: rgba(20,18,12,0.3); color: var(--text); }
+.btn-secondary:disabled { opacity: .35; cursor: default; }
 .ins-hint { margin-left: auto; font-size: 12px; color: var(--text-faint); font-style: italic; }
 
 /* Choice buttons */
 .ins-choices { gap: 8px; flex-wrap: wrap; margin-top: 16px; }
 .btn-choice {
-  font-family: var(--sans); font-size: 13px; padding: 9px 16px; border-radius: 6px;
+  font-family: var(--sans); font-size: 14px; padding: 9px 16px; border-radius: 6px;
   border: 1px solid var(--rule); background: var(--panel); color: var(--text-soft);
   cursor: pointer; transition: all .12s;
 }
@@ -550,7 +570,7 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); font
 .kv-row { display: flex; gap: 14px; padding: 6px 0; border-bottom: 1px solid var(--rule); }
 .kv-row:last-child { border-bottom: none; }
 .kv-key { font-family: var(--mono); font-size: 12px; color: var(--text-mute); min-width: 100px; flex-shrink: 0; padding-top: 2px; }
-.kv-val { font-size: 14px; color: var(--text); line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
+.kv-val { font-size: 15px; color: var(--text); line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
 .kv-val-true  { font-family: var(--mono); color: var(--done-clr); }
 .kv-val-false { font-family: var(--mono); color: var(--text-faint); }
 .kv-empty     { font-size: 13px; color: var(--text-faint); font-style: italic; }
@@ -565,8 +585,6 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); font
 <div id="app">
   <header id="hdr">
     <img src="/assets/zippergen-lockup-ink.svg" alt="ZipperGen" class="hdr-logo">
-    <div class="hdr-sep"></div>
-    <span id="wf-name">&mdash;</span>
     <div class="hdr-gap"></div>
     <div id="your-turn">
       <span class="yt-dot"></span>
@@ -587,19 +605,20 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); font
 </div>
 <script>
 // State
-let evSrc      = null;
-const byKey    = {};
-const groups   = {};
-const lifelines = [];
-const rowEls   = {};
-const reqMap   = new Map();
-let pending    = 0;
-let selectedId = null;
+let evSrc         = null;
+const byKey       = {};
+const groups      = {};
+const lifelines   = [];
+const rowEls      = {};
+const inboxRowEls = {};
+const reqMap      = new Map();
+let pending       = 0;
+let inboxTotal    = 0;
+let selectedId    = null;
 
 // DOM
 const sidebar  = document.getElementById('sidebar');
 const insBody  = document.getElementById('ins-body');
-const wfName   = document.getElementById('wf-name');
 const yourTurn = document.getElementById('your-turn');
 const ytCount  = document.getElementById('yt-count');
 
@@ -616,6 +635,51 @@ function fmtV(v){
 function refreshCount(){
   if(pending>0){ yourTurn.classList.add('on'); ytCount.textContent=pending; }
   else yourTurn.classList.remove('on');
+  updateInboxBadge();
+}
+
+// Inbox
+function ensureInbox(){
+  if(document.getElementById('grp-inbox')) return;
+  const em=sidebar.querySelector('.sb-empty'); if(em) em.remove();
+  const grp=document.createElement('div');
+  grp.className='sg-group sg-group-inbox'; grp.id='grp-inbox';
+  grp.innerHTML='<div class="sg-hdr sg-hdr-inbox"><span>Inbox</span><span class="sg-count" id="grpc-inbox">0 / 0</span></div>';
+  sidebar.insertBefore(grp, sidebar.firstChild);
+}
+
+function inboxRowInner(key){
+  const a=byKey[key];
+  const req=a.reqId?reqMap.get(a.reqId):null;
+  const hp=req&&!req.resolved&&a.kind==='human';
+  const dc=hp?'dot-pending':'dot-done';
+  return '<span class="sg-dot '+dc+'"></span><span class="sg-name">'+esc(a.name)+'</span>'+(hp?'<span class="sg-you">you</span>':'');
+}
+
+function createInboxRow(key){
+  ensureInbox();
+  inboxTotal++;
+  const el=document.createElement('div');
+  el.className='sg-row'; el.id='inbox-row-'+key; el.tabIndex=0;
+  el.innerHTML=inboxRowInner(key);
+  el.onclick=()=>selectAction(key);
+  el.onkeydown=e=>{ if(e.key==='Enter'||e.key===' '){ e.preventDefault(); selectAction(key); } };
+  inboxRowEls[key]=el;
+  const grp=document.getElementById('grp-inbox');
+  if(grp) grp.appendChild(el);
+  updateInboxBadge();
+}
+
+function updateInboxRow(key){
+  const el=inboxRowEls[key]; if(!el) return;
+  el.innerHTML=inboxRowInner(key);
+  el.onclick=()=>selectAction(key);
+  el.classList.toggle('sg-sel',selectedId===key);
+}
+
+function updateInboxBadge(){
+  const cnt=document.getElementById('grpc-inbox');
+  if(cnt) cnt.textContent=pending+' / '+inboxTotal;
 }
 
 // Sidebar
@@ -662,8 +726,10 @@ function updateRow(key){
 function selectAction(key){
   if(selectedId===key) return;
   if(selectedId&&rowEls[selectedId]) rowEls[selectedId].classList.remove('sg-sel');
+  if(selectedId&&inboxRowEls[selectedId]) inboxRowEls[selectedId].classList.remove('sg-sel');
   selectedId=key;
   if(rowEls[key]) rowEls[key].classList.add('sg-sel');
+  if(inboxRowEls[key]) inboxRowEls[key].classList.add('sg-sel');
   renderInspector();
 }
 
@@ -678,17 +744,25 @@ function renderInspector(){
   const hp=req&&!req.resolved&&a.kind==='human';
   const hd=req&&req.resolved;
   const kl={llm:'llm',pure:'pure',human:'human',planner:'plan'}[a.kind]||'act';
+  const isHuman=a.kind==='human';
+
+  // For human actions: extract title from prompt; show fn name in meta
+  // For others: title IS the fn name
+  const isBool=req&&req.input_type==='bool';
+  const parts=isHuman?extractPromptParts(req?req.prompt:'',isBool):{title:null,body:'',instruction:null};
+  const title=isHuman?(parts.title||a.name):a.name;
 
   let html='<div class="ins-meta">'
     +'<span class="ins-meta-ll">'+esc(a.lifeline)+'</span>'
     +'<span class="ins-meta-dot">&middot;</span>'
     +'<span class="ins-meta-kind">'+esc(kl)+'</span>'
+    +(isHuman?'<span class="ins-meta-dot">&middot;</span><span class="ins-meta-fn">'+esc(a.name)+'</span>':'')
     +(a.time?'<span class="ins-meta-dot">&middot;</span><span class="ins-meta-time">'+esc(a.time)+'</span>':'')
     +(hp?'<span class="ins-meta-await">awaiting you</span>':'')
     +'</div>'
-    +'<div class="ins-title">'+esc(a.name)+'</div>';
+    +'<div class="ins-title">'+esc(title)+'</div>';
 
-  if(hp)      html+=renderPendingForm(req);
+  if(hp)      html+=renderPendingForm(req,parts);
   else if(hd) html+=renderHumanDone(req);
   else        html+=renderDoneSection(a);
 
@@ -696,19 +770,62 @@ function renderInspector(){
   if(hp) wireInputs(a.reqId,req);
 }
 
-function renderPendingForm(req){
+function boolContext(prompt){
+  const lines=prompt.trimEnd().split('\n');
+  while(lines.length&&(!lines[lines.length-1].trim()||lines[lines.length-1].trim().endsWith('?')))
+    lines.pop();
+  return lines.join('\n').trimEnd();
+}
+
+function renderCtxHtml(text){
+  const lines=text.split('\n');
+  return lines.map(function(line){
+    const t=line.trim();
+    if(!t) return '';
+    if(t.endsWith(':')) return '<span class="ctx-hdr">'+esc(t)+'</span>';
+    return esc(t);
+  }).join('\n');
+}
+
+function extractPromptParts(prompt, isBool){
+  if(!prompt) return {title:null, body:'', instruction:null};
+  const text=isBool?boolContext(prompt):prompt;
+  const lines=text.split('\n');
+  let titleIdx=-1;
+  for(let i=0;i<lines.length;i++){
+    const t=lines[i].trim();
+    if(t&&t.endsWith(':')&&t.length<=50){ titleIdx=i; break; }
+  }
+  let lastNonEmpty=-1;
+  for(let i=lines.length-1;i>=0;i--){ if(lines[i].trim()){ lastNonEmpty=i; break; } }
+  let instrIdx=-1;
+  if(lastNonEmpty>=0&&lastNonEmpty!==titleIdx&&lines[lastNonEmpty].trim().endsWith(':'))
+    instrIdx=lastNonEmpty;
+  const title      =titleIdx>=0?lines[titleIdx].trim().slice(0,-1):null;
+  const instruction=instrIdx>=0?lines[instrIdx].trim().slice(0,-1):null;
+  const bodyLines  =lines.filter((_,i)=>i!==titleIdx&&i!==instrIdx);
+  return {title, body:bodyLines.join('\n').trim(), instruction};
+}
+
+function renderPendingForm(req, parts){
+  parts=parts||{title:null,body:'',instruction:null};
   let h='';
-  if(req.prompt) h+='<div class="ins-section"><div class="ins-sec-label">Context</div><div class="ins-sec-body ins-ctx">'+esc(req.prompt)+'</div></div>';
-  if(req.prefill) h+='<div class="ins-section"><div class="ins-sec-label">Proposed reply</div><div class="ins-proposed">'+esc(req.prefill)+'</div></div>';
   if(req.input_type==='bool'){
-    h+='<div class="ins-actions"><button class="btn-approve" disabled>Yes</button><button class="btn-decline" disabled>No</button></div>';
+    if(parts.body) h+='<div class="ins-section"><div class="ins-ctx">'+renderCtxHtml(parts.body)+'</div></div>';
+    h+='<div class="ins-actions"><button class="btn-approve" disabled>Accept</button><button class="btn-secondary" disabled>Decline</button></div>';
   } else if(req.input_type==='choice'&&req.options){
+    if(parts.body) h+='<div class="ins-section"><div class="ins-ctx">'+renderCtxHtml(parts.body)+'</div></div>';
     const btns=req.options.map(o=>'<button class="btn-choice" disabled data-val="'+esc(o)+'">'+esc(o)+'</button>').join('');
     h+='<div class="ins-actions ins-choices">'+btns+'</div>';
   } else {
-    h+='<div class="ins-section"><div class="ins-sec-label">'+(req.prefill?'Your edit (optional)':'Input')+'</div>'
-      +'<div class="ins-sec-body"><textarea class="ins-ta" placeholder="Leave blank to approve as-is…"></textarea></div></div>'
-      +'<div class="ins-actions"><button class="btn-approve" disabled>Approve &amp; send →</button>'
+    if(parts.body) h+='<div class="ins-section"><div class="ins-ctx">'+renderCtxHtml(parts.body)+'</div></div>';
+    const taLabel=parts.instruction||(req.prefill?'Proposed reply':'Input');
+    const taLabelCls=parts.instruction?'ins-instr-label':'ins-sec-label';
+    const taVal=esc(req.prefill||'');
+    h+='<div class="ins-section"><div class="'+taLabelCls+'">'+esc(taLabel)+'</div>'
+      +'<div class="ins-sec-body"><textarea class="ins-ta">'+taVal+'</textarea></div></div>';
+    h+='<div class="ins-actions"><button class="btn-approve" disabled>Approve &amp; send →</button>'
+      +'<button class="btn-secondary" disabled>Decline</button>'
       +'<span class="ins-hint">⌘↩ to approve</span></div>';
   }
   return h;
@@ -740,19 +857,21 @@ function kvBlock(entries){
 let _cmdHandler=null;
 function wireInputs(req_id,req){
   if(req.input_type==='bool'){
-    const yes=insBody.querySelector('.btn-approve'),no=insBody.querySelector('.btn-decline');
-    setTimeout(function(){ yes.disabled=false; no.disabled=false; },600);
+    const yes=insBody.querySelector('.btn-approve'),no=insBody.querySelector('.btn-secondary');
+    setTimeout(function(){ yes.disabled=false; if(no) no.disabled=false; },600);
     yes.onclick=function(){ doSubmit(req_id,'true'); };
-    no.onclick=function(){ doSubmit(req_id,'false'); };
+    if(no) no.onclick=function(){ doSubmit(req_id,'false'); };
   } else if(req.input_type==='choice'){
     const btns=insBody.querySelectorAll('.btn-choice');
     setTimeout(function(){ btns.forEach(function(b){ b.disabled=false; }); },600);
     btns.forEach(function(b){ b.onclick=function(){ doSubmit(req_id,b.dataset.val); }; });
   } else {
     const ta=insBody.querySelector('.ins-ta'),btn=insBody.querySelector('.btn-approve');
-    setTimeout(function(){ btn.disabled=false; },800);
+    const dec=insBody.querySelector('.btn-secondary');
+    setTimeout(function(){ btn.disabled=false; if(dec) dec.disabled=false; },800);
     setTimeout(function(){ ta.focus({preventScroll:true}); },900);
     btn.onclick=function(){ doSubmit(req_id,ta.value); };
+    if(dec) dec.onclick=function(){ doSubmit(req_id,''); };
     if(_cmdHandler) document.removeEventListener('keydown',_cmdHandler);
     _cmdHandler=function(e){
       if((e.metaKey||e.ctrlKey)&&e.key==='Enter'&&!btn.disabled){ e.preventDefault(); doSubmit(req_id,ta.value); }
@@ -770,10 +889,10 @@ function handleInit(e){
   Object.keys(byKey).forEach(function(k){ delete byKey[k]; });
   Object.keys(groups).forEach(function(k){ delete groups[k]; });
   Object.keys(rowEls).forEach(function(k){ delete rowEls[k]; });
-  lifelines.length=0; reqMap.clear(); pending=0; selectedId=null;
+  Object.keys(inboxRowEls).forEach(function(k){ delete inboxRowEls[k]; });
+  lifelines.length=0; reqMap.clear(); pending=0; inboxTotal=0; selectedId=null;
   sidebar.innerHTML='<p class="sb-empty">Awaiting workflow…</p>';
   insBody.innerHTML='<div class="ins-empty-state">Click an action to inspect it</div>';
-  wfName.textContent=e.name||'workflow';
   refreshCount();
   (e.lifelines||[]).forEach(function(ll){ ensureGroup(ll); });
 }
@@ -790,6 +909,7 @@ function handleActStart(e){
   byKey[key]={key:key,lifeline:ll,name:name,kind:kind,seq:e.seq,status:'pending',inputs:{},outputs:{},reqId:null,time:time};
   groups[ll].push(key);
   createRow(key);
+  if(kind==='human') createInboxRow(key);
 }
 
 function handleAct(e){
@@ -804,19 +924,21 @@ function handleHumanRequired(e){
   pending++; refreshCount();
   reqMap.set(e.id,{lifeline:e.lifeline,prompt:e.prompt||'',input_type:e.input_type,options:e.options,prefill:e.prefill||null,resolved:false,value:null});
   const llKeys=groups[e.lifeline]||[];
+  let matchedKey=null;
   for(let i=llKeys.length-1;i>=0;i--){
     const k=llKeys[i],a=byKey[k];
     if(a&&a.kind==='human'&&a.status==='pending'&&!a.reqId){
-      a.reqId=e.id; updateRow(k); selectAction(k); break;
+      a.reqId=e.id; matchedKey=k; updateRow(k); selectAction(k); break;
     }
   }
+  if(matchedKey) updateInboxRow(matchedKey);
 }
 
 function handleHumanInput(e){
   const req=reqMap.get(e.id);
   if(req){ req.resolved=true; req.value=e.value; }
   pending=Math.max(0,pending-1); refreshCount();
-  Object.keys(byKey).forEach(function(k){ if(byKey[k].reqId===e.id) updateRow(k); });
+  Object.keys(byKey).forEach(function(k){ if(byKey[k].reqId===e.id){ updateRow(k); updateInboxRow(k); } });
   if(selectedId&&byKey[selectedId]&&byKey[selectedId].reqId===e.id) renderInspector();
   for(const [id,r] of reqMap){
     if(!r.resolved){
@@ -840,6 +962,7 @@ function dispatch(e){
     case 'human_input':          handleHumanInput(e); break;
   }
 }
+
 
 // SSE
 function connect(){

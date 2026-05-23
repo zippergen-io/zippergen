@@ -219,7 +219,7 @@ def accept_edit(edit: str, reply: str) -> str:
 
 
 @human(
-    prompt="New email:\n\n  {email}\n\nEdit the proposed reply or submit as-is:",
+    prompt="New email:\n\n{email}\n\nEdit the proposed reply or submit as-is:",
     outputs=["edit: str"],
     prefill="reply",
 )

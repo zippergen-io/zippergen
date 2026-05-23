@@ -206,7 +206,9 @@ def remember_scheduling_reply(email: str, reply: str, sched_context: str) -> str
 
 @pure
 def enrich_invite(invite: str, sched_context: str) -> str:
-    return f"{invite}\n\n[Scheduling context:\n{sched_context}]"
+    if not sched_context:
+        return invite
+    return f"{invite}\n\nScheduling context:\n{sched_context}"
 
 
 @pure
@@ -328,7 +330,7 @@ def write_scheduling_reply(email: str, choice: str) -> None: ...
 # ---------------------------------------------------------------------------
 
 @human(
-    prompt="New email:\n\n  {email}\n\nEdit the proposed reply or submit as-is:",
+    prompt="New email:\n\n{email}\n\nEdit the proposed reply or submit as-is:",
     outputs=["edit: str"],
     prefill="reply",
 )
@@ -337,8 +339,8 @@ def approve_or_edit(email: str, reply: str): pass
 
 @human(
     prompt=(
-        "Email:\n\n  {email}\n\n"
-        "Calendar says:\n\n  {availability}\n\n"
+        "Email:\n\n{email}\n\n"
+        "Calendar says:\n\n{availability}\n\n"
         "Confirm this slot?"
     ),
     outputs=["confirmed: bool"],
@@ -348,8 +350,8 @@ def confirm_slot(email: str, availability: str): pass
 
 @human(
     prompt=(
-        "Email:\n\n  {email}\n\n"
-        "Available slots:\n\n  {availability}\n\n"
+        "Email:\n\n{email}\n\n"
+        "Available slots:\n\n{availability}\n\n"
         "Choose a slot:"
     ),
     outputs=["choice: str"],
