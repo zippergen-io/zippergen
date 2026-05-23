@@ -1212,7 +1212,7 @@ def _workflow_configure(
             wf._rt._trace = console_trace
         else:
             if wf._rt._webtrace is None:
-                wf._rt._webtrace = WebTrace(lifelines).start()
+                wf._rt._webtrace = WebTrace(lifelines, name=wf.name).start()
             base_trace = trace if trace is not None else console_trace
             wf._rt._trace = tee_traces(wf._rt._webtrace, base_trace)
     elif trace is not None:

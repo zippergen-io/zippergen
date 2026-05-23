@@ -234,10 +234,11 @@ class WebTrace:
             wt.wait_for_replay()
     """
 
-    def __init__(self, lifelines, port: int = 8765, *, dashboard: bool = False):
+    def __init__(self, lifelines, port: int = 8765, *, dashboard: bool = False, name: str = ""):
         self._dashboard = dashboard
         self._lifelines = _lifeline_names(lifelines)
         self._port = port
+        self._name = name
         self._bus = _EventBus()
         self._server: ThreadingHTTPServer | None = None
         self._replay_event = threading.Event()
@@ -255,7 +256,10 @@ class WebTrace:
     def _init_event(self) -> dict:
         if self._dashboard:
             return {"type": "init", "dashboard": True}
-        return {"type": "init", "lifelines": self._lifelines}
+        ev: dict = {"type": "init", "lifelines": self._lifelines}
+        if self._name:
+            ev["name"] = self._name
+        return ev
 
     def start(self) -> "WebTrace":
         if self._server is not None:
@@ -333,6 +337,7 @@ class WebTrace:
                 "prompt": prompt,
                 "input_type": input_type,
                 "options": list(action.options) if action.options else None,
+                "prefill": inputs[action.prefill] if action.prefill else None,
             }
             if path is not None:
                 request_event["path"] = list(path)
@@ -379,2180 +384,547 @@ _HTML = r"""<!DOCTYPE html>
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <style>
-/* ─── Variables (navy chrome + cream stage + sherbet event bars) ─────────── */
 :root {
-  /* Surfaces */
-  --bg:            #F8F8F6;            /* warm gray-white page (the "stage") */
-  --bg-card:       #FFFFFF;            /* drawer + card surface              */
-  --bg-hover:      #EDECEA;            /* hover wash on gray-white           */
-
-  /* Frame (navy chrome) */
-  --frame:         #143146;            /* deep navy chrome                   */
-  --frame-fg:      #F2EDE6;            /* text on navy                       */
-  --frame-mute:    #9CB0C2;            /* muted text on navy                 */
-
-  /* Ink — single dark text color */
-  --ink:           #143146;
-  --ink-mute:      #4D6479;
-  --ink-faint:     #8195A6;
-  --ink-ghost:     #BCC8D2;
-
-  /* Hairlines */
-  --hairline:        rgba(20,49,70,0.10);
-  --hairline-strong: rgba(20,49,70,0.20);
-  --hairline-frame:  rgba(255,255,255,0.10);
-
-  /* Agent identity (lifeline rails — quiet blue→gray) */
-  --a-1: #3F5A78;
-  --a-2: #5A7390;
-  --a-3: #6E8298;
-  --a-4: #7E8B9C;
-  --a-5: #8E96A2;
-
-  /* Event-kind fills (sherbet) — bar fills, calibrated for navy ink */
-  --k-action:    #69A6E0;   /* periwinkle — actions / send-only           */
-  --k-model:     #9C8FD9;   /* lavender — planner / workflow-spawning act */
-  --k-tool:      #F1B07A;   /* peach — (reserved)                          */
-  --k-send:      #7FB1B0;   /* teal — outbound messages                   */
-  --k-recv:      #BFD9D8;   /* light teal — inbound (lighter sibling)     */
-  --k-decision:  #D4BA88;   /* wheat — if/while decisions                  */
-  --k-guard-true:  #69A6E0;   /* action blue — affirmative guard verdict     */
-  --k-guard-false: #D4BA88;   /* wheat — neutral false                       */
-  --k-ctrl:      #C4CCD4;   /* muted gray — control messages              */
-  --k-human:     #E7A0A5;   /* soft rose — human input actions            */
-
-  /* Functional status (single-color semantics across the UI) */
-  --status-run:   var(--k-action);    /* periwinkle = running               */
-  --status-done:  var(--k-send);      /* teal = done                        */
-  --status-err:   #E06B8A;            /* pink = error                       */
-  --status-idle:  var(--ink-ghost);
+  --bg:        #F8F8F6;
+  --bg-card:   #FFFFFF;
+  --frame:     #143146;
+  --frame-fg:  #F2EDE6;
+  --ink:       #1A1A1A;
+  --ink-mute:  #6B7280;
+  --ink-faint: #9CA3AF;
+  --hair:      #E5E7EB;
+  --hair-s:    #D1D5DB;
+  --k-llm:     #6366F1;
+  --k-llm-bg:  #EEF2FF;
+  --k-pure:    #6B7280;
+  --k-pure-bg: #F3F4F6;
+  --k-human:   #C2495A;
+  --k-human-bg:#FDF2F3;
+  --k-plan:    #D97706;
+  --k-plan-bg: #FFFBEB;
+  --radius:    8px;
 }
-
-/* ─── Dark theme ─────────────────────────────────────────────────────────── */
 body.dark {
-  --bg:              #0E1B2A;
-  --bg-card:         #14283C;
-  --bg-hover:        #1C3250;
-  --frame:           #07111B;
-  --frame-fg:        #E8F0F8;
-  --frame-mute:      #6A8EA8;
-  --ink:             #DDE8F0;
-  --ink-mute:        #8AAEC8;
-  --ink-faint:       #5A7A96;
-  --ink-ghost:       #2E4860;
-  --hairline:        rgba(255,255,255,0.07);
-  --hairline-strong: rgba(255,255,255,0.13);
-  --hairline-frame:  rgba(255,255,255,0.06);
+  --bg:        #0D1B2A;
+  --bg-card:   #142032;
+  --ink:       #E8E6E3;
+  --ink-mute:  #8B94A3;
+  --ink-faint: #3D4F63;
+  --hair:      #1C2E42;
+  --hair-s:    #253D56;
+  --k-llm-bg:  #11183A;
+  --k-pure-bg: #1A2535;
+  --k-human-bg:#200E12;
+  --k-plan-bg: #1F1408;
 }
-
-/* ─── Reset & base ───────────────────────────────────────────────────────── */
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-html, body { height: 100%; }
-body {
-  font-family: -apple-system, BlinkMacSystemFont, 'Inter', 'Segoe UI', system-ui, sans-serif;
-  font-size: 13px;
-  line-height: 1.45;
-  letter-spacing: -0.005em;
-  background: var(--bg);
-  color: var(--ink);
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
+html, body { height: 100%; overflow: hidden; }
+body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--ink); font-size: 13px; }
+
+/* ── Layout ────────────────────────────────────────────────────────────── */
+#app  { display: flex; flex-direction: column; height: 100%; }
+#main { display: flex; flex: 1; overflow: hidden; }
+
+/* ── Header ────────────────────────────────────────────────────────────── */
+#hdr {
+  display: flex; align-items: center; gap: 10px;
+  padding: 0 16px; height: 48px;
+  background: var(--frame); color: var(--frame-fg);
+  flex-shrink: 0;
 }
-button { font-family: inherit; }
-.mono { font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace; }
-::selection { background: rgba(105, 166, 224, 0.32); color: var(--ink); }
-::-webkit-scrollbar { width: 8px; height: 8px; }
+.hdr-logo { font-size: 12px; font-weight: 700; letter-spacing: 0.06em; opacity: 0.85; }
+.hdr-sep  { width: 1px; height: 18px; background: rgba(242,237,230,.2); margin: 0 2px; }
+#wf-name  { font-size: 13px; font-weight: 500; opacity: 0.8; }
+.hdr-gap  { flex: 1; }
+.s-dot {
+  width: 7px; height: 7px; border-radius: 50%; background: #4B5563;
+  transition: background .3s;
+}
+.s-dot.running { background: #4ADE80; }
+.s-dot.waiting { background: #FBBF24; animation: pulse 1.2s ease-in-out infinite; }
+.s-dot.done    { background: #818CF8; }
+.s-dot.error   { background: #F87171; }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.45} }
+#s-label { font-size: 11px; color: rgba(242,237,230,.55); letter-spacing: .02em; }
+#dark-btn {
+  background: none; border: 1px solid rgba(242,237,230,.2); color: var(--frame-fg);
+  cursor: pointer; width: 28px; height: 28px; border-radius: 6px;
+  font-size: 13px; display: flex; align-items: center; justify-content: center;
+  transition: border-color .15s;
+}
+#dark-btn:hover { border-color: rgba(242,237,230,.55); }
+
+/* ── Timeline (left) ───────────────────────────────────────────────────── */
+#timeline {
+  flex: 1; overflow-x: auto; overflow-y: hidden;
+  display: flex; gap: 1px; background: var(--hair);
+  align-items: stretch; min-width: 0;
+}
+.ll-col {
+  display: flex; flex-direction: column;
+  min-width: 160px; flex: 1; max-width: 240px;
+  background: var(--bg); overflow: hidden;
+}
+.ll-header {
+  padding: 7px 10px; flex-shrink: 0;
+  background: var(--bg-card); border-bottom: 1px solid var(--hair);
+  font-size: 10px; font-weight: 700; letter-spacing: .07em;
+  color: var(--ink-mute); text-transform: uppercase;
+}
+.ll-body {
+  flex: 1; overflow-y: auto; padding: 6px 5px;
+  display: flex; flex-direction: column; gap: 3px;
+}
+/* ── Action card ───────────────────────────────────────────────────────── */
+.ac {
+  border-radius: 5px; padding: 5px 7px;
+  border: 1px solid var(--hair); background: var(--bg-card);
+  transition: opacity .2s;
+}
+.ac.pending { opacity: .6; }
+.ac-top { display: flex; align-items: center; gap: 5px; }
+.ac-kind {
+  font-size: 7.5px; font-weight: 700; letter-spacing: .06em;
+  text-transform: uppercase; padding: 1px 4px; border-radius: 3px; flex-shrink: 0;
+}
+.k-llm    { background: var(--k-llm-bg);   color: var(--k-llm); }
+.k-pure   { background: var(--k-pure-bg);  color: var(--k-pure); }
+.k-human  { background: var(--k-human-bg); color: var(--k-human); }
+.k-planner{ background: var(--k-plan-bg);  color: var(--k-plan); }
+.ac-name {
+  font-size: 11px; font-weight: 500; color: var(--ink);
+  flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.ac-st { font-size: 10px; color: var(--ink-faint); flex-shrink: 0; }
+.ac-st.run { color: #4ADE80; animation: pulse 1s ease-in-out infinite; }
+.ac-st.err { color: #F87171; }
+.ac-outs {
+  margin-top: 3px; font-size: 10px;
+  font-family: 'JetBrains Mono', monospace; color: var(--ink-mute); line-height: 1.4;
+}
+.ac-out { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* send/recv tag */
+.msg-tag {
+  font-size: 9px; color: var(--ink-faint); padding: 1px 0 0 1px;
+  font-family: 'JetBrains Mono', monospace; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis;
+}
+
+/* ── Inspector (right) ─────────────────────────────────────────────────── */
+#inspector {
+  width: 380px; flex-shrink: 0;
+  display: flex; flex-direction: column;
+  border-left: 1px solid var(--hair); background: var(--bg-card);
+  overflow: hidden;
+}
+#ins-hdr {
+  display: flex; align-items: center; gap: 8px;
+  padding: 0 14px; height: 40px; flex-shrink: 0;
+  border-bottom: 1px solid var(--hair);
+  font-size: 10px; font-weight: 700; letter-spacing: .07em;
+  color: var(--ink-mute); text-transform: uppercase;
+}
+#q-count {
+  background: var(--k-human); color: #fff;
+  font-size: 9px; font-weight: 700; border-radius: 10px;
+  padding: 1px 7px; display: none;
+}
+#q-count.on { display: inline-block; }
+/* ins-body fills the panel; its children define the layout per view */
+#ins-body {
+  flex: 1; min-height: 0;
+  display: flex; flex-direction: column;
+  overflow: hidden;
+}
+.ins-empty {
+  flex: 1; display: flex; align-items: center; justify-content: center;
+  font-size: 12px; color: var(--ink-faint); text-align: center; padding: 24px;
+}
+/* Shared section header */
+.ins-sec-hdr {
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 8px 14px; flex-shrink: 0;
+  background: var(--bg-card); border-bottom: 1px solid var(--hair);
+}
+.ins-ll {
+  font-size: 9px; font-weight: 700; letter-spacing: .05em;
+  text-transform: uppercase; padding: 2px 7px; border-radius: 4px;
+  background: var(--k-human-bg); color: var(--k-human);
+}
+.ins-title { font-size: 12px; font-weight: 500; color: var(--ink); }
+.ins-badge { font-size: 10px; color: var(--ink-faint); margin-left: auto; }
+/* Prompt: scrollable, fills remaining height */
+.ins-prompt {
+  flex: 1; overflow-y: auto;
+  padding: 12px 14px; font-size: 12px; line-height: 1.65;
+  white-space: pre-wrap; font-family: 'JetBrains Mono', monospace; color: var(--ink);
+}
+/* Widget: pinned at bottom, always visible */
+.ins-widget {
+  flex-shrink: 0; padding: 12px 14px;
+  border-top: 1px solid var(--hair); background: var(--bg-card);
+}
+.ins-resolved {
+  flex-shrink: 0; padding: 10px 14px;
+  font-size: 11px; font-family: 'JetBrains Mono', monospace;
+  color: var(--ink-mute); border-top: 1px solid var(--hair); background: var(--bg-card);
+}
+/* Action outputs (card detail) */
+.ins-outputs {
+  flex: 1; overflow-y: auto; padding: 12px 14px;
+}
+.ins-out-row { margin-bottom: 10px; }
+.ins-out-key { font-size: 10px; color: var(--ink-faint); font-family: 'JetBrains Mono', monospace; }
+.ins-out-val {
+  font-size: 12px; font-family: 'JetBrains Mono', monospace; color: var(--ink);
+  white-space: pre-wrap; word-break: break-word; line-height: 1.5; margin-top: 2px;
+}
+/* Timeline card: hoverable, selectable */
+.ac { cursor: pointer; }
+.ac:hover { border-color: var(--hair-s); }
+.ac.selected      { border-color: var(--k-llm) !important; }
+.ac.human-pending { border-color: var(--k-human) !important; opacity: 1; }
+/* Input widgets */
+.qi-ta {
+  width: 100%; font-size: 12px; font-family: 'JetBrains Mono', monospace;
+  min-height: 72px; padding: 7px 9px; resize: vertical;
+  border-radius: 5px; border: 1px solid var(--hair-s);
+  background: var(--bg-card); color: var(--ink);
+  outline: none; transition: border-color .15s; box-sizing: border-box;
+}
+.qi-ta::placeholder { color: var(--ink-faint); }
+.qi-ta:focus { border-color: var(--k-human); }
+.qi-submit-row { display: flex; justify-content: flex-end; margin-top: 8px; }
+.qi-btn {
+  font-size: 12px; font-weight: 600; padding: 7px 20px;
+  border-radius: 5px; border: 1px solid var(--k-human);
+  background: var(--k-human-bg); color: var(--k-human);
+  cursor: pointer; transition: background .12s, opacity .12s;
+}
+.qi-btn:hover:not(:disabled) { background: rgba(194,73,90,.12); }
+.qi-btn:disabled { opacity: .3; cursor: default; }
+.qi-bool-row { display: flex; gap: 8px; }
+.qi-bool {
+  flex: 1; font-size: 13px; font-weight: 600; padding: 10px 12px;
+  border-radius: 5px; border: 1px solid var(--hair-s);
+  background: var(--bg-card); color: var(--ink);
+  cursor: pointer; transition: background .12s, border-color .12s;
+}
+.qi-bool:hover:not(:disabled) { border-color: var(--ink-mute); background: var(--bg); }
+.qi-bool.yes:hover:not(:disabled) { background: #F0FDF4; border-color: #4ADE80; color: #166534; }
+.qi-bool.no:hover:not(:disabled)  { background: #FFF1F2; border-color: #F87171; color: #991B1B; }
+.qi-bool:disabled { opacity: .3; cursor: default; }
+body.dark .qi-bool.yes:hover:not(:disabled) { background:#052E16; border-color:#166534; color:#4ADE80; }
+body.dark .qi-bool.no:hover:not(:disabled)  { background:#2D0708; border-color:#991B1B; color:#F87171; }
+/* Scrollbars */
+::-webkit-scrollbar { width: 5px; height: 5px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: var(--hairline-strong); border-radius: 4px; }
-::-webkit-scrollbar-thumb:hover { background: var(--ink-faint); }
-::-webkit-scrollbar-corner { background: transparent; }
-
-/* ─── Topbar (navy chrome) ──────────────────────────────────────────────── */
-#topbar {
-  height: 52px;
-  flex-shrink: 0;
-  background: var(--frame);
-  color: var(--frame-fg);
-  display: flex;
-  align-items: stretch;
-  border-bottom: 1px solid #0B1A28;
-}
-.brand {
-  display: flex;
-  align-items: center;
-  padding: 0 20px;
-}
-.brand-logo {
-  width: 124px;
-  height: auto;
-  display: block;
-  object-fit: contain;
-  border-radius: 0;
-  flex-shrink: 0;
-}
-
-#topbar-meta {
-  display: flex;
-  align-items: center;
-  flex: 1;
-  padding: 0 18px;
-  min-width: 0;
-}
-
-#status-indicator {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  margin-left: auto;
-  padding: 4px 12px;
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.02em;
-  color: var(--frame-mute);
-  flex-shrink: 0;
-  border-radius: 999px;
-  background: rgba(255,255,255,0.04);
-  transition: background 0.15s ease;
-}
-#status-indicator.connected,
-#status-indicator.running { color: var(--frame-fg); background: rgba(105,166,224,0.10); }
-#status-indicator.done    { color: var(--frame-fg); background: rgba(127,177,176,0.16); }
-#status-indicator.error   { color: var(--frame-fg); background: rgba(224,107,138,0.16); }
-.status-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--status-idle);
-  flex-shrink: 0;
-  transition: background 0.2s ease, box-shadow 0.2s ease;
-}
-.status-dot.connected,
-.status-dot.running {
-  background: var(--status-run);
-  box-shadow: 0 0 0 3px rgba(105,166,224,0.20);
-  animation: status-pulse 1.6s ease-in-out infinite;
-}
-.status-dot.done {
-  background: var(--status-done);
-  box-shadow: 0 0 0 3px rgba(127,177,176,0.18);
-}
-.status-dot.error {
-  background: var(--status-err);
-  box-shadow: 0 0 0 3px rgba(224,107,138,0.18);
-}
-@keyframes status-pulse {
-  0%, 100% { box-shadow: 0 0 0 2px rgba(105,166,224,0.20); }
-  50%      { box-shadow: 0 0 0 5px rgba(105,166,224,0.10); }
-}
-
-/* ─── Dark-mode toggle ───────────────────────────────────────────────────── */
-#dark-toggle {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  align-self: center;
-  width: 32px;
-  height: 32px;
-  margin: 0 10px;
-  border: none;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--frame-mute);
-  cursor: pointer;
-  transition: background 0.15s, color 0.15s;
-  flex-shrink: 0;
-}
-#dark-toggle:hover { background: rgba(255,255,255,0.08); color: var(--frame-fg); }
-#dark-toggle .icon-sun  { display: block; }
-#dark-toggle .icon-moon { display: none;  }
-body.dark #dark-toggle .icon-sun  { display: none;  }
-body.dark #dark-toggle .icon-moon { display: block; }
-
-/* Event boxes keep dark text in dark mode (sherbet fills are light) */
-body.dark .ev-box   { --ink: #143146; --ink-mute: #4D6479; --ink-faint: #8195A6; }
-body.dark .detail-type { color: #143146; }
-
-/* ─── Body ───────────────────────────────────────────────────────────────── */
-#body {
-  flex: 1;
-  display: flex;
-  min-height: 0;
-}
-
-/* ─── Sidebar ───────────────────────────────────────────────────────────── */
-#sidebar {
-  width: 232px;
-  flex-shrink: 0;
-  background: var(--bg-card);
-  border-right: 1px solid var(--hairline);
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
-.sidebar-section {
-  padding: 18px 16px 12px;
-  flex: 1;
-  overflow-y: auto;
-}
-.section-label {
-  font-size: 9.5px;
-  font-weight: 700;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  color: var(--ink-faint);
-  margin-bottom: 14px;
-  padding: 0 4px;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.section-label::after {
-  content: '';
-  flex: 1;
-  height: 1px;
-  background: var(--hairline);
-}
-
-/* Workflow tree */
-#wf-tree {
-  list-style: none;
-}
-.wf-tree-children {
-  list-style: none;
-  margin-left: 13px;
-  padding-left: 11px;
-  border-left: 1px solid var(--hairline);
-}
-.wf-tree-row {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  padding: 6px 8px;
-  cursor: pointer;
-  border: 1px solid transparent;
-  border-radius: 6px;
-  transition: background 0.12s ease, border-color 0.12s ease;
-  position: relative;
-  margin: 1px 0;
-}
-.wf-tree-row:hover {
-  background: var(--bg-hover);
-}
-.wf-tree-row.focused {
-  background: var(--bg-hover);
-  border-color: var(--hairline-strong);
-}
-.wf-tree-status {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  flex-shrink: 0;
-  background: var(--status-idle);
-  transition: background 0.2s ease, box-shadow 0.2s ease;
-}
-.wf-tree-status.running {
-  background: var(--status-run);
-  box-shadow: 0 0 0 3px rgba(105,166,224,0.16);
-  animation: status-pulse 1.6s ease-in-out infinite;
-}
-.wf-tree-status.done {
-  background: var(--status-done);
-  box-shadow: 0 0 0 2px rgba(127,177,176,0.16);
-}
-.wf-tree-name {
-  font-size: 12.5px;
-  color: var(--ink);
-  font-weight: 500;
-  letter-spacing: -0.005em;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  flex: 1;
-}
-.wf-tree-row.running .wf-tree-name { font-weight: 600; }
-
-.sidebar-bottom {
-  padding: 14px 16px;
-  border-top: 1px solid var(--hairline);
-  flex-shrink: 0;
-  background: var(--bg-card);
-}
-#replay-btn {
-  width: 100%;
-  height: 36px;
-  padding: 0 14px;
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.01em;
-  color: var(--ink-ghost);
-  background: var(--bg);
-  border: 1px solid var(--hairline);
-  border-radius: 8px;
-  cursor: not-allowed;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  transition: color 0.15s ease, border-color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
-}
-#replay-btn:not([disabled]) {
-  color: var(--frame);
-  border-color: var(--ink);
-  background: var(--bg-card);
-  cursor: pointer;
-}
-#replay-btn:not([disabled]):hover {
-  background: var(--ink);
-  color: var(--frame-fg);
-  box-shadow: 0 1px 6px rgba(20,49,70,0.18);
-}
-#replay-btn .btn-icon { font-size: 9px; }
-
-/* Replay button dark-mode overrides */
-body.dark #replay-btn              { color: var(--ink-faint); }
-body.dark #replay-btn:not([disabled]) {
-  color: var(--frame-fg);
-  border-color: var(--hairline-strong);
-  background: rgba(255,255,255,0.06);
-}
-body.dark #replay-btn:not([disabled]):hover {
-  background: var(--frame-fg);
-  color: var(--frame);
-  box-shadow: 0 1px 6px rgba(0,0,0,0.30);
-}
-
-/* ─── Main diagram area (the cream stage) ───────────────────────────────── */
-#main {
-  flex: 1;
-  min-width: 0;
-  background: var(--bg);
-  position: relative;
-  overflow: hidden;
-}
-#diagram-root {
-  position: absolute;
-  inset: 0;
-  overflow-y: auto;
-  display: flex;
-  flex-direction: column;
-  padding: 22px 24px 60px;
-  gap: 18px;
-}
-.empty-msg {
-  margin: auto;
-  text-align: center;
-  color: var(--ink-faint);
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.14em;
-  text-transform: uppercase;
-  padding: 60px 28px;
-  border: 1px dashed var(--hairline);
-  background: var(--bg-card);
-  border-radius: 10px;
-}
-
-/* ─── Workflow group (a "level" — white card on cream) ──────────────────── */
-.wf-group {
-  display: flex;
-  flex-direction: column;
-  position: relative;
-  --wf-accent: var(--k-model);
-}
-/* Active workflow: subtle left border in the level's accent color */
-.wf-group.wf-active {
-  border-radius: 10px;
-  box-shadow: -3px 0 0 0 var(--spawner-color, rgba(156,143,217,0.4));
-}
-/* Children container */
-.wf-children {
-  display: flex;
-  flex-direction: column;
-  gap: 18px;
-  padding: 18px 0 0 36px;
-}
-.wf-children:empty { display: none; }
-/* All group labels are clickable */
-.wf-label { cursor: pointer; }
-.wf-label {
-  display: flex;
-  align-items: center;
-  gap: 11px;
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--ink);
-  padding: 9px 14px;
-  background: var(--bg-card);
-  border: 1px solid var(--hairline);
-  border-bottom: none;
-  border-radius: 10px 10px 0 0;
-  letter-spacing: -0.005em;
-}
-.wf-label-name {
-  font-weight: 600;
-  font-size: 12.5px;
-  color: var(--ink);
-}
-.wf-label-lifelines {
-  font-size: 10.5px;
-  font-weight: 500;
-  color: var(--ink-mute);
-  letter-spacing: 0.01em;
-}
-.wf-label-context {
-  margin-left: auto;
-  color: var(--ink-faint);
-  font-size: 11px;
-  font-weight: 500;
-  letter-spacing: -0.005em;
-}
-.wf-label-context strong {
-  color: var(--ink-mute);
-  font-weight: 600;
-}
-
-.wf-body {
-  display: flex;
-  background: var(--bg-card);
-  border: 1px solid var(--hairline);
-  border-radius: 0 0 10px 10px;
-  min-height: 80px;
-  overflow: hidden;
-}
-
-/* Frozen lifeline strip (white, no rail through it) */
-.ll-strip {
-  width: 152px;
-  flex-shrink: 0;
-  background: var(--bg-card);
-  border-right: 1px solid var(--hairline);
-  display: flex;
-  flex-direction: column;
-  z-index: 2;
-}
-.ll-strip-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 0 14px;
-  height: var(--row-h, 76px);
-  position: relative;
-  --ll-color: var(--ink-faint);
-  transition: background 0.18s ease;
-}
-.ll-strip-swatch {
-  width: 4px;
-  height: 22px;
-  background: var(--ll-color);
-  border-radius: 2px;
-  flex-shrink: 0;
-}
-.ll-strip-name {
-  font-size: 12.5px;
-  font-weight: 600;
-  color: var(--ink);
-  letter-spacing: -0.005em;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  flex: 1;
-}
-.ll-strip-row.thinking .ll-strip-name { color: var(--ink); }
-.ll-strip-status {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: transparent;
-  flex-shrink: 0;
-  transition: background 0.2s ease, box-shadow 0.2s ease;
-}
-.ll-strip-row.thinking .ll-strip-status {
-  background: var(--status-run);
-  box-shadow: 0 0 0 3px rgba(105,166,224,0.20);
-  animation: status-pulse 1.2s ease-in-out infinite;
-}
-.ll-strip-row.done .ll-strip-status {
-  background: var(--status-done);
-}
-
-/* Scrollable events */
-.wf-scroll {
-  flex: 1;
-  min-width: 0;
-  overflow-x: auto;
-  overflow-y: hidden;
-  position: relative;
-  background: var(--bg-card);
-}
-.wf-scroll::-webkit-scrollbar { height: 8px; }
-.wf-events {
-  display: flex;
-  flex-direction: row;
-  width: max-content;
-  min-width: 100%;
-  height: 100%;
-  position: relative;
-}
-.msg-overlay {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  pointer-events: none;
-  overflow: visible;
-  z-index: 1;
-}
-
-/* ─── Event column ──────────────────────────────────────────────────────── */
-.ev-col {
-  display: grid;
-  grid-template-rows: var(--rows, 76px);
-  width: 158px;
-  flex-shrink: 0;
-  position: relative;
-  padding: 0;
-  animation: col-enter 0.18s ease-out;
-  z-index: 2;
-}
-@keyframes col-enter {
-  from { opacity: 0; transform: translateX(8px); }
-  to   { opacity: 1; transform: translateX(0); }
-}
-.ev-col.msg-col svg.msg-arrow {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  pointer-events: none;
-  overflow: visible;
-  z-index: 1;
-}
-.ev-cell {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  position: relative;
-  padding: 8px 10px;
-}
-/* Per-cell lifeline rail (only inside the events area) */
-.ev-cell::before {
-  content: '';
-  position: absolute;
-  left: 0;
-  right: 0;
-  top: 50%;
-  height: 1px;
-  background: var(--rail-color, transparent);
-  pointer-events: none;
-  z-index: 0;
-}
-
-/* ─── Event boxes (sherbet bars, navy ink) ─────────────────────────────── */
-.ev-box {
-  width: 100%;
-  max-width: 138px;
-  background: var(--bar-fill);
-  color: var(--ink);
-  border: 1px solid var(--bar-edge);
-  border-radius: 6px;
-  padding: 7px 11px;
-  cursor: pointer;
-  transition: background 0.12s ease, border-color 0.12s ease,
-              box-shadow 0.16s ease, transform 0.08s ease;
-  position: relative;
-  z-index: 2;
-  user-select: none;
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  min-height: 42px;
-  --bar-fill: var(--k-action);
-  --bar-edge: rgba(20,49,70,0.16);
-}
-.ev-box:hover {
-  filter: brightness(1.04);
-  box-shadow: 0 4px 12px rgba(20,49,70,0.10);
-  transform: translateY(-1px);
-}
-.ev-box.selected {
-  box-shadow: 0 0 0 2px var(--bg-card), 0 0 0 4px var(--bar-fill);
-}
-.ev-box-tag {
-  font-size: 9.5px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--ink);
-  opacity: 0.78;
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-.ev-box-name {
-  font-size: 12.5px;
-  font-weight: 600;
-  color: var(--ink);
-  letter-spacing: -0.01em;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-/* Type-specific bar fills */
-.ev-box.act-box { --bar-fill: var(--k-action); }
-.ev-box.act-box.human-act {
-  --bar-fill: var(--k-human);
-}
-.ev-box.msg-box.send  { --bar-fill: var(--k-send);  }
-.ev-box.msg-box.recv  { --bar-fill: var(--k-recv);  }
-.ev-box.msg-box.ctrl  { --bar-fill: var(--k-ctrl); border-style: dashed; opacity: 0.92; }
-.ev-box.dec-box       { --bar-fill: var(--k-decision); }
-.ev-box.dec-box .ev-box-name {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-}
-.dec-symbol {
-  font-size: 13px;
-  font-weight: 700;
-  font-family: 'JetBrains Mono', monospace;
-  color: var(--ink);
-}
-
-/* Action box pulse while running */
-.ev-box.act-box.running {
-  animation: act-pulse 1.4s ease-in-out infinite;
-}
-@keyframes act-pulse {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(20,49,70,0); }
-  50%      { box-shadow: 0 0 0 4px rgba(105,166,224,0.20); }
-}
-
-.ev-box.human-box {
-  --bar-fill: var(--k-human);
-}
-.ev-box.human-box.human-pending {
-  border: 2px solid var(--k-human);
-  animation: human-pulse 1.2s ease-in-out infinite;
-}
-@keyframes human-pulse {
-  0%, 100% { border-color: var(--k-human); }
-  50%       { border-color: transparent; }
-}
-.human-pending-widgets {
-  margin-top: 6px;
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-}
-.human-pending-btn {
-  padding: 3px 10px;
-  border-radius: 4px;
-  border: 1px solid var(--k-human);
-  background: transparent;
-  color: var(--ink);
-  cursor: pointer;
-  font-size: 12px;
-}
-.human-pending-btn:hover { background: rgba(231, 160, 165, 0.18); }
-.human-pending-input {
-  width: 100%;
-  font-size: 12px;
-  min-height: 80px;
-  padding: 7px 9px;
-  border-radius: 6px;
-  border: 1px solid var(--hairline-strong);
-  background: var(--bg-card);
-  color: var(--ink);
-  resize: none;
-  box-sizing: border-box;
-  outline: none;
-  transition: border-color 0.15s ease, box-shadow 0.15s ease, background 0.15s ease;
-}
-.human-pending-input:hover {
-  border-color: var(--ink-faint);
-}
-.human-pending-input:focus {
-  border-color: var(--k-human);
-  box-shadow: 0 0 0 2px rgba(231, 160, 165, 0.22);
-}
-
-/* ─── Detail panel (push, not overlay) ──────────────────────────────────── */
-#detail-panel {
-  width: 360px;
-  flex-shrink: 0;
-  background: var(--bg-card);
-  border-left: 1px solid var(--hairline);
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  --accent: var(--k-action);
-}
-#detail-panel[hidden] { display: none !important; }
-.detail-header {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 14px 16px;
-  border-bottom: 1px solid var(--hairline);
-  background: var(--bg);
-  flex-shrink: 0;
-}
-.detail-type {
-  font-size: 9.5px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--ink);
-  padding: 4px 9px;
-  background: var(--accent);
-  border-radius: 4px;
-  flex-shrink: 0;
-}
-.detail-name {
-  font-size: 14px;
-  font-weight: 600;
-  color: var(--ink);
-  letter-spacing: -0.01em;
-  flex: 1;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.detail-close {
-  width: 28px;
-  height: 28px;
-  background: var(--bg-card);
-  border: 1px solid var(--hairline);
-  color: var(--ink-mute);
-  font-size: 14px;
-  cursor: pointer;
-  border-radius: 6px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  transition: color 0.12s, border-color 0.12s, background 0.12s;
-  font-weight: 600;
-}
-.detail-close:hover {
-  color: var(--ink);
-  border-color: var(--ink);
-  background: var(--bg);
-}
-.detail-body {
-  flex: 1;
-  overflow-y: auto;
-  padding: 16px 16px 32px;
-}
-.detail-meta {
-  display: flex;
-  align-items: center;
-  padding: 10px 12px;
-  margin-bottom: 18px;
-  border: 1px solid var(--hairline);
-  background: var(--bg);
-  border-radius: 8px;
-}
-.detail-meta-row {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  font-size: 12.5px;
-  color: var(--ink);
-  font-weight: 600;
-  letter-spacing: -0.005em;
-}
-.detail-meta-arrow {
-  color: var(--ink-faint);
-  font-size: 12px;
-  margin: 0 2px;
-}
-.detail-section { margin-bottom: 18px; }
-.detail-section-label {
-  font-size: 9.5px;
-  font-weight: 700;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: var(--ink-faint);
-  margin-bottom: 7px;
-  display: flex;
-  align-items: center;
-  gap: 7px;
-}
-.detail-section-label::after {
-  content: '';
-  flex: 1;
-  height: 1px;
-  background: var(--hairline);
-}
-.detail-kv {
-  border: 1px solid var(--hairline);
-  background: var(--bg);
-  border-radius: 8px;
-  overflow: hidden;
-}
-.detail-kv-row {
-  display: grid;
-  grid-template-columns: minmax(60px, max-content) 1fr;
-  gap: 14px;
-  padding: 8px 12px;
-  align-items: baseline;
-}
-.detail-kv-row + .detail-kv-row {
-  border-top: 1px solid var(--hairline);
-}
-.detail-kv-key {
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--ink-mute);
-  letter-spacing: -0.005em;
-}
-.detail-kv-val {
-  font-size: 11.5px;
-  color: var(--ink);
-  word-break: break-word;
-  white-space: pre-wrap;
-  line-height: 1.55;
-  font-family: 'JetBrains Mono', monospace;
-}
-.detail-empty {
-  font-size: 11px;
-  color: var(--ink-faint);
-  font-style: italic;
-  letter-spacing: -0.005em;
-  text-align: center;
-  padding: 10px;
-  border: 1px dashed var(--hairline);
-  border-radius: 6px;
-  background: var(--bg-card);
-}
-
-/* ─── Vertical message arrows ───────────────────────────────────────────── */
-svg.msg-arrow line {
-  stroke-width: 1.6;
-  stroke-linecap: round;
-}
-svg.msg-arrow.ctrl line {
-  stroke-dasharray: 4 3;
-}
-
-/* ─── Responsive ─────────────────────────────────────────────────────────── */
-@media (max-width: 1080px) {
-  #sidebar { width: 200px; }
-  #detail-panel { width: 320px; }
-}
-@media (max-width: 820px) {
-  #sidebar { width: 176px; }
-  #detail-panel { width: 280px; }
-  .ll-strip { width: 132px; }
-  .brand { padding: 0 14px; }
-}
+::-webkit-scrollbar-thumb { background: var(--hair-s); border-radius: 3px; }
 </style>
 </head>
 <body>
-
-<header id="topbar">
-  <div class="brand">
-    <img class="brand-logo" src="/assets/zippergen-lockup-dark.svg" alt="ZipperGen">
-  </div>
-  <div id="topbar-meta">
-    <div id="status-indicator">
-      <span class="status-dot"></span>
-      <span class="status-label">connecting</span>
+<div id="app">
+  <header id="hdr">
+    <span class="hdr-logo">ZIPPERCHAT</span>
+    <div class="hdr-sep"></div>
+    <span id="wf-name">—</span>
+    <div class="hdr-gap"></div>
+    <span class="s-dot" id="s-dot"></span>
+    <span id="s-label">connecting…</span>
+    <button id="dark-btn" title="Toggle dark mode">🌙</button>
+  </header>
+  <div id="main">
+    <div id="timeline">
+      <p style="padding:20px;color:var(--ink-faint);font-size:12px;">Awaiting workflow…</p>
+    </div>
+    <div id="inspector">
+      <div id="ins-hdr">
+        Inspector
+        <span id="q-count"></span>
+      </div>
+      <div id="ins-body">
+        <div class="ins-empty">Click an action to inspect it</div>
+      </div>
     </div>
   </div>
-  <button id="dark-toggle" type="button" title="Toggle dark mode" aria-label="Toggle dark mode">
-    <svg class="icon-sun" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
-    <svg class="icon-moon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
-  </button>
-</header>
-
-<div id="body">
-
-  <aside id="sidebar">
-    <div class="sidebar-section">
-      <h3 class="section-label">Workflows</h3>
-      <ul id="wf-tree"></ul>
-    </div>
-    <div class="sidebar-bottom">
-      <button id="replay-btn" type="button" disabled>
-        <span class="btn-icon">▶</span>
-        <span class="btn-label">Run again</span>
-      </button>
-    </div>
-  </aside>
-
-  <main id="main">
-    <div id="diagram-root"></div>
-  </main>
-
-  <aside id="detail-panel" hidden aria-hidden="true">
-    <header class="detail-header">
-      <span class="detail-type" id="detail-type">EVENT</span>
-      <span class="detail-name" id="detail-name"></span>
-      <button class="detail-close" type="button" aria-label="Close detail" title="Close (Esc)">✕</button>
-    </header>
-    <div class="detail-body" id="detail-body"></div>
-  </aside>
-
 </div>
-
 <script>
-'use strict';
+// ── State ──────────────────────────────────────────────────────────────────
+let evSrc      = null;
+const cols     = {};        // lifeline name → {bodyEl}
+const cards    = {};        // `${ll}:${seq}` → {el, outsEl, kind, name, lifeline, outputs, reqId}
+const reqMap   = new Map(); // req_id → {lifeline, prompt, input_type, options, prefill, resolved, value}
+let pending    = 0;
+let selReqId   = null;      // req_id currently shown in inspector
+let selCardKey = null;      // card key currently shown in inspector
 
-// ─── Configuration ────────────────────────────────────────────────────────
-const AGENT_COLORS = ['#3F5A78', '#5A7390', '#6E8298', '#7E8B9C', '#8E96A2'];
-const ROW_HEIGHT = 76;
-const STRIP_WIDTH = 152;
+// ── DOM ────────────────────────────────────────────────────────────────────
+const timeline = document.getElementById('timeline');
+const insBody  = document.getElementById('ins-body');
+const qCount   = document.getElementById('q-count');
+const sDot     = document.getElementById('s-dot');
+const sLabel   = document.getElementById('s-label');
+const wfName   = document.getElementById('wf-name');
+const darkBtn  = document.getElementById('dark-btn');
 
-// Bar-fill kinds
-const KIND = {
-  action:   '#69A6E0',
-  model:    '#9C8FD9',
-  send:     '#7FB1B0',
-  recv:     '#BFD9D8',
-  ctrl:     '#C4CCD4',
-  decision: '#D4BA88',
-  human:    '#E7A0A5',
-};
-
-// ─── State ────────────────────────────────────────────────────────────────
-const levels = new Map();          // pathKey → Level
-let selectedBox = null;
-let eventSrc = null;
-let focusedLevelKey = null;
-const pendingHumanCards = new Map(); // request id → {box, row, lev, lifelineIdx}
-
-function submitHumanInput(id, value) {
-  fetch('/human-input', {
-    method: 'POST',
-    headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({id, value}),
-  });
-}
-
-// ─── DOM refs ─────────────────────────────────────────────────────────────
-const diagramRoot   = document.getElementById('diagram-root');
-const statusDot     = document.querySelector('#status-indicator .status-dot');
-const statusLabel   = document.querySelector('#status-indicator .status-label');
-const statusInd     = document.getElementById('status-indicator');
-const wfTreeEl      = document.getElementById('wf-tree');
-const replayBtn     = document.getElementById('replay-btn');
-const detailPanel   = document.getElementById('detail-panel');
-const detailType    = document.getElementById('detail-type');
-const detailName    = document.getElementById('detail-name');
-const detailBody    = document.getElementById('detail-body');
-const detailClose   = document.querySelector('.detail-close');
-const darkToggleBtn = document.getElementById('dark-toggle');
-
-// ─── Dark-mode toggle ─────────────────────────────────────────────────────
-(function() {
-  const saved = localStorage.getItem('zc-theme');
-  if (saved === 'dark') document.body.classList.add('dark');
-})();
-darkToggleBtn.addEventListener('click', () => {
-  const isDark = document.body.classList.toggle('dark');
-  localStorage.setItem('zc-theme', isDark ? 'dark' : 'light');
+// ── Dark mode ──────────────────────────────────────────────────────────────
+(()=>{ if(localStorage.getItem('zc-theme')==='dark') document.body.classList.add('dark'); })();
+darkBtn.addEventListener('click', ()=>{
+  document.body.classList.toggle('dark');
+  localStorage.setItem('zc-theme', document.body.classList.contains('dark')?'dark':'light');
 });
 
-// Expose strip width to CSS
-document.documentElement.style.setProperty('--strip-w', STRIP_WIDTH + 'px');
-
-// ─── Helpers ──────────────────────────────────────────────────────────────
-function pathKey(p) { return p.length ? p.join('\x00') : '__root'; }
-function pad2(n) { return n < 10 ? '0' + n : '' + n; }
-function escHtml(s) {
-  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;')
-                  .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+// ── Helpers ────────────────────────────────────────────────────────────────
+function esc(s){ return String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function fmtV(v){
+  if(v===null||v===undefined) return '';
+  if(typeof v==='string'&&v.startsWith('κ_ctrl_')) return '';
+  if(typeof v==='boolean') return v?'true':'false';
+  if(typeof v==='string') return v.length>400?v.slice(0,399)+'…':v;
+  try{ return JSON.stringify(v,null,2); }catch{ return String(v); }
 }
-function agentColor(i) { return AGENT_COLORS[i % AGENT_COLORS.length]; }
-function hexToRgba(hex, alpha) {
-  const h = hex.replace('#','');
-  const r = parseInt(h.slice(0,2), 16);
-  const g = parseInt(h.slice(2,4), 16);
-  const b = parseInt(h.slice(4,6), 16);
-  return `rgba(${r},${g},${b},${alpha})`;
+function setStatus(cls, label){
+  sDot.className = 's-dot '+cls;
+  sLabel.textContent = label;
 }
-function isCtrlVal(v) {
-  return typeof v === 'string' && v.startsWith('κ_ctrl_');
+function refreshCount(){
+  if(pending>0){ qCount.textContent=pending; qCount.classList.add('on'); }
+  else{ qCount.classList.remove('on'); }
 }
-function isCtrlVals(vs) {
-  return Array.isArray(vs) && vs.some(isCtrlVal);
-}
-function fmtValue(v, maxLen) {
-  if (v === null || v === undefined) return 'null';
-  if (typeof v === 'string' && v.startsWith('κ_ctrl_')) {
-    return v.slice('κ_ctrl_'.length) || 'ctrl';
-  }
-  if (typeof v === 'boolean') return v ? 'true' : 'false';
-  if (typeof v === 'string') {
-    if (maxLen && v.length > maxLen) return v.slice(0, maxLen - 1) + '…';
-    return v;
-  }
-  if (Array.isArray(v)) {
-    return v.map(x => fmtValue(x, maxLen)).join(', ');
-  }
-  if (typeof v === 'object') {
-    try { return JSON.stringify(v, null, 2); } catch { return String(v); }
-  }
-  return String(v);
-}
-function causalSections(ev) {
-  const sections = [];
-  if (ev && ev.vc) {
-    sections.push({ label: 'Vector clock', entries: ev.vc });
-  }
-  if (ev && ev.message_vc) {
-    sections.push({ label: 'Message clock', entries: ev.message_vc });
-  }
-  return sections;
-}
-function parallelSections(ev) {
-  const entries = {};
-  if (ev && ev.parallel_branch) entries.branch = ev.parallel_branch;
-  return Object.keys(entries).length
-    ? [{ label: 'Parallel region', entries }]
-    : [];
-}
-function tagWithBranch(tag, ev) {
-  return ev && ev.parallel_branch ? `${tag} · ${ev.parallel_branch}` : tag;
-}
-function channelKey(from, to, channel) {
-  return `${from}->${to}#${channel || 'main'}`;
+function clearSelected(){
+  document.querySelectorAll('.ac.selected').forEach(el=>el.classList.remove('selected'));
 }
 
-// ─── Status indicator ─────────────────────────────────────────────────────
-function setStatus(state, text) {
-  statusDot.className = 'status-dot ' + (state || '');
-  statusInd.classList.remove('connected','running','done','error');
-  if (state) statusInd.classList.add(state);
-  statusLabel.textContent = text;
-}
+// ── Inspector: show human req ──────────────────────────────────────────────
+function showReq(req_id){
+  const req = reqMap.get(req_id);
+  if(!req) return;
+  selReqId = req_id; selCardKey = null;
+  clearSelected();
+  for(const c of Object.values(cards)){ if(c.reqId===req_id) c.el.classList.add('selected'); }
 
-// ─── Workflow tree ────────────────────────────────────────────────────────
-function renderTree() {
-  wfTreeEl.innerHTML = '';
-  const roots = Array.from(levels.values()).filter(lev => !lev.parentLevel);
-  if (roots.length === 0) return;
-  roots.forEach(root => wfTreeEl.appendChild(renderTreeNode(root)));
-}
-function renderTreeNode(lev) {
-  const li = document.createElement('li');
-  li.className = 'wf-tree-item';
-  const row = document.createElement('div');
-  row.className = 'wf-tree-row ' + (lev.status || '');
-  row.dataset.key = lev.key;
-  if (lev.key === focusedLevelKey) row.classList.add('focused');
-  row.innerHTML = `
-    <span class="wf-tree-status ${lev.status || ''}"></span>
-    <span class="wf-tree-name">${escHtml(lev.name)}</span>
-  `;
-  row.addEventListener('click', () => {
-    if (lev._plannerBox) {
-      // Nested level — selecting it is the same as selecting its planner box
-      fillDetailPanel(lev._plannerBox, lev._plannerBox._dataBuilder());
-      requestAnimationFrame(() => scrollToLevel(lev));
-    } else {
-      // Direct workflow selection: deselect any box, highlight this level
-      if (selectedBox) { selectedBox.classList.remove('selected'); selectedBox = null; }
-      detailPanel.hidden = true;
-      detailPanel.setAttribute('aria-hidden', 'true');
-      setGroupActive(lev.groupEl, hexToRgba(lev.accent, 0.38));
-      focusedLevelKey = lev.key;
-      renderTree();
-      scrollToLevel(lev);
-    }
-  });
-  li.appendChild(row);
-  const childList = Array.from(lev.children.values());
-  if (childList.length > 0) {
-    const ul = document.createElement('ul');
-    ul.className = 'wf-tree-children';
-    childList.forEach(c => ul.appendChild(renderTreeNode(c)));
-    li.appendChild(ul);
-  }
-  return li;
-}
-function scrollToLevel(lev) {
-  if (!lev || !lev.groupEl) return;
-  lev.groupEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
-}
+  const isBool   = req.input_type==='bool';
+  const isChoice = req.input_type==='choice';
 
-// ─── Lifeline status (in diagram strip) ──────────────────────────────────
-function setLLStatusInLevel(lev, lifelineName, state) {
-  const idx = lev.lifelineNames.indexOf(lifelineName);
-  if (idx < 0 || !lev.stripEl) return;
-  const row = lev.stripEl.children[idx];
-  if (!row) return;
-  row.classList.remove('thinking', 'done');
-  if (state) row.classList.add(state);
-}
-function markAllLLDone(lev) {
-  if (!lev.stripEl) return;
-  for (const row of lev.stripEl.children) {
-    row.classList.remove('thinking');
-    row.classList.add('done');
-  }
-}
-
-// ─── Level management ─────────────────────────────────────────────────────
-function makeLevel(path, name, lifelineNames, parentLevel = null,
-                   parentLifeline = null, parentSeq = null) {
-  const key = pathKey(path);
-  if (levels.has(key)) return levels.get(key);
-
-  let accent = KIND.model;
-  if (parentLevel && parentLifeline) {
-    const idx = parentLevel.lifelineNames.indexOf(parentLifeline);
-    if (idx >= 0) accent = agentColor(idx);
-  }
-
-  const lev = {
-    path, key, name, lifelineNames,
-    N: lifelineNames.length,
-    parentLevel, parentLifeline, parentSeq,
-    accent,
-    status: 'running',
-    children: new Map(),
-    groupEl: null, bodyEl: null, stripEl: null, scrollEl: null, eventsEl: null, overlayEl: null, childrenEl: null,
-    cgRows: {},
-    cgIdSeq: 0,
-    cgLast: {},
-    cgPending: {},
-    cgOpen: {},
-    completed: [],
-    pendingActBoxes: {},
-    seqToActBox: new Map(),
-  };
-  levels.set(key, lev);
-  if (parentLevel) {
-    parentLevel.children.set(key, lev);
-    if (parentSeq != null) markCallerAsPlanner(parentLevel, parentSeq, lev);
-  }
-  buildLevelDom(lev);
-  renderTree();
-  return lev;
-}
-
-function markCallerAsPlanner(parentLev, parentSeq, childLevel) {
-  const box = parentLev.seqToActBox.get(parentSeq);
-  if (!box) return;
-  box.classList.add('planner-act');
-  box._childLevel = childLevel;
-  childLevel._plannerBox = box;
-}
-
-function buildLevelDom(lev) {
-  const isNested = !!lev.parentLevel;
-
-  const group = document.createElement('section');
-  group.className = 'wf-group' + (isNested ? ' nested' : '');
-  group.dataset.path = lev.key;
-  group.style.setProperty('--wf-accent', lev.accent);
-  group.style.setProperty('--spawner-color', hexToRgba(lev.accent, 0.38));
-
-  // Label
-  const label = document.createElement('header');
-  label.className = 'wf-label';
-  const ctxHtml = (isNested && lev.parentLifeline)
-    ? `<span class="wf-label-context">spawned by <strong>${escHtml(lev.parentLifeline)}</strong></span>`
-    : '';
-  const llHtml = (isNested || lev.path.length > 0)
-    ? `<span class="wf-label-lifelines">${lev.lifelineNames.map(escHtml).join(' · ')}</span>`
-    : '';
-  label.innerHTML = `
-    <span class="wf-label-name">${escHtml(lev.name)}</span>
-    ${llHtml}
-    ${ctxHtml}
-  `;
-  // Clicking a group's header: nested with planner → show detail; otherwise → select workflow
-  label.addEventListener('click', () => {
-    if (lev._plannerBox) {
-      fillDetailPanel(lev._plannerBox, lev._plannerBox._dataBuilder());
-    } else {
-      if (selectedBox) { selectedBox.classList.remove('selected'); selectedBox = null; }
-      detailPanel.hidden = true;
-      detailPanel.setAttribute('aria-hidden', 'true');
-      setGroupActive(lev.groupEl, hexToRgba(lev.accent, 0.38));
-      focusedLevelKey = lev.key;
-      renderTree();
-    }
-  });
-  group.appendChild(label);
-
-  // Body
-  const body = document.createElement('div');
-  body.className = 'wf-body';
-
-  // Lifeline strip (white, no rail through it)
-  const strip = document.createElement('aside');
-  strip.className = 'll-strip';
-  lev.lifelineNames.forEach((name, i) => {
-    const c = agentColor(i);
-    const row = document.createElement('div');
-    row.className = 'll-strip-row';
-    row.style.setProperty('--ll-color', c);
-    row.style.setProperty('--row-h', ROW_HEIGHT + 'px');
-    row.innerHTML = `
-      <span class="ll-strip-swatch"></span>
-      <span class="ll-strip-name">${escHtml(name)}</span>
-      <span class="ll-strip-status"></span>
-    `;
-    strip.appendChild(row);
-  });
-
-  // Scroll + events
-  const scroll = document.createElement('div');
-  scroll.className = 'wf-scroll';
-  const events = document.createElement('div');
-  events.className = 'wf-events';
-  events.style.setProperty('--rows', `repeat(${lev.N}, ${ROW_HEIGHT}px)`);
-  const overlay = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-  overlay.setAttribute('class', 'msg-overlay');
-  events.appendChild(overlay);
-  scroll.appendChild(events);
-
-  body.appendChild(strip);
-  body.appendChild(scroll);
-  group.appendChild(body);
-
-  // Children container — nested sub-workflow groups go here (continuous guide line)
-  const childrenEl = document.createElement('div');
-  childrenEl.className = 'wf-children';
-  group.appendChild(childrenEl);
-
-  lev.groupEl = group;
-  lev.bodyEl  = body;
-  lev.stripEl = strip;
-  lev.scrollEl = scroll;
-  lev.eventsEl = events;
-  lev.overlayEl = overlay;
-  lev.childrenEl = childrenEl;
-
-  // Insert into DOM: nested groups go into their parent's children container
-  if (isNested && lev.parentLevel && lev.parentLevel.childrenEl) {
-    lev.parentLevel.childrenEl.appendChild(group);
+  let widgetHtml = '';
+  if(req.resolved){
+    const shown = req.value===''||req.value==='(approved as-is)' ? 'approved as-is' : req.value;
+    widgetHtml = `<div class="ins-resolved">✓ ${esc(shown)}</div>`;
+  } else if(isBool){
+    widgetHtml = `<div class="ins-widget"><div class="qi-bool-row">
+      <button class="qi-bool yes" disabled>Yes</button>
+      <button class="qi-bool no"  disabled>No</button>
+    </div></div>`;
+  } else if(isChoice&&req.options){
+    const btns = req.options.map(o=>`<button class="qi-bool" disabled data-val="${esc(o)}">${esc(o)}</button>`).join('');
+    widgetHtml = `<div class="ins-widget"><div class="qi-bool-row">${btns}</div></div>`;
   } else {
-    const empty = diagramRoot.querySelector('.empty-msg');
-    if (empty) empty.remove();
-    diagramRoot.appendChild(group);
-  }
-}
-
-function setLevelStatus(lev, status) {
-  if (lev.status === status) return;
-  lev.status = status;
-  if (status === 'done' && lev.stripEl) markAllLLDone(lev);
-  renderTree();
-}
-
-// ─── Constraint graph (per-level) ─────────────────────────────────────────
-function newCgRow(lev, kind) {
-  const r = {
-    id: lev.cgIdSeq++, kind, level: 0,
-    succ: new Set(), pred: new Set(),
-    wrapper: null, cells: null, svg: null,
-    fromIdx: -1, toIdx: -1, ctrl: false, color: null,
-    occupied: new Set()
-  };
-  lev.cgRows[r.id] = r;
-  return r;
-}
-function cgAddEdge(lev, u, v) {
-  if (!u || !v || u.id === v.id) return;
-  if (u.succ.has(v.id)) return;
-  u.succ.add(v.id); v.pred.add(u.id);
-  if (v.level <= u.level) cgRaise(lev, v, u.level + 1);
-}
-function cgRaise(lev, v, nl) {
-  if (nl <= v.level) return;
-  v.level = nl;
-  for (const wId of v.succ) cgRaise(lev, lev.cgRows[wId], v.level + 1);
-}
-function hasPath(lev, start, target) {
-  if (!start || !target) return false;
-  if (start.id === target.id) return true;
-  const seen = new Set([start.id]);
-  const stack = [...start.succ];
-  while (stack.length) {
-    const id = stack.pop();
-    if (id === target.id) return true;
-    if (seen.has(id)) continue;
-    seen.add(id);
-    const row = lev.cgRows[id];
-    if (!row) continue;
-    for (const succ of row.succ) stack.push(succ);
-  }
-  return false;
-}
-function canReuseActRow(lev, lifeline, r) {
-  if (!r || r.kind !== 'action') return false;
-  const idx = lev.lifelineNames.indexOf(lifeline);
-  if (idx < 0 || r.occupied.has(idx)) return false;
-  const last = lev.cgLast[lifeline];
-  if (last && hasPath(lev, r, last)) return false;
-  for (const pending of (lev.cgPending[lifeline] || [])) {
-    if (pending.id !== r.id && hasPath(lev, pending, r)) return false;
-  }
-  return true;
-}
-function findReusableActRow(lev, lifeline, ev = null) {
-  return Object.values(lev.cgRows)
-    .filter(r => canReuseActRow(lev, lifeline, r))
-    .sort((a, b) => b.level !== a.level ? b.level - a.level : b.id - a.id)[0] || null;
-}
-function materializeOnLifeline(lev, lifeline, r) {
-  cgAddEdge(lev, lev.cgLast[lifeline], r);
-  for (const p of (lev.cgPending[lifeline] || [])) {
-    if (p.id !== r.id) cgAddEdge(lev, r, p);
-  }
-  lev.cgLast[lifeline] = r;
-}
-function syncOrder(lev) {
-  const sorted = Object.values(lev.cgRows)
-    .filter(r => r.wrapper)
-    .sort((a, b) => a.level !== b.level ? a.level - b.level : a.id - b.id);
-  for (const r of sorted) lev.eventsEl.appendChild(r.wrapper);
-  requestAnimationFrame(() => redrawArrowsForLevel(lev));
-}
-function scrollLevelToEnd(lev) {
-  if (lev.scrollEl) lev.scrollEl.scrollLeft = lev.scrollEl.scrollWidth;
-}
-
-// ─── Detail panel ─────────────────────────────────────────────────────────
-function fillDetailPanel(box, data) {
-  if (selectedBox && selectedBox !== box) {
-    selectedBox.classList.remove('selected');
-  }
-  selectedBox = box;
-  box.classList.add('selected');
-
-  // Active group = sub-workflow (if this box spawns one), otherwise this box's own level
-  const activeLev = box._childLevel || box._level;
-  if (activeLev && activeLev.groupEl) {
-    setGroupActive(activeLev.groupEl, hexToRgba(activeLev.accent, 0.38));
-    focusedLevelKey = activeLev.key;
-    renderTree();
+    const prefillVal = req.prefill ? esc(req.prefill) : '';
+    widgetHtml = `<div class="ins-widget">
+      <textarea class="qi-ta" rows="3">${prefillVal}</textarea>
+      <div class="qi-submit-row"><button class="qi-btn" disabled>Submit →</button></div>
+    </div>`;
   }
 
-  const accent = data.accent || KIND.action;
-  detailPanel.style.setProperty('--accent', accent);
-  detailType.textContent = data.type;
-  detailName.textContent = data.name || '';
-  detailBody.innerHTML = '';
-
-  // Meta block
-  const meta = document.createElement('div');
-  meta.className = 'detail-meta';
-  let metaHtml;
-  if (data.lifelines) {
-    metaHtml = `<span class="detail-meta-row">
-      <span>${escHtml(data.lifelines[0])}</span>
-      <span class="detail-meta-arrow">→</span>
-      <span>${escHtml(data.lifelines[1])}</span>
-    </span>`;
-  } else if (data.lifeline) {
-    metaHtml = `<span class="detail-meta-row"><span>${escHtml(data.lifeline)}</span></span>`;
-  } else {
-    metaHtml = `<span class="detail-meta-row"><span>—</span></span>`;
-  }
-  meta.innerHTML = metaHtml;
-  detailBody.appendChild(meta);
-
-  // Sections
-  if (data.sections) {
-    data.sections.forEach(sec => {
-      const section = document.createElement('div');
-      section.className = 'detail-section';
-      const lbl = document.createElement('div');
-      lbl.className = 'detail-section-label';
-      lbl.textContent = sec.label;
-      section.appendChild(lbl);
-
-      const entries = sec.entries || {};
-      const keys = Object.keys(entries).filter(k => {
-        const v = entries[k];
-        if (Array.isArray(v) && v.every(isCtrlVal)) return false;
-        return true;
-      });
-
-      if (keys.length === 0) {
-        const empty = document.createElement('div');
-        empty.className = 'detail-empty';
-        empty.textContent = sec.emptyText || '(none)';
-        section.appendChild(empty);
-      } else {
-        const kv = document.createElement('div');
-        kv.className = 'detail-kv';
-        keys.forEach(k => {
-          const row = document.createElement('div');
-          row.className = 'detail-kv-row';
-          row.innerHTML = `
-            <span class="detail-kv-key">${escHtml(k)}</span>
-            <span class="detail-kv-val">${escHtml(fmtValue(entries[k]))}</span>
-          `;
-          kv.appendChild(row);
-        });
-        section.appendChild(kv);
-      }
-      detailBody.appendChild(section);
-    });
-  }
-
-  detailPanel.hidden = false;
-  detailPanel.setAttribute('aria-hidden', 'false');
-  requestAnimationFrame(redrawAllArrows);
-}
-let activeGroupEl = null;
-function setGroupActive(groupEl, color) {
-  if (activeGroupEl) {
-    activeGroupEl.classList.remove('wf-active');
-    activeGroupEl.style.removeProperty('--spawner-color');
-  }
-  activeGroupEl = groupEl || null;
-  if (activeGroupEl) {
-    activeGroupEl.style.setProperty('--spawner-color', color || 'rgba(156,143,217,0.4)');
-    activeGroupEl.classList.add('wf-active');
-  }
-}
-function closeDetail() {
-  if (selectedBox) {
-    selectedBox.classList.remove('selected');
-    selectedBox = null;
-  }
-  setGroupActive(null);
-  focusedLevelKey = null;
-  renderTree();
-  detailPanel.hidden = true;
-  detailPanel.setAttribute('aria-hidden', 'true');
-  requestAnimationFrame(redrawAllArrows);
-}
-detailClose.addEventListener('click', closeDetail);
-diagramRoot.addEventListener('click', (e) => {
-  if (e.target.closest('.ev-box')) return;
-  if (e.target.closest('.wf-label')) return;
-  closeDetail();
-});
-document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && !detailPanel.hidden) closeDetail();
-});
-
-// ─── Box factory ──────────────────────────────────────────────────────────
-function makeBox(opts) {
-  const box = document.createElement('div');
-  box.className = `ev-box ${opts.kind || ''}`;
-  if (opts.extraClass) {
-    String(opts.extraClass).split(/\s+/).filter(Boolean).forEach(c => box.classList.add(c));
-  }
-  box.innerHTML = `
-    <div class="ev-box-tag">${opts.tag}</div>
-    <div class="ev-box-name">${escHtml(opts.name)}</div>
-  `;
-  box._dataBuilder = opts.dataBuilder;
-  box.addEventListener('click', (e) => {
-    e.stopPropagation();
-    if (selectedBox === box && !detailPanel.hidden) {
-      closeDetail();
-      return;
-    }
-    fillDetailPanel(box, opts.dataBuilder());
-  });
-  return box;
-}
-
-// ─── Action rendering ─────────────────────────────────────────────────────
-function actionMeta(ev, box) {
-  const kind = String(ev.action_kind || '').toLowerCase();
-  if (kind === 'llm')      return { tag: 'LLM',      type: 'LLM',      cls: 'llm-act',          accent: KIND.action };
-  if (kind === 'pure')     return { tag: 'PURE',     type: 'PURE',     cls: 'pure-act',         accent: KIND.action };
-  if (kind === 'planner')  return { tag: 'PLANNER',  type: 'PLANNER',  cls: 'planner-kind-act', accent: KIND.action };
-  if (kind === 'workflow') return { tag: 'WORKFLOW', type: 'WORKFLOW', cls: 'workflow-act',     accent: KIND.action };
-  if (kind === 'human')    return { tag: 'HUMAN',    type: 'HUMAN',    cls: 'human-act',        accent: KIND.human };
-  if (box && box.classList.contains('planner-act')) {
-    return { tag: 'WORKFLOW', type: 'WORKFLOW', cls: 'workflow-act', accent: KIND.action };
-  }
-  return { tag: 'ACT', type: 'ACT', cls: '', accent: KIND.action };
-}
-
-function handleActStart(lev, ev) {
-  // Human actions are rendered by the dedicated pending-input path below.
-  // Rendering the generic act_start/act pair as well would duplicate them.
-  if (String(ev.action_kind || '').toLowerCase() === 'human') return;
-
-  const i = lev.lifelineNames.indexOf(ev.lifeline);
-  if (i < 0) return;
-
-  setLLStatusInLevel(lev, ev.lifeline, 'thinking');
-
-  let r = findReusableActRow(lev, ev.lifeline, ev);
-  if (r) {
-    materializeOnLifeline(lev, ev.lifeline, r);
-  } else {
-    r = newCgRow(lev, 'action');
-    const wrapper = document.createElement('div');
-    wrapper.className = 'ev-col act-col';
-    wrapper.style.setProperty('--rows', `repeat(${lev.N}, ${ROW_HEIGHT}px)`);
-    r.wrapper = wrapper;
-    r.cells = lev.lifelineNames.map((_, k) => {
-      const cell = document.createElement('div');
-      cell.className = 'ev-cell';
-      cell.dataset.row = String(k);
-      cell.style.setProperty('--rail-color', hexToRgba(agentColor(k), 0.55));
-      wrapper.appendChild(cell);
-      return cell;
-    });
-    materializeOnLifeline(lev, ev.lifeline, r);
-    lev.eventsEl.appendChild(wrapper);
-  }
-  r.occupied.add(i);
-  r.seq = ev.seq;
-
-  const inputs = ev.inputs || {};
-  const meta = actionMeta(ev);
-  const box = makeBox({
-    kind: 'act-box',
-    extraClass: `running ${meta.cls}`,
-    tag: tagWithBranch(meta.tag, ev),
-    name: ev.action,
-    dataBuilder: () => ({
-      type: actionMeta(ev, box).type,
-      name: ev.action,
-      lifeline: ev.lifeline,
-      seq: ev.seq,
-      accent: actionMeta(ev, box).accent,
-      sections: [
-        ...parallelSections(ev),
-        { label: 'Inputs',  entries: inputs,           emptyText: '(no inputs)' },
-        { label: 'Outputs', entries: box._outputs || {}, emptyText: '(awaiting outputs…)' },
-        ...causalSections({vc: box._vc}),
-      ],
-    }),
-  });
-  box._outputs = {};
-  box._vc = null;
-  box._level = lev;
-  r.cells[i].appendChild(box);
-  lev.pendingActBoxes[`${ev.lifeline}:${ev.seq}`] = box;
-  lev.seqToActBox.set(ev.seq, box);
-  syncOrder(lev);
-  scrollLevelToEnd(lev);
-}
-
-function handleAct(lev, ev) {
-  if (String(ev.action_kind || '').toLowerCase() === 'human') return;
-
-  const key = `${ev.lifeline}:${ev.seq}`;
-  const box = lev.pendingActBoxes[key];
-  if (!box) return;
-  delete lev.pendingActBoxes[key];
-  box.classList.remove('running');
-  box._outputs = ev.outputs || {};
-  box._vc = ev.vc || null;
-  setLLStatusInLevel(lev, ev.lifeline, '');
-
-  if (selectedBox === box) {
-    const meta = actionMeta(ev, box);
-    fillDetailPanel(box, {
-      type: meta.type,
-      name: ev.action,
-      lifeline: ev.lifeline,
-      seq: ev.seq,
-      accent: meta.accent,
-      sections: [
-        ...parallelSections(ev),
-        { label: 'Inputs',  entries: ev.inputs || {},  emptyText: '(no inputs)' },
-        { label: 'Outputs', entries: ev.outputs || {}, emptyText: '(no outputs)' },
-        ...causalSections(ev),
-      ],
-    });
-  }
-}
-
-// ─── Human input rendering ────────────────────────────────────────────────
-function _makeHumanWidget(ev) {
-  // Build the interactive widget section shown in the detail panel.
-  const section = document.createElement('div');
-  section.className = 'detail-section';
-  const lbl = document.createElement('div');
-  lbl.className = 'detail-section-label';
-  lbl.textContent = ev.input_type === 'bool' ? 'Decision'
-                  : ev.input_type === 'choice' ? 'Select option'
-                  : 'Enter text';
-  section.appendChild(lbl);
-  const inner = document.createElement('div');
-  inner.className = 'human-pending-widgets';
-  if (ev.input_type === 'bool') {
-    ['Yes', 'No'].forEach(label => {
-      const btn = document.createElement('button');
-      btn.className = 'human-pending-btn';
-      btn.textContent = label;
-      btn.onclick = () => submitHumanInput(ev.id, label.toLowerCase() === 'yes' ? 'true' : 'false');
-      inner.appendChild(btn);
-    });
-  } else if (ev.input_type === 'choice' && ev.options) {
-    ev.options.forEach(opt => {
-      const btn = document.createElement('button');
-      btn.className = 'human-pending-btn';
-      btn.textContent = opt;
-      btn.onclick = () => submitHumanInput(ev.id, opt);
-      inner.appendChild(btn);
-    });
-  } else {
-    const textCol = document.createElement('div');
-    textCol.style.cssText = 'display:flex;flex-direction:column;gap:10px;width:100%;';
-    const textarea = document.createElement('textarea');
-    textarea.className = 'human-pending-input';
-    textarea.rows = 3;
-    textCol.appendChild(textarea);
-    const submitBtn = document.createElement('button');
-    submitBtn.className = 'human-pending-btn';
-    submitBtn.textContent = 'Submit';
-    submitBtn.onclick = () => submitHumanInput(ev.id, textarea.value);
-    textCol.appendChild(submitBtn);
-    inner.appendChild(textCol);
-  }
-  section.appendChild(inner);
-  return section;
-}
-
-function _focusHumanWidget(widget) {
-  const input = widget && widget.querySelector('.human-pending-input');
-  if (input) setTimeout(() => input.focus(), 0);
-}
-
-function handleHumanInputRequired(ev) {
-  const lev = levels.get(pathKey(ev.path || []));
-  if (!lev) return;
-  const i = lev.lifelineNames.indexOf(ev.lifeline);
-  if (i < 0) return;
-
-  setLLStatusInLevel(lev, ev.lifeline, 'thinking');
-
-  const r = newCgRow(lev, 'action');
-  const wrapper = document.createElement('div');
-  wrapper.className = 'ev-col act-col';
-  wrapper.style.setProperty('--rows', `repeat(${lev.N}, ${ROW_HEIGHT}px)`);
-  r.wrapper = wrapper;
-  r.cells = lev.lifelineNames.map((_, k) => {
-    const cell = document.createElement('div');
-    cell.className = 'ev-cell';
-    cell.dataset.row = String(k);
-    cell.style.setProperty('--rail-color', hexToRgba(agentColor(k), 0.55));
-    wrapper.appendChild(cell);
-    return cell;
-  });
-  materializeOnLifeline(lev, ev.lifeline, r);
-  lev.eventsEl.appendChild(wrapper);
-  r.occupied.add(i);
-
-  const actionName = ev.input_type === 'bool' ? 'Approval' : 'Input';
-  const box = makeBox({
-    kind: 'human-box',
-    extraClass: 'human-pending',
-    tag: 'HUMAN',
-    name: actionName,
-    dataBuilder: () => ({
-      type: 'HUMAN',
-      name: actionName,
-      lifeline: ev.lifeline,
-      accent: KIND.human,
-      sections: [
-        { label: 'Prompt',   entries: { prompt: ev.prompt }, emptyText: '' },
-        { label: 'Response', entries: box._humanResult || {}, emptyText: '(awaiting input…)' },
-      ],
-    }),
-  });
-  box._level = lev;
-  box._humanResult = null;
-  box._widgetEl = _makeHumanWidget(ev);
-
-  // When the box is clicked (re-opened), re-inject the widget if still pending
-  box.addEventListener('click', () => {
-    if (box._widgetEl && selectedBox === box && !detailPanel.hidden) {
-      detailBody.appendChild(box._widgetEl);
-      _focusHumanWidget(box._widgetEl);
-    }
-  });
-
-  r.cells[i].appendChild(box);
-  pendingHumanCards.set(ev.id, {box, lev, lifeline: ev.lifeline});
-
-  // Auto-open detail panel and inject widget at the bottom
-  fillDetailPanel(box, box._dataBuilder());
-  detailBody.appendChild(box._widgetEl);
-  _focusHumanWidget(box._widgetEl);
-
-  syncOrder(lev);
-  scrollLevelToEnd(lev);
-}
-
-function handleHumanInput(ev) {
-  const entry = pendingHumanCards.get(ev.id);
-  if (!entry) return;
-  pendingHumanCards.delete(ev.id);
-
-  const {box, lev, lifeline} = entry;
-  box.classList.remove('human-pending');
-  box._humanResult = { response: ev.value };
-
-  // Remove the widget (it lives in detailBody while panel is open, or is detached)
-  if (box._widgetEl) {
-    box._widgetEl.remove();
-    box._widgetEl = null;
-  }
-
-  // Refresh detail panel to show the submitted response
-  if (selectedBox === box) fillDetailPanel(box, box._dataBuilder());
-
-  setLLStatusInLevel(lev, lifeline, '');
-}
-
-// ─── Decision rendering ───────────────────────────────────────────────────
-function handleDecision(lev, ev) {
-  const i = lev.lifelineNames.indexOf(ev.lifeline);
-  if (i < 0) return;
-
-  const r = newCgRow(lev, 'decision');
-  const wrapper = document.createElement('div');
-  wrapper.className = 'ev-col dec-col';
-  wrapper.style.setProperty('--rows', `repeat(${lev.N}, ${ROW_HEIGHT}px)`);
-  r.wrapper = wrapper;
-  r.cells = lev.lifelineNames.map((_, k) => {
-    const cell = document.createElement('div');
-    cell.className = 'ev-cell';
-    cell.style.setProperty('--rail-color', hexToRgba(agentColor(k), 0.55));
-    wrapper.appendChild(cell);
-    return cell;
-  });
-  materializeOnLifeline(lev, ev.lifeline, r);
-
-  const isTrue = !!ev.value;
-  const isWhile = ev.kind === 'while';
-  let sym, word;
-  if (isWhile) {
-    sym = isTrue ? '↻' : '⊥';
-    word = isTrue ? 'continue' : 'exit';
-  } else {
-    sym = isTrue ? '⊤' : '⊥';
-    word = isTrue ? 'true' : 'false';
-  }
-  const tag = isWhile ? 'WHILE' : 'IF';
-
-  const box = document.createElement('div');
-  box.className = 'ev-box dec-box';
-  box._level = lev;
-  box.innerHTML = `
-    <div class="ev-box-tag">${tag}</div>
-    <div class="ev-box-name">
-      <span class="dec-symbol">${sym}</span>
-      <span>${escHtml(word)}</span>
+  insBody.innerHTML = `
+    <div class="ins-sec-hdr">
+      <span class="ins-ll">${esc(req.lifeline)}</span>
+      <span class="ins-title">${isBool?'Decision required':'Input required'}</span>
+      ${req.resolved?'<span class="ins-badge">✓ done</span>':''}
     </div>
-  `;
-  box.addEventListener('click', (e) => {
-    e.stopPropagation();
-    if (selectedBox === box && !detailPanel.hidden) {
-      closeDetail();
-      return;
-    }
-    const condSections = [];
-    if (ev.formula) {
-      condSections.push({ label: 'Formula', entries: { guard: ev.formula } });
-    } else if (ev.condition) {
-      condSections.push({ label: 'Condition', entries: { expr: ev.condition } });
-    }
-    fillDetailPanel(box, {
-      type: tag,
-      name: word,
-      lifeline: ev.lifeline,
-      accent: KIND.decision,
-      sections: [
-        ...condSections,
-        { label: 'Verdict', entries: { value: isTrue } },
-        ...causalSections(ev),
-      ],
-    });
-  });
-  r.cells[i].appendChild(box);
-  syncOrder(lev);
-  scrollLevelToEnd(lev);
-}
+    <div class="ins-prompt">${esc(req.prompt)}</div>
+    ${widgetHtml}`;
 
-// ─── Message rendering ────────────────────────────────────────────────────
-function makeEventWrapper(lev, className) {
-  const wrapper = document.createElement('div');
-  wrapper.className = className;
-  wrapper.style.setProperty('--rows', `repeat(${lev.N}, ${ROW_HEIGHT}px)`);
-  const cells = lev.lifelineNames.map((_, k) => {
-    const cell = document.createElement('div');
-    cell.className = 'ev-cell';
-    cell.style.setProperty('--rail-color', hexToRgba(agentColor(k), 0.55));
-    wrapper.appendChild(cell);
-    return cell;
-  });
-  return {wrapper, cells};
-}
-
-function handleSend(lev, ev) {
-  const fromIdx = lev.lifelineNames.indexOf(ev.from);
-  const toIdx   = lev.lifelineNames.indexOf(ev.to);
-  if (fromIdx < 0 || toIdx < 0) return;
-  const ctrl = isCtrlVals(ev.values);
-  const crossColumn = !!ev.parallel_branch;
-
-  const r = newCgRow(lev, 'message');
-  r.fromIdx = fromIdx; r.toIdx = toIdx; r.ctrl = ctrl;
-  r.color = ctrl ? KIND.ctrl : KIND.send;
-  r.crossColumn = crossColumn;
-
-  const {wrapper, cells} = makeEventWrapper(lev, 'ev-col msg-col');
-  r.wrapper = wrapper;
-  r.cells = cells;
-
-  const sendBindings = ctrl ? { branch: ev.values[0] } : (ev.bindings || {});
-  const sendBox = makeBox({
-    kind: 'msg-box send',
-    extraClass: ctrl ? 'ctrl' : '',
-    tag: tagWithBranch(ctrl ? 'CTRL' : 'SEND', ev),
-    name: '→ ' + ev.to,
-    dataBuilder: () => ({
-      type: ctrl ? 'CTRL SEND' : 'SEND',
-      name: `${ev.from} → ${ev.to}`,
-      lifelines: [ev.from, ev.to],
-      fromColor: agentColor(fromIdx),
-      toColor:   agentColor(toIdx),
-      seq: ev.seq,
-      accent: ctrl ? KIND.ctrl : KIND.send,
-      sections: [
-        ...parallelSections(ev),
-        { label: 'Values', entries: sendBindings, emptyText: '(no values)' },
-        ...causalSections(ev),
-      ],
-    }),
-  });
-  sendBox._level = lev;
-  r.sendBox = sendBox;
-  r.cells[fromIdx].appendChild(sendBox);
-
-  if (!crossColumn) {
-    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-    svg.setAttribute('class', ctrl ? 'msg-arrow ctrl' : 'msg-arrow');
-    wrapper.appendChild(svg);
-    r.svg = svg;
-  }
-
-  materializeOnLifeline(lev, ev.from, r);
-
-  const chanKey = channelKey(ev.from, ev.to, ev.channel);
-  if (!lev.cgOpen[chanKey]) lev.cgOpen[chanKey] = [];
-  lev.cgOpen[chanKey].push(r);
-  if (!crossColumn) {
-    if (!lev.cgPending[ev.to]) lev.cgPending[ev.to] = new Set();
-    lev.cgPending[ev.to].add(r);
-  }
-
-  lev.completed.push(r);
-  lev.eventsEl.appendChild(wrapper);
-  syncOrder(lev);
-  scrollLevelToEnd(lev);
-}
-
-function handleRecv(lev, ev) {
-  const chanKey = channelKey(ev.from, ev.to, ev.channel);
-  const queue   = lev.cgOpen[chanKey];
-  if (!queue || !queue.length) return;
-  const r = queue.shift();
-  if (!r.crossColumn) lev.cgPending[ev.to]?.delete(r);
-
-  const ctrl = r.ctrl;
-  const toIdx = r.toIdx;
-  const recvBindings = ev.bindings || {};
-
-  const recvBox = makeBox({
-    kind: 'msg-box recv',
-    extraClass: ctrl ? 'ctrl' : '',
-    tag: tagWithBranch(ctrl ? 'CTRL' : 'RECV', ev),
-    name: '← ' + ev.from,
-    dataBuilder: () => ({
-      type: ctrl ? 'CTRL RECV' : 'RECV',
-      name: `${ev.from} → ${ev.to}`,
-      lifelines: [ev.from, ev.to],
-      fromColor: agentColor(r.fromIdx),
-      toColor:   agentColor(toIdx),
-      seq: ev.seq,
-      accent: ctrl ? KIND.ctrl : KIND.recv,
-      sections: [
-        ...parallelSections(ev),
-        { label: 'Bindings', entries: recvBindings, emptyText: '(no bindings)' },
-        ...causalSections(ev),
-      ],
-    }),
-  });
-  recvBox._level = lev;
-  r.recvBox = recvBox;
-
-  if (r.crossColumn) {
-    const rr = newCgRow(lev, 'message-recv');
-    rr.wrapper = makeEventWrapper(lev, 'ev-col msg-col').wrapper;
-    rr.cells = Array.from(rr.wrapper.children);
-    rr.fromIdx = r.fromIdx;
-    rr.toIdx = r.toIdx;
-    rr.ctrl = r.ctrl;
-    rr.color = r.color;
-    rr.occupied.add(toIdx);
-    rr.cells[toIdx].appendChild(recvBox);
-    r.recvRow = rr;
-    r.recvWrapper = rr.wrapper;
-    cgAddEdge(lev, r, rr);
-    materializeOnLifeline(lev, ev.to, rr);
-    lev.eventsEl.appendChild(rr.wrapper);
-  } else {
-    r.cells[toIdx].appendChild(recvBox);
-    materializeOnLifeline(lev, ev.to, r);
-  }
-
-  syncOrder(lev);
-  scrollLevelToEnd(lev);
-}
-
-// ─── Vertical arrow drawing ───────────────────────────────────────────────
-function drawOverlayArrow(lev, r) {
-  const overlay = lev.overlayEl;
-  if (!overlay || !r.sendBox || !r.recvBox) return;
-
-  const eventsRect = lev.eventsEl.getBoundingClientRect();
-  const sendRect = r.sendBox.getBoundingClientRect();
-  const recvRect = r.recvBox.getBoundingClientRect();
-  const dir = r.toIdx > r.fromIdx ? 1 : -1;
-
-  const x1 = sendRect.left + sendRect.width / 2 - eventsRect.left;
-  const y1 = (dir > 0 ? sendRect.bottom : sendRect.top) - eventsRect.top;
-  const x2 = recvRect.left + recvRect.width / 2 - eventsRect.left;
-  const y2 = (dir > 0 ? recvRect.top : recvRect.bottom) - eventsRect.top;
-
-  const color = r.color;
-  const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
-  line.setAttribute('x1', x1); line.setAttribute('y1', y1);
-  line.setAttribute('x2', x2); line.setAttribute('y2', y2);
-  line.setAttribute('stroke', color);
-  line.setAttribute('stroke-width', '1.5');
-  if (r.ctrl) line.setAttribute('stroke-dasharray', '4 3');
-  overlay.appendChild(line);
-
-  const angle = Math.atan2(y2 - y1, x2 - x1);
-  const arrowLen = 9;
-  const arrowHalf = 5;
-  const bx = x2 - arrowLen * Math.cos(angle);
-  const by = y2 - arrowLen * Math.sin(angle);
-  const px = arrowHalf * Math.sin(angle);
-  const py = -arrowHalf * Math.cos(angle);
-  const pts = `${x2},${y2} ${bx + px},${by + py} ${bx - px},${by - py}`;
-  const arrow = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
-  arrow.setAttribute('points', pts);
-  arrow.setAttribute('fill', color);
-  overlay.appendChild(arrow);
-}
-
-function drawArrow(lev, r) {
-  if (r.crossColumn) {
-    drawOverlayArrow(lev, r);
-    return;
-  }
-
-  const wrap = r.wrapper;
-  const svg  = r.svg;
-  if (!wrap || !svg) return;
-  const W = wrap.clientWidth;
-  const H = wrap.clientHeight || (lev.N * ROW_HEIGHT);
-  svg.setAttribute('viewBox', `0 0 ${W} ${H}`);
-  svg.innerHTML = '';
-
-  const sendBox = r.cells[r.fromIdx].querySelector('.ev-box');
-  const recvBox = r.cells[r.toIdx].querySelector('.ev-box');
-  const wrapRect = wrap.getBoundingClientRect();
-  const zoom = W > 0 ? wrapRect.width / W : 1;
-
-  const x = W / 2;
-  const dir = r.toIdx > r.fromIdx ? 1 : -1;
-  const cellH = H / lev.N;
-
-  let y1, y2;
-  if (sendBox) {
-    const rb = sendBox.getBoundingClientRect();
-    y1 = (dir > 0 ? rb.bottom - wrapRect.top : rb.top - wrapRect.top) / zoom;
-  } else {
-    y1 = (r.fromIdx + 0.5) * cellH;
-  }
-  if (recvBox) {
-    const rb = recvBox.getBoundingClientRect();
-    y2 = (dir > 0 ? rb.top - wrapRect.top : rb.bottom - wrapRect.top) / zoom;
-  } else {
-    y2 = (r.toIdx + 0.5) * cellH;
-  }
-
-  const color = r.color;
-  const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
-  line.setAttribute('x1', x); line.setAttribute('y1', y1);
-  line.setAttribute('x2', x); line.setAttribute('y2', y2);
-  line.setAttribute('stroke', color);
-  if (r.ctrl) line.setAttribute('stroke-dasharray', '4 3');
-  svg.appendChild(line);
-
-  const arrowLen = 9;
-  const arrowHalf = 5;
-  const ay = y2 - dir * arrowLen;
-  const pts = `${x},${y2} ${x - arrowHalf},${ay} ${x + arrowHalf},${ay}`;
-  const arrow = document.createElementNS('http://www.w3.org/2000/svg', 'polygon');
-  arrow.setAttribute('points', pts);
-  arrow.setAttribute('fill', color);
-  svg.appendChild(arrow);
-}
-function redrawArrowsForLevel(lev) {
-  if (lev.overlayEl && lev.eventsEl) {
-    const w = Math.max(lev.eventsEl.scrollWidth, lev.eventsEl.clientWidth || 0);
-    const h = Math.max(lev.eventsEl.scrollHeight, lev.eventsEl.clientHeight || 0);
-    lev.overlayEl.setAttribute('viewBox', `0 0 ${w} ${h}`);
-    lev.overlayEl.style.width = `${w}px`;
-    lev.overlayEl.style.height = `${h}px`;
-    lev.overlayEl.innerHTML = '';
-  }
-  for (const r of lev.completed) drawArrow(lev, r);
-}
-function redrawAllArrows() {
-  for (const lev of levels.values()) redrawArrowsForLevel(lev);
-}
-new ResizeObserver(redrawAllArrows).observe(diagramRoot);
-window.addEventListener('resize', redrawAllArrows);
-
-// ─── Event dispatch ───────────────────────────────────────────────────────
-function dispatchEvent(e) {
-  if (e.type === 'init') { handleInit(e); return; }
-  if (e.type === 'run_start') { handleRunStart(e); return; }
-  if (e.type === 'level_push') { handleLevelPush(e); return; }
-  if (e.type === 'level_pop') {
-    const lev = levels.get(pathKey(e.path || []));
-    if (lev) setLevelStatus(lev, 'done');
-    return;
-  }
-  if (e.type === 'done') {
-    const path = e.path || [];
-    if (path.length > 0) {
-      const lev = levels.get(pathKey(path));
-      if (lev) setLevelStatus(lev, 'done');
-      const roots = Array.from(levels.values()).filter(level => !level.parentLevel);
-      if (roots.length > 0 && roots.every(level => level.status === 'done')) {
-        setStatus('done', 'done');
-      }
+  if(!req.resolved){
+    if(isBool){
+      const yes=insBody.querySelector('.yes'), no=insBody.querySelector('.no');
+      setTimeout(()=>{ yes.disabled=false; no.disabled=false; },600);
+      yes.onclick=()=>doSubmit(req_id,'true');
+      no.onclick =()=>doSubmit(req_id,'false');
+    } else if(isChoice){
+      const btns=insBody.querySelectorAll('.qi-bool');
+      setTimeout(()=>btns.forEach(b=>b.disabled=false),600);
+      btns.forEach(b=>{ b.onclick=()=>doSubmit(req_id,b.dataset.val); });
     } else {
-      setStatus('done', 'done');
-      replayBtn.disabled = false;
-      const root = levels.get(pathKey([]));
-      if (root) setLevelStatus(root, 'done');
-    }
-    return;
-  }
-  if (e.type === 'close') {
-    if (eventSrc) { eventSrc.close(); eventSrc = null; }
-    setStatus('error', 'stopped');
-    return;
-  }
-
-  if (e.type === 'human_input_required') { handleHumanInputRequired(e); return; }
-  if (e.type === 'human_input')          { handleHumanInput(e); return; }
-
-  const path = e.path || [];
-  const lev = levels.get(pathKey(path));
-  if (!lev) return;
-
-  if (e.type === 'act_start') handleActStart(lev, e);
-  else if (e.type === 'act')    handleAct(lev, e);
-  else if (e.type === 'send')   handleSend(lev, e);
-  else if (e.type === 'recv')   handleRecv(lev, e);
-  else if (e.type === 'decision') handleDecision(lev, e);
-}
-
-function handleInit(e) {
-  levels.clear();
-  diagramRoot.innerHTML = '';
-  closeDetail();
-  replayBtn.disabled = true;
-  focusedLevelKey = null;
-
-  if (e.dashboard) {
-    diagramRoot.innerHTML = '<div class="empty-msg">Awaiting workflow runs…</div>';
-    setStatus('connected', 'connected');
-    renderTree();
-    return;
-  }
-
-  makeLevel([], 'workflow', e.lifelines || []);
-  setStatus('running', 'running');
-}
-
-function handleRunStart(e) {
-  const path = e.path || [e.run_id || String(levels.size)];
-  makeLevel(path, e.name || 'workflow', e.lifelines || []);
-  replayBtn.disabled = true;
-  setStatus('running', 'running');
-}
-
-function handleLevelPush(e) {
-  const childPath  = e.path;
-  const parentPath = childPath.slice(0, -1);
-  const parent = levels.get(pathKey(parentPath));
-  if (!parent) return;
-  let parentLifeline = null;
-  for (const key of Object.keys(parent.pendingActBoxes)) {
-    const [llname, seqStr] = key.split(':');
-    if (parseInt(seqStr, 10) === e.parent_seq) {
-      parentLifeline = llname;
-      break;
+      const ta=insBody.querySelector('.qi-ta'), btn=insBody.querySelector('.qi-btn');
+      setTimeout(()=>btn.disabled=false,800);
+      setTimeout(()=>ta.focus({preventScroll:true}),900);
+      btn.onclick=()=>doSubmit(req_id,ta.value);
     }
   }
-  if (!parentLifeline) {
-    const box = parent.seqToActBox.get(e.parent_seq);
-    if (box) {
-      const cell = box.parentElement;
-      const rowIdx = cell ? parseInt(cell.dataset.row || '-1', 10) : -1;
-      if (rowIdx >= 0) parentLifeline = parent.lifelineNames[rowIdx];
+}
+
+// ── Inspector: show card detail ────────────────────────────────────────────
+function showCard(key){
+  const c=cards[key];
+  if(!c){ return; }
+  if(c.reqId && !reqMap.get(c.reqId)?.resolved){ showReq(c.reqId); return; }
+  selCardKey=key; selReqId=null;
+  clearSelected(); c.el.classList.add('selected');
+
+  const outEntries=Object.entries(c.outputs||{})
+    .filter(([,v])=>!(typeof v==='string'&&v.startsWith('κ_ctrl_')));
+  const outHtml=outEntries.length
+    ? outEntries.map(([k,v])=>`<div class="ins-out-row">
+        <div class="ins-out-key">${esc(k)}</div>
+        <div class="ins-out-val">${esc(fmtV(v))}</div>
+      </div>`).join('')
+    : '<p style="color:var(--ink-faint);font-size:12px">No outputs yet</p>';
+
+  insBody.innerHTML = `
+    <div class="ins-sec-hdr">
+      <span class="ac-kind k-${esc(c.kind)}">${esc(kindLabel(c.kind))}</span>
+      <span class="ins-title">${esc(c.name)}</span>
+      <span class="ins-badge">${esc(c.lifeline)}</span>
+    </div>
+    <div class="ins-outputs">${outHtml}</div>`;
+}
+
+// ── Submit ─────────────────────────────────────────────────────────────────
+function doSubmit(req_id, val){
+  fetch('/human-input',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:req_id,value:val})});
+}
+
+// ── Lifeline columns ───────────────────────────────────────────────────────
+function ensureCol(name){
+  if(cols[name]) return;
+  const col=document.createElement('div');
+  col.className='ll-col';
+  col.innerHTML=`<div class="ll-header">${esc(name)}</div><div class="ll-body" id="llb-${esc(name)}"></div>`;
+  timeline.appendChild(col);
+  cols[name]={ bodyEl: col.querySelector('.ll-body') };
+}
+
+const KIND_LABEL={llm:'LLM',pure:'PURE',human:'HUMAN',planner:'PLAN'};
+function kindLabel(k){ return KIND_LABEL[k]||'ACT'; }
+
+// ── Event handlers ─────────────────────────────────────────────────────────
+function handleInit(e){
+  timeline.innerHTML='';
+  Object.keys(cols).forEach(k=>delete cols[k]);
+  Object.keys(cards).forEach(k=>delete cards[k]);
+  reqMap.clear(); pending=0; selReqId=null; selCardKey=null;
+  wfName.textContent=e.name||'workflow';
+  setStatus('running','running');
+  (e.lifelines||[]).forEach(ll=>ensureCol(ll));
+  insBody.innerHTML='<div class="ins-empty">Click an action to inspect it</div>';
+  refreshCount();
+}
+
+function handleActStart(e){
+  const ll=e.lifeline;
+  if(!cols[ll]) ensureCol(ll);
+  const body=cols[ll].bodyEl;
+  const kind=e.action_kind||'pure';
+  const name=e.action||'—';
+  const key=ll+':'+e.seq;
+  if(name==='assign') return;
+
+  const card=document.createElement('div');
+  card.className='ac pending';
+  card.innerHTML=`
+    <div class="ac-top">
+      <span class="ac-kind k-${esc(kind)}">${esc(kindLabel(kind))}</span>
+      <span class="ac-name" title="${esc(name)}">${esc(name)}</span>
+      <span class="ac-st run">●</span>
+    </div>
+    <div class="ac-outs"></div>`;
+  body.appendChild(card);
+  body.scrollTop=body.scrollHeight;
+  cards[key]={ el:card, outsEl:card.querySelector('.ac-outs'), kind, name, lifeline:ll, outputs:{}, reqId:null };
+  card.onclick=()=>showCard(key);
+}
+
+function handleAct(e){
+  const key=e.lifeline+':'+e.seq;
+  const c=cards[key]; if(!c) return;
+  c.el.classList.remove('pending','human-pending');
+  const st=c.el.querySelector('.ac-st');
+  st.className='ac-st'; st.textContent='✓';
+  c.outputs=e.outputs||{};
+  const lines=Object.entries(e.outputs||{})
+    .filter(([,v])=>!(typeof v==='string'&&v.startsWith('κ_ctrl_')))
+    .map(([k,v])=>{ const val=fmtV(v); return val?`<div class="ac-out"><span style="color:var(--ink-faint)">${esc(k)} </span>${esc(val)}</div>`:''; }).join('');
+  if(lines) c.outsEl.innerHTML=lines;
+  if(selCardKey===key) showCard(key);
+}
+
+function handleSend(e){
+  const ll=e.from||e.lifeline; if(!cols[ll]) return;
+  const body=cols[ll].bodyEl;
+  const last=body.querySelector('.ac:last-child'); if(!last) return;
+  const tag=document.createElement('div');
+  tag.className='msg-tag'; tag.textContent='→ '+(e.to||'');
+  last.appendChild(tag);
+}
+
+function handleHumanRequired(e){
+  pending++;
+  setStatus('waiting','your turn');
+  refreshCount();
+  reqMap.set(e.id,{ lifeline:e.lifeline, prompt:e.prompt||'', input_type:e.input_type, options:e.options, prefill:e.prefill||null, resolved:false, value:null });
+
+  // Link to most recent pending human card for this lifeline
+  if(cols[e.lifeline]){
+    const allCards=Array.from(cols[e.lifeline].bodyEl.querySelectorAll('.ac.pending'));
+    for(let i=allCards.length-1;i>=0;i--){
+      if(allCards[i].querySelector('.k-human')){
+        allCards[i].classList.add('human-pending');
+        for(const [k,c] of Object.entries(cards)){ if(c.el===allCards[i]){ c.reqId=e.id; break; } }
+        break;
+      }
     }
   }
-  makeLevel(childPath, e.name, e.lifelines, parent, parentLifeline, e.parent_seq);
+  showReq(e.id);
 }
 
-// ─── Replay button ────────────────────────────────────────────────────────
-replayBtn.addEventListener('click', () => {
-  if (replayBtn.disabled) return;
-  replayBtn.disabled = true;
-  setStatus('connected', 'waiting…');
-  fetch('/replay', { method: 'POST' }).then(() => connect());
-});
-
-// ─── SSE ──────────────────────────────────────────────────────────────────
-function connect() {
-  if (eventSrc) { eventSrc.close(); eventSrc = null; }
-  const src = new EventSource('/events');
-  eventSrc = src;
-  src.onopen = () => { setStatus('connected', 'connected'); };
-  src.onmessage = (ev) => {
-    try {
-      const data = JSON.parse(ev.data);
-      dispatchEvent(data);
-    } catch (err) {
-      console.error('event parse error', err, ev.data);
-    }
-  };
-  src.onerror = () => { setStatus('error', 'reconnecting…'); };
+function handleHumanInput(e){
+  const req=reqMap.get(e.id);
+  if(req){ req.resolved=true; req.value=e.value; }
+  pending=Math.max(0,pending-1);
+  if(pending===0) setStatus('running','running');
+  refreshCount();
+  for(const c of Object.values(cards)){ if(c.reqId===e.id){ c.el.classList.remove('human-pending'); break; } }
+  if(selReqId===e.id) showReq(e.id);
+  // Auto-advance to next pending req
+  for(const [id,r] of reqMap){ if(!r.resolved){ setTimeout(()=>showReq(id),350); return; } }
 }
 
-// Initial empty state
-diagramRoot.innerHTML = '<div class="empty-msg">Awaiting workflow…</div>';
+function handleDone(){
+  if(pending===0) setStatus('done','done');
+}
+
+function handleRunStart(e){
+  (e.lifelines||[]).forEach(ll=>ensureCol(ll));
+}
+
+// ── Dispatcher ─────────────────────────────────────────────────────────────
+function dispatch(e){
+  if(!e||!e.type) return;
+  switch(e.type){
+    case 'init':                 handleInit(e);          break;
+    case 'run_start':            handleRunStart(e);      break;
+    case 'act_start':            handleActStart(e);      break;
+    case 'act':                  handleAct(e);           break;
+    case 'send':                 handleSend(e);          break;
+    case 'human_input_required': handleHumanRequired(e); break;
+    case 'human_input':          handleHumanInput(e);    break;
+    case 'done':                 handleDone();           break;
+    case 'error':                setStatus('error','error'); break;
+  }
+}
+
+// ── SSE ────────────────────────────────────────────────────────────────────
+function connect(){
+  if(evSrc){ evSrc.close(); evSrc=null; }
+  const src=new EventSource('/events');
+  evSrc=src;
+  src.onopen    =()=>setStatus('','connected');
+  src.onmessage =ev=>{ try{ dispatch(JSON.parse(ev.data)); }catch(err){ console.error(err,ev.data); } };
+  src.onerror   =()=>setStatus('error','reconnecting…');
+}
 connect();
 </script>
-
 </body>
 </html>
 """

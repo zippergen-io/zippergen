@@ -249,6 +249,7 @@ class HumanAction:
     output_type: ZType                      # bool or str
     prompt: str                             # template with {var} placeholders
     options: tuple[str, ...] | None = None  # None → bool/text; tuple → choice
+    prefill: str | None = None             # input var name to pre-populate the textarea
 
     def __post_init__(self) -> None:
         if self.output_type not in (bool, str):

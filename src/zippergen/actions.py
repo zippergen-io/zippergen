@@ -252,6 +252,7 @@ def human(
     prompt: str,
     outputs: list[str],
     options: list[str] | None = None,
+    prefill: str | None = None,
 ):
     """
     Decorator that produces a HumanAction node.
@@ -267,6 +268,9 @@ def human(
     options : list of str, optional
         Fixed choices for the human to select from. Only valid when output
         type is ``str``. Renders as buttons in ZipperChat.
+    prefill : str, optional
+        Name of an input variable whose value pre-populates the textarea.
+        Only valid when output type is ``str`` and ``options`` is None.
     """
     def decorator(fn: Callable) -> HumanAction:
         fn_name = fn.__name__
@@ -296,6 +300,19 @@ def human(
                 f"type is 'str', got '{output_type.__name__}'"
             )
 
+        # prefill only valid for text (str, no options)
+        if prefill is not None:
+            if output_type is not str or options is not None:
+                raise TypeError(
+                    f"@human '{fn_name}': prefill is only valid for text "
+                    f"output (str, no options)"
+                )
+            if prefill not in input_names:
+                raise TypeError(
+                    f"@human '{fn_name}': prefill {prefill!r} is not a "
+                    f"declared input. Declared inputs: {input_names}"
+                )
+
         _options = tuple(options) if options is not None else None
 
         return HumanAction(
@@ -305,6 +322,7 @@ def human(
             output_type=output_type,
             prompt=prompt,
             options=_options,
+            prefill=prefill,
         )
 
     return decorator
