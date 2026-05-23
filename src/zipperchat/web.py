@@ -448,8 +448,18 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); font
 }
 .sg-hdr {
   display: flex; align-items: baseline; justify-content: space-between;
-  padding: 0 28px 8px; font-size: 13px; font-weight: 500; color: var(--text);
+  padding: 0 28px 8px; font-size: 14px; font-weight: 500; color: var(--text);
+  cursor: pointer; user-select: none;
 }
+.sg-hdr:hover { color: var(--text); }
+.sg-chevron {
+  display: inline-block; width: 8px; height: 8px; flex-shrink: 0;
+  border-right: 1.5px solid var(--text-mute); border-bottom: 1.5px solid var(--text-mute);
+  transform: rotate(45deg); transition: transform .15s;
+  margin-right: 8px; position: relative; top: -1px;
+}
+.sg-group.sg-folded .sg-chevron { transform: rotate(-45deg); }
+.sg-group.sg-folded .sg-row { display: none; }
 .sg-hdr-inbox { font-weight: 600; }
 .sg-count { font-family: var(--mono); font-size: 11px; color: var(--text-faint); }
 .sg-row {
@@ -639,13 +649,17 @@ function refreshCount(){
   updateInboxBadge();
 }
 
+// Fold toggle
+function toggleGroup(grpEl){ grpEl.classList.toggle('sg-folded'); }
+
 // Inbox
 function ensureInbox(){
   if(document.getElementById('grp-inbox')) return;
   const em=sidebar.querySelector('.sb-empty'); if(em) em.remove();
   const grp=document.createElement('div');
   grp.className='sg-group sg-group-inbox'; grp.id='grp-inbox';
-  grp.innerHTML='<div class="sg-hdr sg-hdr-inbox"><span>Inbox</span><span class="sg-count" id="grpc-inbox">0 / 0</span></div>';
+  grp.innerHTML='<div class="sg-hdr sg-hdr-inbox"><span><span class="sg-chevron"></span>Inbox</span><span class="sg-count" id="grpc-inbox">0 / 0</span></div>';
+  grp.querySelector('.sg-hdr').addEventListener('click', function(){ toggleGroup(grp); });
   sidebar.insertBefore(grp, sidebar.firstChild);
 }
 
@@ -667,7 +681,7 @@ function createInboxRow(key){
   el.onkeydown=e=>{ if(e.key==='Enter'||e.key===' '){ e.preventDefault(); selectAction(key); } };
   inboxRowEls[key]=el;
   const grp=document.getElementById('grp-inbox');
-  if(grp) grp.appendChild(el);
+  if(grp) grp.insertBefore(el, grp.querySelector('.sg-row'));
   updateInboxBadge();
 }
 
@@ -690,7 +704,8 @@ function ensureGroup(ll){
   const em=sidebar.querySelector('.sb-empty'); if(em) em.remove();
   const grp=document.createElement('div');
   grp.className='sg-group'; grp.id='grp-'+ll;
-  grp.innerHTML='<div class="sg-hdr"><span>'+esc(ll)+'</span><span class="sg-count" id="grpc-'+esc(ll)+'">0</span></div>';
+  grp.innerHTML='<div class="sg-hdr"><span><span class="sg-chevron"></span>'+esc(ll)+'</span><span class="sg-count" id="grpc-'+esc(ll)+'">0</span></div>';
+  grp.querySelector('.sg-hdr').addEventListener('click', function(){ toggleGroup(grp); });
   sidebar.appendChild(grp);
 }
 
