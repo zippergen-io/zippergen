@@ -382,548 +382,486 @@ _HTML = r"""<!DOCTYPE html>
 <title>ZipperChat</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:ital,wght@0,400;0,500;0,600;1,400&family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
 :root {
-  --bg:        #F8F8F6;
-  --bg-card:   #FFFFFF;
-  --frame:     #143146;
-  --frame-fg:  #F2EDE6;
-  --ink:       #1A1A1A;
-  --ink-mute:  #6B7280;
-  --ink-faint: #9CA3AF;
-  --hair:      #E5E7EB;
-  --hair-s:    #D1D5DB;
-  --k-llm:     #6366F1;
-  --k-llm-bg:  #EEF2FF;
-  --k-pure:    #6B7280;
-  --k-pure-bg: #F3F4F6;
-  --k-human:   #C2495A;
-  --k-human-bg:#FDF2F3;
-  --k-plan:    #D97706;
-  --k-plan-bg: #FFFBEB;
-  --radius:    8px;
-}
-body.dark {
-  --bg:        #0D1B2A;
-  --bg-card:   #142032;
-  --ink:       #E8E6E3;
-  --ink-mute:  #8B94A3;
-  --ink-faint: #3D4F63;
-  --hair:      #1C2E42;
-  --hair-s:    #253D56;
-  --k-llm-bg:  #11183A;
-  --k-pure-bg: #1A2535;
-  --k-human-bg:#200E12;
-  --k-plan-bg: #1F1408;
+  --bg:         #faf8f3;
+  --panel:      #ffffff;
+  --rule:       rgba(20,18,12,0.08);
+  --text:       #1a1812;
+  --text-soft:  #54514a;
+  --text-mute:  #8e8a80;
+  --text-faint: #b8b4a8;
+  --accent:     #a06a2c;
+  --accent-bg:  #fdf4e4;
+  --done-clr:   #9aa28e;
+  --serif:      'Instrument Serif', Georgia, serif;
+  --sans:       'Instrument Sans', system-ui, sans-serif;
+  --mono:       'JetBrains Mono', 'Courier New', monospace;
 }
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 html, body { height: 100%; overflow: hidden; }
-body { font-family: 'Inter', sans-serif; background: var(--bg); color: var(--ink); font-size: 13px; }
+body { font-family: var(--sans); background: var(--bg); color: var(--text); font-size: 14px; }
 
-/* ── Layout ────────────────────────────────────────────────────────────── */
-#app  { display: flex; flex-direction: column; height: 100%; }
-#main { display: flex; flex: 1; overflow: hidden; }
 
-/* ── Header ────────────────────────────────────────────────────────────── */
-#hdr {
-  display: flex; align-items: center; gap: 10px;
-  padding: 0 16px; height: 48px;
-  background: var(--frame); color: var(--frame-fg);
-  flex-shrink: 0;
+/* ── App shell ──────────────────────────────────────────────────────────── */
+#app  { display: flex; flex-direction: column; height: 100vh; }
+#hdr  {
+  display: flex; align-items: center; gap: 20px;
+  padding: 0 40px; height: 70px; flex-shrink: 0;
+  border-bottom: 1px solid var(--rule); background: var(--bg);
 }
-.hdr-logo { font-size: 12px; font-weight: 700; letter-spacing: 0.06em; opacity: 0.85; }
-.hdr-sep  { width: 1px; height: 18px; background: rgba(242,237,230,.2); margin: 0 2px; }
-#wf-name  { font-size: 13px; font-weight: 500; opacity: 0.8; }
+#body {
+  display: grid; grid-template-columns: 320px 1fr;
+  flex: 1; min-height: 0; overflow: hidden;
+}
+
+/* ── Header ─────────────────────────────────────────────────────────────── */
+.hdr-logo { height: 26px; display: block; }
+.hdr-sep  { width: 1px; height: 22px; background: var(--rule); flex-shrink: 0; }
+#wf-name  { font-size: 14px; color: var(--text-mute); font-weight: 400; }
 .hdr-gap  { flex: 1; }
-.s-dot {
-  width: 7px; height: 7px; border-radius: 50%; background: #4B5563;
-  transition: background .3s;
+#your-turn {
+  display: none; align-items: center; gap: 8px;
+  font-size: 13px; color: var(--accent); font-weight: 500;
 }
-.s-dot.running { background: #4ADE80; }
-.s-dot.waiting { background: #FBBF24; animation: pulse 1.2s ease-in-out infinite; }
-.s-dot.done    { background: #818CF8; }
-.s-dot.error   { background: #F87171; }
-@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.45} }
-#s-label { font-size: 11px; color: rgba(242,237,230,.55); letter-spacing: .02em; }
-#dark-btn {
-  background: none; border: 1px solid rgba(242,237,230,.2); color: var(--frame-fg);
-  cursor: pointer; width: 28px; height: 28px; border-radius: 6px;
-  font-size: 13px; display: flex; align-items: center; justify-content: center;
-  transition: border-color .15s;
+#your-turn.on { display: flex; }
+@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+.yt-dot {
+  width: 7px; height: 7px; border-radius: 50%; background: var(--accent); flex-shrink: 0;
+  animation: pulse 1.2s ease-in-out infinite;
 }
-#dark-btn:hover { border-color: rgba(242,237,230,.55); }
-
-/* ── Timeline (left) ───────────────────────────────────────────────────── */
-#timeline {
-  flex: 1; overflow-x: auto; overflow-y: hidden;
-  display: flex; gap: 1px; background: var(--hair);
-  align-items: stretch; min-width: 0;
-}
-.ll-col {
-  display: flex; flex-direction: column;
-  min-width: 160px; flex: 1; max-width: 240px;
-  background: var(--bg); overflow: hidden;
-}
-.ll-header {
-  padding: 7px 10px; flex-shrink: 0;
-  background: var(--bg-card); border-bottom: 1px solid var(--hair);
-  font-size: 10px; font-weight: 700; letter-spacing: .07em;
-  color: var(--ink-mute); text-transform: uppercase;
-}
-.ll-body {
-  flex: 1; overflow-y: auto; padding: 6px 5px;
-  display: flex; flex-direction: column; gap: 3px;
-}
-/* ── Action card ───────────────────────────────────────────────────────── */
-.ac {
-  border-radius: 5px; padding: 5px 7px;
-  border: 1px solid var(--hair); background: var(--bg-card);
-  transition: opacity .2s;
-}
-.ac.pending { opacity: .6; }
-.ac-top { display: flex; align-items: center; gap: 5px; }
-.ac-kind {
-  font-size: 7.5px; font-weight: 700; letter-spacing: .06em;
-  text-transform: uppercase; padding: 1px 4px; border-radius: 3px; flex-shrink: 0;
-}
-.k-llm    { background: var(--k-llm-bg);   color: var(--k-llm); }
-.k-pure   { background: var(--k-pure-bg);  color: var(--k-pure); }
-.k-human  { background: var(--k-human-bg); color: var(--k-human); }
-.k-planner{ background: var(--k-plan-bg);  color: var(--k-plan); }
-.ac-name {
-  font-size: 11px; font-weight: 500; color: var(--ink);
-  flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-}
-.ac-st { font-size: 10px; color: var(--ink-faint); flex-shrink: 0; }
-.ac-st.run { color: #4ADE80; animation: pulse 1s ease-in-out infinite; }
-.ac-st.err { color: #F87171; }
-.ac-outs {
-  margin-top: 3px; font-size: 10px;
-  font-family: 'JetBrains Mono', monospace; color: var(--ink-mute); line-height: 1.4;
-}
-.ac-out { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* send/recv tag */
-.msg-tag {
-  font-size: 9px; color: var(--ink-faint); padding: 1px 0 0 1px;
-  font-family: 'JetBrains Mono', monospace; white-space: nowrap;
-  overflow: hidden; text-overflow: ellipsis;
+#yt-count {
+  font-family: var(--mono); font-size: 11px;
+  background: var(--accent-bg); color: var(--accent); border-radius: 10px; padding: 1px 7px;
 }
 
-/* ── Inspector (right) ─────────────────────────────────────────────────── */
-#inspector {
-  width: 380px; flex-shrink: 0;
-  display: flex; flex-direction: column;
-  border-left: 1px solid var(--hair); background: var(--bg-card);
-  overflow: hidden;
+/* ── Sidebar ─────────────────────────────────────────────────────────────── */
+#sidebar { overflow-y: auto; border-right: 1px solid var(--rule); padding: 16px 0 32px; }
+.sg-group { margin-bottom: 24px; }
+.sg-hdr {
+  display: flex; align-items: baseline; justify-content: space-between;
+  padding: 0 28px 8px; font-size: 13px; font-weight: 500; color: var(--text);
 }
-#ins-hdr {
-  display: flex; align-items: center; gap: 8px;
-  padding: 0 14px; height: 40px; flex-shrink: 0;
-  border-bottom: 1px solid var(--hair);
-  font-size: 10px; font-weight: 700; letter-spacing: .07em;
-  color: var(--ink-mute); text-transform: uppercase;
+.sg-count { font-family: var(--mono); font-size: 11px; color: var(--text-faint); }
+.sg-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 6px 28px; cursor: pointer;
+  border-left: 2px solid transparent;
+  font-size: 13px; color: var(--text-soft);
+  user-select: none; transition: background .1s;
 }
-#q-count {
-  background: var(--k-human); color: #fff;
-  font-size: 9px; font-weight: 700; border-radius: 10px;
-  padding: 1px 7px; display: none;
+.sg-row:hover { background: rgba(160,106,44,0.04); }
+.sg-row:focus { outline: none; background: rgba(160,106,44,0.06); }
+.sg-row.sg-sel { background: var(--accent-bg); border-left-color: var(--accent); color: var(--text); }
+.sg-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+.dot-done    { background: transparent; border: 1.5px solid var(--done-clr); }
+.dot-running { background: var(--text-faint); }
+.dot-pending { background: var(--accent); animation: pulse 1.2s ease-in-out infinite; }
+.sg-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sg-you  { font-size: 12px; font-style: italic; color: var(--accent); flex-shrink: 0; }
+.sb-empty { padding: 40px 28px; font-size: 13px; color: var(--text-faint); }
+
+/* ── Inspector ─────────────────────────────────────────────────────────────── */
+#inspector { overflow-y: auto; }
+#ins-body  { padding: 32px 56px; max-width: 760px; min-height: 100%; }
+.ins-empty-state {
+  display: flex; align-items: center; justify-content: center;
+  min-height: 300px; font-size: 14px; color: var(--text-faint);
 }
-#q-count.on { display: inline-block; }
-/* ins-body fills the panel; its children define the layout per view */
-#ins-body {
-  flex: 1; min-height: 0;
-  display: flex; flex-direction: column;
-  overflow: hidden;
-}
-.ins-empty {
-  flex: 1; display: flex; align-items: center; justify-content: center;
-  font-size: 12px; color: var(--ink-faint); text-align: center; padding: 24px;
-}
-/* Shared section header */
-.ins-sec-hdr {
+
+/* Meta */
+.ins-meta {
   display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
-  padding: 8px 14px; flex-shrink: 0;
-  background: var(--bg-card); border-bottom: 1px solid var(--hair);
+  margin-bottom: 12px; font-size: 13px; color: var(--text-mute);
 }
-.ins-ll {
-  font-size: 9px; font-weight: 700; letter-spacing: .05em;
-  text-transform: uppercase; padding: 2px 7px; border-radius: 4px;
-  background: var(--k-human-bg); color: var(--k-human);
+.ins-meta-ll   { font-weight: 500; color: var(--text-soft); }
+.ins-meta-dot  { color: var(--text-faint); }
+.ins-meta-kind { font-family: var(--mono); font-size: 11px; }
+.ins-meta-time { font-family: var(--mono); font-size: 11px; color: var(--text-faint); }
+.ins-meta-await { margin-left: auto; font-size: 13px; color: var(--accent); font-weight: 500; font-style: italic; }
+
+/* Title */
+.ins-title {
+  font-family: var(--serif); font-size: 36px; font-weight: 400;
+  letter-spacing: -0.01em; line-height: 1.1; color: var(--text); margin-bottom: 28px;
 }
-.ins-title { font-size: 12px; font-weight: 500; color: var(--ink); }
-.ins-badge { font-size: 10px; color: var(--ink-faint); margin-left: auto; }
-/* Prompt: scrollable, fills remaining height */
-.ins-prompt {
-  flex: 1; overflow-y: auto;
-  padding: 12px 14px; font-size: 12px; line-height: 1.65;
-  white-space: pre-wrap; font-family: 'JetBrains Mono', monospace; color: var(--ink);
+
+/* Sections */
+.ins-section { margin-bottom: 24px; }
+.ins-sec-label {
+  font-size: 11px; font-weight: 500; letter-spacing: 0.1em;
+  text-transform: uppercase; color: var(--text-mute); margin-bottom: 10px;
 }
-/* Widget: pinned at bottom, always visible */
-.ins-widget {
-  flex-shrink: 0; padding: 12px 14px;
-  border-top: 1px solid var(--hair); background: var(--bg-card);
+.ins-sec-body { font-size: 14px; line-height: 1.6; color: var(--text); }
+
+/* Proposed reply */
+.ins-proposed {
+  background: var(--panel); border: 1px solid var(--rule); border-radius: 6px;
+  padding: 14px 16px; font-size: 14px; line-height: 1.6;
+  white-space: pre-wrap; word-break: break-word; max-height: 200px; overflow-y: auto;
 }
-.ins-resolved {
-  flex-shrink: 0; padding: 10px 14px;
-  font-size: 11px; font-family: 'JetBrains Mono', monospace;
-  color: var(--ink-mute); border-top: 1px solid var(--hair); background: var(--bg-card);
+
+/* Prompt context */
+.ins-ctx { white-space: pre-wrap; word-break: break-word; color: var(--text-soft); }
+
+/* Resolved */
+.ins-resolved-val { color: var(--done-clr); font-style: italic; }
+
+/* Textarea */
+.ins-ta {
+  width: 100%; font-family: var(--sans); font-size: 14px; line-height: 1.55;
+  padding: 12px 14px; border: 1px dashed var(--text-faint); border-radius: 6px;
+  background: var(--bg); color: var(--text); resize: vertical; min-height: 90px;
+  outline: none; transition: border-color .15s, border-style .15s;
 }
-/* Action outputs (card detail) */
-.ins-outputs {
-  flex: 1; overflow-y: auto; padding: 12px 14px;
+.ins-ta::placeholder { color: var(--text-faint); font-style: italic; }
+.ins-ta:focus { border-color: var(--accent); border-style: solid; }
+
+/* Action row */
+.ins-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 20px; }
+.btn-approve {
+  font-family: var(--sans); font-size: 14px; font-weight: 500;
+  padding: 10px 24px; border-radius: 6px;
+  background: var(--accent); color: #fff; border: none; cursor: pointer; transition: opacity .15s;
 }
-.ins-out-row { margin-bottom: 10px; }
-.ins-out-key { font-size: 10px; color: var(--ink-faint); font-family: 'JetBrains Mono', monospace; }
-.ins-out-val {
-  font-size: 12px; font-family: 'JetBrains Mono', monospace; color: var(--ink);
-  white-space: pre-wrap; word-break: break-word; line-height: 1.5; margin-top: 2px;
+.btn-approve:hover:not(:disabled) { opacity: .85; }
+.btn-approve:disabled { opacity: .35; cursor: default; }
+.btn-decline {
+  font-family: var(--sans); font-size: 14px; color: var(--text-mute);
+  background: none; border: none; cursor: pointer;
+  text-decoration: underline; text-underline-offset: 3px; padding: 10px 4px;
 }
-/* Timeline card: hoverable, selectable */
-.ac { cursor: pointer; }
-.ac:hover { border-color: var(--hair-s); }
-.ac.selected      { border-color: var(--k-llm) !important; }
-.ac.human-pending { border-color: var(--k-human) !important; opacity: 1; }
-/* Input widgets */
-.qi-ta {
-  width: 100%; font-size: 12px; font-family: 'JetBrains Mono', monospace;
-  min-height: 72px; padding: 7px 9px; resize: vertical;
-  border-radius: 5px; border: 1px solid var(--hair-s);
-  background: var(--bg-card); color: var(--ink);
-  outline: none; transition: border-color .15s; box-sizing: border-box;
+.btn-decline:hover:not(:disabled) { color: var(--text); }
+.btn-decline:disabled { opacity: .3; cursor: default; }
+.ins-hint { margin-left: auto; font-size: 12px; color: var(--text-faint); font-style: italic; }
+
+/* Choice buttons */
+.ins-choices { gap: 8px; flex-wrap: wrap; margin-top: 16px; }
+.btn-choice {
+  font-family: var(--sans); font-size: 13px; padding: 9px 16px; border-radius: 6px;
+  border: 1px solid var(--rule); background: var(--panel); color: var(--text-soft);
+  cursor: pointer; transition: all .12s;
 }
-.qi-ta::placeholder { color: var(--ink-faint); }
-.qi-ta:focus { border-color: var(--k-human); }
-.qi-submit-row { display: flex; justify-content: flex-end; margin-top: 8px; }
-.qi-btn {
-  font-size: 12px; font-weight: 600; padding: 7px 20px;
-  border-radius: 5px; border: 1px solid var(--k-human);
-  background: var(--k-human-bg); color: var(--k-human);
-  cursor: pointer; transition: background .12s, opacity .12s;
-}
-.qi-btn:hover:not(:disabled) { background: rgba(194,73,90,.12); }
-.qi-btn:disabled { opacity: .3; cursor: default; }
-.qi-bool-row { display: flex; gap: 8px; }
-.qi-bool {
-  flex: 1; font-size: 13px; font-weight: 600; padding: 10px 12px;
-  border-radius: 5px; border: 1px solid var(--hair-s);
-  background: var(--bg-card); color: var(--ink);
-  cursor: pointer; transition: background .12s, border-color .12s;
-}
-.qi-bool:hover:not(:disabled) { border-color: var(--ink-mute); background: var(--bg); }
-.qi-bool.yes:hover:not(:disabled) { background: #F0FDF4; border-color: #4ADE80; color: #166534; }
-.qi-bool.no:hover:not(:disabled)  { background: #FFF1F2; border-color: #F87171; color: #991B1B; }
-.qi-bool:disabled { opacity: .3; cursor: default; }
-body.dark .qi-bool.yes:hover:not(:disabled) { background:#052E16; border-color:#166534; color:#4ADE80; }
-body.dark .qi-bool.no:hover:not(:disabled)  { background:#2D0708; border-color:#991B1B; color:#F87171; }
+.btn-choice:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); background: var(--accent-bg); }
+.btn-choice:disabled { opacity: .3; cursor: default; }
+
+/* KvBlock */
+.kv-row { display: flex; gap: 14px; padding: 6px 0; border-bottom: 1px solid var(--rule); }
+.kv-row:last-child { border-bottom: none; }
+.kv-key { font-family: var(--mono); font-size: 12px; color: var(--text-mute); min-width: 100px; flex-shrink: 0; padding-top: 2px; }
+.kv-val { font-size: 14px; color: var(--text); line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
+.kv-val-true  { font-family: var(--mono); color: var(--done-clr); }
+.kv-val-false { font-family: var(--mono); color: var(--text-faint); }
+.kv-empty     { font-size: 13px; color: var(--text-faint); font-style: italic; }
+
 /* Scrollbars */
 ::-webkit-scrollbar { width: 5px; height: 5px; }
 ::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: var(--hair-s); border-radius: 3px; }
+::-webkit-scrollbar-thumb { background: var(--rule); border-radius: 3px; }
 </style>
 </head>
 <body>
 <div id="app">
   <header id="hdr">
-    <span class="hdr-logo">ZIPPERCHAT</span>
+    <img src="/assets/zippergen-lockup-ink.svg" alt="ZipperGen" class="hdr-logo">
     <div class="hdr-sep"></div>
-    <span id="wf-name">—</span>
+    <span id="wf-name">&mdash;</span>
     <div class="hdr-gap"></div>
-    <span class="s-dot" id="s-dot"></span>
-    <span id="s-label">connecting…</span>
-    <button id="dark-btn" title="Toggle dark mode">🌙</button>
+    <div id="your-turn">
+      <span class="yt-dot"></span>
+      Your turn
+      <span id="yt-count">1</span>
+    </div>
   </header>
-  <div id="main">
-    <div id="timeline">
-      <p style="padding:20px;color:var(--ink-faint);font-size:12px;">Awaiting workflow…</p>
+  <div id="body">
+    <div id="sidebar">
+      <p class="sb-empty">Awaiting workflow&hellip;</p>
     </div>
     <div id="inspector">
-      <div id="ins-hdr">
-        Inspector
-        <span id="q-count"></span>
-      </div>
       <div id="ins-body">
-        <div class="ins-empty">Click an action to inspect it</div>
+        <div class="ins-empty-state">Click an action to inspect it</div>
       </div>
     </div>
   </div>
 </div>
 <script>
-// ── State ──────────────────────────────────────────────────────────────────
+// State
 let evSrc      = null;
-const cols     = {};        // lifeline name → {bodyEl}
-const cards    = {};        // `${ll}:${seq}` → {el, outsEl, kind, name, lifeline, outputs, reqId}
-const reqMap   = new Map(); // req_id → {lifeline, prompt, input_type, options, prefill, resolved, value}
+const byKey    = {};
+const groups   = {};
+const lifelines = [];
+const rowEls   = {};
+const reqMap   = new Map();
 let pending    = 0;
-let selReqId   = null;      // req_id currently shown in inspector
-let selCardKey = null;      // card key currently shown in inspector
+let selectedId = null;
 
-// ── DOM ────────────────────────────────────────────────────────────────────
-const timeline = document.getElementById('timeline');
+// DOM
+const sidebar  = document.getElementById('sidebar');
 const insBody  = document.getElementById('ins-body');
-const qCount   = document.getElementById('q-count');
-const sDot     = document.getElementById('s-dot');
-const sLabel   = document.getElementById('s-label');
 const wfName   = document.getElementById('wf-name');
-const darkBtn  = document.getElementById('dark-btn');
+const yourTurn = document.getElementById('your-turn');
+const ytCount  = document.getElementById('yt-count');
 
-// ── Dark mode ──────────────────────────────────────────────────────────────
-(()=>{ if(localStorage.getItem('zc-theme')==='dark') document.body.classList.add('dark'); })();
-darkBtn.addEventListener('click', ()=>{
-  document.body.classList.toggle('dark');
-  localStorage.setItem('zc-theme', document.body.classList.contains('dark')?'dark':'light');
-});
-
-// ── Helpers ────────────────────────────────────────────────────────────────
+// Helpers
 function esc(s){ return String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+function isCtrl(v){ return typeof v==='string'&&v.startsWith('κ_ctrl_'); }
 function fmtV(v){
   if(v===null||v===undefined) return '';
-  if(typeof v==='string'&&v.startsWith('κ_ctrl_')) return '';
+  if(isCtrl(v)) return '';
   if(typeof v==='boolean') return v?'true':'false';
-  if(typeof v==='string') return v.length>400?v.slice(0,399)+'…':v;
+  if(typeof v==='string') return v.length>600?v.slice(0,599)+'…':v;
   try{ return JSON.stringify(v,null,2); }catch{ return String(v); }
 }
-function setStatus(cls, label){
-  sDot.className = 's-dot '+cls;
-  sLabel.textContent = label;
-}
 function refreshCount(){
-  if(pending>0){ qCount.textContent=pending; qCount.classList.add('on'); }
-  else{ qCount.classList.remove('on'); }
-}
-function clearSelected(){
-  document.querySelectorAll('.ac.selected').forEach(el=>el.classList.remove('selected'));
+  if(pending>0){ yourTurn.classList.add('on'); ytCount.textContent=pending; }
+  else yourTurn.classList.remove('on');
 }
 
-// ── Inspector: show human req ──────────────────────────────────────────────
-function showReq(req_id){
-  const req = reqMap.get(req_id);
-  if(!req) return;
-  selReqId = req_id; selCardKey = null;
-  clearSelected();
-  for(const c of Object.values(cards)){ if(c.reqId===req_id) c.el.classList.add('selected'); }
+// Sidebar
+function ensureGroup(ll){
+  if(groups[ll]) return;
+  groups[ll]=[]; lifelines.push(ll);
+  const em=sidebar.querySelector('.sb-empty'); if(em) em.remove();
+  const grp=document.createElement('div');
+  grp.className='sg-group'; grp.id='grp-'+ll;
+  grp.innerHTML='<div class="sg-hdr"><span>'+esc(ll)+'</span><span class="sg-count" id="grpc-'+esc(ll)+'">0</span></div>';
+  sidebar.appendChild(grp);
+}
 
-  const isBool   = req.input_type==='bool';
-  const isChoice = req.input_type==='choice';
+function rowInner(a){
+  const req=a.reqId?reqMap.get(a.reqId):null;
+  const hp=req&&!req.resolved&&a.kind==='human';
+  const dc=hp?'dot-pending':(a.status==='pending'?'dot-running':'dot-done');
+  return '<span class="sg-dot '+dc+'"></span><span class="sg-name">'+esc(a.name)+'</span>'+(hp?'<span class="sg-you">you</span>':'');
+}
 
-  let widgetHtml = '';
-  if(req.resolved){
-    const shown = req.value===''||req.value==='(approved as-is)' ? 'approved as-is' : req.value;
-    widgetHtml = `<div class="ins-resolved">✓ ${esc(shown)}</div>`;
-  } else if(isBool){
-    widgetHtml = `<div class="ins-widget"><div class="qi-bool-row">
-      <button class="qi-bool yes" disabled>Yes</button>
-      <button class="qi-bool no"  disabled>No</button>
-    </div></div>`;
-  } else if(isChoice&&req.options){
-    const btns = req.options.map(o=>`<button class="qi-bool" disabled data-val="${esc(o)}">${esc(o)}</button>`).join('');
-    widgetHtml = `<div class="ins-widget"><div class="qi-bool-row">${btns}</div></div>`;
+function createRow(key){
+  const a=byKey[key];
+  const el=document.createElement('div');
+  el.className='sg-row'; el.id='row-'+key; el.tabIndex=0;
+  el.innerHTML=rowInner(a);
+  el.onclick=()=>selectAction(key);
+  el.onkeydown=e=>{ if(e.key==='Enter'||e.key===' '){ e.preventDefault(); selectAction(key); } };
+  rowEls[key]=el;
+  const grp=document.getElementById('grp-'+a.lifeline);
+  if(grp){
+    grp.appendChild(el);
+    const cnt=document.getElementById('grpc-'+a.lifeline);
+    if(cnt) cnt.textContent=grp.querySelectorAll('.sg-row').length;
+  }
+}
+
+function updateRow(key){
+  const el=rowEls[key]; if(!el) return;
+  el.innerHTML=rowInner(byKey[key]);
+  el.onclick=()=>selectAction(key);
+  el.classList.toggle('sg-sel',selectedId===key);
+}
+
+function selectAction(key){
+  if(selectedId===key) return;
+  if(selectedId&&rowEls[selectedId]) rowEls[selectedId].classList.remove('sg-sel');
+  selectedId=key;
+  if(rowEls[key]) rowEls[key].classList.add('sg-sel');
+  renderInspector();
+}
+
+// Inspector
+function renderInspector(){
+  if(!selectedId||!byKey[selectedId]){
+    insBody.innerHTML='<div class="ins-empty-state">Click an action to inspect it</div>';
+    return;
+  }
+  const a=byKey[selectedId];
+  const req=a.reqId?reqMap.get(a.reqId):null;
+  const hp=req&&!req.resolved&&a.kind==='human';
+  const hd=req&&req.resolved;
+  const kl={llm:'llm',pure:'pure',human:'human',planner:'plan'}[a.kind]||'act';
+
+  let html='<div class="ins-meta">'
+    +'<span class="ins-meta-ll">'+esc(a.lifeline)+'</span>'
+    +'<span class="ins-meta-dot">&middot;</span>'
+    +'<span class="ins-meta-kind">'+esc(kl)+'</span>'
+    +(a.time?'<span class="ins-meta-dot">&middot;</span><span class="ins-meta-time">'+esc(a.time)+'</span>':'')
+    +(hp?'<span class="ins-meta-await">awaiting you</span>':'')
+    +'</div>'
+    +'<div class="ins-title">'+esc(a.name)+'</div>';
+
+  if(hp)      html+=renderPendingForm(req);
+  else if(hd) html+=renderHumanDone(req);
+  else        html+=renderDoneSection(a);
+
+  insBody.innerHTML=html;
+  if(hp) wireInputs(a.reqId,req);
+}
+
+function renderPendingForm(req){
+  let h='';
+  if(req.prompt) h+='<div class="ins-section"><div class="ins-sec-label">Context</div><div class="ins-sec-body ins-ctx">'+esc(req.prompt)+'</div></div>';
+  if(req.prefill) h+='<div class="ins-section"><div class="ins-sec-label">Proposed reply</div><div class="ins-proposed">'+esc(req.prefill)+'</div></div>';
+  if(req.input_type==='bool'){
+    h+='<div class="ins-actions"><button class="btn-approve" disabled>Yes</button><button class="btn-decline" disabled>No</button></div>';
+  } else if(req.input_type==='choice'&&req.options){
+    const btns=req.options.map(o=>'<button class="btn-choice" disabled data-val="'+esc(o)+'">'+esc(o)+'</button>').join('');
+    h+='<div class="ins-actions ins-choices">'+btns+'</div>';
   } else {
-    const prefillVal = req.prefill ? esc(req.prefill) : '';
-    widgetHtml = `<div class="ins-widget">
-      <textarea class="qi-ta" rows="3">${prefillVal}</textarea>
-      <div class="qi-submit-row"><button class="qi-btn" disabled>Submit →</button></div>
-    </div>`;
+    h+='<div class="ins-section"><div class="ins-sec-label">'+(req.prefill?'Your edit (optional)':'Input')+'</div>'
+      +'<div class="ins-sec-body"><textarea class="ins-ta" placeholder="Leave blank to approve as-is…"></textarea></div></div>'
+      +'<div class="ins-actions"><button class="btn-approve" disabled>Approve &amp; send →</button>'
+      +'<span class="ins-hint">⌘↩ to approve</span></div>';
   }
+  return h;
+}
 
-  insBody.innerHTML = `
-    <div class="ins-sec-hdr">
-      <span class="ins-ll">${esc(req.lifeline)}</span>
-      <span class="ins-title">${isBool?'Decision required':'Input required'}</span>
-      ${req.resolved?'<span class="ins-badge">✓ done</span>':''}
-    </div>
-    <div class="ins-prompt">${esc(req.prompt)}</div>
-    ${widgetHtml}`;
+function renderHumanDone(req){
+  const shown=req.value===''?'(approved as-is)':req.value;
+  return '<div class="ins-section"><div class="ins-sec-label">Response</div><div class="ins-sec-body ins-resolved-val">'+esc(shown)+'</div></div>';
+}
 
-  if(!req.resolved){
-    if(isBool){
-      const yes=insBody.querySelector('.yes'), no=insBody.querySelector('.no');
-      setTimeout(()=>{ yes.disabled=false; no.disabled=false; },600);
-      yes.onclick=()=>doSubmit(req_id,'true');
-      no.onclick =()=>doSubmit(req_id,'false');
-    } else if(isChoice){
-      const btns=insBody.querySelectorAll('.qi-bool');
-      setTimeout(()=>btns.forEach(b=>b.disabled=false),600);
-      btns.forEach(b=>{ b.onclick=()=>doSubmit(req_id,b.dataset.val); });
-    } else {
-      const ta=insBody.querySelector('.qi-ta'), btn=insBody.querySelector('.qi-btn');
-      setTimeout(()=>btn.disabled=false,800);
-      setTimeout(()=>ta.focus({preventScroll:true}),900);
-      btn.onclick=()=>doSubmit(req_id,ta.value);
-    }
+function renderDoneSection(a){
+  const inE=Object.entries(a.inputs||{}).filter(([,v])=>!isCtrl(v));
+  const outE=Object.entries(a.outputs||{}).filter(([,v])=>!isCtrl(v));
+  let h='';
+  if(inE.length) h+='<div class="ins-section"><div class="ins-sec-label">Input</div><div class="ins-sec-body">'+kvBlock(inE)+'</div></div>';
+  h+='<div class="ins-section"><div class="ins-sec-label">Output</div><div class="ins-sec-body">'+(outE.length?kvBlock(outE):'<span class="kv-empty">(empty)</span>')+'</div></div>';
+  return h;
+}
+
+function kvBlock(entries){
+  return entries.map(function(e){
+    const k=e[0], v=e[1], val=fmtV(v);
+    const vc=typeof v==='boolean'?(v?'kv-val kv-val-true':'kv-val kv-val-false'):'kv-val';
+    return '<div class="kv-row"><span class="kv-key">'+esc(k)+'</span><span class="'+vc+'">'+esc(val)+'</span></div>';
+  }).join('');
+}
+
+// Wire inputs
+let _cmdHandler=null;
+function wireInputs(req_id,req){
+  if(req.input_type==='bool'){
+    const yes=insBody.querySelector('.btn-approve'),no=insBody.querySelector('.btn-decline');
+    setTimeout(function(){ yes.disabled=false; no.disabled=false; },600);
+    yes.onclick=function(){ doSubmit(req_id,'true'); };
+    no.onclick=function(){ doSubmit(req_id,'false'); };
+  } else if(req.input_type==='choice'){
+    const btns=insBody.querySelectorAll('.btn-choice');
+    setTimeout(function(){ btns.forEach(function(b){ b.disabled=false; }); },600);
+    btns.forEach(function(b){ b.onclick=function(){ doSubmit(req_id,b.dataset.val); }; });
+  } else {
+    const ta=insBody.querySelector('.ins-ta'),btn=insBody.querySelector('.btn-approve');
+    setTimeout(function(){ btn.disabled=false; },800);
+    setTimeout(function(){ ta.focus({preventScroll:true}); },900);
+    btn.onclick=function(){ doSubmit(req_id,ta.value); };
+    if(_cmdHandler) document.removeEventListener('keydown',_cmdHandler);
+    _cmdHandler=function(e){
+      if((e.metaKey||e.ctrlKey)&&e.key==='Enter'&&!btn.disabled){ e.preventDefault(); doSubmit(req_id,ta.value); }
+    };
+    document.addEventListener('keydown',_cmdHandler);
   }
 }
 
-// ── Inspector: show card detail ────────────────────────────────────────────
-function showCard(key){
-  const c=cards[key];
-  if(!c){ return; }
-  if(c.reqId && !reqMap.get(c.reqId)?.resolved){ showReq(c.reqId); return; }
-  selCardKey=key; selReqId=null;
-  clearSelected(); c.el.classList.add('selected');
-
-  const outEntries=Object.entries(c.outputs||{})
-    .filter(([,v])=>!(typeof v==='string'&&v.startsWith('κ_ctrl_')));
-  const outHtml=outEntries.length
-    ? outEntries.map(([k,v])=>`<div class="ins-out-row">
-        <div class="ins-out-key">${esc(k)}</div>
-        <div class="ins-out-val">${esc(fmtV(v))}</div>
-      </div>`).join('')
-    : '<p style="color:var(--ink-faint);font-size:12px">No outputs yet</p>';
-
-  insBody.innerHTML = `
-    <div class="ins-sec-hdr">
-      <span class="ac-kind k-${esc(c.kind)}">${esc(kindLabel(c.kind))}</span>
-      <span class="ins-title">${esc(c.name)}</span>
-      <span class="ins-badge">${esc(c.lifeline)}</span>
-    </div>
-    <div class="ins-outputs">${outHtml}</div>`;
-}
-
-// ── Submit ─────────────────────────────────────────────────────────────────
-function doSubmit(req_id, val){
+function doSubmit(req_id,val){
   fetch('/human-input',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:req_id,value:val})});
 }
 
-// ── Lifeline columns ───────────────────────────────────────────────────────
-function ensureCol(name){
-  if(cols[name]) return;
-  const col=document.createElement('div');
-  col.className='ll-col';
-  col.innerHTML=`<div class="ll-header">${esc(name)}</div><div class="ll-body" id="llb-${esc(name)}"></div>`;
-  timeline.appendChild(col);
-  cols[name]={ bodyEl: col.querySelector('.ll-body') };
-}
-
-const KIND_LABEL={llm:'LLM',pure:'PURE',human:'HUMAN',planner:'PLAN'};
-function kindLabel(k){ return KIND_LABEL[k]||'ACT'; }
-
-// ── Event handlers ─────────────────────────────────────────────────────────
+// Event handlers
 function handleInit(e){
-  timeline.innerHTML='';
-  Object.keys(cols).forEach(k=>delete cols[k]);
-  Object.keys(cards).forEach(k=>delete cards[k]);
-  reqMap.clear(); pending=0; selReqId=null; selCardKey=null;
+  Object.keys(byKey).forEach(function(k){ delete byKey[k]; });
+  Object.keys(groups).forEach(function(k){ delete groups[k]; });
+  Object.keys(rowEls).forEach(function(k){ delete rowEls[k]; });
+  lifelines.length=0; reqMap.clear(); pending=0; selectedId=null;
+  sidebar.innerHTML='<p class="sb-empty">Awaiting workflow…</p>';
+  insBody.innerHTML='<div class="ins-empty-state">Click an action to inspect it</div>';
   wfName.textContent=e.name||'workflow';
-  setStatus('running','running');
-  (e.lifelines||[]).forEach(ll=>ensureCol(ll));
-  insBody.innerHTML='<div class="ins-empty">Click an action to inspect it</div>';
   refreshCount();
+  (e.lifelines||[]).forEach(function(ll){ ensureGroup(ll); });
 }
+
+function handleRunStart(e){ (e.lifelines||[]).forEach(function(ll){ ensureGroup(ll); }); }
 
 function handleActStart(e){
-  const ll=e.lifeline;
-  if(!cols[ll]) ensureCol(ll);
-  const body=cols[ll].bodyEl;
-  const kind=e.action_kind||'pure';
-  const name=e.action||'—';
-  const key=ll+':'+e.seq;
+  const ll=e.lifeline; ensureGroup(ll);
+  const kind=e.action_kind||'pure', name=e.action||'—';
   if(name==='assign') return;
-
-  const card=document.createElement('div');
-  card.className='ac pending';
-  card.innerHTML=`
-    <div class="ac-top">
-      <span class="ac-kind k-${esc(kind)}">${esc(kindLabel(kind))}</span>
-      <span class="ac-name" title="${esc(name)}">${esc(name)}</span>
-      <span class="ac-st run">●</span>
-    </div>
-    <div class="ac-outs"></div>`;
-  body.appendChild(card);
-  body.scrollTop=body.scrollHeight;
-  cards[key]={ el:card, outsEl:card.querySelector('.ac-outs'), kind, name, lifeline:ll, outputs:{}, reqId:null };
-  card.onclick=()=>showCard(key);
+  const key=ll+':'+e.seq;
+  const now=new Date();
+  const time=now.getHours().toString().padStart(2,'0')+':'+now.getMinutes().toString().padStart(2,'0');
+  byKey[key]={key:key,lifeline:ll,name:name,kind:kind,seq:e.seq,status:'pending',inputs:{},outputs:{},reqId:null,time:time};
+  groups[ll].push(key);
+  createRow(key);
 }
 
 function handleAct(e){
   const key=e.lifeline+':'+e.seq;
-  const c=cards[key]; if(!c) return;
-  c.el.classList.remove('pending','human-pending');
-  const st=c.el.querySelector('.ac-st');
-  st.className='ac-st'; st.textContent='✓';
-  c.outputs=e.outputs||{};
-  const lines=Object.entries(e.outputs||{})
-    .filter(([,v])=>!(typeof v==='string'&&v.startsWith('κ_ctrl_')))
-    .map(([k,v])=>{ const val=fmtV(v); return val?`<div class="ac-out"><span style="color:var(--ink-faint)">${esc(k)} </span>${esc(val)}</div>`:''; }).join('');
-  if(lines) c.outsEl.innerHTML=lines;
-  if(selCardKey===key) showCard(key);
-}
-
-function handleSend(e){
-  const ll=e.from||e.lifeline; if(!cols[ll]) return;
-  const body=cols[ll].bodyEl;
-  const last=body.querySelector('.ac:last-child'); if(!last) return;
-  const tag=document.createElement('div');
-  tag.className='msg-tag'; tag.textContent='→ '+(e.to||'');
-  last.appendChild(tag);
+  const a=byKey[key]; if(!a) return;
+  a.status='done'; a.inputs=e.inputs||{}; a.outputs=e.outputs||{};
+  updateRow(key);
+  if(selectedId===key) renderInspector();
 }
 
 function handleHumanRequired(e){
-  pending++;
-  setStatus('waiting','your turn');
-  refreshCount();
-  reqMap.set(e.id,{ lifeline:e.lifeline, prompt:e.prompt||'', input_type:e.input_type, options:e.options, prefill:e.prefill||null, resolved:false, value:null });
-
-  // Link to most recent pending human card for this lifeline
-  if(cols[e.lifeline]){
-    const allCards=Array.from(cols[e.lifeline].bodyEl.querySelectorAll('.ac.pending'));
-    for(let i=allCards.length-1;i>=0;i--){
-      if(allCards[i].querySelector('.k-human')){
-        allCards[i].classList.add('human-pending');
-        for(const [k,c] of Object.entries(cards)){ if(c.el===allCards[i]){ c.reqId=e.id; break; } }
-        break;
-      }
+  pending++; refreshCount();
+  reqMap.set(e.id,{lifeline:e.lifeline,prompt:e.prompt||'',input_type:e.input_type,options:e.options,prefill:e.prefill||null,resolved:false,value:null});
+  const llKeys=groups[e.lifeline]||[];
+  for(let i=llKeys.length-1;i>=0;i--){
+    const k=llKeys[i],a=byKey[k];
+    if(a&&a.kind==='human'&&a.status==='pending'&&!a.reqId){
+      a.reqId=e.id; updateRow(k); selectAction(k); break;
     }
   }
-  showReq(e.id);
 }
 
 function handleHumanInput(e){
   const req=reqMap.get(e.id);
   if(req){ req.resolved=true; req.value=e.value; }
-  pending=Math.max(0,pending-1);
-  if(pending===0) setStatus('running','running');
-  refreshCount();
-  for(const c of Object.values(cards)){ if(c.reqId===e.id){ c.el.classList.remove('human-pending'); break; } }
-  if(selReqId===e.id) showReq(e.id);
-  // Auto-advance to next pending req
-  for(const [id,r] of reqMap){ if(!r.resolved){ setTimeout(()=>showReq(id),350); return; } }
-}
-
-function handleDone(){
-  if(pending===0) setStatus('done','done');
-}
-
-function handleRunStart(e){
-  (e.lifelines||[]).forEach(ll=>ensureCol(ll));
-}
-
-// ── Dispatcher ─────────────────────────────────────────────────────────────
-function dispatch(e){
-  if(!e||!e.type) return;
-  switch(e.type){
-    case 'init':                 handleInit(e);          break;
-    case 'run_start':            handleRunStart(e);      break;
-    case 'act_start':            handleActStart(e);      break;
-    case 'act':                  handleAct(e);           break;
-    case 'send':                 handleSend(e);          break;
-    case 'human_input_required': handleHumanRequired(e); break;
-    case 'human_input':          handleHumanInput(e);    break;
-    case 'done':                 handleDone();           break;
-    case 'error':                setStatus('error','error'); break;
+  pending=Math.max(0,pending-1); refreshCount();
+  Object.keys(byKey).forEach(function(k){ if(byKey[k].reqId===e.id) updateRow(k); });
+  if(selectedId&&byKey[selectedId]&&byKey[selectedId].reqId===e.id) renderInspector();
+  for(const [id,r] of reqMap){
+    if(!r.resolved){
+      setTimeout(function(){
+        Object.keys(byKey).forEach(function(k){ if(byKey[k].reqId===id){ selectAction(k); } });
+      },350);
+      return;
+    }
   }
 }
 
-// ── SSE ────────────────────────────────────────────────────────────────────
+// Dispatcher
+function dispatch(e){
+  if(!e||!e.type) return;
+  switch(e.type){
+    case 'init':                 handleInit(e); break;
+    case 'run_start':            handleRunStart(e); break;
+    case 'act_start':            handleActStart(e); break;
+    case 'act':                  handleAct(e); break;
+    case 'human_input_required': handleHumanRequired(e); break;
+    case 'human_input':          handleHumanInput(e); break;
+  }
+}
+
+// SSE
 function connect(){
   if(evSrc){ evSrc.close(); evSrc=null; }
   const src=new EventSource('/events');
   evSrc=src;
-  src.onopen    =()=>setStatus('','connected');
-  src.onmessage =ev=>{ try{ dispatch(JSON.parse(ev.data)); }catch(err){ console.error(err,ev.data); } };
-  src.onerror   =()=>setStatus('error','reconnecting…');
+  src.onmessage=function(ev){ try{ dispatch(JSON.parse(ev.data)); }catch(err){ console.error(err,ev.data); } };
 }
 connect();
+
+// Keyboard nav
+document.addEventListener('keydown',function(e){
+  if(e.target.tagName==='TEXTAREA'||e.target.tagName==='INPUT') return;
+  if(e.key!=='ArrowUp'&&e.key!=='ArrowDown') return;
+  e.preventDefault();
+  const all=[];
+  lifelines.forEach(function(ll){ (groups[ll]||[]).forEach(function(k){ if(byKey[k]&&byKey[k].name!=='assign') all.push(k); }); });
+  if(!all.length) return;
+  const idx=all.indexOf(selectedId);
+  const next=e.key==='ArrowDown'?all[Math.min(idx+1,all.length-1)]:all[Math.max(idx-1,0)];
+  if(next&&next!==selectedId){ selectAction(next); if(rowEls[next]) rowEls[next].scrollIntoView({block:'nearest'}); }
+});
 </script>
 </body>
 </html>
