@@ -23,10 +23,8 @@ __all__ = [
     # Expressions
     "Expr",
     "VarExpr", "LitExpr",
-    # Located argument (var @ inner_lifeline at a workflow-action call site)
-    "LocatedArg",
     # Actions
-    "LLMAction", "PureAction", "PlannerAction", "WorkflowAction", "HumanAction",
+    "LLMAction", "PureAction", "PlannerAction", "HumanAction",
     # Type + lifeline annotation helper
     "ZTypeAtLifeline",
     # Statements
@@ -73,28 +71,14 @@ class Lifeline:
     def __repr__(self) -> str:
         return self.name
 
-    def __rmatmul__(self, other: object) -> "ZTypeAtLifeline | LocatedArg":
-        """Support ``str @ Planner`` (annotation) and ``var @ Planner`` (call site)."""
-        if isinstance(other, Var):
-            return LocatedArg(VarExpr(other), self)
+    def __rmatmul__(self, other: object) -> "ZTypeAtLifeline":
+        """Support ``str @ Planner`` (annotation)."""
         if is_ztype(other):
             return ZTypeAtLifeline(other, self)  # type: ignore[arg-type]
         raise TypeError(
             f"Unsupported use of '@': {other!r} @ {self.name}. "
-            f"Use  ZType @ Lifeline  for annotations (e.g. str @ Doctor) "
-            f"or  var @ Lifeline  for workflow-action call sites."
+            f"Use  ZType @ Lifeline  for annotations (e.g. str @ Doctor)."
         )
-
-
-@dataclass(frozen=True)
-class LocatedArg:
-    """A value expression tagged with an inner lifeline destination.
-
-    Produced by  ``var @ InnerLifeline``  at a workflow-action call site.
-    Consumed by ``act()`` when the action is a ``Workflow``.
-    """
-    expr: "Expr"
-    lifeline: "Lifeline"
 
 
 @dataclass(frozen=True)
@@ -224,24 +208,6 @@ class PlannerAction:
 
 
 @dataclass(frozen=True)
-class WorkflowAction:
-    """IR node for a nested workflow used as a black-box action.
-
-    The outer caller lifeline owns the call.  Each input carries the inner
-    lifeline that should receive it.  All outputs land on the caller.
-    """
-    name: str
-    workflow: "Workflow"
-    inputs: tuple[tuple[str, ZType, "Lifeline"], ...]   # (inner_name, type, inner_lifeline)
-    outputs: tuple[tuple[str, ZType], ...]              # (name, type) — land on caller
-
-    def __repr__(self) -> str:
-        ins = ", ".join(f"{n}: {t.__name__} @ {ll.name}" for n, t, ll in self.inputs)
-        outs = ", ".join(f"{n}: {t.__name__}" for n, t in self.outputs)
-        return f"WorkflowAction({self.name!r}, ({ins}) -> ({outs}))"
-
-
-@dataclass(frozen=True)
 class HumanAction:
     name: str
     inputs: tuple[tuple[str, ZType], ...]   # (param_name, type) pairs
@@ -344,7 +310,7 @@ class CoregionStmt:
 class ActStmt:
     """act lifeline: outputs := action(inputs)"""
     lifeline: Lifeline
-    action: Union[LLMAction, PureAction, "PlannerAction", "WorkflowAction", "HumanAction"]
+    action: Union[LLMAction, PureAction, "PlannerAction", "HumanAction"]
     inputs: tuple[Expr, ...]
     outputs: tuple[Var, ...]
 

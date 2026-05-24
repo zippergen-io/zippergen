@@ -13,11 +13,11 @@ from typing import cast
 
 from zippergen.syntax import (
     ZType, Lifeline, Var,
-    ZTypeAtLifeline, LocatedArg,
+    ZTypeAtLifeline,
     Expr, VarExpr, LitExpr,
     Stmt, AnyStmt, EmptyStmt, MsgStmt, CoregionStmt, ActStmt, SkipStmt, SeqStmt, IfStmt, WhileStmt,
     ParallelStmt,
-    LLMAction, PureAction, PlannerAction, WorkflowAction,
+    LLMAction, PureAction, PlannerAction,
     Workflow,
     seq, is_ztype,
 )
@@ -130,45 +130,20 @@ def msg(
 
 def act(
     lifeline: Lifeline,
-    action: LLMAction | PureAction | PlannerAction | WorkflowAction | Workflow,
+    action: LLMAction | PureAction | PlannerAction,
     inputs: tuple,
     outputs: tuple[Var, ...],
 ) -> None:
-    """
-    act lifeline: outputs := action(inputs)
+    """act lifeline: outputs := action(inputs)
 
     Vars in inputs are automatically wrapped in VarExpr.
-    When action is a Workflow, inputs must be LocatedArg objects (var @ inner_lifeline).
     """
-    if isinstance(action, Workflow):
-        located = tuple(inputs)
-        for i, la in enumerate(located):
-            if not isinstance(la, LocatedArg):
-                raise TypeError(
-                    f"Workflow action '{action.name}': argument {i} must be  var @ InnerLifeline, "
-                    f"got {la!r}. Every input to a nested workflow must declare its inner lifeline."
-                )
-        plain_exprs = tuple(la.expr for la in located)
-        wa_inputs = tuple(
-            (wf_name, wf_type, la.lifeline)
-            for (wf_name, wf_type, _), la in zip(action.inputs, located)
-        )
-        wa_outputs = tuple(
-            (var.name, var.type) for var, _ in action.outputs
-        )
-        _record(ActStmt(
-            lifeline,
-            WorkflowAction(name=action.name, workflow=action, inputs=wa_inputs, outputs=wa_outputs),
-            plain_exprs,
-            tuple(outputs),
-        ))
-    else:
-        _record(ActStmt(
-            lifeline,
-            action,
-            tuple(_to_expr(x) for x in inputs),
-            tuple(outputs),
-        ))
+    _record(ActStmt(
+        lifeline,
+        action,
+        tuple(_to_expr(x) for x in inputs),
+        tuple(outputs),
+    ))
 
 
 def skip(lifeline: Lifeline) -> None:

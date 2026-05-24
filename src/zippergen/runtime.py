@@ -20,7 +20,7 @@ from zippergen.syntax import (
     SeqStmt, IfStmt, WhileStmt, IfRecvStmt, WhileRecvStmt,
     ParallelStmt, ParallelLocalStmt,
     VarExpr, LitExpr, Var,
-    LLMAction, PureAction, PlannerAction, WorkflowAction, HumanAction,
+    LLMAction, PureAction, PlannerAction, HumanAction,
     Lifeline, Workflow, LocalStmt, AnyStmt,
     is_kappa_ctrl,
     _ordered_workflow_lifelines,
@@ -338,8 +338,6 @@ def _action_kind(action: object) -> str:
         return "pure"
     if isinstance(action, PlannerAction):
         return "planner"
-    if isinstance(action, WorkflowAction):
-        return "workflow"
     if isinstance(action, HumanAction):
         return "human"
     if isinstance(action, LLMAction):
@@ -701,68 +699,6 @@ def _exec(stmt: LocalStmt, env: Env, ch: Channels, ns: dict, llm_backend, human_
 
         case ActStmt(lifeline=_, action=action, inputs=ins, outputs=outs):
             in_vals = tuple(_eval(x, env) for x in ins)
-
-            if isinstance(action, WorkflowAction):
-                inner_initial_envs: dict[str, dict[str, object]] = {}
-                for (inner_name, _, inner_ll), val in zip(action.inputs, in_vals):
-                    inner_initial_envs.setdefault(inner_ll.name, {})[inner_name] = val
-                inner_wf = action.workflow
-                inner_lifelines = list(_ordered_workflow_lifelines(inner_wf))
-                seq = _next_act_seq()
-                display_inputs = {
-                    expr.var.name if isinstance(expr, VarExpr) else n: val
-                    for (n, _, _), expr, val in zip(action.inputs, ins, in_vals)
-                }
-                if trace:
-                    trace({
-                        "type": "act_start",
-                        "lifeline": threading.current_thread().name,
-                        "action": action.name,
-                        "action_kind": _action_kind(action),
-                        "inputs": {k: _jsonify(v) for k, v in display_inputs.items()},
-                        "seq": seq,
-                    })
-                my_path = [action.name]
-                if trace:
-                    trace({
-                        "type": "level_push",
-                        "name": action.name,
-                        "path": my_path,
-                        "lifelines": [ll.name for ll in inner_lifelines],
-                        "parent_seq": seq,
-                    })
-                def _inner_trace(event: dict, _p: list = my_path) -> None:
-                    if trace:
-                        trace({**event, "path": _p + event.get("path", [])})
-                result = run(
-                    inner_wf, inner_lifelines, inner_initial_envs,
-                    llm_backend=llm_backend, human_backend=human_backend,
-                    trace=_inner_trace, timeout=inner_wf._rt._timeout,
-                )
-                if trace:
-                    trace({"type": "level_pop", "path": my_path})
-                n_out = len(inner_wf.outputs)
-                if n_out == 0:
-                    out_map: dict[str, object] = {}
-                elif n_out == 1:
-                    out_map = {outs[0].name: result}
-                else:
-                    out_map = {out_var.name: val for out_var, val in zip(outs, cast(tuple, result))}
-                env.update(out_map)
-                if monitor:
-                    monitor.on_event("act", env)
-                if trace:
-                    trace({
-                        "type": "act",
-                        "lifeline": threading.current_thread().name,
-                        "action": action.name,
-                        "action_kind": _action_kind(action),
-                        "inputs": {k: _jsonify(v) for k, v in display_inputs.items()},
-                        "outputs": {k: _jsonify(v) for k, v in out_map.items()},
-                        "seq": seq,
-                        **_monitor_trace_fields(monitor),
-                    })
-                return
 
             if not hasattr(action, 'inputs'):
                 raise RuntimeError(
