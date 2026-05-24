@@ -9,7 +9,7 @@ One-time auth setup:
     python examples/gmail_client.py --setup
 
 Default credential paths (override via env vars):
-    ZIPPERGEN_GMAIL_CREDENTIALS  — path to credentials.json from Google Cloud Console
+    ZIPPERGEN_GMAIL_CREDENTIALS  — path to credentials.json (default: ~/.zippergen_google_credentials.json)
     ZIPPERGEN_GMAIL_TOKEN        — path where the OAuth2 token is cached (auto-created)
 """
 
@@ -31,7 +31,7 @@ from typing import TypedDict
 
 CREDENTIALS_PATH = Path(
     os.environ.get("ZIPPERGEN_GMAIL_CREDENTIALS",
-                   Path.home() / ".zippergen_gmail_credentials.json")
+                   Path.home() / ".zippergen_google_credentials.json")
 )
 TOKEN_PATH = Path(
     os.environ.get("ZIPPERGEN_GMAIL_TOKEN",

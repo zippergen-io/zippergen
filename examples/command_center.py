@@ -38,6 +38,9 @@ from zippergen.actions import human
 from zippergen.backends import make_openai_backend
 
 _gmail: object = None
+_gcal:  object = None
+
+_invite_meta: dict[str, dict] = {}
 
 # ---------------------------------------------------------------------------
 # Lifelines
@@ -76,6 +79,11 @@ enriched_invite  = Var("enriched_invite",  str)
 decision         = Var("decision",         bool)
 cal_status       = Var("cal_status",       str)
 sched_context    = Var("sched_context",    str)  # Calendar-local; updated by scheduling_reply
+
+# Event creation (scheduling_reply branch, Calendar lifeline)
+today         = Var("today",         str)
+event_details = Var("event_details", str)
+sched_event   = Var("sched_event",   str)
 
 # Each branch owns its own summary — no shared variable across branches
 email_summary    = Var("email_summary",    str)
@@ -160,22 +168,39 @@ def email_stream_done() -> str:
 # ---------------------------------------------------------------------------
 
 def invite_present() -> bool:
+    if _gcal is not None:
+        return _gcal.count_pending_invites() > 0
     return bool(INVITES)
 
 
 @pure
 def pop_pending_invite() -> str:
+    if _gcal is not None:
+        meta = _gcal.fetch_one_invite()
+        if meta is None:
+            return ""
+        text = (f"Meeting: {meta['summary']}\n"
+                f"When: {meta['start']} – {meta['end']}\n"
+                f"Organizer: {meta['organizer']}")
+        if meta["description"]:
+            text += f"\nDescription: {meta['description']}"
+        _invite_meta[text] = meta
+        return text
     return INVITES.pop(0)
 
 
 @pure
 def check_requested_slot(email: str) -> str:
+    if _gcal is not None:
+        return _gcal.check_slot(email)
     print("[Calendar] Checking proposed slot…")
     return "Monday 10:00 is free."
 
 
 @pure
 def propose_available_slots(email: str) -> str:
+    if _gcal is not None:
+        return _gcal.list_free_slots()
     print("[Calendar] Fetching open slots…")
     return "Monday 10:00, Tuesday 14:00, Thursday 11:00."
 
@@ -184,6 +209,12 @@ def propose_available_slots(email: str) -> str:
 def apply_calendar_decision(invite: str, decision: bool) -> str:
     verb = "Accepted" if decision else "Declined"
     print(f"[Calendar] {verb}: {invite}")
+    if _gcal is not None and invite in _invite_meta:
+        meta = _invite_meta[invite]
+        if decision:
+            _gcal.accept_event(meta["id"])
+        else:
+            _gcal.decline_event(meta["id"])
     return verb.lower()
 
 
@@ -214,6 +245,59 @@ def enrich_invite(invite: str, sched_context: str) -> str:
 @pure
 def slot_from_confirm(availability: str, confirmed: bool) -> str:
     return availability if confirmed else "None of these — please suggest another time."
+
+
+@pure
+def todays_date() -> str:
+    from datetime import date
+    return date.today().strftime("%A %d %B %Y")
+
+
+@llm(
+    system=(
+        "You are a calendar assistant. Given an email requesting a meeting and the chosen "
+        "time slot, extract the event details and output a JSON object with exactly these keys:\n"
+        '  "title":    a short meeting title derived from the email content\n'
+        '  "start":    ISO 8601 datetime string (e.g. "2026-05-25T10:00:00")\n'
+        '  "end":      ISO 8601 datetime string (default: 1 hour after start)\n'
+        '  "attendee": the sender\'s email address extracted from the email headers\n'
+        "Output only the JSON object, no other text. "
+        "If no clear time can be determined, output an empty JSON object {}."
+    ),
+    user="Today is {today}.\n\nEmail:\n{email}\n\nChosen slot:\n{choice}",
+    parse="text",
+    outputs=(("event_details", str),),
+)
+def extract_event_details(today: str, email: str, choice: str) -> None: ...
+
+
+@pure
+def create_scheduled_event(event_details: str) -> str:
+    import json, re
+    # Strip markdown code fences that LLMs sometimes add
+    text = re.sub(r"^```[a-z]*\n?", "", event_details.strip(), flags=re.MULTILINE)
+    text = text.replace("```", "").strip()
+    try:
+        d = json.loads(text)
+    except Exception:
+        print(f"[Calendar] Could not parse event JSON: {text[:120]}")
+        return "skipped (parse error)"
+    if not d.get("start"):
+        print(f"[Calendar] No start time in event details: {text[:120]}")
+        return "skipped (no time determined)"
+    if _gcal is None:
+        print(f"[Calendar] Mock: would create '{d.get('title', 'Meeting')}' at {d['start']}")
+        return "skipped (mock mode)"
+    try:
+        return _gcal.create_event(
+            summary=d.get("title", "Meeting"),
+            start_iso=d["start"],
+            end_iso=d.get("end", d["start"]),
+            attendee_email=d.get("attendee", ""),
+        )
+    except Exception as exc:
+        print(f"[Calendar] Event creation failed: {exc}")
+        return f"error: {exc}"
 
 
 # ---------------------------------------------------------------------------
@@ -351,11 +435,10 @@ def confirm_slot(email: str, availability: str): pass
 @human(
     prompt=(
         "Email:\n\n{email}\n\n"
-        "Available slots:\n\n{availability}\n\n"
         "Choose a slot:"
     ),
     outputs=["choice: str"],
-    options=["Monday 10:00", "Tuesday 14:00", "Thursday 11:00", "None of these"],
+    prefill="availability",
 )
 def choose_from_proposed_slots(email: str, availability: str): pass
 
@@ -422,10 +505,13 @@ def command_center() -> str:
                     User(email, reply) >> Mailbox(email, reply)
                     Mailbox: mail_status = create_draft(email, reply)
 
-                    # Cross-stream: approved scheduling reply is sent to Calendar
-                    # and appended to its local context.
-                    User(email, reply) >> Calendar(email, reply)
+                    # Cross-stream: approved scheduling reply sent to Calendar.
+                    # Calendar appends context and creates the calendar event.
+                    User(email, choice, reply) >> Calendar(email, choice, reply)
                     Calendar: sched_context = remember_scheduling_reply(email, reply, sched_context)
+                    Calendar: today = todays_date()
+                    Calendar: event_details = extract_event_details(today, email, choice)
+                    Calendar: sched_event = create_scheduled_event(event_details)
 
                 else:
                     Dispatcher(email) >> Writer(email)
@@ -478,13 +564,18 @@ if __name__ == "__main__":
     elif "--live" in sys.argv:
         import importlib.util
         from pathlib import Path
-        _spec = importlib.util.spec_from_file_location(
-            "gmail_client", Path(__file__).parent / "gmail_client.py"
-        )
-        assert _spec and _spec.loader, "Could not load gmail_client.py"
-        _gmail_module = importlib.util.module_from_spec(_spec)
-        _spec.loader.exec_module(_gmail_module)  # type: ignore[union-attr]
-        _gmail = _gmail_module
+
+        def _load(name: str):
+            spec = importlib.util.spec_from_file_location(
+                name, Path(__file__).parent / f"{name}.py"
+            )
+            assert spec and spec.loader, f"Could not load {name}.py"
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)  # type: ignore[union-attr]
+            return mod
+
+        _gmail = _load("gmail_client")
+        _gcal  = _load("google_calendar_client")
         backend = make_openai_backend(
             api_key="ollama",
             model="qwen2.5:7b",

@@ -412,11 +412,11 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); font
 #app  { display: flex; flex-direction: column; height: 100vh; }
 #hdr  {
   display: flex; align-items: center; gap: 20px;
-  padding: 0 40px 0 25px; height: 70px; flex-shrink: 0;
+  padding: 0 56px 0 25px; height: 70px; flex-shrink: 0;
   border-bottom: 1px solid var(--rule); background: var(--bg);
 }
 #body {
-  display: grid; grid-template-columns: 350px 1fr;
+  display: grid; grid-template-columns: 250px 1fr;
   flex: 1; min-height: 0; overflow: hidden;
 }
 
@@ -482,7 +482,7 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); font
 
 /* ── Inspector ─────────────────────────────────────────────────────────────── */
 #inspector { overflow-y: auto; }
-#ins-body  { padding: 32px 56px; max-width: 820px; min-height: 100%; }
+#ins-body  { padding: 32px 56px; min-height: 100%; }
 .ins-empty-state {
   display: flex; align-items: center; justify-content: center;
   min-height: 300px; font-size: 14px; color: var(--text-faint);
@@ -527,18 +527,37 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); font
 .ctx-hint      { font-style: italic; color: var(--text-mute); }
 .ins-ctx-mono  { font-family: var(--mono); font-size: 13px; }
 
+/* Email artifact bubble */
+.ins-email-bubble {
+  white-space: pre-wrap; word-break: break-word; color: var(--text-soft);
+  background: rgba(20,18,12,0.035); border-radius: 6px; padding: 20px 18px;
+  font-size: 14px; line-height: 1.6;
+}
+.ins-email-subj {
+  font-family: var(--sans); font-size: 18px; font-weight: 500;
+  color: var(--text); line-height: 1.3; margin-bottom: 10px; white-space: normal;
+}
+.ins-email-rule { border: none; border-top: 1px solid rgba(20,18,12,0.1); margin: 10px 0 12px; }
+.ins-email-from { font-size: 13px; color: var(--text-mute); margin: 4px 0 0; }
+
 /* Resolved */
 .ins-resolved-val { color: var(--done-clr); font-style: italic; }
 
 /* Textarea */
+.ins-split {
+  display: grid; grid-template-columns: 1fr 1.1fr; gap: 28px; align-items: start;
+  margin-bottom: 24px;
+}
+.ins-split-work { display: flex; flex-direction: column; gap: 14px; }
+
 .ins-ta {
-  width: 100%; font-family: var(--sans); font-size: 15px; line-height: 1.55;
-  padding: 12px 14px; border: 1px dashed var(--text-faint); border-radius: 6px;
-  background: var(--bg); color: var(--text); resize: vertical; min-height: 120px;
-  outline: none; transition: border-color .15s, border-style .15s;
+  width: 100%; font-family: var(--sans); font-size: 15px; line-height: 1.6;
+  padding: 20px 18px; border: 1px solid rgba(20,20,40,0.13); border-radius: 6px;
+  background: var(--bg); color: var(--text); resize: none; min-height: 160px;
+  field-sizing: content; outline: none; transition: border-color .15s;
 }
 .ins-ta::placeholder { color: var(--text-faint); font-style: italic; }
-.ins-ta:focus { border-color: var(--accent); border-style: solid; }
+.ins-ta:focus { border-color: var(--accent); }
 
 /* Action row */
 .ins-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 20px; }
@@ -768,6 +787,7 @@ function renderInspector(){
   const parts=isHuman?extractPromptParts(req?req.prompt:'',isBool):{title:null,body:'',instruction:null};
   const title=isHuman?(parts.title||a.name):a.name;
 
+  const isEmailCtx=hp&&parts.body&&parseEmailMeta(parts.body)!==null;
   let html='<div class="ins-meta">'
     +'<span class="ins-meta-ll">'+esc(a.lifeline)+'</span>'
     +'<span class="ins-meta-dot">&middot;</span>'
@@ -775,8 +795,8 @@ function renderInspector(){
     +(isHuman?'<span class="ins-meta-dot">&middot;</span><span class="ins-meta-fn">'+esc(a.name)+'</span>':'')
     +(a.time?'<span class="ins-meta-dot">&middot;</span><span class="ins-meta-time">'+esc(a.time)+'</span>':'')
     +(hp?'<span class="ins-meta-await">awaiting you</span>':'')
-    +'</div>'
-    +'<div class="ins-title">'+esc(title)+'</div>';
+    +'</div>';
+  if(!isEmailCtx) html+='<div class="ins-title">'+esc(title)+'</div>';
 
   if(hp)      html+=renderPendingForm(req,parts);
   else if(hd) html+=renderHumanDone(req);
@@ -801,6 +821,41 @@ function renderCtxHtml(text){
     if(t.endsWith(':')) return '<span class="ctx-hdr">'+esc(t)+'</span>';
     return esc(t);
   }).join('\n');
+}
+
+function parseEmailMeta(text){
+  if(!text) return null;
+  const lines=text.split('\n');
+  let from=null, subject=null, bodyStart=-1;
+  for(let i=0;i<Math.min(lines.length,6);i++){
+    const t=lines[i];
+    if(t.startsWith('From: ')) from=t.slice(6).trim();
+    else if(t.startsWith('Subject: ')) subject=t.slice(9).trim();
+    else if(!t.trim()&&(from||subject)){ bodyStart=i+1; break; }
+  }
+  if(!from&&!subject) return null;
+  if(bodyStart<0) bodyStart=2;
+  return {from, subject, body:lines.slice(bodyStart).join('\n').trim()};
+}
+
+function renderEmailCtx(text){
+  const meta=parseEmailMeta(text);
+  if(!meta) return '<div class="ins-ctx">'+renderCtxHtml(text)+'</div>';
+  // Extract display name and address from "Name <email@...>"
+  const fromAddrM=meta.from?(meta.from.match(/<([^>]+)>/)||null):null;
+  const fromAddr=fromAddrM?fromAddrM[1]:null;
+  const fromName=meta.from?(meta.from.replace(/\s*<[^>]*>/,'').trim()||meta.from):null;
+  let inner='';
+  if(meta.subject) inner+='<div class="ins-email-subj">'+esc(meta.subject)+'</div>';
+  if(fromName){
+    const nameSpan=fromAddr
+      ?'<span title="'+esc(fromAddr)+'" style="cursor:default">'+esc(fromName)+'</span>'
+      :esc(fromName);
+    inner+='<div class="ins-email-from"><span style="color:var(--text-faint)">From</span> '+nameSpan+'</div>';
+  }
+  inner+='<hr class="ins-email-rule">';
+  inner+=esc(meta.body||'');
+  return '<div class="ins-email-bubble">'+inner+'</div>';
 }
 
 function extractPromptParts(prompt, isBool){
@@ -834,15 +889,22 @@ function renderPendingForm(req, parts){
     const btns=req.options.map(o=>'<button class="btn-choice" disabled data-val="'+esc(o)+'">'+esc(o)+'</button>').join('');
     h+='<div class="ins-actions ins-choices">'+btns+'</div>';
   } else {
-    if(parts.body) h+='<div class="ins-section"><div class="ins-ctx">'+renderCtxHtml(parts.body)+'</div></div>';
-    const taLabel=parts.instruction||(req.prefill?'Proposed reply':'Input');
+    const taLabel=parts.instruction||(req.prefill?'Edit or approve':'Input');
     const taLabelCls=parts.instruction?'ins-instr-label':'ins-sec-label';
     const taVal=esc(req.prefill||'');
-    h+='<div class="ins-section"><div class="'+taLabelCls+'">'+esc(taLabel)+'</div>'
-      +'<div class="ins-sec-body"><textarea class="ins-ta">'+taVal+'</textarea></div></div>';
-    h+='<div class="ins-actions"><button class="btn-approve" disabled>Approve &amp; send →</button>'
+    const actHtml='<div class="ins-actions"><button class="btn-approve" disabled>Approve &amp; send →</button>'
       +'<button class="btn-secondary" disabled>Decline</button>'
       +'<span class="ins-hint">⌘↩ to approve</span></div>';
+    if(parts.body){
+      h+='<div class="ins-split">'
+        +'<div>'+renderEmailCtx(parts.body)+'</div>'
+        +'<div class="ins-split-work"><textarea class="ins-ta">'+taVal+'</textarea>'+actHtml+'</div>'
+        +'</div>';
+    } else {
+      const taHtml='<div class="'+taLabelCls+'">'+esc(taLabel)+'</div>'
+        +'<textarea class="ins-ta">'+taVal+'</textarea>';
+      h+='<div class="ins-section">'+taHtml+'</div>'+actHtml;
+    }
   }
   return h;
 }
