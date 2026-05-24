@@ -253,6 +253,9 @@ def human(
     outputs: list[str],
     options: list[str] | None = None,
     prefill: str | None = None,
+    context: str | None = None,
+    submit_label: str | None = None,
+    cancel_label: str | None = None,
 ):
     """
     Decorator that produces a HumanAction node.
@@ -313,6 +316,12 @@ def human(
                     f"declared input. Declared inputs: {input_names}"
                 )
 
+        if context is not None and context not in input_names:
+            raise TypeError(
+                f"@human '{fn_name}': context {context!r} is not a "
+                f"declared input. Declared inputs: {input_names}"
+            )
+
         _options = tuple(options) if options is not None else None
 
         return HumanAction(
@@ -323,6 +332,9 @@ def human(
             prompt=prompt,
             options=_options,
             prefill=prefill,
+            context=context,
+            submit_label=submit_label,
+            cancel_label=cancel_label,
         )
 
     return decorator

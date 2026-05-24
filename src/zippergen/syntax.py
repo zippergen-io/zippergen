@@ -250,6 +250,9 @@ class HumanAction:
     prompt: str                             # template with {var} placeholders
     options: tuple[str, ...] | None = None  # None → bool/text; tuple → choice
     prefill: str | None = None             # input var name to pre-populate the textarea
+    context: str | None = None            # input var name to show as left-column context
+    submit_label: str | None = None       # label for the primary action button
+    cancel_label: str | None = None       # label for the secondary/cancel button
 
     def __post_init__(self) -> None:
         if self.output_type not in (bool, str):

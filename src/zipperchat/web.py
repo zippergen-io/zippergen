@@ -338,6 +338,9 @@ class WebTrace:
                 "input_type": input_type,
                 "options": list(action.options) if action.options else None,
                 "prefill": inputs[action.prefill] if action.prefill else None,
+                "context": inputs[action.context] if action.context else None,
+                "submit_label": action.submit_label,
+                "cancel_label": action.cancel_label,
             }
             if path is not None:
                 request_event["path"] = list(path)
@@ -794,7 +797,8 @@ function renderInspector(){
   const parts=isHuman?extractPromptParts(req?req.prompt:'',isBool):{title:null,body:'',instruction:null};
   const title=isHuman?(parts.title||a.name):a.name;
 
-  const isEmailCtx=hp&&parts.body&&parseEmailMeta(parts.body)!==null;
+  const _ctxForTitle=hp&&req?(req.context!=null?req.context:parts.body):'';
+  const isEmailCtx=hp&&_ctxForTitle&&parseEmailMeta(_ctxForTitle)!==null;
   let html='<div class="ins-meta">'
     +'<span class="ins-meta-ll">'+esc(a.lifeline)+'</span>'
     +'<span class="ins-meta-dot">&middot;</span>'
@@ -886,23 +890,24 @@ function extractPromptParts(prompt, isBool){
 
 function renderPendingForm(req, parts){
   parts=parts||{title:null,body:'',instruction:null};
+  const ctxText=req.context!=null?req.context:parts.body;
+  const submitLabel=req.submit_label||(req.input_type==='bool'?'Accept':'Approve & send →');
+  const cancelLabel=req.cancel_label||'Decline';
   let h='';
   if(req.input_type==='bool'){
-    if(parts.body) h+='<div class="ins-section"><div class="ins-ctx">'+renderCtxHtml(parts.body)+'</div></div>';
-    h+='<div class="ins-actions"><button class="btn-approve" disabled>Accept</button><button class="btn-secondary" disabled>Decline</button></div>';
-  } else if(req.input_type==='choice'&&req.options){
-    if(parts.body) h+='<div class="ins-section"><div class="ins-ctx">'+renderCtxHtml(parts.body)+'</div></div>';
-    const btns=req.options.map(o=>'<button class="btn-choice" disabled data-val="'+esc(o)+'">'+esc(o)+'</button>').join('');
-    h+='<div class="ins-actions ins-choices">'+btns+'</div>';
+    if(ctxText) h+='<div class="ins-section"><div class="ins-ctx">'+renderCtxHtml(ctxText)+'</div></div>';
+    h+='<div class="ins-actions"><button class="btn-approve" disabled>'+esc(submitLabel)+'</button>'
+      +'<button class="btn-secondary" disabled>'+esc(cancelLabel)+'</button></div>';
   } else {
-    const taLabel=parts.instruction||(req.prefill?'Edit or approve':'Input');
-    const taLabelCls=parts.instruction?'ins-instr-label':'ins-sec-label';
-    const taVal=esc(req.prefill||'');
-    const actHtml='<div class="ins-actions"><button class="btn-approve" disabled>Approve &amp; send →</button>'
-      +'<button class="btn-secondary" disabled>Decline</button>'
+    // text and choice both render as editable textarea
+    const taVal=req.input_type==='choice'&&req.options
+      ?esc(req.options.join('\n'))
+      :esc(req.prefill||'');
+    const actHtml='<div class="ins-actions"><button class="btn-approve" disabled>'+esc(submitLabel)+'</button>'
+      +'<button class="btn-secondary" disabled>'+esc(cancelLabel)+'</button>'
       +'<span class="ins-hint">⌘↩ to approve</span></div>';
-    if(parts.body){
-      const emailMeta=parseEmailMeta(parts.body);
+    if(ctxText){
+      const emailMeta=parseEmailMeta(ctxText);
       const toName=emailMeta&&emailMeta.from
         ?(emailMeta.from.replace(/\s*<[^>]*>/,'').trim()||emailMeta.from)
         :null;
@@ -911,23 +916,23 @@ function renderPendingForm(req, parts){
         ?'<div class="ea-instr">Reply to '+esc(toFirst)+'</div><hr class="ea-rule">'
         :'';
       h+='<div class="ins-split">'
-        +'<div>'+renderEmailCtx(parts.body)+'</div>'
+        +'<div>'+renderEmailCtx(ctxText)+'</div>'
         +'<div class="ins-split-work">'
         +'<div class="ea ea-write">'+toHdr+'<textarea class="ea-ta">'+taVal+'</textarea></div>'
-        +actHtml
-        +'</div>'
+        +actHtml+'</div>'
         +'</div>';
     } else {
-      const taHtml='<div class="'+taLabelCls+'">'+esc(taLabel)+'</div>'
-        +'<textarea class="ins-ta">'+taVal+'</textarea>';
-      h+='<div class="ins-section">'+taHtml+'</div>'+actHtml;
+      const taLabel=parts.instruction||(req.prefill?'Edit or approve':'Input');
+      const taLabelCls=parts.instruction?'ins-instr-label':'ins-sec-label';
+      h+='<div class="ins-section"><div class="'+taLabelCls+'">'+esc(taLabel)+'</div>'
+        +'<textarea class="ins-ta">'+taVal+'</textarea></div>'+actHtml;
     }
   }
   return h;
 }
 
 function renderHumanDone(req){
-  const shown=req.value===''?'(approved as-is)':req.value;
+  const shown=req.declined?'(declined)':req.value===''?'(approved as-is)':req.value;
   return '<div class="ins-section"><div class="ins-sec-label">Response</div>'
     +'<div class="ins-ctx">'+esc(shown)+'</div></div>';
 }
@@ -967,17 +972,13 @@ function wireInputs(req_id,req){
     setTimeout(function(){ yes.disabled=false; if(no) no.disabled=false; },600);
     yes.onclick=function(){ doSubmit(req_id,'true'); };
     if(no) no.onclick=function(){ doSubmit(req_id,'false'); };
-  } else if(req.input_type==='choice'){
-    const btns=insBody.querySelectorAll('.btn-choice');
-    setTimeout(function(){ btns.forEach(function(b){ b.disabled=false; }); },600);
-    btns.forEach(function(b){ b.onclick=function(){ doSubmit(req_id,b.dataset.val); }; });
   } else {
     const ta=insBody.querySelector('.ea-ta,.ins-ta'),btn=insBody.querySelector('.btn-approve');
     const dec=insBody.querySelector('.btn-secondary');
     setTimeout(function(){ btn.disabled=false; if(dec) dec.disabled=false; },800);
     setTimeout(function(){ ta.focus({preventScroll:true}); },900);
     btn.onclick=function(){ doSubmit(req_id,ta.value); };
-    if(dec) dec.onclick=function(){ doSubmit(req_id,''); };
+    if(dec) dec.onclick=function(){ const r=reqMap.get(req_id); if(r) r.declined=true; doSubmit(req_id,''); };
     if(_cmdHandler) document.removeEventListener('keydown',_cmdHandler);
     _cmdHandler=function(e){
       if((e.metaKey||e.ctrlKey)&&e.key==='Enter'&&!btn.disabled){ e.preventDefault(); doSubmit(req_id,ta.value); }
@@ -1028,7 +1029,7 @@ function handleAct(e){
 
 function handleHumanRequired(e){
   pending++; refreshCount();
-  reqMap.set(e.id,{lifeline:e.lifeline,prompt:e.prompt||'',input_type:e.input_type,options:e.options,prefill:e.prefill||null,resolved:false,value:null});
+  reqMap.set(e.id,{lifeline:e.lifeline,prompt:e.prompt||'',input_type:e.input_type,options:e.options,prefill:e.prefill||null,context:e.context??null,submit_label:e.submit_label||null,cancel_label:e.cancel_label||null,resolved:false,value:null});
   const llKeys=groups[e.lifeline]||[];
   let matchedKey=null;
   for(let i=llKeys.length-1;i>=0;i--){
