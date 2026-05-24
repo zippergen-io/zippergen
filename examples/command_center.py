@@ -257,17 +257,25 @@ def todays_date() -> str:
 
 
 @llm(
-    system=(
-        "You are a calendar assistant. Given an email requesting a meeting and the chosen "
-        "time slot, extract the event details and output a JSON object with exactly these keys:\n"
-        '  "title":    a short meeting title derived from the email content\n'
-        '  "start":    ISO 8601 datetime string (e.g. "2026-05-25T10:00:00")\n'
-        '  "end":      ISO 8601 datetime string (default: 1 hour after start)\n'
-        '  "attendee": the sender\'s email address extracted from the email headers\n'
-        "Output only the JSON object, no other text. "
-        "If no clear time can be determined, output an empty JSON object {}."
-    ),
-    user="Today is {today}.\n\nEmail:\n{email}\n\nChosen slot:\n{choice}",
+    system="""
+You are a calendar assistant. Given an email requesting a meeting and the chosen
+time slot, extract the event details and output a JSON object with exactly these keys:
+  "title":    a short meeting title derived from the email content
+  "start":    ISO 8601 datetime string (e.g. "2026-05-25T10:00:00")
+  "end":      ISO 8601 datetime string (default: 1 hour after start)
+  "attendee": the sender's email address extracted from the email headers
+Output only the JSON object, no other text.
+If no clear time can be determined, output an empty JSON object {}.
+""".strip(),
+    user="""
+Today is {today}.
+
+Email:
+{email}
+
+Chosen slot:
+{choice}
+""".strip(),
     parse="text",
     outputs=(("event_details", str),),
 )
@@ -338,15 +346,15 @@ def accept_edit(edit: str, reply: str) -> str:
 # ---------------------------------------------------------------------------
 
 @llm(
-    system=(
-        "You are an email triage assistant. "
-        "Classify the email as exactly one of four labels:\n"
-        "  spam              — unsolicited or promotional\n"
-        "  quick_reply       — simple request answerable in one sentence\n"
-        "  scheduling_reply  — requests a meeting or asks about availability\n"
-        "  careful_reply     — requires research or careful composition\n"
-        "Reply with the single label and nothing else."
-    ),
+    system="""
+You are an email triage assistant.
+Classify the email as exactly one of four labels:
+  spam              — unsolicited or promotional
+  quick_reply       — simple request answerable in one sentence
+  scheduling_reply  — requests a meeting or asks about availability
+  careful_reply     — requires research or careful composition
+Reply with the single label and nothing else.
+""".strip(),
     user="{email}",
     parse="text",
     outputs=(("route", str),),
@@ -355,13 +363,13 @@ def classify(email: str) -> None: ...
 
 
 @llm(
-    system=(
-        "You are a scheduling assistant. "
-        "Classify the scheduling request as exactly one of two labels:\n"
-        "  check_slot    — the sender proposes a specific time and asks if it works\n"
-        "  propose_slots — the sender asks for available times without proposing one\n"
-        "Reply with the single label and nothing else."
-    ),
+    system="""
+You are a scheduling assistant.
+Classify the scheduling request as exactly one of two labels:
+  check_slot    — the sender proposes a specific time and asks if it works
+  propose_slots — the sender asks for available times without proposing one
+Reply with the single label and nothing else.
+""".strip(),
     user="{email}",
     parse="text",
     outputs=(("sched_kind", str),),
@@ -370,10 +378,10 @@ def classify_scheduling_request(email: str) -> None: ...
 
 
 @llm(
-    system=(
-        "You are a professional email assistant. "
-        "Write a concise, polite reply in two sentences or fewer."
-    ),
+    system="""
+You are a professional email assistant.
+Write a concise, polite reply in two sentences or fewer.
+""".strip(),
     user="{email}",
     parse="text",
     outputs=(("draft", str),),
@@ -382,10 +390,10 @@ def write_draft(email: str) -> None: ...
 
 
 @llm(
-    system=(
-        "You are a research assistant. Given an email, provide 2–3 sentences "
-        "of relevant background context the writer should know before replying."
-    ),
+    system="""
+You are a research assistant. Given an email, provide 2–3 sentences
+of relevant background context the writer should know before replying.
+""".strip(),
     user="{email}",
     parse="text",
     outputs=(("context", str),),
@@ -394,12 +402,12 @@ def research(email: str) -> None: ...
 
 
 @llm(
-    system=(
-        "You are a professional email assistant. "
-        "Read the email and plan your reply: identify the key points to address, "
-        "the appropriate tone, and the reply structure. "
-        "Write a brief outline (3–5 bullet points), not the full reply text."
-    ),
+    system="""
+You are a professional email assistant.
+Read the email and plan your reply: identify the key points to address,
+the appropriate tone, and the reply structure.
+Write a brief outline (3–5 bullet points), not the full reply text.
+""".strip(),
     user="{email}",
     parse="text",
     outputs=(("outline", str),),
@@ -408,12 +416,21 @@ def sketch_reply(email: str) -> None: ...
 
 
 @llm(
-    system=(
-        "You are a professional email assistant. "
-        "Write a complete, polished reply using the reply outline and the background context. "
-        "Keep it professional and under four sentences."
-    ),
-    user="Email:\n{email}\n\nReply outline:\n{outline}\n\nContext:\n{context}",
+    system="""
+You are a professional email assistant.
+Write a complete, polished reply using the reply outline and the background context.
+Keep it professional and under four sentences.
+""".strip(),
+    user="""
+Email:
+{email}
+
+Reply outline:
+{outline}
+
+Context:
+{context}
+""".strip(),
     parse="text",
     outputs=(("reply", str),),
 )
@@ -421,12 +438,18 @@ def write_reply(email: str, outline: str, context: str) -> None: ...
 
 
 @llm(
-    system=(
-        "You are a professional email assistant. "
-        "Write a concise, polite scheduling reply confirming the chosen slot or "
-        "proposing it to the sender. Keep it under three sentences."
-    ),
-    user="Email:\n{email}\n\nScheduling decision:\n{choice}",
+    system="""
+You are a professional email assistant.
+Write a concise, polite scheduling reply confirming the chosen slot or
+proposing it to the sender. Keep it under three sentences.
+""".strip(),
+    user="""
+Email:
+{email}
+
+Scheduling decision:
+{choice}
+""".strip(),
     parse="text",
     outputs=(("reply", str),),
 )

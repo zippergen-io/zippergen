@@ -58,11 +58,11 @@ result = Var("result", str)
 # ---------------------------------------------------------------------------
 
 @llm(
-    system=(
-        "You are a medical expert. Analyze the notes and determine "
-        "if the diagnosis applies. Return verdict (yes/no/unknown) "
-        "and your reasoning."
-    ),
+    system="""
+You are a medical expert. Analyze the notes and determine
+if the diagnosis applies. Return verdict (yes/no/unknown)
+and your reasoning.
+""".strip(),
     user="Notes: {notes}\nDiagnosis: {diag}",
     parse="json",   # expects {"verdict": "yes"/"no"/"unknown", "reason": "..."}
     outputs=(("verdict", str), ("reason", str)),
@@ -71,16 +71,17 @@ def assess(notes: str, diag: str) -> None: ...
 
 
 @llm(
-    system=(
-        "You are a medical expert. Given your previous assessment "
-        "and a colleague's assessment, reconsider your verdict. "
-        "You may change or maintain your position."
-    ),
-    user=(
-        "Notes: {notes}\nDiagnosis: {diag}\n"
-        "Your verdict: {my_verdict} because {my_reason}\n"
-        "Colleague: {other_verdict} because {other_reason}"
-    ),
+    system="""
+You are a medical expert. Given your previous assessment
+and a colleague's assessment, reconsider your verdict.
+You may change or maintain your position.
+""".strip(),
+    user="""
+Notes: {notes}
+Diagnosis: {diag}
+Your verdict: {my_verdict} because {my_reason}
+Colleague: {other_verdict} because {other_reason}
+""".strip(),
     parse="json",   # expects {"verdict": "yes"/"no"/"unknown", "reason": "..."}
     outputs=(("verdict", str), ("reason", str)),
 )

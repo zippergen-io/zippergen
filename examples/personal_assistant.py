@@ -147,14 +147,14 @@ def create_draft(email: str, reply: str) -> str:
 # ---------------------------------------------------------------------------
 
 @llm(
-    system=(
-        "You are an email triage assistant. "
-        "Classify the email as exactly one of three labels:\n"
-        "  spam          — unsolicited or promotional\n"
-        "  quick_reply   — simple request answerable in one sentence\n"
-        "  careful_reply — requires research or careful composition\n"
-        "Reply with the single label and nothing else."
-    ),
+    system="""
+You are an email triage assistant.
+Classify the email as exactly one of three labels:
+  spam          — unsolicited or promotional
+  quick_reply   — simple request answerable in one sentence
+  careful_reply — requires research or careful composition
+Reply with the single label and nothing else.
+""".strip(),
     user="{email}",
     parse="text",
     outputs=(("route", str),),
@@ -163,10 +163,10 @@ def classify(email: str) -> None: ...
 
 
 @llm(
-    system=(
-        "You are a professional email assistant. "
-        "Write a concise, polite reply in two sentences or fewer."
-    ),
+    system="""
+You are a professional email assistant.
+Write a concise, polite reply in two sentences or fewer.
+""".strip(),
     user="{email}",
     parse="text",
     outputs=(("draft", str),),
@@ -175,10 +175,10 @@ def write_draft(email: str) -> None: ...
 
 
 @llm(
-    system=(
-        "You are a research assistant. Given an email, provide 2–3 sentences "
-        "of relevant background context the writer should know before replying."
-    ),
+    system="""
+You are a research assistant. Given an email, provide 2–3 sentences
+of relevant background context the writer should know before replying.
+""".strip(),
     user="{email}",
     parse="text",
     outputs=(("context", str),),
@@ -187,12 +187,12 @@ def research(email: str) -> None: ...
 
 
 @llm(
-    system=(
-        "You are a professional email assistant. "
-        "Read the email and plan your reply: identify the key points to address, "
-        "the appropriate tone, and the reply structure. "
-        "Write a brief outline (3–5 bullet points), not the full reply text."
-    ),
+    system="""
+You are a professional email assistant.
+Read the email and plan your reply: identify the key points to address,
+the appropriate tone, and the reply structure.
+Write a brief outline (3–5 bullet points), not the full reply text.
+""".strip(),
     user="{email}",
     parse="text",
     outputs=(("outline", str),),
@@ -201,12 +201,21 @@ def sketch_reply(email: str) -> None: ...
 
 
 @llm(
-    system=(
-        "You are a professional email assistant. "
-        "Write a complete, polished reply using the reply outline and the background context. "
-        "Keep it professional and under four sentences."
-    ),
-    user="Email:\n{email}\n\nReply outline:\n{outline}\n\nContext:\n{context}",
+    system="""
+You are a professional email assistant.
+Write a complete, polished reply using the reply outline and the background context.
+Keep it professional and under four sentences.
+""".strip(),
+    user="""
+Email:
+{email}
+
+Reply outline:
+{outline}
+
+Context:
+{context}
+""".strip(),
     parse="text",
     outputs=(("reply", str),),
 )

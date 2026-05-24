@@ -85,16 +85,20 @@ def summarize(email: str) -> None: ...
 
 
 @llm(
-    system=(
-        "You are an assistant that classifies emails and extracts action details. "
-        "Classify the required action as exactly one of: reply, calendar, todo, archive. "
-        "  reply    — the sender is waiting for a response\n"
-        "  calendar — the email describes a meeting, event, or deadline to schedule\n"
-        "  todo     — the email contains a task or follow-up that needs tracking\n"
-        "  archive  — no action needed, safe to archive\n"
-        "Also extract the key details needed to carry out that action."
-    ),
-    user="Classify this email and extract the relevant action details:\n\n{email}",
+    system="""
+You are an assistant that classifies emails and extracts action details.
+Classify the required action as exactly one of: reply, calendar, todo, archive.
+  reply    — the sender is waiting for a response
+  calendar — the email describes a meeting, event, or deadline to schedule
+  todo     — the email contains a task or follow-up that needs tracking
+  archive  — no action needed, safe to archive
+Also extract the key details needed to carry out that action.
+""".strip(),
+    user="""
+Classify this email and extract the relevant action details:
+
+{email}
+""".strip(),
     parse="json",
     outputs=(("action", str), ("details", str)),
 )

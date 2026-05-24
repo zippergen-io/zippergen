@@ -68,18 +68,20 @@ report = Var("report", str)     # final report returned to User
 # ---------------------------------------------------------------------------
 
 @llm(
-    system=(
-        "You are a legal expert specialising in jurisdictional analysis. "
-        "Review the contract for issues related to: governing law, venue, "
-        "dispute resolution mechanisms, and applicable regulations. "
-        "Flag any clauses that are ambiguous, one-sided, or potentially "
-        "unenforceable."
-    ),
-    user=(
-        "Contract:\n\n{contract}\n\n"
-        "Return a concise summary of jurisdictional issues found (issues) "
-        "and whether any of them are critical and require escalation (critical)."
-    ),
+    system="""
+You are a legal expert specialising in jurisdictional analysis.
+Review the contract for issues related to: governing law, venue,
+dispute resolution mechanisms, and applicable regulations.
+Flag any clauses that are ambiguous, one-sided, or potentially unenforceable.
+""".strip(),
+    user="""
+Contract:
+
+{contract}
+
+Return a concise summary of jurisdictional issues found (issues)
+and whether any of them are critical and require escalation (critical).
+""".strip(),
     parse="json",
     outputs=(("issues", str), ("critical", bool)),
 )
@@ -87,17 +89,20 @@ def analyze_jurisdiction(contract: str) -> None: ...
 
 
 @llm(
-    system=(
-        "You are a legal expert specialising in liability and indemnification. "
-        "Review the contract for issues related to: indemnification clauses, "
-        "limitation of liability, warranty disclaimers, and risk allocation. "
-        "Flag any clauses that expose one party to disproportionate risk."
-    ),
-    user=(
-        "Contract:\n\n{contract}\n\n"
-        "Return a concise summary of liability issues found (issues) "
-        "and whether any of them are critical and require escalation (critical)."
-    ),
+    system="""
+You are a legal expert specialising in liability and indemnification.
+Review the contract for issues related to: indemnification clauses,
+limitation of liability, warranty disclaimers, and risk allocation.
+Flag any clauses that expose one party to disproportionate risk.
+""".strip(),
+    user="""
+Contract:
+
+{contract}
+
+Return a concise summary of liability issues found (issues)
+and whether any of them are critical and require escalation (critical).
+""".strip(),
     parse="json",
     outputs=(("issues", str), ("critical", bool)),
 )
@@ -105,19 +110,20 @@ def analyze_liability(contract: str) -> None: ...
 
 
 @llm(
-    system=(
-        "You are a legal expert specialising in intellectual property and "
-        "confidentiality. Review the contract for issues related to: IP "
-        "ownership and assignment, confidentiality obligations, non-compete "
-        "and non-solicitation clauses, and data protection. "
-        "Flag any clauses that could result in unintended IP transfer or "
-        "excessive confidentiality burdens."
-    ),
-    user=(
-        "Contract:\n\n{contract}\n\n"
-        "Return a concise summary of IP and confidentiality issues found (issues) "
-        "and whether any of them are critical and require escalation (critical)."
-    ),
+    system="""
+You are a legal expert specialising in intellectual property and confidentiality.
+Review the contract for issues related to: IP ownership and assignment,
+confidentiality obligations, non-compete and non-solicitation clauses, and data protection.
+Flag any clauses that could result in unintended IP transfer or excessive confidentiality burdens.
+""".strip(),
+    user="""
+Contract:
+
+{contract}
+
+Return a concise summary of IP and confidentiality issues found (issues)
+and whether any of them are critical and require escalation (critical).
+""".strip(),
     parse="json",
     outputs=(("issues", str), ("critical", bool)),
 )
@@ -125,19 +131,19 @@ def analyze_confidentiality(contract: str) -> None: ...
 
 
 @llm(
-    system=(
-        "You are a senior legal counsel coordinating a multi-specialist contract "
-        "review. You have received preliminary findings from three specialist "
-        "reviewers. Assess the combined risk profile and decide whether the "
-        "findings warrant an escalated deep review."
-    ),
-    user=(
-        "Jurisdiction issues: {j_issues} (critical: {j_critical})\n"
-        "Liability issues: {l_issues} (critical: {l_critical})\n"
-        "Confidentiality issues: {cf_issues} (critical: {cf_critical})\n\n"
-        "Return: a brief consolidated summary (summary) and whether an "
-        "escalated deep review is required (critical_found)."
-    ),
+    system="""
+You are a senior legal counsel coordinating a multi-specialist contract review.
+You have received preliminary findings from three specialist reviewers.
+Assess the combined risk profile and decide whether the findings warrant an escalated deep review.
+""".strip(),
+    user="""
+Jurisdiction issues: {j_issues} (critical: {j_critical})
+Liability issues: {l_issues} (critical: {l_critical})
+Confidentiality issues: {cf_issues} (critical: {cf_critical})
+
+Return: a brief consolidated summary (summary) and whether an
+escalated deep review is required (critical_found).
+""".strip(),
     parse="json",
     outputs=(("critical_found", bool), ("summary", str)),
 )
@@ -149,19 +155,24 @@ def consolidate(
 
 
 @llm(
-    system=(
-        "You are a legal specialist conducting a deep-dive review. "
-        "You have been asked to revisit your preliminary analysis in light "
-        "of a consolidated risk summary from the coordinating counsel. "
-        "Provide a detailed, actionable assessment."
-    ),
-    user=(
-        "Original contract:\n\n{contract}\n\n"
-        "Your preliminary findings: {issues}\n\n"
-        "Consolidated risk context from coordinating counsel: {context}\n\n"
-        "Provide a detailed deep-review assessment with specific clause "
-        "references and recommended actions."
-    ),
+    system="""
+You are a legal specialist conducting a deep-dive review.
+You have been asked to revisit your preliminary analysis in light
+of a consolidated risk summary from the coordinating counsel.
+Provide a detailed, actionable assessment.
+""".strip(),
+    user="""
+Original contract:
+
+{contract}
+
+Your preliminary findings: {issues}
+
+Consolidated risk context from coordinating counsel: {context}
+
+Provide a detailed deep-review assessment with specific clause
+references and recommended actions.
+""".strip(),
     parse="text",
     outputs=(("deep_findings", str),),
 )
@@ -169,20 +180,22 @@ def deep_review(contract: str, issues: str, context: str) -> None: ...
 
 
 @llm(
-    system=(
-        "You are a senior legal counsel producing a final contract review report "
-        "after an escalated multi-specialist deep review. "
-        "Structure your report clearly for a non-legal executive audience."
-    ),
-    user=(
-        "Consolidated risk summary: {summary}\n\n"
-        "Deep review — Jurisdiction: {j_deep}\n"
-        "Deep review — Liability: {l_deep}\n"
-        "Deep review — Confidentiality: {cf_deep}\n\n"
-        "Produce a structured final report with: Executive Summary, "
-        "Critical Issues (with clause references), Recommended Actions, "
-        "and an overall Risk Rating (Low / Medium / High / Critical)."
-    ),
+    system="""
+You are a senior legal counsel producing a final contract review report
+after an escalated multi-specialist deep review.
+Structure your report clearly for a non-legal executive audience.
+""".strip(),
+    user="""
+Consolidated risk summary: {summary}
+
+Deep review — Jurisdiction: {j_deep}
+Deep review — Liability: {l_deep}
+Deep review — Confidentiality: {cf_deep}
+
+Produce a structured final report with: Executive Summary,
+Critical Issues (with clause references), Recommended Actions,
+and an overall Risk Rating (Low / Medium / High / Critical).
+""".strip(),
     parse="text",
     outputs=(("report", str),),
 )
@@ -190,16 +203,17 @@ def final_report_critical(summary: str, j_deep: str, l_deep: str, cf_deep: str) 
 
 
 @llm(
-    system=(
-        "You are a senior legal counsel producing a final contract review report. "
-        "Structure your report clearly for a non-legal executive audience."
-    ),
-    user=(
-        "Consolidated findings: {summary}\n\n"
-        "Produce a structured final report with: Executive Summary, "
-        "Issues Found (with clause references), Recommended Actions, "
-        "and an overall Risk Rating (Low / Medium / High / Critical)."
-    ),
+    system="""
+You are a senior legal counsel producing a final contract review report.
+Structure your report clearly for a non-legal executive audience.
+""".strip(),
+    user="""
+Consolidated findings: {summary}
+
+Produce a structured final report with: Executive Summary,
+Issues Found (with clause references), Recommended Actions,
+and an overall Risk Rating (Low / Medium / High / Critical).
+""".strip(),
     parse="text",
     outputs=(("report", str),),
 )

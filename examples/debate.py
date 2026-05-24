@@ -81,12 +81,15 @@ def open_against(topic: str) -> None: ...
         "then reinforce your own position. Be concise (3-5 sentences). "
         "Respond with JSON: {\"argument\": \"...\"}."
     ),
-    user=(
-        "Topic: {topic}\n\n"
-        "Your previous argument: {argument}\n\n"
-        "Opponent said: {other_argument}\n\n"
-        "Rebut and reinforce."
-    ),
+    user="""
+Topic: {topic}
+
+Your previous argument: {argument}
+
+Opponent said: {other_argument}
+
+Rebut and reinforce.
+""".strip(),
     parse="json",
     outputs=(("argument", str),),
 )
@@ -100,12 +103,15 @@ def rebut_for(topic: str, argument: str, other_argument: str) -> None: ...
         "then reinforce your own position. Be concise (3-5 sentences). "
         "Respond with JSON: {\"argument\": \"...\"}."
     ),
-    user=(
-        "Topic: {topic}\n\n"
-        "Your previous argument: {argument}\n\n"
-        "Opponent said: {other_argument}\n\n"
-        "Rebut and reinforce."
-    ),
+    user="""
+Topic: {topic}
+
+Your previous argument: {argument}
+
+Opponent said: {other_argument}
+
+Rebut and reinforce.
+""".strip(),
     parse="json",
     outputs=(("argument", str),),
 )
@@ -120,12 +126,15 @@ def rebut_against(topic: str, argument: str, other_argument: str) -> None: ...
         "has clearly prevailed or the exchange is becoming repetitive. "
         "Respond with JSON: {\"go_on\": true/false}."
     ),
-    user=(
-        "Topic: {topic}\n\n"
-        "Pro: {pro_arg}\n\n"
-        "Con: {con_arg}\n\n"
-        "Should the debate continue?"
-    ),
+    user="""
+Topic: {topic}
+
+Pro: {pro_arg}
+
+Con: {con_arg}
+
+Should the debate continue?
+""".strip(),
     parse="json",
     outputs=(("go_on", bool),),
 )
@@ -133,17 +142,23 @@ def assess(topic: str, pro_arg: str, con_arg: str) -> None: ...
 
 
 @llm(
-    system=(
-        "You are an impartial debate judge. The debate has concluded. "
-        "Weigh both sides carefully and deliver your final verdict: "
-        "which position was better argued, and why? Be decisive — name a winner. "
-        "Respond with JSON: {\"verdict\": \"...\"}."
-    ),
-    user=(
-        "Topic: {topic}\n\n"
-        "Final arguments:\n\nPro: {pro_arg}\n\nCon: {con_arg}\n\n"
-        "Deliver your verdict."
-    ),
+    system="""
+You are an impartial debate judge. The debate has concluded.
+Weigh both sides carefully and deliver your final verdict:
+which position was better argued, and why? Be decisive — name a winner.
+Respond with JSON: {"verdict": "..."}.
+""".strip(),
+    user="""
+Topic: {topic}
+
+Final arguments:
+
+Pro: {pro_arg}
+
+Con: {con_arg}
+
+Deliver your verdict.
+""".strip(),
     parse="json",
     outputs=(("verdict", str),),
 )

@@ -701,19 +701,21 @@ def _exec_planner(action: PlannerAction, named_inputs: dict, llm_backend, trace=
             attempts_used = attempt + 1
             break
         print(f"[planner] attempt {attempt + 1} failed: {error}")
-        hint = (
-            "\nHint: a lifeline already has every variable it produced — "
-            "do NOT self-forward those back. Only send variables from OTHER lifelines.\n"
-            if "self-send" in error else ""
-        )
-        correction = (
-            f"The workflow you generated has an error:\n\n  {error}\n{hint}\n"
-            f"Return the complete corrected output (all @llm/@pure definitions + @workflow).\n"
-            f"Key rules:\n"
-            f"  - Each parameter annotated with its owner: `name: type @ Lifeline`\n"
-            f"  - Last statement: `return var @ Lifeline` where var is in scope\n\n"
-            f"Current (broken) workflow:\n{spec}"
-        )
+        hint = ("""
+Hint: a lifeline already has every variable it produced —
+do NOT self-forward those back. Only send variables from OTHER lifelines.
+""" if "self-send" in error else "")
+        correction = f"""The workflow you generated has an error:
+
+  {error}
+{hint}
+Return the complete corrected output (all @llm/@pure definitions + @workflow).
+Key rules:
+  - Each parameter annotated with its owner: `name: type @ Lifeline`
+  - Last statement: `return var @ Lifeline` where var is in scope
+
+Current (broken) workflow:
+{spec}"""
         spec_result = llm_backend(
             LLMAction(
                 name=f"_generate_spec_retry{attempt + 1}",
