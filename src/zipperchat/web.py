@@ -90,7 +90,8 @@ class _EventBus:
 def _make_handler(bus: _EventBus, lifelines: list[str],
                   replay_event: threading.Event,
                   init_event: dict,
-                  pending_human_inputs: dict):
+                  pending_human_inputs: dict,
+                  pending_lock: threading.Lock):
     class _Handler(BaseHTTPRequestHandler):
 
         def do_GET(self):
@@ -155,8 +156,10 @@ def _make_handler(bus: _EventBus, lifelines: list[str],
                 body = json.loads(self.rfile.read(length).decode())
                 req_id = body.get("id")
                 raw_value = str(body.get("value", ""))
-                if req_id and req_id in pending_human_inputs:
-                    evt, result_box = pending_human_inputs[req_id]
+                with pending_lock:
+                    entry = pending_human_inputs.get(req_id) if req_id else None
+                if entry is not None:
+                    evt, result_box = entry
                     result_box.append(raw_value)
                     evt.set()
                     self.send_response(204)
@@ -243,6 +246,7 @@ class WebTrace:
         self._server: ThreadingHTTPServer | None = None
         self._replay_event = threading.Event()
         self._pending_human_inputs: dict[str, tuple[threading.Event, list]] = {}
+        self._pending_lock = threading.Lock()
 
     @classmethod
     def dashboard(cls, port: int = 8765) -> "WebTrace":
@@ -268,7 +272,7 @@ class WebTrace:
         init_ev = self._init_event()
         handler = _make_handler(
             self._bus, self._lifelines, self._replay_event, init_ev,
-            self._pending_human_inputs,
+            self._pending_human_inputs, self._pending_lock,
         )
         self._server = _Server(("", self._port), handler)
         self._port = self._server.server_address[1]
@@ -314,12 +318,14 @@ class WebTrace:
     def _make_human_backend(self, path: list[str] | None = None):
         """Return a human backend callable that blocks until ZipperChat provides input."""
         pending = self._pending_human_inputs
+        lock = self._pending_lock
 
         def backend(action, inputs: dict) -> dict:
             req_id = str(uuid.uuid4())
             evt = threading.Event()
             result_box: list = []
-            pending[req_id] = (evt, result_box)
+            with lock:
+                pending[req_id] = (evt, result_box)
 
             context_val = action.context.format(**inputs) if action.context else None
             instruction_val = action.instruction.format(**inputs) if action.instruction else None
@@ -342,7 +348,8 @@ class WebTrace:
             self._bus.publish(request_event)
 
             evt.wait()
-            del pending[req_id]
+            with lock:
+                pending.pop(req_id, None)
             raw = result_box[0]
 
             if action.output_type is bool:
