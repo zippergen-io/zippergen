@@ -7,27 +7,31 @@ def test_human_action_fields():
         inputs=(("plan", str),),
         output="approved",
         output_type=bool,
-        prompt="Approve this plan?\n\n{plan}",
-        options=None,
+        kind="confirm",
+        instruction="Approve this plan?",
     )
     assert action.name == "review_plan"
     assert action.inputs == (("plan", str),)
     assert action.output == "approved"
     assert action.output_type is bool
-    assert action.prompt == "Approve this plan?\n\n{plan}"
-    assert action.options is None
+    assert action.kind == "confirm"
+    assert action.instruction == "Approve this plan?"
+    assert action.context is None
+    assert action.prefill is None
 
-def test_human_action_choice():
+def test_human_action_select():
     action = HumanAction(
         name="choose",
         inputs=(("plan", str),),
         output="decision",
         output_type=str,
-        prompt="Choose: {plan}",
-        options=("approve", "reject", "escalate"),
+        kind="select",
+        context="{plan}",
+        prefill="approve\nreject\nescalate",
     )
-    assert action.options == ("approve", "reject", "escalate")
+    assert action.kind == "select"
     assert action.output_type is str
+    assert action.prefill == "approve\nreject\nescalate"
 
 def test_human_action_repr():
     action = HumanAction(
@@ -35,7 +39,7 @@ def test_human_action_repr():
         inputs=(("plan", str),),
         output="approved",
         output_type=bool,
-        prompt="Approve? {plan}",
+        kind="confirm",
     )
     r = repr(action)
     assert r.startswith("HumanAction(")
@@ -48,7 +52,7 @@ def test_human_action_immutable():
         inputs=(("plan", str),),
         output="approved",
         output_type=bool,
-        prompt="Approve? {plan}",
+        kind="confirm",
     )
     with pytest.raises((AttributeError, TypeError)):
         action.name = "changed"  # type: ignore
@@ -60,13 +64,13 @@ def test_human_action_invalid_output_type():
             inputs=(),
             output="result",
             output_type=int,
-            prompt="Hello",
+            kind="confirm",
         )
 
-def test_human_decorator_bool():
+def test_human_decorator_confirm():
     from zippergen.actions import human
 
-    @human(prompt="Approve this plan?\n\n{plan}", outputs=["approved: bool"])
+    @human(kind="confirm", instruction="Approve this plan?", outputs=["approved: bool"])
     def review_plan(plan: str): pass
 
     assert isinstance(review_plan, HumanAction)
@@ -74,50 +78,61 @@ def test_human_decorator_bool():
     assert review_plan.inputs == (("plan", str),)
     assert review_plan.output == "approved"
     assert review_plan.output_type is bool
-    assert review_plan.prompt == "Approve this plan?\n\n{plan}"
-    assert review_plan.options is None
+    assert review_plan.kind == "confirm"
+    assert review_plan.instruction == "Approve this plan?"
 
-def test_human_decorator_text():
+def test_human_decorator_edit():
     from zippergen.actions import human
 
-    @human(prompt="Add a comment about {plan}:", outputs=["comment: str"])
-    def add_comment(plan: str): pass
+    @human(kind="edit", context="{plan}", prefill="{plan}",
+           instruction="Edit this plan:", outputs=["comment: str"])
+    def edit_plan(plan: str): pass
 
-    assert add_comment.output == "comment"
-    assert add_comment.output_type is str
-    assert add_comment.options is None
+    assert edit_plan.output == "comment"
+    assert edit_plan.output_type is str
+    assert edit_plan.kind == "edit"
+    assert edit_plan.context == "{plan}"
+    assert edit_plan.prefill == "{plan}"
 
-def test_human_decorator_choice():
+def test_human_decorator_select():
     from zippergen.actions import human
 
-    @human(
-        prompt="Choose an action for {plan}:",
-        options=["approve", "reject", "escalate"],
-        outputs=["decision: str"],
-    )
+    @human(kind="select", context="{plan}",
+           prefill="approve\nreject\nescalate", outputs=["decision: str"])
     def choose_action(plan: str): pass
 
     assert choose_action.output == "decision"
     assert choose_action.output_type is str
-    assert choose_action.options == ("approve", "reject", "escalate")
+    assert choose_action.prefill == "approve\nreject\nescalate"
 
 def test_human_decorator_bad_placeholder():
     from zippergen.actions import human
 
     with pytest.raises(TypeError, match="unknown variables"):
-        @human(prompt="Approve {typo}?", outputs=["approved: bool"])
+        @human(kind="confirm", context="{typo}", instruction="Approve?",
+               outputs=["approved: bool"])
         def bad_action(plan: str): pass
 
-def test_human_decorator_options_requires_str():
+def test_human_decorator_confirm_requires_bool():
     from zippergen.actions import human
 
-    with pytest.raises(TypeError, match="options.*str"):
-        @human(
-            prompt="Choose: {plan}",
-            options=["a", "b"],
-            outputs=["decision: bool"],
-        )
-        def bad_choice(plan: str): pass
+    with pytest.raises(TypeError, match="bool"):
+        @human(kind="confirm", outputs=["decision: str"])
+        def bad_confirm(plan: str): pass
+
+def test_human_decorator_edit_requires_str():
+    from zippergen.actions import human
+
+    with pytest.raises(TypeError, match="str"):
+        @human(kind="edit", outputs=["decision: bool"])
+        def bad_edit(plan: str): pass
+
+def test_human_decorator_bad_kind():
+    from zippergen.actions import human
+
+    with pytest.raises(ValueError, match="unsupported kind"):
+        @human(kind="unknown", outputs=["x: str"])
+        def bad_kind(): pass
 
 
 # CLI Backend Tests
@@ -125,44 +140,74 @@ from unittest.mock import patch
 from zippergen.human_backends import make_cli_human_backend
 
 
-def _make_action(output_type, options=None):
+def _make_confirm(name="ask"):
     return HumanAction(
-        name="ask",
+        name=name,
         inputs=(("plan", str),),
         output="result",
-        output_type=output_type,
-        prompt="Question: {plan}",
-        options=options,
+        output_type=bool,
+        kind="confirm",
+        instruction="Question: {plan}",
+    )
+
+def _make_edit(name="ask"):
+    return HumanAction(
+        name=name,
+        inputs=(("plan", str),),
+        output="result",
+        output_type=str,
+        kind="edit",
+        instruction="Edit this:",
+        prefill="{plan}",
+    )
+
+def _make_select(name="ask"):
+    return HumanAction(
+        name=name,
+        inputs=(("plan", str),),
+        output="result",
+        output_type=str,
+        kind="select",
+        instruction="Choose:",
+        prefill="approve\nreject\nescalate",
     )
 
 
-def test_cli_backend_bool_yes():
+def test_cli_backend_confirm_yes():
     backend = make_cli_human_backend()
-    action = _make_action(bool)
+    action = _make_confirm()
     with patch("builtins.input", return_value="y"):
         result = backend(action, {"plan": "do something"})
     assert result == {"result": True}
 
 
-def test_cli_backend_bool_no():
+def test_cli_backend_confirm_no():
     backend = make_cli_human_backend()
-    action = _make_action(bool)
+    action = _make_confirm()
     with patch("builtins.input", return_value="n"):
         result = backend(action, {"plan": "do something"})
     assert result == {"result": False}
 
 
-def test_cli_backend_text():
+def test_cli_backend_edit():
     backend = make_cli_human_backend()
-    action = _make_action(str)
+    action = _make_edit()
     with patch("builtins.input", return_value="looks good"):
         result = backend(action, {"plan": "do something"})
     assert result == {"result": "looks good"}
 
 
-def test_cli_backend_choice():
+def test_cli_backend_edit_keep_prefill():
     backend = make_cli_human_backend()
-    action = _make_action(str, options=("approve", "reject", "escalate"))
+    action = _make_edit()
+    with patch("builtins.input", return_value=""):
+        result = backend(action, {"plan": "do something"})
+    assert result == {"result": "do something"}
+
+
+def test_cli_backend_select():
+    backend = make_cli_human_backend()
+    action = _make_select()
     with patch("builtins.input", side_effect=["99", "2"]):
         result = backend(action, {"plan": "do something"})
     assert result == {"result": "reject"}
@@ -177,8 +222,6 @@ from zippergen.runtime import run
 _Human = Lifeline("Human")
 _Planner = Lifeline("Planner")
 
-# Intermediate variables must be declared as Var objects in module scope
-# so the @workflow DSL can resolve them by name during AST execution.
 _plan = Var("plan", str)
 _approved = Var("approved", bool)
 
@@ -186,7 +229,7 @@ _approved = Var("approved", bool)
 def make_task(n: int) -> str:
     return f"task-{n}"
 
-@human(prompt="Approve: {plan}?", outputs=["approved: bool"])
+@human(kind="confirm", instruction="Approve: {plan}?", outputs=["approved: bool"])
 def review_plan(plan: str): pass
 
 @workflow

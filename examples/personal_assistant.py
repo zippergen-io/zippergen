@@ -219,9 +219,13 @@ def accept_edit(edit: str, reply: str) -> str:
 
 
 @human(
-    prompt="New email:\n\n{email}\n\nEdit the proposed reply or submit as-is:",
+    kind="edit",
+    context="{email}",
+    prefill="{reply}",
+    instruction="Edit the proposed reply or submit as-is",
     outputs=["edit: str"],
-    prefill="reply",
+    submit_label="Approve & send →",
+    cancel_label="Decline",
 )
 def approve_or_edit(email: str, reply: str): pass
 

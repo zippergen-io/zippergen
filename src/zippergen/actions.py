@@ -249,11 +249,11 @@ def _parse_human_output(spec: str, fn_name: str) -> tuple[str, type]:
 
 def human(
     *,
-    prompt: str,
+    kind: str,
     outputs: list[str],
-    options: list[str] | None = None,
-    prefill: str | None = None,
     context: str | None = None,
+    instruction: str | None = None,
+    prefill: str | None = None,
     submit_label: str | None = None,
     cancel_label: str | None = None,
 ):
@@ -262,22 +262,41 @@ def human(
 
     Parameters
     ----------
-    prompt : str
-        Prompt shown to the human. May contain ``{var_name}`` placeholders
-        matching the function's parameter names.
+    kind : str
+        Interaction shape: ``"confirm"`` (yes/no buttons), ``"edit"`` (edit
+        pre-filled text), ``"select"`` (choose from a list).
     outputs : list of str
         Single-element list with ``"name: type"`` spec, e.g. ``["approved: bool"]``.
-        Supported types: ``bool``, ``str``.
-    options : list of str, optional
-        Fixed choices for the human to select from. Only valid when output
-        type is ``str``. Renders as buttons in ZipperChat.
+        ``confirm`` requires ``bool``; ``edit`` and ``select`` require ``str``.
+    context : str, optional
+        Template for the left-column context panel.  Use ``{var_name}``
+        placeholders to embed input variable values; literal text is shown
+        as-is.  Multiple variables can be included: ``"{email}\\n{notes}"``.
+    instruction : str, optional
+        Instruction text shown in the right column (or above the buttons for
+        ``confirm``).  Supports ``{var_name}`` placeholders.
     prefill : str, optional
-        Name of an input variable whose value pre-populates the textarea.
-        Only valid when output type is ``str`` and ``options`` is None.
+        For ``edit``: a ``{var_name}`` template whose resolved value
+        pre-populates the textarea.
+        For ``options``: either a ``{var_name}`` template or a literal
+        newline-separated string of choices (e.g. ``"Send\\nSave as draft"``).
+    submit_label : str, optional
+        Label for the primary (approve/submit) button.
+    cancel_label : str, optional
+        Label for the secondary (decline/cancel) button.
     """
+    _valid_kinds = {"confirm", "edit", "select"}
+
     def decorator(fn: Callable) -> HumanAction:
         fn_name = fn.__name__
         inputs = _extract_inputs(fn)
+        input_names = {name for name, _ in inputs}
+
+        if kind not in _valid_kinds:
+            raise ValueError(
+                f"@human '{fn_name}': unsupported kind {kind!r}. "
+                f"Supported: {sorted(_valid_kinds)}"
+            )
 
         if len(outputs) != 1:
             raise TypeError(
@@ -286,53 +305,41 @@ def human(
             )
         output_name, output_type = _parse_human_output(outputs[0], fn_name)
 
-        # Validate prompt placeholders
-        placeholders = set(re.findall(r'\{(\w+)\}', prompt))
-        input_names = {name for name, _ in inputs}
-        unknown = placeholders - input_names
-        if unknown:
+        if kind == "confirm" and output_type is not bool:
             raise TypeError(
-                f"@human '{fn_name}': prompt references unknown variables "
-                f"{unknown}. Declared inputs: {input_names}"
+                f"@human '{fn_name}': kind='confirm' requires a bool output, "
+                f"got '{output_type.__name__}'"
+            )
+        if kind in ("edit", "select") and output_type is not str:
+            raise TypeError(
+                f"@human '{fn_name}': kind='{kind}' requires a str output, "
+                f"got '{output_type.__name__}'"
             )
 
-        # options only valid for str output
-        if options is not None and output_type is not str:
-            raise TypeError(
-                f"@human '{fn_name}': options are only valid when output "
-                f"type is 'str', got '{output_type.__name__}'"
-            )
-
-        # prefill only valid for text (str, no options)
-        if prefill is not None:
-            if output_type is not str or options is not None:
+        # Validate {var} placeholders in template fields
+        for field_name, value in (
+            ("context", context),
+            ("instruction", instruction),
+            ("prefill", prefill),
+        ):
+            if value is None:
+                continue
+            unknown = set(re.findall(r'\{(\w+)\}', value)) - input_names
+            if unknown:
                 raise TypeError(
-                    f"@human '{fn_name}': prefill is only valid for text "
-                    f"output (str, no options)"
+                    f"@human '{fn_name}': {field_name}= references unknown "
+                    f"variables {unknown}. Declared inputs: {input_names}"
                 )
-            if prefill not in input_names:
-                raise TypeError(
-                    f"@human '{fn_name}': prefill {prefill!r} is not a "
-                    f"declared input. Declared inputs: {input_names}"
-                )
-
-        if context is not None and context not in input_names:
-            raise TypeError(
-                f"@human '{fn_name}': context {context!r} is not a "
-                f"declared input. Declared inputs: {input_names}"
-            )
-
-        _options = tuple(options) if options is not None else None
 
         return HumanAction(
             name=fn_name,
             inputs=inputs,
             output=output_name,
             output_type=output_type,
-            prompt=prompt,
-            options=_options,
-            prefill=prefill,
+            kind=kind,
             context=context,
+            instruction=instruction,
+            prefill=prefill,
             submit_label=submit_label,
             cancel_label=cancel_label,
         )

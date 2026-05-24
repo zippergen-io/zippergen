@@ -321,24 +321,19 @@ class WebTrace:
             result_box: list = []
             pending[req_id] = (evt, result_box)
 
-            prompt = action.prompt.format(**inputs)
-            if action.output_type is bool:
-                input_type = "bool"
-            elif action.options is not None:
-                input_type = "choice"
-            else:
-                input_type = "text"
+            context_val = action.context.format(**inputs) if action.context else None
+            instruction_val = action.instruction.format(**inputs) if action.instruction else None
+            prefill_val = action.prefill.format(**inputs) if action.prefill else None
 
             lifeline_name = threading.current_thread().name
             request_event: dict[str, object] = {
                 "type": "human_input_required",
                 "id": req_id,
                 "lifeline": lifeline_name,
-                "prompt": prompt,
-                "input_type": input_type,
-                "options": list(action.options) if action.options else None,
-                "prefill": inputs[action.prefill] if action.prefill else None,
-                "context": inputs[action.context] if action.context else None,
+                "kind": action.kind,
+                "context": context_val,
+                "instruction": instruction_val,
+                "prefill": prefill_val,
                 "submit_label": action.submit_label,
                 "cancel_label": action.cancel_label,
             }
@@ -791,14 +786,10 @@ function renderInspector(){
   const kl={llm:'llm',pure:'pure',human:'human',planner:'plan'}[a.kind]||'act';
   const isHuman=a.kind==='human';
 
-  // For human actions: extract title from prompt; show fn name in meta
-  // For others: title IS the fn name
-  const isBool=req&&req.input_type==='bool';
-  const parts=isHuman?extractPromptParts(req?req.prompt:'',isBool):{title:null,body:'',instruction:null};
-  const title=isHuman?(parts.title||a.name):a.name;
-
-  const _ctxForTitle=hp&&req?(req.context!=null?req.context:parts.body):'';
-  const isEmailCtx=hp&&_ctxForTitle&&parseEmailMeta(_ctxForTitle)!==null;
+  const title=isHuman?(req&&req.instruction?req.instruction:a.name):a.name;
+  const isEmailCtx=hp&&req&&req.context&&parseEmailMeta(req.context)!==null;
+  // show title for: non-human, done human, or confirm (instruction is the question)
+  const showTitle=!isHuman||hd||(hp&&req&&req.kind==='confirm');
   let html='<div class="ins-meta">'
     +'<span class="ins-meta-ll">'+esc(a.lifeline)+'</span>'
     +'<span class="ins-meta-dot">&middot;</span>'
@@ -807,21 +798,14 @@ function renderInspector(){
     +(a.time?'<span class="ins-meta-dot">&middot;</span><span class="ins-meta-time">'+esc(a.time)+'</span>':'')
     +(hp?'<span class="ins-meta-await">awaiting you</span>':'')
     +'</div>';
-  if(!isEmailCtx) html+='<div class="ins-title">'+esc(title)+'</div>';
+  if(showTitle) html+='<div class="ins-title">'+esc(title)+'</div>';
 
-  if(hp)      html+=renderPendingForm(req,parts);
+  if(hp)      html+=renderPendingForm(req);
   else if(hd) html+=renderHumanDone(req);
   else        html+=renderDoneSection(a);
 
   insBody.innerHTML=html;
   if(hp) wireInputs(a.reqId,req);
-}
-
-function boolContext(prompt){
-  const lines=prompt.trimEnd().split('\n');
-  while(lines.length&&(!lines[lines.length-1].trim()||lines[lines.length-1].trim().endsWith('?')))
-    lines.pop();
-  return lines.join('\n').trimEnd();
 }
 
 function renderCtxHtml(text){
@@ -868,62 +852,33 @@ function renderEmailCtx(text){
   return h;
 }
 
-function extractPromptParts(prompt, isBool){
-  if(!prompt) return {title:null, body:'', instruction:null};
-  const text=isBool?boolContext(prompt):prompt;
-  const lines=text.split('\n');
-  let titleIdx=-1;
-  for(let i=0;i<lines.length;i++){
-    const t=lines[i].trim();
-    if(t&&t.endsWith(':')&&t.length<=50){ titleIdx=i; break; }
-  }
-  let lastNonEmpty=-1;
-  for(let i=lines.length-1;i>=0;i--){ if(lines[i].trim()){ lastNonEmpty=i; break; } }
-  let instrIdx=-1;
-  if(lastNonEmpty>=0&&lastNonEmpty!==titleIdx&&lines[lastNonEmpty].trim().endsWith(':'))
-    instrIdx=lastNonEmpty;
-  const title      =titleIdx>=0?lines[titleIdx].trim().slice(0,-1):null;
-  const instruction=instrIdx>=0?lines[instrIdx].trim().slice(0,-1):null;
-  const bodyLines  =lines.filter((_,i)=>i!==titleIdx&&i!==instrIdx);
-  return {title, body:bodyLines.join('\n').trim(), instruction};
-}
-
-function renderPendingForm(req, parts){
-  parts=parts||{title:null,body:'',instruction:null};
-  const ctxText=req.context!=null?req.context:parts.body;
-  const submitLabel=req.submit_label||(req.input_type==='bool'?'Accept':'Approve & send →');
+function renderPendingForm(req){
+  const submitLabel=req.submit_label||(req.kind==='confirm'?'Accept':'Approve & send →');
   const cancelLabel=req.cancel_label||'Decline';
+  const instruction=req.instruction||'';
+  const taVal=esc(req.prefill||'');
   let h='';
-  if(req.input_type==='bool'){
-    if(ctxText) h+='<div class="ins-section"><div class="ins-ctx">'+renderCtxHtml(ctxText)+'</div></div>';
+  if(req.kind==='confirm'){
+    if(req.context) h+='<div class="ins-section">'+renderEmailCtx(req.context)+'</div>';
     h+='<div class="ins-actions"><button class="btn-approve" disabled>'+esc(submitLabel)+'</button>'
       +'<button class="btn-secondary" disabled>'+esc(cancelLabel)+'</button></div>';
   } else {
-    // text and choice both render as editable textarea
-    const taVal=req.input_type==='choice'&&req.options
-      ?esc(req.options.join('\n'))
-      :esc(req.prefill||'');
     const actHtml='<div class="ins-actions"><button class="btn-approve" disabled>'+esc(submitLabel)+'</button>'
       +'<button class="btn-secondary" disabled>'+esc(cancelLabel)+'</button>'
       +'<span class="ins-hint">⌘↩ to approve</span></div>';
-    if(ctxText){
-      const emailMeta=parseEmailMeta(ctxText);
-      const toName=emailMeta&&emailMeta.from
-        ?(emailMeta.from.replace(/\s*<[^>]*>/,'').trim()||emailMeta.from)
-        :null;
-      const toFirst=toName?toName.split(/\s/)[0]:null;
-      const toHdr=toFirst
-        ?'<div class="ea-instr">Reply to '+esc(toFirst)+'</div><hr class="ea-rule">'
+    if(req.context){
+      const instrHdr=instruction
+        ?'<div class="ea-instr">'+esc(instruction)+'</div><hr class="ea-rule">'
         :'';
       h+='<div class="ins-split">'
-        +'<div>'+renderEmailCtx(ctxText)+'</div>'
+        +'<div>'+renderEmailCtx(req.context)+'</div>'
         +'<div class="ins-split-work">'
-        +'<div class="ea ea-write">'+toHdr+'<textarea class="ea-ta">'+taVal+'</textarea></div>'
+        +'<div class="ea ea-write">'+instrHdr+'<textarea class="ea-ta">'+taVal+'</textarea></div>'
         +actHtml+'</div>'
         +'</div>';
     } else {
-      const taLabel=parts.instruction||(req.prefill?'Edit or approve':'Input');
-      const taLabelCls=parts.instruction?'ins-instr-label':'ins-sec-label';
+      const taLabelCls=instruction?'ins-instr-label':'ins-sec-label';
+      const taLabel=instruction||(req.prefill?'Edit or approve':'Input');
       h+='<div class="ins-section"><div class="'+taLabelCls+'">'+esc(taLabel)+'</div>'
         +'<textarea class="ins-ta">'+taVal+'</textarea></div>'+actHtml;
     }
@@ -967,7 +922,7 @@ function renderDoneSection(a){
 // Wire inputs
 let _cmdHandler=null;
 function wireInputs(req_id,req){
-  if(req.input_type==='bool'){
+  if(req.kind==='confirm'){
     const yes=insBody.querySelector('.btn-approve'),no=insBody.querySelector('.btn-secondary');
     setTimeout(function(){ yes.disabled=false; if(no) no.disabled=false; },600);
     yes.onclick=function(){ doSubmit(req_id,'true'); };
@@ -1029,7 +984,7 @@ function handleAct(e){
 
 function handleHumanRequired(e){
   pending++; refreshCount();
-  reqMap.set(e.id,{lifeline:e.lifeline,prompt:e.prompt||'',input_type:e.input_type,options:e.options,prefill:e.prefill||null,context:e.context??null,submit_label:e.submit_label||null,cancel_label:e.cancel_label||null,resolved:false,value:null});
+  reqMap.set(e.id,{lifeline:e.lifeline,kind:e.kind||'confirm',context:e.context??null,instruction:e.instruction??null,prefill:e.prefill??null,submit_label:e.submit_label??null,cancel_label:e.cancel_label??null,resolved:false,value:null});
   const llKeys=groups[e.lifeline]||[];
   let matchedKey=null;
   for(let i=llKeys.length-1;i>=0;i--){

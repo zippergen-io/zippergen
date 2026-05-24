@@ -414,38 +414,47 @@ def write_scheduling_reply(email: str, choice: str) -> None: ...
 # ---------------------------------------------------------------------------
 
 @human(
-    prompt="New email:\n\n{email}\n\nEdit the proposed reply or submit as-is:",
+    kind="edit",
+    context="{email}",
+    prefill="{reply}",
+    instruction="Edit the proposed reply or submit as-is",
     outputs=["edit: str"],
-    prefill="reply",
+    submit_label="Approve & send →",
+    cancel_label="Decline",
 )
 def approve_or_edit(email: str, reply: str): pass
 
 
 @human(
-    prompt=(
-        "Email:\n\n{email}\n\n"
-        "Calendar says:\n\n{availability}\n\n"
-        "Confirm this slot?"
-    ),
+    kind="confirm",
+    context="{email}\n{availability}",
+    instruction="Confirm this slot?",
     outputs=["confirmed: bool"],
+    submit_label="Confirm",
+    cancel_label="Decline",
 )
 def confirm_slot(email: str, availability: str): pass
 
 
 @human(
-    prompt=(
-        "Email:\n\n{email}\n\n"
-        "Choose a slot:"
-    ),
+    kind="select",
+    context="{email}",
+    prefill="{availability}",
+    instruction="Choose a slot",
     outputs=["choice: str"],
-    prefill="availability",
+    submit_label="Select →",
+    cancel_label="Decline",
 )
 def choose_from_proposed_slots(email: str, availability: str): pass
 
 
 @human(
-    prompt="Calendar invite:\n\n{invite_text}\n\nAccept?",
+    kind="confirm",
+    context="{invite_text}",
+    instruction="Accept this calendar invite?",
     outputs=["decision: bool"],
+    submit_label="Accept",
+    cancel_label="Decline",
 )
 def approve_or_decline(invite_text: str): pass
 
