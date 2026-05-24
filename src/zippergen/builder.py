@@ -642,9 +642,12 @@ def _workflow_output(fn: Callable) -> ZType:
 
     For single-output workflows use the concrete type (str, int, …).
     For multi-output workflows use ``tuple`` as the return annotation.
+    Omit the annotation (or use -> None) for non-terminating workflows.
     """
     ret = fn.__annotations__.get("return")
-    if ret is None or not is_ztype(ret):
+    if ret is None or ret is type(None):
+        return type(None)   # non-terminating / no output
+    if not is_ztype(ret):
         raise TypeError(
             f"@workflow '{fn.__name__}': return annotation must be a supported "
             f"coordination type (e.g. -> str) or tuple for multi-output."

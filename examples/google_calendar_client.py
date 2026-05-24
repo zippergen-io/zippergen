@@ -176,6 +176,71 @@ def fetch_one_invite() -> InviteMeta | None:
     return None
 
 
+def count_upcoming_meetings(window_minutes: int = 30) -> int:
+    """Return number of accepted meetings starting within the next window_minutes."""
+    service = _get_service()
+    now = datetime.now(timezone.utc)
+    soon = now + timedelta(minutes=window_minutes)
+    result = service.events().list(
+        calendarId="primary",
+        timeMin=now.isoformat(),
+        timeMax=soon.isoformat(),
+        singleEvents=True,
+        orderBy="startTime",
+    ).execute()
+    count = 0
+    for event in result.get("items", []):
+        attendees = event.get("attendees", [])
+        if not attendees:
+            count += 1  # events with no attendees list are implicitly accepted
+            continue
+        for att in attendees:
+            if att.get("self") and att.get("responseStatus") in ("accepted", "tentative"):
+                count += 1
+                break
+    return count
+
+
+def fetch_next_meeting(window_minutes: int = 30) -> InviteMeta | None:
+    """Return the next accepted meeting starting within window_minutes, or None."""
+    service = _get_service()
+    now = datetime.now(timezone.utc)
+    soon = now + timedelta(minutes=window_minutes)
+    result = service.events().list(
+        calendarId="primary",
+        timeMin=now.isoformat(),
+        timeMax=soon.isoformat(),
+        singleEvents=True,
+        orderBy="startTime",
+    ).execute()
+    for event in result.get("items", []):
+        attendees = event.get("attendees", [])
+        accepted = not attendees or any(
+            att.get("self") and att.get("responseStatus") in ("accepted", "tentative")
+            for att in attendees
+        )
+        if not accepted:
+            continue
+        start = event.get("start", {})
+        end   = event.get("end",   {})
+        all_attendees = [
+            att.get("email", "") for att in attendees if not att.get("self")
+        ]
+        return InviteMeta(
+            id=event["id"],
+            summary=event.get("summary", "(no title)"),
+            start=_fmt_dt(start.get("dateTime"), start.get("date")),
+            end=_fmt_dt(end.get("dateTime"), end.get("date")),
+            organizer=event.get("organizer", {}).get("email", "unknown"),
+            description=(
+                ("Attendees: " + ", ".join(all_attendees) if all_attendees else "")
+                + ("\n\n" + event.get("description", "").strip()[:400]
+                   if event.get("description") else "")
+            ).strip(),
+        )
+    return None
+
+
 def accept_event(event_id: str) -> None:
     """Set the authenticated user's RSVP to accepted and notify organizer."""
     service = _get_service()
