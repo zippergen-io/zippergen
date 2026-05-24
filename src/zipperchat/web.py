@@ -527,18 +527,25 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); font
 .ctx-hint      { font-style: italic; color: var(--text-mute); }
 .ins-ctx-mono  { font-family: var(--mono); font-size: 13px; }
 
-/* Email artifact bubble */
-.ins-email-bubble {
-  white-space: pre-wrap; word-break: break-word; color: var(--text-soft);
-  background: rgba(20,18,12,0.035); border-radius: 6px; padding: 20px 18px;
-  font-size: 14px; line-height: 1.6;
-}
-.ins-email-subj {
+/* Email artifacts — read (filled) and write (outlined) */
+.ea { border-radius: 6px; padding: 20px 18px; }
+.ea-read { background: rgba(20,18,12,0.035); white-space: pre-wrap; word-break: break-word; }
+.ea-write { border: 1px solid rgba(20,20,40,0.13); transition: border-color .15s; }
+.ea-write:focus-within { border-color: var(--accent); }
+.ea-subj {
   font-family: var(--sans); font-size: 18px; font-weight: 500;
-  color: var(--text); line-height: 1.3; margin-bottom: 10px; white-space: normal;
+  color: var(--text); line-height: 1.3; margin-bottom: 4px; white-space: normal;
 }
-.ins-email-rule { border: none; border-top: 1px solid rgba(20,18,12,0.1); margin: 10px 0 12px; }
-.ins-email-from { font-size: 13px; color: var(--text-mute); margin: 4px 0 0; }
+.ea-hdr   { font-size: 13px; color: var(--text-mute); }
+.ea-instr { font-size: 13px; color: var(--text-mute); font-style: italic; }
+.ea-rule  { border: none; border-top: 1px solid rgba(20,18,12,0.1); margin: 10px 0 12px; }
+.ea-body  { font-size: 14px; line-height: 1.6; color: var(--text-soft); }
+.ea-ta {
+  width: 100%; font-family: var(--sans); font-size: 15px; line-height: 1.6;
+  padding: 0; border: none; background: transparent; color: var(--text);
+  resize: none; min-height: 160px; field-sizing: content; outline: none;
+}
+.ea-ta::placeholder { color: var(--text-faint); font-style: italic; }
 
 /* Resolved */
 .ins-resolved-val { color: var(--done-clr); font-style: italic; }
@@ -841,21 +848,20 @@ function parseEmailMeta(text){
 function renderEmailCtx(text){
   const meta=parseEmailMeta(text);
   if(!meta) return '<div class="ins-ctx">'+renderCtxHtml(text)+'</div>';
-  // Extract display name and address from "Name <email@...>"
   const fromAddrM=meta.from?(meta.from.match(/<([^>]+)>/)||null):null;
   const fromAddr=fromAddrM?fromAddrM[1]:null;
   const fromName=meta.from?(meta.from.replace(/\s*<[^>]*>/,'').trim()||meta.from):null;
-  let inner='';
-  if(meta.subject) inner+='<div class="ins-email-subj">'+esc(meta.subject)+'</div>';
+  let h='<div class="ea ea-read">';
+  if(meta.subject) h+='<div class="ea-subj">'+esc(meta.subject)+'</div>';
   if(fromName){
     const nameSpan=fromAddr
       ?'<span title="'+esc(fromAddr)+'" style="cursor:default">'+esc(fromName)+'</span>'
       :esc(fromName);
-    inner+='<div class="ins-email-from"><span style="color:var(--text-faint)">From</span> '+nameSpan+'</div>';
+    h+='<div class="ea-hdr"><span style="color:var(--text-faint)">From</span> '+nameSpan+'</div>';
   }
-  inner+='<hr class="ins-email-rule">';
-  inner+=esc(meta.body||'');
-  return '<div class="ins-email-bubble">'+inner+'</div>';
+  h+='<hr class="ea-rule"><div class="ea-body">'+esc(meta.body||'')+'</div>';
+  h+='</div>';
+  return h;
 }
 
 function extractPromptParts(prompt, isBool){
@@ -896,9 +902,20 @@ function renderPendingForm(req, parts){
       +'<button class="btn-secondary" disabled>Decline</button>'
       +'<span class="ins-hint">⌘↩ to approve</span></div>';
     if(parts.body){
+      const emailMeta=parseEmailMeta(parts.body);
+      const toName=emailMeta&&emailMeta.from
+        ?(emailMeta.from.replace(/\s*<[^>]*>/,'').trim()||emailMeta.from)
+        :null;
+      const toFirst=toName?toName.split(/\s/)[0]:null;
+      const toHdr=toFirst
+        ?'<div class="ea-instr">Reply to '+esc(toFirst)+'</div><hr class="ea-rule">'
+        :'';
       h+='<div class="ins-split">'
         +'<div>'+renderEmailCtx(parts.body)+'</div>'
-        +'<div class="ins-split-work"><textarea class="ins-ta">'+taVal+'</textarea>'+actHtml+'</div>'
+        +'<div class="ins-split-work">'
+        +'<div class="ea ea-write">'+toHdr+'<textarea class="ea-ta">'+taVal+'</textarea></div>'
+        +actHtml
+        +'</div>'
         +'</div>';
     } else {
       const taHtml='<div class="'+taLabelCls+'">'+esc(taLabel)+'</div>'
@@ -955,7 +972,7 @@ function wireInputs(req_id,req){
     setTimeout(function(){ btns.forEach(function(b){ b.disabled=false; }); },600);
     btns.forEach(function(b){ b.onclick=function(){ doSubmit(req_id,b.dataset.val); }; });
   } else {
-    const ta=insBody.querySelector('.ins-ta'),btn=insBody.querySelector('.btn-approve');
+    const ta=insBody.querySelector('.ea-ta,.ins-ta'),btn=insBody.querySelector('.btn-approve');
     const dec=insBody.querySelector('.btn-secondary');
     setTimeout(function(){ btn.disabled=false; if(dec) dec.disabled=false; },800);
     setTimeout(function(){ ta.focus({preventScroll:true}); },900);
