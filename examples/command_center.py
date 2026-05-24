@@ -52,6 +52,7 @@ Researcher = Lifeline("Researcher")
 User       = Lifeline("User")
 Mailbox    = Lifeline("Mailbox")
 Calendar   = Lifeline("Calendar")
+Notifier   = Lifeline("Notifier")
 
 # ---------------------------------------------------------------------------
 # Variables
@@ -81,9 +82,11 @@ cal_status       = Var("cal_status",       str)
 sched_context    = Var("sched_context",    str)  # Calendar-local; updated by scheduling_reply
 
 # Event creation (scheduling_reply branch, Calendar lifeline)
-today         = Var("today",         str)
-event_details = Var("event_details", str)
-sched_event   = Var("sched_event",   str)
+today            = Var("today",            str)
+event_details    = Var("event_details",    str)
+sched_event      = Var("sched_event",      str)
+event_summary    = Var("event_summary",    str)
+ack              = Var("ack",              bool)
 
 # Each branch owns its own summary — no shared variable across branches
 email_summary    = Var("email_summary",    str)
@@ -269,6 +272,27 @@ def todays_date() -> str:
     outputs=(("event_details", str),),
 )
 def extract_event_details(today: str, email: str, choice: str) -> None: ...
+
+
+@pure
+def format_event_confirmation(event_details: str) -> str:
+    import json, re
+    text = re.sub(r"^```[a-z]*\n?", "", event_details.strip(), flags=re.MULTILINE)
+    text = text.replace("```", "").strip()
+    try:
+        d = json.loads(text)
+    except Exception:
+        return "Calendar event created."
+    title = d.get("title", "Meeting")
+    start = d.get("start", "")
+    # Format ISO datetime → readable e.g. "Monday 25 May at 10:00"
+    try:
+        from datetime import datetime
+        dt = datetime.fromisoformat(start)
+        start_fmt = dt.strftime("%A %-d %B at %H:%M")
+    except Exception:
+        start_fmt = start
+    return f"{title} — {start_fmt}" if start_fmt else title
 
 
 @pure
@@ -459,6 +483,16 @@ def choose_from_proposed_slots(email: str, availability: str): pass
 def approve_or_decline(invite_text: str): pass
 
 
+@human(
+    kind="ack",
+    context="{event_summary}",
+    instruction="Calendar event created.",
+    outputs=["ack: bool"],
+    submit_label="Noted",
+)
+def acknowledge_event_created(event_summary: str): pass
+
+
 # ---------------------------------------------------------------------------
 # Workflow
 # ---------------------------------------------------------------------------
@@ -521,6 +555,9 @@ def command_center() -> str:
                     Calendar: today = todays_date()
                     Calendar: event_details = extract_event_details(today, email, choice)
                     Calendar: sched_event = create_scheduled_event(event_details)
+                    Calendar: event_summary = format_event_confirmation(event_details)
+                    Calendar(event_summary) >> Notifier(event_summary)
+                    Notifier: ack = acknowledge_event_created(event_summary)
 
                 else:
                     Dispatcher(email) >> Writer(email)

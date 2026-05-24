@@ -105,6 +105,30 @@ def test_human_decorator_select():
     assert choose_action.output_type is str
     assert choose_action.prefill == "approve\nreject\nescalate"
 
+def test_human_decorator_ack():
+    from zippergen.actions import human
+
+    @human(kind="ack", context="{event}", instruction="Event created.",
+           outputs=["ack: bool"], submit_label="Noted")
+    def acknowledge(event: str): pass
+
+    assert acknowledge.output == "ack"
+    assert acknowledge.output_type is bool
+    assert acknowledge.kind == "ack"
+    assert acknowledge.submit_label == "Noted"
+    assert acknowledge.cancel_label is None
+
+def test_human_decorator_input():
+    from zippergen.actions import human
+
+    @human(kind="input", instruction="Any additional notes?",
+           outputs=["notes: str"])
+    def add_notes(): pass
+
+    assert add_notes.output == "notes"
+    assert add_notes.output_type is str
+    assert add_notes.kind == "input"
+
 def test_human_decorator_bad_placeholder():
     from zippergen.actions import human
 
@@ -119,6 +143,13 @@ def test_human_decorator_confirm_requires_bool():
     with pytest.raises(TypeError, match="bool"):
         @human(kind="confirm", outputs=["decision: str"])
         def bad_confirm(plan: str): pass
+
+def test_human_decorator_ack_requires_bool():
+    from zippergen.actions import human
+
+    with pytest.raises(TypeError, match="bool"):
+        @human(kind="ack", outputs=["ack: str"])
+        def bad_ack(): pass
 
 def test_human_decorator_edit_requires_str():
     from zippergen.actions import human
@@ -172,6 +203,16 @@ def _make_select(name="ask"):
         prefill="approve\nreject\nescalate",
     )
 
+def _make_ack(name="ask"):
+    return HumanAction(
+        name=name,
+        inputs=(("event", str),),
+        output="result",
+        output_type=bool,
+        kind="ack",
+        instruction="Event created.",
+    )
+
 
 def test_cli_backend_confirm_yes():
     backend = make_cli_human_backend()
@@ -211,6 +252,14 @@ def test_cli_backend_select():
     with patch("builtins.input", side_effect=["99", "2"]):
         result = backend(action, {"plan": "do something"})
     assert result == {"result": "reject"}
+
+
+def test_cli_backend_ack():
+    backend = make_cli_human_backend()
+    action = _make_ack()
+    with patch("builtins.input", return_value=""):
+        result = backend(action, {"event": "Meeting at 10am"})
+    assert result == {"result": True}
 
 
 # Runtime integration tests

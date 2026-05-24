@@ -15,8 +15,10 @@ def make_cli_human_backend():
     Return a human backend that blocks on stdin.
 
     - confirm: prompts [y/n], loops until valid, returns True/False.
+    - ack: shows notification, press Enter to acknowledge, returns True.
     - edit: shows pre-filled text, reads one line (empty = keep prefill).
-    - options: prints numbered list, loops until valid selection.
+    - select: prints numbered list, loops until valid selection.
+    - input: free-form text input.
     """
     def backend(action, inputs: dict) -> dict:
         from zippergen.syntax import HumanAction
@@ -44,6 +46,10 @@ def make_cli_human_backend():
                     break
                 print("Please enter 'y' or 'n'.")
 
+        elif action.kind == "ack":
+            input(f"{display} [press Enter to acknowledge]")
+            value = True
+
         elif action.kind == "select":
             options = [o.strip() for o in (prefill_text or "").split("\n") if o.strip()]
             if options:
@@ -61,13 +67,16 @@ def make_cli_human_backend():
             else:
                 value = input(f"{display}: ").strip()
 
-        else:  # edit
+        elif action.kind == "edit":
             if prefill_text:
                 print(f"{display}\n[Current: {prefill_text!r}]")
                 raw = input("Edit (empty to keep): ").strip()
                 value = raw if raw else prefill_text
             else:
                 value = input(f"{display}: ").strip()
+
+        else:  # input
+            value = input(f"{display}: ").strip()
 
         return {action.output: value}
 

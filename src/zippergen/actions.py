@@ -263,11 +263,14 @@ def human(
     Parameters
     ----------
     kind : str
-        Interaction shape: ``"confirm"`` (yes/no buttons), ``"edit"`` (edit
-        pre-filled text), ``"select"`` (choose from a list).
+        Interaction shape: ``"confirm"`` (yes/no), ``"ack"`` (acknowledge a
+        completed event — single button, no cancel), ``"edit"`` (edit
+        pre-filled text), ``"select"`` (choose from a list), ``"input"``
+        (free-form text).
     outputs : list of str
         Single-element list with ``"name: type"`` spec, e.g. ``["approved: bool"]``.
-        ``confirm`` requires ``bool``; ``edit`` and ``select`` require ``str``.
+        ``confirm`` and ``ack`` require ``bool``; ``edit``, ``select``, and
+        ``input`` require ``str``.
     context : str, optional
         Template for the left-column context panel.  Use ``{var_name}``
         placeholders to embed input variable values; literal text is shown
@@ -285,7 +288,7 @@ def human(
     cancel_label : str, optional
         Label for the secondary (decline/cancel) button.
     """
-    _valid_kinds = {"confirm", "edit", "select"}
+    _valid_kinds = {"confirm", "edit", "select", "input", "ack"}
 
     def decorator(fn: Callable) -> HumanAction:
         fn_name = fn.__name__
@@ -305,12 +308,12 @@ def human(
             )
         output_name, output_type = _parse_human_output(outputs[0], fn_name)
 
-        if kind == "confirm" and output_type is not bool:
+        if kind in ("confirm", "ack") and output_type is not bool:
             raise TypeError(
-                f"@human '{fn_name}': kind='confirm' requires a bool output, "
+                f"@human '{fn_name}': kind='{kind}' requires a bool output, "
                 f"got '{output_type.__name__}'"
             )
-        if kind in ("edit", "select") and output_type is not str:
+        if kind in ("edit", "select", "input") and output_type is not str:
             raise TypeError(
                 f"@human '{fn_name}': kind='{kind}' requires a str output, "
                 f"got '{output_type.__name__}'"

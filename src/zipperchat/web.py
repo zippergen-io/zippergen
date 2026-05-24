@@ -788,8 +788,8 @@ function renderInspector(){
 
   const title=isHuman?(req&&req.instruction?req.instruction:a.name):a.name;
   const isEmailCtx=hp&&req&&req.context&&parseEmailMeta(req.context)!==null;
-  // show title for: non-human, done human, or confirm (instruction is the question)
-  const showTitle=!isHuman||hd||(hp&&req&&req.kind==='confirm');
+  // show title for: non-human, done human, confirm (question), or ack (notification)
+  const showTitle=!isHuman||hd||(hp&&req&&(req.kind==='confirm'||req.kind==='ack'));
   let html='<div class="ins-meta">'
     +'<span class="ins-meta-ll">'+esc(a.lifeline)+'</span>'
     +'<span class="ins-meta-dot">&middot;</span>'
@@ -853,12 +853,15 @@ function renderEmailCtx(text){
 }
 
 function renderPendingForm(req){
-  const submitLabel=req.submit_label||(req.kind==='confirm'?'Accept':'Approve & send →');
+  const submitLabel=req.submit_label||(req.kind==='confirm'?'Accept':req.kind==='ack'?'Noted':'Approve & send →');
   const cancelLabel=req.cancel_label||'Decline';
   const instruction=req.instruction||'';
   const taVal=esc(req.prefill||'');
   let h='';
-  if(req.kind==='confirm'){
+  if(req.kind==='ack'){
+    if(req.context) h+='<div class="ins-section">'+renderEmailCtx(req.context)+'</div>';
+    h+='<div class="ins-actions"><button class="btn-approve" disabled>'+esc(submitLabel)+'</button></div>';
+  } else if(req.kind==='confirm'){
     if(req.context) h+='<div class="ins-section">'+renderEmailCtx(req.context)+'</div>';
     h+='<div class="ins-actions"><button class="btn-approve" disabled>'+esc(submitLabel)+'</button>'
       +'<button class="btn-secondary" disabled>'+esc(cancelLabel)+'</button></div>';
@@ -922,11 +925,16 @@ function renderDoneSection(a){
 // Wire inputs
 let _cmdHandler=null;
 function wireInputs(req_id,req){
-  if(req.kind==='confirm'){
+  if(_cmdHandler){ document.removeEventListener('keydown',_cmdHandler); _cmdHandler=null; }
+  if(req.kind==='ack'||req.kind==='confirm'){
     const yes=insBody.querySelector('.btn-approve'),no=insBody.querySelector('.btn-secondary');
     setTimeout(function(){ yes.disabled=false; if(no) no.disabled=false; },600);
     yes.onclick=function(){ doSubmit(req_id,'true'); };
     if(no) no.onclick=function(){ doSubmit(req_id,'false'); };
+    _cmdHandler=function(e){
+      if((e.metaKey||e.ctrlKey)&&e.key==='Enter'&&!yes.disabled){ e.preventDefault(); doSubmit(req_id,'true'); }
+    };
+    document.addEventListener('keydown',_cmdHandler);
   } else {
     const ta=insBody.querySelector('.ea-ta,.ins-ta'),btn=insBody.querySelector('.btn-approve');
     const dec=insBody.querySelector('.btn-secondary');
@@ -934,7 +942,6 @@ function wireInputs(req_id,req){
     setTimeout(function(){ ta.focus({preventScroll:true}); },900);
     btn.onclick=function(){ doSubmit(req_id,ta.value); };
     if(dec) dec.onclick=function(){ const r=reqMap.get(req_id); if(r) r.declined=true; doSubmit(req_id,''); };
-    if(_cmdHandler) document.removeEventListener('keydown',_cmdHandler);
     _cmdHandler=function(e){
       if((e.metaKey||e.ctrlKey)&&e.key==='Enter'&&!btn.disabled){ e.preventDefault(); doSubmit(req_id,ta.value); }
     };
@@ -990,7 +997,11 @@ function handleHumanRequired(e){
   for(let i=llKeys.length-1;i>=0;i--){
     const k=llKeys[i],a=byKey[k];
     if(a&&a.kind==='human'&&a.status==='pending'&&!a.reqId){
-      a.reqId=e.id; matchedKey=k; updateRow(k); selectAction(k); break;
+      a.reqId=e.id; matchedKey=k; updateRow(k);
+      // Only jump to the new action if we're not already looking at a pending human action
+      const curReq=selectedId&&byKey[selectedId]&&byKey[selectedId].reqId?reqMap.get(byKey[selectedId].reqId):null;
+      if(!curReq||curReq.resolved) selectAction(k);
+      break;
     }
   }
   if(matchedKey) updateInboxRow(matchedKey);
@@ -1002,7 +1013,9 @@ function handleHumanInput(e){
   pending=Math.max(0,pending-1); refreshCount();
   Object.keys(byKey).forEach(function(k){ if(byKey[k].reqId===e.id){ updateRow(k); updateInboxRow(k); } });
   if(selectedId&&byKey[selectedId]&&byKey[selectedId].reqId===e.id) renderInspector();
-  for(const [id,r] of reqMap){
+  const entries=[...reqMap];
+  for(let i=entries.length-1;i>=0;i--){
+    const [id,r]=entries[i];
     if(!r.resolved){
       setTimeout(function(){
         Object.keys(byKey).forEach(function(k){ if(byKey[k].reqId===id){ selectAction(k); } });
