@@ -16,9 +16,9 @@ drafts and Chat replies; User is the human-in-the-loop for both streams.
 
 Modes
 -----
---mock   Fake inbox + chat messages, mock LLM responses.
---live   Email and Chat streams connect to real services (Gmail, Calendar,
-         Tasks, Telegram).  One-time setup per service:
+--mock    Fake inbox + chat messages, mock LLM responses.
+--openai  Live services + OpenAI (reads OPENAI_API_KEY and OPENAI_MODEL).
+--live    Live services + local Ollama model.  One-time setup per service:
            python examples/gmail_client.py --setup
            python examples/google_calendar_client.py --setup
            python examples/google_tasks_client.py --setup
@@ -1064,6 +1064,32 @@ if __name__ == "__main__":
 
     if "--mock" in sys.argv:
         command_center.configure(llms="mock", ui=True, timeout=3600)
+
+    elif "--openai" in sys.argv:
+        import importlib.util
+        import os
+        from pathlib import Path
+
+        def _load(name: str):
+            spec = importlib.util.spec_from_file_location(
+                name, Path(__file__).parent / f"{name}.py"
+            )
+            assert spec and spec.loader, f"Could not load {name}.py"
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)  # type: ignore[union-attr]
+            return mod
+
+        _gmail   = _load("gmail_client")
+        _gcal    = _load("google_calendar_client")
+        _gchat   = _load("telegram_client")
+        _gtasks  = _load("google_tasks_client")
+        api_key = os.environ.get("OPENAI_API_KEY", "")
+        if not api_key:
+            raise RuntimeError("OPENAI_API_KEY is not set.")
+        model = os.environ.get("OPENAI_MODEL", "gpt-4o")
+        print(f"Using OpenAI model: {model}")
+        backend = make_openai_backend(api_key=api_key, model=model, max_tokens=1024)
+        command_center.configure(backend=backend, ui=True, timeout=3600)
 
     elif "--live" in sys.argv:
         import importlib.util

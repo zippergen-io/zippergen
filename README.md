@@ -19,7 +19,7 @@ ZipperGen separates **what agents do** (LLM calls, tool use, human input) from *
 
 Each participant is called a **lifeline**, which is the standard term from Message Sequence Charts (MSCs), the formalism ZipperGen is based on. In practice a lifeline is simply an agent: one sequential thread of execution that sends and receives messages.
 
-ZipperChat visualizes a run as a message sequence chart, including actions, messages, decisions, and human control points.
+ZipperChat streams the execution live as a per-lifeline event feed: actions, messages, decisions, and human control points appear as cards as they happen.
 
 ![ZipperChat screenshot](assets/zipperchat-screenshot.png)
 
@@ -250,7 +250,7 @@ python examples/nested_dashboard.py   # dashboard runs with nested subworkflows
 python examples/write_tweet_local.py  # hello-world through a local OpenAI-compatible server
 ```
 
-Open **http://localhost:8765** to watch the agents exchange messages in real time as a message sequence chart.
+Open **http://localhost:8765** to watch the agents exchange messages in real time.
 
 For applications that call several workflows from ordinary Python code, ZipperChat can show multiple independent runs on the same page:
 
