@@ -201,7 +201,7 @@ def planner(
 # @pure decorator
 # ---------------------------------------------------------------------------
 
-def pure(fn: Callable) -> PureAction:
+def pure(fn: Callable | None = None, *, visible: bool = True):
     """
     Decorator that produces a PureAction node.
 
@@ -209,17 +209,27 @@ def pure(fn: Callable) -> PureAction:
         def check_agreement(v1: bool, v2: bool) -> bool:
             return v1 == v2
 
+    Pass ``visible=False`` to suppress ZipperChat trace events:
+
+        @pure(visible=False)
+        def wait_briefly() -> str: ...
+
     The output name is taken from the function name and its type from the
     return annotation.
     """
-    inputs = _extract_inputs(fn)
-    outputs = _single_output_from_return(fn)
-    return PureAction(
-        name=fn.__name__,
-        inputs=inputs,
-        outputs=outputs,
-        fn=fn,
-    )
+    def decorator(fn: Callable) -> PureAction:
+        inputs = _extract_inputs(fn)
+        outputs = _single_output_from_return(fn)
+        return PureAction(
+            name=fn.__name__,
+            inputs=inputs,
+            outputs=outputs,
+            fn=fn,
+            visible=visible,
+        )
+    if fn is not None:
+        return decorator(fn)
+    return decorator
 
 
 # ---------------------------------------------------------------------------

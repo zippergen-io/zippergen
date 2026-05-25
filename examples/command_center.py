@@ -1,4 +1,4 @@
-# pyright: reportInvalidTypeForm=false, reportGeneralTypeIssues=false, reportOperatorIssue=false, reportCallIssue=false, reportAttributeAccessIssue=false, reportUnusedExpression=false, reportUnboundVariable=false, reportReturnType=false
+# pyright: reportInvalidTypeForm=false, reportGeneralTypeIssues=false, reportOperatorIssue=false, reportCallIssue=false, reportAttributeAccessIssue=false, reportUnusedExpression=false, reportUnboundVariable=false, reportReturnType=false, reportArgumentType=false
 
 """Personal command center: three parallel streams sharing lifelines.
 
@@ -25,7 +25,7 @@ Modes
            # Telegram: message @BotFather → /newbot → set ZIPPERGEN_TELEGRAM_TOKEN
 """
 
-from zippergen import Lifeline, Var, branch, llm, parallel, pure, workflow
+from zippergen import Lifeline, Var, branch, fragment, llm, parallel, pure, workflow
 from zippergen.actions import human
 from zippergen.backends import make_openai_backend
 
@@ -185,7 +185,7 @@ def create_draft(email: str, reply: str) -> str:
     return "draft_created"
 
 
-@pure
+@pure(visible=False)
 def wait_briefly() -> str:
     import time
     time.sleep(2)
@@ -233,7 +233,11 @@ def skip_cancellation() -> str:
 @pure
 def add_task(task_title: str, task_notes: str) -> str:
     if _gtasks is not None:
-        return _gtasks.create_task(task_title, task_notes)  # type: ignore[union-attr]
+        try:
+            return _gtasks.create_task(task_title, task_notes)  # type: ignore[union-attr]
+        except Exception as exc:
+            print(f"[Tasks] Error creating task: {exc}")
+            return f"error: {exc}"
     print(f"[Tasks] Mock: would create '{task_title}'")
     return "task_created_mock"
 
@@ -742,6 +746,83 @@ def approve_or_edit_chat(chat_msg: str, chat_draft: str): pass
 
 
 # ---------------------------------------------------------------------------
+# Fragments — reusable coordination sub-sequences
+# ---------------------------------------------------------------------------
+
+@fragment
+def approve_email_reply(email, reply):
+    Writer(email, reply) >> User(email, reply)
+    User: edit = approve_or_edit(email, reply)
+    User: reply = accept_edit(edit, reply)
+    User(email, reply) >> Mailbox(email, reply)
+    Mailbox: mail_status = create_draft(email, reply)
+
+
+@fragment
+def approve_chat_reply(chat_msg, chat_draft):
+    Writer(chat_msg, chat_draft) >> User(chat_msg, chat_draft)
+    User: chat_edit = approve_or_edit_chat(chat_msg, chat_draft)
+    User: chat_reply = accept_edit(chat_edit, chat_draft)
+    User(chat_msg, chat_reply) >> Chat(chat_msg, chat_reply)
+    Chat: chat_status = send_chat_reply(chat_msg, chat_reply)
+
+
+@fragment
+def create_calendar_event(source_msg, choice):
+    Calendar: today = todays_date()
+    Calendar: event_details = extract_event_details(today, source_msg, choice)
+    Calendar: sched_event = create_scheduled_event(event_details)
+    Calendar: event_summary = format_event_confirmation(event_details)
+    Calendar(event_summary) >> User(event_summary)
+    User: ack = acknowledge_event_created(event_summary)
+
+
+@fragment
+def task_branch(email):
+    Dispatcher(email) >> Writer(email)
+    Writer: (task_title, task_notes) = extract_task(email)
+    Writer(email, task_title, task_notes) >> User(email, task_title, task_notes)
+    User: task_edit = confirm_task(email, task_title, task_notes)
+    User: task_title = accept_edit(task_edit, task_title)
+    User(task_title, task_notes) >> TasksTool(task_title, task_notes)
+    TasksTool: task_status = add_task(task_title, task_notes)
+
+
+@fragment
+def cancellation_branch(email):
+    Dispatcher(email) >> Calendar(email)
+    Calendar: cancel_query = extract_cancel_query(email)
+    Calendar: cancel_matches = find_matching_events(cancel_query)
+    Calendar(email, cancel_matches) >> User(email, cancel_matches)
+    User: cancel_confirm = confirm_cancellation(cancel_matches)
+    if cancel_confirm @ User:
+        Calendar: cancel_status = do_delete_event(cancel_matches)
+        Calendar(email, cancel_status) >> Writer(email, cancel_status)
+    else:
+        User: cancel_status = skip_cancellation()
+        User(email, cancel_status) >> Writer(email, cancel_status)
+    Writer: draft = write_cancellation_reply(email, cancel_status)
+    approve_email_reply(email, draft)
+
+
+@fragment
+def cancellation_chat_branch(chat_msg):
+    Writer(chat_msg) >> Calendar(chat_msg)
+    Calendar: cancel_query = extract_cancel_query(chat_msg)
+    Calendar: cancel_matches = find_matching_events(cancel_query)
+    Calendar(chat_msg, cancel_matches) >> User(chat_msg, cancel_matches)
+    User: cancel_confirm = confirm_cancellation(cancel_matches)
+    if cancel_confirm @ User:
+        Calendar: cancel_status = do_delete_event(cancel_matches)
+        Calendar(chat_msg, cancel_status) >> Writer(chat_msg, cancel_status)
+    else:
+        User: cancel_status = skip_cancellation()
+        User(chat_msg, cancel_status) >> Writer(chat_msg, cancel_status)
+    Writer: chat_draft = write_cancellation_reply(chat_msg, cancel_status)
+    approve_chat_reply(chat_msg, chat_draft)
+
+
+# ---------------------------------------------------------------------------
 # Workflow
 # ---------------------------------------------------------------------------
 
@@ -765,11 +846,7 @@ def command_center():
                     elif (route == "quick_reply") @ Dispatcher:
                         Dispatcher(email) >> Writer(email)
                         Writer: draft = write_draft(email)
-                        Writer(email, draft) >> User(email, draft)
-                        User: edit = approve_or_edit(email, draft)
-                        User: reply = accept_edit(edit, draft)
-                        User(email, reply) >> Mailbox(email, reply)
-                        Mailbox: mail_status = create_draft(email, reply)
+                        approve_email_reply(email, draft)
 
                     elif (route == "scheduling_reply") @ Dispatcher:
                         # Calendar classifies the request and checks or proposes slots.
@@ -790,51 +867,18 @@ def command_center():
                         User(email, choice) >> Writer(email, choice)
                         Writer: reply = write_scheduling_reply(email, choice)
 
-                        Writer(email, reply) >> User(email, reply)
-                        User: edit = approve_or_edit(email, reply)
-                        User: reply = accept_edit(edit, reply)
+                        approve_email_reply(email, reply)
 
-                        User(email, reply) >> Mailbox(email, reply)
-                        Mailbox: mail_status = create_draft(email, reply)
-
-                        # Cross-stream: approved scheduling reply sent to Calendar.
-                        # Calendar appends context and creates the calendar event.
+                        # Cross-stream: Calendar appends context and creates the calendar event.
                         User(email, choice, reply) >> Calendar(email, choice, reply)
                         Calendar: sched_context = remember_scheduling_reply(email, reply, sched_context)
-                        Calendar: today = todays_date()
-                        Calendar: event_details = extract_event_details(today, email, choice)
-                        Calendar: sched_event = create_scheduled_event(event_details)
-                        Calendar: event_summary = format_event_confirmation(event_details)
-                        Calendar(event_summary) >> User(event_summary)
-                        User: ack = acknowledge_event_created(event_summary)
+                        create_calendar_event(email, choice)
 
                     elif (route == "cancellation") @ Dispatcher:
-                        Dispatcher(email) >> Calendar(email)
-                        Calendar: cancel_query = extract_cancel_query(email)
-                        Calendar: cancel_matches = find_matching_events(cancel_query)
-                        Calendar(email, cancel_matches) >> User(email, cancel_matches)
-                        User: cancel_confirm = confirm_cancellation(cancel_matches)
-                        if cancel_confirm @ User:
-                            Calendar: cancel_status = do_delete_event(cancel_matches)
-                            Calendar(email, cancel_status) >> Writer(email, cancel_status)
-                        else:
-                            User: cancel_status = skip_cancellation()
-                            User(email, cancel_status) >> Writer(email, cancel_status)
-                        Writer: draft = write_cancellation_reply(email, cancel_status)
-                        Writer(email, draft) >> User(email, draft)
-                        User: edit = approve_or_edit(email, draft)
-                        User: reply = accept_edit(edit, draft)
-                        User(email, reply) >> Mailbox(email, reply)
-                        Mailbox: mail_status = create_draft(email, reply)
+                        cancellation_branch(email)
 
                     elif (route == "task") @ Dispatcher:
-                        Dispatcher(email) >> Writer(email)
-                        Writer: (task_title, task_notes) = extract_task(email)
-                        Writer(email, task_title, task_notes) >> User(email, task_title, task_notes)
-                        User: task_edit = confirm_task(email, task_title, task_notes)
-                        User: task_title = accept_edit(task_edit, task_title)
-                        User(task_title, task_notes) >> TasksTool(task_title, task_notes)
-                        TasksTool: task_status = add_task(task_title, task_notes)
+                        task_branch(email)
 
                     else:
                         Dispatcher(email) >> Writer(email)
@@ -848,11 +892,7 @@ def command_center():
 
                         Researcher(email, context) >> Writer(email, context)
                         Writer: reply = write_reply(email, outline, context)
-                        Writer(email, reply) >> User(email, reply)
-                        User: edit = approve_or_edit(email, reply)
-                        User: reply = accept_edit(edit, reply)
-                        User(email, reply) >> Mailbox(email, reply)
-                        Mailbox: mail_status = create_draft(email, reply)
+                        approve_email_reply(email, reply)
 
                 else:
                     Dispatcher: _ = wait_briefly()
@@ -887,45 +927,17 @@ def command_center():
                         Calendar: chat_slots = propose_available_slots(chat_msg)
                         Calendar(chat_msg, chat_slots) >> Writer(chat_msg, chat_slots)
                         Writer: chat_draft = draft_meeting_reply(chat_msg, chat_slots)
-                        Writer(chat_msg, chat_draft) >> User(chat_msg, chat_draft)
-                        User: chat_edit = approve_or_edit_chat(chat_msg, chat_draft)
-                        User: chat_reply = accept_edit(chat_edit, chat_draft)
-                        User(chat_msg, chat_reply) >> Chat(chat_msg, chat_reply)
-                        Chat: chat_status = send_chat_reply(chat_msg, chat_reply)
-                        # Cross-stream: Calendar creates the event from the approved reply
-                        User(chat_msg, chat_reply) >> Calendar(chat_msg, chat_reply)
-                        Calendar: today = todays_date()
-                        Calendar: event_details = extract_event_details(today, chat_msg, chat_reply)
-                        Calendar: sched_event = create_scheduled_event(event_details)
-                        Calendar: event_summary = format_event_confirmation(event_details)
-                        Calendar(event_summary) >> User(event_summary)
-                        User: ack = acknowledge_event_created(event_summary)
+                        approve_chat_reply(chat_msg, chat_draft)
+                        # Cross-stream: Calendar creates the event from the proposed slots.
+                        # Calendar already has chat_slots; User signals it to proceed.
+                        User(chat_msg) >> Calendar(chat_msg)
+                        create_calendar_event(chat_msg, chat_slots)
                     elif (chat_route == "cancellation") @ Writer:
-                        Writer(chat_msg) >> Calendar(chat_msg)
-                        Calendar: cancel_query = extract_cancel_query(chat_msg)
-                        Calendar: cancel_matches = find_matching_events(cancel_query)
-                        Calendar(chat_msg, cancel_matches) >> User(chat_msg, cancel_matches)
-                        User: cancel_confirm = confirm_cancellation(cancel_matches)
-                        if cancel_confirm @ User:
-                            Calendar: cancel_status = do_delete_event(cancel_matches)
-                            Calendar(chat_msg, cancel_status) >> Writer(chat_msg, cancel_status)
-                        else:
-                            User: cancel_status = skip_cancellation()
-                            User(chat_msg, cancel_status) >> Writer(chat_msg, cancel_status)
-                        Writer: chat_draft = write_cancellation_reply(chat_msg, cancel_status)
-                        Writer(chat_msg, chat_draft) >> User(chat_msg, chat_draft)
-                        User: chat_edit = approve_or_edit_chat(chat_msg, chat_draft)
-                        User: chat_reply = accept_edit(chat_edit, chat_draft)
-                        User(chat_msg, chat_reply) >> Chat(chat_msg, chat_reply)
-                        Chat: chat_status = send_chat_reply(chat_msg, chat_reply)
+                        cancellation_chat_branch(chat_msg)
 
                     else:
                         Writer: chat_draft = draft_chat_reply(chat_msg)
-                        Writer(chat_msg, chat_draft) >> User(chat_msg, chat_draft)
-                        User: chat_edit = approve_or_edit_chat(chat_msg, chat_draft)
-                        User: chat_reply = accept_edit(chat_edit, chat_draft)
-                        User(chat_msg, chat_reply) >> Chat(chat_msg, chat_reply)
-                        Chat: chat_status = send_chat_reply(chat_msg, chat_reply)
+                        approve_chat_reply(chat_msg, chat_draft)
                 else:
                     Chat: _ = wait_briefly()
 

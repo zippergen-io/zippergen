@@ -25,6 +25,8 @@ from zippergen.syntax import (
 __all__ = [
     # Workflow decorator
     "workflow",
+    # Fragment decorator
+    "fragment",
     # Statement builders
     "msg", "act", "skip", "coregion", "parallel", "branch",
     "if_", "while_",
@@ -716,3 +718,47 @@ def workflow(fn: Callable) -> Workflow:
         outputs=tuple(resolved_outputs),
         ns=fn.__globals__,
     )
+
+
+# ---------------------------------------------------------------------------
+# @fragment decorator
+# ---------------------------------------------------------------------------
+
+def fragment(fn: Callable) -> Callable:
+    """
+    Decorator for reusable coordination sub-sequences.
+
+    Apply the ZipperGen DSL transformation to a helper function.  When called
+    inside a ``@workflow`` body, the fragment's statements are recorded
+    directly into the surrounding scope — identical to writing them inline.
+
+    Parameters are the ``Var`` objects that must already be in scope at the
+    call site; all other ``Var`` objects may be referenced as module globals.
+
+    Example::
+
+        @fragment
+        def task_branch(email):
+            Dispatcher(email) >> Writer(email)
+            Writer: (task_title, task_notes) = extract_task(email)
+            Writer(email, task_title, task_notes) >> User(email, task_title, task_notes)
+            ...
+
+        @workflow
+        def command_center():
+            ...
+            elif (route == "task") @ Dispatcher:
+                task_branch(email)
+    """
+    transformed, _ = _transform_proc_source(fn)
+
+    def wrapper(*args, **kwargs):
+        if not _stack:
+            raise RuntimeError(
+                f"@fragment '{fn.__name__}' must be called inside a @workflow body."
+            )
+        transformed(*args, **kwargs)
+
+    wrapper.__name__ = fn.__name__
+    wrapper.__qualname__ = fn.__qualname__
+    return wrapper

@@ -713,7 +713,8 @@ def _exec(stmt: LocalStmt, env: Env, ch: Channels, ns: dict, llm_backend, human_
                 for (formal, _), expr, val in zip(action.inputs, ins, in_vals)
             }
             seq = _next_act_seq()
-            if trace:
+            _show = not (isinstance(action, PureAction) and not action.visible)
+            if trace and _show:
                 trace({
                     "type": "act_start",
                     "lifeline": threading.current_thread().name,
@@ -745,7 +746,7 @@ def _exec(stmt: LocalStmt, env: Env, ch: Channels, ns: dict, llm_backend, human_
             env.update(out_map)
             if monitor:
                 monitor.on_event("act", env)
-            if trace:
+            if trace and _show:
                 trace({
                     "type": "act",
                     "lifeline": threading.current_thread().name,

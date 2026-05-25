@@ -175,6 +175,7 @@ class PureAction:
     inputs: tuple[tuple[str, ZType], ...]
     outputs: tuple[tuple[str, ZType], ...]
     fn: Callable[..., object]
+    visible: bool = True   # False → skip trace events (no ZipperChat card)
 
     def __repr__(self) -> str:
         ins = ", ".join(f"{n}: {t.__name__}" for n, t in self.inputs)
