@@ -482,9 +482,11 @@ The implementation is based on the theory of Message Sequence Charts. The key pr
 - **Correctness**: The distributed projected programs produce exactly the same behaviors as the global program.
 - **Deadlock-freedom**: Follows by structural induction; no runtime checking required.
 
-The formal proofs are in [our paper](https://arxiv.org/abs/2604.17612). The main theorems (Theorem 3.1 and Corollary 3.1) have been machine-checked in Lean 4; see the [formalization](https://github.com/zippergen-io/paper-isola/tree/main/Lean).
+The main theorems (Theorem 3.1 and Corollary 3.1) have been machine-checked in Lean 4; see the [formalization](https://github.com/zippergen-io/paper-isola/tree/main/Lean).
 
-The causal runtime guards (`At[Lifeline].var`, `Here.var`) are described in a companion paper: Bollig. [*Causal Past Logic for Runtime Verification of Distributed LLM Agent Workflows*](https://arxiv.org/abs/2605.20923). arXiv:2605.20923 [cs.LO].
+Bollig, Függer, Nowak. [*Provable Coordination for LLM Agents via Message Sequence Charts.*](https://arxiv.org/abs/2604.17612) arXiv:2604.17612 [cs.PL]
+
+Bollig. [*Causal Past Logic for Runtime Verification of Distributed LLM Agent Workflows.*](https://arxiv.org/abs/2605.20923) arXiv:2605.20923 [cs.LO]
 
 ## License
 
