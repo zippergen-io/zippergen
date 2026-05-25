@@ -263,11 +263,14 @@ def decline_creation() -> str:
 @pure
 def create_draft_from_instruction(chat_msg: str, reply: str) -> str:
     import re
+    if not reply.strip():
+        return "Draft skipped."
     print(f"[Mailbox] Draft from instruction: {reply[:80]}…")
     if _gmail is not None:
         to_match   = re.search(r'^To:\s*(.+)$',      reply, re.MULTILINE | re.IGNORECASE)
         subj_match = re.search(r'^Subject:\s*(.+)$', reply, re.MULTILINE | re.IGNORECASE)
-        recipient = to_match.group(1).strip()   if to_match   else ""
+        raw_to    = to_match.group(1).strip()   if to_match   else ""
+        recipient = raw_to if "@" in raw_to else ""   # Gmail rejects non-email To headers
         subject   = subj_match.group(1).strip() if subj_match else "Draft from Telegram"
         try:
             draft_id = _gmail.create_draft(recipient, subject, reply)  # type: ignore[union-attr]
@@ -470,6 +473,12 @@ def create_scheduled_event(event_details: str) -> str:
 @pure
 def accept_edit(edit: str, reply: str) -> str:
     return edit.strip() if edit.strip() else reply
+
+
+@pure
+def accept_or_skip(edit: str) -> str:
+    """Returns the edited text, or '' if the user clicked Skip."""
+    return edit.strip()
 
 
 # ---------------------------------------------------------------------------
@@ -686,6 +695,27 @@ def write_cancellation_reply(message: str, cancel_status: str) -> None: ...
 @llm(
     system="""
 You are a professional email assistant.
+Draft a polite meeting cancellation email.
+Format your response as:
+  To: <attendee name or email if identifiable, otherwise leave blank>
+  Subject: Cancellation: <event name>
+
+  <brief, polite notice that the meeting has been cancelled, 1-3 sentences>
+""".strip(),
+    user="""
+Original request: {chat_msg}
+
+Cancellation result: {chat_cancel_status}
+""".strip(),
+    parse="text",
+    outputs=(("draft", str),),
+)
+def write_cancellation_email(chat_msg: str, chat_cancel_status: str) -> None: ...
+
+
+@llm(
+    system="""
+You are a professional email assistant.
 Draft a complete email based on the instruction given.
 Format your response as:
   To: <recipient name or email if mentioned, otherwise leave blank>
@@ -857,6 +887,18 @@ def approve_or_edit_chat(chat_msg: str, chat_draft: str): pass
 
 
 @human(
+    kind="edit",
+    context="{chat_msg}",
+    prefill="{chat_email_draft}",
+    instruction="Edit the email draft or approve as-is",
+    outputs=["chat_email_edit: str"],
+    submit_label="Save draft",
+    cancel_label="Skip",
+)
+def approve_email_draft_from_chat(chat_msg: str, chat_email_draft: str): pass
+
+
+@human(
     kind="confirm",
     context="{chat_event_details}",
     instruction="Create this calendar event?",
@@ -949,11 +991,18 @@ def cancellation_chat_branch(chat_msg):
     if chat_cancel_confirm @ User:
         Calendar: chat_cancel_status = do_delete_event(chat_cancel_matches)
         Calendar(chat_msg, chat_cancel_status) >> Writer(chat_msg, chat_cancel_status)
+        Writer: chat_email_draft = write_cancellation_email(chat_msg, chat_cancel_status)
+        Writer(chat_msg, chat_email_draft) >> User(chat_msg, chat_email_draft)
+        User: chat_email_edit = approve_email_draft_from_chat(chat_msg, chat_email_draft)
+        User: chat_email_reply = accept_or_skip(chat_email_edit)
+        User(chat_msg, chat_email_reply) >> Mailbox(chat_msg, chat_email_reply)
+        Mailbox: chat_mail_status = create_draft_from_instruction(chat_msg, chat_email_reply)
+        Mailbox(chat_mail_status) >> Chat(chat_mail_status)
+        Chat: chat_status = send_chat_reply(chat_msg, chat_mail_status)
     else:
         User: chat_cancel_status = skip_cancellation()
-        User(chat_msg, chat_cancel_status) >> Writer(chat_msg, chat_cancel_status)
-    Writer: chat_draft = write_cancellation_reply(chat_msg, chat_cancel_status)
-    approve_chat_reply(chat_msg, chat_draft)
+        User(chat_msg, chat_cancel_status) >> Chat(chat_msg, chat_cancel_status)
+        Chat: chat_status = send_chat_reply(chat_msg, chat_cancel_status)
 
 
 @fragment
@@ -969,8 +1018,8 @@ def schedule_meeting_from_chat(chat_msg):
         Calendar(chat_msg, chat_event_details) >> Writer(chat_msg, chat_event_details)
         Writer: chat_email_draft = draft_meeting_invitation(chat_msg, chat_event_details)
         Writer(chat_msg, chat_email_draft) >> User(chat_msg, chat_email_draft)
-        User: chat_email_edit = approve_or_edit_chat(chat_msg, chat_email_draft)
-        User: chat_email_reply = accept_edit(chat_email_edit, chat_email_draft)
+        User: chat_email_edit = approve_email_draft_from_chat(chat_msg, chat_email_draft)
+        User: chat_email_reply = accept_or_skip(chat_email_edit)
         User(chat_msg, chat_email_reply) >> Mailbox(chat_msg, chat_email_reply)
         Mailbox: chat_mail_status = create_draft_from_instruction(chat_msg, chat_email_reply)
         Mailbox(chat_mail_status) >> Chat(chat_mail_status)
@@ -1015,8 +1064,8 @@ def create_event_from_chat(chat_msg):
 def draft_email_from_chat(chat_msg):
     Writer: chat_email_draft = draft_email_from_instruction(chat_msg)
     Writer(chat_msg, chat_email_draft) >> User(chat_msg, chat_email_draft)
-    User: chat_email_edit = approve_or_edit_chat(chat_msg, chat_email_draft)
-    User: chat_email_reply = accept_edit(chat_email_edit, chat_email_draft)
+    User: chat_email_edit = approve_email_draft_from_chat(chat_msg, chat_email_draft)
+    User: chat_email_reply = accept_or_skip(chat_email_edit)
     User(chat_msg, chat_email_reply) >> Mailbox(chat_msg, chat_email_reply)
     Mailbox: chat_mail_status = create_draft_from_instruction(chat_msg, chat_email_reply)
     Mailbox(chat_mail_status) >> Chat(chat_mail_status)
