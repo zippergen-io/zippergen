@@ -7,7 +7,9 @@ Three independent streams all route decisions through a single shared User lifel
   Email branch    — triage incoming emails:
                       spam / quick_reply / scheduling_reply / task / careful_reply
   Calendar branch — prepare briefings for upcoming meetings (Researcher → User)
-  Chat branch     — reply to Telegram messages (Writer → User → Chat)
+  Chat branch     — Telegram as control interface (all messages are owner commands):
+                      schedule_meeting / cancel_meeting / create_task
+                      create_event / draft_email / general
 
 Adding a new stream never touches existing ones — ZipperGen's projection ensures
 each lifeline receives only the messages it needs.  Writer handles both email
@@ -101,24 +103,34 @@ task_status  = Var("task_status",  str)
 # Chat stream
 chat_msg     = Var("chat_msg",     str)
 chat_route   = Var("chat_route",   str)
-chat_slots   = Var("chat_slots",   str)
 chat_draft   = Var("chat_draft",   str)
 chat_edit    = Var("chat_edit",    str)
 chat_reply   = Var("chat_reply",   str)
 chat_status  = Var("chat_status",  str)
 
-# Cancellation branch — chat stream (exclusive to chat branch)
+# cancel_meeting branch — chat stream (exclusive)
 chat_cancel_query    = Var("chat_cancel_query",    str)
 chat_cancel_matches  = Var("chat_cancel_matches",  str)
 chat_cancel_confirm  = Var("chat_cancel_confirm",  bool)
 chat_cancel_status   = Var("chat_cancel_status",   str)
 
-# Event creation — chat stream (exclusive to chat branch)
-chat_today          = Var("chat_today",          str)
-chat_event_details  = Var("chat_event_details",  str)
-chat_sched_event    = Var("chat_sched_event",     str)
-chat_event_summary  = Var("chat_event_summary",  str)
-chat_ack            = Var("chat_ack",            bool)
+# schedule_meeting / create_event branches — chat stream (exclusive)
+chat_today           = Var("chat_today",           str)
+chat_event_details   = Var("chat_event_details",   str)
+chat_sched_event     = Var("chat_sched_event",      str)
+chat_confirmed_event = Var("chat_confirmed_event",  bool)
+
+# create_task_from_chat (exclusive to chat branch)
+chat_task_title  = Var("chat_task_title",  str)
+chat_task_notes  = Var("chat_task_notes",  str)
+chat_task_edit   = Var("chat_task_edit",   str)
+chat_task_status = Var("chat_task_status", str)
+
+# draft_email_from_chat (exclusive to chat branch, touches Writer/User/Mailbox)
+chat_email_draft  = Var("chat_email_draft",  str)
+chat_email_edit   = Var("chat_email_edit",   str)
+chat_email_reply  = Var("chat_email_reply",  str)
+chat_mail_status  = Var("chat_mail_status",  str)
 
 _  = Var("_", str)  # throwaway output for wait_briefly()
 
@@ -241,6 +253,29 @@ def do_delete_event(cancel_matches: str) -> str:
 @pure
 def skip_cancellation() -> str:
     return "Cancellation declined by user — event kept."
+
+
+@pure
+def decline_creation() -> str:
+    return "Got it — no event was created."
+
+
+@pure
+def create_draft_from_instruction(chat_msg: str, reply: str) -> str:
+    import re
+    print(f"[Mailbox] Draft from instruction: {reply[:80]}…")
+    if _gmail is not None:
+        to_match   = re.search(r'^To:\s*(.+)$',      reply, re.MULTILINE | re.IGNORECASE)
+        subj_match = re.search(r'^Subject:\s*(.+)$', reply, re.MULTILINE | re.IGNORECASE)
+        recipient = to_match.group(1).strip()   if to_match   else ""
+        subject   = subj_match.group(1).strip() if subj_match else "Draft from Telegram"
+        try:
+            draft_id = _gmail.create_draft(recipient, subject, reply)  # type: ignore[union-attr]
+            return f"Draft saved (id: {draft_id})"
+        except Exception as exc:
+            print(f"[Mailbox] Error saving draft: {exc}")
+            return f"error: {exc}"
+    return "draft_saved_mock"
 
 
 @pure
@@ -588,11 +623,14 @@ def extract_task(email: str) -> None: ...
 
 @llm(
     system="""
-You are an assistant that classifies Telegram messages.
-Classify the message as exactly one of three labels:
-  meeting_request — the sender is asking to schedule a meeting or call
-  cancellation    — the sender is asking to cancel an existing meeting or event
-  general         — anything else
+You are an assistant that classifies commands sent to a personal Telegram bot.
+All messages are from the bot owner giving instructions. Classify as exactly one of six labels:
+  schedule_meeting — schedule a meeting with someone (creates event + drafts invitation)
+  cancel_meeting   — cancel or remove an existing calendar event
+  create_task      — create a task or reminder
+  create_event     — add a calendar event without sending an invitation
+  draft_email      — draft an email and save it to Gmail
+  general          — anything else (questions, status queries, etc.)
 Reply with the single label and nothing else.
 """.strip(),
     user="{chat_msg}",
@@ -647,19 +685,79 @@ def write_cancellation_reply(message: str, cancel_status: str) -> None: ...
 
 @llm(
     system="""
-You are a professional assistant replying to a meeting request via Telegram.
-Propose the available slots and ask the sender to confirm one.
-Keep it friendly and concise (2-3 sentences).
+You are a professional email assistant.
+Draft a complete email based on the instruction given.
+Format your response as:
+  To: <recipient name or email if mentioned, otherwise leave blank>
+  Subject: <concise subject line>
+
+  <email body, professional and under 5 sentences>
+""".strip(),
+    user="{chat_msg}",
+    parse="text",
+    outputs=(("draft", str),),
+)
+def draft_email_from_instruction(chat_msg: str) -> None: ...
+
+
+@llm(
+    system="""
+You are a calendar assistant.
+Extract event details from a direct scheduling command and output a JSON object with exactly these keys:
+  "title":    a short meeting title
+  "start":    ISO 8601 datetime string (e.g. "2026-05-25T10:00:00")
+  "end":      ISO 8601 datetime string (default: 1 hour after start)
+  "attendee": email address if mentioned, otherwise empty string
+Output only the JSON object, no other text.
+If no clear time can be determined, output an empty JSON object {}.
 """.strip(),
     user="""
-Message: {chat_msg}
+Today is {today}.
 
-Available slots: {chat_slots}
+Command: {chat_msg}
 """.strip(),
     parse="text",
-    outputs=(("chat_draft", str),),
+    outputs=(("event_details", str),),
 )
-def draft_meeting_reply(chat_msg: str, chat_slots: str) -> None: ...
+def extract_event_details_from_command(today: str, chat_msg: str) -> None: ...
+
+
+@llm(
+    system="""
+You are an assistant that extracts action items from messages.
+Given a task creation request, identify the task.
+Return a JSON object with exactly these keys:
+  "task_title": a short actionable title (verb phrase, under 60 chars)
+  "task_notes": key details or deadline (1-2 sentences)
+""".strip(),
+    user="{chat_msg}",
+    parse="json",
+    outputs=(("task_title", str), ("task_notes", str)),
+)
+def extract_task_from_chat(chat_msg: str) -> None: ...
+
+
+@llm(
+    system="""
+You are a professional email assistant.
+Draft a meeting invitation email based on the scheduling command and event details.
+Format your response as:
+  To: <attendee email or name>
+  Subject: Meeting Invitation: <meeting title>
+
+  <friendly invitation body mentioning the time and asking the recipient to confirm>
+
+Keep it professional and concise (under 5 sentences).
+""".strip(),
+    user="""
+Command: {chat_msg}
+
+Event details: {chat_event_details}
+""".strip(),
+    parse="text",
+    outputs=(("draft", str),),
+)
+def draft_meeting_invitation(chat_msg: str, chat_event_details: str) -> None: ...
 
 
 # ---------------------------------------------------------------------------
@@ -758,6 +856,29 @@ def confirm_task(email: str, task_title: str, task_notes: str): pass
 def approve_or_edit_chat(chat_msg: str, chat_draft: str): pass
 
 
+@human(
+    kind="confirm",
+    context="{chat_event_details}",
+    instruction="Create this calendar event?",
+    outputs=["chat_confirmed_event: bool"],
+    submit_label="Create →",
+    cancel_label="Skip",
+)
+def confirm_event(chat_event_details: str): pass
+
+
+@human(
+    kind="edit",
+    context="{chat_msg}",
+    prefill="{chat_task_title}",
+    instruction="Task notes: {chat_task_notes}",
+    outputs=["chat_task_edit: str"],
+    submit_label="Create task →",
+    cancel_label="Skip",
+)
+def confirm_task_from_chat(chat_msg: str, chat_task_title: str, chat_task_notes: str): pass
+
+
 # ---------------------------------------------------------------------------
 # Fragments — reusable coordination sub-sequences
 # ---------------------------------------------------------------------------
@@ -836,13 +957,70 @@ def cancellation_chat_branch(chat_msg):
 
 
 @fragment
-def create_chat_calendar_event(source_msg, choice):
+def schedule_meeting_from_chat(chat_msg):
+    Writer(chat_msg) >> Calendar(chat_msg)
     Calendar: chat_today = todays_date()
-    Calendar: chat_event_details = extract_event_details(chat_today, source_msg, choice)
-    Calendar: chat_sched_event = create_scheduled_event(chat_event_details)
-    Calendar: chat_event_summary = format_event_confirmation(chat_event_details)
-    Calendar(chat_event_summary) >> User(chat_event_summary)
-    User: chat_ack = acknowledge_event_created(chat_event_summary)
+    Calendar: chat_event_details = extract_event_details_from_command(chat_today, chat_msg)
+    Calendar(chat_event_details) >> User(chat_event_details)
+    User: chat_confirmed_event = confirm_event(chat_event_details)
+    if chat_confirmed_event @ User:
+        User(chat_event_details) >> Calendar(chat_event_details)
+        Calendar: chat_sched_event = create_scheduled_event(chat_event_details)
+        Calendar(chat_msg, chat_event_details) >> Writer(chat_msg, chat_event_details)
+        Writer: chat_email_draft = draft_meeting_invitation(chat_msg, chat_event_details)
+        Writer(chat_msg, chat_email_draft) >> User(chat_msg, chat_email_draft)
+        User: chat_email_edit = approve_or_edit_chat(chat_msg, chat_email_draft)
+        User: chat_email_reply = accept_edit(chat_email_edit, chat_email_draft)
+        User(chat_msg, chat_email_reply) >> Mailbox(chat_msg, chat_email_reply)
+        Mailbox: chat_mail_status = create_draft_from_instruction(chat_msg, chat_email_reply)
+        Mailbox(chat_mail_status) >> Chat(chat_mail_status)
+        Chat: chat_status = send_chat_reply(chat_msg, chat_mail_status)
+    else:
+        User: chat_sched_event = decline_creation()
+        User(chat_msg, chat_sched_event) >> Chat(chat_msg, chat_sched_event)
+        Chat: chat_status = send_chat_reply(chat_msg, chat_sched_event)
+
+
+@fragment
+def create_task_from_chat(chat_msg):
+    Writer: (chat_task_title, chat_task_notes) = extract_task_from_chat(chat_msg)
+    Writer(chat_msg, chat_task_title, chat_task_notes) >> User(chat_msg, chat_task_title, chat_task_notes)
+    User: chat_task_edit = confirm_task_from_chat(chat_msg, chat_task_title, chat_task_notes)
+    User: chat_task_title = accept_edit(chat_task_edit, chat_task_title)
+    User(chat_msg, chat_task_title, chat_task_notes) >> TasksTool(chat_msg, chat_task_title, chat_task_notes)
+    TasksTool: chat_task_status = add_task(chat_task_title, chat_task_notes)
+    TasksTool(chat_msg, chat_task_status) >> Chat(chat_msg, chat_task_status)
+    Chat: chat_status = send_chat_reply(chat_msg, chat_task_status)
+
+
+@fragment
+def create_event_from_chat(chat_msg):
+    Writer(chat_msg) >> Calendar(chat_msg)
+    Calendar: chat_today = todays_date()
+    Calendar: chat_event_details = extract_event_details_from_command(chat_today, chat_msg)
+    Calendar(chat_event_details) >> User(chat_event_details)
+    User: chat_confirmed_event = confirm_event(chat_event_details)
+    if chat_confirmed_event @ User:
+        User(chat_event_details) >> Calendar(chat_event_details)
+        Calendar: chat_sched_event = create_scheduled_event(chat_event_details)
+        Calendar(chat_msg, chat_sched_event) >> Chat(chat_msg, chat_sched_event)
+        Chat: chat_status = send_chat_reply(chat_msg, chat_sched_event)
+    else:
+        User: chat_sched_event = decline_creation()
+        User(chat_msg, chat_sched_event) >> Chat(chat_msg, chat_sched_event)
+        Chat: chat_status = send_chat_reply(chat_msg, chat_sched_event)
+
+
+@fragment
+def draft_email_from_chat(chat_msg):
+    Writer: chat_email_draft = draft_email_from_instruction(chat_msg)
+    Writer(chat_msg, chat_email_draft) >> User(chat_msg, chat_email_draft)
+    User: chat_email_edit = approve_or_edit_chat(chat_msg, chat_email_draft)
+    User: chat_email_reply = accept_edit(chat_email_edit, chat_email_draft)
+    User(chat_msg, chat_email_reply) >> Mailbox(chat_msg, chat_email_reply)
+    Mailbox: chat_mail_status = create_draft_from_instruction(chat_msg, chat_email_reply)
+    Mailbox(chat_mail_status) >> Chat(chat_mail_status)
+    Chat: chat_status = send_chat_reply(chat_msg, chat_mail_status)
 
 
 # ---------------------------------------------------------------------------
@@ -936,8 +1114,9 @@ def command_center():
 
         with branch:
             # ── Chat stream ───────────────────────────────────────────────
-            # Incoming Telegram messages are classified; meeting requests get
-            # a calendar slot check before Writer drafts the reply.
+            # All Telegram messages are commands from the bot owner.
+            # Telegram is the control interface; side effects go to the
+            # right lifeline (Calendar, Mailbox, TasksTool).
             while True @ Chat:
                 if chat_present() @ Chat:
                     Chat: chat_msg = pop_pending_chat()
@@ -945,19 +1124,16 @@ def command_center():
                     Writer: chat_route = classify_chat(chat_msg)
                     Writer: chat_route = normalize_route(chat_route)
 
-                    if (chat_route == "meeting_request") @ Writer:
-                        Writer(chat_msg) >> Calendar(chat_msg)
-                        Calendar: chat_slots = propose_available_slots(chat_msg)
-                        Calendar(chat_msg, chat_slots) >> Writer(chat_msg, chat_slots)
-                        Writer: chat_draft = draft_meeting_reply(chat_msg, chat_slots)
-                        approve_chat_reply(chat_msg, chat_draft)
-                        # Cross-stream: Calendar creates the event from the proposed slots.
-                        # Calendar already has chat_slots; User signals it to proceed.
-                        User(chat_msg) >> Calendar(chat_msg)
-                        create_chat_calendar_event(chat_msg, chat_slots)
-                    elif (chat_route == "cancellation") @ Writer:
+                    if (chat_route == "schedule_meeting") @ Writer:
+                        schedule_meeting_from_chat(chat_msg)
+                    elif (chat_route == "cancel_meeting") @ Writer:
                         cancellation_chat_branch(chat_msg)
-
+                    elif (chat_route == "create_task") @ Writer:
+                        create_task_from_chat(chat_msg)
+                    elif (chat_route == "create_event") @ Writer:
+                        create_event_from_chat(chat_msg)
+                    elif (chat_route == "draft_email") @ Writer:
+                        draft_email_from_chat(chat_msg)
                     else:
                         Writer: chat_draft = draft_chat_reply(chat_msg)
                         approve_chat_reply(chat_msg, chat_draft)
