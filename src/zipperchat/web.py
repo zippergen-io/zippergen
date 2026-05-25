@@ -390,7 +390,7 @@ _HTML = r"""<!DOCTYPE html>
 <link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:ital,wght@0,400;0,500;0,600;1,400&family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500&family=Space+Grotesk:wght@400;500;600&family=Space+Mono:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet">
 <style>
 :root {
-  --bg:              #F5F2EC;
+  --bg:              #FCFCF4;
   --panel:           #ffffff;
   --rule:            rgba(20,20,40,0.08);
   --text:            #14141A;
@@ -426,23 +426,9 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); font
 }
 
 /* ── Header ─────────────────────────────────────────────────────────────── */
-.hdr-logo { height: 28px; display: block; }
+.hdr-logo { height: 36px; display: block; }
 
-.hdr-gap  { flex: 1; }
-#your-turn {
-  display: none; align-items: center; gap: 8px;
-  font-size: 13px; color: var(--accent-attn); font-weight: 500;
-}
-#your-turn.on { display: flex; }
 @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
-.yt-dot {
-  width: 7px; height: 7px; border-radius: 50%; background: var(--accent-attn); flex-shrink: 0;
-  animation: pulse 1.2s ease-in-out infinite;
-}
-#yt-count {
-  font-family: var(--mono); font-size: 11px;
-  background: var(--accent-attn-bg); color: var(--accent-attn); border-radius: 10px; padding: 1px 7px;
-}
 
 /* ── Sidebar ─────────────────────────────────────────────────────────────── */
 #sidebar { overflow-y: auto; border-right: 1px solid var(--rule); padding: 16px 0 32px; }
@@ -453,7 +439,8 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); font
 }
 .sg-hdr {
   display: flex; align-items: baseline; justify-content: space-between;
-  padding: 0 28px 8px; font-size: 14px; font-weight: 500; color: var(--text);
+  padding: 0 28px 8px; font-size: 11px; font-weight: 600; color: var(--text);
+  text-transform: uppercase; letter-spacing: 0.07em;
   cursor: pointer; user-select: none;
 }
 .sg-hdr:hover { color: var(--text); }
@@ -478,11 +465,15 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); font
 .sg-row:focus { outline: none; background: rgba(0,0,0,0.05); }
 .sg-row.sg-sel { background: var(--accent-bg); border-left-color: var(--accent); color: var(--text); }
 .sg-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
-.dot-done    { background: transparent; border: 1.5px solid var(--text-faint); }
+.dot-done    { background: var(--done-clr); border: none; }
 .dot-running { background: var(--text-faint); }
 .dot-pending { background: var(--accent-attn); animation: pulse 1.2s ease-in-out infinite; }
 .sg-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.sg-you  { font-size: 11px; font-style: italic; color: var(--accent-attn); flex-shrink: 0; }
+.sg-you  {
+  font-family: var(--mono); font-size: 9px; font-weight: 600; letter-spacing: 0.06em;
+  text-transform: uppercase; color: var(--accent-attn);
+  background: var(--accent-attn-bg); border-radius: 3px; padding: 1px 5px; flex-shrink: 0;
+}
 .sb-empty { padding: 40px 28px; font-size: 13px; color: var(--text-faint); }
 
 /* ── Inspector ─────────────────────────────────────────────────────────────── */
@@ -503,7 +494,12 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); font
 .ins-meta-kind { font-family: var(--mono); font-size: 12px; }
 .ins-meta-time { font-family: var(--mono); font-size: 12px; color: var(--text-faint); }
 .ins-meta-fn   { font-family: var(--mono); font-size: 12px; color: var(--text-faint); }
-.ins-meta-await { margin-left: auto; font-size: 13px; color: var(--accent-attn); font-weight: 500; font-style: italic; }
+.ins-meta-await {
+  margin-left: auto; font-family: var(--mono); font-size: 10px; font-weight: 600;
+  letter-spacing: 0.07em; text-transform: uppercase;
+  color: var(--accent-attn); background: var(--accent-attn-bg);
+  border-radius: 3px; padding: 2px 7px;
+}
 
 /* Title */
 .ins-title {
@@ -518,14 +514,14 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); font
   text-transform: uppercase; color: var(--text-mute); margin-bottom: 10px;
 }
 .ins-instr-label {
-  font-size: 14px; font-style: italic; color: var(--text-mute); margin-bottom: 10px;
+  font-size: 14px; font-weight: 500; color: var(--text-soft); margin-bottom: 10px;
 }
 .ins-sec-body { font-size: 15px; line-height: 1.6; color: var(--text); }
 
 /* Prompt context */
 .ins-ctx {
   white-space: pre-wrap; word-break: break-word; color: var(--text-soft);
-  background: rgba(20,18,12,0.035); border-radius: 6px; padding: 12px 14px;
+  border: 1px solid rgba(20,20,40,0.11); border-radius: 6px; padding: 12px 14px;
   font-size: 15px; line-height: 1.6;
 }
 .ctx-hdr       { font-weight: 600; color: var(--text); }
@@ -534,7 +530,7 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); font
 
 /* Email artifacts — read (filled) and write (outlined) */
 .ea { border-radius: 6px; padding: 20px 18px; }
-.ea-read { background: rgba(20,18,12,0.035); white-space: pre-wrap; word-break: break-word; }
+.ea-read { border: 1px solid rgba(20,20,40,0.11); white-space: pre-wrap; word-break: break-word; }
 .ea-write { border: 1px solid rgba(20,20,40,0.13); transition: border-color .15s; }
 .ea-write:focus-within { border-color: var(--accent); }
 .ea-subj {
@@ -542,7 +538,7 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); font
   color: var(--text); line-height: 1.3; margin-bottom: 4px; white-space: normal;
 }
 .ea-hdr   { font-size: 13px; color: var(--text-mute); }
-.ea-instr { font-size: 13px; color: var(--text-mute); font-style: italic; }
+.ea-instr { font-size: 13px; color: var(--text-mute); }
 .ea-rule  { border: none; border-top: 1px solid rgba(20,18,12,0.1); margin: 10px 0 12px; }
 .ea-body  { font-size: 14px; line-height: 1.6; color: var(--text-soft); }
 .ea-ta {
@@ -550,10 +546,10 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); font
   padding: 0; border: none; background: transparent; color: var(--text);
   resize: none; min-height: 160px; field-sizing: content; outline: none;
 }
-.ea-ta::placeholder { color: var(--text-faint); font-style: italic; }
+.ea-ta::placeholder { color: var(--text-faint); }
 
 /* Resolved */
-.ins-resolved-val { color: var(--done-clr); font-style: italic; }
+.ins-resolved-val { color: var(--done-clr); }
 
 /* Textarea */
 .ins-split {
@@ -568,7 +564,7 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); font
   background: var(--bg); color: var(--text); resize: none; min-height: 160px;
   field-sizing: content; outline: none; transition: border-color .15s;
 }
-.ins-ta::placeholder { color: var(--text-faint); font-style: italic; }
+.ins-ta::placeholder { color: var(--text-faint); }
 .ins-ta:focus { border-color: var(--accent); }
 
 /* Action row */
@@ -576,7 +572,7 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); font
 .btn-approve {
   font-family: var(--sans); font-size: 14px; font-weight: 500;
   padding: 10px 28px; border-radius: 6px;
-  background: var(--btn-bg); color: var(--btn-text);
+  background: var(--accent); color: #fff;
   border: none; cursor: pointer; transition: opacity .15s;
 }
 .btn-approve:hover:not(:disabled) { opacity: .85; }
@@ -596,7 +592,7 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); font
 }
 .btn-secondary:hover:not(:disabled) { border-color: rgba(20,18,12,0.3); color: var(--text); }
 .btn-secondary:disabled { opacity: .35; cursor: default; }
-.ins-hint { margin-left: auto; font-size: 12px; color: var(--text-faint); font-style: italic; }
+.ins-hint { margin-left: auto; font-size: 12px; color: var(--text-faint); }
 
 /* Choice buttons */
 .ins-choices { gap: 8px; flex-wrap: wrap; margin-top: 16px; }
@@ -615,7 +611,7 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); font
 .kv-val { font-size: 15px; color: var(--text); line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
 .kv-val-true  { font-family: var(--mono); color: var(--done-clr); }
 .kv-val-false { font-family: var(--mono); color: var(--text-faint); }
-.kv-empty     { font-size: 13px; color: var(--text-faint); font-style: italic; }
+.kv-empty     { font-size: 13px; color: var(--text-faint); }
 
 /* Scrollbars */
 ::-webkit-scrollbar { width: 5px; height: 5px; }
@@ -627,12 +623,6 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); font
 <div id="app">
   <header id="hdr">
     <img src="/assets/zippergen-lockup-ink.svg" alt="ZipperGen" class="hdr-logo">
-    <div class="hdr-gap"></div>
-    <div id="your-turn">
-      <span class="yt-dot"></span>
-      Your turn
-      <span id="yt-count">1</span>
-    </div>
   </header>
   <div id="body">
     <div id="sidebar">
@@ -661,8 +651,6 @@ let selectedId    = null;
 // DOM
 const sidebar  = document.getElementById('sidebar');
 const insBody  = document.getElementById('ins-body');
-const yourTurn = document.getElementById('your-turn');
-const ytCount  = document.getElementById('yt-count');
 
 // Helpers
 function esc(s){ return String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
@@ -674,11 +662,7 @@ function fmtV(v){
   if(typeof v==='string') return v.length>600?v.slice(0,599)+'…':v;
   try{ return JSON.stringify(v,null,2); }catch{ return String(v); }
 }
-function refreshCount(){
-  if(pending>0){ yourTurn.classList.add('on'); ytCount.textContent=pending; }
-  else yourTurn.classList.remove('on');
-  updateInboxBadge();
-}
+function refreshCount(){ updateInboxBadge(); }
 
 // Fold toggle
 function toggleGroup(grpEl){ grpEl.classList.toggle('sg-folded'); }
@@ -699,7 +683,7 @@ function inboxRowInner(key){
   const req=a.reqId?reqMap.get(a.reqId):null;
   const hp=req&&!req.resolved&&a.kind==='human';
   const dc=hp?'dot-pending':'dot-done';
-  return '<span class="sg-dot '+dc+'"></span><span class="sg-name">'+esc(a.name)+'</span>'+(hp?'<span class="sg-you">you</span>':'');
+  return '<span class="sg-dot '+dc+'"></span><span class="sg-name">'+esc(a.name)+'</span>'+(hp?'<span class="sg-you">PENDING</span>':'');
 }
 
 function createInboxRow(key){
@@ -744,7 +728,7 @@ function rowInner(a){
   const req=a.reqId?reqMap.get(a.reqId):null;
   const hp=req&&!req.resolved&&a.kind==='human';
   const dc=hp?'dot-pending':(a.status==='pending'?'dot-running':'dot-done');
-  return '<span class="sg-dot '+dc+'"></span><span class="sg-name">'+esc(a.name)+'</span>'+(hp?'<span class="sg-you">you</span>':'');
+  return '<span class="sg-dot '+dc+'"></span><span class="sg-name">'+esc(a.name)+'</span>'+(hp?'<span class="sg-you">PENDING</span>':'');
 }
 
 function createRow(key){
@@ -803,7 +787,7 @@ function renderInspector(){
     +'<span class="ins-meta-kind">'+esc(kl)+'</span>'
     +(isHuman?'<span class="ins-meta-dot">&middot;</span><span class="ins-meta-fn">'+esc(a.name)+'</span>':'')
     +(a.time?'<span class="ins-meta-dot">&middot;</span><span class="ins-meta-time">'+esc(a.time)+'</span>':'')
-    +(hp?'<span class="ins-meta-await">awaiting you</span>':'')
+    +(hp?'<span class="ins-meta-await">PENDING</span>':'')
     +'</div>';
   if(showTitle) html+='<div class="ins-title">'+esc(title)+'</div>';
 
