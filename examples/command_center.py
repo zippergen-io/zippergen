@@ -86,7 +86,7 @@ ack              = Var("ack",              bool)
 
 email_summary    = Var("email_summary",    str)
 
-# Cancellation branch (email and chat)
+# Cancellation branch — email stream (exclusive to email branch)
 cancel_query    = Var("cancel_query",    str)
 cancel_matches  = Var("cancel_matches",  str)
 cancel_confirm  = Var("cancel_confirm",  bool)
@@ -106,6 +106,19 @@ chat_draft   = Var("chat_draft",   str)
 chat_edit    = Var("chat_edit",    str)
 chat_reply   = Var("chat_reply",   str)
 chat_status  = Var("chat_status",  str)
+
+# Cancellation branch — chat stream (exclusive to chat branch)
+chat_cancel_query    = Var("chat_cancel_query",    str)
+chat_cancel_matches  = Var("chat_cancel_matches",  str)
+chat_cancel_confirm  = Var("chat_cancel_confirm",  bool)
+chat_cancel_status   = Var("chat_cancel_status",   str)
+
+# Event creation — chat stream (exclusive to chat branch)
+chat_today          = Var("chat_today",          str)
+chat_event_details  = Var("chat_event_details",  str)
+chat_sched_event    = Var("chat_sched_event",     str)
+chat_event_summary  = Var("chat_event_summary",  str)
+chat_ack            = Var("chat_ack",            bool)
 
 _  = Var("_", str)  # throwaway output for wait_briefly()
 
@@ -808,18 +821,28 @@ def cancellation_branch(email):
 @fragment
 def cancellation_chat_branch(chat_msg):
     Writer(chat_msg) >> Calendar(chat_msg)
-    Calendar: cancel_query = extract_cancel_query(chat_msg)
-    Calendar: cancel_matches = find_matching_events(cancel_query)
-    Calendar(chat_msg, cancel_matches) >> User(chat_msg, cancel_matches)
-    User: cancel_confirm = confirm_cancellation(cancel_matches)
-    if cancel_confirm @ User:
-        Calendar: cancel_status = do_delete_event(cancel_matches)
-        Calendar(chat_msg, cancel_status) >> Writer(chat_msg, cancel_status)
+    Calendar: chat_cancel_query = extract_cancel_query(chat_msg)
+    Calendar: chat_cancel_matches = find_matching_events(chat_cancel_query)
+    Calendar(chat_msg, chat_cancel_matches) >> User(chat_msg, chat_cancel_matches)
+    User: chat_cancel_confirm = confirm_cancellation(chat_cancel_matches)
+    if chat_cancel_confirm @ User:
+        Calendar: chat_cancel_status = do_delete_event(chat_cancel_matches)
+        Calendar(chat_msg, chat_cancel_status) >> Writer(chat_msg, chat_cancel_status)
     else:
-        User: cancel_status = skip_cancellation()
-        User(chat_msg, cancel_status) >> Writer(chat_msg, cancel_status)
-    Writer: chat_draft = write_cancellation_reply(chat_msg, cancel_status)
+        User: chat_cancel_status = skip_cancellation()
+        User(chat_msg, chat_cancel_status) >> Writer(chat_msg, chat_cancel_status)
+    Writer: chat_draft = write_cancellation_reply(chat_msg, chat_cancel_status)
     approve_chat_reply(chat_msg, chat_draft)
+
+
+@fragment
+def create_chat_calendar_event(source_msg, choice):
+    Calendar: chat_today = todays_date()
+    Calendar: chat_event_details = extract_event_details(chat_today, source_msg, choice)
+    Calendar: chat_sched_event = create_scheduled_event(chat_event_details)
+    Calendar: chat_event_summary = format_event_confirmation(chat_event_details)
+    Calendar(chat_event_summary) >> User(chat_event_summary)
+    User: chat_ack = acknowledge_event_created(chat_event_summary)
 
 
 # ---------------------------------------------------------------------------
@@ -931,7 +954,7 @@ def command_center():
                         # Cross-stream: Calendar creates the event from the proposed slots.
                         # Calendar already has chat_slots; User signals it to proceed.
                         User(chat_msg) >> Calendar(chat_msg)
-                        create_calendar_event(chat_msg, chat_slots)
+                        create_chat_calendar_event(chat_msg, chat_slots)
                     elif (chat_route == "cancellation") @ Writer:
                         cancellation_chat_branch(chat_msg)
 
