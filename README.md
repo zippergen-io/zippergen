@@ -29,14 +29,54 @@ ZipperChat visualizes a run as a message sequence chart, including actions, mess
 git clone https://github.com/zippergen-io/zippergen.git
 cd zippergen
 pip install -e .
-python examples/write_tweet.py
+python examples/hello.py
 ```
 
 Python 3.11 or later required. No external dependencies: stdlib only (LLM backends optional).
 
-## Hello, World
+## Hello, ZipperGen
 
-Three agents collaborate: `Writer` drafts a tweet, `Editor` decides whether it's good enough, and ZipperGen handles the coordination. No API key needed; the built-in mock backend returns placeholder model outputs.
+Two lifelines, one LLM call, one message back.
+
+```python
+from zippergen.syntax import Lifeline
+from zippergen.actions import llm
+from zippergen.builder import workflow
+
+User   = Lifeline("User")
+Writer = Lifeline("Writer")
+
+@llm(system="Write a concise reply.",
+     user="{topic}", parse="text", outputs=(("draft", str),))
+def write_reply(topic: str) -> None: ...
+
+@workflow
+def hello(topic: str @ User) -> str:
+    User(topic) >> Writer(topic)
+    Writer: draft = write_reply(topic)
+    Writer(draft) >> User(draft)
+    return draft @ User
+
+hello.configure(llms="mock", ui=True)
+result = hello(topic="Say hello to ZipperGen")
+print(result)
+```
+
+`User` sends a value to `Writer`, `Writer` runs an LLM action, and the result comes back. The workflow says explicitly who owns each step: which lifeline sends, which receives, and which runs each action. Open **http://localhost:8765** to watch the exchange in ZipperChat.
+
+Switch to a real LLM with one line:
+
+```python
+hello.configure(llms="openai", ui=True)   # or "mistral", "claude"
+```
+
+The full example is at `examples/hello.py`.
+
+## Owned decisions
+
+The previous example has no coordination choice. Here is the first place where ZipperGen matters more: one lifeline owns a decision, and ZipperGen generates the required coordination messages automatically.
+
+Three agents collaborate: `Writer` drafts a tweet, `Editor` decides whether it's good enough, and `Writer` revises if needed.
 
 ```python
 from zippergen.syntax import Lifeline, Var
@@ -76,20 +116,11 @@ def write_tweet(topic: str @ User) -> str:
         Writer(tweet) >> User(tweet)
     return tweet @ User
 
-# No API key needed; the built-in mock backend returns placeholder outputs.
-# Switch to a real LLM: write_tweet.configure(llms="openai")
 result = write_tweet(topic="a git commit message that tells the truth")
 print(result)
 ```
 
 `if approved @ Editor` is the key line. `Editor` owns the branching decision; ZipperGen automatically determines which agents need to receive that decision and generates the coordination messages. You don't write any routing code.
-
-The mock backend produces placeholder output (`[draft:tweet]`, `[revise:tweet]`). Add one line to switch to a real LLM:
-
-```python
-write_tweet.configure(llms="openai")   # or "mistral", "claude"
-result = write_tweet(topic="a git commit message that tells the truth")
-```
 
 The full example is at `examples/write_tweet.py`.
 
@@ -162,29 +193,7 @@ For a live setup with Gmail, Google Calendar, Google Tasks, and Telegram, follow
 
 ## Parallel regions
 
-A `parallel` region runs several full sub-programs concurrently. Branches are structurally independent: each send/receive action carries a channel name derived from its syntactic position, so FIFO order is maintained per branch without any programmer-visible bookkeeping.
-
-```python
-@workflow
-def merge_candidate(candidate: str @ Orchestrator) -> str:
-    Orchestrator(candidate) >> Committer(candidate)
-
-    with parallel:
-        with branch:
-            Orchestrator(candidate) >> TestRunner(candidate)
-            TestRunner: (test_status,) = run_tests(candidate)
-            TestRunner(test_status) >> Committer(test_status)
-
-        with branch:
-            Orchestrator(candidate) >> Security(candidate)
-            Security: (security_status,) = scan_security(candidate)
-            Security(security_status) >> Committer(security_status)
-
-    Committer: (decision,) = decide_merge(candidate, test_status, security_status)
-    return decision @ Committer
-```
-
-`Orchestrator` and `Committer` are *shared lifelines*: each appears in both branches. The projection of a shared lifeline interleaves its branch-local programs while preserving their internal order. At the semantic level, ZipperGen keeps only complete message-sequence-chart executions. This lets you write realistic feedback patterns between shared lifelines without manually managing branch-local channels.
+A `parallel` region runs several full sub-programs concurrently. Branches are structurally independent: each send/receive action carries a channel name derived from its syntactic position, so FIFO order is maintained per branch without any programmer-visible bookkeeping. A lifeline that appears in multiple branches is a *shared lifeline*; its projection interleaves the branch-local programs while preserving their internal order. At the semantic level, ZipperGen keeps only complete message-sequence-chart executions, which lets you write realistic feedback patterns between shared lifelines without manually managing branch-local channels.
 
 See `examples/parallel.py` for fan-out/fan-in and `examples/parallel_cyclic.py` for a feedback pattern between shared lifelines.
 
@@ -252,46 +261,6 @@ dashboard = WebTrace.dashboard().start()
 first_workflow.configure(ui=True, trace=dashboard)
 second_workflow.configure(ui=True, trace=dashboard)
 ```
-
-## How it works
-
-The code is organized as a pipeline of layers that mirror the paper almost literally. A user writes a global workflow in Python DSL syntax; `@workflow` rewrites it into an immutable IR; the projection layer turns that global IR into one local program per lifeline; the runtime starts one thread per lifeline and connects them with FIFO queues.
-
-### Diagnosis consensus
-
-Two LLMs independently assess a case, then iterate until they agree or a round limit is reached:
-
-```python
-@workflow
-def diagnosis_consensus(notes: str @ User, diagnosis: str @ User) -> str:
-    # Distribute inputs to both LLMs
-    User(notes, diagnosis) >> LLM1(notes, diagnosis)
-    User(notes, diagnosis) >> LLM2(notes, diagnosis)
-
-    # Independent initial assessments
-    LLM1: (verdict, reason) = assess(notes, diagnosis)
-    LLM2: (verdict, reason) = assess(notes, diagnosis)
-
-    # Consensus loop, owned by LLM1 (at most MAX_ROUNDS rounds)
-    while (not agreed and trials < MAX_ROUNDS) @ LLM1:
-        LLM1(verdict, reason) >> LLM2(other_verdict, other_reason)
-        LLM2(verdict, reason) >> LLM1(other_verdict, other_reason)
-        LLM1: (verdict, reason) = reconsider(notes, diagnosis, verdict, reason, other_verdict, other_reason)
-        LLM2: (verdict, reason) = reconsider(notes, diagnosis, verdict, reason, other_verdict, other_reason)
-        LLM2(verdict) >> LLM1(other_verdict)
-        with LLM1:
-            agreed = check_agreement(verdict, other_verdict)
-            trials = inc_trials(trials)
-
-    # Final result computed by LLM1, returned to User
-    LLM1: result = choose_result(verdict, agreed)
-    LLM1(result) >> User(result)
-    return result @ User
-```
-
-`while cond @ LLM1` means LLM1 owns the loop guard and broadcasts the decision each iteration. `if cond @ Owner` works the same way for conditionals. ZipperGen figures out which other agents need to receive the decision and generates the control messages automatically.
-
-Workflows that return a value end with `return var @ Lifeline`. This declares which lifeline owns the result once all agents have finished. It is a declaration, not a control flow statement. No matter which branches executed, the result always lands in the same place. Output-free workflows can use `-> tuple` and omit the return.
 
 ## Defining LLM actions
 
