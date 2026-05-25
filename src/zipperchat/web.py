@@ -387,7 +387,7 @@ _HTML = r"""<!DOCTYPE html>
 <title>ZipperChat</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:ital,wght@0,400;0,500;0,600;1,400&family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500&family=Space+Grotesk:wght@400;500;600&family=Space+Mono:ital,wght@0,400;0,700;1,400&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
 <style>
 :root {
   --bg:              #FCFCF4;
@@ -404,8 +404,7 @@ _HTML = r"""<!DOCTYPE html>
   --btn-bg:          #14141A;
   --btn-text:        #F5F2EC;
   --done-clr:        #9aaa2a;
-  --serif:      'Instrument Serif', Georgia, serif;
-  --sans:       'Space Grotesk', system-ui, sans-serif;
+  --sans:       'IBM Plex Sans', system-ui, sans-serif;
   --mono:       'Space Mono', 'Courier New', monospace;
 }
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -439,8 +438,8 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); font
 }
 .sg-hdr {
   display: flex; align-items: baseline; justify-content: space-between;
-  padding: 0 28px 8px; font-size: 11px; font-weight: 600; color: var(--text);
-  text-transform: uppercase; letter-spacing: 0.07em;
+  padding: 0 28px 8px; font-family: var(--sans); font-size: 11px; font-weight: 600;
+  color: var(--text); text-transform: uppercase; letter-spacing: 0.06em;
   cursor: pointer; user-select: none;
 }
 .sg-hdr:hover { color: var(--text); }
@@ -453,17 +452,16 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); font
 .sg-group.sg-folded .sg-chevron { transform: rotate(-45deg); }
 .sg-group.sg-folded .sg-row { display: none; }
 .sg-hdr-inbox { font-weight: 600; }
-.sg-count { font-family: var(--mono); font-size: 11px; color: var(--text-faint); }
+.sg-count { font-size: 11px; color: var(--text-faint); }
 .sg-row {
   display: flex; align-items: center; gap: 10px;
   padding: 6px 28px; cursor: pointer;
-  border-left: 2px solid transparent;
   font-size: 13px; color: var(--text-soft);
   user-select: none; transition: background .1s;
 }
 .sg-row:hover { background: rgba(0,0,0,0.03); }
 .sg-row:focus { outline: none; background: rgba(0,0,0,0.05); }
-.sg-row.sg-sel { background: var(--accent-bg); border-left-color: var(--accent); color: var(--text); }
+.sg-row.sg-sel { background: var(--accent-bg); color: var(--text); }
 .sg-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
 .dot-done    { background: var(--done-clr); border: none; }
 .dot-running { background: var(--text-faint); }
@@ -491,9 +489,9 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); font
 }
 .ins-meta-ll   { font-weight: 500; color: var(--text-soft); }
 .ins-meta-dot  { color: var(--text-faint); }
-.ins-meta-kind { font-family: var(--mono); font-size: 12px; }
-.ins-meta-time { font-family: var(--mono); font-size: 12px; color: var(--text-faint); }
-.ins-meta-fn   { font-family: var(--mono); font-size: 12px; color: var(--text-faint); }
+.ins-meta-kind { font-size: 12px; }
+.ins-meta-time { font-size: 12px; color: var(--text-faint); }
+.ins-meta-fn   { font-size: 12px; color: var(--text-faint); }
 .ins-meta-await {
   margin-left: auto; font-family: var(--mono); font-size: 10px; font-weight: 600;
   letter-spacing: 0.07em; text-transform: uppercase;
@@ -534,13 +532,13 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); font
 .ea-write { border: 1px solid rgba(20,20,40,0.13); transition: border-color .15s; }
 .ea-write:focus-within { border-color: var(--accent); }
 .ea-subj {
-  font-family: var(--sans); font-size: 18px; font-weight: 500;
+  font-family: var(--sans); font-size: 20px; font-weight: 500;
   color: var(--text); line-height: 1.3; margin-bottom: 4px; white-space: normal;
 }
-.ea-hdr   { font-size: 13px; color: var(--text-mute); }
+.ea-hdr   { font-size: 14px; color: var(--text-mute); }
 .ea-instr { font-size: 13px; color: var(--text-mute); }
 .ea-rule  { border: none; border-top: 1px solid rgba(20,18,12,0.1); margin: 10px 0 12px; }
-.ea-body  { font-size: 14px; line-height: 1.6; color: var(--text-soft); }
+.ea-body  { font-size: 15px; line-height: 1.6; color: var(--text-soft); }
 .ea-ta {
   width: 100%; font-family: var(--sans); font-size: 15px; line-height: 1.6;
   padding: 0; border: none; background: transparent; color: var(--text);
@@ -683,7 +681,7 @@ function inboxRowInner(key){
   const req=a.reqId?reqMap.get(a.reqId):null;
   const hp=req&&!req.resolved&&a.kind==='human';
   const dc=hp?'dot-pending':'dot-done';
-  return '<span class="sg-dot '+dc+'"></span><span class="sg-name">'+esc(a.name)+'</span>'+(hp?'<span class="sg-you">PENDING</span>':'');
+  return '<span class="sg-dot '+dc+'"></span><span class="sg-name">'+esc(a.name)+'</span>';
 }
 
 function createInboxRow(key){
@@ -728,7 +726,7 @@ function rowInner(a){
   const req=a.reqId?reqMap.get(a.reqId):null;
   const hp=req&&!req.resolved&&a.kind==='human';
   const dc=hp?'dot-pending':(a.status==='pending'?'dot-running':'dot-done');
-  return '<span class="sg-dot '+dc+'"></span><span class="sg-name">'+esc(a.name)+'</span>'+(hp?'<span class="sg-you">PENDING</span>':'');
+  return '<span class="sg-dot '+dc+'"></span><span class="sg-name">'+esc(a.name)+'</span>';
 }
 
 function createRow(key){
@@ -787,7 +785,7 @@ function renderInspector(){
     +'<span class="ins-meta-kind">'+esc(kl)+'</span>'
     +(isHuman?'<span class="ins-meta-dot">&middot;</span><span class="ins-meta-fn">'+esc(a.name)+'</span>':'')
     +(a.time?'<span class="ins-meta-dot">&middot;</span><span class="ins-meta-time">'+esc(a.time)+'</span>':'')
-    +(hp?'<span class="ins-meta-await">PENDING</span>':'')
+    +(hp?'<span class="ins-meta-await">AWAITING YOU</span>':'')
     +'</div>';
   if(showTitle) html+='<div class="ins-title">'+esc(title)+'</div>';
 
@@ -855,7 +853,8 @@ function renderPendingForm(req){
   } else if(req.kind==='confirm'){
     if(req.context) h+='<div class="ins-section">'+renderEmailCtx(req.context)+'</div>';
     h+='<div class="ins-actions"><button class="btn-approve" disabled>'+esc(submitLabel)+'</button>'
-      +'<button class="btn-secondary" disabled>'+esc(cancelLabel)+'</button></div>';
+      +'<button class="btn-secondary" disabled>'+esc(cancelLabel)+'</button>'
+      +'<span class="ins-hint">⌘↩ to confirm</span></div>';
   } else {
     const actHtml='<div class="ins-actions"><button class="btn-approve" disabled>'+esc(submitLabel)+'</button>'
       +'<button class="btn-secondary" disabled>'+esc(cancelLabel)+'</button>'
