@@ -730,8 +730,12 @@ def _exec(stmt: LocalStmt, env: Env, ch: Channels, ns: dict, llm_backend, human_
             elif isinstance(action, PlannerAction):
                 out_map = {outs[0].name: _exec_planner(action, named_inputs, llm_backend, trace, seq)}
             elif isinstance(action, HumanAction):
-                named_outputs = human_backend(action, named_inputs)
-                out_map = {outs[0].name: named_outputs[action.output]}
+                if not action.visible:
+                    default = True if action.output_type is bool else ""
+                    out_map = {outs[0].name: default}
+                else:
+                    named_outputs = human_backend(action, named_inputs)
+                    out_map = {outs[0].name: named_outputs[action.output]}
             else:
                 named_outputs = llm_backend(action, named_inputs)
                 out_map = {

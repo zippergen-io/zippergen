@@ -219,6 +219,7 @@ class HumanAction:
     prefill: str | None = None             # template or literal for textarea; {var} = variable
     submit_label: str | None = None        # label for the primary action button
     cancel_label: str | None = None        # label for the secondary/cancel button
+    visible: bool = True                   # False → auto-complete silently (no UI card)
 
     def __post_init__(self) -> None:
         if self.output_type not in (bool, str):

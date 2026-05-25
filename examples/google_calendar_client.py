@@ -95,6 +95,13 @@ class InviteMeta(TypedDict):
     description: str
 
 
+class EventMeta(TypedDict):
+    id: str
+    summary: str
+    start: str
+    end: str
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -239,6 +246,40 @@ def fetch_next_meeting(window_minutes: int = 30) -> InviteMeta | None:
             ).strip(),
         )
     return None
+
+
+def find_events(query: str, days_ahead: int = 30) -> list[EventMeta]:
+    """Return upcoming events whose title or description matches query."""
+    service = _get_service()
+    now = datetime.now(timezone.utc)
+    end = now + timedelta(days=days_ahead)
+    result = service.events().list(
+        calendarId="primary",
+        timeMin=now.isoformat(),
+        timeMax=end.isoformat(),
+        q=query,
+        singleEvents=True,
+        orderBy="startTime",
+        maxResults=5,
+    ).execute()
+    out = []
+    for event in result.get("items", []):
+        start = event.get("start", {})
+        end_e = event.get("end", {})
+        out.append(EventMeta(
+            id=event["id"],
+            summary=event.get("summary", "(no title)"),
+            start=_fmt_dt(start.get("dateTime"), start.get("date")),
+            end=_fmt_dt(end_e.get("dateTime"), end_e.get("date")),
+        ))
+    return out
+
+
+def delete_event(event_id: str) -> None:
+    """Permanently delete a calendar event by ID."""
+    service = _get_service()
+    service.events().delete(calendarId="primary", eventId=event_id).execute()
+    print(f"[Calendar] Deleted event: {event_id}")
 
 
 def accept_event(event_id: str) -> None:

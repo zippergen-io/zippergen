@@ -256,6 +256,7 @@ def human(
     prefill: str | None = None,
     submit_label: str | None = None,
     cancel_label: str | None = None,
+    visible: bool = True,
 ):
     """
     Decorator that produces a HumanAction node.
@@ -345,6 +346,7 @@ def human(
             prefill=prefill,
             submit_label=submit_label,
             cancel_label=cancel_label,
+            visible=visible,
         )
 
     return decorator

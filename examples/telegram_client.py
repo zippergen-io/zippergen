@@ -25,7 +25,17 @@ import urllib.request
 from typing import TypedDict
 
 
-TOKEN = os.environ.get("ZIPPERGEN_TELEGRAM_TOKEN", "")
+_TOKEN_FILE = os.path.expanduser("~/.zippergen_telegram_token")
+
+def _load_token() -> str:
+    t = os.environ.get("ZIPPERGEN_TELEGRAM_TOKEN", "")
+    if t:
+        return t
+    if os.path.exists(_TOKEN_FILE):
+        return open(_TOKEN_FILE).read().strip()
+    return ""
+
+TOKEN = _load_token()
 
 # In-memory queue of fetched but unprocessed messages.
 _pending: list["TelegramMeta"] = []
