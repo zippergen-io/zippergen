@@ -9,11 +9,15 @@
   <a href="https://github.com/zippergen-io/paper-isola/tree/main/Lean"><img src="assets/lean.svg" alt="Lean verified"></a>
 </p>
 
-ZipperGen is a Python framework for multi-agent LLM coordination. You write a single global protocol (who sends what to whom, who runs which LLM, who owns each decision), and ZipperGen projects it onto each agent automatically. If the protocol compiles, it cannot deadlock. This is not a runtime check; it follows from how the projection works.
+ZipperGen is a Python framework for AI workflows where several agents, tools, and humans must coordinate without ad-hoc message routing.
 
-ZipperGen separates **what agents do** (LLM calls and pure functions) from **how they coordinate** (the protocol). Unlike tool-calling frameworks, ZipperGen provides formal guarantees: coordination is provably deadlock-free by construction, whether the protocol is written by hand or generated at runtime.
+You write the workflow once as a global protocol: who sends what to whom, who runs which LLM, and who owns each decision. ZipperGen projects it to local agent programs automatically.
 
-Each participant in a workflow is called a **lifeline**, which is the standard term from Message Sequence Charts (MSCs), the formalism ZipperGen is based on. In practice a lifeline is simply an agent: one sequential thread of execution that sends and receives messages.
+For well-formed workflows, the generated coordination is deadlock-free by construction. This follows from the projection discipline, not from runtime checking.
+
+ZipperGen separates **what agents do** (LLM calls, tool use, human input) from **how they coordinate** (the protocol). The protocol is readable, auditable, and can be shared with anyone who needs to understand how the system works.
+
+Each participant is called a **lifeline**, which is the standard term from Message Sequence Charts (MSCs), the formalism ZipperGen is based on. In practice a lifeline is simply an agent: one sequential thread of execution that sends and receives messages.
 
 ZipperChat visualizes a run as a message sequence chart, including actions, messages, decisions, and human control points.
 
@@ -25,6 +29,7 @@ ZipperChat visualizes a run as a message sequence chart, including actions, mess
 git clone https://github.com/zippergen-io/zippergen.git
 cd zippergen
 pip install -e .
+python examples/write_tweet.py
 ```
 
 Python 3.11 or later required. No external dependencies: stdlib only (LLM backends optional).
@@ -71,15 +76,13 @@ def write_tweet(topic: str @ User) -> str:
         Writer(tweet) >> User(tweet)
     return tweet @ User
 
-# No API key needed; the built-in mock backend returns placeholder model outputs.
+# No API key needed; the built-in mock backend returns placeholder outputs.
 # Switch to a real LLM: write_tweet.configure(llms="openai")
 result = write_tweet(topic="a git commit message that tells the truth")
 print(result)
 ```
 
 `if approved @ Editor` is the key line. `Editor` owns the branching decision; ZipperGen automatically determines which agents need to receive that decision and generates the coordination messages. You don't write any routing code.
-
-Human control points can be inserted directly into a lifeline, too. A workflow may pause for approval, review, correction, or data entry exactly where the global protocol requires it; the interaction remains explicit in the projected program and visible in ZipperChat.
 
 The mock backend produces placeholder output (`[draft:tweet]`, `[revise:tweet]`). Add one line to switch to a real LLM:
 
@@ -90,36 +93,72 @@ result = write_tweet(topic="a git commit message that tells the truth")
 
 The full example is at `examples/write_tweet.py`.
 
-## Why it can't deadlock
+## Why protocols?
 
 In most multi-agent frameworks, control flow lives inside each agent. Agents call tools, decide what to do next, and rely on the other agents being ready to receive. This works until a subtle ordering problem causes two agents to wait on each other indefinitely.
 
-ZipperGen works differently. You write the control flow once, as a global protocol. ZipperGen then *projects* that protocol onto each agent: each agent receives exactly the local view of the global plan that it needs. Because every send has a corresponding receive by construction, deadlock cannot occur. This is a structural property, not something checked at runtime.
+ZipperGen works differently. You write the control flow once, as a global protocol. ZipperGen then *projects* that protocol onto each agent: each agent receives exactly the local view of the global plan that it needs. Because every send has a corresponding receive by construction, deadlock cannot occur for well-formed protocols. This is a structural property, not something checked at runtime.
 
 The formal statement is in [our paper](https://arxiv.org/abs/2604.17612): the projected programs produce exactly the same behaviors as the global program, and deadlock-freedom follows by structural induction.
 
-The practical consequence: the global protocol is also a complete audit trail of what your agents are allowed to do. You can read it, reason about it, and submit it to anyone who needs to understand how the system works.
+The practical consequence: the global protocol is also a complete audit trail of what your agents are allowed to do. You can read it, reason about it, and show it to anyone who needs to understand how the system works.
 
-## Causal runtime guards
+## Command center
 
-ZipperGen also supports causal-past guards for workflows where the latest locally received value may be stale. In `examples/cpl_test.py`, a device reports its status through two relays. The indicator receives a newer `on=True` update before an older delayed `on=False` update. A local guard on `on` would follow the delayed stale message, but a causal guard reads the latest causally visible device state:
-
-```python
-latest_device_on = At[Device].on == True
-
-if latest_device_on @ Indicator:
-    ...
-```
-
-**Field terms** let a guard compare its local variables with another lifeline's latest causally visible variables. Every message automatically piggybacks the sender's latest variable snapshot, so the receiving lifeline's monitor has it for free:
+`examples/command_center.py` is a larger example that runs two independent event loops in parallel, sharing the same lifelines. One branch handles incoming email: `Mailbox` polls the inbox, `Dispatcher` classifies each message, and named fragments handle the rest (`scheduling_branch`, `cancellation_branch`, `task_branch`, `reply_branch`). The other branch handles Telegram commands from the owner: `Chat` receives a command, `Dispatcher` classifies it, and a matching fragment runs (`schedule_meeting_from_chat`, `create_task_from_chat`, and so on). Telegram is only the command interface: `Calendar` owns calendar changes, `Mailbox` owns email drafts, `TasksTool` owns tasks, and `User` owns approvals.
 
 ```python
-version_matches = At[Reviewer].rev_version == Here.version
+@workflow
+def command_center():
+    with parallel:
+        with branch:
+            while True @ Mailbox:
+                if mail_present() @ Mailbox:
+                    Mailbox: email = pop_pending_email()
+                    Mailbox(email) >> Dispatcher(email)
+                    Dispatcher: route = classify_email(email)
+                    Dispatcher: route = normalize_route(route)
+
+                    if (route == "spam") @ Dispatcher:
+                        ...
+                    elif (route == "scheduling") @ Dispatcher:
+                        scheduling_branch(email)
+                    elif (route == "task") @ Dispatcher:
+                        task_branch(email)
+                        reply_branch(email)
+                    else:
+                        reply_branch(email)
+                else:
+                    Mailbox: _ = wait_briefly()
+
+        with branch:
+            while True @ Chat:
+                if chat_present() @ Chat:
+                    Chat: chat_msg = pop_pending_chat()
+                    Chat(chat_msg) >> Dispatcher(chat_msg)
+                    Dispatcher: chat_route = classify_chat(chat_msg)
+                    Dispatcher: chat_route = normalize_route(chat_route)
+
+                    if (chat_route == "schedule_meeting") @ Dispatcher:
+                        Dispatcher(chat_msg) >> Writer(chat_msg)
+                        schedule_meeting_from_chat(chat_msg)
+                    elif (chat_route == "create_task") @ Dispatcher:
+                        Dispatcher(chat_msg) >> Writer(chat_msg)
+                        create_task_from_chat(chat_msg)
+                    ...
+                else:
+                    Chat: _ = wait_briefly()
 ```
 
-Here `At[Reviewer].rev_version` is the Reviewer's `rev_version` at its latest causally visible event, while `Here.version` is the deciding lifeline's current `version`. The Reviewer's version was never explicitly sent to the Gatekeeper; it arrives implicitly on the verdict message.
+`Calendar`, `Writer`, `Mailbox`, and `User` are shared between the two branches. ZipperGen's projection ensures each one receives exactly the messages it needs from whichever stream generated them, in the order the global protocol requires. The two loops interleave freely at runtime without any programmer-visible synchronization.
 
-The result is determined entirely from the asynchronous communication structure: vector clocks record which events are causally visible, and message-carried views provide the latest guard values at those visible events.
+Run it with mock data to see both streams in ZipperChat without any API keys:
+
+```bash
+python examples/command_center.py --mock
+```
+
+For a live setup with Gmail, Google Calendar, Google Tasks, and Telegram, follow the one-time setup steps in the file's docstring.
 
 ## Parallel regions
 
@@ -145,36 +184,66 @@ def merge_candidate(candidate: str @ Orchestrator) -> str:
     return decision @ Committer
 ```
 
-`Orchestrator` and `Committer` are *shared lifelines*: each appears in both branches. The projection of a shared lifeline interleaves its branch-local programs while preserving their internal order. The source semantics keeps only those branch shuffles that form a complete MSC, so cyclic interleavings are filtered out at the semantic level without rejecting the program itself; this admits realistic feedback patterns where two branches exchange messages between the same pair of shared lifelines.
+`Orchestrator` and `Committer` are *shared lifelines*: each appears in both branches. The projection of a shared lifeline interleaves its branch-local programs while preserving their internal order. At the semantic level, ZipperGen keeps only complete message-sequence-chart executions. This lets you write realistic feedback patterns between shared lifelines without manually managing branch-local channels.
 
 See `examples/parallel.py` for fan-out/fan-in and `examples/parallel_cyclic.py` for a feedback pattern between shared lifelines.
 
-## See it in action
+## Human control points
 
-Examples ship with the repo. The first two run without an API key.
+Workflows can pause for human input anywhere in the protocol. A `@human` action specifies the interaction shape and appears in ZipperChat as a card waiting for a response. When the human responds, the workflow continues from exactly that point.
+
+```python
+@human(
+    kind="confirm",
+    context="{draft}",
+    instruction="Send this reply?",
+    outputs=["approved: bool"],
+    submit_label="Send",
+    cancel_label="Discard",
+)
+def approve_reply(draft: str): pass
+```
+
+Supported kinds: `confirm` (yes/no), `edit` (review and edit text), `input` (free-form entry), `select` (choose from options), and `ack` (acknowledge a completed event). Human actions are visible in ZipperChat by default and can be hidden with `visible=False`.
+
+See `examples/human_approval.py` for approval, notes, and priority selection patterns.
+
+## Examples
+
+**Start here** (no API key needed):
 
 ```bash
-python examples/parallel.py           # fan-out/fan-in across parallel branches (no key needed)
-python examples/parallel_cyclic.py    # feedback pattern between shared lifelines (no key needed)
-python examples/cpl_test.py           # causal guard ignores stale relay status (no key needed)
-python examples/field_terms.py        # field-term guard: cross-lifeline version check (no key needed)
-python examples/coregion.py           # unordered receives from independent analysts (no key needed)
-python examples/dashboard.py          # several top-level workflow runs in one ZipperChat page
-python examples/nested_dashboard.py   # several dashboard runs, each with nested subworkflows
-python examples/write_tweet.py        # draft-and-approve with mock LLM (no key needed)
-python examples/write_tweet_local.py  # same workflow through a local OpenAI-compatible server
-python examples/human_approval.py     # human priority, notes, and approval in ZipperChat (no key needed)
-python examples/diagnosis.py          # two LLMs reach consensus iteratively (no key needed with mock)
+python examples/write_tweet.py        # draft-and-approve loop with mock LLM
+python examples/parallel.py           # fan-out/fan-in across parallel branches
+python examples/command_center.py --mock  # email triage + Telegram commands, two parallel streams
+```
+
+**Core coordination patterns:**
+
+```bash
+python examples/diagnosis.py          # two LLMs reach consensus iteratively
 python examples/contract_review.py    # four agents review a contract in parallel (needs MISTRAL_API_KEY)
 python examples/morning_digest.py     # inbox triage: parallel analysis, owned branching (needs MISTRAL_API_KEY)
-python examples/arithmetic_planner.py # LLM decomposes and evaluates an arithmetic expression in parallel (needs OPENAI_API_KEY)
+python examples/human_approval.py     # human priority, notes, and approval in ZipperChat
+```
+
+**Advanced features:**
+
+```bash
+python examples/cpl_test.py           # causal guard ignores stale relay status
+python examples/field_terms.py        # cross-lifeline version check via field-term guard
+python examples/arithmetic_planner.py # LLM decomposes an expression and evaluates it in parallel (needs OPENAI_API_KEY)
 python examples/planner.py            # LLM designs and runs its own sub-workflow (needs OPENAI_API_KEY)
+python examples/parallel_cyclic.py    # feedback pattern between shared lifelines
+python examples/coregion.py           # unordered receives from independent analysts
+python examples/dashboard.py          # several workflow runs in one ZipperChat page
+python examples/nested_dashboard.py   # dashboard runs with nested subworkflows
+python examples/write_tweet_local.py  # hello-world through a local OpenAI-compatible server
 ```
 
 Open **http://localhost:8765** to watch the agents exchange messages in real time as a message sequence chart.
 
-For applications that call several workflows from ordinary Python code, ZipperChat
-can show multiple independent runs on the same page:
+For applications that call several workflows from ordinary Python code, ZipperChat can show multiple independent runs on the same page:
 
 ```python
 from zipperchat import WebTrace
@@ -186,7 +255,7 @@ second_workflow.configure(ui=True, trace=dashboard)
 
 ## How it works
 
-The code is organized as a pipeline of layers that mirror the paper almost literally. A user writes a global workflow in Python DSL syntax; `@workflow` rewrites it into an immutable IR; the projection layer turns that global IR into one local program per lifeline; the runtime starts one thread per lifeline and connects them with FIFO queues. The optional `@planner` primitive asks an LLM to generate a new global workflow at runtime, then runs it through the exact same pipeline, so the guarantee holds there too.
+The code is organized as a pipeline of layers that mirror the paper almost literally. A user writes a global workflow in Python DSL syntax; `@workflow` rewrites it into an immutable IR; the projection layer turns that global IR into one local program per lifeline; the runtime starts one thread per lifeline and connects them with FIFO queues.
 
 ### Diagnosis consensus
 
@@ -222,7 +291,7 @@ def diagnosis_consensus(notes: str @ User, diagnosis: str @ User) -> str:
 
 `while cond @ LLM1` means LLM1 owns the loop guard and broadcasts the decision each iteration. `if cond @ Owner` works the same way for conditionals. ZipperGen figures out which other agents need to receive the decision and generates the control messages automatically.
 
-Workflows that return a value end with `return var @ Lifeline`. This declares which lifeline owns the result once all agents have finished: it is a declaration, not a control flow statement. No matter which branches executed, the result always lands in the same place. Output-free workflows can use `-> tuple` and omit the return.
+Workflows that return a value end with `return var @ Lifeline`. This declares which lifeline owns the result once all agents have finished. It is a declaration, not a control flow statement. No matter which branches executed, the result always lands in the same place. Output-free workflows can use `-> tuple` and omit the return.
 
 ## Defining LLM actions
 
@@ -264,9 +333,32 @@ def summarise(notes: str) -> None: ...
 def approve(tweet: str) -> None: ...
 ```
 
-## Dynamic planning
+## Advanced
 
-For tasks where the coordination structure isn't known in advance, `@planner` lets an LLM design the workflow at runtime. Give it a description, an action vocabulary, and a set of lifelines; it generates a complete sub-workflow, which ZipperGen validates and executes.
+### Causal runtime guards
+
+ZipperGen supports causal-past guards for workflows where the latest locally received value may be stale. In `examples/cpl_test.py`, a device reports its status through two relays. The indicator receives a newer `on=True` update before an older delayed `on=False` update. A local guard on `on` would follow the delayed stale message, but a causal guard reads the latest causally visible device state:
+
+```python
+latest_device_on = At[Device].on == True
+
+if latest_device_on @ Indicator:
+    ...
+```
+
+**Field terms** let a guard compare its local variables with another lifeline's latest causally visible variables. Every message automatically piggybacks the sender's latest variable snapshot, so the receiving lifeline's monitor has it for free:
+
+```python
+version_matches = At[Reviewer].rev_version == Here.version
+```
+
+Here `At[Reviewer].rev_version` is the Reviewer's `rev_version` at its latest causally visible event, while `Here.version` is the deciding lifeline's current `version`. The Reviewer's version was never explicitly sent to the Gatekeeper; it arrives implicitly on the verdict message.
+
+The result is determined entirely from the asynchronous communication structure: vector clocks record which events are causally visible, and message-carried views provide the latest guard values at those visible events.
+
+### Dynamic planning
+
+For tasks where the coordination structure is not known in advance, `@planner` lets an LLM design the workflow at runtime. Give it a description, an action vocabulary, and a set of lifelines; it generates a complete sub-workflow, which ZipperGen validates structurally and then executes. The same coordination guarantee applies to the generated workflow once it validates.
 
 Actions in the vocabulary can be atomic tools (`@pure` functions or `@llm` calls) or full skills: entire `@workflow`s that appear to the planner as a single typed action but internally run their own verified coordination protocol.
 
@@ -313,7 +405,7 @@ def generated_workflow(expression: str @ Planner) -> str:
     return result @ Planner
 ```
 
-The LLM parsed the expression, identified that `(2 - 4)`, `(2 + 3)`, and `(3 - 2)` are all independent, evaluated them in parallel across three calculators, checked the denominator before dividing, and wired the join correctly, all from the description and action vocabulary alone. ZipperGen validates the generated workflow structurally before running it.
+The LLM parsed the expression, identified that `(2 - 4)`, `(2 + 3)`, and `(3 - 2)` are all independent, evaluated them in parallel across three calculators, checked the denominator before dividing, and wired the join correctly, all from the description and action vocabulary alone.
 
 **`allow`** controls extensions: `"pure"` (define helper functions), `"llm"` (define new LLM actions), `"if"` (conditional branching), `"while"` (loops). Default is `[]` (pre-defined vocabulary only, linear workflows).
 
@@ -378,10 +470,7 @@ local_llm = make_openai_backend(
 write_tweet.configure(backend=local_llm, ui=True)
 ```
 
-For a remote GPU server, run the model server on the remote machine with a local
-bind address and use SSH port forwarding, for example
-`ssh -L 8000:127.0.0.1:8000 lmf-gpu`. See `examples/write_tweet_local.py`
-for a complete local-model variant of the hello-world workflow.
+For a remote GPU server, run the model server on the remote machine with a local bind address and use SSH port forwarding, for example `ssh -L 8000:127.0.0.1:8000 lmf-gpu`. See `examples/write_tweet_local.py` for a complete local-model variant of the hello-world workflow.
 
 The built-in backends read these environment variables:
 
@@ -407,15 +496,15 @@ my_workflow.configure(backend=my_backend, timeout=60)
 
 ## Why not LangGraph / CrewAI / AutoGen?
 
-The short answer: those frameworks leave coordination up to the agents or the graph structure. ZipperGen makes coordination explicit and proves it correct.
+Three different answers to the same coordination problem:
 
-**LangGraph** uses a graph of nodes and edges. Conditional branching requires a router function that returns the name of the next node. The graph structure implies an execution order, but protocol-level deadlock-freedom and projection correctness are not the focus of the framework. It's a good fit when you need fine-grained control over an irregular flow and are comfortable reasoning about the graph yourself.
+**LangGraph** is state-centric orchestration. Control flow is a graph of nodes and edges; conditional branching requires a router function that returns the name of the next node. It is a good fit when you need fine-grained control over an irregular flow and are comfortable reasoning about the graph yourself.
 
-**CrewAI and AutoGen** are conversation-based: agents exchange messages and decide what to do next. The coordination is mostly emergent from the agent prompts. This works well for open-ended tasks where you can't or don't want to specify the coordination structure in advance. The tradeoff is that protocol behavior is harder to audit and outside the scope of those frameworks to prove correct.
+**CrewAI and AutoGen** are conversation-centric orchestration. Agents exchange messages and decide what to do next. Coordination is mostly emergent from the agent prompts. This works well for open-ended tasks where you cannot or do not want to specify the structure in advance. The tradeoff is that protocol behavior is harder to audit.
 
-**ZipperGen** requires you to write the coordination structure explicitly. That's a constraint. In return, you get a protocol that can be read by a person, checked by a tool, and submitted to anyone who needs to understand how the system behaves, along with a proof that it terminates without deadlock. If your use case involves a fixed or semi-fixed coordination structure (which most production systems do), the explicitness is an asset.
+**ZipperGen** is protocol-centric orchestration. You write the coordination structure explicitly as a global protocol, then ZipperGen projects it to each agent with a structural correctness guarantee. That is a constraint. In return, you get a protocol that can be read by a person, checked by a tool, and submitted to anyone who needs to understand how the system behaves, along with a structural guarantee against coordination deadlocks.
 
-If the structure genuinely isn't known in advance, use `@planner`; the LLM generates the sub-workflow, ZipperGen validates it structurally, and the guarantee still holds.
+If the structure genuinely is not known in advance, use `@planner`: the LLM generates the sub-workflow, ZipperGen validates it structurally, and the coordination guarantee applies to the generated workflow once it passes validation.
 
 ## Formal foundation
 

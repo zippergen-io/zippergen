@@ -140,8 +140,9 @@ INBOX = [
 ]
 
 CHAT_MESSAGES = [
-    "From: Alice\n\nCan you send me the Q1 report when you get a chance?",
-    "From: Bob\n\nIs the team meeting tomorrow still on?",
+    "Create a task: send Alice the Q1 report tomorrow",
+    "Cancel the team meeting tomorrow",
+    "Draft an email to Alice saying I will send the report by Friday",
 ]
 
 _email_meta: dict[str, dict] = {}
@@ -692,7 +693,7 @@ def draft_meeting_invitation(chat_msg: str, chat_event_details: str) -> None: ..
     prefill="{reply}",
     instruction="Edit the proposed reply or submit as-is",
     outputs=["edit: str"],
-    submit_label="Approve & send →",
+    submit_label="Save draft →",
     cancel_label="Decline",
 )
 def approve_or_edit(email: str, reply: str): pass
