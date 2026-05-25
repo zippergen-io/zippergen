@@ -68,6 +68,13 @@ def _retry_json_request(req: request.Request, *, timeout: float, max_retries: in
                 time.sleep(1.0 + attempt)
                 continue
             raise RuntimeError(f"Could not reach API: {exc.reason}") from exc
+        except OSError as exc:
+            # Catches ConnectionResetError and similar low-level socket errors
+            # that occur during response reading, after urlopen() succeeds.
+            if attempt < max_retries:
+                time.sleep(1.0 + attempt)
+                continue
+            raise RuntimeError(f"Connection error: {exc}") from exc
     raise RuntimeError("Unreachable.")
 
 

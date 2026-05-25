@@ -1,26 +1,24 @@
 # pyright: reportInvalidTypeForm=false, reportGeneralTypeIssues=false, reportOperatorIssue=false, reportCallIssue=false, reportAttributeAccessIssue=false, reportUnusedExpression=false, reportUnboundVariable=false, reportReturnType=false, reportArgumentType=false
 
-"""Personal command center: three parallel streams sharing lifelines.
+"""Personal command center: two parallel streams sharing lifelines.
 
-Three independent streams all route decisions through a single shared User lifeline:
+Two independent streams both route decisions through a single shared User lifeline:
 
-  Email branch    — triage incoming emails:
-                      spam / quick_reply / scheduling_reply / task / careful_reply
-  Calendar branch — prepare briefings for upcoming meetings (Researcher → User)
-  Chat branch     — Telegram as control interface (all messages are owner commands):
-                      schedule_meeting / cancel_meeting / create_task
-                      create_event / draft_email / general
+  Email branch — triage incoming emails:
+                   spam / reply / scheduling_reply / task / cancellation
+  Chat branch  — Telegram as control interface (all messages are owner commands):
+                   schedule_meeting / cancel_meeting / create_task
+                   create_event / draft_email / general
 
 Adding a new stream never touches existing ones — ZipperGen's projection ensures
 each lifeline receives only the messages it needs.  Writer handles both email
-drafts and Chat replies; User is the human-in-the-loop for all three streams;
-Calendar cross-participates in scheduling emails and meeting prep.
+drafts and Chat replies; User is the human-in-the-loop for both streams.
 
 Modes
 -----
---mock   Fake inbox + meetings + chat messages, mock LLM responses.
---live   All three streams connect to real Google APIs (Gmail, Calendar, Chat,
-         Tasks).  One-time setup per service:
+--mock   Fake inbox + chat messages, mock LLM responses.
+--live   Email and Chat streams connect to real services (Gmail, Calendar,
+         Tasks, Telegram).  One-time setup per service:
            python examples/gmail_client.py --setup
            python examples/google_calendar_client.py --setup
            python examples/google_tasks_client.py --setup
@@ -36,7 +34,6 @@ _gcal:    object = None
 _gchat:   object = None
 _gtasks:  object = None
 
-_briefed_meetings:    set[str] = set()
 _chat_meta:           dict[str, dict] = {}  # formatted text → ChatMeta
 _cancel_meta:         dict[str, str]  = {}  # cancel_matches text → event_id
 
@@ -46,7 +43,6 @@ _cancel_meta:         dict[str, str]  = {}  # cancel_matches text → event_id
 
 Dispatcher = Lifeline("Dispatcher")
 Writer     = Lifeline("Writer")
-Researcher = Lifeline("Researcher")
 User       = Lifeline("User")
 Mailbox    = Lifeline("Mailbox")
 Calendar   = Lifeline("Calendar")
@@ -61,8 +57,6 @@ Chat       = Lifeline("Chat")
 email        = Var("email",        str)
 route        = Var("route",        str)
 draft        = Var("draft",        str)
-outline      = Var("outline",      str)
-context      = Var("context",      str)
 reply        = Var("reply",        str)
 edit         = Var("edit",         str)
 mail_status  = Var("mail_status",  str)
@@ -73,10 +67,6 @@ availability  = Var("availability",  str)
 confirmed     = Var("confirmed",     bool)   # check_slot: User confirms/declines the proposed slot
 choice        = Var("choice",        str)    # unified slot choice going to Writer
 
-# Calendar / meeting-prep branch
-meeting          = Var("meeting",          str)
-briefing         = Var("briefing",         str)
-briefing_ack     = Var("briefing_ack",     bool)
 sched_context    = Var("sched_context",    str)  # Calendar-local; updated by scheduling_reply
 
 # Event creation (scheduling_reply branch, Calendar lifeline)
@@ -85,8 +75,6 @@ event_details    = Var("event_details",    str)
 sched_event      = Var("sched_event",      str)
 event_summary    = Var("event_summary",    str)
 ack              = Var("ack",              bool)
-
-email_summary    = Var("email_summary",    str)
 
 # Cancellation branch — email stream (exclusive to email branch)
 cancel_query    = Var("cancel_query",    str)
@@ -149,11 +137,6 @@ INBOX = [
         "on your experience with distributed systems and formal verification? "
         "We are particularly interested in your approach to message-passing correctness."
     ),
-]
-
-MEETINGS = [
-    "Standup — 09:30\nAttendees: Sarah, John, Alice\nRoom: Zoom",
-    "Product review — 14:00\nAttendees: Sarah, Product Team\nRoom: Conference A",
 ]
 
 CHAT_MESSAGES = [
@@ -324,32 +307,6 @@ def send_chat_reply(chat_msg: str, reply: str) -> str:
     return "sent_mock"
 
 
-# ---------------------------------------------------------------------------
-# Infrastructure — calendar / meeting prep
-# ---------------------------------------------------------------------------
-
-def meeting_soon() -> bool:
-    if _gcal is not None:
-        meta = _gcal.fetch_next_meeting(window_minutes=30)
-        return meta is not None and meta['id'] not in _briefed_meetings
-    return bool(MEETINGS)
-
-
-@pure
-def pop_next_meeting() -> str:
-    if _gcal is not None:
-        meta = _gcal.fetch_next_meeting(window_minutes=30)
-        if meta is None:
-            return ""
-        text = (
-            f"{meta['summary']}\nWhen: {meta['start']} – {meta['end']}"
-            f"\nOrganizer: {meta['organizer']}"
-            + (f"\n\n{meta['description']}" if meta['description'] else "")
-        )
-        _briefed_meetings.add(meta['id'])
-        return text
-    return MEETINGS.pop(0)
-
 
 @pure
 def check_requested_slot(email: str) -> str:
@@ -488,20 +445,19 @@ def accept_or_skip(edit: str) -> str:
 @llm(
     system="""
 You are an email triage assistant.
-Classify the email as exactly one of six labels:
-  spam              — unsolicited or promotional
-  quick_reply       — simple request answerable in one sentence
-  scheduling_reply  — requests a meeting or asks about availability
-  cancellation      — requests cancellation of an existing meeting or event
-  task              — asks you to do something that should be tracked as a to-do
-  careful_reply     — requires research or careful composition
+Classify the email as exactly one of five labels:
+  spam         — unsolicited or promotional
+  reply        — needs a written reply (any complexity)
+  scheduling   — requests a meeting or asks about availability
+  cancellation — requests cancellation of an existing meeting or event
+  task         — asks you to do something that should be tracked as a to-do
 Reply with the single label and nothing else.
 """.strip(),
     user="{email}",
     parse="text",
     outputs=(("route", str),),
 )
-def classify(email: str) -> None: ...
+def classify_email(email: str) -> None: ...
 
 
 @llm(
@@ -533,54 +489,6 @@ def write_draft(email: str) -> None: ...
 
 @llm(
     system="""
-You are a research assistant. Given an email, provide 2–3 sentences
-of relevant background context the writer should know before replying.
-""".strip(),
-    user="{email}",
-    parse="text",
-    outputs=(("context", str),),
-)
-def research(email: str) -> None: ...
-
-
-@llm(
-    system="""
-You are a professional email assistant.
-Read the email and plan your reply: identify the key points to address,
-the appropriate tone, and the reply structure.
-Write a brief outline (3–5 bullet points), not the full reply text.
-""".strip(),
-    user="{email}",
-    parse="text",
-    outputs=(("outline", str),),
-)
-def sketch_reply(email: str) -> None: ...
-
-
-@llm(
-    system="""
-You are a professional email assistant.
-Write a complete, polished reply using the reply outline and the background context.
-Keep it professional and under four sentences.
-""".strip(),
-    user="""
-Email:
-{email}
-
-Reply outline:
-{outline}
-
-Context:
-{context}
-""".strip(),
-    parse="text",
-    outputs=(("reply", str),),
-)
-def write_reply(email: str, outline: str, context: str) -> None: ...
-
-
-@llm(
-    system="""
 You are a professional email assistant.
 Write a concise, polite scheduling reply confirming the chosen slot or
 proposing it to the sender. Keep it under three sentences.
@@ -596,23 +504,6 @@ Scheduling decision:
     outputs=(("reply", str),),
 )
 def write_scheduling_reply(email: str, choice: str) -> None: ...
-
-
-@llm(
-    system="""
-You are a meeting preparation assistant.
-Given a meeting title, time, and attendees, write a concise briefing:
-- Inferred objective (1 sentence)
-- Key attendees and their likely roles
-- 2–3 suggested talking points or questions to raise
-- Any preparation recommended
-Keep it under 150 words.
-""".strip(),
-    user="{meeting}",
-    parse="text",
-    outputs=(("briefing", str),),
-)
-def prepare_meeting_briefing(meeting: str) -> None: ...
 
 
 @llm(
@@ -794,6 +685,7 @@ def draft_meeting_invitation(chat_msg: str, chat_event_details: str) -> None: ..
 # Human actions
 # ---------------------------------------------------------------------------
 
+
 @human(
     kind="edit",
     context="{email}",
@@ -827,17 +719,6 @@ def confirm_slot(email: str, availability: str): pass
     cancel_label="Decline",
 )
 def choose_from_proposed_slots(email: str, availability: str): pass
-
-
-@human(
-    kind="ack",
-    context="{briefing}",
-    instruction="{meeting}",
-    outputs=["briefing_ack: bool"],
-    submit_label="Got it",
-    visible=False,
-)
-def acknowledge_briefing(meeting: str, briefing: str): pass
 
 
 @human(
@@ -954,6 +835,35 @@ def create_calendar_event(source_msg, choice):
 
 
 @fragment
+def reply_branch(email):
+    Dispatcher(email) >> Writer(email)
+    Writer: reply = write_draft(email)
+    approve_email_reply(email, reply)
+
+
+@fragment
+def scheduling_branch(email):
+    Dispatcher(email) >> Calendar(email)
+    Calendar: sched_kind = classify_scheduling_request(email)
+    Calendar: sched_kind = normalize_route(sched_kind)
+    if (sched_kind == "check_slot") @ Calendar:
+        Calendar: availability = check_requested_slot(email)
+        Calendar(email, availability) >> User(email, availability)
+        User: confirmed = confirm_slot(email, availability)
+        User: choice = slot_from_confirm(availability, confirmed)
+    else:
+        Calendar: availability = propose_available_slots(email)
+        Calendar(email, availability) >> User(email, availability)
+        User: choice = choose_from_proposed_slots(email, availability)
+    User(email, choice) >> Writer(email, choice)
+    Writer: reply = write_scheduling_reply(email, choice)
+    approve_email_reply(email, reply)
+    User(email, choice, reply) >> Calendar(email, choice, reply)
+    Calendar: sched_context = remember_scheduling_reply(email, reply, sched_context)
+    create_calendar_event(email, choice)
+
+
+@fragment
 def task_branch(email):
     Dispatcher(email) >> Writer(email)
     Writer: (task_title, task_notes) = extract_task(email)
@@ -1044,7 +954,6 @@ def create_task_from_chat(chat_msg):
 
 @fragment
 def create_event_from_chat(chat_msg):
-    Writer(chat_msg) >> Calendar(chat_msg)
     Calendar: chat_today = todays_date()
     Calendar: chat_event_details = extract_event_details_from_command(chat_today, chat_msg)
     Calendar(chat_event_details) >> User(chat_event_details)
@@ -1083,83 +992,32 @@ def command_center():
     with parallel:
         with branch:
             # ── Email stream ──────────────────────────────────────────────
-            while True @ Dispatcher:
-                if mail_present() @ Dispatcher:
-                    Dispatcher: email = pop_pending_email()
-                    Dispatcher: route = classify(email)
+            while True @ Mailbox:
+                if mail_present() @ Mailbox:
+                    Mailbox: email = pop_pending_email()
+                    Mailbox(email) >> Dispatcher(email)
+                    Dispatcher: route = classify_email(email)
                     Dispatcher: route = normalize_route(route)
 
                     if (route == "spam") @ Dispatcher:
                         Dispatcher(email) >> Mailbox(email)
                         Mailbox: mail_status = mark_as_spam(email)
 
-                    elif (route == "quick_reply") @ Dispatcher:
-                        Dispatcher(email) >> Writer(email)
-                        Writer: draft = write_draft(email)
-                        approve_email_reply(email, draft)
-
-                    elif (route == "scheduling_reply") @ Dispatcher:
-                        # Calendar classifies the request and checks or proposes slots.
-                        Dispatcher(email) >> Calendar(email)
-                        Calendar: sched_kind = classify_scheduling_request(email)
-                        Calendar: sched_kind = normalize_route(sched_kind)
-
-                        if (sched_kind == "check_slot") @ Calendar:
-                            Calendar: availability = check_requested_slot(email)
-                            Calendar(email, availability) >> User(email, availability)
-                            User: confirmed = confirm_slot(email, availability)
-                            User: choice = slot_from_confirm(availability, confirmed)
-                        else:
-                            Calendar: availability = propose_available_slots(email)
-                            Calendar(email, availability) >> User(email, availability)
-                            User: choice = choose_from_proposed_slots(email, availability)
-
-                        User(email, choice) >> Writer(email, choice)
-                        Writer: reply = write_scheduling_reply(email, choice)
-
-                        approve_email_reply(email, reply)
-
-                        # Cross-stream: Calendar appends context and creates the calendar event.
-                        User(email, choice, reply) >> Calendar(email, choice, reply)
-                        Calendar: sched_context = remember_scheduling_reply(email, reply, sched_context)
-                        create_calendar_event(email, choice)
+                    elif (route == "scheduling") @ Dispatcher:
+                        scheduling_branch(email)
 
                     elif (route == "cancellation") @ Dispatcher:
                         cancellation_branch(email)
 
                     elif (route == "task") @ Dispatcher:
                         task_branch(email)
+                        reply_branch(email)
 
                     else:
-                        Dispatcher(email) >> Writer(email)
-                        Dispatcher(email) >> Researcher(email)
-
-                        with parallel:
-                            with branch:
-                                Writer: outline = sketch_reply(email)
-                            with branch:
-                                Researcher: context = research(email)
-
-                        Researcher(email, context) >> Writer(email, context)
-                        Writer: reply = write_reply(email, outline, context)
-                        approve_email_reply(email, reply)
+                        reply_branch(email)
 
                 else:
-                    Dispatcher: _ = wait_briefly()
-
-        with branch:
-            # ── Meeting prep stream ───────────────────────────────────────
-            # When a meeting is approaching, Researcher prepares a briefing
-            # and User is notified — independently of the email stream.
-            while True @ Calendar:
-                if meeting_soon() @ Calendar:
-                    Calendar: meeting = pop_next_meeting()
-                    Calendar(meeting) >> Researcher(meeting)
-                    Researcher: briefing = prepare_meeting_briefing(meeting)
-                    Researcher(meeting, briefing) >> User(meeting, briefing)
-                    User: briefing_ack = acknowledge_briefing(meeting, briefing)
-                else:
-                    Calendar: _ = wait_briefly()
+                    Mailbox: _ = wait_briefly()
 
         with branch:
             # ── Chat stream ───────────────────────────────────────────────
@@ -1169,21 +1027,27 @@ def command_center():
             while True @ Chat:
                 if chat_present() @ Chat:
                     Chat: chat_msg = pop_pending_chat()
-                    Chat(chat_msg) >> Writer(chat_msg)
-                    Writer: chat_route = classify_chat(chat_msg)
-                    Writer: chat_route = normalize_route(chat_route)
+                    Chat(chat_msg) >> Dispatcher(chat_msg)
+                    Dispatcher: chat_route = classify_chat(chat_msg)
+                    Dispatcher: chat_route = normalize_route(chat_route)
 
-                    if (chat_route == "schedule_meeting") @ Writer:
+                    if (chat_route == "schedule_meeting") @ Dispatcher:
+                        Dispatcher(chat_msg) >> Writer(chat_msg)
                         schedule_meeting_from_chat(chat_msg)
-                    elif (chat_route == "cancel_meeting") @ Writer:
+                    elif (chat_route == "cancel_meeting") @ Dispatcher:
+                        Dispatcher(chat_msg) >> Writer(chat_msg)
                         cancellation_chat_branch(chat_msg)
-                    elif (chat_route == "create_task") @ Writer:
+                    elif (chat_route == "create_task") @ Dispatcher:
+                        Dispatcher(chat_msg) >> Writer(chat_msg)
                         create_task_from_chat(chat_msg)
-                    elif (chat_route == "create_event") @ Writer:
+                    elif (chat_route == "create_event") @ Dispatcher:
+                        Dispatcher(chat_msg) >> Calendar(chat_msg)
                         create_event_from_chat(chat_msg)
-                    elif (chat_route == "draft_email") @ Writer:
+                    elif (chat_route == "draft_email") @ Dispatcher:
+                        Dispatcher(chat_msg) >> Writer(chat_msg)
                         draft_email_from_chat(chat_msg)
                     else:
+                        Dispatcher(chat_msg) >> Writer(chat_msg)
                         Writer: chat_draft = draft_chat_reply(chat_msg)
                         approve_chat_reply(chat_msg, chat_draft)
                 else:
