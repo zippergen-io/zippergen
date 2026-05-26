@@ -390,7 +390,7 @@ _HTML = r"""<!DOCTYPE html>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
 <style>
 :root {
-  --bg:              #FCFCF4;
+  --bg:              #FCFCFA;
   --panel:           #ffffff;
   --rule:            rgba(20,20,40,0.08);
   --text:            #14141A;
@@ -438,8 +438,8 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); font
 }
 .sg-hdr {
   display: flex; align-items: baseline; justify-content: space-between;
-  padding: 0 28px 8px; font-family: var(--sans); font-size: 11px; font-weight: 600;
-  color: var(--text); text-transform: uppercase; letter-spacing: 0.06em;
+  padding: 0 28px 8px; font-family: var(--sans); font-size: 14px; font-weight: 600;
+  color: var(--text); letter-spacing: 0.02em;
   cursor: pointer; user-select: none;
 }
 .sg-hdr:hover { color: var(--text); }
