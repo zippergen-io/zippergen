@@ -431,7 +431,7 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); font
 
 /* ── Sidebar ─────────────────────────────────────────────────────────────── */
 #sidebar { overflow-y: auto; border-right: 1px solid var(--rule); padding: 16px 0 32px; }
-.sg-group { margin-bottom: 24px; }
+.sg-group { margin-bottom: 8px; }
 .sg-group-inbox {
   border-bottom: 1px solid var(--rule);
   padding-bottom: 16px; margin-bottom: 16px;
@@ -463,8 +463,8 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); font
 .sg-row:focus { outline: none; background: rgba(0,0,0,0.05); }
 .sg-row.sg-sel { background: var(--accent-bg); color: var(--text); }
 .sg-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
-.dot-done    { background: var(--done-clr); border: none; }
-.dot-running { background: var(--text-faint); }
+.dot-done    { background: transparent; }
+.dot-running { background: transparent; }
 .dot-pending { background: var(--accent-attn); animation: pulse 1.2s ease-in-out infinite; }
 .sg-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sg-you  {
