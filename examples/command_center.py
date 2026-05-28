@@ -127,12 +127,13 @@ _  = Var("_", str)  # throwaway output for wait_briefly()
 # ---------------------------------------------------------------------------
 
 INBOX = [
-    "Hi, can we move our Friday 2pm catch-up to Monday at 10am? Thanks, Sarah",
-    "CONGRATULATIONS! You have been selected for a $1,000,000 prize. Click now!",
-    "Could we find some time next week for a quick sync? I'm flexible on timing.",
-    "Please review the proposal doc and share your comments by end of week — I need them for the board meeting.",
-    "Hey, could you cancel our Thursday standup? I have a conflict that day.",
+    "From: Sarah Müller <sarah.mueller@example.com>\nSubject: Moving Friday catch-up\n\nHi, can we move our Friday 2pm catch-up to Monday at 10am? Thanks, Sarah",
+    "From: noreply@prize-alert.com\nSubject: CONGRATULATIONS — you have been selected!\n\nCONGRATULATIONS! You have been selected for a $1,000,000 prize. Click now!",
+    "From: Tom Nakamura <tom.nakamura@example.com>\nSubject: Quick sync next week?\n\nCould we find some time next week for a quick sync? I'm flexible on timing.",
+    "From: Priya Sharma <priya.sharma@example.com>\nSubject: Proposal doc review\n\nPlease review the proposal doc and share your comments by end of week — I need them for the board meeting.",
+    "From: Alex Rivera <alex.rivera@example.com>\nSubject: Cancel Thursday standup\n\nHey, could you cancel our Thursday standup? I have a conflict that day.",
     (
+        "From: recruiting@researchlab.example.com\nSubject: Follow-up on your application\n\n"
         "Dear candidate, following up on your application: could you elaborate "
         "on your experience with distributed systems and formal verification? "
         "We are particularly interested in your approach to message-passing correctness."
@@ -428,16 +429,6 @@ def create_scheduled_event(event_details: str) -> str:
 # Shared fallback
 # ---------------------------------------------------------------------------
 
-@pure
-def accept_edit(edit: str, reply: str) -> str:
-    return edit.strip() if edit.strip() else reply
-
-
-@pure
-def accept_or_skip(edit: str) -> str:
-    """Returns the edited text, or '' if the user clicked Skip."""
-    return edit.strip()
-
 
 # ---------------------------------------------------------------------------
 # LLM actions
@@ -694,7 +685,7 @@ def draft_meeting_invitation(chat_msg: str, chat_event_details: str) -> None: ..
     instruction="Edit the proposed reply or submit as-is",
     outputs=["edit: str"],
     submit_label="Save draft →",
-    cancel_label="Decline",
+    cancel_label="Skip",
 )
 def approve_or_edit(email: str, reply: str): pass
 
@@ -811,18 +802,18 @@ def confirm_task_from_chat(chat_msg: str, chat_task_title: str, chat_task_notes:
 def approve_email_reply(email, reply):
     Writer(email, reply) >> User(email, reply)
     User: edit = approve_or_edit(email, reply)
-    User: reply = accept_edit(edit, reply)
-    User(email, reply) >> Mailbox(email, reply)
-    Mailbox: mail_status = create_draft(email, reply)
+    if edit @ User:
+        User(email, edit) >> Mailbox(email, edit)
+        Mailbox: mail_status = create_draft(email, edit)
 
 
 @fragment
 def approve_chat_reply(chat_msg, chat_draft):
     Writer(chat_msg, chat_draft) >> User(chat_msg, chat_draft)
     User: chat_edit = approve_or_edit_chat(chat_msg, chat_draft)
-    User: chat_reply = accept_edit(chat_edit, chat_draft)
-    User(chat_msg, chat_reply) >> Chat(chat_msg, chat_reply)
-    Chat: chat_status = send_chat_reply(chat_msg, chat_reply)
+    if chat_edit @ User:
+        User(chat_msg, chat_edit) >> Chat(chat_msg, chat_edit)
+        Chat: chat_status = send_chat_reply(chat_msg, chat_edit)
 
 
 @fragment
@@ -870,9 +861,9 @@ def task_branch(email):
     Writer: (task_title, task_notes) = extract_task(email)
     Writer(email, task_title, task_notes) >> User(email, task_title, task_notes)
     User: task_edit = confirm_task(email, task_title, task_notes)
-    User: task_title = accept_edit(task_edit, task_title)
-    User(task_title, task_notes) >> TasksTool(task_title, task_notes)
-    TasksTool: task_status = add_task(task_title, task_notes)
+    if task_edit @ User:
+        User(task_edit, task_notes) >> TasksTool(task_edit, task_notes)
+        TasksTool: task_status = add_task(task_edit, task_notes)
 
 
 @fragment
@@ -905,11 +896,14 @@ def cancellation_chat_branch(chat_msg):
         Writer: chat_email_draft = write_cancellation_email(chat_msg, chat_cancel_status)
         Writer(chat_msg, chat_email_draft) >> User(chat_msg, chat_email_draft)
         User: chat_email_edit = approve_email_draft_from_chat(chat_msg, chat_email_draft)
-        User: chat_email_reply = accept_or_skip(chat_email_edit)
-        User(chat_msg, chat_email_reply) >> Mailbox(chat_msg, chat_email_reply)
-        Mailbox: chat_mail_status = create_draft_from_instruction(chat_msg, chat_email_reply)
-        Mailbox(chat_mail_status) >> Chat(chat_mail_status)
-        Chat: chat_status = send_chat_reply(chat_msg, chat_mail_status)
+        if chat_email_edit @ User:
+            User(chat_msg, chat_email_edit) >> Mailbox(chat_msg, chat_email_edit)
+            Mailbox: chat_mail_status = create_draft_from_instruction(chat_msg, chat_email_edit)
+            Mailbox(chat_mail_status) >> Chat(chat_mail_status)
+            Chat: chat_status = send_chat_reply(chat_msg, chat_mail_status)
+        else:
+            User(chat_msg, chat_cancel_status) >> Chat(chat_msg, chat_cancel_status)
+            Chat: chat_status = send_chat_reply(chat_msg, chat_cancel_status)
     else:
         User: chat_cancel_status = skip_cancellation()
         User(chat_msg, chat_cancel_status) >> Chat(chat_msg, chat_cancel_status)
@@ -930,11 +924,14 @@ def schedule_meeting_from_chat(chat_msg):
         Writer: chat_email_draft = draft_meeting_invitation(chat_msg, chat_event_details)
         Writer(chat_msg, chat_email_draft) >> User(chat_msg, chat_email_draft)
         User: chat_email_edit = approve_email_draft_from_chat(chat_msg, chat_email_draft)
-        User: chat_email_reply = accept_or_skip(chat_email_edit)
-        User(chat_msg, chat_email_reply) >> Mailbox(chat_msg, chat_email_reply)
-        Mailbox: chat_mail_status = create_draft_from_instruction(chat_msg, chat_email_reply)
-        Mailbox(chat_mail_status) >> Chat(chat_mail_status)
-        Chat: chat_status = send_chat_reply(chat_msg, chat_mail_status)
+        if chat_email_edit @ User:
+            User(chat_msg, chat_email_edit) >> Mailbox(chat_msg, chat_email_edit)
+            Mailbox: chat_mail_status = create_draft_from_instruction(chat_msg, chat_email_edit)
+            Mailbox(chat_mail_status) >> Chat(chat_mail_status)
+            Chat: chat_status = send_chat_reply(chat_msg, chat_mail_status)
+        else:
+            User(chat_msg, chat_sched_event) >> Chat(chat_msg, chat_sched_event)
+            Chat: chat_status = send_chat_reply(chat_msg, chat_sched_event)
     else:
         User: chat_sched_event = decline_creation()
         User(chat_msg, chat_sched_event) >> Chat(chat_msg, chat_sched_event)
@@ -946,11 +943,11 @@ def create_task_from_chat(chat_msg):
     Writer: (chat_task_title, chat_task_notes) = extract_task_from_chat(chat_msg)
     Writer(chat_msg, chat_task_title, chat_task_notes) >> User(chat_msg, chat_task_title, chat_task_notes)
     User: chat_task_edit = confirm_task_from_chat(chat_msg, chat_task_title, chat_task_notes)
-    User: chat_task_title = accept_edit(chat_task_edit, chat_task_title)
-    User(chat_msg, chat_task_title, chat_task_notes) >> TasksTool(chat_msg, chat_task_title, chat_task_notes)
-    TasksTool: chat_task_status = add_task(chat_task_title, chat_task_notes)
-    TasksTool(chat_msg, chat_task_status) >> Chat(chat_msg, chat_task_status)
-    Chat: chat_status = send_chat_reply(chat_msg, chat_task_status)
+    if chat_task_edit @ User:
+        User(chat_msg, chat_task_edit, chat_task_notes) >> TasksTool(chat_msg, chat_task_edit, chat_task_notes)
+        TasksTool: chat_task_status = add_task(chat_task_edit, chat_task_notes)
+        TasksTool(chat_msg, chat_task_status) >> Chat(chat_msg, chat_task_status)
+        Chat: chat_status = send_chat_reply(chat_msg, chat_task_status)
 
 
 @fragment
@@ -975,11 +972,11 @@ def draft_email_from_chat(chat_msg):
     Writer: chat_email_draft = draft_email_from_instruction(chat_msg)
     Writer(chat_msg, chat_email_draft) >> User(chat_msg, chat_email_draft)
     User: chat_email_edit = approve_email_draft_from_chat(chat_msg, chat_email_draft)
-    User: chat_email_reply = accept_or_skip(chat_email_edit)
-    User(chat_msg, chat_email_reply) >> Mailbox(chat_msg, chat_email_reply)
-    Mailbox: chat_mail_status = create_draft_from_instruction(chat_msg, chat_email_reply)
-    Mailbox(chat_mail_status) >> Chat(chat_mail_status)
-    Chat: chat_status = send_chat_reply(chat_msg, chat_mail_status)
+    if chat_email_edit @ User:
+        User(chat_msg, chat_email_edit) >> Mailbox(chat_msg, chat_email_edit)
+        Mailbox: chat_mail_status = create_draft_from_instruction(chat_msg, chat_email_edit)
+        Mailbox(chat_mail_status) >> Chat(chat_mail_status)
+        Chat: chat_status = send_chat_reply(chat_msg, chat_mail_status)
 
 
 # ---------------------------------------------------------------------------

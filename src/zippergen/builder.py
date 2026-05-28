@@ -148,9 +148,10 @@ def act(
     ))
 
 
-def skip(lifeline: Lifeline) -> None:
-    """skip lifeline — local no-op."""
-    _record(SkipStmt(lifeline))
+def skip(lifeline: Lifeline | None = None) -> None:
+    """skip — ε (empty program). Optional lifeline records explicit participation."""
+    if lifeline is not None:
+        _record(SkipStmt(lifeline))
 
 
 def coregion_(body: Callable) -> None:
