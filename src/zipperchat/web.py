@@ -390,9 +390,8 @@ _HTML = r"""<!DOCTYPE html>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
 <style>
 :root {
-  --bg:              #FCFCFA;
-  --panel:           #ffffff;
-  --rule:            rgba(20,20,40,0.08);
+  --bg:              #f8fafb;
+  --panel:           #f8fafb;
   --text:            #14141A;
   --text-soft:       #3a3a5a;
   --text-mute:       #6e6e92;
@@ -406,6 +405,16 @@ _HTML = r"""<!DOCTYPE html>
   --done-clr:        #9aaa2a;
   --sans:       'IBM Plex Sans', system-ui, sans-serif;
   --mono:       'Space Mono', 'Courier New', monospace;
+  /* Column view palette */
+  --col-op-fill:    #d8e0fb;
+  --col-op-bdr:     #9aa9ec;
+  --col-send-fill:  #cdeadb;
+  --col-send-bdr:   #7fc4a6;
+  --col-recv-fill:  #ddf3eb;
+  --col-recv-bdr:   #a8d5c4;
+  --col-sel:        #2f9168;
+  --rule:         #e7ebee;
+  --rule-hdr:     #dde2e6;
 }
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 html, body { height: 100%; overflow: hidden; }
@@ -416,13 +425,27 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); font
 #app  { display: flex; flex-direction: column; height: 100vh; }
 #hdr  {
   display: flex; align-items: center; gap: 20px;
-  padding: 0 56px 0 25px; height: 70px; flex-shrink: 0;
-  border-bottom: 1px solid var(--rule); background: var(--bg);
+  padding: 0 24px 0 25px; height: 70px; flex-shrink: 0;
+  border-bottom: 1px solid var(--rule-hdr); background: var(--bg);
 }
 #body {
   display: grid; grid-template-columns: 250px 1fr;
   flex: 1; min-height: 0; overflow: hidden;
 }
+
+/* ── View toggle ─────────────────────────────────────────────────────────── */
+.hdr-right { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+.view-toggle {
+  display: flex; gap: 2px;
+  background: rgba(20,20,40,0.06); border-radius: 8px; padding: 3px;
+}
+.vt-btn {
+  font-family: var(--sans); font-size: 12px; font-weight: 500;
+  padding: 4px 14px; border-radius: 6px; border: none; cursor: pointer;
+  background: transparent; color: var(--text-mute); transition: all .12s;
+}
+.vt-btn.vt-active { background: var(--panel); color: var(--text); box-shadow: 0 1px 3px rgba(0,0,0,.08); }
+.vt-btn:hover:not(.vt-active) { color: var(--text-soft); }
 
 /* ── Header ─────────────────────────────────────────────────────────────── */
 .hdr-logo { height: 36px; display: block; }
@@ -461,7 +484,7 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); font
 }
 .sg-row:hover { background: rgba(0,0,0,0.03); }
 .sg-row:focus { outline: none; background: rgba(0,0,0,0.05); }
-.sg-row.sg-sel { background: var(--accent-bg); color: var(--text); }
+.sg-row.sg-sel { background: var(--col-op-fill); color: var(--text); }
 .sg-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
 .dot-done    { background: transparent; }
 .dot-running { background: transparent; }
@@ -508,8 +531,8 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); font
 /* Sections */
 .ins-section { margin-bottom: 24px; }
 .ins-sec-label {
-  font-size: 11px; font-weight: 600; letter-spacing: 0.07em;
-  text-transform: uppercase; color: var(--text-mute); margin-bottom: 10px;
+  font-size: 13px; font-weight: 600;
+  color: var(--text-mute); margin-bottom: 10px;
 }
 .ins-instr-label {
   font-size: 14px; font-weight: 500; color: var(--text-soft); margin-bottom: 10px;
@@ -615,12 +638,109 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); font
 ::-webkit-scrollbar { width: 5px; height: 5px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--rule); border-radius: 3px; }
+
+/* ── Column view ─────────────────────────────────────────────────────────── */
+#view-columns {
+  flex: 1; min-height: 0;
+  display: flex; flex-direction: row;
+  overflow-x: auto; overflow-y: hidden;
+  padding: 0 25px;
+}
+.col-empty { padding: 40px 28px; font-size: 13px; color: var(--text-faint); }
+.col-lifeline {
+  flex: 0 0 250px; display: flex; flex-direction: column;
+  border-right: 1px solid var(--rule);
+}
+.col-lifeline:first-child { border-left: 1px solid var(--rule); }
+.col-hdr {
+  padding: 14px 16px 10px; font-size: 13px; font-weight: 600;
+  color: var(--text); border-bottom: 1px solid var(--rule-hdr);
+  flex-shrink: 0; letter-spacing: 0.02em; text-align: center;
+}
+.col-content { flex: 1; overflow-y: auto; padding: 8px; position: relative; }
+.col-content .col-card { margin-bottom: 0; min-height: 50px; }
+
+.col-card {
+  border: 1.5px solid var(--rule); border-radius: 5px;
+  padding: 7px 10px; margin-bottom: 7px; cursor: pointer;
+  background: var(--panel); transition: border-color .12s, background .12s;
+}
+.col-card:hover { filter: brightness(.96); }
+.col-card.col-sel { border-width: 2px; }
+.col-card.col-pending { border-width: 2px; }
+.col-card-row { display: flex; align-items: center; gap: 6px; }
+.col-card-name {
+  font-size: 12px; color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1;
+}
+.col-card-preview {
+  font-size: 10px; color: var(--text-mute); margin-top: 2px;
+  font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.col-msg-arrow { font-size: 11px; color: var(--text-soft); flex-shrink: 0; width: 14px; text-align: center; }
+.col-msg-partner { font-size: 12px; color: var(--text-soft); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* Type fills + faint borders, always visible */
+.col-act-llm, .col-act-pure, .col-act-planner {
+  background: var(--col-op-fill); border-color: var(--col-op-bdr);
+}
+.col-act-human {
+  background: var(--accent-attn-bg); border-color: var(--accent-attn);
+}
+.col-msg-send { background: var(--col-send-fill); border-color: var(--col-send-bdr); }
+.col-msg-recv { background: var(--col-recv-fill); border-color: var(--col-recv-bdr); }
+
+/* Type-specific selection borders */
+.col-act-llm.col-sel, .col-act-pure.col-sel, .col-act-planner.col-sel { border-color: var(--accent); }
+.col-act-human.col-sel   { border-color: #c53a22; }
+.col-msg-send.col-sel,
+.col-msg-recv.col-sel    { border-color: var(--col-sel); }
+
+/* ── Message arrows SVG ──────────────────────────────────────────────────── */
+#col-arrows { position: fixed; inset: 0; pointer-events: none; overflow: visible; z-index: 9; color: rgba(20,20,26,.6); }
+#col-arrows line { stroke: currentColor; stroke-width: 1.5; marker-end: url(#arr-tip); }
+
+/* Arrows toggle button */
+#btn-arrows {
+  font-family: var(--sans); font-size: 12px; font-weight: 500;
+  padding: 4px 14px; border-radius: 6px; border: 1px solid var(--rule);
+  cursor: pointer; background: transparent; color: var(--text-mute); transition: all .12s;
+}
+#btn-arrows.arr-on { background: var(--col-msg-fill); border-color: var(--col-msg-bdr); color: var(--text); }
+#btn-arrows:hover:not(.arr-on) { color: var(--text-soft); }
+
+/* ── Overlay ─────────────────────────────────────────────────────────────── */
+#col-overlay {
+  position: fixed; inset: 0; z-index: 200;
+  pointer-events: none; display: flex; justify-content: flex-end;
+}
+#col-overlay.ov-visible { pointer-events: auto; }
+#col-overlay-bg {
+  position: absolute; inset: 0;
+  background: rgba(0,0,0,0.15); opacity: 0; transition: opacity .2s;
+}
+#col-overlay.ov-visible #col-overlay-bg { opacity: 1; }
+#col-overlay-panel {
+  position: relative; width: 640px;
+  background: var(--bg); border-left: 1px solid var(--rule);
+  overflow-y: auto;
+  transform: translateX(100%); transition: transform .2s ease;
+}
+#col-overlay.ov-visible #col-overlay-panel { transform: translateX(0); }
+#col-overlay-body { padding: 32px 40px; min-height: 100%; }
 </style>
 </head>
 <body>
 <div id="app">
   <header id="hdr">
     <img src="/assets/zippergen-lockup-ink.svg" alt="ZipperGen" class="hdr-logo">
+    <div class="hdr-right">
+      <button id="btn-arrows" onclick="toggleArrows()" title="Show message arrows" style="display:none">arrows</button>
+      <div class="view-toggle">
+        <button class="vt-btn vt-active" id="btn-inbox" onclick="setView('inbox')">Inbox</button>
+        <button class="vt-btn" id="btn-columns" onclick="setView('columns')">Columns</button>
+      </div>
+    </div>
   </header>
   <div id="body">
     <div id="sidebar">
@@ -632,9 +752,26 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); font
       </div>
     </div>
   </div>
+  <div id="view-columns" style="display:none">
+    <p class="col-empty">Awaiting workflow&hellip;</p>
+  </div>
+  <div id="col-overlay">
+    <div id="col-overlay-bg"></div>
+    <div id="col-overlay-panel">
+      <div id="col-overlay-body"></div>
+    </div>
+  </div>
+  <svg id="col-arrows">
+    <defs>
+      <marker id="arr-tip" markerWidth="6" markerHeight="6" refX="6" refY="3" orient="auto">
+        <polygon points="0 0, 6 3, 0 6" fill="currentColor"/>
+      </marker>
+    </defs>
+    <g id="col-arrows-g"></g>
+  </svg>
 </div>
 <script>
-// State
+// ── State ────────────────────────────────────────────────────────────────────
 let evSrc         = null;
 const byKey       = {};
 const groups      = {};
@@ -646,11 +783,80 @@ let pending       = 0;
 let inboxTotal    = 0;
 let selectedId    = null;
 
-// DOM
-const sidebar  = document.getElementById('sidebar');
-const insBody  = document.getElementById('ins-body');
+// Column view state
+let viewMode      = 'inbox';
+const colEls      = {};   // lifeline → col-content element
+const colActCards = {};   // key (ll:seq) → card element
+const msgCards    = {};   // msgKey → {send: el, recv: el}
+let colOverlayKey = null; // key currently shown in overlay
+const colYPx      = {};   // lifeline → next available Y (px)
+const sendYPx     = {};   // msgKey → Y where send card was placed
+const COL_PAD = 8;        // top/bottom breathing room in pixels
+const COL_GAP = 10;       // gap between cards in pixels
+let showArrows    = false;
+let _arrowRaf     = null;
 
-// Helpers
+// ── DOM ──────────────────────────────────────────────────────────────────────
+const sidebar        = document.getElementById('sidebar');
+const insBody        = document.getElementById('ins-body');
+const bodyEl         = document.getElementById('body');
+const colView        = document.getElementById('view-columns');
+const colOverlay     = document.getElementById('col-overlay');
+const colOverlayBg   = document.getElementById('col-overlay-bg');
+const colOverlayBody = document.getElementById('col-overlay-body');
+const arrowsSvg      = document.getElementById('col-arrows');
+const arrowsGroup    = document.getElementById('col-arrows-g');
+
+// ── View toggle ───────────────────────────────────────────────────────────────
+function setView(mode){
+  viewMode = mode;
+  bodyEl.style.display   = mode === 'inbox'   ? 'grid' : 'none';
+  colView.style.display  = mode === 'columns' ? 'flex' : 'none';
+  document.getElementById('btn-inbox').classList.toggle('vt-active',   mode === 'inbox');
+  document.getElementById('btn-columns').classList.toggle('vt-active', mode === 'columns');
+  document.getElementById('btn-arrows').style.display = mode === 'columns' ? '' : 'none';
+  if(mode !== 'columns'){ hideColOverlay(); arrowsGroup.innerHTML=''; }
+  if(mode === 'columns' && showArrows) scheduleDrawArrows();
+}
+
+// ── Message arrows ────────────────────────────────────────────────────────────
+function scheduleDrawArrows(){
+  if(_arrowRaf) cancelAnimationFrame(_arrowRaf);
+  _arrowRaf=requestAnimationFrame(drawArrows);
+}
+
+function drawArrows(){
+  _arrowRaf=null;
+  if(!showArrows||viewMode!=='columns'){ arrowsGroup.innerHTML=''; return; }
+  let lines='';
+  Object.values(msgCards).forEach(function(pair){
+    const sEl=pair.send, rEl=pair.recv;
+    if(!sEl||!rEl) return;
+    const sRect=sEl.getBoundingClientRect();
+    const rRect=rEl.getBoundingClientRect();
+    const sCol=sEl.closest('.col-content');
+    const rCol=rEl.closest('.col-content');
+    if(!sCol||!rCol) return;
+    const sColRect=sCol.getBoundingClientRect();
+    const rColRect=rCol.getBoundingClientRect();
+    if(sRect.bottom<sColRect.top||sRect.top>sColRect.bottom) return;
+    if(rRect.bottom<rColRect.top||rRect.top>rColRect.bottom) return;
+    const sCx=(sRect.left+sRect.right)/2, rCx=(rRect.left+rRect.right)/2;
+    const x1=rCx>=sCx ? sRect.right : sRect.left;
+    const x2=rCx>=sCx ? rRect.left  : rRect.right;
+    const y1=(sRect.top+sRect.bottom)/2, y2=(rRect.top+rRect.bottom)/2;
+    lines+='<line x1="'+x1+'" y1="'+y1+'" x2="'+x2+'" y2="'+y2+'"/>';
+  });
+  arrowsGroup.innerHTML=lines;
+}
+
+function toggleArrows(){
+  showArrows=!showArrows;
+  document.getElementById('btn-arrows').classList.toggle('arr-on', showArrows);
+  drawArrows();
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
 function esc(s){ return String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
 function isCtrl(v){ return typeof v==='string'&&v.startsWith('κ_ctrl_'); }
 function fmtV(v){
@@ -665,7 +871,7 @@ function refreshCount(){ updateInboxBadge(); }
 // Fold toggle
 function toggleGroup(grpEl){ grpEl.classList.toggle('sg-folded'); }
 
-// Inbox
+// ── Inbox ─────────────────────────────────────────────────────────────────────
 function ensureInbox(){
   if(document.getElementById('grp-inbox')) return;
   const em=sidebar.querySelector('.sb-empty'); if(em) em.remove();
@@ -710,7 +916,7 @@ function updateInboxBadge(){
   if(cnt) cnt.textContent=pending+' / '+inboxTotal;
 }
 
-// Sidebar
+// ── Sidebar ───────────────────────────────────────────────────────────────────
 function ensureGroup(ll){
   if(groups[ll]) return;
   groups[ll]=[]; lifelines.push(ll);
@@ -762,13 +968,15 @@ function selectAction(key){
   renderInspector();
 }
 
-// Inspector
-function renderInspector(){
-  if(!selectedId||!byKey[selectedId]){
-    insBody.innerHTML='<div class="ins-empty-state">Click an action to inspect it</div>';
+// ── Inspector ─────────────────────────────────────────────────────────────────
+function renderInspector(overrideKey, targetEl, afterInput){
+  const key = overrideKey !== undefined ? overrideKey : selectedId;
+  const el  = targetEl || insBody;
+  if(!key||!byKey[key]){
+    el.innerHTML='<div class="ins-empty-state">Click an action to inspect it</div>';
     return;
   }
-  const a=byKey[selectedId];
+  const a=byKey[key];
   const req=a.reqId?reqMap.get(a.reqId):null;
   const hp=req&&!req.resolved&&a.kind==='human';
   const hd=req&&req.resolved;
@@ -777,7 +985,6 @@ function renderInspector(){
 
   const title=isHuman?(req&&req.instruction?req.instruction:a.name):a.name;
   const isEmailCtx=hp&&req&&req.context&&parseEmailMeta(req.context)!==null;
-  // show title for: non-human, done human, confirm (question), or ack (notification)
   const showTitle=!isHuman||hd||(hp&&req&&(req.kind==='confirm'||req.kind==='ack'));
   let html='<div class="ins-meta">'
     +'<span class="ins-meta-ll">'+esc(a.lifeline)+'</span>'
@@ -793,8 +1000,8 @@ function renderInspector(){
   else if(hd) html+=renderHumanDone(req);
   else        html+=renderDoneSection(a);
 
-  insBody.innerHTML=html;
-  if(hp) wireInputs(a.reqId,req);
+  el.innerHTML=html;
+  if(hp) wireInputs(a.reqId, req, afterInput||null, el);
 }
 
 function renderCtxHtml(text){
@@ -912,28 +1119,30 @@ function renderDoneSection(a){
   return h;
 }
 
-// Wire inputs
+// ── Wire inputs ───────────────────────────────────────────────────────────────
 let _cmdHandler=null;
-function wireInputs(req_id,req){
+function wireInputs(req_id, req, afterInput, containerEl){
+  containerEl = containerEl || insBody;
   if(_cmdHandler){ document.removeEventListener('keydown',_cmdHandler); _cmdHandler=null; }
+  const sub = function(val){ doSubmit(req_id,val); if(afterInput) afterInput(); };
   if(req.kind==='ack'||req.kind==='confirm'){
-    const yes=insBody.querySelector('.btn-approve'),no=insBody.querySelector('.btn-secondary');
+    const yes=containerEl.querySelector('.btn-approve'),no=containerEl.querySelector('.btn-secondary');
     setTimeout(function(){ yes.disabled=false; if(no) no.disabled=false; },600);
-    yes.onclick=function(){ doSubmit(req_id,'true'); };
-    if(no) no.onclick=function(){ doSubmit(req_id,'false'); };
+    yes.onclick=function(){ sub('true'); };
+    if(no) no.onclick=function(){ sub('false'); };
     _cmdHandler=function(e){
-      if((e.metaKey||e.ctrlKey)&&e.key==='Enter'&&!yes.disabled){ e.preventDefault(); doSubmit(req_id,'true'); }
+      if((e.metaKey||e.ctrlKey)&&e.key==='Enter'&&!yes.disabled){ e.preventDefault(); sub('true'); }
     };
     document.addEventListener('keydown',_cmdHandler);
   } else {
-    const ta=insBody.querySelector('.ea-ta,.ins-ta'),btn=insBody.querySelector('.btn-approve');
-    const dec=insBody.querySelector('.btn-secondary');
+    const ta=containerEl.querySelector('.ea-ta,.ins-ta'),btn=containerEl.querySelector('.btn-approve');
+    const dec=containerEl.querySelector('.btn-secondary');
     setTimeout(function(){ btn.disabled=false; if(dec) dec.disabled=false; },800);
     setTimeout(function(){ ta.focus({preventScroll:true}); },900);
-    btn.onclick=function(){ doSubmit(req_id,ta.value); };
-    if(dec) dec.onclick=function(){ const r=reqMap.get(req_id); if(r) r.declined=true; doSubmit(req_id,''); };
+    btn.onclick=function(){ sub(ta.value); };
+    if(dec) dec.onclick=function(){ const r=reqMap.get(req_id); if(r) r.declined=true; sub(''); };
     _cmdHandler=function(e){
-      if((e.metaKey||e.ctrlKey)&&e.key==='Enter'&&!btn.disabled){ e.preventDefault(); doSubmit(req_id,ta.value); }
+      if((e.metaKey||e.ctrlKey)&&e.key==='Enter'&&!btn.disabled){ e.preventDefault(); sub(ta.value); }
     };
     document.addEventListener('keydown',_cmdHandler);
   }
@@ -943,7 +1152,154 @@ function doSubmit(req_id,val){
   fetch('/human-input',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:req_id,value:val})});
 }
 
-// Event handlers
+// ── Column view ───────────────────────────────────────────────────────────────
+function msgKey(e){ return e.from+'→'+e.to+'@'+(e.channel||'')+'#'+e.seq; }
+
+function isCtrlMsg(e){
+  return e.ctrl || (e.values||[]).some(isCtrl);
+}
+
+function colNextY(ll){ return colYPx[ll]!==undefined ? colYPx[ll] : COL_PAD; }
+function colPlace(el, ll, y){
+  el.style.position='absolute';
+  el.style.top=y+'px';
+  el.style.left='28px';
+  el.style.right='28px';
+  colEls[ll].appendChild(el);
+  const h=el.offsetHeight||46;
+  colYPx[ll]=y+h+COL_GAP;
+  colEls[ll].style.minHeight=(y+h+COL_PAD)+'px';
+  if(showArrows) scheduleDrawArrows();
+}
+
+function ensureColGroup(ll){
+  if(colEls[ll]) return;
+  const em=colView.querySelector('.col-empty'); if(em) em.remove();
+  const col=document.createElement('div');
+  col.className='col-lifeline';
+  col.innerHTML='<div class="col-hdr">'+esc(ll)+'</div>'
+    +'<div class="col-content" id="col-content-'+esc(ll)+'"></div>';
+  colView.appendChild(col);
+  colEls[ll]=col.querySelector('.col-content');
+  colEls[ll].addEventListener('scroll', function(){ if(showArrows) scheduleDrawArrows(); });
+}
+
+function colActCardInner(a){
+  const req=a.reqId?reqMap.get(a.reqId):null;
+  const hp=req&&!req.resolved&&a.kind==='human';
+  const firstIn=Object.entries(a.inputs||{}).find(([,v])=>!isCtrl(v)&&fmtV(v));
+  const preview=firstIn?firstIn[0]:'';
+  return '<div class="col-card-row">'
+    +(hp?'<span class="sg-dot dot-pending"></span>':'')
+    +'<span class="col-card-name">'+esc(a.name)+'</span>'
+    +'</div>'
+    +(preview?'<div class="col-card-preview">'+esc(preview)+'</div>':'');
+}
+
+function createColActCard(key){
+  const a=byKey[key];
+  if(!a||a.name==='assign') return;
+  ensureColGroup(a.lifeline);
+  const el=document.createElement('div');
+  el.className='col-card col-act-'+a.kind+(a.kind==='human'?' col-pending':'');
+  el.dataset.key=key;
+  el.innerHTML=colActCardInner(a);
+  el.onclick=()=>selectColCard(key);
+  colActCards[key]=el;
+  colPlace(el, a.lifeline, colNextY(a.lifeline));
+}
+
+function updateColActCard(key){
+  const el=colActCards[key]; if(!el) return;
+  const a=byKey[key]; if(!a) return;
+  const req=a.reqId?reqMap.get(a.reqId):null;
+  const hp=req&&!req.resolved&&a.kind==='human';
+  const isSel=colOverlayKey===key;
+  el.className='col-card col-act-'+a.kind+(hp?' col-pending':'')+(isSel?' col-sel':'');
+  el.innerHTML=colActCardInner(a);
+  el.onclick=()=>selectColCard(key);
+}
+
+function createColMsgCard(e){
+  if(isCtrlMsg(e)) return;
+  const ll=e.type==='send'?e.from:e.to;
+  ensureColGroup(ll);
+  const arrow=e.type==='send'?'→':'←';
+  const partner=e.type==='send'?e.to:e.from;
+  const bindings=e.bindings||{};
+  const vars=Object.keys(bindings).filter(function(k){ return k!=='branch'&&k!=='loop'&&!isCtrl(bindings[k]); }).join(', ');
+  const el=document.createElement('div');
+  el.className='col-card col-msg col-msg-'+e.type;
+  const mk=msgKey(e);
+  el.dataset.msgkey=mk;
+  el.innerHTML='<div class="col-card-row">'
+    +'<span class="col-msg-arrow">'+esc(arrow)+'</span>'
+    +'<span class="col-msg-partner">'+esc(partner)+'</span>'
+    +'</div>'
+    +(vars?'<div class="col-card-preview">'+esc(vars)+'</div>':'');
+  el.onclick=function(){ selectColMsg(mk, el); };
+  if(!msgCards[mk]) msgCards[mk]={};
+  msgCards[mk][e.type]=el;
+  let y;
+  if(e.type==='send'){
+    y=colNextY(ll);
+    sendYPx[mk]=y;
+  } else {
+    y=Math.max(colNextY(ll), sendYPx[mk]!==undefined?sendYPx[mk]:0);
+  }
+  colPlace(el, ll, y);
+}
+
+function selectColCard(key){
+  document.querySelectorAll('.col-msg.col-sel').forEach(function(el){ el.classList.remove('col-sel'); });
+  if(colOverlayKey&&colActCards[colOverlayKey]) colActCards[colOverlayKey].classList.remove('col-sel');
+  colOverlayKey=key;
+  if(colActCards[key]) colActCards[key].classList.add('col-sel');
+  showColOverlay(key);
+}
+
+function selectColMsg(mk, clickedEl){
+  document.querySelectorAll('.col-msg.col-sel').forEach(function(el){ el.classList.remove('col-sel'); });
+  const pair=msgCards[mk]; if(!pair) return;
+  const sendEl=pair.send, recvEl=pair.recv;
+  if(sendEl) sendEl.classList.add('col-sel');
+  if(recvEl) recvEl.classList.add('col-sel');
+  const otherEl=clickedEl===sendEl?recvEl:sendEl;
+  if(otherEl) alignCol(clickedEl, otherEl);
+}
+
+function alignCol(anchorEl, targetEl){
+  const anchorCol=anchorEl.closest('.col-content');
+  const targetCol=targetEl.closest('.col-content');
+  if(!anchorCol||!targetCol||anchorCol===targetCol) return;
+  const anchorOffset=anchorEl.getBoundingClientRect().top - anchorCol.getBoundingClientRect().top;
+  const newScrollTop=targetEl.offsetTop - anchorOffset;
+  targetCol.scrollTo({top:Math.max(0,newScrollTop), behavior:'smooth'});
+}
+
+// ── Overlay ───────────────────────────────────────────────────────────────────
+function showColOverlay(key){
+  colOverlay.classList.add('ov-visible');
+  renderInspector(key, colOverlayBody, hideColOverlay);
+}
+
+function hideColOverlay(){
+  colOverlay.classList.remove('ov-visible');
+  if(_cmdHandler){ document.removeEventListener('keydown',_cmdHandler); _cmdHandler=null; }
+  if(colOverlayKey&&colActCards[colOverlayKey]) colActCards[colOverlayKey].classList.remove('col-sel');
+  colOverlayKey=null;
+}
+
+colOverlayBg.onclick=hideColOverlay;
+
+colView.addEventListener('click', function(e){
+  if(!e.target.closest('.col-card')){
+    document.querySelectorAll('.col-msg.col-sel').forEach(function(el){ el.classList.remove('col-sel'); });
+    hideColOverlay();
+  }
+});
+
+// ── Event handlers ────────────────────────────────────────────────────────────
 function handleInit(e){
   Object.keys(byKey).forEach(function(k){ delete byKey[k]; });
   Object.keys(groups).forEach(function(k){ delete groups[k]; });
@@ -954,9 +1310,21 @@ function handleInit(e){
   insBody.innerHTML='<div class="ins-empty-state">Click an action to inspect it</div>';
   refreshCount();
   (e.lifelines||[]).forEach(function(ll){ ensureGroup(ll); });
+  // Reset column view
+  Object.keys(colEls).forEach(function(k){ delete colEls[k]; });
+  Object.keys(colActCards).forEach(function(k){ delete colActCards[k]; });
+  Object.keys(msgCards).forEach(function(k){ delete msgCards[k]; });
+  Object.keys(colYPx).forEach(function(k){ delete colYPx[k]; });
+  Object.keys(sendYPx).forEach(function(k){ delete sendYPx[k]; });
+  arrowsGroup.innerHTML='';
+  colView.innerHTML='<p class="col-empty">Awaiting workflow…</p>';
+  hideColOverlay();
+  (e.lifelines||[]).forEach(function(ll){ ensureColGroup(ll); });
 }
 
-function handleRunStart(e){ (e.lifelines||[]).forEach(function(ll){ ensureGroup(ll); }); }
+function handleRunStart(e){
+  (e.lifelines||[]).forEach(function(ll){ ensureGroup(ll); ensureColGroup(ll); });
+}
 
 function handleActStart(e){
   const ll=e.lifeline; ensureGroup(ll);
@@ -969,6 +1337,7 @@ function handleActStart(e){
   groups[ll].push(key);
   createRow(key);
   if(kind==='human') createInboxRow(key);
+  createColActCard(key);
 }
 
 function handleAct(e){
@@ -976,6 +1345,7 @@ function handleAct(e){
   const a=byKey[key]; if(!a) return;
   a.status='done'; a.inputs=e.inputs||{}; a.outputs=e.outputs||{};
   updateRow(key);
+  updateColActCard(key);
   if(selectedId===key) renderInspector();
 }
 
@@ -988,21 +1358,28 @@ function handleHumanRequired(e){
     const k=llKeys[i],a=byKey[k];
     if(a&&a.kind==='human'&&a.status==='pending'&&!a.reqId){
       a.reqId=e.id; matchedKey=k; updateRow(k);
-      // Only jump to the new action if we're not already looking at a pending human action
       const curReq=selectedId&&byKey[selectedId]&&byKey[selectedId].reqId?reqMap.get(byKey[selectedId].reqId):null;
       if(!curReq||curReq.resolved) selectAction(k);
       break;
     }
   }
-  if(matchedKey) updateInboxRow(matchedKey);
+  if(matchedKey){
+    updateInboxRow(matchedKey);
+    updateColActCard(matchedKey);
+  }
 }
 
 function handleHumanInput(e){
   const req=reqMap.get(e.id);
   if(req){ req.resolved=true; req.value=e.value; }
   pending=Math.max(0,pending-1); refreshCount();
-  Object.keys(byKey).forEach(function(k){ if(byKey[k].reqId===e.id){ updateRow(k); updateInboxRow(k); } });
+  Object.keys(byKey).forEach(function(k){
+    if(byKey[k].reqId===e.id){ updateRow(k); updateInboxRow(k); updateColActCard(k); }
+  });
   if(selectedId&&byKey[selectedId]&&byKey[selectedId].reqId===e.id) renderInspector();
+  // Close overlay if it was showing the resolved action
+  if(colOverlayKey&&byKey[colOverlayKey]&&byKey[colOverlayKey].reqId===e.id) hideColOverlay();
+  // Auto-advance to next pending human action
   const entries=[...reqMap];
   for(let i=entries.length-1;i>=0;i--){
     const [id,r]=entries[i];
@@ -1015,7 +1392,10 @@ function handleHumanInput(e){
   }
 }
 
-// Dispatcher
+function handleSend(e){ createColMsgCard(e); }
+function handleRecv(e){ createColMsgCard(e); }
+
+// ── Dispatcher ────────────────────────────────────────────────────────────────
 function dispatch(e){
   if(!e||!e.type) return;
   switch(e.type){
@@ -1025,11 +1405,13 @@ function dispatch(e){
     case 'act':                  handleAct(e); break;
     case 'human_input_required': handleHumanRequired(e); break;
     case 'human_input':          handleHumanInput(e); break;
+    case 'send':                 handleSend(e); break;
+    case 'recv':                 handleRecv(e); break;
   }
 }
 
 
-// SSE
+// ── SSE ───────────────────────────────────────────────────────────────────────
 function connect(){
   if(evSrc){ evSrc.close(); evSrc=null; }
   const src=new EventSource('/events');
@@ -1038,7 +1420,7 @@ function connect(){
 }
 connect();
 
-// Keyboard nav
+// ── Keyboard nav ──────────────────────────────────────────────────────────────
 document.addEventListener('keydown',function(e){
   if(e.target.tagName==='TEXTAREA'||e.target.tagName==='INPUT') return;
   if(e.key!=='ArrowUp'&&e.key!=='ArrowDown') return;

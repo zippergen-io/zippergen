@@ -5,9 +5,9 @@
 Two independent streams both route decisions through a single shared User lifeline:
 
   Email branch — triage incoming emails:
-                   spam / reply / scheduling_reply / task / cancellation
+                   spam / reply / scheduling / cancellation
   Chat branch  — Telegram as control interface (all messages are owner commands):
-                   schedule_meeting / cancel_meeting / create_task
+                   schedule_meeting / cancel_meeting
                    create_event / draft_email / general
 
 Adding a new stream never touches existing ones — ZipperGen's projection ensures
@@ -21,7 +21,6 @@ Modes
 --live    Live services + local Ollama model.  One-time setup per service:
            python examples/gmail_client.py --setup
            python examples/google_calendar_client.py --setup
-           python examples/google_tasks_client.py --setup
            # Telegram: message @BotFather → /newbot → set ZIPPERGEN_TELEGRAM_TOKEN
 """
 
@@ -32,7 +31,6 @@ from zippergen.backends import make_openai_backend
 _gmail:   object = None
 _gcal:    object = None
 _gchat:   object = None
-_gtasks:  object = None
 
 _chat_meta:           dict[str, dict] = {}  # formatted text → ChatMeta
 _cancel_meta:         dict[str, str]  = {}  # cancel_matches text → event_id
@@ -46,7 +44,6 @@ Writer     = Lifeline("Writer")
 User       = Lifeline("User")
 Mailbox    = Lifeline("Mailbox")
 Calendar   = Lifeline("Calendar")
-TasksTool  = Lifeline("TasksTool")
 Chat       = Lifeline("Chat")
 
 # ---------------------------------------------------------------------------
@@ -82,12 +79,6 @@ cancel_matches  = Var("cancel_matches",  str)
 cancel_confirm  = Var("cancel_confirm",  bool)
 cancel_status   = Var("cancel_status",   str)
 
-# Task branch (within email stream)
-task_title   = Var("task_title",   str)
-task_notes   = Var("task_notes",   str)
-task_edit    = Var("task_edit",    str)
-task_status  = Var("task_status",  str)
-
 # Chat stream
 chat_msg     = Var("chat_msg",     str)
 chat_route   = Var("chat_route",   str)
@@ -107,12 +98,6 @@ chat_today           = Var("chat_today",           str)
 chat_event_details   = Var("chat_event_details",   str)
 chat_sched_event     = Var("chat_sched_event",      str)
 chat_confirmed_event = Var("chat_confirmed_event",  bool)
-
-# create_task_from_chat (exclusive to chat branch)
-chat_task_title  = Var("chat_task_title",  str)
-chat_task_notes  = Var("chat_task_notes",  str)
-chat_task_edit   = Var("chat_task_edit",   str)
-chat_task_status = Var("chat_task_status", str)
 
 # draft_email_from_chat (exclusive to chat branch, touches Writer/User/Mailbox)
 chat_email_draft  = Var("chat_email_draft",  str)
@@ -141,9 +126,9 @@ INBOX = [
 ]
 
 CHAT_MESSAGES = [
-    "Create a task: send Alice the Q1 report tomorrow",
     "Cancel the team meeting tomorrow",
     "Draft an email to Alice saying I will send the report by Friday",
+    "Schedule a meeting with Alice for next Monday at 10am",
 ]
 
 _email_meta: dict[str, dict] = {}
@@ -208,7 +193,7 @@ def email_stream_done() -> str:
 
 
 # ---------------------------------------------------------------------------
-# Infrastructure — Google Tasks
+# Infrastructure — Calendar
 # ---------------------------------------------------------------------------
 
 @pure
@@ -265,17 +250,6 @@ def create_draft_from_instruction(chat_msg: str, reply: str) -> str:
             return f"error: {exc}"
     return "draft_saved_mock"
 
-
-@pure
-def add_task(task_title: str, task_notes: str) -> str:
-    if _gtasks is not None:
-        try:
-            return _gtasks.create_task(task_title, task_notes)  # type: ignore[union-attr]
-        except Exception as exc:
-            print(f"[Tasks] Error creating task: {exc}")
-            return f"error: {exc}"
-    print(f"[Tasks] Mock: would create '{task_title}'")
-    return "task_created_mock"
 
 
 # ---------------------------------------------------------------------------
@@ -442,7 +416,6 @@ Classify the email as exactly one of five labels:
   reply        — needs a written reply (any complexity)
   scheduling   — requests a meeting or asks about availability
   cancellation — requests cancellation of an existing meeting or event
-  task         — asks you to do something that should be tracked as a to-do
 Reply with the single label and nothing else.
 """.strip(),
     user="{email}",
@@ -498,28 +471,13 @@ Scheduling decision:
 def write_scheduling_reply(email: str, choice: str) -> None: ...
 
 
-@llm(
-    system="""
-You are an assistant that extracts action items from emails.
-Given an email, identify the single most important task for the recipient.
-Return a JSON object with exactly these keys:
-  "task_title": a short actionable title (verb phrase, under 60 chars)
-  "task_notes": key details or deadline from the email (1-2 sentences)
-""".strip(),
-    user="{email}",
-    parse="json",
-    outputs=(("task_title", str), ("task_notes", str)),
-)
-def extract_task(email: str) -> None: ...
-
 
 @llm(
     system="""
 You are an assistant that classifies commands sent to a personal Telegram bot.
-All messages are from the bot owner giving instructions. Classify as exactly one of six labels:
+All messages are from the bot owner giving instructions. Classify as exactly one of five labels:
   schedule_meeting — schedule a meeting with someone (creates event + drafts invitation)
   cancel_meeting   — cancel or remove an existing calendar event
-  create_task      — create a task or reminder
   create_event     — add a calendar event without sending an invitation
   draft_email      — draft an email and save it to Gmail
   general          — anything else (questions, status queries, etc.)
@@ -635,20 +593,6 @@ Command: {chat_msg}
 def extract_event_details_from_command(today: str, chat_msg: str) -> None: ...
 
 
-@llm(
-    system="""
-You are an assistant that extracts action items from messages.
-Given a task creation request, identify the task.
-Return a JSON object with exactly these keys:
-  "task_title": a short actionable title (verb phrase, under 60 chars)
-  "task_notes": key details or deadline (1-2 sentences)
-""".strip(),
-    user="{chat_msg}",
-    parse="json",
-    outputs=(("task_title", str), ("task_notes", str)),
-)
-def extract_task_from_chat(chat_msg: str) -> None: ...
-
 
 @llm(
     system="""
@@ -735,17 +679,6 @@ def acknowledge_event_created(event_summary: str): pass
 def confirm_cancellation(cancel_matches: str): pass
 
 
-@human(
-    kind="edit",
-    context="{email}",
-    prefill="{task_title}",
-    instruction="Task notes: {task_notes}",
-    outputs=["task_edit: str"],
-    submit_label="Create task →",
-    cancel_label="Skip",
-)
-def confirm_task(email: str, task_title: str, task_notes: str): pass
-
 
 @human(
     kind="edit",
@@ -781,17 +714,6 @@ def approve_email_draft_from_chat(chat_msg: str, chat_email_draft: str): pass
 )
 def confirm_event(chat_event_details: str): pass
 
-
-@human(
-    kind="edit",
-    context="{chat_msg}",
-    prefill="{chat_task_title}",
-    instruction="Task notes: {chat_task_notes}",
-    outputs=["chat_task_edit: str"],
-    submit_label="Create task →",
-    cancel_label="Skip",
-)
-def confirm_task_from_chat(chat_msg: str, chat_task_title: str, chat_task_notes: str): pass
 
 
 # ---------------------------------------------------------------------------
@@ -855,16 +777,6 @@ def scheduling_branch(email):
     create_calendar_event(email, choice)
 
 
-@fragment
-def task_branch(email):
-    Dispatcher(email) >> Writer(email)
-    Writer: (task_title, task_notes) = extract_task(email)
-    Writer(email, task_title, task_notes) >> User(email, task_title, task_notes)
-    User: task_edit = confirm_task(email, task_title, task_notes)
-    if task_edit @ User:
-        User(task_edit, task_notes) >> TasksTool(task_edit, task_notes)
-        TasksTool: task_status = add_task(task_edit, task_notes)
-
 
 @fragment
 def cancellation_branch(email):
@@ -885,7 +797,6 @@ def cancellation_branch(email):
 
 @fragment
 def cancellation_chat_branch(chat_msg):
-    Writer(chat_msg) >> Calendar(chat_msg)
     Calendar: chat_cancel_query = extract_cancel_query(chat_msg)
     Calendar: chat_cancel_matches = find_matching_events(chat_cancel_query)
     Calendar(chat_msg, chat_cancel_matches) >> User(chat_msg, chat_cancel_matches)
@@ -912,7 +823,6 @@ def cancellation_chat_branch(chat_msg):
 
 @fragment
 def schedule_meeting_from_chat(chat_msg):
-    Writer(chat_msg) >> Calendar(chat_msg)
     Calendar: chat_today = todays_date()
     Calendar: chat_event_details = extract_event_details_from_command(chat_today, chat_msg)
     Calendar(chat_event_details) >> User(chat_event_details)
@@ -937,17 +847,6 @@ def schedule_meeting_from_chat(chat_msg):
         User(chat_msg, chat_sched_event) >> Chat(chat_msg, chat_sched_event)
         Chat: chat_status = send_chat_reply(chat_msg, chat_sched_event)
 
-
-@fragment
-def create_task_from_chat(chat_msg):
-    Writer: (chat_task_title, chat_task_notes) = extract_task_from_chat(chat_msg)
-    Writer(chat_msg, chat_task_title, chat_task_notes) >> User(chat_msg, chat_task_title, chat_task_notes)
-    User: chat_task_edit = confirm_task_from_chat(chat_msg, chat_task_title, chat_task_notes)
-    if chat_task_edit @ User:
-        User(chat_msg, chat_task_edit, chat_task_notes) >> TasksTool(chat_msg, chat_task_edit, chat_task_notes)
-        TasksTool: chat_task_status = add_task(chat_task_edit, chat_task_notes)
-        TasksTool(chat_msg, chat_task_status) >> Chat(chat_msg, chat_task_status)
-        Chat: chat_status = send_chat_reply(chat_msg, chat_task_status)
 
 
 @fragment
@@ -1007,10 +906,6 @@ def command_center():
                     elif (route == "cancellation") @ Dispatcher:
                         cancellation_branch(email)
 
-                    elif (route == "task") @ Dispatcher:
-                        task_branch(email)
-                        reply_branch(email)
-
                     else:
                         reply_branch(email)
 
@@ -1021,7 +916,7 @@ def command_center():
             # ── Chat stream ───────────────────────────────────────────────
             # All Telegram messages are commands from the bot owner.
             # Telegram is the control interface; side effects go to the
-            # right lifeline (Calendar, Mailbox, TasksTool).
+            # right lifeline (Calendar, Mailbox).
             while True @ Chat:
                 if chat_present() @ Chat:
                     Chat: chat_msg = pop_pending_chat()
@@ -1030,14 +925,11 @@ def command_center():
                     Dispatcher: chat_route = normalize_route(chat_route)
 
                     if (chat_route == "schedule_meeting") @ Dispatcher:
-                        Dispatcher(chat_msg) >> Writer(chat_msg)
+                        Dispatcher(chat_msg) >> Calendar(chat_msg)
                         schedule_meeting_from_chat(chat_msg)
                     elif (chat_route == "cancel_meeting") @ Dispatcher:
-                        Dispatcher(chat_msg) >> Writer(chat_msg)
+                        Dispatcher(chat_msg) >> Calendar(chat_msg)
                         cancellation_chat_branch(chat_msg)
-                    elif (chat_route == "create_task") @ Dispatcher:
-                        Dispatcher(chat_msg) >> Writer(chat_msg)
-                        create_task_from_chat(chat_msg)
                     elif (chat_route == "create_event") @ Dispatcher:
                         Dispatcher(chat_msg) >> Calendar(chat_msg)
                         create_event_from_chat(chat_msg)
@@ -1079,7 +971,6 @@ if __name__ == "__main__":
         _gmail   = _load("gmail_client")
         _gcal    = _load("google_calendar_client")
         _gchat   = _load("telegram_client")
-        _gtasks  = _load("google_tasks_client")
         api_key = os.environ.get("OPENAI_API_KEY", "")
         if not api_key:
             raise RuntimeError("OPENAI_API_KEY is not set.")
@@ -1104,7 +995,6 @@ if __name__ == "__main__":
         _gmail   = _load("gmail_client")
         _gcal    = _load("google_calendar_client")
         _gchat   = _load("telegram_client")
-        _gtasks  = _load("google_tasks_client")
         backend = make_openai_backend(
             api_key="ollama",
             model="qwen2.5:7b",
