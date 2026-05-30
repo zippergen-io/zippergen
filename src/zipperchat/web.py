@@ -658,7 +658,10 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); font
   flex-shrink: 0; letter-spacing: 0.02em; text-align: center;
 }
 .col-content { flex: 1; overflow-y: auto; padding: 8px; position: relative; }
-.col-content .col-card { margin-bottom: 0; min-height: 50px; }
+.col-content .col-card {
+  margin-bottom: 0; height: 50px; overflow: hidden;
+  display: flex; flex-direction: column; justify-content: center; padding: 0 10px;
+}
 
 .col-card {
   border: 1.5px solid var(--rule); border-radius: 5px;
@@ -712,20 +715,20 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); font
 /* ── Decision / control-broadcast ────────────────────────────────────────── */
 .col-decision {
   position: absolute; left: 28px; right: 28px;
-  background: #fef9c3; border: 1px solid #d4b483; border-radius: 8px;
-  padding: 5px 10px; min-height: 34px;
-  display: flex; flex-direction: column; justify-content: center;
+  background: #e5e3c7; border: 1px solid #bcb576; border-radius: 8px;
+  height: 50px; overflow: hidden;
+  display: flex; flex-direction: column; justify-content: center; padding: 0 10px;
 }
-.col-dec-label { font-size: 12px; font-weight: 600; color: #7a5c00; }
-.col-dec-cond  { font-size: 11px; color: #9a7820; font-family: var(--mono); margin-top: 2px;
+.col-dec-label { font-size: 12px; font-weight: 600; color: #4a4820; }
+.col-dec-cond  { font-size: 11px; color: #6b6840; font-family: var(--mono); margin-top: 2px;
                  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .col-ctrl-circle {
-  position: absolute; width: 32px; height: 32px; border-radius: 50%;
-  background: #fef9c3; border: 1px solid #d4b483;
+  position: absolute; width: 40px; height: 40px; border-radius: 50%;
+  background: #e5e3c7; border: 1px solid #bcb576;
   display: flex; align-items: center; justify-content: center;
-  font-size: 13px; font-weight: 600; color: #7a5c00;
+  font-size: 13px; font-weight: 600; color: #4a4820;
 }
-#col-ctrl-g line { stroke: #c4983a; stroke-width: 1; stroke-opacity: 0.45; }
+#col-ctrl-g line { stroke: #bcb576; stroke-width: 1.5; stroke-opacity: 0.7; }
 
 /* ── Overlay ─────────────────────────────────────────────────────────────── */
 #col-overlay {
@@ -812,7 +815,9 @@ let colOverlayKey = null; // key currently shown in overlay
 const colYPx      = {};   // lifeline → next available Y (px)
 const sendYPx     = {};   // msgKey → Y where send card was placed
 const COL_PAD = 8;        // top/bottom breathing room in pixels
-const COL_GAP = 10;       // gap between cards in pixels
+const COL_GAP = 8;        // gap between cards in pixels
+const ROW_H   = 50;       // fixed height for every event card
+let globalMinY    = 0;    // all columns stay at or below this after a decision row
 let showArrows    = false;
 let _arrowRaf     = null;
 const currentDecision = {};  // ownerLL → ctrl_id of most recent decision
@@ -1216,16 +1221,15 @@ function isCtrlMsg(e){
   return e.ctrl || (e.values||[]).some(isCtrl);
 }
 
-function colNextY(ll){ return colYPx[ll]!==undefined ? colYPx[ll] : COL_PAD; }
+function colNextY(ll){ return Math.max(colYPx[ll]!==undefined ? colYPx[ll] : COL_PAD, globalMinY); }
 function colPlace(el, ll, y){
   el.style.position='absolute';
   el.style.top=y+'px';
   el.style.left='28px';
   el.style.right='28px';
   colEls[ll].appendChild(el);
-  const h=el.offsetHeight||46;
-  colYPx[ll]=y+h+COL_GAP;
-  colEls[ll].style.minHeight=(y+h+COL_PAD)+'px';
+  colYPx[ll]=y+ROW_H+COL_GAP;
+  colEls[ll].style.minHeight=(y+ROW_H+COL_PAD)+'px';
   if(showArrows) scheduleDrawArrows();
 }
 
@@ -1321,9 +1325,9 @@ function handleDecision(e){
   const y=colNextY(ll);
   el.style.top=y+'px';
   colEls[ll].appendChild(el);
-  const h=el.offsetHeight||34;
-  colYPx[ll]=y+h+COL_GAP;
-  colEls[ll].style.minHeight=(y+h+COL_PAD)+'px';
+  colYPx[ll]=y+ROW_H+COL_GAP;
+  colEls[ll].style.minHeight=(y+ROW_H+COL_PAD)+'px';
+  globalMinY=Math.max(globalMinY, y+ROW_H+COL_GAP);
   ctrlCards[ctrlId]={ownerEl:el,y:y,circles:{}};
   scheduleDrawCtrlLines();
 }
@@ -1340,12 +1344,13 @@ function handleCtrlRecv(e){
   const el=document.createElement('div');
   el.className='col-ctrl-circle';
   el.textContent=flag?'⊤':'⊥';
-  const y=Math.max(colNextY(ll),sync.y);
-  el.style.top=y+'px';
-  el.style.left='calc(50% - 16px)';
+  const rawY=colYPx[ll]!==undefined?colYPx[ll]:COL_PAD;
+  const y=Math.max(rawY,sync.y);         // bypass globalMinY: circles belong in the decision row
+  el.style.top=(y+5)+'px';              // centre 40px circle in 50px row
+  el.style.left='calc(50% - 20px)';
   colEls[ll].appendChild(el);
-  colYPx[ll]=y+32+COL_GAP;
-  colEls[ll].style.minHeight=(y+32+COL_PAD)+'px';
+  colYPx[ll]=y+ROW_H+COL_GAP;
+  colEls[ll].style.minHeight=(y+ROW_H+COL_PAD)+'px';
   sync.circles[ll]=el;
   scheduleDrawCtrlLines();
 }
@@ -1420,6 +1425,7 @@ function handleInit(e){
   Object.keys(sendYPx).forEach(function(k){ delete sendYPx[k]; });
   Object.keys(currentDecision).forEach(function(k){ delete currentDecision[k]; });
   Object.keys(ctrlCards).forEach(function(k){ delete ctrlCards[k]; });
+  globalMinY=0;
   arrowsGroup.innerHTML=''; ctrlLinesGroup.innerHTML='';
   colView.innerHTML='<p class="col-empty">Awaiting workflow…</p>';
   hideColOverlay();
@@ -1427,6 +1433,7 @@ function handleInit(e){
 }
 
 function handleRunStart(e){
+  globalMinY=0;
   (e.lifelines||[]).forEach(function(ll){ ensureGroup(ll); ensureColGroup(ll); });
 }
 
