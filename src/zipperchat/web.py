@@ -709,6 +709,24 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); font
 #btn-arrows.arr-on { background: var(--col-msg-fill); border-color: var(--col-msg-bdr); color: var(--text); }
 #btn-arrows:hover:not(.arr-on) { color: var(--text-soft); }
 
+/* ── Decision / control-broadcast ────────────────────────────────────────── */
+.col-decision {
+  position: absolute; left: 28px; right: 28px;
+  background: #fef9c3; border: 1px solid #d4b483; border-radius: 8px;
+  padding: 5px 10px; min-height: 34px;
+  display: flex; flex-direction: column; justify-content: center;
+}
+.col-dec-label { font-size: 12px; font-weight: 600; color: #7a5c00; }
+.col-dec-cond  { font-size: 11px; color: #9a7820; font-family: var(--mono); margin-top: 2px;
+                 white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.col-ctrl-circle {
+  position: absolute; width: 32px; height: 32px; border-radius: 50%;
+  background: #fef9c3; border: 1px solid #d4b483;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 13px; font-weight: 600; color: #7a5c00;
+}
+#col-ctrl-g line { stroke: #c4983a; stroke-width: 1; stroke-opacity: 0.45; }
+
 /* ── Overlay ─────────────────────────────────────────────────────────────── */
 #col-overlay {
   position: fixed; inset: 0; z-index: 200;
@@ -724,8 +742,9 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); font
   position: relative; width: 640px;
   background: var(--bg); border-left: 1px solid var(--rule);
   overflow-y: auto;
-  transform: translateX(100%); transition: transform .2s ease;
+  transform: translateX(100%); transition: transform .2s ease, width .2s ease;
 }
+#col-overlay.ov-human #col-overlay-panel { width: min(90vw, 1000px); }
 #col-overlay.ov-visible #col-overlay-panel { transform: translateX(0); }
 #col-overlay-body { padding: 32px 40px; min-height: 100%; }
 </style>
@@ -768,6 +787,7 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); font
       </marker>
     </defs>
     <g id="col-arrows-g"></g>
+    <g id="col-ctrl-g"></g>
   </svg>
 </div>
 <script>
@@ -795,6 +815,10 @@ const COL_PAD = 8;        // top/bottom breathing room in pixels
 const COL_GAP = 10;       // gap between cards in pixels
 let showArrows    = false;
 let _arrowRaf     = null;
+const currentDecision = {};  // ownerLL → ctrl_id of most recent decision
+const ctrlCards       = {};  // ctrl_id → {ownerEl, y, circles: {ll: el}}
+let _ctrlSeq          = 0;
+let _ctrlRaf          = null;
 
 // ── DOM ──────────────────────────────────────────────────────────────────────
 const sidebar        = document.getElementById('sidebar');
@@ -806,6 +830,7 @@ const colOverlayBg   = document.getElementById('col-overlay-bg');
 const colOverlayBody = document.getElementById('col-overlay-body');
 const arrowsSvg      = document.getElementById('col-arrows');
 const arrowsGroup    = document.getElementById('col-arrows-g');
+const ctrlLinesGroup = document.getElementById('col-ctrl-g');
 
 // ── View toggle ───────────────────────────────────────────────────────────────
 function setView(mode){
@@ -815,8 +840,8 @@ function setView(mode){
   document.getElementById('btn-inbox').classList.toggle('vt-active',   mode === 'inbox');
   document.getElementById('btn-columns').classList.toggle('vt-active', mode === 'columns');
   document.getElementById('btn-arrows').style.display = mode === 'columns' ? '' : 'none';
-  if(mode !== 'columns'){ hideColOverlay(); arrowsGroup.innerHTML=''; }
-  if(mode === 'columns' && showArrows) scheduleDrawArrows();
+  if(mode !== 'columns'){ hideColOverlay(); arrowsGroup.innerHTML=''; ctrlLinesGroup.innerHTML=''; }
+  if(mode === 'columns'){ scheduleDrawCtrlLines(); if(showArrows) scheduleDrawArrows(); }
 }
 
 // ── Message arrows ────────────────────────────────────────────────────────────
@@ -854,6 +879,38 @@ function toggleArrows(){
   showArrows=!showArrows;
   document.getElementById('btn-arrows').classList.toggle('arr-on', showArrows);
   drawArrows();
+}
+
+// ── Control-broadcast lines ───────────────────────────────────────────────────
+function scheduleDrawCtrlLines(){
+  if(_ctrlRaf) return;
+  _ctrlRaf=requestAnimationFrame(drawCtrlLines);
+}
+
+function drawCtrlLines(){
+  _ctrlRaf=null;
+  if(viewMode!=='columns'){ ctrlLinesGroup.innerHTML=''; return; }
+  let lines='';
+  Object.values(ctrlCards).forEach(function(sync){
+    const oEl=sync.ownerEl; if(!oEl) return;
+    const oRect=oEl.getBoundingClientRect();
+    const oCol=oEl.closest('.col-content'); if(!oCol) return;
+    const oColRect=oCol.getBoundingClientRect();
+    if(oRect.bottom<oColRect.top||oRect.top>oColRect.bottom) return;
+    Object.values(sync.circles).forEach(function(cEl){
+      if(!cEl) return;
+      const cRect=cEl.getBoundingClientRect();
+      const cCol=cEl.closest('.col-content'); if(!cCol) return;
+      const cColRect=cCol.getBoundingClientRect();
+      if(cRect.bottom<cColRect.top||cRect.top>cColRect.bottom) return;
+      const oCx=(oRect.left+oRect.right)/2, cCx=(cRect.left+cRect.right)/2;
+      const x1=cCx>=oCx?oRect.right:oRect.left;
+      const x2=cCx>=oCx?cRect.left:cRect.right;
+      const y1=(oRect.top+oRect.bottom)/2, y2=(cRect.top+cRect.bottom)/2;
+      lines+='<line x1="'+x1+'" y1="'+y1+'" x2="'+x2+'" y2="'+y2+'"/>';
+    });
+  });
+  ctrlLinesGroup.innerHTML=lines;
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -1181,7 +1238,7 @@ function ensureColGroup(ll){
     +'<div class="col-content" id="col-content-'+esc(ll)+'"></div>';
   colView.appendChild(col);
   colEls[ll]=col.querySelector('.col-content');
-  colEls[ll].addEventListener('scroll', function(){ if(showArrows) scheduleDrawArrows(); });
+  colEls[ll].addEventListener('scroll', function(){ scheduleDrawCtrlLines(); if(showArrows) scheduleDrawArrows(); });
 }
 
 function colActCardInner(a){
@@ -1250,6 +1307,49 @@ function createColMsgCard(e){
   colPlace(el, ll, y);
 }
 
+function handleDecision(e){
+  const ll=e.lifeline;
+  ensureColGroup(ll);
+  const ctrlId=_ctrlSeq++;
+  currentDecision[ll]=ctrlId;
+  const sym=e.value?'⊤':'⊥';
+  const cond=e.formula||e.condition||'';
+  const el=document.createElement('div');
+  el.className='col-decision';
+  el.innerHTML='<span class="col-dec-label">'+esc(e.kind||'if')+' '+sym+'</span>'
+    +(cond?'<div class="col-dec-cond">'+esc(cond)+'</div>':'');
+  const y=colNextY(ll);
+  el.style.top=y+'px';
+  colEls[ll].appendChild(el);
+  const h=el.offsetHeight||34;
+  colYPx[ll]=y+h+COL_GAP;
+  colEls[ll].style.minHeight=(y+h+COL_PAD)+'px';
+  ctrlCards[ctrlId]={ownerEl:el,y:y,circles:{}};
+  scheduleDrawCtrlLines();
+}
+
+function handleCtrlRecv(e){
+  const ownerLL=e.from;
+  const ctrlId=currentDecision[ownerLL];
+  if(ctrlId===undefined) return;
+  const sync=ctrlCards[ctrlId]; if(!sync) return;
+  const ll=e.to;
+  ensureColGroup(ll);
+  const b=e.bindings||{};
+  const flag=b.branch==='true'||b.loop==='continue';
+  const el=document.createElement('div');
+  el.className='col-ctrl-circle';
+  el.textContent=flag?'⊤':'⊥';
+  const y=Math.max(colNextY(ll),sync.y);
+  el.style.top=y+'px';
+  el.style.left='calc(50% - 16px)';
+  colEls[ll].appendChild(el);
+  colYPx[ll]=y+32+COL_GAP;
+  colEls[ll].style.minHeight=(y+32+COL_PAD)+'px';
+  sync.circles[ll]=el;
+  scheduleDrawCtrlLines();
+}
+
 function selectColCard(key){
   document.querySelectorAll('.col-msg.col-sel').forEach(function(el){ el.classList.remove('col-sel'); });
   if(colOverlayKey&&colActCards[colOverlayKey]) colActCards[colOverlayKey].classList.remove('col-sel');
@@ -1279,12 +1379,14 @@ function alignCol(anchorEl, targetEl){
 
 // ── Overlay ───────────────────────────────────────────────────────────────────
 function showColOverlay(key){
+  const a=byKey[key];
+  colOverlay.classList.toggle('ov-human', !!(a&&a.kind==='human'));
   colOverlay.classList.add('ov-visible');
   renderInspector(key, colOverlayBody, hideColOverlay);
 }
 
 function hideColOverlay(){
-  colOverlay.classList.remove('ov-visible');
+  colOverlay.classList.remove('ov-visible','ov-human');
   if(_cmdHandler){ document.removeEventListener('keydown',_cmdHandler); _cmdHandler=null; }
   if(colOverlayKey&&colActCards[colOverlayKey]) colActCards[colOverlayKey].classList.remove('col-sel');
   colOverlayKey=null;
@@ -1316,7 +1418,9 @@ function handleInit(e){
   Object.keys(msgCards).forEach(function(k){ delete msgCards[k]; });
   Object.keys(colYPx).forEach(function(k){ delete colYPx[k]; });
   Object.keys(sendYPx).forEach(function(k){ delete sendYPx[k]; });
-  arrowsGroup.innerHTML='';
+  Object.keys(currentDecision).forEach(function(k){ delete currentDecision[k]; });
+  Object.keys(ctrlCards).forEach(function(k){ delete ctrlCards[k]; });
+  arrowsGroup.innerHTML=''; ctrlLinesGroup.innerHTML='';
   colView.innerHTML='<p class="col-empty">Awaiting workflow…</p>';
   hideColOverlay();
   (e.lifelines||[]).forEach(function(ll){ ensureColGroup(ll); });
@@ -1393,7 +1497,7 @@ function handleHumanInput(e){
 }
 
 function handleSend(e){ createColMsgCard(e); }
-function handleRecv(e){ createColMsgCard(e); }
+function handleRecv(e){ if(isCtrlMsg(e)) handleCtrlRecv(e); else createColMsgCard(e); }
 
 // ── Dispatcher ────────────────────────────────────────────────────────────────
 function dispatch(e){
@@ -1407,6 +1511,7 @@ function dispatch(e){
     case 'human_input':          handleHumanInput(e); break;
     case 'send':                 handleSend(e); break;
     case 'recv':                 handleRecv(e); break;
+    case 'decision':             handleDecision(e); break;
   }
 }
 
