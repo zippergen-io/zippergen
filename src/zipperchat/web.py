@@ -439,18 +439,19 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); font
 #inbox-panel {
   flex: 0 0 220px; display: flex; flex-direction: column;
   border-right: 1px solid var(--rule); overflow: hidden;
+  position: relative; z-index: 10; background: var(--bg);
 }
 .inbox-hdr {
   display: flex; align-items: baseline; gap: 6px;
-  padding: 14px 16px 10px; font-size: 13px; font-weight: 600;
+  padding: 14px 25px 10px; font-size: 13px; font-weight: 600;
   color: var(--text); border-bottom: 1px solid var(--rule-hdr); flex-shrink: 0;
   letter-spacing: 0.02em;
 }
 .inbox-badge { font-size: 11px; font-weight: 700; color: var(--accent-attn); }
 #inbox-list { flex: 1; overflow-y: auto; }
-.inbox-empty { padding: 24px 16px; font-size: 13px; color: var(--text-faint); }
+.inbox-empty { padding: 24px 25px; font-size: 13px; color: var(--text-faint); }
 .inbox-card {
-  padding: 9px 16px; cursor: pointer; user-select: none;
+  padding: 9px 25px; cursor: pointer; user-select: none;
   border-bottom: 1px solid var(--rule); transition: background .1s;
 }
 .inbox-card:hover:not(.inbox-sel) { background: rgba(0,0,0,.03); }
@@ -461,7 +462,7 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); font
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1;
 }
 .inbox-card.inbox-sel .inbox-card-name { color: var(--accent); }
-.inbox-card-sub { font-size: 11px; color: var(--text-mute); margin-top: 3px; padding-left: 14px; }
+.inbox-card-sub { font-size: 11px; color: var(--text-mute); margin-top: 3px; }
 .inbox-card.inbox-sel .inbox-card-sub { color: var(--accent); opacity: .7; }
 .sg-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
 .dot-done    { background: transparent; }
@@ -479,7 +480,7 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); font
   flex: 1; min-height: 0;
   display: flex; flex-direction: row;
   overflow: auto;
-  padding: 0 25px;
+  padding: 0 25px 0 0;
   align-items: flex-start;
 }
 .col-empty { padding: 40px 28px; font-size: 13px; color: var(--text-faint); }
@@ -529,16 +530,16 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); font
 /* ── Detail panel ────────────────────────────────────────────────────────── */
 #detail-panel {
   position: absolute; inset: 0; background: var(--bg);
-  display: flex; flex-direction: column; z-index: 10;
+  display: flex; flex-direction: column; z-index: 25;
 }
 #detail-topbar {
   display: flex; align-items: center; justify-content: flex-end;
-  padding: 8px 16px; border-bottom: 1px solid var(--rule); flex-shrink: 0;
+  padding: 14px 16px 10px; border-bottom: 1px solid var(--rule-hdr); flex-shrink: 0;
 }
 #detail-close {
   background: none; border: none; cursor: pointer;
-  font-size: 16px; color: var(--text-mute); padding: 4px 8px;
-  border-radius: 4px; line-height: 1;
+  font-size: 13px; color: var(--text-mute); padding: 3px 8px;
+  border-radius: 4px; line-height: 1; font-weight: 600;
 }
 #detail-close:hover { color: var(--text); background: rgba(0,0,0,.05); }
 #detail-body { flex: 1; overflow-y: auto; padding: 32px 56px; }
@@ -802,8 +803,8 @@ function inboxCardInner(key){
   const hp = req && !req.resolved && a.kind==='human';
   const sub = a.lifeline + (a.time ? ' · ' + a.time : '');
   return '<div class="inbox-card-top">'
-    +'<span class="sg-dot '+(hp?'dot-pending':'dot-done')+'"></span>'
     +'<span class="inbox-card-name">'+esc(a.name)+'</span>'
+    +(hp?'<span class="sg-dot dot-pending"></span>':'')
     +'</div>'
     +'<div class="inbox-card-sub">'+esc(sub)+'</div>';
 }
