@@ -520,7 +520,7 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); font
 .col-msg-arrow { font-size: 11px; color: var(--text-soft); flex-shrink: 0; width: 14px; text-align: center; }
 .col-msg-partner { font-size: 12px; color: var(--text-soft); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .col-act-llm, .col-act-pure, .col-act-planner { background: var(--col-op-fill); border-color: var(--col-op-bdr); }
-.col-act-human { background: var(--accent-attn-bg); border-color: var(--accent-attn); }
+.col-act-human { background: var(--accent-attn-bg); border-color: var(--accent-attn); border-width: 1px; }
 .col-msg-send { background: var(--col-send-fill); border-color: var(--col-send-bdr); }
 .col-msg-recv { background: var(--col-recv-fill); border-color: var(--col-recv-bdr); }
 .col-act-llm.col-sel, .col-act-pure.col-sel, .col-act-planner.col-sel { border-color: var(--accent); }
@@ -660,19 +660,23 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); font
 .col-decision {
   position: absolute; left: 28px; right: 28px;
   background: #e5e3c7; border: 1px solid #bcb576; border-radius: 8px;
-  height: 50px; overflow: hidden;
+  height: 50px; overflow: hidden; cursor: pointer;
   display: flex; flex-direction: column; justify-content: center; padding: 0 10px;
+  transition: border-color .12s;
 }
+.col-decision:hover { border-color: #8a8040; }
+.col-decision.col-dec-sel { border: 2px solid #8a8040; }
 .col-dec-label { font-size: 12px; font-weight: 600; color: #4a4820; }
 .col-dec-cond  { font-size: 11px; color: #6b6840; font-family: var(--mono); margin-top: 2px;
                  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .col-ctrl-circle {
   position: absolute; width: 40px; height: 40px; border-radius: 50%;
-  background: #e5e3c7; border: 1px solid #bcb576;
+  background: #e5e3c7; border: 1px solid #bcb576; cursor: pointer;
   display: flex; align-items: center; justify-content: center;
   font-size: 13px; font-weight: 600; color: #4a4820;
-  box-shadow: 0 0 0 3px var(--bg);
+  box-shadow: 0 0 0 3px var(--bg); transition: border-color .12s;
 }
+.col-ctrl-circle:hover { border-color: #8a8040; }
 
 /* Scrollbars */
 ::-webkit-scrollbar { width: 5px; height: 5px; }
@@ -743,6 +747,7 @@ let decisionsEnabled = true;
 let _arrowRaf        = null;
 const currentDecision = {};
 const ctrlCards       = {};
+const decisionEls     = {};  // 'dec:N' → decision box element
 let _ctrlSeq          = 0;
 
 // ── DOM ──────────────────────────────────────────────────────────────────────
@@ -832,19 +837,28 @@ function updateInboxBadge(){
 }
 
 // ── Detail panel ──────────────────────────────────────────────────────────────
+function _clearDetailSel(key){
+  if(!key) return;
+  if(colActCards[key]) colActCards[key].classList.remove('col-sel');
+  const mp = msgCards[key];
+  if(mp){ if(mp.send) mp.send.classList.remove('col-sel'); if(mp.recv) mp.recv.classList.remove('col-sel'); }
+  if(decisionEls[key]) decisionEls[key].classList.remove('col-dec-sel');
+}
+
 function openDetail(key){
-  if(detailKey && colActCards[detailKey]) colActCards[detailKey].classList.remove('col-sel');
+  _clearDetailSel(detailKey);
   detailKey = key;
-  Object.keys(inboxCards).forEach(function(k){
-    inboxCards[k].classList.toggle('inbox-sel', k===key);
-  });
+  Object.keys(inboxCards).forEach(function(k){ inboxCards[k].classList.toggle('inbox-sel', k===key); });
   if(colActCards[key]) colActCards[key].classList.add('col-sel');
+  const mp = msgCards[key];
+  if(mp){ if(mp.send) mp.send.classList.add('col-sel'); if(mp.recv) mp.recv.classList.add('col-sel'); }
+  if(decisionEls[key]) decisionEls[key].classList.add('col-dec-sel');
   detailPanel.style.display = 'flex';
   renderInspector(key, detailBody, closeDetail);
 }
 
 function closeDetail(){
-  if(detailKey && colActCards[detailKey]) colActCards[detailKey].classList.remove('col-sel');
+  _clearDetailSel(detailKey);
   Object.keys(inboxCards).forEach(function(k){ inboxCards[k].classList.remove('inbox-sel'); });
   detailKey = null;
   detailPanel.style.display = 'none';
@@ -852,6 +866,46 @@ function closeDetail(){
 }
 
 // ── Inspector ─────────────────────────────────────────────────────────────────
+function renderMsgDetail(a){
+  const vars = Object.entries(a.bindings||{}).filter(function([k,v]){
+    return k!=='branch'&&k!=='loop'&&!isCtrl(v);
+  });
+  let h = '<div class="ins-meta">'
+    +'<span class="ins-meta-ll">'+esc(a.from)+'</span>'
+    +'<span class="ins-meta-dot">&#x2192;</span>'
+    +'<span class="ins-meta-ll">'+esc(a.to)+'</span>'
+    +(a.channel?'<span class="ins-meta-dot">&middot;</span><span class="ins-meta-kind">'+esc(a.channel)+'</span>':'')
+    +'</div>'
+    +'<div class="ins-title">'+esc(a.from)+' → '+esc(a.to)+'</div>';
+  if(vars.length){
+    vars.forEach(function([k,v]){
+      h += '<div class="ins-section"><div class="ins-sec-label">'+esc(k)+'</div>'+ctxBox(v)+'</div>';
+    });
+  } else {
+    h += '<div class="ins-section"><div class="ins-sec-label">variables</div>'
+      +'<div class="ins-ctx"><span class="kv-empty">(none)</span></div></div>';
+  }
+  return h;
+}
+
+function renderDecisionDetail(a){
+  const sym = a.value ? '⊤' : '⊥';
+  let h = '<div class="ins-meta">'
+    +'<span class="ins-meta-ll">'+esc(a.lifeline)+'</span>'
+    +'<span class="ins-meta-dot">&middot;</span>'
+    +'<span class="ins-meta-kind">'+esc(a.decKind)+'</span>'
+    +'</div>'
+    +'<div class="ins-title">'+esc(a.decKind)+' '+sym+'</div>';
+  const formula = a.formula||a.condition||'';
+  if(formula){
+    h += '<div class="ins-section"><div class="ins-sec-label">condition</div>'
+      +'<div class="ins-ctx ins-ctx-mono">'+esc(formula)+'</div></div>';
+  }
+  h += '<div class="ins-section"><div class="ins-sec-label">value</div>'
+    +'<div class="ins-ctx ins-ctx-mono"><span class="'+(a.value?'kv-val-true':'kv-val-false')+'">'+esc(sym)+'</span></div></div>';
+  return h;
+}
+
 function renderInspector(overrideKey, targetEl, afterInput){
   const key = overrideKey !== undefined ? overrideKey : detailKey;
   const el  = targetEl || detailBody;
@@ -860,6 +914,8 @@ function renderInspector(overrideKey, targetEl, afterInput){
     return;
   }
   const a   = byKey[key];
+  if(a.kind==='msg'){      el.innerHTML = renderMsgDetail(a);      return; }
+  if(a.kind==='decision'){ el.innerHTML = renderDecisionDetail(a); return; }
   const req = a.reqId ? reqMap.get(a.reqId) : null;
   const hp  = req && !req.resolved && a.kind==='human';
   const hd  = req && req.resolved;
@@ -1113,13 +1169,18 @@ function createColMsgCard(e){
   const arrow   = e.type==='send' ? '→' : '←';
   const partner = e.type==='send' ? e.to : e.from;
   ensureColGroup(ll);
+  const mk = msgKey(e);
+  // Accumulate bindings from send + recv into shared byKey entry
+  if(!byKey[mk]){
+    byKey[mk] = {key:mk, kind:'msg', from:e.from, to:e.to, channel:e.channel||'', seq:e.seq, bindings:{}};
+  }
+  Object.assign(byKey[mk].bindings, e.bindings||{});
   const bindings = e.bindings||{};
   const vars = Object.keys(bindings).filter(function(k){
     return k!=='branch'&&k!=='loop'&&!isCtrl(bindings[k]);
   }).join(', ');
   const el = document.createElement('div');
   el.className = 'col-card col-msg col-msg-'+e.type;
-  const mk = msgKey(e);
   el.dataset.msgkey = mk;
   el.innerHTML = '<div class="col-card-row">'
     +'<span class="col-msg-arrow">'+esc(arrow)+'</span>'
@@ -1145,12 +1206,17 @@ function handleDecision(e){
   ensureColGroup(ll);
   const ctrlId = _ctrlSeq++;
   currentDecision[ll] = ctrlId;
+  const decKey = 'dec:'+ctrlId;
+  byKey[decKey] = {key:decKey, kind:'decision', lifeline:ll, value:e.value,
+    formula:e.formula||'', condition:e.condition||'', decKind:e.kind||'if'};
   const sym  = e.value ? '⊤' : '⊥';
   const cond = e.formula||e.condition||'';
   const el   = document.createElement('div');
   el.className = 'col-decision';
   el.innerHTML = '<span class="col-dec-label">'+esc(e.kind||'if')+' '+sym+'</span>'
     +(cond?'<div class="col-dec-cond">'+esc(cond)+'</div>':'');
+  el.onclick = function(){ openDetail(decKey); };
+  decisionEls[decKey] = el;
   const decRow = Object.keys(colEls).reduce(function(m,k){ return Math.max(m,colNextRow(k)); }, colNextRow(ll));
   const y = rowToY(decRow);
   el.style.top = y+'px';
@@ -1158,7 +1224,7 @@ function handleDecision(e){
   colRowIdx[ll] = decRow+1;
   colSetScrollH(ll, y+ROW_H+COL_PAD);
   globalMinRow = Math.max(globalMinRow, decRow+1);
-  ctrlCards[ctrlId] = {row: decRow};
+  ctrlCards[ctrlId] = {row: decRow, decKey};
 }
 
 function handleCtrlRecv(e){
@@ -1172,6 +1238,7 @@ function handleCtrlRecv(e){
   const el   = document.createElement('div');
   el.className = 'col-ctrl-circle';
   el.textContent = flag ? '⊤' : '⊥';
+  if(sync.decKey) el.onclick = function(){ openDetail(sync.decKey); };
   const y = rowToY(sync.row);
   el.style.top  = (y+5)+'px';
   el.style.left = 'calc(50% - 20px)';
@@ -1186,10 +1253,8 @@ function selectColCard(key){
 }
 
 function selectColMsg(mk, clickedEl){
-  document.querySelectorAll('.col-msg.col-sel').forEach(function(el){ el.classList.remove('col-sel'); });
+  openDetail(mk);  // openDetail handles col-sel on both cards
   const pair = msgCards[mk]; if(!pair) return;
-  if(pair.send) pair.send.classList.add('col-sel');
-  if(pair.recv) pair.recv.classList.add('col-sel');
   const otherEl = clickedEl===pair.send ? pair.recv : pair.send;
   if(otherEl) alignCol(clickedEl, otherEl);
 }
@@ -1225,6 +1290,7 @@ function handleInit(e){
   Object.keys(sendRowIdx).forEach(function(k){ delete sendRowIdx[k]; });
   Object.keys(currentDecision).forEach(function(k){ delete currentDecision[k]; });
   Object.keys(ctrlCards).forEach(function(k){ delete ctrlCards[k]; });
+  Object.keys(decisionEls).forEach(function(k){ delete decisionEls[k]; });
   globalMinRow = 0; globalColH = 0; _ctrlSeq = 0;
   arrowsGroup.innerHTML = '';
   colView.innerHTML = '<p class="col-empty">Awaiting workflow…</p>';
