@@ -820,6 +820,7 @@ const COL_PAD = 8;        // top breathing room in pixels
 const COL_GAP = 8;        // gap between cards in pixels
 const ROW_H   = 50;       // fixed height for every event card
 let globalMinRow  = 0;    // all columns stay at or above this row index after a decision
+let globalColH    = 0;    // tallest column height — all spacers stay at least this tall
 let showArrows       = false;
 let decisionsEnabled = true;
 let _arrowRaf        = null;
@@ -1191,8 +1192,11 @@ function isCtrlMsg(e){
 function rowToY(row){ return COL_PAD + row*(ROW_H+COL_GAP); }
 function colNextRow(ll){ return Math.max(colRowIdx[ll]!==undefined ? colRowIdx[ll] : 0, globalMinRow); }
 function colSetScrollH(ll, h){
-  const s=document.getElementById('col-spacer-'+ll);
-  if(s) s.style.height=h+'px';
+  globalColH=Math.max(globalColH, h);
+  Object.keys(colEls).forEach(function(k){
+    const s=document.getElementById('col-spacer-'+k);
+    if(s) s.style.height=globalColH+'px';
+  });
 }
 function colPlace(el, ll, row){
   const y=rowToY(row);
@@ -1400,7 +1404,7 @@ function handleInit(e){
   Object.keys(sendRowIdx).forEach(function(k){ delete sendRowIdx[k]; });
   Object.keys(currentDecision).forEach(function(k){ delete currentDecision[k]; });
   Object.keys(ctrlCards).forEach(function(k){ delete ctrlCards[k]; });
-  globalMinRow=0;
+  globalMinRow=0; globalColH=0;
   arrowsGroup.innerHTML='';
   colView.innerHTML='<p class="col-empty">Awaiting workflow…</p>';
   hideColOverlay();
@@ -1408,7 +1412,7 @@ function handleInit(e){
 }
 
 function handleRunStart(e){
-  globalMinRow=0;
+  globalMinRow=0; globalColH=0;
   (e.lifelines||[]).forEach(function(ll){ ensureGroup(ll); ensureColGroup(ll); });
 }
 
