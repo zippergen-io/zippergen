@@ -727,6 +727,7 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); font
   background: #e5e3c7; border: 1px solid #bcb576;
   display: flex; align-items: center; justify-content: center;
   font-size: 13px; font-weight: 600; color: #4a4820;
+  z-index: 10;
 }
 #col-ctrl-g line { stroke: #bcb576; stroke-width: 1.5; stroke-opacity: 0.7; }
 
@@ -1322,7 +1323,8 @@ function handleDecision(e){
   el.className='col-decision';
   el.innerHTML='<span class="col-dec-label">'+esc(e.kind||'if')+' '+sym+'</span>'
     +(cond?'<div class="col-dec-cond">'+esc(cond)+'</div>':'');
-  const y=colNextY(ll);
+  // Place below every event already visible across all columns
+  const y=Object.keys(colEls).reduce(function(m,k){ return Math.max(m,colNextY(k)); }, colNextY(ll));
   el.style.top=y+'px';
   colEls[ll].appendChild(el);
   colYPx[ll]=y+ROW_H+COL_GAP;
