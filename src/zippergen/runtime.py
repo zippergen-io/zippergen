@@ -1125,6 +1125,7 @@ def _workflow_configure(
     llms=None,
     ui: bool | None = None,
     mock_delay: tuple[float, float] = (1.0, 2.0),
+    show_decisions: bool = True,
 ) -> Workflow:
     lifelines = _ordered_workflow_lifelines(wf)
 
@@ -1153,7 +1154,7 @@ def _workflow_configure(
             wf._rt._trace = console_trace
         else:
             if wf._rt._webtrace is None:
-                wf._rt._webtrace = WebTrace(lifelines, name=wf.name).start()
+                wf._rt._webtrace = WebTrace(lifelines, name=wf.name, show_decisions=show_decisions).start()
             base_trace = trace if trace is not None else console_trace
             wf._rt._trace = tee_traces(wf._rt._webtrace, base_trace)
     elif trace is not None:

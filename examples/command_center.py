@@ -1002,7 +1002,7 @@ if __name__ == "__main__":
             max_tokens=512,
             timeout=120,
         )
-        command_center.configure(backend=backend, ui=True, timeout=3600)
+        command_center.configure(backend=backend, ui=True, timeout=3600, show_decisions=False)
 
     else:
         backend = make_openai_backend(

@@ -237,11 +237,12 @@ class WebTrace:
             wt.wait_for_replay()
     """
 
-    def __init__(self, lifelines, port: int = 8765, *, dashboard: bool = False, name: str = ""):
+    def __init__(self, lifelines, port: int = 8765, *, dashboard: bool = False, name: str = "", show_decisions: bool = True):
         self._dashboard = dashboard
         self._lifelines = _lifeline_names(lifelines)
         self._port = port
         self._name = name
+        self._show_decisions = show_decisions
         self._bus = _EventBus()
         self._server: ThreadingHTTPServer | None = None
         self._replay_event = threading.Event()
@@ -260,7 +261,7 @@ class WebTrace:
     def _init_event(self) -> dict:
         if self._dashboard:
             return {"type": "init", "dashboard": True}
-        ev: dict = {"type": "init", "lifelines": self._lifelines}
+        ev: dict = {"type": "init", "lifelines": self._lifelines, "show_decisions": self._show_decisions}
         if self._name:
             ev["name"] = self._name
         return ev
@@ -643,8 +644,9 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); font
 #view-columns {
   flex: 1; min-height: 0;
   display: flex; flex-direction: row;
-  overflow-x: auto; overflow-y: hidden;
+  overflow: auto;
   padding: 0 25px;
+  align-items: flex-start;
 }
 .col-empty { padding: 40px 28px; font-size: 13px; color: var(--text-faint); }
 .col-lifeline {
@@ -656,8 +658,9 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); font
   padding: 14px 16px 10px; font-size: 13px; font-weight: 600;
   color: var(--text); border-bottom: 1px solid var(--rule-hdr);
   flex-shrink: 0; letter-spacing: 0.02em; text-align: center;
+  position: sticky; top: 0; background: var(--bg); z-index: 20;
 }
-.col-content { flex: 1; overflow-y: auto; padding: 8px; position: relative; }
+.col-content { overflow: visible; padding: 8px; position: relative; }
 .col-content .col-card {
   margin-bottom: 0; height: 50px; overflow: hidden;
   display: flex; flex-direction: column; justify-content: center; padding: 0 10px;
@@ -727,9 +730,8 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); font
   background: #e5e3c7; border: 1px solid #bcb576;
   display: flex; align-items: center; justify-content: center;
   font-size: 13px; font-weight: 600; color: #4a4820;
-  z-index: 10;
+  box-shadow: 0 0 0 3px var(--bg);
 }
-#col-ctrl-g line { stroke: #bcb576; stroke-width: 1.5; stroke-opacity: 0.7; }
 
 /* ── Overlay ─────────────────────────────────────────────────────────────── */
 #col-overlay {
@@ -791,7 +793,6 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); font
       </marker>
     </defs>
     <g id="col-arrows-g"></g>
-    <g id="col-ctrl-g"></g>
   </svg>
 </div>
 <script>
@@ -813,18 +814,18 @@ const colEls      = {};   // lifeline → col-content element
 const colActCards = {};   // key (ll:seq) → card element
 const msgCards    = {};   // msgKey → {send: el, recv: el}
 let colOverlayKey = null; // key currently shown in overlay
-const colYPx      = {};   // lifeline → next available Y (px)
-const sendYPx     = {};   // msgKey → Y where send card was placed
-const COL_PAD = 8;        // top/bottom breathing room in pixels
+const colRowIdx   = {};   // lifeline → next available row index
+const sendRowIdx  = {};   // msgKey → row index where send card was placed
+const COL_PAD = 8;        // top breathing room in pixels
 const COL_GAP = 8;        // gap between cards in pixels
 const ROW_H   = 50;       // fixed height for every event card
-let globalMinY    = 0;    // all columns stay at or below this after a decision row
-let showArrows    = false;
-let _arrowRaf     = null;
+let globalMinRow  = 0;    // all columns stay at or above this row index after a decision
+let showArrows       = false;
+let decisionsEnabled = true;
+let _arrowRaf        = null;
 const currentDecision = {};  // ownerLL → ctrl_id of most recent decision
-const ctrlCards       = {};  // ctrl_id → {ownerEl, y, circles: {ll: el}}
+const ctrlCards       = {};  // ctrl_id → {row}
 let _ctrlSeq          = 0;
-let _ctrlRaf          = null;
 
 // ── DOM ──────────────────────────────────────────────────────────────────────
 const sidebar        = document.getElementById('sidebar');
@@ -836,7 +837,7 @@ const colOverlayBg   = document.getElementById('col-overlay-bg');
 const colOverlayBody = document.getElementById('col-overlay-body');
 const arrowsSvg      = document.getElementById('col-arrows');
 const arrowsGroup    = document.getElementById('col-arrows-g');
-const ctrlLinesGroup = document.getElementById('col-ctrl-g');
+colView.addEventListener('scroll', function(){ if(showArrows) scheduleDrawArrows(); });
 
 // ── View toggle ───────────────────────────────────────────────────────────────
 function setView(mode){
@@ -846,8 +847,8 @@ function setView(mode){
   document.getElementById('btn-inbox').classList.toggle('vt-active',   mode === 'inbox');
   document.getElementById('btn-columns').classList.toggle('vt-active', mode === 'columns');
   document.getElementById('btn-arrows').style.display = mode === 'columns' ? '' : 'none';
-  if(mode !== 'columns'){ hideColOverlay(); arrowsGroup.innerHTML=''; ctrlLinesGroup.innerHTML=''; }
-  if(mode === 'columns'){ scheduleDrawCtrlLines(); if(showArrows) scheduleDrawArrows(); }
+  if(mode !== 'columns'){ hideColOverlay(); arrowsGroup.innerHTML=''; }
+  if(mode === 'columns'){ if(showArrows) scheduleDrawArrows(); }
 }
 
 // ── Message arrows ────────────────────────────────────────────────────────────
@@ -859,19 +860,15 @@ function scheduleDrawArrows(){
 function drawArrows(){
   _arrowRaf=null;
   if(!showArrows||viewMode!=='columns'){ arrowsGroup.innerHTML=''; return; }
+  const vr=colView.getBoundingClientRect();
   let lines='';
   Object.values(msgCards).forEach(function(pair){
     const sEl=pair.send, rEl=pair.recv;
     if(!sEl||!rEl) return;
     const sRect=sEl.getBoundingClientRect();
     const rRect=rEl.getBoundingClientRect();
-    const sCol=sEl.closest('.col-content');
-    const rCol=rEl.closest('.col-content');
-    if(!sCol||!rCol) return;
-    const sColRect=sCol.getBoundingClientRect();
-    const rColRect=rCol.getBoundingClientRect();
-    if(sRect.bottom<sColRect.top||sRect.top>sColRect.bottom) return;
-    if(rRect.bottom<rColRect.top||rRect.top>rColRect.bottom) return;
+    if(sRect.bottom<vr.top||sRect.top>vr.bottom) return;
+    if(rRect.bottom<vr.top||rRect.top>vr.bottom) return;
     const sCx=(sRect.left+sRect.right)/2, rCx=(rRect.left+rRect.right)/2;
     const x1=rCx>=sCx ? sRect.right : sRect.left;
     const x2=rCx>=sCx ? rRect.left  : rRect.right;
@@ -887,37 +884,6 @@ function toggleArrows(){
   drawArrows();
 }
 
-// ── Control-broadcast lines ───────────────────────────────────────────────────
-function scheduleDrawCtrlLines(){
-  if(_ctrlRaf) return;
-  _ctrlRaf=requestAnimationFrame(drawCtrlLines);
-}
-
-function drawCtrlLines(){
-  _ctrlRaf=null;
-  if(viewMode!=='columns'){ ctrlLinesGroup.innerHTML=''; return; }
-  let lines='';
-  Object.values(ctrlCards).forEach(function(sync){
-    const oEl=sync.ownerEl; if(!oEl) return;
-    const oRect=oEl.getBoundingClientRect();
-    const oCol=oEl.closest('.col-content'); if(!oCol) return;
-    const oColRect=oCol.getBoundingClientRect();
-    if(oRect.bottom<oColRect.top||oRect.top>oColRect.bottom) return;
-    Object.values(sync.circles).forEach(function(cEl){
-      if(!cEl) return;
-      const cRect=cEl.getBoundingClientRect();
-      const cCol=cEl.closest('.col-content'); if(!cCol) return;
-      const cColRect=cCol.getBoundingClientRect();
-      if(cRect.bottom<cColRect.top||cRect.top>cColRect.bottom) return;
-      const oCx=(oRect.left+oRect.right)/2, cCx=(cRect.left+cRect.right)/2;
-      const x1=cCx>=oCx?oRect.right:oRect.left;
-      const x2=cCx>=oCx?cRect.left:cRect.right;
-      const y1=(oRect.top+oRect.bottom)/2, y2=(cRect.top+cRect.bottom)/2;
-      lines+='<line x1="'+x1+'" y1="'+y1+'" x2="'+x2+'" y2="'+y2+'"/>';
-    });
-  });
-  ctrlLinesGroup.innerHTML=lines;
-}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function esc(s){ return String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
@@ -1222,15 +1188,21 @@ function isCtrlMsg(e){
   return e.ctrl || (e.values||[]).some(isCtrl);
 }
 
-function colNextY(ll){ return Math.max(colYPx[ll]!==undefined ? colYPx[ll] : COL_PAD, globalMinY); }
-function colPlace(el, ll, y){
+function rowToY(row){ return COL_PAD + row*(ROW_H+COL_GAP); }
+function colNextRow(ll){ return Math.max(colRowIdx[ll]!==undefined ? colRowIdx[ll] : 0, globalMinRow); }
+function colSetScrollH(ll, h){
+  const s=document.getElementById('col-spacer-'+ll);
+  if(s) s.style.height=h+'px';
+}
+function colPlace(el, ll, row){
+  const y=rowToY(row);
   el.style.position='absolute';
   el.style.top=y+'px';
   el.style.left='28px';
   el.style.right='28px';
   colEls[ll].appendChild(el);
-  colYPx[ll]=y+ROW_H+COL_GAP;
-  colEls[ll].style.minHeight=(y+ROW_H+COL_PAD)+'px';
+  colRowIdx[ll]=row+1;
+  colSetScrollH(ll, y+ROW_H+COL_PAD);
   if(showArrows) scheduleDrawArrows();
 }
 
@@ -1243,7 +1215,10 @@ function ensureColGroup(ll){
     +'<div class="col-content" id="col-content-'+esc(ll)+'"></div>';
   colView.appendChild(col);
   colEls[ll]=col.querySelector('.col-content');
-  colEls[ll].addEventListener('scroll', function(){ scheduleDrawCtrlLines(); if(showArrows) scheduleDrawArrows(); });
+  const spacer=document.createElement('div');
+  spacer.id='col-spacer-'+ll;
+  spacer.style.height='0';
+  colEls[ll].appendChild(spacer);
 }
 
 function colActCardInner(a){
@@ -1268,7 +1243,7 @@ function createColActCard(key){
   el.innerHTML=colActCardInner(a);
   el.onclick=()=>selectColCard(key);
   colActCards[key]=el;
-  colPlace(el, a.lifeline, colNextY(a.lifeline));
+  colPlace(el, a.lifeline, colNextRow(a.lifeline));
 }
 
 function updateColActCard(key){
@@ -1302,17 +1277,18 @@ function createColMsgCard(e){
   el.onclick=function(){ selectColMsg(mk, el); };
   if(!msgCards[mk]) msgCards[mk]={};
   msgCards[mk][e.type]=el;
-  let y;
+  let row;
   if(e.type==='send'){
-    y=colNextY(ll);
-    sendYPx[mk]=y;
+    row=colNextRow(ll);
+    sendRowIdx[mk]=row;
   } else {
-    y=Math.max(colNextY(ll), sendYPx[mk]!==undefined?sendYPx[mk]:0);
+    row=Math.max(colNextRow(ll), sendRowIdx[mk]!==undefined?sendRowIdx[mk]:0);
   }
-  colPlace(el, ll, y);
+  colPlace(el, ll, row);
 }
 
 function handleDecision(e){
+  if(!decisionsEnabled) return;
   const ll=e.lifeline;
   ensureColGroup(ll);
   const ctrlId=_ctrlSeq++;
@@ -1323,15 +1299,15 @@ function handleDecision(e){
   el.className='col-decision';
   el.innerHTML='<span class="col-dec-label">'+esc(e.kind||'if')+' '+sym+'</span>'
     +(cond?'<div class="col-dec-cond">'+esc(cond)+'</div>':'');
-  // Place below every event already visible across all columns
-  const y=Object.keys(colEls).reduce(function(m,k){ return Math.max(m,colNextY(k)); }, colNextY(ll));
+  // Decision row = max row index across all lifelines (guarantees its own row)
+  const decRow=Object.keys(colEls).reduce(function(m,k){ return Math.max(m,colNextRow(k)); }, colNextRow(ll));
+  const y=rowToY(decRow);
   el.style.top=y+'px';
   colEls[ll].appendChild(el);
-  colYPx[ll]=y+ROW_H+COL_GAP;
-  colEls[ll].style.minHeight=(y+ROW_H+COL_PAD)+'px';
-  globalMinY=Math.max(globalMinY, y+ROW_H+COL_GAP);
-  ctrlCards[ctrlId]={ownerEl:el,y:y,circles:{}};
-  scheduleDrawCtrlLines();
+  colRowIdx[ll]=decRow+1;
+  colSetScrollH(ll, y+ROW_H+COL_PAD);
+  globalMinRow=Math.max(globalMinRow, decRow+1);
+  ctrlCards[ctrlId]={row:decRow};
 }
 
 function handleCtrlRecv(e){
@@ -1346,15 +1322,13 @@ function handleCtrlRecv(e){
   const el=document.createElement('div');
   el.className='col-ctrl-circle';
   el.textContent=flag?'⊤':'⊥';
-  const rawY=colYPx[ll]!==undefined?colYPx[ll]:COL_PAD;
-  const y=Math.max(rawY,sync.y);         // bypass globalMinY: circles belong in the decision row
-  el.style.top=(y+5)+'px';              // centre 40px circle in 50px row
+  // Circle always occupies the decision's exact row
+  const y=rowToY(sync.row);
+  el.style.top=(y+5)+'px';   // centre 40px circle in 50px row
   el.style.left='calc(50% - 20px)';
   colEls[ll].appendChild(el);
-  colYPx[ll]=y+ROW_H+COL_GAP;
-  colEls[ll].style.minHeight=(y+ROW_H+COL_PAD)+'px';
-  sync.circles[ll]=el;
-  scheduleDrawCtrlLines();
+  colRowIdx[ll]=Math.max(colRowIdx[ll]!==undefined?colRowIdx[ll]:0, sync.row+1);
+  colSetScrollH(ll, y+ROW_H+COL_PAD);
 }
 
 function selectColCard(key){
@@ -1376,12 +1350,10 @@ function selectColMsg(mk, clickedEl){
 }
 
 function alignCol(anchorEl, targetEl){
-  const anchorCol=anchorEl.closest('.col-content');
-  const targetCol=targetEl.closest('.col-content');
-  if(!anchorCol||!targetCol||anchorCol===targetCol) return;
-  const anchorOffset=anchorEl.getBoundingClientRect().top - anchorCol.getBoundingClientRect().top;
-  const newScrollTop=targetEl.offsetTop - anchorOffset;
-  targetCol.scrollTo({top:Math.max(0,newScrollTop), behavior:'smooth'});
+  const viewRect=colView.getBoundingClientRect();
+  const anchorOffset=anchorEl.getBoundingClientRect().top - viewRect.top;
+  const newScrollTop=colView.scrollTop + targetEl.getBoundingClientRect().top - viewRect.top - anchorOffset;
+  colView.scrollTo({top:Math.max(0,newScrollTop), behavior:'smooth'});
 }
 
 // ── Overlay ───────────────────────────────────────────────────────────────────
@@ -1410,6 +1382,7 @@ colView.addEventListener('click', function(e){
 
 // ── Event handlers ────────────────────────────────────────────────────────────
 function handleInit(e){
+  decisionsEnabled = e.show_decisions !== false;
   Object.keys(byKey).forEach(function(k){ delete byKey[k]; });
   Object.keys(groups).forEach(function(k){ delete groups[k]; });
   Object.keys(rowEls).forEach(function(k){ delete rowEls[k]; });
@@ -1423,19 +1396,19 @@ function handleInit(e){
   Object.keys(colEls).forEach(function(k){ delete colEls[k]; });
   Object.keys(colActCards).forEach(function(k){ delete colActCards[k]; });
   Object.keys(msgCards).forEach(function(k){ delete msgCards[k]; });
-  Object.keys(colYPx).forEach(function(k){ delete colYPx[k]; });
-  Object.keys(sendYPx).forEach(function(k){ delete sendYPx[k]; });
+  Object.keys(colRowIdx).forEach(function(k){ delete colRowIdx[k]; });
+  Object.keys(sendRowIdx).forEach(function(k){ delete sendRowIdx[k]; });
   Object.keys(currentDecision).forEach(function(k){ delete currentDecision[k]; });
   Object.keys(ctrlCards).forEach(function(k){ delete ctrlCards[k]; });
-  globalMinY=0;
-  arrowsGroup.innerHTML=''; ctrlLinesGroup.innerHTML='';
+  globalMinRow=0;
+  arrowsGroup.innerHTML='';
   colView.innerHTML='<p class="col-empty">Awaiting workflow…</p>';
   hideColOverlay();
   (e.lifelines||[]).forEach(function(ll){ ensureColGroup(ll); });
 }
 
 function handleRunStart(e){
-  globalMinY=0;
+  globalMinRow=0;
   (e.lifelines||[]).forEach(function(ll){ ensureGroup(ll); ensureColGroup(ll); });
 }
 
