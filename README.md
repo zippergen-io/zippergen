@@ -21,6 +21,10 @@ Each participant is called a **lifeline**, which is the standard term from Messa
 
 ZipperChat streams the execution live. Each lifeline gets its own column. Actions, messages, decisions, and human control points appear as cards as they happen.
 
+<p align="center">
+  <a href="https://zippergen.io/demo"><strong>Try the demo →</strong></a>
+</p>
+
 ![ZipperChat MSC view](assets/zipperchat-msc.png)
 
 Clicking a human action opens a detail view with the full context and a form to respond.
