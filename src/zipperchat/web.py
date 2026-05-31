@@ -536,12 +536,12 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); font
 }
 #detail-topbar {
   display: flex; align-items: center; justify-content: flex-end;
-  padding: 14px 16px 10px; border-bottom: 1px solid var(--rule-hdr); flex-shrink: 0;
+  padding: 14px 24px 10px; border-bottom: 1px solid var(--rule-hdr); flex-shrink: 0;
 }
 #detail-close {
   background: none; border: none; cursor: pointer;
   font-size: 13px; color: var(--text-mute); padding: 3px 8px;
-  border-radius: 4px; line-height: 1; font-weight: 600;
+  border-radius: 4px; line-height: 1; font-weight: 500;
 }
 #detail-close:hover { color: var(--text); background: rgba(0,0,0,.05); }
 #detail-body { flex: 1; overflow-y: auto; padding: 32px 56px; }
@@ -709,7 +709,7 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); font
       </div>
       <div id="detail-panel" style="display:none">
         <div id="detail-topbar">
-          <button id="detail-close" onclick="closeDetail()">&#x2715;</button>
+          <button id="detail-close" onclick="closeDetail()">← Back</button>
         </div>
         <div id="detail-body"></div>
       </div>
