@@ -388,7 +388,7 @@ _HTML = r"""<!DOCTYPE html>
 <title>ZipperChat</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
 <style>
 :root {
   --bg:              #f8fafb;
@@ -404,8 +404,9 @@ _HTML = r"""<!DOCTYPE html>
   --btn-bg:          #14141A;
   --btn-text:        #F5F2EC;
   --done-clr:        #9aaa2a;
-  --sans:       'IBM Plex Sans', system-ui, sans-serif;
-  --mono:       'Space Mono', 'Courier New', monospace;
+  --sans:       'Inter', system-ui, sans-serif;
+  --mono:       'JetBrains Mono', ui-monospace, monospace;
+  --lifeline-color: #1e40af;
   --col-op-fill:    #d8e0fb;
   --col-op-bdr:     #9aa9ec;
   --col-send-fill:  #cdeadb;
@@ -418,7 +419,7 @@ _HTML = r"""<!DOCTYPE html>
 }
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 html, body { height: 100%; overflow: hidden; }
-body { font-family: var(--sans); background: var(--bg); color: var(--text); font-size: 14px; }
+body { font-family: var(--sans); background: var(--bg); color: var(--text); font-size: 14px; line-height: 1.4; }
 
 /* ── App shell ──────────────────────────────────────────────────────────── */
 #app  { display: flex; flex-direction: column; height: 100vh; }
@@ -426,6 +427,7 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); font
   display: flex; align-items: center; gap: 20px;
   padding: 0 24px 0 25px; height: 70px; flex-shrink: 0;
   border-bottom: 1px solid var(--rule-hdr); background: var(--bg);
+  position: relative; z-index: 10;
 }
 #main { display: flex; flex-direction: row; flex: 1; min-height: 0; overflow: hidden; }
 
@@ -486,7 +488,7 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); font
 .col-empty { padding: 40px 28px; font-size: 13px; color: var(--text-faint); }
 .col-lifeline {
   flex: 0 0 250px; display: flex; flex-direction: column;
-  border-right: 1px solid var(--rule);
+  border-right: 1px solid var(--rule); min-height: 100%;
 }
 .col-lifeline:first-child { border-left: 1px solid var(--rule); }
 .col-hdr {
@@ -514,11 +516,11 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); font
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1;
 }
 .col-card-preview {
-  font-size: 10px; color: var(--text-mute); margin-top: 2px;
+  font-size: 10px; color: #6b7280; margin-top: 2px;
   font-family: var(--mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.col-msg-arrow { font-size: 11px; color: var(--text-soft); flex-shrink: 0; width: 14px; text-align: center; }
-.col-msg-partner { font-size: 12px; color: var(--text-soft); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.col-msg-arrow { font-size: 11px; color: #4a4f5a; flex-shrink: 0; width: 14px; text-align: center; }
+.col-msg-partner { font-size: 12px; color: var(--lifeline-color); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .col-act-llm, .col-act-pure, .col-act-planner { background: var(--col-op-fill); border-color: var(--col-op-bdr); }
 .col-act-human { background: var(--accent-attn-bg); border-color: var(--accent-attn); border-width: 1px; }
 .col-msg-send { background: var(--col-send-fill); border-color: var(--col-send-bdr); }
@@ -553,7 +555,9 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); font
   display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
   margin-bottom: 12px; font-size: 14px; color: var(--text-mute);
 }
-.ins-meta-ll   { font-weight: 500; color: var(--text-soft); }
+.ins-meta-ll   { font-weight: 500; color: var(--lifeline-color); }
+.ll-name { color: var(--lifeline-color); }
+.ins-arrow { color: #4a4f5a; }
 .ins-meta-dot  { color: var(--text-faint); }
 .ins-meta-kind { font-size: 12px; }
 .ins-meta-time { font-size: 12px; color: var(--text-faint); }
@@ -740,7 +744,7 @@ const sendRowIdx  = {};
 const COL_PAD = 8;
 const COL_GAP = 8;
 const ROW_H   = 50;
-let globalMinRow     = 0;
+const decisionRows   = new Set();
 let globalColH       = 0;
 let showArrows       = false;
 let decisionsEnabled = true;
@@ -775,7 +779,6 @@ function drawArrows(){
     if(!sEl||!rEl) return;
     const sRect=sEl.getBoundingClientRect(), rRect=rEl.getBoundingClientRect();
     if(sRect.bottom<vr.top||sRect.top>vr.bottom) return;
-    if(rRect.bottom<vr.top||rRect.top>vr.bottom) return;
     const sCx=(sRect.left+sRect.right)/2, rCx=(rRect.left+rRect.right)/2;
     const x1=rCx>=sCx?sRect.right:sRect.left, x2=rCx>=sCx?rRect.left:rRect.right;
     const y1=(sRect.top+sRect.bottom)/2, y2=(rRect.top+rRect.bottom)/2;
@@ -876,7 +879,7 @@ function renderMsgDetail(a){
     +'<span class="ins-meta-ll">'+esc(a.to)+'</span>'
     +(a.channel?'<span class="ins-meta-dot">&middot;</span><span class="ins-meta-kind">'+esc(a.channel)+'</span>':'')
     +'</div>'
-    +'<div class="ins-title">'+esc(a.from)+' → '+esc(a.to)+'</div>';
+    +'<div class="ins-title"><span class="ll-name">'+esc(a.from)+'</span> <span class="ins-arrow">→</span> <span class="ll-name">'+esc(a.to)+'</span></div>';
   if(vars.length){
     vars.forEach(function([k,v]){
       h += '<div class="ins-section"><div class="ins-sec-label">'+esc(k)+'</div>'+ctxBox(v)+'</div>';
@@ -1088,7 +1091,11 @@ function doSubmit(req_id, val){
 function msgKey(e){ return e.from+'→'+e.to+'@'+(e.channel||'')+'#'+e.seq; }
 function isCtrlMsg(e){ return e.ctrl || (e.values||[]).some(isCtrl); }
 function rowToY(row){ return COL_PAD + row*(ROW_H+COL_GAP); }
-function colNextRow(ll){ return Math.max(colRowIdx[ll]!==undefined?colRowIdx[ll]:0, globalMinRow); }
+function colNextRow(ll){
+  let r = colRowIdx[ll]!==undefined ? colRowIdx[ll] : 0;
+  while(decisionRows.has(r)) r++;
+  return r;
+}
 
 function colSetScrollH(ll, h){
   globalColH = Math.max(globalColH, h);
@@ -1223,7 +1230,7 @@ function handleDecision(e){
   colEls[ll].appendChild(el);
   colRowIdx[ll] = decRow+1;
   colSetScrollH(ll, y+ROW_H+COL_PAD);
-  globalMinRow = Math.max(globalMinRow, decRow+1);
+  decisionRows.add(decRow);
   ctrlCards[ctrlId] = {row: decRow, decKey};
 }
 
@@ -1291,7 +1298,7 @@ function handleInit(e){
   Object.keys(currentDecision).forEach(function(k){ delete currentDecision[k]; });
   Object.keys(ctrlCards).forEach(function(k){ delete ctrlCards[k]; });
   Object.keys(decisionEls).forEach(function(k){ delete decisionEls[k]; });
-  globalMinRow = 0; globalColH = 0; _ctrlSeq = 0;
+  decisionRows.clear(); globalColH = 0; _ctrlSeq = 0;
   arrowsGroup.innerHTML = '';
   colView.innerHTML = '<p class="col-empty">Awaiting workflow…</p>';
   document.getElementById('btn-arrows').style.display = 'none';
@@ -1299,7 +1306,7 @@ function handleInit(e){
 }
 
 function handleRunStart(e){
-  globalMinRow = 0; globalColH = 0;
+  decisionRows.clear(); globalColH = 0;
   (e.lifelines||[]).forEach(function(ll){ ensureGroup(ll); ensureColGroup(ll); });
 }
 

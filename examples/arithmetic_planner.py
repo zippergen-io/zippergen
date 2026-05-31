@@ -107,6 +107,7 @@ if __name__ == "__main__":
     arithmetic_planner.configure(
         llms={"Planner": make_openai_backend(api_key=os.environ["OPENAI_API_KEY"], model="gpt-4o")},
         ui=True,
+        show_decisions=True,
         timeout=120,
     )
 
