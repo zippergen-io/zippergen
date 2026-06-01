@@ -669,7 +669,7 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); font
 }
 .btn-secondary:hover:not(:disabled) { border-color: rgba(20,18,12,0.3); color: var(--text); }
 .btn-secondary:disabled { opacity: .35; cursor: default; }
-.ins-hint { text-align: center; margin-top: 12px; font-size: 12px; color: var(--text-faint); }
+.ins-hint { font-size: 12px; color: var(--text-faint); }
 .btn-choice {
   font-family: var(--sans); font-size: 14px; padding: 9px 16px; border-radius: 6px;
   border: 1px solid var(--rule); background: var(--panel); color: var(--text-soft);
@@ -1071,12 +1071,12 @@ function renderPendingForm(req){
   } else if(req.kind==='confirm'){
     if(req.context) h += '<div class="ins-section">'+renderEmailCtx(req.context)+'</div>';
     h += '<div class="ins-actions"><button class="btn-approve" disabled>'+esc(submitLabel)+'</button>'
-      +'<button class="btn-secondary" disabled>'+esc(cancelLabel)+'</button></div>'
-      +'<div class="ins-hint">⌘↩ to confirm</div>';
+      +'<button class="btn-secondary" disabled>'+esc(cancelLabel)+'</button>'
+      +'<span class="ins-hint">⌘↩ to confirm</span></div>';
   } else {
     const actHtml = '<div class="ins-actions"><button class="btn-approve" disabled>'+esc(submitLabel)+'</button>'
-      +'<button class="btn-secondary" disabled>'+esc(cancelLabel)+'</button></div>'
-      +'<div class="ins-hint">⌘↩ to approve</div>';
+      +'<button class="btn-secondary" disabled>'+esc(cancelLabel)+'</button>'
+      +'<span class="ins-hint">⌘↩ to approve</span></div>';
     if(req.context){
       const instrHdr = instruction
         ? '<div class="ea-instr">'+esc(instruction)+'</div><hr class="ea-rule">'
