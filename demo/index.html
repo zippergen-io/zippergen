@@ -729,8 +729,7 @@ function renderPendingForm(req){
         +'<div>'+renderEmailCtx(req.context)+'</div>'
         +'<div class="ins-split-work">'
         +'<div class="ea ea-write">'+instrHdr+'<textarea class="ea-ta">'+taVal+'</textarea></div>'
-        +'</div></div>'
-        +actHtml;
+        +actHtml+'</div></div>';
     } else {
       const taLabelCls = instruction ? 'ins-instr-label' : 'ins-sec-label';
       const taLabel = instruction||(req.prefill?'Edit or approve':'Input');
