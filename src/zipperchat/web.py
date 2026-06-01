@@ -929,6 +929,7 @@ function openDetail(key){
   const mp = msgCards[key];
   if(mp){ if(mp.send) mp.send.classList.add('col-sel'); if(mp.recv) mp.recv.classList.add('col-sel'); }
   if(decisionEls[key]) decisionEls[key].classList.add('col-dec-sel');
+  document.getElementById('btn-arrows').style.display = 'none';
   detailPanel.style.display = 'flex';
   renderInspector(key, detailBody, closeDetail);
 }
@@ -938,6 +939,7 @@ function closeDetail(){
   Object.keys(inboxCards).forEach(function(k){ inboxCards[k].classList.remove('inbox-sel'); });
   detailKey = null;
   detailPanel.style.display = 'none';
+  if(Object.keys(colEls).length) document.getElementById('btn-arrows').style.display = '';
   if(_cmdHandler){ document.removeEventListener('keydown',_cmdHandler); _cmdHandler=null; }
 }
 
