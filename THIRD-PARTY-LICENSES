@@ -20,4 +20,4 @@ LOSS OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR
 OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR
 PERFORMANCE OF THIS SOFTWARE.
 
-Used: inbox icon SVG path (src/zipperchat/web.py)
+Used: inbox, chevron-left, chevron-right icon SVG paths (src/zipperchat/web.py)

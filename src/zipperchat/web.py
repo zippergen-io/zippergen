@@ -733,14 +733,18 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); font
   <div id="main">
     <div id="inbox-panel">
       <div class="inbox-hdr">
-        <button id="inbox-fold" aria-label="Collapse inbox">&#171;</button>
+        <button id="inbox-fold" aria-label="Collapse inbox">
+          <svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>
+        </button>
         <span class="inbox-hdr-title">Inbox<span class="inbox-badge" id="inbox-badge"></span></span>
       </div>
       <div id="inbox-list">
         <p class="inbox-empty">No actions yet&hellip;</p>
       </div>
       <div class="inbox-strip">
-        <button class="inbox-strip-btn" onclick="document.getElementById('inbox-fold').click()" aria-label="Expand inbox">&#187;</button>
+        <button class="inbox-strip-btn" onclick="document.getElementById('inbox-fold').click()" aria-label="Expand inbox">
+          <svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m9 18 6-6-6-6"/></svg>
+        </button>
         <svg class="inbox-strip-icon" aria-hidden="true" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
           <path d="M22 12h-6l-2 3h-4l-2-3H2"/>
           <path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>
