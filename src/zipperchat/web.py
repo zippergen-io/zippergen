@@ -468,24 +468,27 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); font
 }
 .inbox-strip-count:empty { display: none; }
 .inbox-hdr {
-  display: flex; align-items: center; gap: 6px;
-  padding: 10px 10px 10px; font-size: 13px; font-weight: 600;
+  display: flex; align-items: center;
+  padding: 10px 12px 10px 0; font-size: 13px; font-weight: 600;
   color: var(--text); border-bottom: 1px solid var(--rule-hdr); flex-shrink: 0;
   letter-spacing: 0.02em;
 }
+.inbox-hdr-gutter {
+  flex: 0 0 24px; display: flex; align-items: center; justify-content: center;
+}
 .inbox-hdr-title { display: flex; align-items: baseline; gap: 6px; flex: 1; min-width: 0; }
 #inbox-fold {
-  flex-shrink: 0; width: 22px; height: 22px;
+  width: 22px; height: 22px;
   background: none; border: none; cursor: pointer; border-radius: 4px;
-  font-size: 14px; color: var(--text-mute); padding: 0;
+  color: var(--text-mute); padding: 0;
   display: flex; align-items: center; justify-content: center; transition: color .12s;
 }
 #inbox-fold:hover { color: var(--text); background: rgba(0,0,0,.06); }
 .inbox-badge { font-size: 11px; font-weight: 700; color: var(--accent-attn); }
 #inbox-list { flex: 1; overflow-y: auto; }
-.inbox-empty { padding: 24px 25px; font-size: 13px; color: var(--text-faint); }
+.inbox-empty { padding: 24px 12px 24px 24px; font-size: 13px; color: var(--text-faint); }
 .inbox-card {
-  padding: 9px 25px; cursor: pointer; user-select: none;
+  padding: 9px 12px 9px 24px; cursor: pointer; user-select: none;
   border-bottom: 1px solid var(--rule); transition: background .1s;
 }
 .inbox-card:hover:not(.inbox-sel) { background: rgba(0,0,0,.03); }
@@ -733,9 +736,11 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); font
   <div id="main">
     <div id="inbox-panel">
       <div class="inbox-hdr">
-        <button id="inbox-fold" aria-label="Collapse inbox">
-          <svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>
-        </button>
+        <div class="inbox-hdr-gutter">
+          <button id="inbox-fold" aria-label="Collapse inbox">
+            <svg aria-hidden="true" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m15 18-6-6 6-6"/></svg>
+          </button>
+        </div>
         <span class="inbox-hdr-title">Inbox<span class="inbox-badge" id="inbox-badge"></span></span>
       </div>
       <div id="inbox-list">
