@@ -587,7 +587,7 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); font
   min-height: 300px; font-size: 14px; color: var(--text-faint);
 }
 .ins-meta {
-  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
   margin-bottom: 12px; font-size: 14px; color: var(--text-mute);
 }
 .ins-meta-ll   { font-weight: 500; color: var(--lifeline-color); }
