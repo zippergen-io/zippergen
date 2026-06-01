@@ -398,7 +398,7 @@ _HTML = r"""<!DOCTYPE html>
   --text-mute:       #6e6e92;
   --text-faint:      #a8a8c4;
   --accent:          #2148FF;
-  --accent-bg:       #e8edff;
+  --accent-bg:       #dde6fb;
   --accent-attn:     #E94F2E;
   --accent-attn-bg:  #fde8e3;
   --btn-bg:          #14141A;
@@ -414,8 +414,9 @@ _HTML = r"""<!DOCTYPE html>
   --col-recv-fill:  #ddf3eb;
   --col-recv-bdr:   #a8d5c4;
   --col-sel:        #2f9168;
-  --rule:         #e7ebee;
-  --rule-hdr:     #dde2e6;
+  --rule:         #e0e4e8;
+  --rule-hdr:     #e0e4e8;
+  --inbox-bg:     #eef1f4;
 }
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 html, body { height: 100%; overflow: hidden; }
@@ -439,16 +440,47 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); font
 
 /* ── Inbox panel ─────────────────────────────────────────────────────────── */
 #inbox-panel {
-  flex: 0 0 220px; display: flex; flex-direction: column;
+  flex: 0 0 250px; display: flex; flex-direction: column;
   border-right: 1px solid var(--rule); overflow: hidden;
-  position: relative; z-index: 10; background: var(--bg);
+  position: relative; z-index: 10; background: var(--inbox-bg);
+  transition: flex-basis 0.22s ease;
 }
+#inbox-panel.inbox-collapsed { flex-basis: 52px; }
+#inbox-panel.inbox-collapsed .inbox-hdr,
+#inbox-panel.inbox-collapsed #inbox-list { display: none; }
+.inbox-strip {
+  display: none; flex-direction: column; align-items: center;
+  padding: 8px 0 0; gap: 8px; flex: 1;
+}
+#inbox-panel.inbox-collapsed .inbox-strip { display: flex; }
+.inbox-strip-btn {
+  background: none; border: none; cursor: pointer; border-radius: 4px;
+  font-size: 15px; color: var(--text-mute); padding: 3px 5px; line-height: 1;
+  transition: color .12s;
+}
+.inbox-strip-btn:hover { color: var(--text); background: rgba(0,0,0,.06); }
+.inbox-strip-icon { color: var(--text-mute); display: block; }
+.inbox-strip-count {
+  min-width: 18px; height: 18px; padding: 0 4px;
+  border-radius: 99px; background: var(--accent-attn);
+  color: #fff; font-size: 10px; font-weight: 700;
+  display: flex; align-items: center; justify-content: center;
+}
+.inbox-strip-count:empty { display: none; }
 .inbox-hdr {
-  display: flex; align-items: baseline; gap: 6px;
-  padding: 14px 25px 10px; font-size: 13px; font-weight: 600;
+  display: flex; align-items: center; gap: 6px;
+  padding: 10px 10px 10px; font-size: 13px; font-weight: 600;
   color: var(--text); border-bottom: 1px solid var(--rule-hdr); flex-shrink: 0;
   letter-spacing: 0.02em;
 }
+.inbox-hdr-title { display: flex; align-items: baseline; gap: 6px; flex: 1; min-width: 0; }
+#inbox-fold {
+  flex-shrink: 0; width: 22px; height: 22px;
+  background: none; border: none; cursor: pointer; border-radius: 4px;
+  font-size: 14px; color: var(--text-mute); padding: 0;
+  display: flex; align-items: center; justify-content: center; transition: color .12s;
+}
+#inbox-fold:hover { color: var(--text); background: rgba(0,0,0,.06); }
 .inbox-badge { font-size: 11px; font-weight: 700; color: var(--accent-attn); }
 #inbox-list { flex: 1; overflow-y: auto; }
 .inbox-empty { padding: 24px 25px; font-size: 13px; color: var(--text-faint); }
@@ -463,9 +495,9 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); font
   font-size: 13px; font-weight: 500; color: var(--text);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1;
 }
-.inbox-card.inbox-sel .inbox-card-name { color: var(--accent); }
+.inbox-card.inbox-sel .inbox-card-name { color: var(--text); }
 .inbox-card-sub { font-size: 11px; color: var(--text-mute); margin-top: 3px; }
-.inbox-card.inbox-sel .inbox-card-sub { color: var(--accent); opacity: .7; }
+.inbox-card.inbox-sel .inbox-card-sub { color: var(--text-mute); }
 .sg-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
 .dot-done    { background: transparent; }
 .dot-running { background: transparent; }
@@ -500,7 +532,7 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); font
 .col-content { overflow: visible; padding: 8px; position: relative; }
 .col-content .col-card {
   margin-bottom: 0; height: 50px; overflow: hidden;
-  display: flex; flex-direction: column; justify-content: center; padding: 0 10px;
+  display: flex; flex-direction: column; justify-content: flex-start; padding: 6px 10px;
 }
 .col-card {
   border: 1.5px solid var(--rule); border-radius: 5px;
@@ -641,6 +673,8 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); font
 }
 .btn-choice:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); background: var(--accent-bg); }
 .btn-choice:disabled { opacity: .3; cursor: default; }
+.sel-opts { display: flex; flex-direction: column; gap: 8px; margin: 4px 0; }
+.sel-opt.sel-active { border-color: var(--accent); color: var(--accent); background: var(--accent-bg); }
 .kv-row { display: flex; gap: 14px; padding: 6px 0; border-bottom: 1px solid var(--rule); }
 .kv-row:last-child { border-bottom: none; }
 .kv-key { font-family: var(--mono); font-size: 12px; color: var(--text-mute); min-width: 100px; flex-shrink: 0; padding-top: 2px; }
@@ -698,9 +732,20 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); font
   </header>
   <div id="main">
     <div id="inbox-panel">
-      <div class="inbox-hdr">Inbox<span class="inbox-badge" id="inbox-badge"></span></div>
+      <div class="inbox-hdr">
+        <button id="inbox-fold" aria-label="Collapse inbox">&#171;</button>
+        <span class="inbox-hdr-title">Inbox<span class="inbox-badge" id="inbox-badge"></span></span>
+      </div>
       <div id="inbox-list">
         <p class="inbox-empty">No actions yet&hellip;</p>
+      </div>
+      <div class="inbox-strip">
+        <button class="inbox-strip-btn" onclick="document.getElementById('inbox-fold').click()" aria-label="Expand inbox">&#187;</button>
+        <svg class="inbox-strip-icon" aria-hidden="true" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M22 12h-6l-2 3h-4l-2-3H2"/>
+          <path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>
+        </svg>
+        <span class="inbox-strip-count" id="inbox-strip-count"></span>
       </div>
     </div>
     <div id="right-panel">
@@ -757,11 +802,27 @@ let _ctrlSeq          = 0;
 // ── DOM ──────────────────────────────────────────────────────────────────────
 const inboxList   = document.getElementById('inbox-list');
 const inboxBadge  = document.getElementById('inbox-badge');
+const inboxPanel  = document.getElementById('inbox-panel');
 const detailPanel = document.getElementById('detail-panel');
 const detailBody  = document.getElementById('detail-body');
 const colView     = document.getElementById('col-view');
 const arrowsGroup = document.getElementById('col-arrows-g');
 colView.addEventListener('scroll', function(){ if(showArrows) scheduleDrawArrows(); });
+
+// ── Inbox fold ────────────────────────────────────────────────────────────────
+const _FOLD_KEY = 'zc-inbox-collapsed';
+const _foldBtn  = document.getElementById('inbox-fold');
+function _applyFold(collapsed){
+  inboxPanel.classList.toggle('inbox-collapsed', collapsed);
+  _foldBtn.title = collapsed ? 'Expand inbox' : 'Collapse inbox';
+}
+_applyFold(localStorage.getItem(_FOLD_KEY) === '1');
+_foldBtn.onclick = function(){
+  const collapsed = !inboxPanel.classList.contains('inbox-collapsed');
+  _applyFold(collapsed);
+  localStorage.setItem(_FOLD_KEY, collapsed ? '1' : '0');
+};
+inboxPanel.addEventListener('transitionend', function(){ if(showArrows) scheduleDrawArrows(); });
 
 // ── Message arrows ────────────────────────────────────────────────────────────
 function scheduleDrawArrows(){
@@ -836,7 +897,9 @@ function updateInboxCard(key){
 }
 
 function updateInboxBadge(){
-  inboxBadge.textContent = pending > 0 ? pending : '';
+  const t = pending > 0 ? pending : '';
+  inboxBadge.textContent = t;
+  document.getElementById('inbox-strip-count').textContent = t;
 }
 
 // ── Detail panel ──────────────────────────────────────────────────────────────
