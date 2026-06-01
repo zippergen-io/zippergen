@@ -397,7 +397,7 @@ _HTML = r"""<!DOCTYPE html>
   --text-soft:       #3a3a5a;
   --text-mute:       #6e6e92;
   --text-faint:      #a8a8c4;
-  --accent:          #2148FF;
+  --accent:          #1d4ed8;
   --accent-bg:       #dde6fb;
   --accent-attn:     #E94F2E;
   --accent-attn-bg:  #fde8e3;
