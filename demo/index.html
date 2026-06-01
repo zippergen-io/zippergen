@@ -197,7 +197,7 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); font
   border-radius: 4px; line-height: 1; font-weight: 500;
 }
 #detail-close:hover { color: var(--text); background: rgba(0,0,0,.05); }
-#detail-body { flex: 1; overflow-y: auto; padding: 32px 56px; }
+#detail-body { flex: 1; overflow-y: scroll; -webkit-overflow-scrolling: touch; padding: 32px 56px; }
 
 /* ── Inspector content ───────────────────────────────────────────────────── */
 .ins-empty-state {
@@ -817,11 +817,13 @@ function colNextRow(ll){
 }
 
 function colSetScrollH(ll, h){
+  const pinned = colView.scrollTop + colView.clientHeight >= colView.scrollHeight - 40;
   globalColH = Math.max(globalColH, h);
   Object.keys(colEls).forEach(function(k){
     const s = document.getElementById('col-spacer-'+k);
     if(s) s.style.height = globalColH+'px';
   });
+  if(pinned) colView.scrollTop = colView.scrollHeight;
 }
 
 function colPlace(el, ll, row){
