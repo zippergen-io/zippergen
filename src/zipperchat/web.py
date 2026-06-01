@@ -946,7 +946,7 @@ function renderMsgDetail(a){
     +'<span class="ins-meta-ll">'+esc(a.to)+'</span>'
     +(a.channel?'<span class="ins-meta-dot">&middot;</span><span class="ins-meta-kind">'+esc(a.channel)+'</span>':'')
     +'</div>'
-    +'<div class="ins-title"><span class="ll-name">'+esc(a.from)+'</span> <span class="ins-arrow">→</span> <span class="ll-name">'+esc(a.to)+'</span></div>';
+    +'<div class="ins-title">'+esc(a.from)+' → '+esc(a.to)+'</div>';
   if(vars.length){
     vars.forEach(function([k,v]){
       h += '<div class="ins-section"><div class="ins-sec-label">'+esc(k)+'</div>'+ctxBox(v)+'</div>';
