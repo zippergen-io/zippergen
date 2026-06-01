@@ -571,7 +571,7 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); font
 }
 #detail-topbar {
   display: flex; align-items: center; justify-content: flex-end;
-  padding: 14px 24px 10px; border-bottom: 1px solid var(--rule-hdr); flex-shrink: 0;
+  padding: 14px 56px 10px; border-bottom: 1px solid var(--rule-hdr); flex-shrink: 0;
 }
 #detail-close {
   background: none; border: none; cursor: pointer;
@@ -597,8 +597,9 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); font
 .ins-meta-kind { font-size: 12px; }
 .ins-meta-time { font-size: 12px; color: var(--text-faint); }
 .ins-meta-fn   { font-size: 12px; color: var(--text-faint); }
+.ins-await-row { margin: 0 0 8px; }
 .ins-meta-await {
-  margin-left: auto; font-family: var(--mono); font-size: 10px; font-weight: 600;
+  font-family: var(--mono); font-size: 10px; font-weight: 600;
   letter-spacing: 0.07em; text-transform: uppercase;
   color: var(--accent-attn); background: var(--accent-attn-bg);
   border-radius: 3px; padding: 2px 7px;
@@ -668,7 +669,7 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); font
 }
 .btn-secondary:hover:not(:disabled) { border-color: rgba(20,18,12,0.3); color: var(--text); }
 .btn-secondary:disabled { opacity: .35; cursor: default; }
-.ins-hint { margin-left: auto; font-size: 12px; color: var(--text-faint); }
+.ins-hint { text-align: center; margin-top: 12px; font-size: 12px; color: var(--text-faint); }
 .btn-choice {
   font-family: var(--sans); font-size: 14px; padding: 9px 16px; border-radius: 6px;
   border: 1px solid var(--rule); background: var(--panel); color: var(--text-soft);
@@ -1004,8 +1005,8 @@ function renderInspector(overrideKey, targetEl, afterInput){
     +'<span class="ins-meta-kind">'+esc(kl)+'</span>'
     +(isHuman?'<span class="ins-meta-dot">&middot;</span><span class="ins-meta-fn">'+esc(a.name)+'</span>':'')
     +(a.time?'<span class="ins-meta-dot">&middot;</span><span class="ins-meta-time">'+esc(a.time)+'</span>':'')
-    +(hp?'<span class="ins-meta-await">AWAITING YOU</span>':'')
-    +'</div>';
+    +'</div>'
+    +(hp?'<div class="ins-await-row"><span class="ins-meta-await">AWAITING YOU</span></div>':'');
   if(showTitle) html += '<div class="ins-title">'+esc(title)+'</div>';
   if(hp)       html += renderPendingForm(req);
   else if(hd)  html += renderHumanDone(req);
@@ -1068,12 +1069,12 @@ function renderPendingForm(req){
   } else if(req.kind==='confirm'){
     if(req.context) h += '<div class="ins-section">'+renderEmailCtx(req.context)+'</div>';
     h += '<div class="ins-actions"><button class="btn-approve" disabled>'+esc(submitLabel)+'</button>'
-      +'<button class="btn-secondary" disabled>'+esc(cancelLabel)+'</button>'
-      +'<span class="ins-hint">⌘↩ to confirm</span></div>';
+      +'<button class="btn-secondary" disabled>'+esc(cancelLabel)+'</button></div>'
+      +'<div class="ins-hint">⌘↩ to confirm</div>';
   } else {
     const actHtml = '<div class="ins-actions"><button class="btn-approve" disabled>'+esc(submitLabel)+'</button>'
-      +'<button class="btn-secondary" disabled>'+esc(cancelLabel)+'</button>'
-      +'<span class="ins-hint">⌘↩ to approve</span></div>';
+      +'<button class="btn-secondary" disabled>'+esc(cancelLabel)+'</button></div>'
+      +'<div class="ins-hint">⌘↩ to approve</div>';
     if(req.context){
       const instrHdr = instruction
         ? '<div class="ea-instr">'+esc(instruction)+'</div><hr class="ea-rule">'
@@ -1082,7 +1083,8 @@ function renderPendingForm(req){
         +'<div>'+renderEmailCtx(req.context)+'</div>'
         +'<div class="ins-split-work">'
         +'<div class="ea ea-write">'+instrHdr+'<textarea class="ea-ta">'+taVal+'</textarea></div>'
-        +actHtml+'</div></div>';
+        +'</div></div>'
+        +actHtml;
     } else {
       const taLabelCls = instruction ? 'ins-instr-label' : 'ins-sec-label';
       const taLabel = instruction||(req.prefill?'Edit or approve':'Input');
