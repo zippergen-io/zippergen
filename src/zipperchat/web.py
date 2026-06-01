@@ -724,6 +724,18 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); font
 ::-webkit-scrollbar { width: 5px; height: 5px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--rule); border-radius: 3px; }
+
+/* Landscape phone: reclaim vertical space */
+@media (max-height: 500px) {
+  #detail-topbar { padding-top: 6px; padding-bottom: 6px; }
+  #detail-body   { padding-top: 14px; padding-bottom: 14px; }
+  .ins-meta      { margin-bottom: 6px; }
+  .ins-await-row { margin-bottom: 4px; }
+  .ins-title     { font-size: 18px; margin-bottom: 12px; }
+  .ins-section   { margin-bottom: 12px; }
+  .ins-actions   { margin-top: 12px; }
+  .ea            { padding: 12px 18px; }
+}
 </style>
 </head>
 <body>
