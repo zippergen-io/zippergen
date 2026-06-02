@@ -19,6 +19,8 @@ ZipperGen separates **what agents do** (LLM calls, tool use, human input) from *
 
 Each participant is called a **lifeline**, which is the standard term from Message Sequence Charts (MSCs), the formalism ZipperGen is based on. In practice a lifeline is simply an agent: one sequential thread of execution that sends and receives messages.
 
+Executions can be inspected as message sequence charts in ZipperChat.
+
 <p align="center">
   <a href="https://zippergen.io/demo"><strong>Try the demo →</strong></a>
 </p>
