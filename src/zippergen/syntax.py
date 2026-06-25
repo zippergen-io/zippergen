@@ -757,11 +757,11 @@ def participation_set(stmt: AnyStmt) -> frozenset[Lifeline]:
         case MsgStmt(sender=a, receiver=b):
             return frozenset({a, b})
         case CoregionStmt(messages=messages):
-            participants: set[Lifeline] = set()
+            coregion_participants: set[Lifeline] = set()
             for msg in messages:
-                participants.add(msg.sender)
-                participants.add(msg.receiver)
-            return frozenset(participants)
+                coregion_participants.add(msg.sender)
+                coregion_participants.add(msg.receiver)
+            return frozenset(coregion_participants)
         case ActStmt(lifeline=a):
             return frozenset({a})
         case SkipStmt(lifeline=a):
@@ -773,10 +773,10 @@ def participation_set(stmt: AnyStmt) -> frozenset[Lifeline]:
         case WhileStmt(owner=b, body=p, exit_body=q):
             return frozenset({b}) | participation_set(p) | participation_set(q)
         case ParallelStmt(branches=branches) | ParallelLocalStmt(branches=branches):
-            participants: frozenset[Lifeline] = frozenset()
+            branch_participants: frozenset[Lifeline] = frozenset()
             for branch in branches:
-                participants |= participation_set(branch)
-            return participants
+                branch_participants |= participation_set(branch)
+            return branch_participants
         case SendStmt(lifeline=a):
             return frozenset({a})
         case RecvStmt(lifeline=a):

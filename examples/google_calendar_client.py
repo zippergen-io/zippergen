@@ -61,8 +61,11 @@ def _get_service():
 
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
+            try:
+                creds.refresh(Request())
+            except Exception:
+                creds = None
+        if not creds or not creds.valid:
             if not CREDENTIALS_PATH.exists():
                 sys.exit(
                     f"OAuth2 credentials not found at {CREDENTIALS_PATH}\n"

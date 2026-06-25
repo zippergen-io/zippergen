@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import ast
 import inspect
+import sys
 import textwrap
 from collections.abc import Callable
 from typing import cast
@@ -284,15 +285,19 @@ def _tag_cond(fn: Callable, src: str) -> Callable:
 
 def _make_fn(name: str, body: list[ast.stmt]) -> ast.FunctionDef:
     """Build a no-argument FunctionDef AST node."""
+    args = ast.arguments(
+        posonlyargs=[], args=[], vararg=None,
+        kwonlyargs=[], kw_defaults=[], kwarg=None, defaults=[],
+    )
+    if sys.version_info >= (3, 12):
+        return ast.FunctionDef(
+            name=name, args=args, body=body or [ast.Pass()],
+            decorator_list=[], returns=None, type_params=[],
+            lineno=0, col_offset=0,
+        )
     return ast.FunctionDef(
-        name=name,
-        args=ast.arguments(
-            posonlyargs=[], args=[], vararg=None,
-            kwonlyargs=[], kw_defaults=[], kwarg=None, defaults=[],
-        ),
-        body=body or [ast.Pass()],
-        decorator_list=[],
-        returns=None,
+        name=name, args=args, body=body or [ast.Pass()],
+        decorator_list=[], returns=None,
         lineno=0, col_offset=0,
     )
 

@@ -28,7 +28,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 import operator
-from typing import Union
+from typing import Any, TypeAlias
 
 __all__ = [
     "EventContext",
@@ -141,7 +141,7 @@ class FieldTerm:
             return f"Here.{self.field_name}"
         return f"At[{self.lifeline_name}].{self.field_name}"
 
-    def _compare(self, other: object, symbol: str, op: Callable[[object, object], bool]) -> AtomicFormula:
+    def _compare(self, other: object, symbol: str, op: Callable[[Any, Any], bool]) -> AtomicFormula:
         src = f"{_term_src(self)} {symbol} {_term_src(other)}"
 
         def predicate(env, ctx) -> bool:
@@ -297,11 +297,7 @@ class NotFormula(Formula):
         return f"~{self.subformula!r}"
 
 
-AnyFormula = Union[
-    ConstFormula, AtomicFormula, OnFormula, YFormula, AtFormula,
-    SinceFormula, PastFormula,
-    AndFormula, OrFormula, NotFormula,
-]
+AnyFormula: TypeAlias = Formula
 
 
 # ---------------------------------------------------------------------------

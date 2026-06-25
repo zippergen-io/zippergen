@@ -22,6 +22,7 @@ Modes
            python examples/gmail_client.py --setup
            python examples/google_calendar_client.py --setup
            # Telegram: message @BotFather → /newbot → set ZIPPERGEN_TELEGRAM_TOKEN
+default   Fake services + local Ollama model.
 """
 
 from zippergen import Lifeline, Var, branch, fragment, llm, parallel, pure, workflow
@@ -411,7 +412,7 @@ def create_scheduled_event(event_details: str) -> str:
 @llm(
     system="""
 You are an email triage assistant.
-Classify the email as exactly one of five labels:
+Classify the email as exactly one of four labels:
   spam         — unsolicited or promotional
   reply        — needs a written reply (any complexity)
   scheduling   — requests a meeting or asks about availability

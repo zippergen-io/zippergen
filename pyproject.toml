@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -8,7 +8,8 @@ version = "0.1.0a1"
 description = "Python DSL and runtime for structured multi-agent coordination"
 readme = "README.md"
 requires-python = ">=3.11"
-license = { file = "LICENSE" }
+license = "Apache-2.0"
+license-files = ["LICENSE"]
 authors = [
   { name = "The ZipperGen Authors" }
 ]
@@ -16,7 +17,6 @@ keywords = ["agents", "llm", "coordination", "protocols", "msc"]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Intended Audience :: Developers",
-  "License :: OSI Approved :: Apache Software License",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.11",
   "Topic :: Software Development :: Libraries",
@@ -35,3 +35,6 @@ package-dir = {"" = "src"}
 [tool.setuptools.packages.find]
 where = ["src"]
 include = ["zippergen*", "zipperchat*"]
+
+[tool.setuptools.package-data]
+zipperchat = ["assets/*"]
