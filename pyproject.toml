@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "zippergen"
-version = "0.1.0a1"
+version = "0.1.0a2"
 description = "Python DSL and runtime for structured multi-agent coordination"
 readme = "README.md"
 requires-python = ">=3.11"
