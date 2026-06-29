@@ -57,4 +57,7 @@ if __name__ == "__main__":
     hello.configure(llms="mock", ui=True, mock_delay=(0.5, 1.5))
     result = hello(topic="Say hello to ZipperGen")
     print(f"\nResult: {result}")
-    input("ZipperChat is running at http://localhost:8765 . Press Enter to close. ")
+    try:
+        input("ZipperChat is running at http://localhost:8765 . Press Enter to close. ")
+    except EOFError:
+        pass

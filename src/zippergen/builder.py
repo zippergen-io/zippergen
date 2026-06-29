@@ -18,7 +18,7 @@ from zippergen.syntax import (
     Expr, VarExpr, LitExpr,
     Stmt, AnyStmt, EmptyStmt, MsgStmt, CoregionStmt, ActStmt, SkipStmt, SeqStmt, IfStmt, WhileStmt,
     ParallelStmt,
-    LLMAction, PureAction, PlannerAction,
+    LLMAction, PureAction, PlannerAction, HumanAction,
     Workflow,
     seq, is_ztype,
 )
@@ -131,9 +131,18 @@ def msg(
     ))
 
 
+Action = LLMAction | PureAction | PlannerAction | HumanAction
+
+
+def _action_outputs(action: Action) -> tuple[tuple[str, ZType], ...]:
+    if isinstance(action, HumanAction):
+        return ((action.output, action.output_type),)
+    return action.outputs
+
+
 def act(
     lifeline: Lifeline,
-    action: LLMAction | PureAction | PlannerAction,
+    action: Action,
     inputs: tuple,
     outputs: tuple[Var, ...],
 ) -> None:
@@ -141,6 +150,20 @@ def act(
 
     Vars in inputs are automatically wrapped in VarExpr.
     """
+    expected_outputs = _action_outputs(action)
+    if len(outputs) != len(expected_outputs):
+        raise TypeError(
+            f"Action '{action.name}' produces {len(expected_outputs)} output(s), "
+            f"but this workflow binds {len(outputs)}."
+        )
+    for output, (_, expected_type) in zip(outputs, expected_outputs):
+        if output.type is not expected_type:
+            raise TypeError(
+                f"Action '{action.name}' output '{output.name}' is declared as "
+                f"{output.type.__name__}, but the action produces "
+                f"{expected_type.__name__}."
+            )
+
     _record(ActStmt(
         lifeline,
         action,
@@ -321,6 +344,14 @@ class _ProcTransformer(ast.NodeTransformer):
     def __init__(self) -> None:
         super().__init__()
         self.return_outputs: list[tuple[str, str]] = []  # [(var_name, lifeline_name), ...]
+        self.action_outputs: list[tuple[str, ast.expr, int, int]] = []
+
+    def _remember_action_outputs(self, action_ast: ast.expr, outputs: list[ast.expr]) -> None:
+        """Remember ``name = action(...)`` outputs for automatic Var inference."""
+        total = len(outputs)
+        for index, output in enumerate(outputs):
+            if isinstance(output, ast.Name):
+                self.action_outputs.append((output.id, action_ast, index, total))
 
     @staticmethod
     def _is_at(node: ast.expr) -> bool:
@@ -390,6 +421,7 @@ class _ProcTransformer(ast.NodeTransformer):
         action_call = node.value
         ann = node.annotation
         outputs = list(ann.elts) if isinstance(ann, ast.Tuple) else [ann]
+        self._remember_action_outputs(action_call.func, outputs)
         return self._make_act_call(lifeline_ast, action_call.func, action_call.args, outputs)
 
     def visit_With(self, node: ast.With) -> ast.stmt | list[ast.stmt]:
@@ -467,6 +499,7 @@ class _ProcTransformer(ast.NodeTransformer):
                     return ast.Name(id=n.id, ctx=ast.Load())
                 return n
             outputs = [_to_load(e) for e in target.elts] if isinstance(target, ast.Tuple) else [_to_load(target)]
+            self._remember_action_outputs(action_call.func, outputs)
             result.append(self._make_act_call(lifeline_ast, action_call.func, action_call.args, outputs))
 
         return result if result else [ast.Pass()]
@@ -551,7 +584,71 @@ class _ProcTransformer(ast.NodeTransformer):
         return [body_fn, exit_fn, call]
 
 
-def _transform_proc_source(fn: Callable) -> tuple[Callable, list[tuple[str, str]]]:
+def _resolve_action_value(action_ast: ast.expr, namespace: dict) -> object:
+    if isinstance(action_ast, ast.Name):
+        return namespace.get(action_ast.id)
+    if isinstance(action_ast, ast.Attribute):
+        base = _resolve_action_value(action_ast.value, namespace)
+        return getattr(base, action_ast.attr, None)
+    return None
+
+
+def _resolve_action(action_ast: ast.expr, namespace: dict) -> Action:
+    if not isinstance(action_ast, (ast.Name, ast.Attribute)):
+        raise TypeError(
+            "Action calls in @workflow bodies must use a named action, "
+            f"got {ast.unparse(action_ast)!r}."
+        )
+
+    value = _resolve_action_value(action_ast, namespace)
+    if isinstance(value, (LLMAction, PureAction, PlannerAction, HumanAction)):
+        return value
+    raise TypeError(
+        f"Workflow action '{ast.unparse(action_ast)}' is not a ZipperGen action. "
+        "Decorate it with @llm, @pure, @planner, or @human."
+    )
+
+
+def _infer_output_vars(
+    workflow_name: str,
+    action_outputs: list[tuple[str, ast.expr, int, int]],
+    namespace: dict,
+) -> dict[str, Var]:
+    inferred: dict[str, Var] = {}
+    missing = object()
+
+    for name, action_ast, index, total in action_outputs:
+        action = _resolve_action(action_ast, namespace)
+        expected_outputs = _action_outputs(action)
+        if total != len(expected_outputs):
+            raise TypeError(
+                f"@workflow '{workflow_name}': action '{action.name}' produces "
+                f"{len(expected_outputs)} output(s), but the workflow binds {total}."
+            )
+
+        _, ztype = expected_outputs[index]
+        existing = inferred.get(name, namespace.get(name, missing))
+        if existing is missing:
+            inferred[name] = Var(name, ztype)
+            continue
+        if not isinstance(existing, Var):
+            raise TypeError(
+                f"@workflow '{workflow_name}': output variable '{name}' conflicts "
+                f"with an existing global {type(existing).__name__}. Rename the "
+                "variable or declare it explicitly as Var(...)."
+            )
+        if existing.type is not ztype:
+            raise TypeError(
+                f"@workflow '{workflow_name}': output variable '{name}' is "
+                f"declared as {existing.type.__name__}, but action '{action.name}' "
+                f"produces {ztype.__name__}."
+            )
+        inferred[name] = existing
+
+    return inferred
+
+
+def _transform_proc_source(fn: Callable) -> tuple[Callable, list[tuple[str, str]], dict[str, Var]]:
     """
     Obtain the source of *fn*, apply ``_ProcTransformer``, compile and exec
     the result in *fn*'s global namespace, and return the rewritten function.
@@ -606,11 +703,13 @@ def _transform_proc_source(fn: Callable) -> tuple[Callable, list[tuple[str, str]
         "parallel_": parallel_,
         "_tag_cond": _tag_cond,
     })
+    inferred_vars = _infer_output_vars(fn.__name__, transformer.action_outputs, exec_globals)
+    exec_globals.update(inferred_vars)
 
     local_ns: dict = {}
     exec(code, exec_globals, local_ns)   # noqa: S102
 
-    return local_ns[fn.__name__], transformer.return_outputs
+    return local_ns[fn.__name__], transformer.return_outputs, inferred_vars
 
 
 # ---------------------------------------------------------------------------
@@ -690,7 +789,7 @@ def workflow(fn: Callable) -> Workflow:
     output_type = _workflow_output(fn)
 
     # Rewrite native if/while/>> into builder-function calls.
-    transformed, return_outputs = _transform_proc_source(fn)
+    transformed, return_outputs, inferred_vars = _transform_proc_source(fn)
 
     # Execute the transformed body once to record all statements.
     kwargs = {name: Var(name, ztype) for name, ztype, _ll in inputs}
@@ -699,7 +798,7 @@ def workflow(fn: Callable) -> Workflow:
     # Resolve each return (var_name, lifeline_name) pair.
     resolved_outputs: list[tuple[Var, Lifeline]] = []
     if return_outputs:
-        namespace = {**fn.__globals__, **kwargs}
+        namespace = {**fn.__globals__, **inferred_vars, **kwargs}
         for var_name, ll_name in return_outputs:
             output_var = namespace.get(var_name)
             if not isinstance(output_var, Var):
@@ -756,7 +855,7 @@ def fragment(fn: Callable) -> Callable:
             elif (route == "task") @ Dispatcher:
                 task_branch(email)
     """
-    transformed, _ = _transform_proc_source(fn)
+    transformed, _, _ = _transform_proc_source(fn)
 
     def wrapper(*args, **kwargs):
         if not _stack:

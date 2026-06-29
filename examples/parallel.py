@@ -64,4 +64,7 @@ def merge_candidate(candidate: str @ Orchestrator) -> str:
 if __name__ == "__main__":
     merge_candidate.configure(llms="mock", ui=True, timeout=30)
     print(merge_candidate(candidate="patch-17 on main@8fd2"))
-    input("\nZipperChat is running at http://localhost:8765\nPress Enter to stop.\n")
+    try:
+        input("\nZipperChat is running at http://localhost:8765\nPress Enter to stop.\n")
+    except EOFError:
+        pass

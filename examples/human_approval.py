@@ -33,22 +33,28 @@ def draft_plan(request: str): pass
 
 
 @human(
-    prompt="Set priority for this plan:\n\n  {plan}\n",
-    options=["high", "medium", "low"],
+    kind="select",
+    context="{plan}",
+    instruction="Set priority for this plan.",
+    prefill="high\nmedium\nlow",
     outputs=["priority: str"],
 )
 def set_priority(plan: str): pass
 
 
 @human(
-    prompt="Add an execution note for this plan:\n\n  {plan}\n",
+    kind="input",
+    context="{plan}",
+    instruction="Add an execution note for this plan.",
     outputs=["note: str"],
 )
 def add_note(plan: str): pass
 
 
 @human(
-    prompt="Approve this plan?\n\n  {plan}\n",
+    kind="confirm",
+    context="{plan}",
+    instruction="Approve this plan?",
     outputs=["approved: bool"],
 )
 def review_plan(plan: str): pass
@@ -77,4 +83,7 @@ if __name__ == "__main__":
     approval_workflow.configure(llms="mock", ui=True)
     result = approval_workflow(request="organise a team offsite")
     print(f"\nResult → {result}")
-    input("\nZipperChat is running at http://localhost:8765\nPress Enter to stop, or click ▶ Run again in the browser.\n")
+    try:
+        input("\nZipperChat is running at http://localhost:8765\nPress Enter to stop, or click Run again in the browser.\n")
+    except EOFError:
+        pass

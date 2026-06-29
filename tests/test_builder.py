@@ -200,6 +200,38 @@ def test_with_block_produces_act_stmts():
         assert a.lifeline == P
 
 
+@llm(system="sys", user="{topic}", parse="text", outputs=(("draft", str),))
+def _draft_without_declared_var(topic: str) -> None: ...
+
+
+@workflow
+def inferred_output_var(topic: str @ P) -> str:
+    P(topic) >> Q(topic)
+    Q: draft = _draft_without_declared_var(topic)
+    Q(draft) >> P(draft)
+    return draft @ P
+
+
+def test_action_output_vars_are_inferred_from_action_metadata():
+    assert inferred_output_var.output_var is not None
+    assert inferred_output_var.output_var.name == "draft"
+    assert inferred_output_var.output_var.type is str
+
+    def _collect_acts(stmt):
+        acts = []
+        if isinstance(stmt, ActStmt):
+            acts.append(stmt)
+        elif isinstance(stmt, SeqStmt):
+            acts.extend(_collect_acts(stmt.first))
+            acts.extend(_collect_acts(stmt.second))
+        return acts
+
+    acts = _collect_acts(inferred_output_var.body)
+    assert len(acts) == 1
+    assert acts[0].outputs[0].name == "draft"
+    assert acts[0].outputs[0].type is str
+
+
 # ---------------------------------------------------------------------------
 # DSL syntax → IR: if/else
 # ---------------------------------------------------------------------------

@@ -160,8 +160,8 @@ Start without API keys:
 python examples/hello.py                        # two lifelines, one LLM call
 python examples/write_tweet.py                  # owned-decision loop
 python examples/parallel.py                     # fan-out / fan-in across branches
-python examples/command_center.py --mock        # two parallel event loops, shared lifelines
-python examples/human_approval.py               # human approval in ZipperChat
+python examples/human_approval.py               # browser-based human approval in ZipperChat
+python examples/command_center.py --mock        # long-running dashboard with two event loops
 ```
 
 Coordination patterns (requires an API key):

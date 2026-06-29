@@ -7,13 +7,12 @@ Conditions in @workflow bodies are boolean expressions, not PureAction calls.
 import pytest
 
 from zippergen.syntax import Lifeline, Var
-from zippergen.actions import pure
+from zippergen.actions import pure, llm
 from zippergen.builder import workflow
 from zippergen.runtime import run, mock_llm
 
-# Module-level Var declarations for output variables used in CPL tests.
-# Annotated-assignment DSL syntax (Lifeline: out = action()) requires output
-# variable names to be Var objects in the module's global namespace.
+# Module-level Var declarations used by tests that inspect or reuse exact Var
+# objects. Ordinary workflow outputs may also be inferred from action metadata.
 verdict = Var("verdict", str)
 flag    = Var("flag",    bool)
 out     = Var("out",     str)
@@ -263,6 +262,22 @@ def test_increment_example():
     assert increment_workflow(number=1) == 4   # (1+1)*2
     assert increment_workflow(number=0) == 2   # (0+1)*2
     assert increment_workflow(number=5) == 12  # (5+1)*2
+
+
+@llm(system="Reply briefly.", user="{topic}", parse="text", outputs=(("reply", str),))
+def make_reply(topic: str) -> None: ...
+
+
+@workflow
+def inferred_llm_workflow(topic: str @ User) -> str:
+    User(topic) >> Worker(topic)
+    Worker: reply = make_reply(topic)
+    Worker(reply) >> User(reply)
+    return reply @ User
+
+
+def test_inferred_llm_output_runtime():
+    assert inferred_llm_workflow(topic="hello") == "[make_reply:reply]"
 
 
 # ---------------------------------------------------------------------------

@@ -95,4 +95,7 @@ if __name__ == "__main__":
     write_tweet.configure(llms="mock", ui=True, mock_delay=(0.5, 1.5))
     result = write_tweet(topic="a git commit message that tells the truth")
     print(f"\nResult: {result}")
-    input("ZipperChat is running at http://localhost:8765 . Press Enter to close. ")
+    try:
+        input("ZipperChat is running at http://localhost:8765 . Press Enter to close. ")
+    except EOFError:
+        pass
