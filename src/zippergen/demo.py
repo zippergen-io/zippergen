@@ -15,7 +15,7 @@ def run_demo(
     ui: bool = True,
     timeout: float = 60.0,
     mock_delay: tuple[float, float] = (1.0, 2.0),
-    show_decisions: bool = True,
+    show_decisions: bool = False,
 ):
     """
     Run an example workflow with a minimal user-facing API.

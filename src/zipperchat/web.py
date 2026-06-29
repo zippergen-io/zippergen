@@ -237,7 +237,7 @@ class WebTrace:
             wt.wait_for_replay()
     """
 
-    def __init__(self, lifelines, port: int = 8765, *, dashboard: bool = False, name: str = "", show_decisions: bool = True):
+    def __init__(self, lifelines, port: int = 8765, *, dashboard: bool = False, name: str = "", show_decisions: bool = False):
         self._dashboard = dashboard
         self._lifelines = _lifeline_names(lifelines)
         self._port = port
@@ -250,9 +250,9 @@ class WebTrace:
         self._pending_lock = threading.Lock()
 
     @classmethod
-    def dashboard(cls, port: int = 8765) -> "WebTrace":
+    def dashboard(cls, port: int = 8765, *, show_decisions: bool = False) -> "WebTrace":
         """Create a ZipperChat dashboard for several independent workflow runs."""
-        return cls([], port=port, dashboard=True)
+        return cls([], port=port, dashboard=True, show_decisions=show_decisions)
 
     @property
     def is_dashboard(self) -> bool:
@@ -260,7 +260,7 @@ class WebTrace:
 
     def _init_event(self) -> dict:
         if self._dashboard:
-            return {"type": "init", "dashboard": True}
+            return {"type": "init", "dashboard": True, "show_decisions": self._show_decisions}
         ev: dict = {"type": "init", "lifelines": self._lifelines, "show_decisions": self._show_decisions}
         if self._name:
             ev["name"] = self._name
@@ -1371,7 +1371,7 @@ colView.addEventListener('click', function(e){
 
 // ── Event handlers ────────────────────────────────────────────────────────────
 function handleInit(e){
-  decisionsEnabled = e.show_decisions !== false;
+  decisionsEnabled = e.show_decisions === true;
   closeDetail();
   Object.keys(byKey).forEach(function(k){ delete byKey[k]; });
   Object.keys(groups).forEach(function(k){ delete groups[k]; });

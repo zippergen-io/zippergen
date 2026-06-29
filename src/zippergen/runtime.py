@@ -192,6 +192,27 @@ def console_trace(event: dict) -> None:
             print()
 
 
+def _is_decision_or_control_event(event: dict) -> bool:
+    if event.get("type") == "decision" or event.get("ctrl"):
+        return True
+    values = event.get("values") or ()
+    if any(isinstance(v, str) and v.startswith("κ_ctrl_") for v in values):
+        return True
+    bindings = event.get("bindings") or {}
+    return any(isinstance(v, str) and v.startswith("κ_ctrl_") for v in bindings.values())
+
+
+def _console_trace_for_decisions(show_decisions: bool):
+    if show_decisions:
+        return console_trace
+
+    def trace(event: dict) -> None:
+        if not _is_decision_or_control_event(event):
+            console_trace(event)
+
+    return trace
+
+
 def tee_traces(*traces):
     active = [trace for trace in traces if trace is not None]
 
@@ -1125,7 +1146,7 @@ def _workflow_configure(
     llms=None,
     ui: bool | None = None,
     mock_delay: tuple[float, float] = (1.0, 2.0),
-    show_decisions: bool = True,
+    show_decisions: bool = False,
 ) -> Workflow:
     lifelines = _ordered_workflow_lifelines(wf)
 
@@ -1151,11 +1172,11 @@ def _workflow_configure(
         from zipperchat import WebTrace
         if isinstance(trace, WebTrace):
             wf._rt._webtrace = trace.start()
-            wf._rt._trace = console_trace
+            wf._rt._trace = _console_trace_for_decisions(show_decisions)
         else:
             if wf._rt._webtrace is None:
                 wf._rt._webtrace = WebTrace(lifelines, name=wf.name, show_decisions=show_decisions).start()
-            base_trace = trace if trace is not None else console_trace
+            base_trace = trace if trace is not None else _console_trace_for_decisions(show_decisions)
             wf._rt._trace = tee_traces(wf._rt._webtrace, base_trace)
     elif trace is not None:
         wf._rt._trace = trace

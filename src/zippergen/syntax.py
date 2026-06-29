@@ -665,7 +665,7 @@ class Workflow:
                   llms: str | Mapping[str, str | Callable] | None = None,
                   ui: bool | None = None,
                   mock_delay: tuple[float, float] = (1.0, 2.0),
-                  show_decisions: bool = True) -> "Workflow":
+                  show_decisions: bool = False) -> "Workflow":
         """Configure runtime parameters and return self for chaining.
 
         Parameters
@@ -678,7 +678,7 @@ class Workflow:
                   or a mapping ``lifeline_name -> provider``.
         ui      : if true, start ZipperChat and mirror the execution there.
         mock_delay : delay range used by the mock backend when ``llms="mock"``.
-        show_decisions : if false, hide decision/control-broadcast markers in ZipperChat.
+        show_decisions : if true, show decision/control-broadcast markers in ZipperChat.
         """
         from zippergen.runtime import _workflow_configure
         return _workflow_configure(self, backend=backend, trace=trace, timeout=timeout,

@@ -140,7 +140,7 @@ The practical consequence: the global protocol is also a complete audit trail of
 
 ## ZipperChat
 
-Each lifeline gets its own column. Actions, messages, decisions, and human control points appear as cards as they happen. Start a workflow with `ui=True` and open **http://localhost:8765**.
+Each lifeline gets its own column. Actions, messages, and human control points appear as cards as they happen. Start a workflow with `ui=True` and open **http://localhost:8765**. Pass `show_decisions=True` to also show branch decisions and control broadcasts.
 
 For applications that run several workflows from ordinary Python code, ZipperChat can show multiple independent runs on the same page:
 
