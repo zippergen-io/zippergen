@@ -276,21 +276,23 @@ def make_events(s) -> list:
 def build_demo_html(events: list, logo_svg: str) -> str:
     html = _HTML
 
-    # Inline the logo SVG
+    # Inline the logo SVG and link it back to the main site.
     html = html.replace(
         '<img src="/assets/zippergen-lockup-ink.svg" alt="ZipperGen" class="hdr-logo">',
-        logo_svg,
+        '<a class="hdr-logo-link" href="https://zippergen.io" '
+        f'aria-label="ZipperGen home">{logo_svg}</a>',
     )
 
     # Inject CSS for the replay button (same look as arrows button)
-    extra_css = """
-#btn-replay {
-  background: none; border: 1px solid transparent;
-  font-size: 13px; font-weight: 500; color: var(--text-faint);
-  padding: 4px 10px; border-radius: 5px; cursor: pointer;
-}
-#btn-replay:hover { color: var(--text-soft); }
-"""
+    extra_css = (
+        "\n#btn-replay {\n"
+        "  background: none; border: 1px solid transparent;\n"
+        "  font-size: 13px; font-weight: 500; color: var(--text-faint);\n"
+        "  padding: 4px 10px; border-radius: 5px; cursor: pointer;\n"
+        "}\n"
+        "#btn-replay:hover { color: var(--text-soft); }\n"
+        ".hdr-logo-link { display: inline-flex; align-items: center; text-decoration: none; }\n"
+    )
     html = html.replace("</style>", extra_css + "</style>", 1)
 
     # Add Replay button next to the arrows button (no inline style)
@@ -374,6 +376,7 @@ _demoStep();
 if __name__ == "__main__":
     logo_path = ROOT / "src" / "zipperchat" / "assets" / "zippergen-lockup-ink.svg"
     logo_svg = logo_path.read_text(encoding="utf-8")
+    logo_svg = logo_svg.removeprefix('<?xml version="1.0" encoding="UTF-8"?>\n')
     logo_svg = logo_svg.replace(
         "<svg ",
         '<svg class="hdr-logo" style="height:36px;width:auto" ',

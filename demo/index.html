@@ -362,13 +362,13 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); font
   padding: 4px 10px; border-radius: 5px; cursor: pointer;
 }
 #btn-replay:hover { color: var(--text-soft); }
+.hdr-logo-link { display: inline-flex; align-items: center; text-decoration: none; }
 </style>
 </head>
 <body>
 <div id="app">
   <header id="hdr">
-    <?xml version="1.0" encoding="UTF-8"?>
-<svg class="hdr-logo" style="height:36px;width:auto" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 605.92 107.00" role="img" aria-label="ZipperGen logo">
+    <a class="hdr-logo-link" href="https://zippergen.io" aria-label="ZipperGen home"><svg class="hdr-logo" style="height:36px;width:auto" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 605.92 107.00" role="img" aria-label="ZipperGen logo">
 <g transform="translate(12,15)">
 <rect x="0.00" y="0.00" width="46.21" height="7.41" rx="2.22" fill="#14141A"></rect>
 <rect x="51.00" y="0.00" width="10.92" height="7.41" rx="2.22" fill="#14141A"></rect>
@@ -386,7 +386,7 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); font
 <rect x="15.71" y="64.59" width="46.21" height="7.41" rx="2.22" fill="#14141A"></rect>
 </g>
 <text x="77.92" y="87.00" font-family="Space Grotesk, -apple-system, BlinkMacSystemFont, Inter, system-ui, sans-serif" font-weight="700" font-size="100" letter-spacing="-3.5" fill="#14141A">ipper<tspan fill="#14141A">Gen</tspan></text>
-</svg>
+</svg></a>
     <div class="hdr-right">
       <button id="btn-replay" onclick="_demoRestart()">Replay</button><button id="btn-arrows" onclick="toggleArrows()" title="Show message arrows" style="display:none">arrows</button>
     </div>
@@ -1015,7 +1015,7 @@ colView.addEventListener('click', function(e){
 
 // ── Event handlers ────────────────────────────────────────────────────────────
 function handleInit(e){
-  decisionsEnabled = e.show_decisions !== false;
+  decisionsEnabled = e.show_decisions === true;
   closeDetail();
   Object.keys(byKey).forEach(function(k){ delete byKey[k]; });
   Object.keys(groups).forEach(function(k){ delete groups[k]; });
