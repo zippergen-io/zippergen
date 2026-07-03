@@ -29,6 +29,13 @@ CREATE TABLE IF NOT EXISTS cursors (
   consumed INTEGER NOT NULL,        -- highest rowid consumed on this key
   PRIMARY KEY (role, chan_key)
 );
+
+CREATE TABLE IF NOT EXISTS snapshots (
+  role    TEXT PRIMARY KEY,
+  env     BLOB NOT NULL,            -- json-encoded local env (scalars)
+  locator BLOB NOT NULL,            -- json-encoded child-index path to the loop node
+  floor   BLOB NOT NULL            -- json-encoded per-channel replay floor
+);
 """
 
 
@@ -73,6 +80,34 @@ def chan_key(sender: str, receiver: str, channel: str) -> str:
     return f"{sender}|{receiver}|{channel}"
 
 
+def write_snapshot(conn, role: str, env: dict, locator: list, floor: dict) -> None:
+    # Serialize BEFORE opening the transaction so a non-serializable env raises
+    # here (caller skips the snapshot) without leaving a dangling transaction.
+    payload = (role, json.dumps(env), json.dumps(locator), json.dumps(floor))
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        conn.execute(
+            "INSERT INTO snapshots(role, env, locator, floor) VALUES(?,?,?,?) "
+            "ON CONFLICT(role) DO UPDATE SET env=excluded.env, "
+            "locator=excluded.locator, floor=excluded.floor",
+            payload,
+        )
+        conn.execute("COMMIT")
+    except BaseException:
+        conn.execute("ROLLBACK")
+        raise
+
+
+def load_snapshot(conn, role: str) -> dict | None:
+    row = conn.execute(
+        "SELECT env, locator, floor FROM snapshots WHERE role=?", (role,)
+    ).fetchone()
+    if row is None:
+        return None
+    return {"env": json.loads(row[0]), "locator": json.loads(row[1]),
+            "floor": json.loads(row[2])}
+
+
 Item = tuple[int, tuple, "dict | None", "dict | None", "dict | None"]
 
 
@@ -86,9 +121,10 @@ class DurableChannel:
     sends (no re-INSERT) and re-serves recorded recvs (no live read).
     """
 
-    def __init__(self, conn: sqlite3.Connection, role: str) -> None:
+    def __init__(self, conn: sqlite3.Connection, role: str, since: dict | None = None) -> None:
         self.conn = conn
         self.role = role
+        self.since = since   # None => full replay; else {"out": int, "cursors": {chan_key: int}}
         self._consumed: dict[tuple[str, str, str], int] = {}
         self._tentative: dict[tuple[str, str, str], int] = {}
         self._replay_outbox: deque = deque()
@@ -105,24 +141,41 @@ class DurableChannel:
             self._consumed[(sender, receiver, channel)] = consumed
 
     def _load_replay(self) -> None:
-        # Recorded outbound sends by this role, in commit order.
+        # With a snapshot floor (self.since), replay only the tail: own sends after
+        # floor["out"], and inbound consumed after each channel's floor cursor.
+        # With since=None, out_floor=0 and per-channel lo=0 -> full history (as before).
+        out_floor = self.since["out"] if self.since else 0
         for rowid, receiver, channel in self.conn.execute(
             "SELECT rowid, receiver, channel FROM events "
-            "WHERE sender=? AND kind IN ('msg','ctrl') ORDER BY rowid", (self.role,)
+            "WHERE sender=? AND kind IN ('msg','ctrl') AND rowid>? ORDER BY rowid",
+            (self.role, out_floor),
         ).fetchall():
             self._replay_outbox.append((rowid, receiver, channel))
-        # Recorded inbound rows already consumed (rowid <= durable cursor).
+        cursor_floors = self.since["cursors"] if self.since else {}
         for (sender, receiver, channel), consumed in self._consumed.items():
+            lo = cursor_floors.get(chan_key(sender, receiver, channel), 0)
             rows = self.conn.execute(
                 "SELECT rowid, payload, causal_stamp FROM events "
-                "WHERE sender=? AND receiver=? AND channel=? AND rowid<=? ORDER BY rowid",
-                (sender, receiver, channel, consumed),
+                "WHERE sender=? AND receiver=? AND channel=? AND rowid>? AND rowid<=? "
+                "ORDER BY rowid",
+                (sender, receiver, channel, lo, consumed),
             ).fetchall()
             if rows:
                 self._replay_inbox[(sender, receiver, channel)] = deque(rows)
 
     def replaying(self) -> bool:
         return bool(self._replay_outbox) or any(self._replay_inbox.values())
+
+    def position(self) -> dict:
+        """The committed replay floor: own-send high-water + per-channel cursors."""
+        row = self.conn.execute(
+            "SELECT MAX(rowid) FROM events WHERE sender=? AND kind IN ('msg','ctrl')",
+            (self.role,),
+        ).fetchone()
+        return {
+            "out": row[0] or 0,
+            "cursors": {chan_key(*key): rowid for key, rowid in self._consumed.items()},
+        }
 
     # ---- interpreter-facing surface ---------------------------------------
     def put(self, sender: str, receiver: str, channel: str, values: tuple,

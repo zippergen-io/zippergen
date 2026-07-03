@@ -2,11 +2,51 @@
 then run live, persisting each step atomically."""
 from __future__ import annotations
 
+import sqlite3
 import time
 
-from zippergen.syntax import EmptyStmt
+from zippergen.syntax import EmptyStmt, WhileStmt, WhileRecvStmt
 from zippergen.runtime import _step, mock_llm
-from zippergen.store import DurableChannel
+from zippergen.store import DurableChannel, load_snapshot, write_snapshot
+from zippergen.locator import loop_node_paths, resolve_path
+
+
+def _floor_coherent(conn, role: str, floor: dict) -> bool:
+    """A floor is coherent only if it does not point past the committed log."""
+    try:
+        out = floor["out"]; cursors = floor["cursors"]
+    except (KeyError, TypeError):
+        return False
+    max_out = conn.execute(
+        "SELECT MAX(rowid) FROM events WHERE sender=? AND kind IN ('msg','ctrl')",
+        (role,),
+    ).fetchone()[0] or 0
+    if out > max_out:
+        return False
+    durable = {ck: c for ck, c in conn.execute(
+        "SELECT chan_key, consumed FROM cursors WHERE role=?", (role,)).fetchall()}
+    return all(v <= durable.get(k, 0) for k, v in cursors.items())
+
+
+def _try_resume(conn, role: str, local_stmt, env: dict):
+    """Return (env, residual, since) from a valid snapshot, else (env, local_stmt, None)."""
+    snap = load_snapshot(conn, role)
+    if snap is None:
+        return env, local_stmt, None
+    node = resolve_path(local_stmt, snap["locator"])
+    if isinstance(node, (WhileStmt, WhileRecvStmt)) and _floor_coherent(conn, role, snap["floor"]):
+        return dict(snap["env"]), node, snap["floor"]
+    return env, local_stmt, None   # stale/invalid -> full replay from seed
+
+
+def _maybe_snapshot(conn, role: str, env: dict, locator: list, ch) -> None:
+    try:
+        write_snapshot(conn, role, env, locator, ch.position())
+    except (TypeError, ValueError, sqlite3.OperationalError):
+        # Best-effort: a snapshot is a rebuildable cache and must never fail a
+        # healthy role — skip on a non-serializable env OR a transient store
+        # error (e.g. lock contention in the separate snapshot transaction).
+        pass
 
 
 def run_role(conn, role: str, local_stmt, env: dict, ns: dict, *,
@@ -17,10 +57,11 @@ def run_role(conn, role: str, local_stmt, env: dict, ns: dict, *,
         from zippergen.human_backends import make_cli_human_backend
         human_backend = make_cli_human_backend()
 
-    ch = DurableChannel(conn, role)
-    residual = local_stmt
+    loop_paths = loop_node_paths(local_stmt)
+    env, residual, since = _try_resume(conn, role, local_stmt, env)
+    ch = DurableChannel(conn, role, since=since)
 
-    # ---- replay: reconstruct (env, residual) from committed history --------
+    # ---- replay: reconstruct (env, residual) from the tail (or full history) --
     # No transactions, no trace: put reserves recorded sends, try_get serves
     # recorded recvs. Determinism of local steps reproduces the exact boundary.
     while ch.replaying() and not isinstance(residual, EmptyStmt):
@@ -43,6 +84,10 @@ def run_role(conn, role: str, local_stmt, env: dict, ns: dict, *,
         if progressed:
             ch.commit_txn()
             residual = new_residual
+            # At a loop-iteration boundary the residual is (by identity) a loop
+            # node in the projected program; checkpoint env + position there.
+            if id(residual) in loop_paths:
+                _maybe_snapshot(conn, role, env, loop_paths[id(residual)], ch)
         else:
             ch.rollback_txn()
             time.sleep(0.02)

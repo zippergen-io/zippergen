@@ -76,3 +76,82 @@ def test_durable_replay_reserves_recorded_sends_and_recvs(tmp_path):
     assert a_restart.replaying() is False
     count = conn.execute("SELECT COUNT(*) FROM events WHERE sender='A'").fetchone()[0]
     assert count == 1
+
+
+# ---------------------------------------------------------------------------
+# Snapshots (Task 1)
+# ---------------------------------------------------------------------------
+from zippergen.store import write_snapshot, load_snapshot
+
+
+def test_snapshot_roundtrip(tmp_path):
+    conn = open_store(str(tmp_path / "s.sqlite"))
+    assert load_snapshot(conn, "A") is None
+    write_snapshot(conn, "A", {"n": 3}, [1], {"out": 5, "cursors": {"B|A|main": 4}})
+    snap = load_snapshot(conn, "A")
+    assert snap == {"env": {"n": 3}, "locator": [1], "floor": {"out": 5, "cursors": {"B|A|main": 4}}}
+
+
+def test_snapshot_is_latest_only(tmp_path):
+    conn = open_store(str(tmp_path / "s.sqlite"))
+    write_snapshot(conn, "A", {"n": 1}, [], {"out": 0, "cursors": {}})
+    write_snapshot(conn, "A", {"n": 2}, [], {"out": 9, "cursors": {}})
+    assert load_snapshot(conn, "A")["env"] == {"n": 2}
+    assert conn.execute("SELECT COUNT(*) FROM snapshots WHERE role='A'").fetchone()[0] == 1
+
+
+def test_write_snapshot_nonserializable_raises_no_open_txn(tmp_path):
+    conn = open_store(str(tmp_path / "s.sqlite"))
+    import pytest
+    with pytest.raises(TypeError):
+        write_snapshot(conn, "A", {"bad": object()}, [], {"out": 0, "cursors": {}})
+    # connection is still usable (no dangling transaction)
+    write_snapshot(conn, "A", {"n": 1}, [], {"out": 0, "cursors": {}})
+    assert load_snapshot(conn, "A")["env"] == {"n": 1}
+
+
+# ---------------------------------------------------------------------------
+# position() + since (tail-only replay) (Task 3)
+# ---------------------------------------------------------------------------
+def test_position_reports_out_and_cursors(tmp_path):
+    conn = open_store(str(tmp_path / "s.sqlite"))
+    a = DurableChannel(conn, "A")
+    conn.execute("BEGIN"); r = a.put("A", "B", "main", (1,)); a.commit_txn()
+    b = DurableChannel(conn, "B")
+    conn.execute("BEGIN"); b.try_get("A", "B", "main"); b.commit_txn()
+    assert a.position()["out"] == r
+    assert b.position()["cursors"]["A|B|main"] == r
+
+
+def test_since_none_replays_all_history(tmp_path):
+    conn = open_store(str(tmp_path / "s.sqlite"))
+    a = DurableChannel(conn, "A")
+    conn.execute("BEGIN"); a.put("A", "B", "main", (1,)); a.commit_txn()
+    a2 = DurableChannel(conn, "A", since=None)
+    assert a2.replaying() is True  # full history reserved
+
+
+def test_since_floor_replays_only_tail(tmp_path):
+    conn = open_store(str(tmp_path / "s.sqlite"))
+    a = DurableChannel(conn, "A")
+    conn.execute("BEGIN"); r1 = a.put("A", "B", "main", (1,)); a.commit_txn()
+    conn.execute("BEGIN"); r2 = a.put("A", "B", "main", (2,)); a.commit_txn()
+    # Resume with a floor at r1: only the r2 send is in the tail.
+    a2 = DurableChannel(conn, "A", since={"out": r1, "cursors": {}})
+    a2.put("A", "B", "main", (2,))   # reserves r2 (no new insert)
+    assert a2.replaying() is False
+    assert conn.execute("SELECT COUNT(*) FROM events WHERE sender='A'").fetchone()[0] == 2
+
+
+def test_since_floor_filters_inbound_tail(tmp_path):
+    conn = open_store(str(tmp_path / "s.sqlite"))
+    a = DurableChannel(conn, "A")
+    conn.execute("BEGIN"); a.put("A", "B", "main", (1,)); a.commit_txn()
+    conn.execute("BEGIN"); r2 = a.put("A", "B", "main", (2,)); a.commit_txn()
+    b = DurableChannel(conn, "B")
+    conn.execute("BEGIN"); b.try_get("A", "B", "main"); b.try_get("A", "B", "main"); b.commit_txn()
+    # B resumes with a floor at the first consumed rowid: only the 2nd is replayed.
+    b2 = DurableChannel(conn, "B", since={"out": 0, "cursors": {"A|B|main": r2 - 1}})
+    item = b2.try_get("A", "B", "main")     # replays r2
+    assert item[0] == r2
+    assert b2.replaying() is False
