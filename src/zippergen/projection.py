@@ -13,7 +13,7 @@ from zippergen.syntax import (
     SendStmt, RecvStmt, ReceiveAnyStmt, SelfAssignStmt, IfRecvStmt, WhileRecvStmt,
     ParallelLocalStmt,
     Lifeline, LocalStmt, AnyStmt, Var, VarExpr, LitExpr,
-    make_kappa_ctrl, participation_set, seq,
+    make_kappa_ctrl, canonical_construct_key, participation_set, seq,
     Workflow,
 )
 
@@ -55,8 +55,12 @@ def _fresh_ctrl(counter: list[int]) -> Var:
 
 
 def _parallel_channel(stmt: ParallelStmt, branch_index: int, parent_channel: str) -> str:
-    """Return the private FIFO channel namespace for one parallel branch."""
-    return f"{parent_channel}/par-{id(stmt)}-{branch_index + 1}"
+    """Return the private FIFO channel namespace for one parallel branch.
+
+    Keyed on the region's content (canonical_construct_key), not id(stmt), so the
+    branch's sender and receiver — which project in separate processes — agree on
+    the same channel name."""
+    return f"{parent_channel}/par-{canonical_construct_key(stmt)}-{branch_index + 1}"
 
 
 # ---------------------------------------------------------------------------
@@ -124,7 +128,7 @@ def _project(stmt: AnyStmt, A: Lifeline, counter: list[int], channel: str = "mai
         # if c@B then P_⊤ else P_⊥
         case IfStmt(condition=c, owner=B, branch_true=p_true, branch_false=p_false):
             r_if = _receivers(p_true, p_false, B)
-            tag = make_kappa_ctrl(id(stmt))   # κ_ctrl^P: unique per construct occurrence
+            tag = make_kappa_ctrl(canonical_construct_key(stmt))   # κ_ctrl^P: keyed on construct content
 
             if A == B:
                 # Owner: prepend control broadcasts to each branch, then recurse.
@@ -157,7 +161,7 @@ def _project(stmt: AnyStmt, A: Lifeline, counter: list[int], channel: str = "mai
         # while c@B do P_body exit P_exit
         case WhileStmt(condition=c, owner=B, body=p_body, exit_body=p_exit):
             r_while = _receivers(p_body, p_exit, B)
-            tag = make_kappa_ctrl(id(stmt))   # κ_ctrl^P: unique per construct occurrence
+            tag = make_kappa_ctrl(canonical_construct_key(stmt))   # κ_ctrl^P: keyed on construct content
 
             if A == B:
                 # Owner: prepend control broadcasts, then recurse.

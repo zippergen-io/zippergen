@@ -5,6 +5,7 @@ Frozen so nodes are immutable and hashable.
 
 from __future__ import annotations
 
+import hashlib
 import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
@@ -38,7 +39,7 @@ __all__ = [
     # Workflow
     "Workflow",
     # Control-tag helpers
-    "make_kappa_ctrl", "is_kappa_ctrl",
+    "make_kappa_ctrl", "is_kappa_ctrl", "canonical_construct_key",
     # Helpers
     "seq", "participation_set", "pp",
 ]
@@ -135,19 +136,96 @@ class LitExpr:
 Expr = Union[VarExpr, LitExpr]
 
 # Per-construct control tags — used only by the projection engine in control-broadcast
-# messages (send B(⊤, κ_ctrl_<id>) → C).  Must not appear in user-written programs.
-# Each if/while construct gets its own tag via make_kappa_ctrl(id(stmt)).
+# messages (send B(⊤, κ_ctrl^P) → C).  Must not appear in user-written programs.
+#
+# The tag is keyed on program CONTENT (the paper's κ_ctrl^P, indexed by the
+# sub-program P), NOT on id(stmt): a memory address is process-local, so an
+# id-based tag differs between the owner's process and each receiver's process
+# and coordination fails.  A content key is identical in every process that
+# imports the same workflow, and — being derived from the construct's syntax —
+# distinct constructs get distinct tags so a misrouted control message fails
+# loudly at bind time.  Structurally-identical constructs may share a tag; that
+# is provably harmless (it degrades locally to a single globally-fresh tag,
+# which is sufficient for correctness) because FIFO ordering disambiguates them.
 _KAPPA_PREFIX = "κ_ctrl_"
 
 
-def make_kappa_ctrl(construct_id: int) -> LitExpr:
-    """Return the dedicated control tag for the construct with the given Python object id."""
-    return LitExpr(f"{_KAPPA_PREFIX}{construct_id}", str)
+def make_kappa_ctrl(construct_key: str) -> LitExpr:
+    """Return the dedicated control tag for a construct, keyed on its content.
+
+    ``construct_key`` is the canonical structural digest from
+    ``canonical_construct_key``; equal content ⇒ equal tag in every process.
+    """
+    return LitExpr(f"{_KAPPA_PREFIX}{construct_key}", str)
 
 
 def is_kappa_ctrl(expr) -> bool:
     """Return True for any per-construct control tag produced by make_kappa_ctrl."""
     return isinstance(expr, LitExpr) and isinstance(expr.value, str) and expr.value.startswith(_KAPPA_PREFIX)
+
+
+def _canon_expr(e: "Expr") -> str:
+    """Canonical, process-stable string for a payload/binding expression."""
+    if isinstance(e, VarExpr):
+        return f"v:{e.var.name}"
+    if isinstance(e, LitExpr):
+        return f"l:{e.type.__name__}:{e.value!r}"
+    return f"?:{e!r}"
+
+
+def _canon_cond(cond: object) -> str:
+    """Canonical string for a control condition.
+
+    Conditions are lambdas whose default repr embeds a memory address, so we key
+    on the source text the builder attaches (``_src``, e.g. ``"n < limit"``).
+    Conditions built without a source (e.g. bare lambdas in unit tests) collapse
+    to a placeholder — a safe collision (see the note on make_kappa_ctrl)."""
+    src = getattr(cond, "_src", None)
+    return f"cond:{src}" if src is not None else "cond:?"
+
+
+def _canon_stmt(node: "AnyStmt") -> str:
+    """Canonical, deterministic serialization of a (sub)program's abstract syntax.
+
+    Renders structure by field — lifeline/var/action names and literals — and
+    excludes condition-lambda internals (see _canon_cond).  Identical across any
+    process that imports the same workflow, which is what makes the derived
+    control tag process-stable."""
+    match node:
+        case EmptyStmt():
+            return "ε"
+        case MsgStmt(sender=s, payload=xs, receiver=r, bindings=ys):
+            xstr = ",".join(_canon_expr(e) for e in xs)
+            ystr = ",".join(_canon_expr(e) for e in ys)
+            return f"msg({s.name},[{xstr}],{r.name},[{ystr}])"
+        case CoregionStmt(messages=messages):
+            return "coreg(" + ";".join(_canon_stmt(m) for m in messages) + ")"
+        case ActStmt(lifeline=a, action=act, inputs=ins, outputs=outs):
+            istr = ",".join(_canon_expr(e) for e in ins)
+            ostr = ",".join(v.name for v in outs)
+            return f"act({a.name},{act.name},[{istr}],[{ostr}])"
+        case SkipStmt(lifeline=a):
+            return f"skip({a.name})"
+        case SeqStmt(first=p1, second=p2):
+            return f"seq({_canon_stmt(p1)},{_canon_stmt(p2)})"
+        case IfStmt(condition=c, owner=b, branch_true=t, branch_false=f):
+            return f"if({_canon_cond(c)}@{b.name},{_canon_stmt(t)},{_canon_stmt(f)})"
+        case WhileStmt(condition=c, owner=b, body=bd, exit_body=ex):
+            return f"while({_canon_cond(c)}@{b.name},{_canon_stmt(bd)},{_canon_stmt(ex)})"
+        case ParallelStmt(branches=branches):
+            return "par(" + "|".join(_canon_stmt(b) for b in branches) + ")"
+        case _:
+            raise TypeError(f"cannot canonicalize statement type: {type(node).__name__}")
+
+
+def canonical_construct_key(node: "AnyStmt") -> str:
+    """Return a short, process-stable content key for a control construct.
+
+    Two constructs with the same abstract syntax (in any process) get the same
+    key; different constructs get different keys.  Uses a stable hash — NOT the
+    built-in ``hash()``, whose string seed varies per process."""
+    digest = hashlib.sha1(_canon_stmt(node).encode("utf-8")).hexdigest()
+    return digest[:16]
 
 
 # ---------------------------------------------------------------------------
