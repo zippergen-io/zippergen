@@ -6,9 +6,7 @@ thread per lifeline, wires FIFO queues, and drives execution to completion.
 from __future__ import annotations
 
 import copy
-import queue
 import threading
-from collections import defaultdict
 from typing import cast
 import time
 import textwrap
@@ -29,6 +27,7 @@ from zippergen.syntax import (
 from zippergen.projection import project
 from zippergen.formula import Formula as _Formula, subformulas as _subformulas
 from zippergen.monitor import MonitorState
+from zippergen.channels import _SeqQueue, InProcessChannel  # noqa: F401
 
 __all__ = ["run", "mock_llm", "console_trace", "tee_traces"]
 
@@ -224,54 +223,6 @@ def tee_traces(*traces):
 
 
 # ---------------------------------------------------------------------------
-# Seq-stamped queue — each message carries a monotone sequence number
-# so send/recv events can be paired in the web viewer
-# ---------------------------------------------------------------------------
-
-class _SeqQueue:
-    """FIFO queue that auto-stamps each item with a per-channel sequence number.
-
-    Items are stored as (seq, values, vc, view, field_view). vc, view, and
-    field_view are the sender's monitor snapshot, or None when monitoring is
-    inactive.
-    """
-
-    def __init__(self):
-        self._q: queue.Queue = queue.Queue()
-        self._next = 0
-
-    def put(
-        self,
-        values: tuple,
-        vc: dict | None = None,
-        view: dict | None = None,
-        field_view: dict | None = None,
-    ) -> int:
-        seq = self._next
-        self._next += 1
-        self._q.put((seq, values, vc, view, field_view))
-        return seq
-
-    def get(
-        self, *, stop: threading.Event | None = None
-    ) -> tuple[int, tuple, dict | None, dict | None, dict | None]:
-        if stop is None:
-            return self._q.get()
-        while True:
-            try:
-                return self._q.get(timeout=0.5)
-            except queue.Empty:
-                if stop.is_set():
-                    raise RuntimeError("Workflow cancelled: another lifeline failed")
-
-    def get_nowait(self) -> tuple[int, tuple, dict | None, dict | None, dict | None]:
-        return self._q.get_nowait()
-
-
-Channels = defaultdict[tuple[str, str, str], _SeqQueue]
-
-
-# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
@@ -367,7 +318,7 @@ def _action_kind(action: object) -> str:
 
 
 def _receive_any(
-    ch: Channels,
+    ch: InProcessChannel,
     receiver: str,
     pending_senders: set[str],
     channel: str,
@@ -376,10 +327,9 @@ def _receive_any(
 ) -> tuple[str, tuple[int, tuple, dict | None, dict | None, dict | None]]:
     while True:
         for sender in sorted(pending_senders):
-            try:
-                return sender, ch[(sender, receiver, channel)].get_nowait()
-            except queue.Empty:
-                pass
+            item = ch.try_get(sender, receiver, channel)
+            if item is not None:
+                return sender, item
         if stop is not None and stop.is_set():
             raise RuntimeError("Workflow cancelled: another lifeline failed")
         time.sleep(0.01)
@@ -390,16 +340,8 @@ def _receive_any(
 # Local-program interpreter
 # ---------------------------------------------------------------------------
 
-def _try_channel_get(
-    ch: Channels,
-    sender: str,
-    receiver: str,
-    channel: str,
-) -> tuple[int, tuple, dict | None, dict | None, dict | None] | None:
-    try:
-        return ch[(sender, receiver, channel)].get_nowait()
-    except queue.Empty:
-        return None
+def _try_channel_get(ch, sender: str, receiver: str, channel: str):
+    return ch.try_get(sender, receiver, channel)
 
 
 def _with_parallel_branch(trace, label: str):
@@ -417,7 +359,7 @@ def _with_parallel_branch(trace, label: str):
 def _step(
     stmt: LocalStmt,
     env: Env,
-    ch: Channels,
+    ch: InProcessChannel,
     ns: dict,
     llm_backend,
     human_backend,
@@ -623,7 +565,7 @@ def _step(
             raise TypeError(f"Unknown local stmt: {type(stmt).__name__}")
 
 
-def _exec(stmt: LocalStmt, env: Env, ch: Channels, ns: dict, llm_backend, human_backend, monitor, trace,
+def _exec(stmt: LocalStmt, env: Env, ch: InProcessChannel, ns: dict, llm_backend, human_backend, monitor, trace,
           formula_conditions: dict[int, _Formula] | None = None,
           stop: threading.Event | None = None) -> None:
     """Execute a LocalStmt, updating env in place."""
@@ -638,9 +580,10 @@ def _exec(stmt: LocalStmt, env: Env, ch: Channels, ns: dict, llm_backend, human_
             values = tuple(copy.deepcopy(_eval(x, env)) for x in xs)
             if monitor:
                 monitor.on_event("send", env)
-                seq = ch[(A.name, B.name, channel)].put(values, monitor.snapshot_vc(), monitor.snapshot_view(), monitor.snapshot_field_view())
+                seq = ch.put(A.name, B.name, channel, values,
+                             monitor.snapshot_vc(), monitor.snapshot_view(), monitor.snapshot_field_view())
             else:
-                seq = ch[(A.name, B.name, channel)].put(values)
+                seq = ch.put(A.name, B.name, channel, values)
             if trace:
                 names = [x.var.name if isinstance(x, VarExpr) else f"_{i}" for i, x in enumerate(xs)]
                 trace({
@@ -654,7 +597,7 @@ def _exec(stmt: LocalStmt, env: Env, ch: Channels, ns: dict, llm_backend, human_
                 })
 
         case RecvStmt(lifeline=A, bindings=ys, sender=B, channel=channel):
-            seq, values, recv_vc, recv_view, recv_field_view = ch[(B.name, A.name, channel)].get(stop=stop)
+            seq, values, recv_vc, recv_view, recv_field_view = ch.get(B.name, A.name, channel, stop=stop)
             _bind(ys, values, env)
             if monitor:
                 monitor.on_event("recv", env, recv_vc=recv_vc, recv_view=recv_view, recv_field_view=recv_field_view)
@@ -851,7 +794,7 @@ def _exec(stmt: LocalStmt, env: Env, ch: Channels, ns: dict, llm_backend, human_
             _exec(cast(LocalStmt, t if flag else f), env, ch, ns, llm_backend, human_backend, monitor, trace, formula_conditions, stop)
 
         case IfRecvStmt(lifeline=A, bindings=ys, sender=B, branch_true=t, branch_false=f, channel=channel):
-            seq, values, recv_vc, recv_view, recv_field_view = ch[(B.name, A.name, channel)].get(stop=stop)
+            seq, values, recv_vc, recv_view, recv_field_view = ch.get(B.name, A.name, channel, stop=stop)
             _bind(ys, values, env)
             if monitor:
                 monitor.on_event("recv", env, recv_vc=recv_vc, recv_view=recv_view, recv_field_view=recv_field_view)
@@ -910,7 +853,7 @@ def _exec(stmt: LocalStmt, env: Env, ch: Channels, ns: dict, llm_backend, human_
 
         case WhileRecvStmt(lifeline=A, bindings=ys, sender=B, body=body, exit_body=exit_b, channel=channel):
             while True:
-                seq, values, recv_vc, recv_view, recv_field_view = ch[(B.name, A.name, channel)].get(stop=stop)
+                seq, values, recv_vc, recv_view, recv_field_view = ch.get(B.name, A.name, channel, stop=stop)
                 _bind(ys, values, env)
                 if monitor:
                     monitor.on_event("recv", env, recv_vc=recv_vc, recv_view=recv_view, recv_field_view=recv_field_view)
@@ -1043,7 +986,7 @@ def run(
     stop = threading.Event()
 
     names = [l.name for l in lifelines]
-    channels: Channels = defaultdict(_SeqQueue)
+    channels = InProcessChannel()
 
     threads: list[threading.Thread] = []
     result_boxes: dict[str, list] = {}

@@ -1,0 +1,14 @@
+[Unit]
+Description=ZipperGen role %i
+After=network.target
+
+[Service]
+Type=simple
+Environment=ZG_STORE=/var/lib/zippergen/workflow.sqlite
+Environment=ZG_WORKFLOW=/opt/zippergen/workflow.py
+ExecStart=/usr/bin/zippergen serve --workflow ${ZG_WORKFLOW} --role %i --store ${ZG_STORE}
+Restart=always
+RestartSec=1
+
+[Install]
+WantedBy=multi-user.target
