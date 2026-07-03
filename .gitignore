@@ -44,3 +44,8 @@ CLAUDE.md
 
 # Work in progress examples
 examples/email_writer.py
+examples/medium_program.py
+
+# Local scratch / non-project tooling
+.superpowers/
+uv.lock
