@@ -138,7 +138,8 @@ def run_role(conn, role: str, local_stmt, env: dict, ns: dict, *,
                            "input_hash": _input_hash(out.inputs), "outputs": out_map})
             conn.execute("COMMIT")
             # pass 2 (no txn): consume the just-committed act row, apply env, advance
-            residual, _ = step(residual, trace)
+            residual, resolved = step(residual, trace)
+            assert resolved, "durable resolve failed to consume the just-committed act row"
             if id(residual) in loop_paths:
                 _maybe_snapshot(conn, role, env, loop_paths[id(residual)], ch)
             continue

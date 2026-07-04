@@ -387,8 +387,8 @@ def external_out_map(action, named_inputs, outs, llm_backend, human_backend) -> 
 def _input_hash(named_inputs: dict) -> str | None:
     try:
         return hashlib.sha1(json.dumps(named_inputs, sort_keys=True).encode()).hexdigest()[:16]
-    except TypeError:
-        return None   # non-serializable inputs -> skip hash (locator+kind still assert)
+    except (TypeError, ValueError):
+        return None   # non-serializable inputs (incl. circular refs) -> skip hash (locator+kind still assert)
 
 
 def _step(

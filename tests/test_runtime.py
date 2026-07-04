@@ -709,7 +709,6 @@ def test_monitor_trace_includes_vector_clock_metadata():
 # Durable mode: PendingExternal + _step journal path
 # ---------------------------------------------------------------------------
 
-import types
 from zippergen.runtime import _step, PendingExternal, mock_llm
 from zippergen.syntax import ActStmt, Lifeline, Var, VarExpr
 from zippergen.actions import pure
@@ -745,6 +744,18 @@ def test_step_external_act_live_returns_pending():
     assert isinstance(out, PendingExternal) and out.node is act
     assert out.inputs == {"x": 5} and progressed is False
     assert env == {"x": 5}                       # nothing mutated
+
+def test_parallel_branch_pending_external_propagates():
+    # A live external act at a parallel branch head must surface as PendingExternal
+    # from the ParallelLocalStmt step (durable mode), not be swallowed.
+    from zippergen.syntax import ParallelLocalStmt
+    act = _llm_act()
+    region = ParallelLocalStmt((act,), (0,))
+    j = _FakeJournal(_FakeChannel(result=None), {id(act): [0]})
+    env = {"x": 5}
+    out, progressed = _step(region, env, None, {}, mock_llm, None, None, None, {}, None, journal=j)
+    assert isinstance(out, PendingExternal) and out.node is act
+    assert progressed is False and env == {"x": 5}   # propagated up, nothing mutated
 
 def test_step_external_act_replay_consumes_no_backend():
     act = _llm_act()
