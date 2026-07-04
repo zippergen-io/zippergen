@@ -763,3 +763,38 @@ def test_step_pure_act_inline_even_in_durable_mode():
     env = {"x": 5}
     out, progressed = _step(act, env, InProcessChannel(), {}, mock_llm, None, None, None, {}, None, journal=j)
     assert progressed is True and env["y"] == 6  # pure recomputed, not journaled
+
+
+# ---------------------------------------------------------------------------
+# Durable mode: owner IfStmt/WhileStmt decision journaling
+# ---------------------------------------------------------------------------
+
+from zippergen.syntax import IfStmt, SkipStmt
+
+
+class _RecordingChannel:
+    def __init__(self, result=None):
+        self._result = result; self.decided = None
+    def consume_journal(self, kind, locator, input_hash=None):
+        return self._result
+    def record_decision(self, payload):
+        self.decided = payload; return 1
+
+def test_owner_decision_live_journals_and_uses_value():
+    t, f = SkipStmt(A), SkipStmt(Lifeline("B"))
+    node = IfStmt(condition=lambda _e: True, owner=A, branch_true=t, branch_false=f)
+    ch = _RecordingChannel(result=None)
+    j = _FakeJournal(ch, {id(node): [7]})
+    out, progressed = _step(node, {}, None, {}, mock_llm, None, None, None, {}, None, journal=j)
+    assert progressed is True and out is t
+    assert ch.decided == {"status": "done", "locator": [7], "value": True}
+
+def test_owner_decision_replay_uses_recorded_value_no_guard():
+    t, f = SkipStmt(A), SkipStmt(Lifeline("B"))
+    def boom(_e):
+        raise AssertionError("guard evaluated during replay")
+    node = IfStmt(condition=boom, owner=A, branch_true=t, branch_false=f)
+    ch = _RecordingChannel(result={"status": "done", "locator": [7], "value": False})
+    j = _FakeJournal(ch, {id(node): [7]})
+    out, progressed = _step(node, {}, None, {}, mock_llm, None, None, None, {}, None, journal=j)
+    assert progressed is True and out is f      # recorded False, guard never called

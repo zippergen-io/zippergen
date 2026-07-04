@@ -501,6 +501,14 @@ def _step(
             return cast(LocalStmt, seq(new_first, second)), True
 
         case IfStmt(condition=c, owner=B, branch_true=t, branch_false=f):
+            if journal is not None:
+                loc = journal.act_paths[id(stmt)]
+                rec = journal.channel.consume_journal("decision", loc)
+                if rec is not None:
+                    return cast(LocalStmt, t if rec["value"] else f), True
+                flag = bool(c(_CondEnv(env, ns)))
+                journal.channel.record_decision({"status": "done", "locator": loc, "value": flag})
+                return cast(LocalStmt, t if flag else f), True
             cached_formula = formula_conditions.get(id(c))
             if cached_formula is not None:
                 cond_formula = cached_formula
@@ -557,6 +565,17 @@ def _step(
             return cast(LocalStmt, t if flag else f), True
 
         case WhileStmt(condition=c, owner=B, body=body, exit_body=exit_b):
+            if journal is not None:
+                loc = journal.act_paths[id(stmt)]
+                rec = journal.channel.consume_journal("decision", loc)
+                if rec is not None:
+                    flag = rec["value"]
+                else:
+                    flag = bool(c(_CondEnv(env, ns)))
+                    journal.channel.record_decision({"status": "done", "locator": loc, "value": flag})
+                if not flag:
+                    return cast(LocalStmt, exit_b), True
+                return cast(LocalStmt, seq(body, stmt)), True
             cached_formula = formula_conditions.get(id(c))
             if cached_formula is not None:
                 wc_formula = cached_formula
