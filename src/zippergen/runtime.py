@@ -635,9 +635,28 @@ def _step(
                 return cast(LocalStmt, seq(body, stmt)), True
             return cast(LocalStmt, exit_b), True
 
-        case ParallelLocalStmt():
+        case ParallelLocalStmt(branches=branches, branch_indices=labels) if journal is None:
             _exec(stmt, env, ch, ns, llm_backend, human_backend, monitor, trace, formula_conditions, stop)
             return EmptyStmt(), True
+
+        case ParallelLocalStmt(branches=branches, branch_indices=labels):
+            residuals = list(branches)
+            for i, branch in enumerate(residuals):
+                if isinstance(branch, EmptyStmt):
+                    continue
+                new_branch, progressed = _step(
+                    branch, env, ch, ns, llm_backend, human_backend, monitor, trace,
+                    formula_conditions, stop, journal=journal)
+                if isinstance(new_branch, PendingExternal):
+                    return new_branch, False           # propagate up; serve resolves
+                residuals[i] = new_branch
+                if progressed:
+                    if all(isinstance(b, EmptyStmt) for b in residuals):
+                        return EmptyStmt(), True
+                    return ParallelLocalStmt(tuple(residuals), labels), True
+            if all(isinstance(b, EmptyStmt) for b in residuals):
+                return EmptyStmt(), True
+            return stmt, False
 
         case _:
             raise TypeError(f"Unknown local stmt: {type(stmt).__name__}")

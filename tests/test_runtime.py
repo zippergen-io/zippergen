@@ -798,3 +798,41 @@ def test_owner_decision_replay_uses_recorded_value_no_guard():
     j = _FakeJournal(ch, {id(node): [7]})
     out, progressed = _step(node, {}, None, {}, mock_llm, None, None, None, {}, None, journal=j)
     assert progressed is True and out is f      # recorded False, guard never called
+
+
+# ---------------------------------------------------------------------------
+# Durable mode: ParallelLocalStmt as a true single step
+# ---------------------------------------------------------------------------
+
+from zippergen.syntax import ParallelLocalStmt, SkipStmt as _Skip, SeqStmt
+
+
+def test_parallel_durable_single_step_advances_one_branch():
+    b0 = SeqStmt(_Skip(A), _Skip(A))
+    b1 = _Skip(A)
+    region = ParallelLocalStmt((b0, b1), (0, 1))
+    j = _FakeJournal(_FakeChannel(result=None), {})
+    out, progressed = _step(region, {}, None, {}, mock_llm, None, None, None, {}, None, journal=j)
+    assert progressed is True and isinstance(out, ParallelLocalStmt)
+    # exactly one branch advanced; region not run to completion in one step
+    assert out is not region
+
+def test_parallel_durable_completes_and_inprocess_delegates(monkeypatch):
+    region = ParallelLocalStmt((_Skip(A),), (0,))
+    j = _FakeJournal(_FakeChannel(result=None), {})
+    out, progressed = _step(region, {}, None, {}, mock_llm, None, None, None, {}, None, journal=j)
+    from zippergen.syntax import EmptyStmt
+    assert isinstance(out, EmptyStmt) and progressed is True
+    # journal=None path must still call _exec (in-process behavior preserved)
+    called = {"exec": False}
+    import zippergen.runtime as rt
+    real_exec = rt._exec
+    def spy(stmt, *a, **k):
+        if isinstance(stmt, ParallelLocalStmt):
+            called["exec"] = True
+        return real_exec(stmt, *a, **k)
+    monkeypatch.setattr(rt, "_exec", spy)
+    from zippergen.channels import InProcessChannel
+    rt._step(ParallelLocalStmt((_Skip(A),), (0,)), {}, InProcessChannel(), {},
+             mock_llm, None, None, None, {}, None, journal=None)
+    assert called["exec"] is True
