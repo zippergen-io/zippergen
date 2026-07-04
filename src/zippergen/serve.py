@@ -193,6 +193,15 @@ def _parse_inputs(pairs: list[str]) -> dict:
     return out
 
 
+def _seed_inputs(wf: Workflow, inputs: dict) -> dict:
+    """Var defaults from the workflow namespace, overlaid by caller inputs —
+    parity with the in-process run() seeding (runtime.py:1014)."""
+    from zippergen.syntax import Var
+    env = {k: v.default for k, v in wf.ns.items() if isinstance(v, Var)}
+    env.update(inputs)
+    return env
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="zippergen")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -205,7 +214,7 @@ def main(argv=None) -> int:
 
     wf, role_ll = load_workflow(args.workflow, args.role)
     conn = open_store(args.store)
-    env = seed_env(conn, args.role, wf, _parse_inputs(args.input))
+    env = seed_env(conn, args.role, wf, _seed_inputs(wf, _parse_inputs(args.input)))
     local = project(wf, role_ll)
     final = run_role(conn, args.role, local, env, wf.ns)
     print(json.dumps({k: v for k, v in final.items()

@@ -49,3 +49,10 @@ def test_external_act_memoized_across_restart(tmp_path):
     env_b2 = _run(path, "B", lb, {})
     assert CALLS["n"] == first_calls               # memoized, no re-invocation
     assert env_b2["label"] == 10
+
+
+def test_default_seed_inputs_overlay():
+    from zippergen.serve import _seed_inputs
+    merged = _seed_inputs(one_round, {"n": 3})
+    assert merged["n"] == 3          # caller input wins
+    assert merged["m"] == 0          # Var default carried through when not supplied
