@@ -1,5 +1,30 @@
 """Per-role durable runtime: project one role, replay its committed history,
-then run live, persisting each step atomically."""
+then run live, persisting each step atomically.
+
+Non-deterministic results are journaled so replay reconstructs them instead of
+re-executing: external acts (LLM/Human/Planner) and owner if/while decisions are
+recorded as ``kind='act'``/``'decision'`` rows and consumed FIFO on replay; a
+``@pure`` act is deterministic by contract and recomputed. A blocking external
+call runs OUTSIDE the SQLite write transaction (the lock is released first), then
+its result is journaled and committed before env/residual advance.
+
+Limitations (v1):
+- External effects are at-least-once: a crash between an external call returning
+  and its journal row committing re-runs the act on restart. Harmless for an LLM
+  (paid twice) or a human (re-prompted); irreversible effects (e.g. sending mail)
+  are NOT made exactly-once here — that needs effect-level idempotency keys.
+- No durable human task queue yet: a role process that is down cannot have its
+  human prompt answered out-of-band; the ``status`` journal field is reserved for
+  that future work.
+- No snapshot fires inside a parallel region (the rebuilt residual changes
+  identity each step), so a crash replays the region from the enclosing loop
+  boundary; replay-length bounding inside parallel is a later refinement.
+- A blocking external act in one parallel branch stalls that role's other
+  branches until it returns (no intra-role concurrency of external calls).
+- CPL Formula guards are not wired on the durable path (monitor is None); a
+  monitored/checked workflow is not yet servable this way.
+
+See docs/superpowers/specs/2026-07-04-durable-deploy-hardening-design.md."""
 from __future__ import annotations
 
 import sqlite3
