@@ -6,7 +6,10 @@ thread per lifeline, wires FIFO queues, and drives execution to completion.
 from __future__ import annotations
 
 import copy
+import hashlib
+import json
 import threading
+from dataclasses import dataclass
 from typing import cast
 import time
 import textwrap
@@ -30,6 +33,16 @@ from zippergen.monitor import MonitorState
 from zippergen.channels import _SeqQueue, InProcessChannel  # noqa: F401
 
 __all__ = ["run", "mock_llm", "console_trace", "tee_traces"]
+
+
+@dataclass(frozen=True)
+class PendingExternal:
+    """Durable-mode signal: a live external act needs its backend run OUTSIDE the
+    write transaction. Carries the node (for its action/outputs) and evaluated
+    inputs. Returned in the residual slot with progressed=False; never produced
+    when journal is None."""
+    node: object
+    inputs: dict
 
 
 # ---------------------------------------------------------------------------
@@ -356,6 +369,28 @@ def _with_parallel_branch(trace, label: str):
     return wrapped
 
 
+def external_out_map(action, named_inputs, outs, llm_backend, human_backend) -> dict:
+    """Output env-delta for an external (LLM/Human/Planner) action — the same
+    computation _exec performs for these branches, factored for the durable driver."""
+    if isinstance(action, PlannerAction):
+        return {outs[0].name: _exec_planner(action, named_inputs, llm_backend, None, _next_act_seq())}
+    if isinstance(action, HumanAction):
+        if not action.visible:
+            default = True if action.output_type is bool else ""
+            return {outs[0].name: default}
+        named_outputs = human_backend(action, named_inputs)
+        return {outs[0].name: named_outputs[action.output]}
+    named_outputs = llm_backend(action, named_inputs)   # LLMAction
+    return {var.name: named_outputs.get(aname) for (aname, _), var in zip(action.outputs, outs)}
+
+
+def _input_hash(named_inputs: dict) -> str | None:
+    try:
+        return hashlib.sha1(json.dumps(named_inputs, sort_keys=True).encode()).hexdigest()[:16]
+    except TypeError:
+        return None   # non-serializable inputs -> skip hash (locator+kind still assert)
+
+
 def _step(
     stmt: LocalStmt,
     env: Env,
@@ -367,12 +402,20 @@ def _step(
     trace,
     formula_conditions: dict[int, _Formula],
     stop: threading.Event | None,
-) -> tuple[LocalStmt, bool]:
+    journal=None,
+) -> tuple[LocalStmt | PendingExternal, bool]:
     """Execute at most one enabled local step.
 
     Returns ``(residual, progressed)``. Blocking receives return the original
     residual with ``progressed=False`` so the local parallel scheduler can try
     another branch.
+
+    When ``journal`` is not ``None`` (durable mode), a live external act
+    (LLM/Human/Planner) is NOT executed inline — instead a ``PendingExternal``
+    is returned (with ``progressed=False``) so the driver can run the backend
+    outside the write transaction. A replayed external act (already recorded
+    in the journal) is applied directly from the recorded outputs, without
+    calling the backend. Pure acts are always executed inline, journal or not.
     """
     match stmt:
         case EmptyStmt():
@@ -381,9 +424,23 @@ def _step(
         case SkipStmt():
             return EmptyStmt(), True
 
-        case SendStmt() | SelfAssignStmt() | ActStmt():
+        case SendStmt() | SelfAssignStmt():
             _exec(stmt, env, ch, ns, llm_backend, human_backend, monitor, trace, formula_conditions, stop)
             return EmptyStmt(), True
+
+        case ActStmt(lifeline=_, action=action, inputs=ins, outputs=outs):
+            if journal is None or isinstance(action, PureAction):
+                # in-process, or a pure (deterministic, non-journaled) act
+                _exec(stmt, env, ch, ns, llm_backend, human_backend, monitor, trace, formula_conditions, stop)
+                return EmptyStmt(), True
+            locator = journal.act_paths[id(stmt)]
+            in_vals = tuple(_eval(x, env) for x in ins)
+            named_inputs = {name: val for (name, _), val in zip(action.inputs, in_vals)}
+            recorded = journal.channel.consume_journal("act", locator, _input_hash(named_inputs))
+            if recorded is not None:                 # replay: apply, no backend call
+                env.update(recorded["outputs"])
+                return EmptyStmt(), True
+            return PendingExternal(stmt, named_inputs), False   # live: serve resolves it
 
         case RecvStmt(lifeline=A, bindings=ys, sender=B, channel=channel):
             item = _try_channel_get(ch, B.name, A.name, channel)
@@ -435,8 +492,10 @@ def _step(
                 return second, True
             new_first, progressed = _step(
                 first, env, ch, ns, llm_backend, human_backend, monitor, trace,
-                formula_conditions, stop,
+                formula_conditions, stop, journal=journal,
             )
+            if isinstance(new_first, PendingExternal):
+                return new_first, False
             if not progressed:
                 return stmt, False
             return cast(LocalStmt, seq(new_first, second)), True

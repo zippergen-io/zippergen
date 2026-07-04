@@ -703,3 +703,63 @@ def test_monitor_trace_includes_vector_clock_metadata():
     assert recv_event["vc"]["MetaPlanner"] == 1
     assert recv_event["message_vc"]["MetaPlanner"] == 1
     assert decision_event["vc"]["MetaExecutor"] == 2
+
+
+# ---------------------------------------------------------------------------
+# Durable mode: PendingExternal + _step journal path
+# ---------------------------------------------------------------------------
+
+import types
+from zippergen.runtime import _step, PendingExternal, mock_llm
+from zippergen.syntax import ActStmt, Lifeline, Var, VarExpr
+from zippergen.actions import pure
+
+A = Lifeline("A")
+_x = Var("x", int); _y = Var("y", int)
+
+@pure
+def inc(x: int) -> int:
+    return x + 1
+
+def _llm_act():
+    # Construct the LLMAction IR node directly (no @llm decorator needed for a unit test).
+    from zippergen.syntax import LLMAction
+    action = LLMAction("ask", (("x", int),), (("y", int),), "s", "{x}", "text")
+    return ActStmt(A, action, (VarExpr(_x),), (_y,))
+
+class _FakeJournal:
+    def __init__(self, channel, act_paths):
+        self.channel = channel; self.act_paths = act_paths
+
+class _FakeChannel:
+    def __init__(self, result=None):
+        self._result = result
+    def consume_journal(self, kind, locator, input_hash=None):
+        return self._result
+
+def test_step_external_act_live_returns_pending():
+    act = _llm_act()
+    j = _FakeJournal(_FakeChannel(result=None), {id(act): [0]})
+    env = {"x": 5}
+    out, progressed = _step(act, env, None, {}, mock_llm, None, None, None, {}, None, journal=j)
+    assert isinstance(out, PendingExternal) and out.node is act
+    assert out.inputs == {"x": 5} and progressed is False
+    assert env == {"x": 5}                       # nothing mutated
+
+def test_step_external_act_replay_consumes_no_backend():
+    act = _llm_act()
+    result = {"status": "done", "locator": [0], "outputs": {"y": 99}}
+    j = _FakeJournal(_FakeChannel(result=result), {id(act): [0]})
+    env = {"x": 5}
+    def boom(*a, **k):  # backend must NOT be called on replay
+        raise AssertionError("backend called during replay")
+    out, progressed = _step(act, env, None, {}, boom, None, None, None, {}, None, journal=j)
+    assert progressed is True and env["y"] == 99
+
+def test_step_pure_act_inline_even_in_durable_mode():
+    act = ActStmt(A, inc, (VarExpr(_x),), (_y,))
+    j = _FakeJournal(_FakeChannel(result=None), {id(act): [0]})
+    from zippergen.channels import InProcessChannel
+    env = {"x": 5}
+    out, progressed = _step(act, env, InProcessChannel(), {}, mock_llm, None, None, None, {}, None, journal=j)
+    assert progressed is True and env["y"] == 6  # pure recomputed, not journaled
