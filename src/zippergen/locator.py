@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from zippergen.syntax import (
     SeqStmt, IfStmt, IfRecvStmt, WhileStmt, WhileRecvStmt,
+    ActStmt, ParallelLocalStmt,
 )
 
 
@@ -24,6 +25,8 @@ def _children(node) -> list:
             return [b, x]
         case WhileRecvStmt(body=b, exit_body=x):
             return [b, x]
+        case ParallelLocalStmt(branches=branches):
+            return list(branches)
         case _:
             return []
 
@@ -49,3 +52,22 @@ def resolve_path(root, path: list[int]):
             return None
         node = children[i]
     return node
+
+
+def action_node_paths(root) -> dict[int, list[int]]:
+    """Map id(node) -> child-index path for every act and owner if/while node.
+
+    These are the statements whose non-deterministic result is journaled; the
+    path re-finds the node in a freshly-projected program (same trick as
+    loop_node_paths). Leaf/owner identity survives _step, so id() is a stable key
+    for the journal locator."""
+    out: dict[int, list[int]] = {}
+
+    def walk(node, path: list[int]) -> None:
+        if isinstance(node, (ActStmt, IfStmt, WhileStmt)):
+            out[id(node)] = list(path)
+        for i, child in enumerate(_children(node)):
+            walk(child, path + [i])
+
+    walk(root, [])
+    return out
