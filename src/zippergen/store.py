@@ -135,6 +135,7 @@ class DurableChannel:
         self._tentative: dict[tuple[str, str, str], int] = {}
         self._replay_outbox: deque = deque()
         self._replay_inbox: dict[tuple[str, str, str], deque] = {}
+        self._journal_consumed: int = (since or {}).get("journal", 0)
         self._load_cursors()
         self._load_replay()
 
@@ -181,7 +182,55 @@ class DurableChannel:
         return {
             "out": row[0] or 0,
             "cursors": {chan_key(*key): rowid for key, rowid in self._consumed.items()},
+            "journal": self._journal_consumed,
         }
+
+    # ---- role-local journal (external act outputs + owner decisions) --------
+    def record_act(self, payload: dict) -> int:
+        """INSERT an act-journal row. Does NOT advance the journal cursor — the
+        result is applied by a separate consume pass (apply-after-commit)."""
+        cur = self.conn.execute(
+            "INSERT INTO events(sender,receiver,channel,kind,payload,causal_stamp) "
+            "VALUES(?,?,?,?,?,?)",
+            (self.role, None, None, "act", json.dumps(payload), None),
+        )
+        return int(cur.lastrowid)
+
+    def record_decision(self, payload: dict) -> int:
+        """INSERT a decision-journal row and advance the cursor past it (the
+        value is recorded and consumed in one step; no separate consume pass)."""
+        cur = self.conn.execute(
+            "INSERT INTO events(sender,receiver,channel,kind,payload,causal_stamp) "
+            "VALUES(?,?,?,?,?,?)",
+            (self.role, None, None, "decision", json.dumps(payload), None),
+        )
+        self._journal_consumed = int(cur.lastrowid)
+        return int(cur.lastrowid)
+
+    def consume_journal(self, expected_kind: str, locator: list,
+                        input_hash: str | None = None) -> dict | None:
+        """Return the next committed journal row for this role (FIFO by rowid),
+        asserting it matches the statement re-executing here; None if none left."""
+        row = self.conn.execute(
+            "SELECT rowid, kind, payload FROM events "
+            "WHERE sender=? AND kind IN ('act','decision') AND rowid>? "
+            "ORDER BY rowid LIMIT 1",
+            (self.role, self._journal_consumed),
+        ).fetchone()
+        if row is None:
+            return None
+        rowid, kind, payload = row
+        data = json.loads(payload)
+        if kind != expected_kind or data.get("locator") != locator:
+            raise ReplayMismatch(
+                f"journal diverged at rowid {rowid}: recorded {kind}/{data.get('locator')}, "
+                f"executing {expected_kind}/{locator}")
+        if input_hash is not None and data.get("input_hash") not in (None, input_hash):
+            raise ReplayMismatch(
+                f"journal input_hash diverged at rowid {rowid}: "
+                f"recorded {data.get('input_hash')!r}, recomputed {input_hash!r}")
+        self._journal_consumed = rowid
+        return data
 
     # ---- interpreter-facing surface ---------------------------------------
     def put(self, sender: str, receiver: str, channel: str, values: tuple,

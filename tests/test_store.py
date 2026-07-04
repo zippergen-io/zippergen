@@ -179,3 +179,41 @@ def test_reserved_send_match_ok(tmp_path):
     a2 = DurableChannel(conn, "A")
     assert a2.put("A", "B", "main", (1,))        # matches -> reserved, no raise
     assert a2.replaying() is False
+
+
+# ---------------------------------------------------------------------------
+# Journal (Task 3)
+# ---------------------------------------------------------------------------
+def test_journal_record_and_consume_fifo(tmp_path):
+    conn = open_store(str(tmp_path / "s.sqlite"))
+    a = DurableChannel(conn, "A")
+    conn.execute("BEGIN")
+    a.record_act({"status": "done", "locator": [0], "action": "llm", "input_hash": "h", "outputs": {"y": 1}})
+    a.record_decision({"status": "done", "locator": [1], "value": True})
+    a.commit_txn()
+    # A fresh channel replays the journal in FIFO order via the cursor.
+    a2 = DurableChannel(conn, "A")
+    p0 = a2.consume_journal("act", [0], "h")
+    assert p0["outputs"] == {"y": 1}
+    p1 = a2.consume_journal("decision", [1])
+    assert p1["value"] is True
+    assert a2.consume_journal("act", [2]) is None          # nothing left -> live path
+    assert a2.position()["journal"] == a2._journal_consumed
+
+def test_journal_locator_mismatch_raises(tmp_path):
+    conn = open_store(str(tmp_path / "s.sqlite"))
+    a = DurableChannel(conn, "A")
+    conn.execute("BEGIN"); a.record_act({"status": "done", "locator": [0], "action": "llm", "outputs": {}}); a.commit_txn()
+    a2 = DurableChannel(conn, "A")
+    with pytest.raises(ReplayMismatch):
+        a2.consume_journal("act", [9])                     # wrong locator
+
+def test_record_act_does_not_advance_cursor(tmp_path):
+    # act rows are consumed by a separate pass; recording must leave the cursor
+    # below the new row so the next consume_journal picks it up.
+    conn = open_store(str(tmp_path / "s.sqlite"))
+    a = DurableChannel(conn, "A")
+    conn.execute("BEGIN"); rid = a.record_act({"status": "done", "locator": [0], "action": "llm", "outputs": {"y": 2}}); a.commit_txn()
+    assert a._journal_consumed < rid
+    got = a.consume_journal("act", [0])
+    assert got["outputs"] == {"y": 2} and a._journal_consumed == rid
