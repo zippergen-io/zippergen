@@ -4,11 +4,18 @@ from __future__ import annotations
 
 import sqlite3
 import time
+from dataclasses import dataclass
 
 from zippergen.syntax import EmptyStmt, WhileStmt, WhileRecvStmt
-from zippergen.runtime import _step, mock_llm
+from zippergen.runtime import _step, mock_llm, PendingExternal, external_out_map, _input_hash
 from zippergen.store import DurableChannel, load_snapshot, write_snapshot
-from zippergen.locator import loop_node_paths, resolve_path
+from zippergen.locator import loop_node_paths, resolve_path, action_node_paths
+
+
+@dataclass
+class JournalContext:
+    channel: object          # DurableChannel
+    act_paths: dict          # id(node) -> child-index path
 
 
 def _floor_coherent(conn, role: str, floor: dict) -> bool:
@@ -68,15 +75,21 @@ def run_role(conn, role: str, local_stmt, env: dict, ns: dict, *,
     loop_paths = loop_node_paths(local_stmt)
     env, residual, since = _try_resume(conn, role, local_stmt, env)
     ch = DurableChannel(conn, role, since=since)
+    jctx = JournalContext(ch, action_node_paths(local_stmt))
+
+    def step(r, tr):
+        return _step(r, env, ch, ns, llm_backend, human_backend, None, tr, {}, None, journal=jctx)
 
     # ---- replay: reconstruct (env, residual) from the tail (or full history) --
     # No transactions, no trace: put reserves recorded sends, try_get serves
     # recorded recvs. Determinism of local steps reproduces the exact boundary.
     while ch.replaying() and not isinstance(residual, EmptyStmt):
-        residual, progressed = _step(
-            residual, env, ch, ns, llm_backend, human_backend, None, None, {}, None)
+        out, progressed = step(residual, None)
+        if isinstance(out, PendingExternal):
+            break            # unreached during replay: committed acts consume, not pend
         if not progressed:
             break  # blocked on live input at the replay boundary
+        residual = out
 
     # ---- live: one transaction per progressing step ------------------------
     while not isinstance(residual, EmptyStmt):
@@ -87,11 +100,26 @@ def run_role(conn, role: str, local_stmt, env: dict, ns: dict, *,
         # the write lock. Taking the write lock up front serializes cleanly, the
         # same pattern seed_env uses.
         conn.execute("BEGIN IMMEDIATE")
-        new_residual, progressed = _step(
-            residual, env, ch, ns, llm_backend, human_backend, None, trace, {}, None)
+        out, progressed = step(residual, trace)
+        if isinstance(out, PendingExternal):
+            conn.execute("ROLLBACK")                 # release the write lock first
+            outs = out.node.outputs
+            out_map = external_out_map(out.node.action, out.inputs, outs,
+                                       llm_backend, human_backend)   # OUTSIDE any txn
+            loc = jctx.act_paths[id(out.node)]
+            conn.execute("BEGIN IMMEDIATE")
+            ch.record_act({"status": "done", "locator": loc,
+                           "action": out.node.action.name,
+                           "input_hash": _input_hash(out.inputs), "outputs": out_map})
+            conn.execute("COMMIT")
+            # pass 2 (no txn): consume the just-committed act row, apply env, advance
+            residual, _ = step(residual, trace)
+            if id(residual) in loop_paths:
+                _maybe_snapshot(conn, role, env, loop_paths[id(residual)], ch)
+            continue
         if progressed:
             ch.commit_txn()
-            residual = new_residual
+            residual = out
             # At a loop-iteration boundary the residual is (by identity) a loop
             # node in the projected program; checkpoint env + position there.
             if id(residual) in loop_paths:
