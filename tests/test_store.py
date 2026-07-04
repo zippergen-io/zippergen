@@ -1,5 +1,6 @@
 import sqlite3
-from zippergen.store import open_store, chan_key
+import pytest
+from zippergen.store import open_store, chan_key, ReplayMismatch
 
 def test_open_store_creates_tables(tmp_path):
     conn = open_store(str(tmp_path / "s.sqlite"))
@@ -155,3 +156,26 @@ def test_since_floor_filters_inbound_tail(tmp_path):
     item = b2.try_get("A", "B", "main")     # replays r2
     assert item[0] == r2
     assert b2.replaying() is False
+
+
+# ---------------------------------------------------------------------------
+# ReplayMismatch (Task 1)
+# ---------------------------------------------------------------------------
+def test_reserved_send_payload_mismatch_raises(tmp_path):
+    conn = open_store(str(tmp_path / "s.sqlite"))
+    a = DurableChannel(conn, "A")
+    conn.execute("BEGIN"); a.put("A", "B", "main", (1,)); a.commit_txn()
+    # Restart A: the recorded send (1,) is reserved on replay.
+    a2 = DurableChannel(conn, "A")
+    assert a2.replaying() is True
+    with pytest.raises(ReplayMismatch):
+        a2.put("A", "B", "main", (2,))          # diverged payload
+
+
+def test_reserved_send_match_ok(tmp_path):
+    conn = open_store(str(tmp_path / "s.sqlite"))
+    a = DurableChannel(conn, "A")
+    conn.execute("BEGIN"); a.put("A", "B", "main", (1,)); a.commit_txn()
+    a2 = DurableChannel(conn, "A")
+    assert a2.put("A", "B", "main", (1,))        # matches -> reserved, no raise
+    assert a2.replaying() is False

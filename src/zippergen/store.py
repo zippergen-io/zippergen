@@ -10,6 +10,12 @@ import threading
 import time
 from collections import deque
 
+
+class ReplayMismatch(Exception):
+    """A step re-executing during replay diverged from the committed log
+    (different payload/locator/kind). Raised loudly rather than corrupting state."""
+
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS events (
   rowid        INTEGER PRIMARY KEY,
@@ -182,7 +188,17 @@ class DurableChannel:
             vc: dict | None = None, view: dict | None = None,
             field_view: dict | None = None) -> int:
         if self._replay_outbox:
-            rowid, _r, _c = self._replay_outbox.popleft()
+            rowid, exp_receiver, exp_channel = self._replay_outbox.popleft()
+            if receiver != exp_receiver or channel != exp_channel:
+                raise ReplayMismatch(
+                    f"send target diverged: replay expected {exp_receiver}/{exp_channel}, "
+                    f"got {receiver}/{channel}")
+            recorded = self.conn.execute(
+                "SELECT payload FROM events WHERE rowid=?", (rowid,)).fetchone()[0]
+            if json.loads(recorded) != list(values):
+                raise ReplayMismatch(
+                    f"send payload diverged at rowid {rowid}: "
+                    f"recorded {recorded!r}, recomputed {list(values)!r}")
             return rowid
         cur = self.conn.execute(
             "INSERT INTO events(sender,receiver,channel,kind,payload,causal_stamp) "
