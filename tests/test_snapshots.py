@@ -126,3 +126,25 @@ def test_stale_snapshot_falls_back_to_full_replay(tmp_path):
     la = project(counter_loop, A)
     env_a = run_role(open_store(path), "A", la, {"n": 0, "limit": 3}, counter_loop.ns)
     assert env_a["n"] == 3   # seed replay wins, not the bogus env n=999
+
+
+# ---------------------------------------------------------------------------
+# Task 4: Journal floor coherence validation
+# ---------------------------------------------------------------------------
+from zippergen.serve import _floor_coherent
+from zippergen.store import open_store as _open
+
+
+def test_floor_without_journal_key_is_incoherent(tmp_path):
+    conn = _open(str(tmp_path / "s.sqlite"))
+    assert _floor_coherent(conn, "A", {"out": 0, "cursors": {}}) is False   # missing journal
+
+
+def test_floor_journal_past_log_is_incoherent(tmp_path):
+    conn = _open(str(tmp_path / "s.sqlite"))
+    assert _floor_coherent(conn, "A", {"out": 0, "cursors": {}, "journal": 5}) is False
+
+
+def test_floor_with_valid_journal_is_coherent(tmp_path):
+    conn = _open(str(tmp_path / "s.sqlite"))
+    assert _floor_coherent(conn, "A", {"out": 0, "cursors": {}, "journal": 0}) is True

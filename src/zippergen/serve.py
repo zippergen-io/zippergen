@@ -12,9 +12,11 @@ from zippergen.locator import loop_node_paths, resolve_path
 
 
 def _floor_coherent(conn, role: str, floor: dict) -> bool:
-    """A floor is coherent only if it does not point past the committed log."""
+    """A floor is coherent only if it carries all three keys and none points past
+    the committed log. A floor lacking "journal" predates journaling -> incoherent
+    (forces full replay from seed)."""
     try:
-        out = floor["out"]; cursors = floor["cursors"]
+        out = floor["out"]; cursors = floor["cursors"]; journal = floor["journal"]
     except (KeyError, TypeError):
         return False
     max_out = conn.execute(
@@ -22,6 +24,12 @@ def _floor_coherent(conn, role: str, floor: dict) -> bool:
         (role,),
     ).fetchone()[0] or 0
     if out > max_out:
+        return False
+    max_journal = conn.execute(
+        "SELECT MAX(rowid) FROM events WHERE sender=? AND kind IN ('act','decision')",
+        (role,),
+    ).fetchone()[0] or 0
+    if journal > max_journal:
         return False
     durable = {ck: c for ck, c in conn.execute(
         "SELECT chan_key, consumed FROM cursors WHERE role=?", (role,)).fetchall()}
