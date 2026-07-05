@@ -120,7 +120,7 @@ def planner(
 
     The decorated function's body must be ``...``.  Its parameter annotations
     declare the inputs passed to the LLM planner.  The return annotation
-    must be ``str``.
+    declares the generated workflow's result type.
 
     At runtime the action builds a full hidden system prompt from ``description``,
     an auto-generated worker summary, optional ``instructions``, DSL rules, and
@@ -132,7 +132,8 @@ def planner(
     description : str
         One sentence describing the planner's task domain.
     actions : list
-        Pre-defined action vocabulary (``LLMAction`` / ``PureAction`` nodes).
+        Pre-defined action vocabulary (``LLMAction`` / ``PureAction`` /
+        ``HumanAction`` / ``PlannerAction`` nodes).
         The LLM may use these directly.  Pass ``[]`` to start from scratch.
     lifelines : list
         Workers available to the generated workflow.  Each entry may be a
@@ -165,11 +166,12 @@ def planner(
     def decorator(fn: Callable) -> PlannerAction:
         inputs = _extract_inputs(fn)
         ret = fn.__annotations__.get("return")
-        if ret is not str:
+        if ret is None or not is_ztype(ret):
             raise TypeError(
-                f"@planner '{fn.__name__}': return annotation must be str."
+                f"@planner '{fn.__name__}': return annotation must be a supported "
+                f"coordination type (str, bool, int, float, or tuple)."
             )
-        outputs = ((fn.__name__, str),)
+        outputs = ((fn.__name__, ret),)
         _allow = tuple(allow) if allow else ()
         _valid = {"pure", "llm", "if", "while"}
         for kind in _allow:

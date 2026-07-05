@@ -263,20 +263,20 @@ class PureAction:
 
 @dataclass(frozen=True)
 class PlannerAction:
-    """IR node for an LLM-generated sub-workflow action.
+    """IR node for an LLM-generated workflow action.
 
     The runtime generates a ZipperGen workflow spec via LLM (using
     ``system_prompt`` and the declared ``actions``/``lifelines`` vocabulary),
-    writes it to a temp file, imports it, and runs it.  The single ``str``
-    output is the result returned by the generated workflow.
+    writes it to a temp file, imports it, and runs it.  The single output has
+    the return type declared on the planner function.
     """
     name: str
-    inputs: tuple[tuple[str, ZType], ...]   # always includes "request" and "inputs_json"
-    outputs: tuple[tuple[str, ZType], ...]  # always single (name, str)
+    inputs: tuple[tuple[str, ZType], ...]   # declared planner input pairs
+    outputs: tuple[tuple[str, ZType], ...]  # always single (name, return type)
     system_prompt: str
-    actions: tuple        # tuple of LLMAction | PureAction  (base vocabulary)
+    actions: tuple        # tuple of LLMAction | PureAction | PlannerAction | HumanAction
     lifelines: tuple      # tuple of Lifeline used in inner workflows
-    allow: tuple[str, ...] = ()          # action kinds the LLM may define: "pure", "llm"
+    allow: tuple[str, ...] = ()          # enabled extensions: "pure", "llm", "if", "while"
     instructions: str | None = None      # optional user guidance on worker roles
     max_retries: int = 3                 # max correction attempts on invalid generated spec
 

@@ -20,7 +20,7 @@ from __future__ import annotations
 import threading
 
 from zippergen.syntax import (
-    LLMAction, PureAction, PlannerAction,
+    LLMAction, PureAction, PlannerAction, HumanAction,
 )
 
 __all__ = ["_exec_planner", "_validate_planner_spec"]
@@ -34,7 +34,7 @@ _PLANNER_DSL_RULES = """\
 Syntax
 ------
 - Name the function exactly `generated_workflow`.
-- Signature: `def generated_workflow({input_sig}) -> str:`
+- Signature: `def generated_workflow({input_sig}) -> {output_type}:`
   Annotate each parameter with the lifeline that holds it at workflow start:
   `name: type @ Lifeline`. Inputs may be distributed across different lifelines.
 - Action call: `Lifeline: var = action(arg1, arg2)` (single output)
@@ -231,35 +231,222 @@ Example — iterate draft/critique until done or 3 rounds:
 # Spec helpers
 # ---------------------------------------------------------------------------
 
-def _extract_intermediate_var_names(spec: str) -> set[str]:
-    """Return variable names that need Var declarations in the generated preamble.
+_TYPE_MAP: dict[str, type] = {"str": str, "int": int, "bool": bool, "float": float, "tuple": tuple}
 
-    Collects output names from action calls (`Lifeline: var = f(...)`) and
-    receive-side bindings of sends (`A(x) >> B(result)` → `result`).
+
+def _type_from_annotation(node) -> type | None:
+    """Return the built-in coordination type named by an annotation AST node."""
+    import ast as _ast
+
+    if isinstance(node, _ast.BinOp) and isinstance(node.op, _ast.MatMult):
+        node = node.left
+    if isinstance(node, _ast.Name):
+        return _TYPE_MAP.get(node.id)
+    return None
+
+
+def _action_outputs(action) -> tuple[tuple[str, type], ...]:
+    if isinstance(action, HumanAction):
+        return ((action.output, action.output_type),)
+    return action.outputs
+
+
+def _literal_type(node) -> type | None:
+    import ast as _ast
+
+    if isinstance(node, _ast.Constant):
+        value = node.value
+        if isinstance(value, bool):
+            return bool
+        if isinstance(value, int):
+            return int
+        if isinstance(value, float):
+            return float
+        if isinstance(value, str):
+            return str
+    if (
+        isinstance(node, _ast.UnaryOp)
+        and isinstance(node.op, (_ast.USub, _ast.UAdd))
+        and isinstance(node.operand, _ast.Constant)
+        and isinstance(node.operand.value, (int, float))
+        and not isinstance(node.operand.value, bool)
+    ):
+        return type(node.operand.value)
+    return None
+
+
+def _parse_output_types(node) -> tuple[type, ...] | None:
+    """Parse an @llm outputs=[("name", type), ...] AST value."""
+    import ast as _ast
+
+    if not isinstance(node, (_ast.List, _ast.Tuple)):
+        return None
+    types: list[type] = []
+    for item in node.elts:
+        if not isinstance(item, _ast.Tuple) or len(item.elts) != 2:
+            return None
+        typ = _type_from_annotation(item.elts[1])
+        if typ is None:
+            return None
+        types.append(typ)
+    return tuple(types)
+
+
+def _defined_action_output_types(tree) -> dict[str, tuple[type, ...]]:
+    """Read output types of @pure/@llm actions defined in a generated spec."""
+    import ast as _ast
+
+    outputs: dict[str, tuple[type, ...]] = {}
+    for fn_node in _ast.walk(tree):
+        if not isinstance(fn_node, _ast.FunctionDef) or fn_node.name == "generated_workflow":
+            continue
+        for deco in fn_node.decorator_list:
+            if isinstance(deco, _ast.Name) and deco.id == "pure":
+                ret = _type_from_annotation(fn_node.returns)
+                if ret is not None:
+                    outputs[fn_node.name] = (ret,)
+            elif isinstance(deco, _ast.Call) and isinstance(deco.func, _ast.Name):
+                if deco.func.id == "pure":
+                    ret = _type_from_annotation(fn_node.returns)
+                    if ret is not None:
+                        outputs[fn_node.name] = (ret,)
+                elif deco.func.id == "llm":
+                    for kw in deco.keywords:
+                        if kw.arg == "outputs":
+                            parsed = _parse_output_types(kw.value)
+                            if parsed is not None:
+                                outputs[fn_node.name] = parsed
+                            break
+    return outputs
+
+
+def _extract_intermediate_var_types(
+    spec: str,
+    caller: str,
+    expected_input_types: dict[str, type],
+    known_action_outputs: dict[str, tuple[type, ...]],
+) -> dict[str, type]:
+    """Infer Var declarations needed by a generated workflow preamble.
+
+    The builder can infer variables produced directly by action calls, but the
+    temporary module also needs names that occur only as receive-side bindings
+    in messages.  We infer both action outputs and message bindings here so
+    that predeclared variables have the same type as the action or payload that
+    creates them.
     """
     import ast as _ast
-    var_names: set[str] = set()
+
     try:
         tree = _ast.parse(spec)
     except SyntaxError:
-        return var_names
-    for fn_node in _ast.walk(tree):
-        if not (isinstance(fn_node, _ast.FunctionDef) and fn_node.name == "generated_workflow"):
-            continue
-        for node in _ast.walk(fn_node):
-            if isinstance(node, _ast.AnnAssign):
-                ann = node.annotation
-                if isinstance(ann, _ast.Tuple):
-                    var_names.update(e.id for e in ann.elts if isinstance(e, _ast.Name))
-                elif isinstance(ann, _ast.Name):
-                    var_names.add(ann.id)
-            elif (isinstance(node, _ast.Expr)
-                  and isinstance(node.value, _ast.BinOp)
-                  and isinstance(node.value.op, _ast.RShift)):
-                rhs = node.value.right
-                if isinstance(rhs, _ast.Call):
-                    var_names.update(a.id for a in rhs.args if isinstance(a, _ast.Name))
-    return var_names
+        return {}
+
+    fn_node = next(
+        (n for n in _ast.walk(tree)
+         if isinstance(n, _ast.FunctionDef) and n.name == "generated_workflow"),
+        None,
+    )
+    if fn_node is None:
+        return {}
+
+    action_outputs = dict(known_action_outputs)
+    action_outputs.update(_defined_action_output_types(tree))
+
+    var_types: dict[str, type] = {}
+    scope: dict[str, dict[str, type]] = {}
+
+    def remember(name: str, typ: type | None) -> None:
+        if typ is None:
+            return
+        existing = var_types.get(name)
+        if existing is None or existing is typ:
+            var_types[name] = typ
+
+    def bind(sc: dict[str, dict[str, type]], lifeline: str, name: str, typ: type | None) -> None:
+        if typ is None:
+            return
+        sc.setdefault(lifeline, {})[name] = typ
+        remember(name, typ)
+
+    def expr_type(expr, lifeline: str, sc: dict[str, dict[str, type]]) -> type | None:
+        if isinstance(expr, _ast.Name):
+            return sc.get(lifeline, {}).get(expr.id, var_types.get(expr.id))
+        return _literal_type(expr)
+
+    for arg in fn_node.args.args:
+        owner = caller
+        ann = arg.annotation
+        if isinstance(ann, _ast.BinOp) and isinstance(ann.op, _ast.MatMult):
+            if isinstance(ann.right, _ast.Name):
+                owner = ann.right.id
+        typ = expected_input_types.get(arg.arg) or _type_from_annotation(ann)
+        if typ is not None:
+            scope.setdefault(owner, {})[arg.arg] = typ
+
+    def output_names(annotation) -> list[str]:
+        if isinstance(annotation, _ast.Tuple):
+            return [elt.id for elt in annotation.elts if isinstance(elt, _ast.Name)]
+        if isinstance(annotation, _ast.Name):
+            return [annotation.id]
+        return []
+
+    def copy_scope(sc: dict[str, dict[str, type]]) -> dict[str, dict[str, type]]:
+        return {lifeline: dict(names) for lifeline, names in sc.items()}
+
+    def merge_common(
+        left: dict[str, dict[str, type]],
+        right: dict[str, dict[str, type]],
+    ) -> dict[str, dict[str, type]]:
+        merged: dict[str, dict[str, type]] = {}
+        for lifeline in set(left) & set(right):
+            for name in set(left[lifeline]) & set(right[lifeline]):
+                if left[lifeline][name] is right[lifeline][name]:
+                    merged.setdefault(lifeline, {})[name] = left[lifeline][name]
+        return merged
+
+    def walk(stmts: list, sc: dict[str, dict[str, type]]) -> None:
+        for stmt in stmts:
+            if isinstance(stmt, _ast.AnnAssign) and isinstance(stmt.target, _ast.Name):
+                lifeline = stmt.target.id
+                if isinstance(stmt.value, _ast.Call) and isinstance(stmt.value.func, _ast.Name):
+                    types = action_outputs.get(stmt.value.func.id, ())
+                    for name, typ in zip(output_names(stmt.annotation), types):
+                        bind(sc, lifeline, name, typ)
+
+            elif (
+                isinstance(stmt, _ast.Expr)
+                and isinstance(stmt.value, _ast.BinOp)
+                and isinstance(stmt.value.op, _ast.RShift)
+                and isinstance(stmt.value.left, _ast.Call)
+                and isinstance(stmt.value.right, _ast.Call)
+                and isinstance(stmt.value.left.func, _ast.Name)
+                and isinstance(stmt.value.right.func, _ast.Name)
+            ):
+                sender = stmt.value.left.func.id
+                receiver = stmt.value.right.func.id
+                for payload, binding in zip(stmt.value.left.args, stmt.value.right.args):
+                    if isinstance(binding, _ast.Name):
+                        typ = expr_type(payload, sender, sc)
+                        bind(sc, receiver, binding.id, typ)
+
+            elif isinstance(stmt, _ast.If):
+                true_scope = copy_scope(sc)
+                false_scope = copy_scope(sc)
+                walk(stmt.body, true_scope)
+                walk(stmt.orelse, false_scope)
+                sc.clear()
+                sc.update(merge_common(true_scope, false_scope))
+
+            elif isinstance(stmt, _ast.While):
+                body_scope = copy_scope(sc)
+                exit_scope = copy_scope(sc)
+                walk(stmt.body, body_scope)
+                walk(stmt.orelse, exit_scope)
+                sc.clear()
+                sc.update(exit_scope)
+
+    walk(fn_node.body, scope)
+    return var_types
 
 
 def _validate_planner_spec(
@@ -267,6 +454,7 @@ def _validate_planner_spec(
     caller: str,
     known_actions: dict[str, int] | None = None,
     expected_input_types: dict[str, type] | None = None,
+    expected_output_type: type | None = None,
 ) -> str | None:
     """Check structural invariants on a generated workflow spec.
 
@@ -320,19 +508,19 @@ def _validate_planner_spec(
     def check_signature() -> str | None:
         if not expected_input_types:
             return None
-        _TYPE_MAP = {"str": str, "int": int, "bool": bool, "float": float, "tuple": tuple}
         declared = {arg.arg for arg in fn_node.args.args}
         expected = set(expected_input_types)
         sig = ", ".join(f"{n}: {t.__name__} @ <Lifeline>" for n, t in expected_input_types.items())
+        ret = expected_output_type.__name__ if expected_output_type is not None else "str"
 
         missing = expected - declared
         if missing:
             return (f"Missing parameter(s): {', '.join(sorted(missing))}. "
-                    f"Signature must include: def generated_workflow({sig}) -> str:")
+                    f"Signature must include: def generated_workflow({sig}) -> {ret}:")
         extra = declared - expected
         if extra:
             return (f"Unexpected parameter(s): {', '.join(sorted(extra))}. "
-                    f"Signature must include: def generated_workflow({sig}) -> str:")
+                    f"Signature must include: def generated_workflow({sig}) -> {ret}:")
 
         for arg in fn_node.args.args:
             ann = arg.annotation
@@ -350,6 +538,19 @@ def _validate_planner_spec(
 
     # ---- 2. Return form ----
     def check_return_form() -> str | None:
+        if expected_output_type is not None:
+            actual_return_type = _type_from_annotation(fn_node.returns)
+            if actual_return_type is None:
+                return (
+                    f"`generated_workflow` must declare return type "
+                    f"`{expected_output_type.__name__}`."
+                )
+            if actual_return_type is not expected_output_type:
+                return (
+                    f"`generated_workflow` declares return type "
+                    f"`{actual_return_type.__name__}`, but the planner action "
+                    f"returns `{expected_output_type.__name__}`."
+                )
         last = stmts[-1]
         if not (isinstance(last, _ast.Return)
                 and isinstance(last.value, _ast.BinOp)
@@ -589,7 +790,7 @@ _planner_path: threading.local = threading.local()
 # Main planner executor
 # ---------------------------------------------------------------------------
 
-def _exec_planner(action: PlannerAction, named_inputs: dict, llm_backend, trace=None, parent_seq: int = 0) -> str:
+def _exec_planner(action: PlannerAction, named_inputs: dict, llm_backend, trace=None, parent_seq: int = 0) -> object:
     """Execute a PlannerAction: generate a workflow spec via LLM, then run it."""
     import ast as _ast
     import importlib.util as _ilu
@@ -601,9 +802,10 @@ def _exec_planner(action: PlannerAction, named_inputs: dict, llm_backend, trace=
     outer_lifeline_name = _threading.current_thread().name
 
     # --- 1. Build system prompt ---
+    _, output_type = action.outputs[0]
     action_lines = [
         f"{a.name}({', '.join(f'{n}: {t.__name__}' for n, t in a.inputs)}) "
-        f"-> {', '.join(f'{n}: {t.__name__}' for n, t in a.outputs)}"
+        f"-> {', '.join(f'{n}: {t.__name__}' for n, t in _action_outputs(a))}"
         for a in action.actions
     ]
     worker_names = [ll.name for ll in action.lifelines]
@@ -629,7 +831,10 @@ def _exec_planner(action: PlannerAction, named_inputs: dict, llm_backend, trace=
         action.system_prompt,
         (f"You have {len(worker_names)} worker{'s' if len(worker_names) != 1 else ''} "
          f"available: {', '.join(worker_names)}."),
-        "DSL rules:\n" + _PLANNER_DSL_RULES.format(input_sig=input_sig),
+        "DSL rules:\n" + _PLANNER_DSL_RULES.format(
+            input_sig=input_sig,
+            output_type=output_type.__name__,
+        ),
     ]
     if control_flow_sections:
         system_parts.append(
@@ -692,11 +897,21 @@ def _exec_planner(action: PlannerAction, named_inputs: dict, llm_backend, trace=
         )
 
     # --- 4. Validate; re-prompt on failure ---
-    known_actions = {a.name: len(a.outputs) for a in action.actions
-                     if isinstance(a, (LLMAction, PureAction, PlannerAction))}
+    known_action_outputs = {
+        a.name: tuple(t for _, t in _action_outputs(a))
+        for a in action.actions
+        if isinstance(a, (LLMAction, PureAction, PlannerAction, HumanAction))
+    }
+    known_actions = {name: len(outputs) for name, outputs in known_action_outputs.items()}
     attempts_used = 1
     for attempt in range(action.max_retries):
-        error = _validate_planner_spec(spec, outer_lifeline_name, known_actions, input_types)
+        error = _validate_planner_spec(
+            spec,
+            outer_lifeline_name,
+            known_actions,
+            input_types,
+            output_type,
+        )
         if error is None:
             attempts_used = attempt + 1
             break
@@ -728,7 +943,13 @@ Current (broken) workflow:
         )
         spec = _strip_fences(str(spec_result.get("workflow_spec", "")))
     else:
-        error = _validate_planner_spec(spec, outer_lifeline_name, known_actions, input_types)
+        error = _validate_planner_spec(
+            spec,
+            outer_lifeline_name,
+            known_actions,
+            input_types,
+            output_type,
+        )
         if error:
             raise RuntimeError(
                 f"Planner failed after {action.max_retries} attempts.\n"
@@ -739,7 +960,12 @@ Current (broken) workflow:
     print(f"\n{'='*60}\nGENERATED WORKFLOW  ({attempt_str})\n{'='*60}\n{spec}\n{'='*60}\n")
 
     # --- 5. Build preamble, write temp file, import ---
-    intermediate_vars = _extract_intermediate_var_names(spec)
+    intermediate_vars = _extract_intermediate_var_types(
+        spec,
+        outer_lifeline_name,
+        input_types,
+        known_action_outputs,
+    )
     preamble_lines = [
         "from zippergen.syntax import Lifeline, Var",
         "from zippergen.builder import workflow",
@@ -748,7 +974,10 @@ Current (broken) workflow:
         f'{outer_lifeline_name} = Lifeline("{outer_lifeline_name}")',
     ] + [f'{ll.name} = Lifeline("{ll.name}")' for ll in action.lifelines] + [
         "",
-    ] + [f'{v} = Var("{v}", str)' for v in sorted(intermediate_vars)]
+    ] + [
+        f'{name} = Var("{name}", {typ.__name__})'
+        for name, typ in sorted(intermediate_vars.items())
+    ]
 
     full_source = "\n".join(preamble_lines) + "\n\n" + spec + "\n"
 
@@ -814,7 +1043,7 @@ Current (broken) workflow:
         wf._backend = _inner_backend
         wf._timeout = 180
         try:
-            result = str(wf._run_once(inputs_for_wf))
+            result = wf._run_once(inputs_for_wf)
         finally:
             _planner_path.path = parent_path
             if trace:

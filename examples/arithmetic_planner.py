@@ -28,7 +28,7 @@ Planner     = Lifeline("Planner")
 # ---------------------------------------------------------------------------
 
 expression = Var("expression", str)
-result     = Var("result",     str)
+result     = Var("result",     float)
 
 # ---------------------------------------------------------------------------
 # Calculator actions — pure arithmetic on floats
@@ -74,14 +74,14 @@ def is_zero(x: float) -> bool:
         "An arithmetic planner that evaluates an expression with maximum parallelism. "
         "It identifies independent subexpressions and evaluates them concurrently on "
         "separate Calculator lifelines, then combines the results. "
-        "If the expression is not defined (division by 0 somewhere), return 0 as result."
+        "If the expression is not defined (division by 0 somewhere), return 0.0 as result."
     ),
     actions=[add, subtract, multiply, divide, identity, is_zero],
     lifelines=["Calculator1", "Calculator2", "Calculator3"],
     allow=["if"],
     max_retries=8,
 )
-def evaluate(request: str) -> str: ...
+def evaluate(request: str) -> float: ...
 
 
 # ---------------------------------------------------------------------------
@@ -89,7 +89,7 @@ def evaluate(request: str) -> str: ...
 # ---------------------------------------------------------------------------
 
 @workflow
-def arithmetic_planner(expression: str @ User) -> str:
+def arithmetic_planner(expression: str @ User) -> float:
     User(expression) >> Planner(expression)
     Planner: result = evaluate(expression)
     Planner(result) >> User(result)
