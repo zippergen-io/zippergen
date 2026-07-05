@@ -275,6 +275,16 @@ def _literal_type(node) -> type | None:
     return None
 
 
+def _is_variable_or_literal(node) -> bool:
+    import ast as _ast
+
+    if isinstance(node, _ast.Name):
+        return True
+    if _literal_type(node) is not None:
+        return True
+    return False
+
+
 def _parse_output_types(node) -> tuple[type, ...] | None:
     """Parse an @llm outputs=[("name", type), ...] AST value."""
     import ast as _ast
@@ -455,6 +465,7 @@ def _validate_planner_spec(
     known_actions: dict[str, int] | None = None,
     expected_input_types: dict[str, type] | None = None,
     expected_output_type: type | None = None,
+    allowed_lifelines: set[str] | None = None,
 ) -> str | None:
     """Check structural invariants on a generated workflow spec.
 
@@ -503,6 +514,7 @@ def _validate_planner_spec(
 
     defined_names = set(_re.findall(r'^def\s+(\w+)', spec, _re.MULTILINE))
     all_action_names = set(known_actions or {}) | (defined_names - {"generated_workflow"})
+    allowed_lifelines = set(allowed_lifelines or ())
 
     # ---- 1. Signature ----
     def check_signature() -> str | None:
@@ -538,6 +550,14 @@ def _validate_planner_spec(
 
     # ---- 2. Return form ----
     def check_return_form() -> str | None:
+        returns = [node for node in _ast.walk(fn_node) if isinstance(node, _ast.Return)]
+        if len(returns) != 1:
+            return "Workflow must have exactly one return statement."
+
+        visible_body = [stmt for stmt in fn_node.body if not isinstance(stmt, _ast.Pass)]
+        if not visible_body or visible_body[-1] is not returns[0]:
+            return "The only return statement must be the final top-level statement."
+
         if expected_output_type is not None:
             actual_return_type = _type_from_annotation(fn_node.returns)
             if actual_return_type is None:
@@ -555,6 +575,7 @@ def _validate_planner_spec(
         if not (isinstance(last, _ast.Return)
                 and isinstance(last.value, _ast.BinOp)
                 and isinstance(last.value.op, _ast.MatMult)
+                and isinstance(last.value.left, _ast.Name)
                 and isinstance(last.value.right, _ast.Name)):
             return "Last statement must be `return var @ Lifeline`."
         return None
@@ -586,7 +607,58 @@ def _validate_planner_spec(
                             f"Rename it — e.g. `{name}_result`.")
         return None
 
-    # ---- 5. Output counts ----
+    # ---- 5. Lifelines ----
+    def check_lifelines() -> str | None:
+        if not allowed_lifelines:
+            return None
+        used: set[str] = set()
+
+        def add_owner(annotation) -> None:
+            if (
+                isinstance(annotation, _ast.BinOp)
+                and isinstance(annotation.op, _ast.MatMult)
+                and isinstance(annotation.right, _ast.Name)
+            ):
+                used.add(annotation.right.id)
+
+        for arg in fn_node.args.args:
+            add_owner(arg.annotation)
+
+        for node in _ast.walk(fn_node):
+            if isinstance(node, _ast.AnnAssign) and isinstance(node.target, _ast.Name):
+                used.add(node.target.id)
+            elif (
+                isinstance(node, _ast.Expr)
+                and isinstance(node.value, _ast.BinOp)
+                and isinstance(node.value.op, _ast.RShift)
+            ):
+                for side in (node.value.left, node.value.right):
+                    if isinstance(side, _ast.Call) and isinstance(side.func, _ast.Name):
+                        used.add(side.func.id)
+            elif (
+                isinstance(node, (_ast.If, _ast.While))
+                and isinstance(node.test, _ast.BinOp)
+                and isinstance(node.test.op, _ast.MatMult)
+                and isinstance(node.test.right, _ast.Name)
+            ):
+                used.add(node.test.right.id)
+            elif (
+                isinstance(node, _ast.Return)
+                and isinstance(node.value, _ast.BinOp)
+                and isinstance(node.value.op, _ast.MatMult)
+                and isinstance(node.value.right, _ast.Name)
+            ):
+                used.add(node.value.right.id)
+
+        unknown = used - allowed_lifelines
+        if unknown:
+            return (
+                f"Unknown lifeline(s): {', '.join(sorted(unknown))}. "
+                f"Use only: {', '.join(sorted(allowed_lifelines))}."
+            )
+        return None
+
+    # ---- 6. Output counts ----
     def check_output_counts() -> str | None:
         if not known_actions:
             return None
@@ -612,7 +684,7 @@ def _validate_planner_spec(
                     f"Use: `{ll}: {lhs} = {fn_name}(...)`.")
         return None
 
-    # ---- 6. Sends ----
+    # ---- 7. Sends ----
     def check_sends() -> str | None:
         for node in _ast.walk(tree):
             if not (isinstance(node, _ast.Expr)
@@ -638,7 +710,7 @@ def _validate_planner_spec(
                         f"Both sides must list the same variables.")
         return None
 
-    # ---- 7. Assignments ----
+    # ---- 8. Assignments and action arguments ----
     def check_assignments() -> str | None:
         for node in _ast.walk(tree):
             if isinstance(node, _ast.AnnAssign) and node.value is not None:
@@ -647,6 +719,20 @@ def _validate_planner_spec(
                     ann = node.annotation.id if isinstance(node.annotation, _ast.Name) else "?"
                     return (f"`{tgt}: {ann} = <non-call>` — RHS must be a function call. "
                             f"To rename a variable use: `Sender({ann}) >> Other(new_name)`.")
+                for arg in node.value.args:
+                    if not _is_variable_or_literal(arg):
+                        ll = node.target.id if isinstance(node.target, _ast.Name) else "?"
+                        fn_name = (
+                            node.value.func.id
+                            if isinstance(node.value.func, _ast.Name)
+                            else "?"
+                        )
+                        return (
+                            f"`{ll}: ... = {fn_name}(...)` uses "
+                            f"`{_ast.unparse(arg)}` as an argument. "
+                            "Arguments must be variables or literals; compute nested "
+                            "action calls in a separate workflow step first."
+                        )
             elif isinstance(node, _ast.Assign) and isinstance(node.value, _ast.Call):
                 fn_name = node.value.func.id if isinstance(node.value.func, _ast.Name) else "?"
                 targets = ", ".join(t.id for t in node.targets if isinstance(t, _ast.Name))
@@ -654,7 +740,25 @@ def _validate_planner_spec(
                         f"use `Lifeline: {targets} = {fn_name}(...)`.")
         return None
 
-    # ---- 8 + 9. Scope and return-variable scope ----
+    # ---- 9. Conditions ----
+    def check_conditions() -> str | None:
+        for node in _ast.walk(fn_node):
+            if not isinstance(node, (_ast.If, _ast.While)):
+                continue
+            test = node.test.left if (
+                isinstance(node.test, _ast.BinOp)
+                and isinstance(node.test.op, _ast.MatMult)
+            ) else node.test
+            call = next((n for n in _ast.walk(test) if isinstance(n, _ast.Call)), None)
+            if call is not None:
+                return (
+                    f"Condition `{_ast.unparse(test)}` contains a function call. "
+                    "Compute the condition with an action first, then branch on "
+                    "the resulting boolean variable."
+                )
+        return None
+
+    # ---- 10 + 11. Scope and return-variable scope ----
     def check_scope_and_return() -> str | None:
         # Seed each lifeline's scope from the signature annotations.
         scope: dict[str, set[str]] = {}
@@ -738,7 +842,7 @@ def _validate_planner_spec(
                         f"or forward `{ret_var}` to `{ret_ll}` before the return.")
         return None
 
-    # ---- 10. Inputs used ----
+    # ---- 12. Inputs used ----
     def check_inputs_used() -> str | None:
         used: set[str] = set()
         for node in _ast.walk(fn_node):
@@ -762,9 +866,11 @@ def _validate_planner_spec(
             or check_return_form()
             or check_actions_defined()
             or check_name_collisions()
+            or check_lifelines()
             or check_output_counts()
             or check_sends()
             or check_assignments()
+            or check_conditions()
             or check_scope_and_return()
             or check_inputs_used())
 
@@ -903,6 +1009,7 @@ def _exec_planner(action: PlannerAction, named_inputs: dict, llm_backend, trace=
         if isinstance(a, (LLMAction, PureAction, PlannerAction, HumanAction))
     }
     known_actions = {name: len(outputs) for name, outputs in known_action_outputs.items()}
+    allowed_lifelines = {outer_lifeline_name, *worker_names}
     attempts_used = 1
     for attempt in range(action.max_retries):
         error = _validate_planner_spec(
@@ -911,6 +1018,7 @@ def _exec_planner(action: PlannerAction, named_inputs: dict, llm_backend, trace=
             known_actions,
             input_types,
             output_type,
+            allowed_lifelines,
         )
         if error is None:
             attempts_used = attempt + 1
@@ -928,6 +1036,8 @@ Return the complete corrected output (all @llm/@pure definitions + @workflow).
 Key rules:
   - Each parameter annotated with its owner: `name: type @ Lifeline`
   - Last statement: `return var @ Lifeline` where var is in scope
+  - Use only these lifelines: {', '.join(sorted(allowed_lifelines))}
+  - Action arguments must be variables or literals, not nested action calls
 
 Current (broken) workflow:
 {spec}"""
@@ -949,6 +1059,7 @@ Current (broken) workflow:
             known_actions,
             input_types,
             output_type,
+            allowed_lifelines,
         )
         if error:
             raise RuntimeError(

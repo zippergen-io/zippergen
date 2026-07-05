@@ -48,4 +48,5 @@ examples/medium_program.py
 
 # Local scratch / non-project tooling
 .superpowers/
+experiments/
 uv.lock

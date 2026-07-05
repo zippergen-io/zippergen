@@ -294,3 +294,87 @@ def generated_workflow(text: str @ Planner) -> str:
     result = _validate_planner_spec(spec, CALLER, KNOWN)
     assert result is not None
     assert "no-op" in result or "same variable" in result or "overlap" in result.lower()
+
+
+def test_unknown_lifeline_rejected_when_allowed_set_given():
+    spec = """\
+@workflow
+def generated_workflow(text: str @ Planner) -> str:
+    Planner(text) >> Worker1(text)
+    Worker1: draft = write(text)
+    Worker1(draft) >> Worker9(draft)
+    return draft @ Worker9
+"""
+    result = _validate_planner_spec(
+        spec,
+        CALLER,
+        KNOWN,
+        {"text": str},
+        str,
+        {"Planner", "Worker1", "Worker2"},
+    )
+    assert result is not None
+    assert "Unknown lifeline" in result
+    assert "Worker9" in result
+
+
+def test_nested_action_argument_rejected():
+    spec = """\
+@workflow
+def generated_workflow(text: str @ Planner) -> str:
+    Planner(text) >> Worker1(text)
+    Worker1: draft = refine(write(text))
+    Worker1(draft) >> Planner(draft)
+    return draft @ Planner
+"""
+    result = _validate_planner_spec(spec, CALLER, {"write": 1, "refine": 1})
+    assert result is not None
+    assert "nested action calls" in result
+
+
+def test_condition_call_rejected():
+    spec = """\
+@workflow
+def generated_workflow(text: str @ Planner) -> str:
+    Planner(text) >> Worker1(text)
+    Worker1: draft = write(text)
+    if critique(draft) @ Worker1:
+        Worker1(draft) >> Planner(result)
+    else:
+        Worker1(draft) >> Planner(result)
+    return result @ Planner
+"""
+    result = _validate_planner_spec(spec, CALLER, {"write": 1, "critique": 1})
+    assert result is not None
+    assert "Condition" in result
+    assert "function call" in result
+
+
+def test_branch_return_rejected():
+    spec = """\
+@workflow
+def generated_workflow(text: str @ Planner) -> str:
+    Planner(text) >> Worker1(text)
+    Worker1: draft = write(text)
+    if draft @ Worker1:
+        return draft @ Worker1
+    else:
+        Worker1(draft) >> Planner(draft)
+    return draft @ Planner
+"""
+    result = _validate_planner_spec(spec, CALLER, KNOWN)
+    assert result is not None
+    assert "exactly one return" in result
+
+
+def test_literal_return_rejected():
+    spec = """\
+@workflow
+def generated_workflow(text: str @ Planner) -> float:
+    Planner(text) >> Worker1(text)
+    Worker1: draft = write(text)
+    return 0.0 @ Planner
+"""
+    result = _validate_planner_spec(spec, CALLER, KNOWN, {"text": str}, float)
+    assert result is not None
+    assert "return var @ Lifeline" in result
