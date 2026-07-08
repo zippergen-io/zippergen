@@ -20,7 +20,7 @@ from __future__ import annotations
 import threading
 
 from zippergen.syntax import (
-    LLMAction, PureAction, PlannerAction, HumanAction,
+    LLMAction, PureAction, EffectAction, PlannerAction, HumanAction,
 )
 
 __all__ = ["_exec_planner", "_validate_planner_spec"]
@@ -1006,7 +1006,7 @@ def _exec_planner(action: PlannerAction, named_inputs: dict, llm_backend, trace=
     known_action_outputs = {
         a.name: tuple(t for _, t in _action_outputs(a))
         for a in action.actions
-        if isinstance(a, (LLMAction, PureAction, PlannerAction, HumanAction))
+        if isinstance(a, (LLMAction, PureAction, EffectAction, PlannerAction, HumanAction))
     }
     known_actions = {name: len(outputs) for name, outputs in known_action_outputs.items()}
     allowed_lifelines = {outer_lifeline_name, *worker_names}

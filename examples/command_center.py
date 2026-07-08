@@ -17,7 +17,7 @@ drafts and Chat replies; User is the human-in-the-loop for both streams.
 Modes
 -----
 --mock    Fake inbox + chat messages, mock LLM responses.
---openai  Live services + OpenAI (reads OPENAI_API_KEY and OPENAI_MODEL).
+--openai  Live services + OpenAI GPT-4o (reads OPENAI_API_KEY).
 --live    Live services + local Ollama model.  One-time setup per service:
            python examples/gmail_client.py --setup
            python examples/google_calendar_client.py --setup
@@ -25,7 +25,7 @@ Modes
 default   Fake services + local Ollama model.
 """
 
-from zippergen import Lifeline, Var, branch, fragment, llm, parallel, pure, workflow
+from zippergen import Lifeline, Var, branch, effect, fragment, llm, parallel, pure, workflow
 from zippergen.actions import human
 from zippergen.backends import make_openai_backend
 
@@ -144,7 +144,7 @@ def mail_present() -> bool:
     return bool(INBOX)
 
 
-@pure
+@effect
 def pop_pending_email() -> str:
     if _gmail is not None:
         meta = _gmail.fetch_one()  # type: ignore[union-attr]
@@ -161,7 +161,7 @@ def normalize_route(s: str) -> str:
     return s.strip().lower().split()[0].rstrip(".,;:")
 
 
-@pure
+@effect
 def mark_as_spam(email: str) -> str:
     print(f"[Mailbox] Marked as spam: {email[:60]}…")
     if _gmail is not None and email in _email_meta:
@@ -169,7 +169,7 @@ def mark_as_spam(email: str) -> str:
     return "spam"
 
 
-@pure
+@effect
 def create_draft(email: str, reply: str) -> str:
     print(f"[Mailbox] Draft: {reply[:80]}…")
     if _gmail is not None and email in _email_meta:
@@ -181,7 +181,7 @@ def create_draft(email: str, reply: str) -> str:
     return "draft_created"
 
 
-@pure(visible=False)
+@effect(visible=False)
 def wait_briefly() -> str:
     import time
     time.sleep(2)
@@ -197,7 +197,7 @@ def email_stream_done() -> str:
 # Infrastructure — Calendar
 # ---------------------------------------------------------------------------
 
-@pure
+@effect
 def find_matching_events(cancel_query: str) -> str:
     if _gcal is not None:
         events = _gcal.find_events(cancel_query)  # type: ignore[union-attr]
@@ -212,7 +212,7 @@ def find_matching_events(cancel_query: str) -> str:
     return text
 
 
-@pure
+@effect
 def do_delete_event(cancel_matches: str) -> str:
     if _gcal is not None and cancel_matches in _cancel_meta:
         _gcal.delete_event(_cancel_meta[cancel_matches])  # type: ignore[union-attr]
@@ -231,7 +231,7 @@ def decline_creation() -> str:
     return "Got it — no event was created."
 
 
-@pure
+@effect
 def create_draft_from_instruction(chat_msg: str, reply: str) -> str:
     import re
     if not reply.strip():
@@ -263,7 +263,7 @@ def chat_present() -> bool:
     return bool(CHAT_MESSAGES)
 
 
-@pure
+@effect
 def pop_pending_chat() -> str:
     if _gchat is not None:
         meta = _gchat.fetch_one_message()  # type: ignore[union-attr]
@@ -275,7 +275,7 @@ def pop_pending_chat() -> str:
     return CHAT_MESSAGES.pop(0)
 
 
-@pure
+@effect
 def send_chat_reply(chat_msg: str, reply: str) -> str:
     print(f"[Telegram] Reply: {reply[:80]}…")
     if _gchat is not None and chat_msg in _chat_meta:
@@ -285,7 +285,7 @@ def send_chat_reply(chat_msg: str, reply: str) -> str:
 
 
 
-@pure
+@effect
 def check_requested_slot(email: str) -> str:
     if _gcal is not None:
         return _gcal.check_slot(email)
@@ -293,7 +293,7 @@ def check_requested_slot(email: str) -> str:
     return "Monday 10:00 is free."
 
 
-@pure
+@effect
 def propose_available_slots(email: str) -> str:
     if _gcal is not None:
         return _gcal.list_free_slots()
@@ -318,7 +318,7 @@ def slot_from_confirm(availability: str, confirmed: bool) -> str:
     return availability if confirmed else "None of these — please suggest another time."
 
 
-@pure
+@effect
 def todays_date() -> str:
     from datetime import date
     return date.today().strftime("%A %d %B %Y")
@@ -371,7 +371,7 @@ def format_event_confirmation(event_details: str) -> str:
     return f"{title} — {start_fmt}" if start_fmt else title
 
 
-@pure
+@effect
 def create_scheduled_event(event_details: str) -> str:
     import json, re
     # Strip markdown code fences that LLMs sometimes add
@@ -430,8 +430,9 @@ def classify_email(email: str) -> None: ...
     system="""
 You are a scheduling assistant.
 Classify the scheduling request as exactly one of two labels:
-  check_slot    — the sender proposes a specific time and asks if it works
-  propose_slots — the sender asks for available times without proposing one
+  check_slot    — the sender proposes exactly one concrete time and asks if it works
+  propose_slots — the sender asks for available times, gives broad windows,
+                  or offers multiple alternative times/windows
 Reply with the single label and nothing else.
 """.strip(),
     user="{email}",
@@ -439,6 +440,32 @@ Reply with the single label and nothing else.
     outputs=(("sched_kind", str),),
 )
 def classify_scheduling_request(email: str) -> None: ...
+
+
+@llm(
+    system="""
+You prepare scheduling choices for a human approver.
+Given the sender's email and raw calendar context, return concise text for the
+human to edit into the slot or slots to offer.
+
+Rules:
+- Prefer the sender's proposed windows when present.
+- Do not treat raw "busy periods" as the chosen slot.
+- If the sender gave broad windows, preserve them as choices and ask for an
+  exact time only when needed.
+- Output only the proposed choice text, no greeting and no email reply.
+""".strip(),
+    user="""
+Email:
+{email}
+
+Calendar context:
+{availability}
+""".strip(),
+    parse="text",
+    outputs=(("availability", str),),
+)
+def prepare_slot_choices(email: str, availability: str) -> None: ...
 
 
 @llm(
@@ -458,6 +485,10 @@ def write_draft(email: str) -> None: ...
 You are a professional email assistant.
 Write a concise, polite scheduling reply confirming the chosen slot or
 proposing it to the sender. Keep it under three sentences.
+If the scheduling decision contains options or notes rather than one exact
+slot, ask the sender to choose or confirm among those options. Do not mention
+internal calendar diagnostics such as raw busy-period lists unless the human
+explicitly wrote them as part of the reply.
 """.strip(),
     user="""
 Email:
@@ -650,9 +681,9 @@ def confirm_slot(email: str, availability: str): pass
     kind="select",
     context="{email}",
     prefill="{availability}",
-    instruction="Choose a slot",
+    instruction="Choose or edit the slot to use",
     outputs=["choice: str"],
-    submit_label="Select →",
+    submit_label="Use slot →",
     cancel_label="Decline",
 )
 def choose_from_proposed_slots(email: str, availability: str): pass
@@ -763,11 +794,12 @@ def scheduling_branch(email):
     Calendar: sched_kind = normalize_route(sched_kind)
     if (sched_kind == "check_slot") @ Calendar:
         Calendar: availability = check_requested_slot(email)
+        Calendar: availability = prepare_slot_choices(email, availability)
         Calendar(email, availability) >> User(email, availability)
-        User: confirmed = confirm_slot(email, availability)
-        User: choice = slot_from_confirm(availability, confirmed)
+        User: choice = choose_from_proposed_slots(email, availability)
     else:
         Calendar: availability = propose_available_slots(email)
+        Calendar: availability = prepare_slot_choices(email, availability)
         Calendar(email, availability) >> User(email, availability)
         User: choice = choose_from_proposed_slots(email, availability)
     User(email, choice) >> Writer(email, choice)
@@ -975,7 +1007,7 @@ if __name__ == "__main__":
         api_key = os.environ.get("OPENAI_API_KEY", "")
         if not api_key:
             raise RuntimeError("OPENAI_API_KEY is not set.")
-        model = os.environ.get("OPENAI_MODEL", "gpt-4o")
+        model = "gpt-4o"
         print(f"Using OpenAI model: {model}")
         backend = make_openai_backend(api_key=api_key, model=model, max_tokens=1024)
         command_center.configure(backend=backend, ui=True, timeout=3600)

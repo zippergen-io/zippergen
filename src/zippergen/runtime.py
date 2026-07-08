@@ -21,7 +21,7 @@ from zippergen.syntax import (
     SeqStmt, IfStmt, WhileStmt, IfRecvStmt, WhileRecvStmt,
     ParallelStmt, ParallelLocalStmt,
     VarExpr, LitExpr, Var,
-    LLMAction, PureAction, PlannerAction, HumanAction,
+    LLMAction, PureAction, EffectAction, PlannerAction, HumanAction,
     Lifeline, Workflow, LocalStmt, AnyStmt,
     is_kappa_ctrl,
     _ordered_workflow_lifelines,
@@ -321,6 +321,8 @@ def _recv_trace_fields(monitor, message_vc: dict | None) -> dict[str, object]:
 def _action_kind(action: object) -> str:
     if isinstance(action, PureAction):
         return "pure"
+    if isinstance(action, EffectAction):
+        return "effect"
     if isinstance(action, PlannerAction):
         return "planner"
     if isinstance(action, HumanAction):
@@ -328,6 +330,10 @@ def _action_kind(action: object) -> str:
     if isinstance(action, LLMAction):
         return "llm"
     return "act"
+
+
+def _action_visible(action: object) -> bool:
+    return not isinstance(action, (PureAction, EffectAction, HumanAction)) or action.visible
 
 
 def _receive_any(
@@ -369,9 +375,19 @@ def _with_parallel_branch(trace, label: str):
     return wrapped
 
 
+def _python_action_out_map(action, values: tuple, outs) -> dict:
+    raw = action.fn(*values)
+    return {outs[0].name: raw} if len(outs) == 1 else {
+        var.name: val for var, val in zip(outs, cast(tuple, raw))
+    }
+
+
 def external_out_map(action, named_inputs, outs, llm_backend, human_backend) -> dict:
-    """Output env-delta for an external (LLM/Human/Planner) action — the same
+    """Output env-delta for an external (LLM/Human/Planner/Effect) action — the same
     computation _exec performs for these branches, factored for the durable driver."""
+    if isinstance(action, EffectAction):
+        values = tuple(named_inputs[name] for name, _ in action.inputs)
+        return _python_action_out_map(action, values, outs)
     if isinstance(action, PlannerAction):
         return {outs[0].name: _exec_planner(action, named_inputs, llm_backend, None, _next_act_seq())}
     if isinstance(action, HumanAction):
@@ -389,6 +405,48 @@ def _input_hash(named_inputs: dict) -> str | None:
         return hashlib.sha1(json.dumps(named_inputs, sort_keys=True).encode()).hexdigest()[:16]
     except (TypeError, ValueError):
         return None   # non-serializable inputs (incl. circular refs) -> skip hash (locator+kind still assert)
+
+
+def _condition_formula_repr(condition, formula_conditions: dict[int, _Formula]) -> str | None:
+    formula = formula_conditions.get(id(condition))
+    if formula is None and isinstance(condition, _Formula):
+        formula = condition
+    return repr(formula) if formula is not None else None
+
+
+def _eval_choice_condition(
+    condition,
+    env: Env,
+    ns: dict,
+    monitor,
+    formula_conditions: dict[int, _Formula],
+) -> tuple[bool, str | None]:
+    cached_formula = formula_conditions.get(id(condition))
+    if cached_formula is not None:
+        cond_formula = cached_formula
+        cond_value = None
+    elif isinstance(condition, _Formula):
+        cond_formula: _Formula | None = condition
+        cond_value = None
+    else:
+        raw = condition(_CondEnv(env, ns))
+        if isinstance(raw, _Formula):
+            cond_formula = raw
+            cond_value = None
+        else:
+            cond_formula = None
+            cond_value = raw
+    if cond_formula is not None and monitor is None:
+        raise RuntimeError(
+            f"CPL Formula guard {cond_formula!r} on lifeline '{threading.current_thread().name}' "
+            "but no monitor was built. Make the Formula guard discoverable before execution."
+        )
+    if monitor:
+        monitor.on_event("choice", env)
+    if cond_formula is not None:
+        assert monitor is not None
+        return monitor.guard_value(cond_formula), repr(cond_formula)
+    return bool(cond_value), None
 
 
 def _step(
@@ -436,9 +494,32 @@ def _step(
             locator = journal.act_paths[id(stmt)]
             in_vals = tuple(_eval(x, env) for x in ins)
             named_inputs = {name: val for (name, _), val in zip(action.inputs, in_vals)}
-            recorded = journal.channel.consume_journal("act", locator, _input_hash(named_inputs))
+            recorded = journal.channel.consume_journal("act", locator, _input_hash(named_inputs), strict=False)
             if recorded is not None:                 # replay: apply, no backend call
-                env.update(recorded["outputs"])
+                out_map = recorded["outputs"]
+                env.update(out_map)
+                if monitor:
+                    monitor.on_event("act", env)
+                if trace and _action_visible(action):
+                    act_seq = recorded.get("human_task") or _next_act_seq()
+                    trace({
+                        "type": "act_start",
+                        "lifeline": threading.current_thread().name,
+                        "action": action.name,
+                        "action_kind": _action_kind(action),
+                        "inputs": {k: _jsonify(v) for k, v in named_inputs.items()},
+                        "seq": act_seq,
+                    })
+                    trace({
+                        "type": "act",
+                        "lifeline": threading.current_thread().name,
+                        "action": action.name,
+                        "action_kind": _action_kind(action),
+                        "inputs": {k: _jsonify(v) for k, v in named_inputs.items()},
+                        "outputs": {k: _jsonify(v) for k, v in out_map.items()},
+                        "seq": act_seq,
+                        **_monitor_trace_fields(monitor),
+                    })
                 return EmptyStmt(), True
             return PendingExternal(stmt, named_inputs), False   # live: serve resolves it
 
@@ -503,11 +584,23 @@ def _step(
         case IfStmt(condition=c, owner=B, branch_true=t, branch_false=f):
             if journal is not None:
                 loc = journal.act_paths[id(stmt)]
-                rec = journal.channel.consume_journal("decision", loc)
+                rec = journal.channel.consume_journal("decision", loc, strict=False)
                 if rec is not None:
-                    return cast(LocalStmt, t if rec["value"] else f), True
-                flag = bool(c(_CondEnv(env, ns)))
+                    if monitor:
+                        monitor.on_event("choice", env)
+                    flag = bool(rec["value"])
+                    formula_repr = _condition_formula_repr(c, formula_conditions)
+                    if trace:
+                        trace({"type": "decision", "lifeline": B.name, "kind": "if", "value": flag,
+                               "condition": getattr(c, "_src", None), "formula": formula_repr,
+                               **_monitor_trace_fields(monitor)})
+                    return cast(LocalStmt, t if flag else f), True
+                flag, formula_repr = _eval_choice_condition(c, env, ns, monitor, formula_conditions)
                 journal.channel.record_decision({"status": "done", "locator": loc, "value": flag})
+                if trace:
+                    trace({"type": "decision", "lifeline": B.name, "kind": "if", "value": flag,
+                           "condition": getattr(c, "_src", None), "formula": formula_repr,
+                           **_monitor_trace_fields(monitor)})
                 return cast(LocalStmt, t if flag else f), True
             cached_formula = formula_conditions.get(id(c))
             if cached_formula is not None:
@@ -567,12 +660,19 @@ def _step(
         case WhileStmt(condition=c, owner=B, body=body, exit_body=exit_b):
             if journal is not None:
                 loc = journal.act_paths[id(stmt)]
-                rec = journal.channel.consume_journal("decision", loc)
+                rec = journal.channel.consume_journal("decision", loc, strict=False)
                 if rec is not None:
-                    flag = rec["value"]
+                    if monitor:
+                        monitor.on_event("choice", env)
+                    flag = bool(rec["value"])
+                    formula_repr = _condition_formula_repr(c, formula_conditions)
                 else:
-                    flag = bool(c(_CondEnv(env, ns)))
+                    flag, formula_repr = _eval_choice_condition(c, env, ns, monitor, formula_conditions)
                     journal.channel.record_decision({"status": "done", "locator": loc, "value": flag})
+                if trace:
+                    trace({"type": "decision", "lifeline": B.name, "kind": "while", "value": flag,
+                           "condition": getattr(c, "_src", None), "formula": formula_repr,
+                           **_monitor_trace_fields(monitor)})
                 if not flag:
                     return cast(LocalStmt, exit_b), True
                 return cast(LocalStmt, seq(body, stmt)), True
@@ -774,7 +874,7 @@ def _exec(stmt: LocalStmt, env: Env, ch: InProcessChannel, ns: dict, llm_backend
                 for (formal, _), expr, val in zip(action.inputs, ins, in_vals)
             }
             seq = _next_act_seq()
-            _show = not (isinstance(action, PureAction) and not action.visible)
+            _show = _action_visible(action)
             if trace and _show:
                 trace({
                     "type": "act_start",
@@ -784,11 +884,8 @@ def _exec(stmt: LocalStmt, env: Env, ch: InProcessChannel, ns: dict, llm_backend
                     "inputs": {k: _jsonify(v) for k, v in display_inputs.items()},
                     "seq": seq,
                 })
-            if isinstance(action, PureAction):
-                raw = action.fn(*in_vals)
-                out_map = {outs[0].name: raw} if len(outs) == 1 else {
-                    var.name: val for var, val in zip(outs, cast(tuple, raw))
-                }
+            if isinstance(action, (PureAction, EffectAction)):
+                out_map = _python_action_out_map(action, in_vals, outs)
             elif isinstance(action, PlannerAction):
                 out_map = {outs[0].name: _exec_planner(action, named_inputs, llm_backend, trace, seq)}
             elif isinstance(action, HumanAction):
@@ -1034,6 +1131,30 @@ def _collect_formula_guards(stmt, ns: dict) -> tuple[list, dict[int, _Formula]]:
     walk(stmt)
     return guards, condition_formulas
 
+
+def _build_formula_monitors(
+    wf: Workflow,
+    lifelines: list[Lifeline] | tuple[Lifeline, ...],
+) -> tuple[dict[str, MonitorState], dict[int, _Formula]]:
+    formula_guards, formula_conditions = _collect_formula_guards(wf.body, wf.ns)
+    if not formula_guards:
+        return {}, formula_conditions
+
+    all_subs: list = []
+    seen_ids: set[int] = set()
+    for guard in formula_guards:
+        for subformula in _subformulas(guard):
+            if id(subformula) not in seen_ids:
+                seen_ids.add(id(subformula))
+                all_subs.append(subformula)
+    names = [lifeline.name for lifeline in lifelines]
+    monitors: dict[str, MonitorState] = {
+        lifeline.name: MonitorState(lifeline.name, names, all_subs)
+        for lifeline in lifelines
+    }
+    return monitors, formula_conditions
+
+
 # ---------------------------------------------------------------------------
 # Public entry point
 # ---------------------------------------------------------------------------
@@ -1088,21 +1209,7 @@ def run(
     threads: list[threading.Thread] = []
     result_boxes: dict[str, list] = {}
 
-    formula_guards, formula_conditions = _collect_formula_guards(wf.body, wf.ns)
-    if formula_guards:
-        all_subs: list = []
-        seen_ids: set[int] = set()
-        for g in formula_guards:
-            for sf in _subformulas(g):
-                if id(sf) not in seen_ids:
-                    seen_ids.add(id(sf))
-                    all_subs.append(sf)
-        monitors: dict[str, MonitorState] = {
-            ll.name: MonitorState(ll.name, [l.name for l in lifelines], all_subs)
-            for ll in lifelines
-        }
-    else:
-        monitors = {}
+    monitors, formula_conditions = _build_formula_monitors(wf, lifelines)
 
     for ll in lifelines:
         local_stmt = project(wf, ll)
@@ -1187,8 +1294,17 @@ def _workflow_configure(
     ui: bool | None = None,
     mock_delay: tuple[float, float] = (1.0, 2.0),
     show_decisions: bool = False,
+    execution: str | None = None,
+    store_path: str | None = None,
 ) -> Workflow:
     lifelines = _ordered_workflow_lifelines(wf)
+
+    if execution is not None:
+        if execution not in {"memory", "sqlite"}:
+            raise ValueError("execution must be 'memory' or 'sqlite'")
+        wf._rt._execution = execution
+    if store_path is not None:
+        wf._rt._store_path = store_path
 
     if llms is not None:
         from zippergen.backends import router_from_env
@@ -1217,7 +1333,7 @@ def _workflow_configure(
             if wf._rt._webtrace is None:
                 wf._rt._webtrace = WebTrace(lifelines, name=wf.name, show_decisions=show_decisions).start()
             base_trace = trace if trace is not None else _console_trace_for_decisions(show_decisions)
-            wf._rt._trace = tee_traces(wf._rt._webtrace, base_trace)
+            wf._rt._trace = base_trace
     elif trace is not None:
         wf._rt._trace = trace
 
@@ -1257,11 +1373,40 @@ def _workflow_run_once(wf: Workflow, kwargs: dict[str, object]) -> object:
         if wf._rt._webtrace is not None and wf._rt._ui_enabled:
             if wf._rt._webtrace.is_dashboard:
                 run_trace = wf._rt._webtrace.start_run(wf.name, lifelines)
-                trace = tee_traces(run_trace, wf._rt._trace)
+                if wf._rt._execution == "memory":
+                    trace = tee_traces(run_trace, wf._rt._trace)
                 human_backend = run_trace.make_human_backend()
             else:
                 wf._rt._webtrace.reset()
+                if wf._rt._execution == "memory":
+                    trace = tee_traces(wf._rt._webtrace, wf._rt._trace)
         try:
+            if wf._rt._execution == "sqlite":
+                from zippergen.sqlite_runner import run_sqlite
+                store_path = wf._rt._store_path
+                sqlite_trace = run_trace if run_trace is not None else wf._rt._webtrace
+                if wf._rt._ui_enabled and sqlite_trace is not None:
+                    if store_path is None:
+                        import tempfile
+                        from pathlib import Path
+                        if wf._rt._ephemeral_store_path is None:
+                            wf._rt._store_tmpdir = tempfile.TemporaryDirectory(prefix="zippergen-ui-run-")
+                            wf._rt._ephemeral_store_path = str(Path(wf._rt._store_tmpdir.name) / "run.sqlite")
+                        store_path = wf._rt._ephemeral_store_path
+                    if hasattr(sqlite_trace, "use_store"):
+                        sqlite_trace.use_store(store_path)
+                    if hasattr(sqlite_trace, "make_sqlite_human_backend"):
+                        human_backend = sqlite_trace.make_sqlite_human_backend()
+                return run_sqlite(
+                    wf,
+                    list(lifelines),
+                    initial_envs,
+                    store_path=store_path,
+                    llm_backend=backend,
+                    human_backend=human_backend,
+                    trace=trace,
+                    timeout=wf._rt._timeout,
+                )
             return run(wf, list(lifelines), initial_envs,
                        llm_backend=backend,
                        human_backend=human_backend,

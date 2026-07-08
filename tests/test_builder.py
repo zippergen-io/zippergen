@@ -13,7 +13,7 @@ from zippergen.syntax import (
     Lifeline, Var, VarExpr, LitExpr,
     Workflow, participation_set,
 )
-from zippergen.actions import pure, llm
+from zippergen.actions import effect, pure, llm
 from zippergen.builder import workflow
 
 
@@ -39,6 +39,17 @@ def test_pure_produces_pure_action():
     assert add_one.name == "add_one"
     assert add_one.inputs == (("x", int),)
     assert add_one.outputs == (("add_one", int),)
+
+
+def test_effect_produces_effect_action():
+    from zippergen.syntax import EffectAction
+    @effect
+    def save_one(x: int) -> int:
+        return x + 1
+    assert isinstance(save_one, EffectAction)
+    assert save_one.name == "save_one"
+    assert save_one.inputs == (("x", int),)
+    assert save_one.outputs == (("save_one", int),)
 
 
 def test_llm_produces_llm_action():

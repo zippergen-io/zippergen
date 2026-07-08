@@ -2,158 +2,38 @@
 then run live, persisting each step atomically.
 
 Non-deterministic results are journaled so replay reconstructs them instead of
-re-executing: external acts (LLM/Human/Planner) and owner if/while decisions are
-recorded as ``kind='act'``/``'decision'`` rows and consumed FIFO on replay; a
-``@pure`` act is deterministic by contract and recomputed. A blocking external
+re-executing: external acts (LLM/Human/Planner/Effect) and owner if/while
+decisions are recorded as ``kind='act'``/``'decision'`` rows and consumed on
+replay; a ``@pure`` act is deterministic by contract and recomputed. A blocking external
 call runs OUTSIDE the SQLite write transaction (the lock is released first), then
 its result is journaled and committed before env/residual advance.
 
 Limitations (v1):
 - External effects are at-least-once: a crash between an external call returning
   and its journal row committing re-runs the act on restart. Harmless for an LLM
-  (paid twice) or a human (re-prompted); irreversible effects (e.g. sending mail)
-  are NOT made exactly-once here — that needs effect-level idempotency keys.
-- No durable human task queue yet: a role process that is down cannot have its
-  human prompt answered out-of-band; the ``status`` journal field is reserved for
-  that future work.
+  (paid twice); visible human actions are first materialized as durable
+  ``human_tasks`` rows and can be answered out-of-band. Irreversible effects
+  (e.g. sending mail) are NOT made exactly-once here — that needs effect-level
+  idempotency keys.
 - No snapshot fires inside a parallel region (the rebuilt residual changes
   identity each step), so a crash replays the region from the enclosing loop
   boundary; replay-length bounding inside parallel is a later refinement.
+- CPL Formula guards use full replay for now because role snapshots do not yet
+  persist monitor state.
 - A blocking external act in one parallel branch stalls that role's other
   branches until it returns (no intra-role concurrency of external calls).
-- CPL Formula guards are not wired on the durable path (monitor is None); a
-  monitored/checked workflow is not yet servable this way.
 
 See docs/superpowers/specs/2026-07-04-durable-deploy-hardening-design.md."""
 from __future__ import annotations
 
-import sqlite3
-import time
-from dataclasses import dataclass
-
-from zippergen.syntax import EmptyStmt, WhileStmt, WhileRecvStmt
-from zippergen.runtime import _step, mock_llm, PendingExternal, external_out_map, _input_hash
-from zippergen.store import DurableChannel, load_snapshot, write_snapshot
-from zippergen.locator import loop_node_paths, resolve_path, action_node_paths
-
-
-@dataclass
-class JournalContext:
-    channel: object          # DurableChannel
-    act_paths: dict          # id(node) -> child-index path
-
-
-def _floor_coherent(conn, role: str, floor: dict) -> bool:
-    """A floor is coherent only if it carries all three keys and none points past
-    the committed log. A floor lacking "journal" predates journaling -> incoherent
-    (forces full replay from seed)."""
-    try:
-        out = floor["out"]; cursors = floor["cursors"]; journal = floor["journal"]
-    except (KeyError, TypeError):
-        return False
-    max_out = conn.execute(
-        "SELECT MAX(rowid) FROM events WHERE sender=? AND kind IN ('msg','ctrl')",
-        (role,),
-    ).fetchone()[0] or 0
-    if out > max_out:
-        return False
-    max_journal = conn.execute(
-        "SELECT MAX(rowid) FROM events WHERE sender=? AND kind IN ('act','decision')",
-        (role,),
-    ).fetchone()[0] or 0
-    if journal > max_journal:
-        return False
-    durable = {ck: c for ck, c in conn.execute(
-        "SELECT chan_key, consumed FROM cursors WHERE role=?", (role,)).fetchall()}
-    return all(v <= durable.get(k, 0) for k, v in cursors.items())
-
-
-def _try_resume(conn, role: str, local_stmt, env: dict):
-    """Return (env, residual, since) from a valid snapshot, else (env, local_stmt, None)."""
-    snap = load_snapshot(conn, role)
-    if snap is None:
-        return env, local_stmt, None
-    node = resolve_path(local_stmt, snap["locator"])
-    if isinstance(node, (WhileStmt, WhileRecvStmt)) and _floor_coherent(conn, role, snap["floor"]):
-        return dict(snap["env"]), node, snap["floor"]
-    return env, local_stmt, None   # stale/invalid -> full replay from seed
-
-
-def _maybe_snapshot(conn, role: str, env: dict, locator: list, ch) -> None:
-    try:
-        write_snapshot(conn, role, env, locator, ch.position())
-    except (TypeError, ValueError, sqlite3.OperationalError):
-        # Best-effort: a snapshot is a rebuildable cache and must never fail a
-        # healthy role — skip on a non-serializable env OR a transient store
-        # error (e.g. lock contention in the separate snapshot transaction).
-        pass
-
-
-def run_role(conn, role: str, local_stmt, env: dict, ns: dict, *,
-             llm_backend=None, human_backend=None, trace=None) -> dict:
-    if llm_backend is None:
-        llm_backend = mock_llm
-    if human_backend is None:
-        from zippergen.human_backends import make_cli_human_backend
-        human_backend = make_cli_human_backend()
-
-    loop_paths = loop_node_paths(local_stmt)
-    env, residual, since = _try_resume(conn, role, local_stmt, env)
-    ch = DurableChannel(conn, role, since=since)
-    jctx = JournalContext(ch, action_node_paths(local_stmt))
-
-    def step(r, tr):
-        return _step(r, env, ch, ns, llm_backend, human_backend, None, tr, {}, None, journal=jctx)
-
-    # ---- replay: reconstruct (env, residual) from the tail (or full history) --
-    # No transactions, no trace: put reserves recorded sends, try_get serves
-    # recorded recvs. Determinism of local steps reproduces the exact boundary.
-    while ch.replaying() and not isinstance(residual, EmptyStmt):
-        out, progressed = step(residual, None)
-        if isinstance(out, PendingExternal):
-            break            # unreached during replay: committed acts consume, not pend
-        if not progressed:
-            break  # blocked on live input at the replay boundary
-        residual = out
-
-    # ---- live: one transaction per progressing step ------------------------
-    while not isinstance(residual, EmptyStmt):
-        # BEGIN IMMEDIATE (not deferred): a recv step reads (SELECT) before it
-        # writes (cursor INSERT in commit_txn); a deferred BEGIN would make that
-        # a read->write upgrade, which SQLite fails immediately with
-        # "database is locked" (bypassing busy_timeout) when the peer role holds
-        # the write lock. Taking the write lock up front serializes cleanly, the
-        # same pattern seed_env uses.
-        conn.execute("BEGIN IMMEDIATE")
-        out, progressed = step(residual, trace)
-        if isinstance(out, PendingExternal):
-            conn.execute("ROLLBACK")                 # release the write lock first
-            outs = out.node.outputs
-            out_map = external_out_map(out.node.action, out.inputs, outs,
-                                       llm_backend, human_backend)   # OUTSIDE any txn
-            loc = jctx.act_paths[id(out.node)]
-            conn.execute("BEGIN IMMEDIATE")
-            ch.record_act({"status": "done", "locator": loc,
-                           "action": out.node.action.name,
-                           "input_hash": _input_hash(out.inputs), "outputs": out_map})
-            conn.execute("COMMIT")
-            # pass 2 (no txn): consume the just-committed act row, apply env, advance
-            residual, resolved = step(residual, trace)
-            assert resolved, "durable resolve failed to consume the just-committed act row"
-            if id(residual) in loop_paths:
-                _maybe_snapshot(conn, role, env, loop_paths[id(residual)], ch)
-            continue
-        if progressed:
-            ch.commit_txn()
-            residual = out
-            # At a loop-iteration boundary the residual is (by identity) a loop
-            # node in the projected program; checkpoint env + position there.
-            if id(residual) in loop_paths:
-                _maybe_snapshot(conn, role, env, loop_paths[id(residual)], ch)
-        else:
-            ch.rollback_txn()
-            time.sleep(0.02)
-    return env
+from zippergen.role_runner import (
+    JournalContext,
+    RoleRunner,
+    _floor_coherent,
+    _maybe_snapshot,
+    _try_resume,
+    run_role,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -239,10 +119,21 @@ def main(argv=None) -> int:
     args = ap.parse_args(argv)
 
     wf, role_ll = load_workflow(args.workflow, args.role)
+    lifelines = _workflow_lifelines(wf)
+    from zippergen.runtime import _build_formula_monitors
+    monitors, formula_conditions = _build_formula_monitors(wf, lifelines)
     conn = open_store(args.store)
     env = seed_env(conn, args.role, wf, _seed_inputs(wf, _parse_inputs(args.input)))
     local = project(wf, role_ll)
-    final = run_role(conn, args.role, local, env, wf.ns)
+    final = run_role(
+        conn,
+        args.role,
+        local,
+        env,
+        wf.ns,
+        monitor=monitors.get(args.role),
+        formula_conditions=formula_conditions,
+    )
     print(json.dumps({k: v for k, v in final.items()
                       if isinstance(v, (bool, int, float, str, type(None)))}))
     return 0

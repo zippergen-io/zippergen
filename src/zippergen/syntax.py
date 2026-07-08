@@ -25,7 +25,7 @@ __all__ = [
     "Expr",
     "VarExpr", "LitExpr",
     # Actions
-    "LLMAction", "PureAction", "PlannerAction", "HumanAction",
+    "LLMAction", "PureAction", "EffectAction", "PlannerAction", "HumanAction",
     # Type + lifeline annotation helper
     "ZTypeAtLifeline",
     # Statements
@@ -262,6 +262,25 @@ class PureAction:
 
 
 @dataclass(frozen=True)
+class EffectAction:
+    """Python action with external effects.
+
+    In memory mode it executes like ``PureAction``. In durable SQLite mode its
+    result is journaled and replayed like LLM/Human/Planner actions.
+    """
+    name: str
+    inputs: tuple[tuple[str, ZType], ...]
+    outputs: tuple[tuple[str, ZType], ...]
+    fn: Callable[..., object]
+    visible: bool = True
+
+    def __repr__(self) -> str:
+        ins = ", ".join(f"{n}: {t.__name__}" for n, t in self.inputs)
+        outs = ", ".join(f"{n}: {t.__name__}" for n, t in self.outputs)
+        return f"EffectAction({self.name!r}, ({ins}) -> ({outs}))"
+
+
+@dataclass(frozen=True)
 class PlannerAction:
     """IR node for an LLM-generated workflow action.
 
@@ -274,7 +293,7 @@ class PlannerAction:
     inputs: tuple[tuple[str, ZType], ...]   # declared planner input pairs
     outputs: tuple[tuple[str, ZType], ...]  # always single (name, return type)
     system_prompt: str
-    actions: tuple        # tuple of LLMAction | PureAction | PlannerAction | HumanAction
+    actions: tuple        # tuple of LLMAction | PureAction | EffectAction | PlannerAction | HumanAction
     lifelines: tuple      # tuple of Lifeline used in inner workflows
     allow: tuple[str, ...] = ()          # enabled extensions: "pure", "llm", "if", "while"
     instructions: str | None = None      # optional user guidance on worker roles
@@ -390,7 +409,7 @@ class CoregionStmt:
 class ActStmt:
     """act lifeline: outputs := action(inputs)"""
     lifeline: Lifeline
-    action: Union[LLMAction, PureAction, "PlannerAction", "HumanAction"]
+    action: Union[LLMAction, PureAction, EffectAction, "PlannerAction", "HumanAction"]
     inputs: tuple[Expr, ...]
     outputs: tuple[Var, ...]
 
@@ -670,6 +689,10 @@ class _WorkflowRuntime:
     _replay_thread: object = field(default=None, repr=False)
     _last_kwargs: dict[str, object] = field(default_factory=dict, repr=False)
     _human_backend: object = field(default=None, repr=False)
+    _execution: str = field(default="sqlite", repr=False)
+    _store_path: str | None = field(default=None, repr=False)
+    _store_tmpdir: object = field(default=None, repr=False)
+    _ephemeral_store_path: str | None = field(default=None, repr=False)
 
 
 @dataclass
@@ -729,6 +752,16 @@ class Workflow:
     def _human_backend(self, v): self._rt._human_backend = v
 
     @property
+    def _execution(self): return self._rt._execution
+    @_execution.setter
+    def _execution(self, v): self._rt._execution = v
+
+    @property
+    def _store_path(self): return self._rt._store_path
+    @_store_path.setter
+    def _store_path(self, v): self._rt._store_path = v
+
+    @property
     def output_var(self) -> "Var | None":
         return self.outputs[0][0] if self.outputs else None
 
@@ -743,7 +776,9 @@ class Workflow:
                   llms: str | Mapping[str, str | Callable] | None = None,
                   ui: bool | None = None,
                   mock_delay: tuple[float, float] = (1.0, 2.0),
-                  show_decisions: bool = False) -> "Workflow":
+                  show_decisions: bool = False,
+                  execution: str | None = None,
+                  store_path: str | None = None) -> "Workflow":
         """Configure runtime parameters and return self for chaining.
 
         Parameters
@@ -757,11 +792,15 @@ class Workflow:
         ui      : if true, start ZipperChat and mirror the execution there.
         mock_delay : delay range used by the mock backend when ``llms="mock"``.
         show_decisions : if true, show decision/control-broadcast markers in ZipperChat.
+        execution : ``"sqlite"`` (default) or ``"memory"`` for the legacy
+                    in-process runner.
+        store_path : optional SQLite store path used when ``execution="sqlite"``.
         """
         from zippergen.runtime import _workflow_configure
         return _workflow_configure(self, backend=backend, trace=trace, timeout=timeout,
                                    llms=llms, ui=ui, mock_delay=mock_delay,
-                                   show_decisions=show_decisions)
+                                   show_decisions=show_decisions,
+                                   execution=execution, store_path=store_path)
 
     def _run_once(self, kwargs: dict[str, object]) -> object:
         from zippergen.runtime import _workflow_run_once

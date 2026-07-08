@@ -1,6 +1,6 @@
 """
-Layer 2: @llm, @pure, @planner, and @human decorators. Read Python annotations to
-produce LLMAction, PureAction, PlannerAction, and HumanAction IR nodes.
+Layer 2: @llm, @pure, @effect, @planner, and @human decorators. Read Python
+annotations to produce action IR nodes.
 """
 
 from __future__ import annotations
@@ -10,10 +10,10 @@ import re
 from collections.abc import Callable
 
 from zippergen.syntax import (
-    ZType, LLMAction, PureAction, PlannerAction, HumanAction, Lifeline, is_ztype,
+    ZType, LLMAction, PureAction, EffectAction, PlannerAction, HumanAction, Lifeline, is_ztype,
 )
 
-__all__ = ["llm", "pure", "planner", "human"]
+__all__ = ["llm", "pure", "effect", "planner", "human"]
 
 # Type alias for an output spec list/tuple (used by @llm)
 OutputSpec = list[tuple[str, ZType]] | tuple[tuple[str, ZType], ...]
@@ -133,7 +133,7 @@ def planner(
         One sentence describing the planner's task domain.
     actions : list
         Pre-defined action vocabulary (``LLMAction`` / ``PureAction`` /
-        ``HumanAction`` / ``PlannerAction`` nodes).
+        ``EffectAction`` / ``HumanAction`` / ``PlannerAction`` nodes).
         The LLM may use these directly.  Pass ``[]`` to start from scratch.
     lifelines : list
         Workers available to the generated workflow.  Each entry may be a
@@ -223,6 +223,34 @@ def pure(fn: Callable | None = None, *, visible: bool = True):
         inputs = _extract_inputs(fn)
         outputs = _single_output_from_return(fn)
         return PureAction(
+            name=fn.__name__,
+            inputs=inputs,
+            outputs=outputs,
+            fn=fn,
+            visible=visible,
+        )
+    if fn is not None:
+        return decorator(fn)
+    return decorator
+
+
+# ---------------------------------------------------------------------------
+# @effect decorator
+# ---------------------------------------------------------------------------
+
+def effect(fn: Callable | None = None, *, visible: bool = True):
+    """
+    Decorator for Python actions that are not deterministic/pure.
+
+    In the in-memory runner, an effect action executes like ``@pure``. In the
+    SQLite runner, it is resolved outside the write transaction and its output
+    is journaled so replay returns the recorded result instead of performing the
+    external operation again.
+    """
+    def decorator(fn: Callable) -> EffectAction:
+        inputs = _extract_inputs(fn)
+        outputs = _single_output_from_return(fn)
+        return EffectAction(
             name=fn.__name__,
             inputs=inputs,
             outputs=outputs,

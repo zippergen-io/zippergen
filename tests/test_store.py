@@ -1,12 +1,25 @@
 import sqlite3
 import pytest
-from zippergen.store import open_store, chan_key, ReplayMismatch
+from zippergen.store import (
+    complete_human_task,
+    ensure_human_task,
+    human_task_id,
+    list_trace_events,
+    list_workflow_results,
+    load_human_task,
+    load_workflow_result,
+    open_store,
+    record_trace_event,
+    chan_key,
+    ReplayMismatch,
+    write_workflow_result,
+)
 
 def test_open_store_creates_tables(tmp_path):
     conn = open_store(str(tmp_path / "s.sqlite"))
     names = {r[0] for r in conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
-    assert {"events", "cursors"} <= names
+    assert {"events", "cursors", "snapshots", "human_tasks", "workflow_results"} <= names
 
 def test_open_store_is_wal(tmp_path):
     conn = open_store(str(tmp_path / "s.sqlite"))
@@ -25,6 +38,90 @@ def test_insert_event_autoincrements_rowid(tmp_path):
 def test_chan_key_roundtrip():
     assert chan_key("A", "B", "main") == "A|B|main"
     assert chan_key("A", "B", "main").split("|") == ["A", "B", "main"]
+
+
+def test_human_task_lifecycle(tmp_path):
+    conn = open_store(str(tmp_path / "s.sqlite"))
+    task_id = human_task_id("A", [0], "abc", 0)
+    conn.execute("BEGIN")
+    task, created = ensure_human_task(
+        conn,
+        task_id=task_id,
+        role="A",
+        locator=[0],
+        action="review",
+        input_hash="abc",
+        inputs={"prompt": "plan"},
+        spec={"kind": "confirm", "output": "approved"},
+    )
+    conn.execute("COMMIT")
+    assert created is True
+    assert task["status"] == "pending"
+    assert task["inputs"] == {"prompt": "plan"}
+
+    conn.execute("BEGIN")
+    same, created_again = ensure_human_task(
+        conn,
+        task_id=task_id,
+        role="A",
+        locator=[0],
+        action="review",
+        input_hash="abc",
+        inputs={"prompt": "changed"},
+        spec={"kind": "confirm", "output": "approved"},
+    )
+    conn.execute("COMMIT")
+    assert created_again is False
+    assert same["inputs"] == {"prompt": "plan"}
+
+    conn.execute("BEGIN")
+    done = complete_human_task(conn, task_id, {"approved": True})
+    conn.execute("COMMIT")
+    assert done["status"] == "done"
+    assert load_human_task(conn, task_id)["result"] == {"approved": True}
+
+    conn.execute("BEGIN")
+    still_done = complete_human_task(conn, task_id, {"approved": False})
+    conn.execute("COMMIT")
+    assert still_done["result"] == {"approved": True}
+
+
+def test_workflow_result_lifecycle(tmp_path):
+    conn = open_store(str(tmp_path / "s.sqlite"))
+    assert load_workflow_result(conn, "wf") is None
+
+    write_workflow_result(conn, "wf", (1, True))
+    assert load_workflow_result(conn, "wf") == [1, True]
+
+    created_at = conn.execute(
+        "SELECT created_at FROM workflow_results WHERE workflow='wf'"
+    ).fetchone()[0]
+    write_workflow_result(conn, "wf", {"answer": 2})
+    assert load_workflow_result(conn, "wf") == {"answer": 2}
+    row = conn.execute(
+        "SELECT COUNT(*), created_at FROM workflow_results WHERE workflow='wf'"
+    ).fetchone()
+    assert row == (1, created_at)
+    results = list_workflow_results(conn)
+    assert len(results) == 1
+    assert results[0]["workflow"] == "wf"
+    assert results[0]["value"] == {"answer": 2}
+    assert results[0]["created_at"] == created_at
+    assert results[0]["updated_at"] >= created_at
+
+
+def test_trace_event_lifecycle(tmp_path):
+    conn = open_store(str(tmp_path / "s.sqlite"))
+    first = record_trace_event(conn, "A", {"type": "send", "from": "A", "to": "B", "values": (1,)})
+    second = record_trace_event(conn, "B", {"type": "recv", "from": "A", "to": "B", "bindings": {"n": 1}})
+
+    assert list_trace_events(conn) == [
+        {"rowid": first, "event": {"type": "send", "from": "A", "to": "B", "values": [1]}},
+        {"rowid": second, "event": {"type": "recv", "from": "A", "to": "B", "bindings": {"n": 1}}},
+    ]
+    assert list_trace_events(conn, after_rowid=first) == [
+        {"rowid": second, "event": {"type": "recv", "from": "A", "to": "B", "bindings": {"n": 1}}},
+    ]
 
 from collections import deque
 from zippergen.store import DurableChannel
@@ -46,6 +143,49 @@ def test_durable_put_live_inserts_and_recv_reads(tmp_path):
     assert b2.try_get("A", "B", "main")[1] == (5,)
     assert b2.try_get("A", "B", "main") is None
     b2.rollback_txn()
+
+
+def test_durable_put_roundtrips_causal_metadata(tmp_path):
+    conn = open_store(str(tmp_path / "s.sqlite"))
+    a = DurableChannel(conn, "A")
+    b = DurableChannel(conn, "B")
+    vc = {"A": 2, "B": 0}
+    view = {"A": {123: True}, "B": {}}
+    field_view = {"A": {"src": "v1"}, "B": {}}
+    conn.execute("BEGIN")
+    a.put("A", "B", "main", ("v1",), vc, view, field_view)
+    a.commit_txn()
+
+    conn.execute("BEGIN")
+    item = b.try_get("A", "B", "main")
+    b.rollback_txn()
+
+    assert item is not None
+    assert item[2] == vc
+    assert item[3] == view
+    assert item[4] == field_view
+
+
+def test_durable_put_reads_legacy_vc_only_causal_stamp(tmp_path):
+    conn = open_store(str(tmp_path / "s.sqlite"))
+    conn.execute("BEGIN")
+    conn.execute(
+        "INSERT INTO events(sender,receiver,channel,kind,payload,causal_stamp) "
+        "VALUES(?,?,?,?,?,?)",
+        ("A", "B", "main", "msg", "[1]", '{"A": 1, "B": 0}'),
+    )
+    conn.execute("COMMIT")
+    b = DurableChannel(conn, "B")
+
+    conn.execute("BEGIN")
+    item = b.try_get("A", "B", "main")
+    b.rollback_txn()
+
+    assert item is not None
+    assert item[2] == {"A": 1, "B": 0}
+    assert item[3] is None
+    assert item[4] is None
+
 
 def test_durable_rollback_does_not_advance_cursor(tmp_path):
     conn = open_store(str(tmp_path / "s.sqlite"))
@@ -207,6 +347,33 @@ def test_journal_locator_mismatch_raises(tmp_path):
     a2 = DurableChannel(conn, "A")
     with pytest.raises(ReplayMismatch):
         a2.consume_journal("act", [9])                     # wrong locator
+
+def test_journal_non_strict_matches_locator_out_of_order(tmp_path):
+    conn = open_store(str(tmp_path / "s.sqlite"))
+    a = DurableChannel(conn, "A")
+    conn.execute("BEGIN")
+    a.record_act({"status": "done", "locator": [1], "action": "llm", "input_hash": "h1", "outputs": {"z": 1}})
+    a.record_act({"status": "done", "locator": [0], "action": "llm", "input_hash": "h0", "outputs": {"y": 2}})
+    a.commit_txn()
+
+    a2 = DurableChannel(conn, "A")
+    p0 = a2.consume_journal("act", [0], "h0", strict=False)
+    assert p0["outputs"] == {"y": 2}
+    p1 = a2.consume_journal("act", [1], "h1", strict=False)
+    assert p1["outputs"] == {"z": 1}
+
+
+def test_journal_non_strict_miss_does_not_consume_rows(tmp_path):
+    conn = open_store(str(tmp_path / "s.sqlite"))
+    a = DurableChannel(conn, "A")
+    conn.execute("BEGIN")
+    a.record_act({"status": "done", "locator": [1], "action": "llm", "outputs": {"z": 1}})
+    a.record_act({"status": "done", "locator": [0], "action": "llm", "outputs": {"y": 2}})
+    a.commit_txn()
+
+    a2 = DurableChannel(conn, "A")
+    assert a2.consume_journal("act", [9], strict=False) is None
+    assert a2.consume_journal("act", [0], strict=False)["outputs"] == {"y": 2}
 
 def test_record_act_does_not_advance_cursor(tmp_path):
     # act rows are consumed by a separate pass; recording must leave the cursor

@@ -32,7 +32,9 @@ from __future__ import annotations
 import json
 import pathlib
 import queue
+import sqlite3
 import threading
+import time
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -43,6 +45,62 @@ __all__ = ["WebTrace"]
 
 def _lifeline_names(lifelines) -> list[str]:
     return [l.name if hasattr(l, "name") else str(l) for l in lifelines]
+
+
+def _parse_human_value(raw_value: str, output_type: str) -> object:
+    if output_type == "bool":
+        return str(raw_value).lower() in ("true", "yes", "1", "y")
+    return str(raw_value)
+
+
+def _begin_immediate(conn) -> None:
+    while True:
+        try:
+            conn.execute("BEGIN IMMEDIATE")
+            return
+        except sqlite3.OperationalError as exc:
+            if "database is locked" not in str(exc).lower():
+                raise
+            time.sleep(0.05)
+
+
+def _human_task_events(task: dict, *, path: list[str] | None = None) -> list[dict]:
+    spec = task.get("spec") or {}
+    rendered = spec.get("rendered") or {}
+    output_name = spec.get("output")
+    events: list[dict] = [
+        {
+            "type": "act_start",
+            "lifeline": task["role"],
+            "action": task["action"],
+            "action_kind": "human",
+            "seq": task["task_id"],
+            "inputs": task.get("inputs") or {},
+        },
+        {
+            "type": "human_input_required",
+            "id": task["task_id"],
+            "lifeline": task["role"],
+            "kind": spec.get("kind") or "confirm",
+            "context": rendered.get("context", spec.get("context")),
+            "instruction": rendered.get("instruction", spec.get("instruction")),
+            "prefill": rendered.get("prefill", spec.get("prefill")),
+            "submit_label": spec.get("submit_label"),
+            "cancel_label": spec.get("cancel_label"),
+        },
+    ]
+    if task.get("status") == "done":
+        result = task.get("result") or {}
+        events.append({
+            "type": "human_input",
+            "id": task["task_id"],
+            "lifeline": task["role"],
+            "value": str(result.get(output_name, "")),
+        })
+    if path is not None:
+        for event in events:
+            event["path"] = list(path)
+    return events
 
 
 # ---------------------------------------------------------------------------
@@ -91,7 +149,9 @@ def _make_handler(bus: _EventBus, lifelines: list[str],
                   replay_event: threading.Event,
                   init_event: dict,
                   pending_human_inputs: dict,
-                  pending_lock: threading.Lock):
+                  pending_lock: threading.Lock,
+                  complete_sqlite_human_input,
+                  load_sqlite_workflow_results):
     class _Handler(BaseHTTPRequestHandler):
 
         def do_GET(self):
@@ -122,6 +182,15 @@ def _make_handler(bus: _EventBus, lifelines: list[str],
                     pass
                 finally:
                     bus.unsubscribe(q)
+
+            elif self.path == "/workflow-results":
+                body = json.dumps(load_sqlite_workflow_results()).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                self.wfile.write(body)
 
             elif self.path.startswith("/assets/"):
                 fname = self.path[len("/assets/"):]
@@ -162,6 +231,9 @@ def _make_handler(bus: _EventBus, lifelines: list[str],
                     evt, result_box = entry
                     result_box.append(raw_value)
                     evt.set()
+                    self.send_response(204)
+                    self.end_headers()
+                elif req_id and complete_sqlite_human_input(req_id, raw_value):
                     self.send_response(204)
                     self.end_headers()
                 else:
@@ -220,6 +292,13 @@ class _ScopedWebTrace:
     def make_human_backend(self):
         return self._parent._make_human_backend(path=self._path)
 
+    def make_sqlite_human_backend(self):
+        return self._parent.make_sqlite_human_backend()
+
+    def use_store(self, store_path: str):
+        self._parent.use_store(store_path, path=self._path)
+        return self
+
 
 class WebTrace:
     """
@@ -237,7 +316,16 @@ class WebTrace:
             wt.wait_for_replay()
     """
 
-    def __init__(self, lifelines, port: int = 8765, *, dashboard: bool = False, name: str = "", show_decisions: bool = False):
+    def __init__(
+        self,
+        lifelines,
+        port: int = 8765,
+        *,
+        dashboard: bool = False,
+        name: str = "",
+        show_decisions: bool = False,
+        store_path: str | None = None,
+    ):
         self._dashboard = dashboard
         self._lifelines = _lifeline_names(lifelines)
         self._port = port
@@ -248,6 +336,15 @@ class WebTrace:
         self._replay_event = threading.Event()
         self._pending_human_inputs: dict[str, tuple[threading.Event, list]] = {}
         self._pending_lock = threading.Lock()
+        self._store_bindings: dict[str, list[str] | None] = {}
+        self._store_seen: dict[tuple[str, str], str] = {}
+        self._store_seen_results: dict[tuple[str, str], float] = {}
+        self._store_seen_trace: dict[str, int] = {}
+        self._store_lock = threading.Lock()
+        self._store_stop = threading.Event()
+        self._store_thread: threading.Thread | None = None
+        if store_path is not None:
+            self.use_store(store_path)
 
     @classmethod
     def dashboard(cls, port: int = 8765, *, show_decisions: bool = False) -> "WebTrace":
@@ -274,6 +371,8 @@ class WebTrace:
         handler = _make_handler(
             self._bus, self._lifelines, self._replay_event, init_ev,
             self._pending_human_inputs, self._pending_lock,
+            self._complete_sqlite_human_input,
+            self._load_sqlite_workflow_results,
         )
         self._server = _Server(("", self._port), handler)
         self._port = self._server.server_address[1]
@@ -281,12 +380,17 @@ class WebTrace:
         t.start()
         print(f"ZipperChat → http://localhost:{self._port}")
         self._bus.publish(init_ev)
+        self._ensure_store_poller()
         return self
 
     def reset(self) -> "WebTrace":
         """Clear the diagram and prepare for a new run."""
         self._replay_event.clear()
         self._bus.reset()
+        with self._store_lock:
+            self._store_seen.clear()
+            self._store_seen_results.clear()
+            self._store_seen_trace.clear()
         self._bus.publish(self._init_event())
         return self
 
@@ -312,9 +416,171 @@ class WebTrace:
         return self.start_run(name, lifelines)
 
     def stop(self) -> None:
+        self._store_stop.set()
         self._bus.publish({"type": "close"})
         if self._server:
             self._server.shutdown()
+
+    def use_store(self, store_path: str, *, path: list[str] | None = None) -> "WebTrace":
+        with self._store_lock:
+            self._store_bindings[str(store_path)] = list(path) if path is not None else None
+            stale = [key for key in self._store_seen if key[0] == str(store_path)]
+            for key in stale:
+                self._store_seen.pop(key, None)
+            stale_results = [key for key in self._store_seen_results if key[0] == str(store_path)]
+            for key in stale_results:
+                self._store_seen_results.pop(key, None)
+            self._store_seen_trace.pop(str(store_path), None)
+        self._ensure_store_poller()
+        return self
+
+    def _ensure_store_poller(self) -> None:
+        with self._store_lock:
+            has_stores = bool(self._store_bindings)
+            running = self._store_thread is not None and self._store_thread.is_alive()
+        if not has_stores or running or self._server is None:
+            return
+        self._store_stop.clear()
+        self._store_thread = threading.Thread(target=self._poll_sqlite_human_tasks, daemon=True)
+        self._store_thread.start()
+
+    def _poll_sqlite_human_tasks(self) -> None:
+        while not self._store_stop.is_set():
+            self._poll_sqlite_human_tasks_once()
+            time.sleep(0.1)
+
+    def _poll_sqlite_human_tasks_once(self) -> None:
+        with self._store_lock:
+            bindings = dict(self._store_bindings)
+        if not bindings:
+            return
+        try:
+            from zippergen.store import list_trace_events, list_workflow_results, load_human_task, open_store
+        except Exception:
+            return
+        for store_path, path in bindings.items():
+            try:
+                conn = open_store(store_path)
+                with self._store_lock:
+                    trace_after = self._store_seen_trace.get(store_path, 0)
+                for item in list_trace_events(conn, trace_after):
+                    event = dict(item["event"])
+                    if path is not None:
+                        event["path"] = list(path) + list(event.get("path") or [])
+                    self._bus.publish(event)
+                    with self._store_lock:
+                        self._store_seen_trace[store_path] = max(
+                            self._store_seen_trace.get(store_path, 0),
+                            int(item["rowid"]),
+                        )
+                rows = conn.execute(
+                    "SELECT task_id FROM human_tasks ORDER BY created_at, task_id"
+                ).fetchall()
+                for (task_id,) in rows:
+                    task = load_human_task(conn, task_id)
+                    if task is None:
+                        continue
+                    status = task.get("status")
+                    key = (store_path, task_id)
+                    with self._store_lock:
+                        previous = self._store_seen.get(key)
+                        if previous == status:
+                            continue
+                        self._store_seen[key] = status
+                    if previous is None:
+                        for event in _human_task_events(task, path=path):
+                            self._bus.publish(event)
+                    elif status == "done":
+                        output = (task.get("spec") or {}).get("output")
+                        result = task.get("result") or {}
+                        event = {
+                            "type": "human_input",
+                            "id": task["task_id"],
+                            "lifeline": task["role"],
+                            "value": str(result.get(output, "")),
+                        }
+                        if path is not None:
+                            event["path"] = list(path)
+                        self._bus.publish(event)
+                for result in list_workflow_results(conn):
+                    workflow = str(result["workflow"])
+                    updated_at = float(result["updated_at"])
+                    key = (store_path, workflow)
+                    with self._store_lock:
+                        previous_result = self._store_seen_results.get(key)
+                        if previous_result == updated_at:
+                            continue
+                        self._store_seen_results[key] = updated_at
+                    event = {
+                        "type": "workflow_result",
+                        "workflow": workflow,
+                        "value": result["value"],
+                        "created_at": result["created_at"],
+                        "updated_at": result["updated_at"],
+                    }
+                    if path is not None:
+                        event["path"] = list(path)
+                    self._bus.publish(event)
+                conn.close()
+            except Exception:
+                continue
+
+    def _load_sqlite_workflow_results(self) -> list[dict]:
+        with self._store_lock:
+            bindings = dict(self._store_bindings)
+        if not bindings:
+            return []
+        try:
+            from zippergen.store import list_workflow_results, open_store
+        except Exception:
+            return []
+        results: list[dict] = []
+        for store_path, path in bindings.items():
+            try:
+                conn = open_store(store_path)
+                try:
+                    for result in list_workflow_results(conn):
+                        item = dict(result)
+                        if path is not None:
+                            item["path"] = list(path)
+                        results.append(item)
+                finally:
+                    conn.close()
+            except Exception:
+                continue
+        return results
+
+    def _complete_sqlite_human_input(self, task_id: str, raw_value: str) -> bool:
+        with self._store_lock:
+            store_paths = list(self._store_bindings)
+        if not store_paths:
+            return False
+        try:
+            from zippergen.store import complete_human_task, load_human_task, open_store
+        except Exception:
+            return False
+        for store_path in store_paths:
+            conn = open_store(store_path)
+            try:
+                task = load_human_task(conn, task_id)
+                if task is None:
+                    continue
+                spec = task.get("spec") or {}
+                output = spec.get("output")
+                if not output:
+                    return False
+                value = _parse_human_value(raw_value, spec.get("output_type", "str"))
+                _begin_immediate(conn)
+                try:
+                    complete_human_task(conn, task_id, {output: value})
+                    conn.execute("COMMIT")
+                except BaseException:
+                    conn.execute("ROLLBACK")
+                    raise
+                return True
+            finally:
+                conn.close()
+        return False
 
     def _make_human_backend(self, path: list[str] | None = None):
         """Return a human backend callable that blocks until ZipperChat provides input."""
@@ -374,6 +640,13 @@ class WebTrace:
 
     def make_human_backend(self):
         return self._make_human_backend()
+
+    def make_sqlite_human_backend(self):
+        def backend(action, inputs: dict) -> dict:
+            raise RuntimeError("SQLite human tasks are completed through the SQLite store.")
+
+        backend.uses_sqlite_human_tasks = True
+        return backend
 
 
 # ---------------------------------------------------------------------------
@@ -435,6 +708,19 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); font
 /* ── Header ─────────────────────────────────────────────────────────────── */
 .hdr-logo { height: 36px; display: block; }
 .hdr-right { display: flex; align-items: center; gap: 8px; margin-left: auto; }
+.result-pill {
+  max-width: 360px; min-height: 28px;
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 4px 10px; border-radius: 6px;
+  border: 1px solid var(--rule); background: transparent;
+  color: var(--text-soft); font-family: var(--sans);
+  font-size: 12px; font-weight: 500; cursor: pointer;
+}
+.result-pill:hover { border-color: var(--accent); color: var(--accent); background: var(--accent-bg); }
+.result-pill-value {
+  font-family: var(--mono); color: var(--text);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 
 @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
 
@@ -744,6 +1030,7 @@ body { font-family: var(--sans); background: var(--bg); color: var(--text); font
   <header id="hdr">
     <img src="/assets/zippergen-lockup-ink.svg" alt="ZipperGen" class="hdr-logo">
     <div class="hdr-right">
+      <button id="result-pill" class="result-pill" onclick="openLatestResult()" title="Inspect workflow result" style="display:none"></button>
       <button id="btn-arrows" onclick="toggleArrows()" title="Show message arrows" style="display:none">arrows</button>
     </div>
   </header>
@@ -802,6 +1089,16 @@ const inboxCards = {};   // key → inbox card element (human actions only)
 const reqMap     = new Map();
 let pending      = 0;
 let detailKey    = null; // key currently shown in detail panel
+let latestResultKey = null;
+const _VIEW_STATE_KEY = 'zc-view-state:' + location.pathname;
+let _savedViewState = null;
+try{ _savedViewState = JSON.parse(localStorage.getItem(_VIEW_STATE_KEY)||'null'); }catch{ _savedViewState = null; }
+let _restoreActive = !!(_savedViewState && Object.prototype.hasOwnProperty.call(_savedViewState,'detailKey'));
+let _restoreAutoOpenSuppressed = _restoreActive;
+let _restoreWantedDetailKey = _restoreActive ? _savedViewState.detailKey : undefined;
+let _restoreWantedScrollTop = (_savedViewState && typeof _savedViewState.colScrollTop === 'number') ? _savedViewState.colScrollTop : null;
+let _restoreTimer = null;
+let _saveStateTimer = null;
 
 // Column view state
 const colEls      = {};
@@ -830,7 +1127,53 @@ const detailPanel = document.getElementById('detail-panel');
 const detailBody  = document.getElementById('detail-body');
 const colView     = document.getElementById('col-view');
 const arrowsGroup = document.getElementById('col-arrows-g');
-colView.addEventListener('scroll', function(){ if(showArrows) scheduleDrawArrows(); });
+const resultPill  = document.getElementById('result-pill');
+colView.addEventListener('scroll', function(){
+  if(showArrows) scheduleDrawArrows();
+  _queueSaveViewState();
+});
+
+function _saveViewState(){
+  if(_restoreActive) return;
+  try{
+    localStorage.setItem(_VIEW_STATE_KEY, JSON.stringify({
+      detailKey: detailKey || null,
+      colScrollTop: colView ? colView.scrollTop : 0
+    }));
+  }catch{}
+}
+
+function _queueSaveViewState(){
+  if(_restoreActive) return;
+  if(_saveStateTimer) clearTimeout(_saveStateTimer);
+  _saveStateTimer = setTimeout(_saveViewState, 120);
+}
+
+function _applySavedViewState(finalPass){
+  if(!_restoreActive) return;
+  if(_restoreWantedScrollTop!==null){
+    colView.scrollTop = Math.max(0, _restoreWantedScrollTop);
+  }
+  if(_restoreWantedDetailKey){
+    if(byKey[_restoreWantedDetailKey] && detailKey!==_restoreWantedDetailKey){
+      openDetail(_restoreWantedDetailKey);
+    }
+  } else if(_restoreWantedDetailKey===null && detailKey!==null){
+    closeDetail();
+  }
+  if(finalPass){
+    _restoreActive = false;
+    _restoreAutoOpenSuppressed = false;
+    _saveViewState();
+  }
+}
+
+function _scheduleRestoreAfterReplay(){
+  if(!_restoreActive) return;
+  _applySavedViewState(false);
+  if(_restoreTimer) clearTimeout(_restoreTimer);
+  _restoreTimer = setTimeout(function(){ _applySavedViewState(true); }, 250);
+}
 
 // ── Inbox fold ────────────────────────────────────────────────────────────────
 const _FOLD_KEY = 'zc-inbox-collapsed';
@@ -886,6 +1229,10 @@ function fmtV(v){
   if(typeof v==='boolean') return v?'true':'false';
   if(typeof v==='string') return v.length>600?v.slice(0,599)+'…':v;
   try{ return JSON.stringify(v,null,2); }catch{ return String(v); }
+}
+function fmtShort(v){
+  const s = fmtV(v).replace(/\s+/g, ' ').trim();
+  return s.length>80 ? s.slice(0,79)+'…' : s;
 }
 
 // ── Inbox ─────────────────────────────────────────────────────────────────────
@@ -945,6 +1292,7 @@ function openDetail(key){
   document.getElementById('btn-arrows').style.display = 'none';
   detailPanel.style.display = 'flex';
   renderInspector(key, detailBody, closeDetail);
+  _saveViewState();
 }
 
 function closeDetail(){
@@ -954,6 +1302,11 @@ function closeDetail(){
   detailPanel.style.display = 'none';
   if(Object.keys(colEls).length) document.getElementById('btn-arrows').style.display = '';
   if(_cmdHandler){ document.removeEventListener('keydown',_cmdHandler); _cmdHandler=null; }
+  _saveViewState();
+}
+
+function openLatestResult(){
+  if(latestResultKey) openDetail(latestResultKey);
 }
 
 // ── Inspector ─────────────────────────────────────────────────────────────────
@@ -997,6 +1350,25 @@ function renderDecisionDetail(a){
   return h;
 }
 
+function renderResultDetail(a){
+  let h = '<div class="ins-meta">'
+    +'<span class="ins-meta-kind">result</span>'
+    +(a.workflow?'<span class="ins-meta-dot">&middot;</span><span class="ins-meta-fn">'+esc(a.workflow)+'</span>':'')
+    +'</div>'
+    +'<div class="ins-title">Workflow result</div>';
+  if(a.workflow){
+    h += '<div class="ins-section"><div class="ins-sec-label">workflow</div>'
+      +'<div class="ins-ctx ins-ctx-mono">'+esc(a.workflow)+'</div></div>';
+  }
+  h += '<div class="ins-section"><div class="ins-sec-label">value</div>'+ctxBox(a.value)+'</div>';
+  if(a.updated_at){
+    const when = new Date(a.updated_at * 1000);
+    h += '<div class="ins-section"><div class="ins-sec-label">updated</div>'
+      +'<div class="ins-ctx ins-ctx-mono">'+esc(when.toISOString())+'</div></div>';
+  }
+  return h;
+}
+
 function renderInspector(overrideKey, targetEl, afterInput){
   const key = overrideKey !== undefined ? overrideKey : detailKey;
   const el  = targetEl || detailBody;
@@ -1007,6 +1379,7 @@ function renderInspector(overrideKey, targetEl, afterInput){
   const a   = byKey[key];
   if(a.kind==='msg'){      el.innerHTML = renderMsgDetail(a);      return; }
   if(a.kind==='decision'){ el.innerHTML = renderDecisionDetail(a); return; }
+  if(a.kind==='result'){   el.innerHTML = renderResultDetail(a);   return; }
   const req = a.reqId ? reqMap.get(a.reqId) : null;
   const hp  = req && !req.resolved && a.kind==='human';
   const hd  = req && req.resolved;
@@ -1186,7 +1559,7 @@ function colNextRow(ll){
 }
 
 function colSetScrollH(ll, h){
-  const pinned = colView.scrollTop + colView.clientHeight >= colView.scrollHeight - 40;
+  const pinned = !_restoreActive && colView.scrollTop + colView.clientHeight >= colView.scrollHeight - 40;
   globalColH = Math.max(globalColH, h);
   Object.keys(colEls).forEach(function(k){
     const s = document.getElementById('col-spacer-'+k);
@@ -1377,6 +1750,9 @@ function handleInit(e){
   Object.keys(groups).forEach(function(k){ delete groups[k]; });
   Object.keys(inboxCards).forEach(function(k){ delete inboxCards[k]; });
   lifelines.length = 0; reqMap.clear(); pending = 0;
+  latestResultKey = null;
+  resultPill.style.display = 'none';
+  resultPill.innerHTML = '';
   inboxList.innerHTML = '<p class="inbox-empty">No actions yet…</p>';
   updateInboxBadge();
   (e.lifelines||[]).forEach(function(ll){ ensureGroup(ll); });
@@ -1405,12 +1781,23 @@ function handleActStart(e){
   const kind = e.action_kind||'pure', name = e.action||'—';
   if(name==='assign') return;
   const key  = ll+':'+e.seq;
+  const existing = byKey[key] || null;
   const now  = new Date();
   const time = now.getHours().toString().padStart(2,'0')+':'+now.getMinutes().toString().padStart(2,'0');
-  byKey[key] = {key,lifeline:ll,name,kind,seq:e.seq,status:'pending',inputs:{},outputs:{},reqId:null,time};
-  groups[ll].push(key);
-  if(kind==='human') createInboxCard(key);
-  createColActCard(key);
+  byKey[key] = {key,lifeline:ll,name,kind,seq:e.seq,
+    status: existing&&existing.status==='done' ? 'done' : 'pending',
+    inputs:e.inputs||existing&&existing.inputs||{},
+    outputs: existing&&existing.outputs||{},
+    reqId: existing&&existing.reqId||null,
+    time: existing&&existing.time||time};
+  if(!existing){
+    groups[ll].push(key);
+    if(kind==='human') createInboxCard(key);
+    createColActCard(key);
+  } else {
+    updateInboxCard(key);
+    updateColActCard(key);
+  }
 }
 
 function handleAct(e){
@@ -1441,7 +1828,7 @@ function handleHumanRequired(e){
     updateColActCard(matchedKey);
     const curReq = detailKey&&byKey[detailKey]&&byKey[detailKey].reqId
       ? reqMap.get(byKey[detailKey].reqId) : null;
-    if(!curReq||curReq.resolved) openDetail(matchedKey);
+    if(!_restoreAutoOpenSuppressed && (!curReq||curReq.resolved)) openDetail(matchedKey);
   }
 }
 
@@ -1467,6 +1854,17 @@ function handleHumanInput(e){
   }
 }
 
+function handleWorkflowResult(e){
+  const workflow = e.workflow||'workflow';
+  const scope = (e.path||[]).join('/');
+  const key = 'result:'+scope+':'+workflow;
+  byKey[key] = {key, kind:'result', workflow, value:e.value, updated_at:e.updated_at};
+  latestResultKey = key;
+  resultPill.style.display = 'inline-flex';
+  resultPill.innerHTML = '<span>Result</span><span class="result-pill-value">'+esc(fmtShort(e.value))+'</span>';
+  if(detailKey===key) renderInspector(key, detailBody, closeDetail);
+}
+
 function handleSend(e){ createColMsgCard(e); }
 function handleRecv(e){ if(isCtrlMsg(e)) handleCtrlRecv(e); else createColMsgCard(e); }
 
@@ -1483,7 +1881,9 @@ function dispatch(e){
     case 'send':                 handleSend(e); break;
     case 'recv':                 handleRecv(e); break;
     case 'decision':             handleDecision(e); break;
+    case 'workflow_result':      handleWorkflowResult(e); break;
   }
+  _scheduleRestoreAfterReplay();
 }
 
 // ── SSE ───────────────────────────────────────────────────────────────────────

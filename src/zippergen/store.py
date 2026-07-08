@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS events (
   sender       TEXT NOT NULL,
   receiver     TEXT,
   channel      TEXT,
-  kind         TEXT NOT NULL,       -- 'seed'|'msg'|'ctrl'|'act'|'decision'|'effect'
+  kind         TEXT NOT NULL,       -- 'seed'|'msg'|'ctrl'|'act'|'decision'|'trace'|'effect'
   payload      BLOB,
   causal_stamp BLOB
 );
@@ -41,6 +41,29 @@ CREATE TABLE IF NOT EXISTS snapshots (
   env     BLOB NOT NULL,            -- json-encoded local env (scalars)
   locator BLOB NOT NULL,            -- json-encoded child-index path to the loop node
   floor   BLOB NOT NULL            -- json-encoded per-channel replay floor
+);
+
+CREATE TABLE IF NOT EXISTS human_tasks (
+  task_id    TEXT PRIMARY KEY,
+  role       TEXT NOT NULL,
+  locator    BLOB NOT NULL,
+  action     TEXT NOT NULL,
+  input_hash TEXT,
+  inputs     BLOB NOT NULL,
+  spec       BLOB NOT NULL,
+  status     TEXT NOT NULL,
+  result     BLOB,
+  created_at REAL NOT NULL,
+  updated_at REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS human_tasks_by_status
+  ON human_tasks(status, updated_at);
+
+CREATE TABLE IF NOT EXISTS workflow_results (
+  workflow   TEXT PRIMARY KEY,
+  value      BLOB NOT NULL,
+  created_at REAL NOT NULL,
+  updated_at REAL NOT NULL
 );
 """
 
@@ -114,7 +137,206 @@ def load_snapshot(conn, role: str) -> dict | None:
             "floor": json.loads(row[2])}
 
 
+def _json_safe(value):
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    if isinstance(value, tuple):
+        return [_json_safe(v) for v in value]
+    if isinstance(value, list):
+        return [_json_safe(v) for v in value]
+    if isinstance(value, dict):
+        return {str(k): _json_safe(v) for k, v in value.items()}
+    return str(value)
+
+
+def write_workflow_result(conn, workflow: str, value: object) -> None:
+    payload = json.dumps(_json_safe(value))
+    now = time.time()
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        conn.execute(
+            "INSERT INTO workflow_results(workflow, value, created_at, updated_at) "
+            "VALUES(?,?,?,?) "
+            "ON CONFLICT(workflow) DO UPDATE SET "
+            "value=excluded.value, updated_at=excluded.updated_at",
+            (workflow, payload, now, now),
+        )
+        conn.execute("COMMIT")
+    except BaseException:
+        conn.execute("ROLLBACK")
+        raise
+
+
+def load_workflow_result(conn, workflow: str) -> object | None:
+    row = conn.execute(
+        "SELECT value FROM workflow_results WHERE workflow=?", (workflow,)
+    ).fetchone()
+    if row is None:
+        return None
+    return json.loads(row[0])
+
+
+def list_workflow_results(conn) -> list[dict]:
+    rows = conn.execute(
+        "SELECT workflow, value, created_at, updated_at "
+        "FROM workflow_results ORDER BY updated_at, workflow"
+    ).fetchall()
+    return [
+        {
+            "workflow": row[0],
+            "value": json.loads(row[1]),
+            "created_at": row[2],
+            "updated_at": row[3],
+        }
+        for row in rows
+    ]
+
+
+def record_trace_event(conn, role: str, event: dict) -> int:
+    cur = conn.execute(
+        "INSERT INTO events(sender,receiver,channel,kind,payload,causal_stamp) "
+        "VALUES(?,?,?,?,?,?)",
+        (role, None, None, "trace", json.dumps(_json_safe(event)), None),
+    )
+    return int(cur.lastrowid)
+
+
+def list_trace_events(conn, after_rowid: int = 0) -> list[dict]:
+    rows = conn.execute(
+        "SELECT rowid, payload FROM events "
+        "WHERE kind='trace' AND rowid>? ORDER BY rowid",
+        (after_rowid,),
+    ).fetchall()
+    return [
+        {"rowid": row[0], "event": json.loads(row[1])}
+        for row in rows
+    ]
+
+
+def human_task_id(
+    role: str,
+    locator: list,
+    input_hash: str | None,
+    journal_after: int,
+) -> str:
+    payload = {
+        "role": role,
+        "locator": locator,
+        "input_hash": input_hash,
+        "journal_after": journal_after,
+    }
+    import hashlib
+    return hashlib.sha1(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:24]
+
+
+def ensure_human_task(
+    conn,
+    *,
+    task_id: str,
+    role: str,
+    locator: list,
+    action: str,
+    input_hash: str | None,
+    inputs: dict,
+    spec: dict,
+) -> tuple[dict, bool]:
+    """Create a pending human task if absent; return (task, created)."""
+    now = time.time()
+    cur = conn.execute(
+        "INSERT OR IGNORE INTO human_tasks("
+        "task_id, role, locator, action, input_hash, inputs, spec, status, result, created_at, updated_at"
+        ") VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+        (
+            task_id,
+            role,
+            json.dumps(locator),
+            action,
+            input_hash,
+            json.dumps(inputs),
+            json.dumps(spec),
+            "pending",
+            None,
+            now,
+            now,
+        ),
+    )
+    task = load_human_task(conn, task_id)
+    assert task is not None
+    return task, cur.rowcount == 1
+
+
+def complete_human_task(conn, task_id: str, result: dict) -> dict:
+    """Mark a pending task done without overwriting an already-completed answer."""
+    now = time.time()
+    conn.execute(
+        "UPDATE human_tasks SET status='done', result=?, updated_at=? "
+        "WHERE task_id=? AND status='pending'",
+        (json.dumps(result), now, task_id),
+    )
+    task = load_human_task(conn, task_id)
+    if task is None:
+        raise KeyError(f"human task {task_id!r} not found")
+    return task
+
+
+def load_human_task(conn, task_id: str) -> dict | None:
+    row = conn.execute(
+        "SELECT task_id, role, locator, action, input_hash, inputs, spec, status, result, "
+        "created_at, updated_at FROM human_tasks WHERE task_id=?",
+        (task_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    result = json.loads(row[8]) if row[8] is not None else None
+    return {
+        "task_id": row[0],
+        "role": row[1],
+        "locator": json.loads(row[2]),
+        "action": row[3],
+        "input_hash": row[4],
+        "inputs": json.loads(row[5]),
+        "spec": json.loads(row[6]),
+        "status": row[7],
+        "result": result,
+        "created_at": row[9],
+        "updated_at": row[10],
+    }
+
+
 Item = tuple[int, tuple, "dict | None", "dict | None", "dict | None"]
+
+
+def _encode_causal_stamp(
+    vc: dict | None,
+    view: dict | None,
+    field_view: dict | None,
+) -> str | None:
+    if vc is None and view is None and field_view is None:
+        return None
+    return json.dumps({"vc": vc, "view": view, "field_view": field_view})
+
+
+def _decode_view(view: dict | None) -> dict | None:
+    if view is None:
+        return None
+    return {
+        str(lifeline): {int(formula_id): bool(value) for formula_id, value in values.items()}
+        for lifeline, values in view.items()
+    }
+
+
+def _decode_causal_stamp(stamp) -> tuple[dict | None, dict | None, dict | None]:
+    if stamp is None:
+        return None, None, None
+    data = json.loads(stamp)
+    if (
+        isinstance(data, dict)
+        and set(data.keys()) <= {"vc", "view", "field_view"}
+        and (data.get("vc") is None or isinstance(data.get("vc"), dict))
+    ):
+        return data.get("vc"), _decode_view(data.get("view")), data.get("field_view")
+    # Backward compatibility: old stores kept only the vector clock in this column.
+    return data, None, None
 
 
 class DurableChannel:
@@ -136,6 +358,8 @@ class DurableChannel:
         self._replay_outbox: deque = deque()
         self._replay_inbox: dict[tuple[str, str, str], deque] = {}
         self._journal_consumed: int = (since or {}).get("journal", 0)
+        self._journal_floor: int = self._journal_consumed
+        self._journal_seen: set[int] = set()
         self._load_cursors()
         self._load_replay()
 
@@ -185,6 +409,9 @@ class DurableChannel:
             "journal": self._journal_consumed,
         }
 
+    def journal_position(self) -> int:
+        return self._journal_consumed
+
     # ---- role-local journal (external act outputs + owner decisions) --------
     def record_act(self, payload: dict) -> int:
         """INSERT an act-journal row. Does NOT advance the journal cursor — the
@@ -204,33 +431,59 @@ class DurableChannel:
             "VALUES(?,?,?,?,?,?)",
             (self.role, None, None, "decision", json.dumps(payload), None),
         )
-        self._journal_consumed = int(cur.lastrowid)
-        return int(cur.lastrowid)
+        rowid = int(cur.lastrowid)
+        self._journal_seen.add(rowid)
+        self._journal_consumed = max(self._journal_consumed, rowid)
+        return rowid
 
     def consume_journal(self, expected_kind: str, locator: list,
-                        input_hash: str | None = None) -> dict | None:
-        """Return the next committed journal row for this role (FIFO by rowid),
-        asserting it matches the statement re-executing here; None if none left."""
-        row = self.conn.execute(
-            "SELECT rowid, kind, payload FROM events "
-            "WHERE sender=? AND kind IN ('act','decision') AND rowid>? "
-            "ORDER BY rowid LIMIT 1",
-            (self.role, self._journal_consumed),
-        ).fetchone()
-        if row is None:
-            return None
-        rowid, kind, payload = row
-        data = json.loads(payload)
-        if kind != expected_kind or data.get("locator") != locator:
-            raise ReplayMismatch(
-                f"journal diverged at rowid {rowid}: recorded {kind}/{data.get('locator')}, "
-                f"executing {expected_kind}/{locator}")
-        if input_hash is not None and data.get("input_hash") not in (None, input_hash):
-            raise ReplayMismatch(
-                f"journal input_hash diverged at rowid {rowid}: "
-                f"recorded {data.get('input_hash')!r}, recomputed {input_hash!r}")
-        self._journal_consumed = rowid
-        return data
+                        input_hash: str | None = None, *,
+                        strict: bool = True) -> dict | None:
+        """Return a committed journal row for this role.
+
+        ``strict=True`` preserves the simple FIFO replay invariant used by unit
+        tests and non-parallel reasoning. Runtime replay uses ``strict=False``
+        because a single lifeline can own multiple local parallel branches whose
+        enabled order can differ while still referring to the same committed
+        action/decision rows.
+        """
+        if strict:
+            row = self.conn.execute(
+                "SELECT rowid, kind, payload FROM events "
+                "WHERE sender=? AND kind IN ('act','decision') AND rowid>? "
+                "ORDER BY rowid LIMIT 1",
+                (self.role, self._journal_consumed),
+            ).fetchone()
+            if row is None:
+                return None
+            candidates = [row]
+        else:
+            candidates = self.conn.execute(
+                "SELECT rowid, kind, payload FROM events "
+                "WHERE sender=? AND kind IN ('act','decision') AND rowid>? "
+                "ORDER BY rowid",
+                (self.role, self._journal_floor),
+            ).fetchall()
+        for rowid, kind, payload in candidates:
+            if rowid in self._journal_seen:
+                continue
+            data = json.loads(payload)
+            if kind != expected_kind or data.get("locator") != locator:
+                if strict:
+                    raise ReplayMismatch(
+                        f"journal diverged at rowid {rowid}: recorded {kind}/{data.get('locator')}, "
+                        f"executing {expected_kind}/{locator}")
+                continue
+            if input_hash is not None and data.get("input_hash") not in (None, input_hash):
+                if strict:
+                    raise ReplayMismatch(
+                        f"journal input_hash diverged at rowid {rowid}: "
+                        f"recorded {data.get('input_hash')!r}, recomputed {input_hash!r}")
+                continue
+            self._journal_seen.add(rowid)
+            self._journal_consumed = max(self._journal_consumed, rowid)
+            return data
+        return None
 
     # ---- interpreter-facing surface ---------------------------------------
     def put(self, sender: str, receiver: str, channel: str, values: tuple,
@@ -253,7 +506,7 @@ class DurableChannel:
             "INSERT INTO events(sender,receiver,channel,kind,payload,causal_stamp) "
             "VALUES(?,?,?,?,?,?)",
             (sender, receiver, channel, "msg", json.dumps(list(values)),
-             json.dumps(vc) if vc is not None else None),
+             _encode_causal_stamp(vc, view, field_view)),
         )
         return int(cur.lastrowid)
 
@@ -288,8 +541,8 @@ class DurableChannel:
     @staticmethod
     def _row_to_item(rowid: int, payload, stamp) -> Item:
         values = tuple(json.loads(payload)) if payload is not None else ()
-        vc = json.loads(stamp) if stamp is not None else None
-        return (rowid, values, vc, None, None)
+        vc, view, field_view = _decode_causal_stamp(stamp)
+        return (rowid, values, vc, view, field_view)
 
     # ---- transaction lifecycle (driven by the per-role loop) --------------
     def commit_txn(self) -> None:

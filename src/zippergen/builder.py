@@ -18,7 +18,7 @@ from zippergen.syntax import (
     Expr, VarExpr, LitExpr,
     Stmt, AnyStmt, EmptyStmt, MsgStmt, CoregionStmt, ActStmt, SkipStmt, SeqStmt, IfStmt, WhileStmt,
     ParallelStmt,
-    LLMAction, PureAction, PlannerAction, HumanAction,
+    LLMAction, PureAction, EffectAction, PlannerAction, HumanAction,
     Workflow,
     seq, is_ztype,
 )
@@ -131,7 +131,7 @@ def msg(
     ))
 
 
-Action = LLMAction | PureAction | PlannerAction | HumanAction
+Action = LLMAction | PureAction | EffectAction | PlannerAction | HumanAction
 
 
 def _action_outputs(action: Action) -> tuple[tuple[str, ZType], ...]:
@@ -601,11 +601,11 @@ def _resolve_action(action_ast: ast.expr, namespace: dict) -> Action:
         )
 
     value = _resolve_action_value(action_ast, namespace)
-    if isinstance(value, (LLMAction, PureAction, PlannerAction, HumanAction)):
+    if isinstance(value, (LLMAction, PureAction, EffectAction, PlannerAction, HumanAction)):
         return value
     raise TypeError(
         f"Workflow action '{ast.unparse(action_ast)}' is not a ZipperGen action. "
-        "Decorate it with @llm, @pure, @planner, or @human."
+        "Decorate it with @llm, @pure, @effect, @planner, or @human."
     )
 
 

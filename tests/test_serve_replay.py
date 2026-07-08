@@ -5,6 +5,7 @@ from zippergen.actions import pure
 from zippergen.projection import project
 from zippergen.store import open_store, DurableChannel
 from zippergen.serve import run_role, seed_env
+from zippergen.role_runner import RoleRunner
 from tests.test_examples_regression import _two_role_branch_workflow, A, B
 
 def _run_both(conn_a, conn_b, wf, seed):
@@ -22,6 +23,19 @@ def test_run_role_completes_two_role_branch(tmp_path):
     path = str(tmp_path / "s.sqlite")
     wf = _two_role_branch_workflow()
     envs = _run_both(open_store(path), open_store(path), wf, {"x": 7})
+    assert envs["A"]["ok"] is True
+
+def test_role_runner_direct_completes_two_role_branch(tmp_path):
+    path = str(tmp_path / "s.sqlite")
+    wf = _two_role_branch_workflow()
+    la = project(wf, A); lb = project(wf, B)
+    import threading
+    envs = {}
+    ta = threading.Thread(target=lambda: envs.__setitem__(
+        "A", RoleRunner(open_store(path), "A", la, {"x": 7}, wf.ns).run()))
+    tb = threading.Thread(target=lambda: envs.__setitem__(
+        "B", run_role(open_store(path), "B", lb, {}, wf.ns)))
+    ta.start(); tb.start(); ta.join(timeout=10); tb.join(timeout=10)
     assert envs["A"]["ok"] is True
 
 def test_run_role_replay_is_idempotent(tmp_path):

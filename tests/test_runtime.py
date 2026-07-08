@@ -714,7 +714,7 @@ from zippergen.syntax import ActStmt, Lifeline, Var, VarExpr
 from zippergen.actions import pure
 
 A = Lifeline("A")
-_x = Var("x", int); _y = Var("y", int)
+_x = Var("x", int); _y = Var("y", int); _z = Var("z", int)
 
 @pure
 def inc(x: int) -> int:
@@ -726,6 +726,11 @@ def _llm_act():
     action = LLMAction("ask", (("x", int),), (("y", int),), "s", "{x}", "text")
     return ActStmt(A, action, (VarExpr(_x),), (_y,))
 
+def _llm_act_output(name: str, output: Var):
+    from zippergen.syntax import LLMAction
+    action = LLMAction(name, (("x", int),), ((output.name, int),), "s", "{x}", "text")
+    return ActStmt(A, action, (VarExpr(_x),), (output,))
+
 class _FakeJournal:
     def __init__(self, channel, act_paths):
         self.channel = channel; self.act_paths = act_paths
@@ -733,7 +738,7 @@ class _FakeJournal:
 class _FakeChannel:
     def __init__(self, result=None):
         self._result = result
-    def consume_journal(self, kind, locator, input_hash=None):
+    def consume_journal(self, kind, locator, input_hash=None, *, strict=True):
         return self._result
 
 def test_step_external_act_live_returns_pending():
@@ -767,6 +772,44 @@ def test_step_external_act_replay_consumes_no_backend():
     out, progressed = _step(act, env, None, {}, boom, None, None, None, {}, None, journal=j)
     assert progressed is True and env["y"] == 99
 
+def test_parallel_external_replay_matches_journal_rows_by_locator():
+    from zippergen.syntax import ParallelLocalStmt, EmptyStmt
+
+    class _MatchingChannel:
+        def __init__(self, rows):
+            self.rows = list(rows)
+            self.seen: set[int] = set()
+            self.calls = []
+
+        def consume_journal(self, kind, locator, input_hash=None, *, strict=True):
+            self.calls.append((kind, list(locator), strict))
+            for i, row in enumerate(self.rows):
+                if i in self.seen:
+                    continue
+                if row["kind"] == kind and row["locator"] == locator:
+                    self.seen.add(i)
+                    return row
+            return None
+
+    act0 = _llm_act_output("ask_y", _y)
+    act1 = _llm_act_output("ask_z", _z)
+    region = ParallelLocalStmt((act0, act1), (0, 1))
+    channel = _MatchingChannel([
+        {"kind": "act", "status": "done", "locator": [1], "outputs": {"z": 1}},
+        {"kind": "act", "status": "done", "locator": [0], "outputs": {"y": 2}},
+    ])
+    j = _FakeJournal(channel, {id(act0): [0], id(act1): [1]})
+    env = {"x": 5}
+
+    out, progressed = _step(region, env, None, {}, mock_llm, None, None, None, {}, None, journal=j)
+    assert progressed is True and env["y"] == 2
+    assert isinstance(out, ParallelLocalStmt)
+
+    out, progressed = _step(out, env, None, {}, mock_llm, None, None, None, {}, None, journal=j)
+    assert progressed is True and env["z"] == 1
+    assert isinstance(out, EmptyStmt)
+    assert channel.calls == [("act", [0], False), ("act", [1], False)]
+
 def test_step_pure_act_inline_even_in_durable_mode():
     act = ActStmt(A, inc, (VarExpr(_x),), (_y,))
     j = _FakeJournal(_FakeChannel(result=None), {id(act): [0]})
@@ -786,7 +829,7 @@ from zippergen.syntax import IfStmt, SkipStmt
 class _RecordingChannel:
     def __init__(self, result=None):
         self._result = result; self.decided = None
-    def consume_journal(self, kind, locator, input_hash=None):
+    def consume_journal(self, kind, locator, input_hash=None, *, strict=True):
         return self._result
     def record_decision(self, payload):
         self.decided = payload; return 1
