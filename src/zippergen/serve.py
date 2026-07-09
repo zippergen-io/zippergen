@@ -350,6 +350,38 @@ def _store_status(store_path: str) -> dict[str, object]:
     }
 
 
+def _load_trace_events(
+    store_path: str,
+    *,
+    after_rowid: int = 0,
+    limit: int = 50,
+) -> list[dict]:
+    if limit <= 0:
+        raise SystemExit("--tail must be greater than 0.")
+    path = Path(store_path).expanduser()
+    if not path.exists():
+        raise SystemExit(f"Store does not exist: {store_path}")
+    conn = open_store(str(path))
+    try:
+        rows = conn.execute(
+            "SELECT rowid, sender, payload FROM events "
+            "WHERE kind='trace' AND rowid>? "
+            "ORDER BY rowid DESC LIMIT ?",
+            (after_rowid, limit),
+        ).fetchall()
+    finally:
+        conn.close()
+    rows = list(reversed(rows))
+    return [
+        {
+            "rowid": row[0],
+            "role": row[1],
+            "event": _safe_json_loads(row[2]),
+        }
+        for row in rows
+    ]
+
+
 def _load_human_tasks(
     store_path: str,
     *,
@@ -387,6 +419,46 @@ def _load_human_tasks(
 def _short_text(value: object, *, limit: int = 120) -> str:
     text = "" if value is None else str(value).replace("\n", " ")
     return text if len(text) <= limit else text[: limit - 1] + "..."
+
+
+def _short_json(value: object, *, limit: int = 160) -> str:
+    text = json.dumps(value, default=str, sort_keys=True)
+    return text if len(text) <= limit else text[: limit - 1] + "..."
+
+
+def _trace_summary(role: str, event: object) -> str:
+    if not isinstance(event, dict):
+        return f"{role} {_short_json(event)}"
+
+    event_type = event.get("type", "event")
+    if event_type == "send":
+        source = event.get("from", role)
+        target = event.get("to", "?")
+        channel = event.get("channel") or "-"
+        return f"{role} send {source}->{target} {channel} values={_short_json(event.get('values') or [])}"
+    if event_type == "recv":
+        source = event.get("from", "?")
+        target = event.get("to", role)
+        channel = event.get("channel") or "-"
+        return f"{role} recv {source}->{target} {channel} bindings={_short_json(event.get('bindings') or {})}"
+    if event_type in {"act_start", "act"}:
+        action = event.get("action", "?")
+        kind = event.get("action_kind") or "action"
+        payload_name = "outputs" if event_type == "act" else "inputs"
+        payload = event.get(payload_name) or {}
+        seq = event.get("seq")
+        seq_text = f" seq={seq}" if seq is not None else ""
+        return f"{role} {event_type} {kind} {action}{seq_text} {payload_name}={_short_json(payload)}"
+    if event_type == "decision":
+        kind = event.get("kind", "if")
+        return f"{role} decision {kind} value={_short_json(event.get('value'))}"
+    return f"{role} {event_type} {_short_json(event)}"
+
+
+def _print_trace_events(events: list[dict]) -> None:
+    print(f"Trace events: {len(events)}")
+    for item in events:
+        print(f"#{item['rowid']} {_trace_summary(item.get('role') or '-', item.get('event'))}")
 
 
 def _print_tasks(tasks: list[dict], *, heading: str) -> None:
@@ -535,6 +607,15 @@ def _status_command(args) -> int:
         print(json.dumps(status, default=str))
     else:
         _print_status(status)
+    return 0
+
+
+def _trace_command(args) -> int:
+    events = _load_trace_events(args.store, after_rowid=args.after, limit=args.tail)
+    if args.json:
+        print(json.dumps(events, default=str))
+    else:
+        _print_trace_events(events)
     return 0
 
 
@@ -694,6 +775,12 @@ def main(argv=None) -> int:
     st.add_argument("--store", required=True, help="SQLite store path.")
     st.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
 
+    tr = sub.add_parser("trace", help="show recent trace events from a local SQLite store")
+    tr.add_argument("--store", required=True, help="SQLite store path.")
+    tr.add_argument("--tail", type=int, default=50, help="Maximum number of trace events to show.")
+    tr.add_argument("--after", type=int, default=0, help="Only show trace events after this event rowid.")
+    tr.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+
     tk = sub.add_parser("tasks", help="list human tasks in a local SQLite store")
     tk.add_argument("--store", required=True, help="SQLite store path.")
     tk.add_argument("--all", action="store_true", help="Include completed tasks.")
@@ -734,6 +821,8 @@ def main(argv=None) -> int:
         return _run_workflow_command(args)
     if args.cmd == "status":
         return _status_command(args)
+    if args.cmd == "trace":
+        return _trace_command(args)
     if args.cmd == "tasks":
         return _tasks_command(args)
     if args.cmd == "approve":

@@ -214,6 +214,8 @@ Inspect a local deployment store:
 ```bash
 zippergen status --store ~/.zippergen/runs/hello.sqlite
 zippergen status --store ~/.zippergen/runs/hello.sqlite --json
+zippergen trace --store ~/.zippergen/runs/hello.sqlite --tail 50
+zippergen trace --store ~/.zippergen/runs/hello.sqlite --after <rowid> --json
 ```
 
 List and complete human approvals without the browser UI:

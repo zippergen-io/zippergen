@@ -1,7 +1,13 @@
 import json
 
 from zippergen.serve import main
-from zippergen.store import ensure_human_task, load_human_task, load_human_task_token, open_store
+from zippergen.store import (
+    ensure_human_task,
+    load_human_task,
+    load_human_task_token,
+    open_store,
+    record_trace_event,
+)
 
 
 WORKFLOW_SOURCE = """
@@ -184,6 +190,70 @@ def test_status_command_reports_missing_store(tmp_path, capsys):
         "state": "missing",
         "summary": "store does not exist",
     }
+
+
+def test_trace_command_reports_recent_trace_events(tmp_path, capsys):
+    store_path = tmp_path / "trace.sqlite"
+    conn = open_store(str(store_path))
+    first = record_trace_event(
+        conn,
+        "Writer",
+        {"type": "send", "from": "Writer", "to": "User", "channel": "main", "values": ["old"]},
+    )
+    second = record_trace_event(
+        conn,
+        "User",
+        {
+            "type": "recv",
+            "from": "Writer",
+            "to": "User",
+            "channel": "main",
+            "bindings": {"draft": "Looks good."},
+        },
+    )
+    conn.close()
+
+    rc = main(["trace", "--store", str(store_path), "--tail", "1"])
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "Trace events: 1" in captured.out
+    assert f"#{second} User recv Writer->User main" in captured.out
+    assert "draft" in captured.out
+    assert f"#{first}" not in captured.out
+
+
+def test_trace_command_outputs_json_after_rowid(tmp_path, capsys):
+    store_path = tmp_path / "trace-json.sqlite"
+    conn = open_store(str(store_path))
+    first = record_trace_event(
+        conn,
+        "Writer",
+        {"type": "act_start", "action": "draft", "action_kind": "llm", "inputs": {"topic": "x"}},
+    )
+    second = record_trace_event(
+        conn,
+        "Writer",
+        {"type": "act", "action": "draft", "action_kind": "llm", "outputs": {"reply": "hello"}},
+    )
+    conn.close()
+
+    rc = main(["trace", "--store", str(store_path), "--after", str(first), "--json"])
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert json.loads(captured.out) == [
+        {
+            "rowid": second,
+            "role": "Writer",
+            "event": {
+                "type": "act",
+                "action": "draft",
+                "action_kind": "llm",
+                "outputs": {"reply": "hello"},
+            },
+        }
+    ]
 
 
 def test_tasks_command_lists_pending_tasks(tmp_path, capsys):
