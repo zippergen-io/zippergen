@@ -5,6 +5,7 @@ stream in one append-only table. All writes serialize through one file, so
 from __future__ import annotations
 
 import json
+import secrets
 import sqlite3
 import threading
 import time
@@ -58,6 +59,17 @@ CREATE TABLE IF NOT EXISTS human_tasks (
 );
 CREATE INDEX IF NOT EXISTS human_tasks_by_status
   ON human_tasks(status, updated_at);
+
+CREATE TABLE IF NOT EXISTS human_task_tokens (
+  token      TEXT PRIMARY KEY,
+  task_id    TEXT NOT NULL,
+  channel    TEXT NOT NULL,
+  created_at REAL NOT NULL,
+  used_at    REAL,
+  UNIQUE(task_id, channel)
+);
+CREATE INDEX IF NOT EXISTS human_task_tokens_by_task
+  ON human_task_tokens(task_id);
 
 CREATE TABLE IF NOT EXISTS workflow_results (
   workflow   TEXT PRIMARY KEY,
@@ -277,6 +289,83 @@ def complete_human_task(conn, task_id: str, result: dict) -> dict:
     if task is None:
         raise KeyError(f"human task {task_id!r} not found")
     return task
+
+
+def ensure_human_task_token(conn, task_id: str, *, channel: str = "default") -> dict:
+    """Return a durable random token for a human task/channel pair.
+
+    Tokens are intended for external adapters such as email, Telegram, or Slack.
+    The raw task id is stable but not meant to be the only approval credential
+    outside trusted local CLI use.
+    """
+
+    channel = str(channel or "default")
+    if load_human_task(conn, task_id) is None:
+        raise KeyError(f"human task {task_id!r} not found")
+
+    row = conn.execute(
+        "SELECT token, task_id, channel, created_at, used_at "
+        "FROM human_task_tokens WHERE task_id=? AND channel=?",
+        (task_id, channel),
+    ).fetchone()
+    if row is not None:
+        return _token_row(row)
+
+    now = time.time()
+    for _attempt in range(10):
+        token = "zg_" + secrets.token_urlsafe(18)
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO human_task_tokens(token, task_id, channel, created_at, used_at) "
+            "VALUES(?,?,?,?,NULL)",
+            (token, task_id, channel, now),
+        )
+        if cur.rowcount == 1:
+            return {
+                "token": token,
+                "task_id": task_id,
+                "channel": channel,
+                "created_at": now,
+                "used_at": None,
+            }
+        row = conn.execute(
+            "SELECT token, task_id, channel, created_at, used_at "
+            "FROM human_task_tokens WHERE task_id=? AND channel=?",
+            (task_id, channel),
+        ).fetchone()
+        if row is not None:
+            return _token_row(row)
+    raise RuntimeError("could not generate unique human task token")
+
+
+def _token_row(row) -> dict:
+    return {
+        "token": row[0],
+        "task_id": row[1],
+        "channel": row[2],
+        "created_at": row[3],
+        "used_at": row[4],
+    }
+
+
+def load_human_task_token(conn, token: str) -> dict | None:
+    row = conn.execute(
+        "SELECT token, task_id, channel, created_at, used_at "
+        "FROM human_task_tokens WHERE token=?",
+        (token,),
+    ).fetchone()
+    return _token_row(row) if row is not None else None
+
+
+def mark_human_task_token_used(conn, token: str) -> dict:
+    now = time.time()
+    conn.execute(
+        "UPDATE human_task_tokens SET used_at=COALESCE(used_at, ?) WHERE token=?",
+        (now, token),
+    )
+    record = load_human_task_token(conn, token)
+    if record is None:
+        raise KeyError(f"human task token {token!r} not found")
+    return record
 
 
 def load_human_task(conn, task_id: str) -> dict | None:

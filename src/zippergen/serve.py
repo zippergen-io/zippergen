@@ -55,7 +55,15 @@ from types import ModuleType
 
 from zippergen.syntax import Workflow, Lifeline
 from zippergen.projection import project
-from zippergen.store import complete_human_task, list_workflow_results, load_human_task, open_store
+from zippergen.store import (
+    complete_human_task,
+    ensure_human_task_token,
+    list_workflow_results,
+    load_human_task,
+    load_human_task_token,
+    mark_human_task_token_used,
+    open_store,
+)
 
 
 @dataclass(frozen=True)
@@ -342,7 +350,14 @@ def _store_status(store_path: str) -> dict[str, object]:
     }
 
 
-def _load_human_tasks(store_path: str, *, status: str | None = "pending", limit: int | None = None) -> list[dict]:
+def _load_human_tasks(
+    store_path: str,
+    *,
+    status: str | None = "pending",
+    limit: int | None = None,
+    with_tokens: bool = False,
+    token_channel: str = "cli",
+) -> list[dict]:
     conn = open_store(str(Path(store_path).expanduser()))
     try:
         query = (
@@ -359,6 +374,10 @@ def _load_human_tasks(store_path: str, *, status: str | None = "pending", limit:
         for row in rows:
             task = load_human_task(conn, row[0])
             if task is not None:
+                if with_tokens:
+                    record = ensure_human_task_token(conn, task["task_id"], channel=token_channel)
+                    task["token"] = record["token"]
+                    task["token_channel"] = record["channel"]
                 tasks.append(task)
         return tasks
     finally:
@@ -382,6 +401,8 @@ def _print_tasks(tasks: list[dict], *, heading: str) -> None:
             f"{spec.get('kind', 'human')} -> {output}: {output_type} "
             f"status={task['status']} updated={_fmt_time(task['updated_at'])}"
         )
+        if task.get("token"):
+            print(f"  token[{task.get('token_channel', 'default')}]: {task['token']}")
         instruction = rendered.get("instruction")
         context = rendered.get("context")
         prefill = rendered.get("prefill")
@@ -489,7 +510,13 @@ def _tasks_command(args) -> int:
     if not Path(args.store).expanduser().exists():
         raise SystemExit(f"Store does not exist: {args.store}")
     status = None if args.all else "pending"
-    tasks = _load_human_tasks(args.store, status=status, limit=args.limit)
+    tasks = _load_human_tasks(
+        args.store,
+        status=status,
+        limit=args.limit,
+        with_tokens=args.tokens,
+        token_channel=args.channel,
+    )
     if args.json:
         print(json.dumps(tasks, default=str))
     else:
@@ -554,15 +581,24 @@ def _approve_command(args) -> int:
         raise SystemExit(f"Store does not exist: {args.store}")
     conn = open_store(store_path)
     try:
-        task = load_human_task(conn, args.task)
+        token_record = None
+        task_id = args.task
+        if args.token is not None:
+            token_record = load_human_task_token(conn, args.token)
+            if token_record is None:
+                raise SystemExit(f"Human task token not found: {args.token}")
+            task_id = token_record["task_id"]
+        task = load_human_task(conn, task_id)
         if task is None:
-            raise SystemExit(f"Human task not found: {args.task}")
+            raise SystemExit(f"Human task not found: {task_id}")
         if task["status"] != "pending":
-            raise SystemExit(f"Human task {args.task} is already {task['status']}.")
+            raise SystemExit(f"Human task {task_id} is already {task['status']}.")
         result = _approve_result_from_args(task, args)
         conn.execute("BEGIN IMMEDIATE")
         try:
-            task = complete_human_task(conn, args.task, result)
+            task = complete_human_task(conn, task_id, result)
+            if token_record is not None:
+                mark_human_task_token_used(conn, token_record["token"])
             conn.execute("COMMIT")
         except BaseException:
             conn.execute("ROLLBACK")
@@ -602,11 +638,15 @@ def main(argv=None) -> int:
     tk.add_argument("--store", required=True, help="SQLite store path.")
     tk.add_argument("--all", action="store_true", help="Include completed tasks.")
     tk.add_argument("--limit", type=int, help="Maximum number of tasks to show.")
+    tk.add_argument("--tokens", action="store_true", help="Generate/show durable approval tokens.")
+    tk.add_argument("--channel", default="cli", help="Token channel name used with --tokens.")
     tk.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
 
     apv = sub.add_parser("approve", help="complete a pending human task")
     apv.add_argument("--store", required=True, help="SQLite store path.")
-    apv.add_argument("--task", required=True, help="Human task id.")
+    target = apv.add_mutually_exclusive_group(required=True)
+    target.add_argument("--task", help="Human task id.")
+    target.add_argument("--token", help="Durable approval token.")
     apv.add_argument("--yes", action="store_true", help="Complete a boolean task with true.")
     apv.add_argument("--no", action="store_true", help="Complete a boolean task with false.")
     apv.add_argument("--value", help="Value for string tasks, or explicit true/false for boolean tasks.")

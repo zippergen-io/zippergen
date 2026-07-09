@@ -1,7 +1,7 @@
 import json
 
 from zippergen.serve import main
-from zippergen.store import ensure_human_task, load_human_task, open_store
+from zippergen.store import ensure_human_task, load_human_task, load_human_task_token, open_store
 
 
 WORKFLOW_SOURCE = """
@@ -294,3 +294,63 @@ def test_approve_command_requires_value_for_string_task(tmp_path):
         assert "requires --value" in str(exc)
     else:
         raise AssertionError("approve should reject string tasks without --value")
+
+
+def test_tasks_command_generates_stable_channel_tokens(tmp_path, capsys):
+    store_path = tmp_path / "task-token.sqlite"
+    conn = open_store(str(store_path))
+    ensure_human_task(
+        conn,
+        task_id="task-1",
+        role="User",
+        locator=[0],
+        action="approve",
+        input_hash=None,
+        inputs={"prompt": "Approve?"},
+        spec={"kind": "confirm", "output": "approved", "output_type": "bool"},
+    )
+    conn.close()
+
+    rc = main(["tasks", "--store", str(store_path), "--tokens", "--channel", "email", "--json"])
+    captured = capsys.readouterr()
+    first = json.loads(captured.out)
+    assert rc == 0
+    assert first[0]["token"].startswith("zg_")
+    assert first[0]["token_channel"] == "email"
+
+    rc = main(["tasks", "--store", str(store_path), "--tokens", "--channel", "email", "--json"])
+    captured = capsys.readouterr()
+    second = json.loads(captured.out)
+    assert rc == 0
+    assert second[0]["token"] == first[0]["token"]
+
+
+def test_approve_command_completes_task_by_token(tmp_path, capsys):
+    store_path = tmp_path / "approve-token.sqlite"
+    conn = open_store(str(store_path))
+    ensure_human_task(
+        conn,
+        task_id="task-1",
+        role="User",
+        locator=[0],
+        action="approve",
+        input_hash=None,
+        inputs={"prompt": "Approve?"},
+        spec={"kind": "confirm", "output": "approved", "output_type": "bool"},
+    )
+    conn.close()
+
+    main(["tasks", "--store", str(store_path), "--tokens", "--channel", "telegram", "--json"])
+    token = json.loads(capsys.readouterr().out)[0]["token"]
+
+    rc = main(["approve", "--store", str(store_path), "--token", token, "--yes"])
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert 'Completed human task task-1: {"approved": true}' in captured.out
+    conn = open_store(str(store_path))
+    try:
+        assert load_human_task(conn, "task-1")["result"] == {"approved": True}
+        assert load_human_task_token(conn, token)["used_at"] is not None
+    finally:
+        conn.close()

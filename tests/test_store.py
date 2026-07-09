@@ -3,11 +3,14 @@ import pytest
 from zippergen.store import (
     complete_human_task,
     ensure_human_task,
+    ensure_human_task_token,
     human_task_id,
     list_trace_events,
     list_workflow_results,
     load_human_task,
+    load_human_task_token,
     load_workflow_result,
+    mark_human_task_token_used,
     open_store,
     record_trace_event,
     chan_key,
@@ -19,7 +22,14 @@ def test_open_store_creates_tables(tmp_path):
     conn = open_store(str(tmp_path / "s.sqlite"))
     names = {r[0] for r in conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
-    assert {"events", "cursors", "snapshots", "human_tasks", "workflow_results"} <= names
+    assert {
+        "events",
+        "cursors",
+        "snapshots",
+        "human_tasks",
+        "human_task_tokens",
+        "workflow_results",
+    } <= names
 
 def test_open_store_is_wal(tmp_path):
     conn = open_store(str(tmp_path / "s.sqlite"))
@@ -84,6 +94,34 @@ def test_human_task_lifecycle(tmp_path):
     still_done = complete_human_task(conn, task_id, {"approved": False})
     conn.execute("COMMIT")
     assert still_done["result"] == {"approved": True}
+
+
+def test_human_task_token_lifecycle(tmp_path):
+    conn = open_store(str(tmp_path / "s.sqlite"))
+    task_id = human_task_id("A", [0], "abc", 0)
+    ensure_human_task(
+        conn,
+        task_id=task_id,
+        role="A",
+        locator=[0],
+        action="review",
+        input_hash="abc",
+        inputs={"prompt": "plan"},
+        spec={"kind": "confirm", "output": "approved"},
+    )
+
+    first = ensure_human_task_token(conn, task_id, channel="email")
+    second = ensure_human_task_token(conn, task_id, channel="email")
+    other = ensure_human_task_token(conn, task_id, channel="telegram")
+
+    assert first == second
+    assert first["token"].startswith("zg_")
+    assert first["channel"] == "email"
+    assert other["token"] != first["token"]
+    assert load_human_task_token(conn, first["token"])["task_id"] == task_id
+
+    used = mark_human_task_token_used(conn, first["token"])
+    assert used["used_at"] is not None
 
 
 def test_workflow_result_lifecycle(tmp_path):

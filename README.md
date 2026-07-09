@@ -225,6 +225,13 @@ zippergen approve --store ~/.zippergen/runs/command-center.sqlite --task <task-i
 zippergen approve --store ~/.zippergen/runs/command-center.sqlite --task <task-id> --value "edited reply"
 ```
 
+External adapters can use durable approval tokens instead of raw task ids:
+
+```bash
+zippergen tasks --store ~/.zippergen/runs/command-center.sqlite --tokens --channel telegram
+zippergen approve --store ~/.zippergen/runs/command-center.sqlite --token <token>
+```
+
 Workflow modules may define an optional setup hook:
 
 ```python
