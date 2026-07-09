@@ -48,13 +48,14 @@ import importlib.util
 import json
 import re
 import sys
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
 
 from zippergen.syntax import Workflow, Lifeline
 from zippergen.projection import project
-from zippergen.store import open_store
+from zippergen.store import list_workflow_results, open_store
 
 
 @dataclass(frozen=True)
@@ -252,6 +253,129 @@ def _call_setup_hook(module: ModuleType, config: RunConfig) -> None:
     setup(config)
 
 
+def _safe_json_loads(value):
+    if value is None:
+        return None
+    try:
+        return json.loads(value)
+    except (TypeError, json.JSONDecodeError):
+        return value
+
+
+def _fmt_time(ts: float | None) -> str:
+    if ts is None:
+        return "-"
+    return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts))
+
+
+def _store_status(store_path: str) -> dict[str, object]:
+    path = Path(store_path).expanduser()
+    if not path.exists():
+        return {
+            "store": str(path),
+            "exists": False,
+            "state": "missing",
+            "summary": "store does not exist",
+        }
+
+    conn = open_store(str(path))
+    try:
+        event_count = conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
+        last_event = conn.execute(
+            "SELECT rowid, sender, receiver, channel, kind, payload "
+            "FROM events ORDER BY rowid DESC LIMIT 1"
+        ).fetchone()
+        human_rows = conn.execute(
+            "SELECT task_id, role, action, status, created_at, updated_at "
+            "FROM human_tasks ORDER BY updated_at DESC"
+        ).fetchall()
+        pending_tasks = [
+            {
+                "task_id": row[0],
+                "role": row[1],
+                "action": row[2],
+                "created_at": row[4],
+                "updated_at": row[5],
+            }
+            for row in human_rows
+            if row[3] == "pending"
+        ]
+        done_task_count = sum(1 for row in human_rows if row[3] == "done")
+        results = list_workflow_results(conn)
+    finally:
+        conn.close()
+
+    if pending_tasks:
+        state = "waiting"
+        summary = f"waiting for {len(pending_tasks)} human task(s)"
+    elif results:
+        state = "done"
+        summary = f"{len(results)} workflow result(s)"
+    elif event_count:
+        state = "active"
+        summary = "events recorded; no result yet"
+    else:
+        state = "empty"
+        summary = "store is initialized but empty"
+
+    last_event_dict = None
+    if last_event is not None:
+        last_event_dict = {
+            "rowid": last_event[0],
+            "sender": last_event[1],
+            "receiver": last_event[2],
+            "channel": last_event[3],
+            "kind": last_event[4],
+            "payload": _safe_json_loads(last_event[5]),
+        }
+
+    return {
+        "store": str(path),
+        "exists": True,
+        "state": state,
+        "summary": summary,
+        "event_count": event_count,
+        "last_event": last_event_dict,
+        "pending_human_tasks": pending_tasks,
+        "done_human_task_count": done_task_count,
+        "workflow_results": results,
+    }
+
+
+def _print_status(status: dict[str, object]) -> None:
+    print(f"Store: {status['store']}")
+    print(f"State: {status['state']} ({status['summary']})")
+    if not status.get("exists"):
+        return
+
+    print(f"Events: {status['event_count']}")
+    last_event = status.get("last_event")
+    if isinstance(last_event, dict):
+        sender = last_event.get("sender")
+        receiver = last_event.get("receiver") or "-"
+        kind = last_event.get("kind")
+        rowid = last_event.get("rowid")
+        print(f"Last event: #{rowid} {kind} {sender}->{receiver}")
+
+    tasks = status.get("pending_human_tasks")
+    if isinstance(tasks, list):
+        print(f"Pending human tasks: {len(tasks)}")
+        for task in tasks[:10]:
+            print(
+                f"  {task['task_id']} {task['role']}.{task['action']} "
+                f"updated {_fmt_time(task['updated_at'])}"
+            )
+
+    results = status.get("workflow_results")
+    if isinstance(results, list):
+        print(f"Workflow results: {len(results)}")
+        for result in results[:10]:
+            print(
+                f"  {result['workflow']} = {json.dumps(result['value'], default=str)} "
+                f"updated {_fmt_time(result['updated_at'])}"
+            )
+
+
 def _run_workflow_command(args) -> int:
     wf, module = load_workflow_spec(args.workflow)
     inputs = _parse_input_json(args.input_json)
@@ -301,6 +425,15 @@ def _run_workflow_command(args) -> int:
     return 0
 
 
+def _status_command(args) -> int:
+    status = _store_status(args.store)
+    if args.json:
+        print(json.dumps(status, default=str))
+    else:
+        _print_status(status)
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="zippergen")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -318,6 +451,10 @@ def main(argv=None) -> int:
     rn.add_argument("--execution", choices=("sqlite", "memory"), default="sqlite", help="Execution backend.")
     rn.add_argument("--show-decisions", action="store_true", help="Show branch/control events in ZipperChat.")
 
+    st = sub.add_parser("status", help="show local SQLite deployment status")
+    st.add_argument("--store", required=True, help="SQLite store path.")
+    st.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+
     sv = sub.add_parser("serve", help="run one role as a durable process")
     sv.add_argument("--workflow", required=True)
     sv.add_argument("--role", required=True)
@@ -327,6 +464,8 @@ def main(argv=None) -> int:
 
     if args.cmd == "run":
         return _run_workflow_command(args)
+    if args.cmd == "status":
+        return _status_command(args)
 
     wf, role_ll = load_workflow(args.workflow, args.role)
     lifelines = _workflow_lifelines(wf)

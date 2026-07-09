@@ -209,6 +209,13 @@ zippergen run examples/hello.py:hello \
 
 The workflow spec can be `module:workflow` or `path.py:workflow`. If `--store` is omitted, `zippergen run` creates a stable local store under `~/.zippergen/runs/`. Restart the same command with the same store to replay committed work and continue from SQLite.
 
+Inspect a local deployment store:
+
+```bash
+zippergen status --store ~/.zippergen/runs/hello.sqlite
+zippergen status --store ~/.zippergen/runs/hello.sqlite --json
+```
+
 Workflow modules may define an optional setup hook:
 
 ```python
