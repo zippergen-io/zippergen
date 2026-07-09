@@ -5,16 +5,20 @@ from zippergen.store import (
     ensure_human_task,
     ensure_human_task_token,
     human_task_id,
+    load_adapter_state,
     list_trace_events,
     list_workflow_results,
     load_human_task,
+    load_human_task_notification,
     load_human_task_token,
     load_workflow_result,
     mark_human_task_token_used,
     open_store,
     record_trace_event,
+    record_human_task_notification,
     chan_key,
     ReplayMismatch,
+    write_adapter_state,
     write_workflow_result,
 )
 
@@ -28,6 +32,8 @@ def test_open_store_creates_tables(tmp_path):
         "snapshots",
         "human_tasks",
         "human_task_tokens",
+        "human_task_notifications",
+        "adapter_state",
         "workflow_results",
     } <= names
 
@@ -122,6 +128,56 @@ def test_human_task_token_lifecycle(tmp_path):
 
     used = mark_human_task_token_used(conn, first["token"])
     assert used["used_at"] is not None
+
+
+def test_human_task_notification_lifecycle(tmp_path):
+    conn = open_store(str(tmp_path / "s.sqlite"))
+    task_id = human_task_id("A", [0], "abc", 0)
+    ensure_human_task(
+        conn,
+        task_id=task_id,
+        role="A",
+        locator=[0],
+        action="review",
+        input_hash="abc",
+        inputs={"prompt": "plan"},
+        spec={"kind": "confirm", "output": "approved"},
+    )
+
+    first = record_human_task_notification(
+        conn,
+        task_id,
+        channel="telegram",
+        target="123",
+        external_id="msg-1",
+    )
+    second = record_human_task_notification(
+        conn,
+        task_id,
+        channel="telegram",
+        target="123",
+        external_id=None,
+    )
+
+    assert first["task_id"] == task_id
+    assert first["external_id"] == "msg-1"
+    assert second["external_id"] == "msg-1"
+    assert second["sent_at"] >= first["sent_at"]
+    assert load_human_task_notification(
+        conn,
+        task_id,
+        channel="telegram",
+        target="123",
+    ) == second
+
+
+def test_adapter_state_lifecycle(tmp_path):
+    conn = open_store(str(tmp_path / "s.sqlite"))
+    assert load_adapter_state(conn, "telegram:offset", 0) == 0
+
+    write_adapter_state(conn, "telegram:offset", 42)
+
+    assert load_adapter_state(conn, "telegram:offset") == 42
 
 
 def test_workflow_result_lifecycle(tmp_path):

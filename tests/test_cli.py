@@ -94,6 +94,28 @@ def test_run_command_loads_workflow_from_module(tmp_path, monkeypatch, capsys):
     assert json.loads(captured.out) == {"result": "local!"}
 
 
+def test_run_command_zero_timeout_means_no_deadline(tmp_path, capsys):
+    workflow_path = tmp_path / "no_deadline_workflow.py"
+    workflow_path.write_text(WORKFLOW_SOURCE)
+    store_path = tmp_path / "no-deadline.sqlite"
+
+    rc = main([
+        "run",
+        f"{workflow_path}:hello",
+        "--store",
+        str(store_path),
+        "--input",
+        "topic=steady",
+        "--timeout",
+        "0",
+    ])
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert store_path.exists()
+    assert json.loads(captured.out) == {"result": "steady!"}
+
+
 def test_run_command_calls_setup_hook_with_options(tmp_path, capsys):
     workflow_path = tmp_path / "setup_workflow.py"
     workflow_path.write_text(SETUP_WORKFLOW_SOURCE)

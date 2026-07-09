@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.zippergen.telegram-notifier</string>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/YOU/path/to/zippergen</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/env</string>
+    <string>uv</string>
+    <string>run</string>
+    <string>zippergen</string>
+    <string>notify</string>
+    <string>telegram</string>
+    <string>--store</string>
+    <string>/Users/YOU/.zippergen/runs/command-center.sqlite</string>
+    <string>--watch</string>
+  </array>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>ZIPPERGEN_TELEGRAM_TOKEN</key>
+    <string>REPLACE_ME</string>
+    <key>ZIPPERGEN_TELEGRAM_CHAT_ID</key>
+    <string>REPLACE_ME</string>
+  </dict>
+
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>/Users/YOU/.zippergen/logs/telegram-notifier.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/YOU/.zippergen/logs/telegram-notifier.err.log</string>
+</dict>
+</plist>

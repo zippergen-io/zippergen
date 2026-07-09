@@ -71,6 +71,23 @@ CREATE TABLE IF NOT EXISTS human_task_tokens (
 CREATE INDEX IF NOT EXISTS human_task_tokens_by_task
   ON human_task_tokens(task_id);
 
+CREATE TABLE IF NOT EXISTS human_task_notifications (
+  task_id     TEXT NOT NULL,
+  channel     TEXT NOT NULL,
+  target      TEXT NOT NULL,
+  external_id TEXT,
+  sent_at     REAL NOT NULL,
+  PRIMARY KEY(task_id, channel, target)
+);
+CREATE INDEX IF NOT EXISTS human_task_notifications_by_channel
+  ON human_task_notifications(channel, target, sent_at);
+
+CREATE TABLE IF NOT EXISTS adapter_state (
+  key        TEXT PRIMARY KEY,
+  value      BLOB NOT NULL,
+  updated_at REAL NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS workflow_results (
   workflow   TEXT PRIMARY KEY,
   value      BLOB NOT NULL,
@@ -366,6 +383,73 @@ def mark_human_task_token_used(conn, token: str) -> dict:
     if record is None:
         raise KeyError(f"human task token {token!r} not found")
     return record
+
+
+def record_human_task_notification(
+    conn,
+    task_id: str,
+    *,
+    channel: str,
+    target: str,
+    external_id: str | None = None,
+) -> dict:
+    """Record that an external adapter notified a target about a human task."""
+
+    if load_human_task(conn, task_id) is None:
+        raise KeyError(f"human task {task_id!r} not found")
+    channel = str(channel or "default")
+    target = str(target)
+    now = time.time()
+    conn.execute(
+        "INSERT INTO human_task_notifications(task_id, channel, target, external_id, sent_at) "
+        "VALUES(?,?,?,?,?) "
+        "ON CONFLICT(task_id, channel, target) DO UPDATE SET "
+        "external_id=COALESCE(excluded.external_id, human_task_notifications.external_id), "
+        "sent_at=excluded.sent_at",
+        (task_id, channel, target, external_id, now),
+    )
+    record = load_human_task_notification(conn, task_id, channel=channel, target=target)
+    assert record is not None
+    return record
+
+
+def _notification_row(row) -> dict:
+    return {
+        "task_id": row[0],
+        "channel": row[1],
+        "target": row[2],
+        "external_id": row[3],
+        "sent_at": row[4],
+    }
+
+
+def load_human_task_notification(
+    conn,
+    task_id: str,
+    *,
+    channel: str,
+    target: str,
+) -> dict | None:
+    row = conn.execute(
+        "SELECT task_id, channel, target, external_id, sent_at "
+        "FROM human_task_notifications WHERE task_id=? AND channel=? AND target=?",
+        (task_id, str(channel or "default"), str(target)),
+    ).fetchone()
+    return _notification_row(row) if row is not None else None
+
+
+def load_adapter_state(conn, key: str, default=None):
+    row = conn.execute("SELECT value FROM adapter_state WHERE key=?", (key,)).fetchone()
+    return default if row is None else json.loads(row[0])
+
+
+def write_adapter_state(conn, key: str, value) -> None:
+    now = time.time()
+    conn.execute(
+        "INSERT INTO adapter_state(key, value, updated_at) VALUES(?,?,?) "
+        "ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at",
+        (key, json.dumps(_json_safe(value)), now),
+    )
 
 
 def load_human_task(conn, task_id: str) -> dict | None:

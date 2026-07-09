@@ -754,6 +754,47 @@ def _notify_stdout_command(args) -> int:
         time.sleep(args.interval)
 
 
+def _notify_telegram_command(args) -> int:
+    from zippergen.telegram_notify import (
+        TelegramBotClient,
+        TelegramNotifier,
+        load_telegram_chat_id,
+        load_telegram_token,
+    )
+
+    store_path = str(Path(args.store).expanduser())
+    if not Path(store_path).exists():
+        raise SystemExit(f"Store does not exist: {args.store}")
+    token = load_telegram_token(args.bot_token)
+    chat_id = load_telegram_chat_id(args.chat_id)
+    if not chat_id:
+        raise SystemExit("Telegram chat id is required. Set ZIPPERGEN_TELEGRAM_CHAT_ID or pass --chat-id.")
+    client = TelegramBotClient(token)
+    notifier = TelegramNotifier(
+        store_path=store_path,
+        client=client,
+        chat_id=chat_id,
+        channel=args.channel,
+        limit=args.limit,
+    )
+
+    if not args.watch:
+        sent = notifier.send_pending_once(resend=args.resend)
+        processed = notifier.poll_updates_once(timeout=0)
+        if not args.quiet:
+            print(f"Telegram: sent {sent} task notification(s), processed {processed} update(s).")
+        return 0
+
+    if not args.quiet:
+        print(f"Watching Telegram chat {chat_id} for store {store_path}.")
+    while True:
+        sent = notifier.send_pending_once(resend=args.resend)
+        processed = notifier.poll_updates_once(timeout=args.poll_timeout)
+        if not args.quiet and (sent or processed):
+            print(f"Telegram: sent {sent} task notification(s), processed {processed} update(s).")
+        time.sleep(args.interval)
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="zippergen")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -767,7 +808,7 @@ def main(argv=None) -> int:
     rn.add_argument("--option", action="append", default=[], metavar="name=value", help="Option passed to zippergen_setup(config).")
     rn.add_argument("--services", choices=("fake", "live"), help="Shortcut for --option services=<value>.")
     rn.add_argument("--ui", action="store_true", help="Start ZipperChat and attach it to the run store.")
-    rn.add_argument("--timeout", type=float, default=60.0, help="Workflow timeout in seconds.")
+    rn.add_argument("--timeout", type=float, default=60.0, help="Workflow timeout in seconds; use 0 for no deadline.")
     rn.add_argument("--execution", choices=("sqlite", "memory"), default="sqlite", help="Execution backend.")
     rn.add_argument("--show-decisions", action="store_true", help="Show branch/control events in ZipperChat.")
 
@@ -810,6 +851,18 @@ def main(argv=None) -> int:
     out.add_argument("--limit", type=int, help="Maximum number of tasks to notify per poll.")
     out.add_argument("--quiet", action="store_true", help="Suppress the no-pending-tasks message in one-shot mode.")
 
+    tg = notify_sub.add_parser("telegram", help="send and receive human task approvals through Telegram")
+    tg.add_argument("--store", required=True, help="SQLite store path.")
+    tg.add_argument("--bot-token", help="Telegram bot token. Defaults to ZIPPERGEN_TELEGRAM_TOKEN.")
+    tg.add_argument("--chat-id", help="Telegram chat id. Defaults to ZIPPERGEN_TELEGRAM_CHAT_ID.")
+    tg.add_argument("--channel", default="telegram", help="Approval token channel name.")
+    tg.add_argument("--watch", action="store_true", help="Keep polling Telegram and the local store.")
+    tg.add_argument("--interval", type=float, default=2.0, help="Delay between store scans in --watch mode.")
+    tg.add_argument("--poll-timeout", type=float, default=20.0, help="Telegram long-poll timeout in seconds.")
+    tg.add_argument("--limit", type=int, help="Maximum number of tasks to notify per poll.")
+    tg.add_argument("--resend", action="store_true", help="Resend already-notified pending tasks.")
+    tg.add_argument("--quiet", action="store_true", help="Suppress progress messages.")
+
     sv = sub.add_parser("serve", help="run one role as a durable process")
     sv.add_argument("--workflow", required=True)
     sv.add_argument("--role", required=True)
@@ -829,6 +882,8 @@ def main(argv=None) -> int:
         return _approve_command(args)
     if args.cmd == "notify" and args.adapter == "stdout":
         return _notify_stdout_command(args)
+    if args.cmd == "notify" and args.adapter == "telegram":
+        return _notify_telegram_command(args)
 
     wf, role_ll = load_workflow(args.workflow, args.role)
     lifelines = _workflow_lifelines(wf)

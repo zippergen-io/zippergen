@@ -1184,7 +1184,8 @@ def run(
                     Defaults to ``make_cli_human_backend()``.
     verbose       : if True, print each event to stdout as it happens
     trace         : custom trace callable(event_dict) — overrides verbose
-    timeout       : seconds to wait for each thread (default 60 s)
+    timeout       : seconds to wait for each thread (default 60 s);
+                    use 0 to run without a deadline
 
     Returns
     -------
@@ -1236,26 +1237,43 @@ def run(
     for t in threads:
         t.start()
 
-    deadline = time.monotonic() + timeout
-    for t in threads:
-        remaining = deadline - time.monotonic()
-        if remaining <= 0:
+    if timeout <= 0:
+        try:
+            while any(t.is_alive() for t in threads):
+                if stop.is_set():
+                    break
+                time.sleep(0.05)
+        except KeyboardInterrupt:
             stop.set()
-            raise TimeoutError(f"Workflow did not finish within {timeout}s")
-        t.join(timeout=remaining)
-        if t.is_alive():
-            stop.set()
-            raise TimeoutError(f"Lifeline '{t.name}' did not finish within {timeout}s")
+            for t in threads:
+                t.join(timeout=1.0)
+            raise
+        for t in threads:
+            if t.is_alive():
+                t.join(timeout=1.0)
+    else:
+        deadline = time.monotonic() + timeout
+        for t in threads:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                stop.set()
+                raise TimeoutError(f"Workflow did not finish within {timeout}s")
+            t.join(timeout=remaining)
+            if t.is_alive():
+                stop.set()
+                raise TimeoutError(f"Lifeline '{t.name}' did not finish within {timeout}s")
 
     # Collect all exceptions, preferring root-cause errors over secondary
     # "Workflow cancelled" errors that are triggered by the stop event.
     root_cause: tuple[str, Exception] | None = None
     cancelled: tuple[str, Exception] | None = None
     final_envs: dict[str, dict] = {}
+    missing: list[str] = []
     for ll in lifelines:
         box = result_boxes[ll.name]
         if not box:
-            raise RuntimeError(f"Lifeline '{ll.name}' produced no result.")
+            missing.append(ll.name)
+            continue
         result = box[0]
         if isinstance(result, Exception):
             msg = str(result)
@@ -1272,6 +1290,9 @@ def run(
     if error is not None:
         name, exc = error
         raise RuntimeError(f"Lifeline '{name}' raised: {exc}") from exc
+    if missing:
+        names = ", ".join(repr(name) for name in missing)
+        raise RuntimeError(f"Lifeline(s) produced no result: {names}.")
 
     if len(wf.outputs) == 0:
         return final_envs
@@ -1359,6 +1380,9 @@ def _workflow_configure(
         and not wf._rt._webtrace.is_dashboard
     ):
         wf._rt._human_backend = wf._rt._webtrace.make_human_backend()
+    elif wf._rt._execution == "sqlite":
+        from zippergen.human_backends import make_sqlite_human_backend
+        wf._rt._human_backend = make_sqlite_human_backend()
     else:
         from zippergen.human_backends import make_cli_human_backend
         wf._rt._human_backend = make_cli_human_backend()

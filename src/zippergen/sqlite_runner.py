@@ -11,6 +11,7 @@ import tempfile
 import threading
 import time
 from pathlib import Path
+from typing import cast
 
 from zippergen.projection import project
 from zippergen.role_runner import RoleRunner
@@ -86,6 +87,9 @@ class LocalSupervisor:
         self.initial_envs = initial_envs or {}
         self.store_path = store_path
         self.llm_backend = llm_backend if llm_backend is not None else mock_llm
+        if human_backend is None:
+            from zippergen.human_backends import make_sqlite_human_backend
+            human_backend = make_sqlite_human_backend()
         self.human_backend = human_backend
         self.trace = trace if trace is not None else (console_trace if verbose else None)
         self.timeout = timeout
@@ -163,25 +167,42 @@ class LocalSupervisor:
             threads.append(t)
             t.start()
 
-        deadline = time.monotonic() + self.timeout
-        for t in threads:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
+        if self.timeout <= 0:
+            try:
+                while any(t.is_alive() for t in threads):
+                    if self.stop.is_set():
+                        break
+                    time.sleep(0.05)
+            except KeyboardInterrupt:
                 self.stop.set()
-                raise TimeoutError(f"Workflow did not finish within {self.timeout}s")
-            t.join(timeout=remaining)
-            if t.is_alive():
-                self.stop.set()
-                t.join(timeout=1.0)
-                raise TimeoutError(f"Lifeline '{t.name}' did not finish within {self.timeout}s")
+                for t in threads:
+                    t.join(timeout=1.0)
+                raise
+            for t in threads:
+                if t.is_alive():
+                    t.join(timeout=1.0)
+        else:
+            deadline = time.monotonic() + self.timeout
+            for t in threads:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    self.stop.set()
+                    raise TimeoutError(f"Workflow did not finish within {self.timeout}s")
+                t.join(timeout=remaining)
+                if t.is_alive():
+                    self.stop.set()
+                    t.join(timeout=1.0)
+                    raise TimeoutError(f"Lifeline '{t.name}' did not finish within {self.timeout}s")
 
         root_cause: tuple[str, BaseException] | None = None
         cancelled: tuple[str, BaseException] | None = None
         final_envs: dict[str, dict] = {}
+        missing: list[str] = []
         for lifeline in self.lifelines:
             result = result_boxes.get(lifeline.name)
             if result is None:
-                raise RuntimeError(f"Lifeline '{lifeline.name}' produced no result.")
+                missing.append(lifeline.name)
+                continue
             if isinstance(result, BaseException):
                 if "Workflow cancelled" in str(result):
                     if cancelled is None:
@@ -189,12 +210,15 @@ class LocalSupervisor:
                 elif root_cause is None:
                     root_cause = (lifeline.name, result)
             else:
-                final_envs[lifeline.name] = result
+                final_envs[lifeline.name] = cast(dict, result)
 
         error = root_cause or cancelled
         if error is not None:
             name, exc = error
             raise RuntimeError(f"Lifeline '{name}' raised: {exc}") from exc
+        if missing:
+            names = ", ".join(repr(name) for name in missing)
+            raise RuntimeError(f"Lifeline(s) produced no result: {names}.")
 
         result = _workflow_result(self.wf, final_envs)
         conn = open_store(self.store_path)

@@ -241,6 +241,18 @@ zippergen notify stdout --store ~/.zippergen/runs/command-center.sqlite --channe
 zippergen notify stdout --store ~/.zippergen/runs/command-center.sqlite --channel telegram --watch
 ```
 
+Telegram approvals are available as a real notification adapter:
+
+```bash
+export ZIPPERGEN_TELEGRAM_TOKEN=<bot-token>
+export ZIPPERGEN_TELEGRAM_CHAT_ID=<chat-id>
+zippergen notify telegram --store ~/.zippergen/runs/command-center.sqlite --watch
+```
+
+For continuous local deployments, run the workflow with `--timeout 0` and use
+the `launchd`/`systemd` templates in `deploy/`. See
+[`docs/local-deployment.md`](docs/local-deployment.md) for the full recipe.
+
 Workflow modules may define an optional setup hook:
 
 ```python

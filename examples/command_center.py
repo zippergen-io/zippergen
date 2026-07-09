@@ -1043,7 +1043,7 @@ if __name__ == "__main__":
     parser.add_argument("--openai", action="store_true", help="Shortcut for --llm openai:gpt-4o --services live.")
     parser.add_argument("--live", action="store_true", help="Shortcut for --llm ollama:qwen2.5:7b --services live.")
     parser.add_argument("--no-ui", action="store_true", help="Run without ZipperChat.")
-    parser.add_argument("--timeout", type=float, default=3600.0, help="Workflow timeout in seconds.")
+    parser.add_argument("--timeout", type=float, default=3600.0, help="Workflow timeout in seconds; use 0 for no deadline.")
     parser.add_argument("--llm-idle-timeout", type=float, help="Release a managed local LLM after this many idle seconds.")
     parser.add_argument("--store", dest="store_path", help="SQLite store path.")
     parser.add_argument("--execution", choices=("sqlite", "memory"), help="Execution backend.")

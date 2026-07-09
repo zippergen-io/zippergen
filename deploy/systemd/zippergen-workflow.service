@@ -1,0 +1,16 @@
+[Unit]
+Description=ZipperGen workflow runner
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/path/to/zippergen
+Environment=OPENAI_API_KEY=REPLACE_ME
+Environment=ZIPPERGEN_TELEGRAM_TOKEN=REPLACE_ME
+ExecStart=/usr/bin/env uv run zippergen run examples/command_center.py:command_center --store %h/.zippergen/runs/command-center.sqlite --llm openai:gpt-4o --services live --llm-idle-timeout 300 --timeout 0
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

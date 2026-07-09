@@ -7,7 +7,7 @@ llm_backend: (action: HumanAction, inputs: dict) -> dict.
 
 from __future__ import annotations
 
-__all__ = ["make_cli_human_backend"]
+__all__ = ["make_cli_human_backend", "make_sqlite_human_backend"]
 
 
 def make_cli_human_backend():
@@ -80,4 +80,18 @@ def make_cli_human_backend():
 
         return {action.output: value}
 
+    return backend
+
+
+def make_sqlite_human_backend():
+    """Return a marker backend for SQLite-owned human tasks.
+
+    RoleRunner creates the durable task row and then waits for some external
+    actor (CLI, UI, Telegram, email, etc.) to complete it in SQLite.
+    """
+
+    def backend(action, inputs: dict) -> dict:
+        raise RuntimeError("SQLite human tasks are completed through the SQLite store.")
+
+    setattr(backend, "uses_sqlite_human_tasks", True)
     return backend

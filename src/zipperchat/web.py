@@ -642,11 +642,8 @@ class WebTrace:
         return self._make_human_backend()
 
     def make_sqlite_human_backend(self):
-        def backend(action, inputs: dict) -> dict:
-            raise RuntimeError("SQLite human tasks are completed through the SQLite store.")
-
-        backend.uses_sqlite_human_tasks = True
-        return backend
+        from zippergen.human_backends import make_sqlite_human_backend
+        return make_sqlite_human_backend()
 
 
 # ---------------------------------------------------------------------------

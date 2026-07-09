@@ -1,0 +1,16 @@
+[Unit]
+Description=ZipperGen Telegram human task notifier
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/path/to/zippergen
+Environment=ZIPPERGEN_TELEGRAM_TOKEN=REPLACE_ME
+Environment=ZIPPERGEN_TELEGRAM_CHAT_ID=REPLACE_ME
+ExecStart=/usr/bin/env uv run zippergen notify telegram --store %h/.zippergen/runs/command-center.sqlite --watch
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

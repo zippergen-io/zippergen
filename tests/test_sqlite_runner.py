@@ -623,3 +623,48 @@ def test_workflow_call_sqlite_ui_completes_human_task_through_store(tmp_path):
     finally:
         trace.stop()
         sqlite_human_round.configure(execution="memory", ui=False)
+
+
+def test_workflow_call_sqlite_without_ui_waits_for_human_task_store(tmp_path):
+    path = str(tmp_path / "sqlite-no-ui-human.sqlite")
+    result_box = {}
+    errors = []
+
+    sqlite_human_round.configure(
+        execution="sqlite",
+        store_path=path,
+        ui=False,
+        timeout=10,
+    )
+
+    def run_workflow():
+        try:
+            result_box["result"] = sqlite_human_round(prompt="plan")
+        except BaseException as exc:
+            errors.append(exc)
+
+    thread = threading.Thread(target=run_workflow)
+    conn = open_store(path)
+    try:
+        thread.start()
+        task_id = None
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            row = conn.execute("SELECT task_id FROM human_tasks WHERE status='pending'").fetchone()
+            if row is not None:
+                task_id = row[0]
+                break
+            time.sleep(0.05)
+
+        assert task_id is not None
+        conn.execute("BEGIN")
+        complete_human_task(conn, task_id, {"p_approved": True})
+        conn.execute("COMMIT")
+        thread.join(timeout=10)
+
+        assert not thread.is_alive()
+        assert errors == []
+        assert result_box["result"] is True
+        assert conn.execute("SELECT status FROM human_tasks WHERE task_id=?", (task_id,)).fetchone()[0] == "done"
+    finally:
+        sqlite_human_round.configure(execution="memory", ui=False)
