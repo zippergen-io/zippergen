@@ -16,18 +16,25 @@ drafts and Chat replies; User is the human-in-the-loop for both streams.
 
 Modes
 -----
---mock    Fake inbox + chat messages, mock LLM responses.
---openai  Live services + OpenAI GPT-4o (reads OPENAI_API_KEY).
---live    Live services + local Ollama model.  One-time setup per service:
+--llm mock
+          Fake inbox + chat messages, mock LLM responses.
+--llm openai:gpt-4o --services live
+          Live services + OpenAI GPT-4o (reads OPENAI_API_KEY).
+--llm ollama:qwen2.5:7b --services live
+          Live services + local Ollama model.  One-time setup per service:
            python examples/gmail_client.py --setup
            python examples/google_calendar_client.py --setup
            # Telegram: message @BotFather → /newbot → set ZIPPERGEN_TELEGRAM_TOKEN
 default   Fake services + local Ollama model.
+
+Backward-compatible shortcuts:
+  --mock    Same as --llm mock --services fake.
+  --openai  Same as --llm openai:gpt-4o --services live.
+  --live    Same as --llm ollama:qwen2.5:7b --services live.
 """
 
 from zippergen import Lifeline, Var, branch, effect, fragment, llm, parallel, pure, workflow
 from zippergen.actions import human
-from zippergen.backends import make_openai_backend
 
 _gmail:   object = None
 _gcal:    object = None
@@ -982,70 +989,73 @@ def command_center():
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    import sys
+    import argparse
+    import importlib.util
+    from pathlib import Path
 
-    if "--mock" in sys.argv:
-        command_center.configure(llms="mock", ui=True, timeout=3600)
-
-    elif "--openai" in sys.argv:
-        import importlib.util
-        import os
-        from pathlib import Path
-
-        def _load(name: str):
-            spec = importlib.util.spec_from_file_location(
-                name, Path(__file__).parent / f"{name}.py"
-            )
-            assert spec and spec.loader, f"Could not load {name}.py"
-            mod = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(mod)  # type: ignore[union-attr]
-            return mod
-
-        _gmail   = _load("gmail_client")
-        _gcal    = _load("google_calendar_client")
-        _gchat   = _load("telegram_client")
-        api_key = os.environ.get("OPENAI_API_KEY", "")
-        if not api_key:
-            raise RuntimeError("OPENAI_API_KEY is not set.")
-        model = "gpt-4o"
-        print(f"Using OpenAI model: {model}")
-        backend = make_openai_backend(api_key=api_key, model=model, max_tokens=1024)
-        command_center.configure(backend=backend, ui=True, timeout=3600)
-
-    elif "--live" in sys.argv:
-        import importlib.util
-        from pathlib import Path
-
-        def _load(name: str):
-            spec = importlib.util.spec_from_file_location(
-                name, Path(__file__).parent / f"{name}.py"
-            )
-            assert spec and spec.loader, f"Could not load {name}.py"
-            mod = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(mod)  # type: ignore[union-attr]
-            return mod
-
-        _gmail   = _load("gmail_client")
-        _gcal    = _load("google_calendar_client")
-        _gchat   = _load("telegram_client")
-        backend = make_openai_backend(
-            api_key="ollama",
-            model="qwen2.5:7b",
-            base_url="http://127.0.0.1:11434/v1",
-            max_tokens=512,
-            timeout=120,
+    def _load(name: str):
+        spec = importlib.util.spec_from_file_location(
+            name, Path(__file__).parent / f"{name}.py"
         )
-        command_center.configure(backend=backend, ui=True, timeout=3600, show_decisions=False)
+        assert spec and spec.loader, f"Could not load {name}.py"
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)  # type: ignore[union-attr]
+        return mod
 
+    parser = argparse.ArgumentParser(description="Run the ZipperGen command center.")
+    parser.add_argument(
+        "--llm",
+        metavar="SPEC",
+        help="LLM spec: mock, openai:gpt-4o, ollama:qwen2.5:7b, mistral:<model>, claude:<model>.",
+    )
+    parser.add_argument(
+        "--services",
+        choices=("fake", "live"),
+        help="Use fake in-memory services or real Gmail/Calendar/Telegram clients.",
+    )
+    parser.add_argument("--mock", action="store_true", help="Shortcut for --llm mock --services fake.")
+    parser.add_argument("--openai", action="store_true", help="Shortcut for --llm openai:gpt-4o --services live.")
+    parser.add_argument("--live", action="store_true", help="Shortcut for --llm ollama:qwen2.5:7b --services live.")
+    parser.add_argument("--no-ui", action="store_true", help="Run without ZipperChat.")
+    parser.add_argument("--timeout", type=float, default=3600.0, help="Workflow timeout in seconds.")
+    parser.add_argument("--store", dest="store_path", help="SQLite store path.")
+    parser.add_argument("--execution", choices=("sqlite", "memory"), help="Execution backend.")
+    parser.add_argument("--show-decisions", action="store_true", help="Show branch/control events in ZipperChat.")
+    args = parser.parse_args()
+
+    preset_count = int(args.mock) + int(args.openai) + int(args.live)
+    if preset_count > 1:
+        parser.error("Use only one of --mock, --openai, or --live.")
+
+    if args.mock:
+        llm_spec = args.llm or "mock"
+        services = args.services or "fake"
+    elif args.openai:
+        llm_spec = args.llm or "openai:gpt-4o"
+        services = args.services or "live"
+    elif args.live:
+        llm_spec = args.llm or "ollama:qwen2.5:7b"
+        services = args.services or "live"
     else:
-        backend = make_openai_backend(
-            api_key="ollama",
-            model="qwen2.5:7b",
-            base_url="http://127.0.0.1:11434/v1",
-            max_tokens=512,
-            timeout=120,
-        )
-        command_center.configure(backend=backend, ui=True, timeout=3600)
+        llm_spec = args.llm or "ollama:qwen2.5:7b"
+        services = args.services or "fake"
+
+    if services == "live":
+        _gmail = _load("gmail_client")
+        _gcal = _load("google_calendar_client")
+        _gchat = _load("telegram_client")
+
+    print(f"LLM: {llm_spec}")
+    print(f"Services: {services}")
+    command_center.configure(
+        llm_spec,
+        ui=not args.no_ui,
+        timeout=args.timeout,
+        show_decisions=args.show_decisions,
+        execution=args.execution,
+        store_path=args.store_path,
+    )
 
     command_center()
-    input("ZipperChat running at http://localhost:8765. Press Enter to exit. ")
+    if not args.no_ui:
+        input("ZipperChat running at http://localhost:8765. Press Enter to exit. ")

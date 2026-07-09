@@ -65,7 +65,7 @@ def hello(topic: str @ User) -> str:
     Writer(draft) >> User(draft)
     return draft @ User
 
-hello.configure(llms="mock", ui=True)
+hello.configure("mock", ui=True)
 result = hello(topic="Say hello to ZipperGen")
 print(result)
 ```
@@ -75,7 +75,7 @@ print(result)
 Switch to a real LLM with one line:
 
 ```python
-hello.configure(llms="openai", ui=True)   # or "mistral", "claude"
+hello.configure("openai:gpt-4o", ui=True)   # or "mistral", "claude"
 ```
 
 The full example is at `examples/hello.py`.
@@ -161,7 +161,7 @@ python examples/hello.py                        # two lifelines, one LLM call
 python examples/write_tweet.py                  # owned-decision loop
 python examples/parallel.py                     # fan-out / fan-in across branches
 python examples/human_approval.py               # browser-based human approval in ZipperChat
-python examples/command_center.py --mock        # long-running dashboard with two event loops
+python examples/command_center.py --llm mock    # long-running dashboard with two event loops
 ```
 
 Coordination patterns (requires an API key):
@@ -183,17 +183,17 @@ python examples/write_tweet_local.py            # local OpenAI-compatible model 
 
 ## Using real LLMs
 
-Export your API key and pass the provider name to `configure()`:
+Export your API key and pass the LLM spec to `configure()`:
 
 ```bash
 export OPENAI_API_KEY=...
 ```
 
 ```python
-workflow.configure(llms="openai", ui=True, timeout=600)
+workflow.configure("openai:gpt-4o", ui=True, timeout=600)
 ```
 
-Supported providers: `"openai"`, `"mistral"`, `"claude"`. For per-agent routing: `llms={"Writer": "openai", "Editor": "mistral"}`. For local OpenAI-compatible servers such as vLLM, see `examples/write_tweet_local.py`.
+Supported specs: `"mock"`, `"openai:<model>"`, `"ollama:<model>"`, `"mistral:<model>"`, `"claude:<model>"`. You can omit the model and use env defaults, for example `"openai"`. For per-agent routing: `llm={"Writer": "openai:gpt-4o", "Editor": "mistral"}`.
 
 ## Formal foundation
 

@@ -11,6 +11,7 @@ def run_demo(
     *,
     workflow,
     inputs: dict[str, object],
+    llm: str | Mapping[str, str] | None = None,
     llms: str | Mapping[str, str] | None = None,
     ui: bool = True,
     timeout: float = 60.0,
@@ -26,11 +27,13 @@ def run_demo(
         The workflow object to execute.
     inputs
         Keyword arguments passed to the workflow.
-    llms
+    llm
         Either:
         - ``None`` or ``"mock"`` for the built-in mock backend
-        - a provider name like ``"openai"`` or ``"mistral"`` for all lifelines
-        - a mapping ``lifeline_name -> provider`` for per-lifeline routing
+        - a compact spec like ``"openai:gpt-4o"`` or ``"ollama:qwen2.5:7b"``
+        - a mapping ``lifeline_name -> spec`` for per-lifeline routing
+    llms
+        Backward-compatible alias for ``llm``.
     ui
         If true, run the browser UI and keep replaying via the browser button.
         If false, run once with console output only.
@@ -40,6 +43,7 @@ def run_demo(
         Delay range used by the mock backend.
     """
     workflow.configure(
+        llm=llm,
         llms=llms,
         ui=ui,
         timeout=timeout,

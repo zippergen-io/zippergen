@@ -11,10 +11,12 @@ from urllib import request
 from urllib.error import HTTPError, URLError
 
 __all__ = [
+    "backend_from_spec",
     "make_mistral_backend",
     "make_openai_backend",
     "make_anthropic_backend",
     "make_lifeline_router",
+    "router_from_specs",
     "router_from_env",
 ]
 
@@ -346,40 +348,131 @@ def make_lifeline_router(backends: dict[str, Callable]) -> Callable:
     return backend
 
 
-def _backend_from_env(provider: str) -> tuple[Callable, str]:
-    provider = provider.lower()
+def _env_int(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        return int(raw)
+    except ValueError as exc:
+        raise RuntimeError(f"{name} must be an integer, got {raw!r}.") from exc
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        return float(raw)
+    except ValueError as exc:
+        raise RuntimeError(f"{name} must be a number, got {raw!r}.") from exc
+
+
+def _split_llm_spec(spec: str) -> tuple[str, str | None]:
+    provider, sep, model = spec.strip().partition(":")
+    provider = provider.strip().lower()
+    model = model.strip() if sep else None
+    if not provider:
+        raise RuntimeError("LLM spec is empty.")
+    if sep and not model:
+        raise RuntimeError(f"LLM spec {spec!r} is missing a model after ':'.")
+    return provider, model
+
+
+def backend_from_spec(spec: str, *, fallback: Callable | None = None) -> tuple[Callable, str]:
+    """Build an LLM backend from a compact spec such as ``"openai:gpt-4o"``.
+
+    Supported specs:
+    - ``"mock"`` for the supplied fallback backend
+    - ``"openai"`` or ``"openai:<model>"``
+    - ``"ollama"`` / ``"local"`` or ``"ollama:<model>"``
+    - ``"mistral"`` or ``"mistral:<model>"``
+    - ``"anthropic"`` / ``"claude"`` or ``"claude:<model>"``
+
+    API keys and base URLs come from environment variables.  For example,
+    ``OPENAI_API_KEY`` is used for OpenAI and ``OLLAMA_BASE_URL`` can override
+    the local Ollama endpoint.
+    """
+
+    provider, model = _split_llm_spec(spec)
+    if provider == "mock":
+        if fallback is None:
+            raise RuntimeError("LLM spec 'mock' requires a fallback backend.")
+        return fallback, "mock LLM"
     if provider == "mistral":
         api_key = os.environ.get("MISTRAL_API_KEY")
-        model = os.environ.get("MISTRAL_MODEL", "mistral-small-latest")
+        model = model or os.environ.get("MISTRAL_MODEL", "mistral-small-latest")
         if not api_key:
             raise RuntimeError("MISTRAL_API_KEY is not set.")
-        return make_mistral_backend(api_key=api_key, model=model), f"Mistral ({model})"
+        return (
+            make_mistral_backend(
+                api_key=api_key,
+                model=model,
+                max_tokens=_env_int("MISTRAL_MAX_TOKENS", 2048),
+                timeout=_env_float("MISTRAL_TIMEOUT", 90.0),
+            ),
+            f"Mistral ({model})",
+        )
     if provider == "openai":
         api_key = os.environ.get("OPENAI_API_KEY")
-        model = os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
+        model = model or os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
         base_url = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
         if not api_key:
             raise RuntimeError("OPENAI_API_KEY is not set.")
-        return make_openai_backend(api_key=api_key, model=model, base_url=base_url), f"OpenAI-compatible ({model})"
+        return (
+            make_openai_backend(
+                api_key=api_key,
+                model=model,
+                base_url=base_url,
+                max_tokens=_env_int("OPENAI_MAX_TOKENS", 2048),
+                timeout=_env_float("OPENAI_TIMEOUT", 90.0),
+            ),
+            f"OpenAI-compatible ({model})",
+        )
+    if provider in {"ollama", "local"}:
+        model = model or os.environ.get("OLLAMA_MODEL", "qwen2.5:7b")
+        base_url = os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434/v1")
+        api_key = os.environ.get("OLLAMA_API_KEY", "ollama")
+        return (
+            make_openai_backend(
+                api_key=api_key,
+                model=model,
+                base_url=base_url,
+                max_tokens=_env_int("OLLAMA_MAX_TOKENS", 512),
+                timeout=_env_float("OLLAMA_TIMEOUT", 120.0),
+            ),
+            f"Ollama ({model})",
+        )
     if provider in {"anthropic", "claude"}:
         api_key = os.environ.get("ANTHROPIC_API_KEY")
-        model = os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-6")
+        model = model or os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-6")
         if not api_key:
             raise RuntimeError("ANTHROPIC_API_KEY is not set.")
-        return make_anthropic_backend(api_key=api_key, model=model), f"Claude ({model})"
-    raise RuntimeError(f"Unsupported provider {provider!r}.")
+        return (
+            make_anthropic_backend(
+                api_key=api_key,
+                model=model,
+                max_tokens=_env_int("ANTHROPIC_MAX_TOKENS", 1024),
+                timeout=_env_float("ANTHROPIC_TIMEOUT", 90.0),
+            ),
+            f"Claude ({model})",
+        )
+    raise RuntimeError(
+        f"Unsupported LLM provider {provider!r}. Use 'mock', 'openai:<model>', "
+        "'ollama:<model>', 'mistral:<model>', or 'claude:<model>'."
+    )
 
 
-def router_from_env(
+def router_from_specs(
     routes: dict[str, str | Callable],
     *,
     fallback: Callable | None = None,
     fallback_label: str = "mock LLM",
 ) -> tuple[Callable, str]:
-    """Build a per-lifeline backend router from env-configured providers.
+    """Build a per-lifeline backend router from compact LLM specs.
 
-    Values in ``routes`` can be a provider name string (``"openai"``,
-    ``"mistral"``, ``"anthropic"``) or a pre-built backend callable
+    Values in ``routes`` can be an LLM spec string (``"openai:gpt-4o"``,
+    ``"ollama:qwen2.5:7b"``, ``"mistral"``, ``"mock"``) or a pre-built backend callable
     (e.g. ``make_mistral_backend(api_key=...)``).
     """
 
@@ -395,7 +488,18 @@ def router_from_env(
             built_backends[lifeline_name] = provider
             labels.append(f"{lifeline_name}=custom")
         else:
-            backend, label = _backend_from_env(provider.lower())
+            backend, label = backend_from_spec(provider, fallback=fallback)
             built_backends[lifeline_name] = backend
             labels.append(f"{lifeline_name}={label}")
     return make_lifeline_router(built_backends), ", ".join(labels)
+
+
+def router_from_env(
+    routes: dict[str, str | Callable],
+    *,
+    fallback: Callable | None = None,
+    fallback_label: str = "mock LLM",
+) -> tuple[Callable, str]:
+    """Backward-compatible alias for :func:`router_from_specs`."""
+
+    return router_from_specs(routes, fallback=fallback, fallback_label=fallback_label)

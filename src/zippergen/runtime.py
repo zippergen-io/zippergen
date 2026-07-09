@@ -1286,7 +1286,9 @@ def run(
 # ---------------------------------------------------------------------------
 
 def _workflow_configure(
-    wf: Workflow, *,
+    wf: Workflow,
+    llm=None,
+    *,
     backend: object = None,
     trace: object = None,
     timeout: float = 60.0,
@@ -1299,6 +1301,15 @@ def _workflow_configure(
 ) -> Workflow:
     lifelines = _ordered_workflow_lifelines(wf)
 
+    if llm is not None and llms is not None:
+        raise ValueError("Use either 'llm' or the legacy 'llms' option, not both.")
+    if callable(llm):
+        if backend is not None:
+            raise ValueError("Use either positional backend/llm or 'backend=', not both.")
+        backend = llm
+        llm = None
+    llm_config = llm if llm is not None else llms
+
     if execution is not None:
         if execution not in {"memory", "sqlite"}:
             raise ValueError("execution must be 'memory' or 'sqlite'")
@@ -1306,15 +1317,15 @@ def _workflow_configure(
     if store_path is not None:
         wf._rt._store_path = store_path
 
-    if llms is not None:
-        from zippergen.backends import router_from_env
-        if llms == "mock":
+    if llm_config is not None:
+        from zippergen.backends import router_from_specs
+        if llm_config == "mock":
             routes: dict = {}
-        elif isinstance(llms, str):
-            routes = {lifeline.name: llms for lifeline in lifelines}
+        elif isinstance(llm_config, str):
+            routes = {lifeline.name: llm_config for lifeline in lifelines}
         else:
-            routes = {str(k): v for k, v in llms.items()}
-        built_backend, _label = router_from_env(
+            routes = {str(k): v for k, v in llm_config.items()}
+        built_backend, _label = router_from_specs(
             routes,
             fallback=lambda a, i: mock_llm(a, i, min_delay=mock_delay[0], max_delay=mock_delay[1]),
         )

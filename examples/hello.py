@@ -8,9 +8,9 @@ Run without an API key:
     python examples/hello.py
 
 To see real results:
-    hello.configure(llms="openai")
-    hello.configure(llms="mistral")
-    hello.configure(llms="claude")
+    hello.configure("openai:gpt-4o")
+    hello.configure("mistral")
+    hello.configure("claude")
 """
 
 from zippergen.syntax import Lifeline
@@ -53,8 +53,8 @@ def hello(topic: str @ User) -> str:
 
 if __name__ == "__main__":
     # No API key needed — runs with the built-in mock backend.
-    # Switch to a real LLM: hello.configure(llms="openai")
-    hello.configure(llms="mock", ui=True, mock_delay=(0.5, 1.5))
+    # Switch to a real LLM: hello.configure("openai:gpt-4o", ui=True)
+    hello.configure("mock", ui=True, mock_delay=(0.5, 1.5))
     result = hello(topic="Say hello to ZipperGen")
     print(f"\nResult: {result}")
     try:

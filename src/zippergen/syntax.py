@@ -769,7 +769,9 @@ class Workflow:
     def output_lifeline(self) -> "Lifeline | None":
         return self.outputs[0][1] if self.outputs else None
 
-    def configure(self, *,
+    def configure(self,
+                  llm: str | Mapping[str, str | Callable] | Callable | None = None,
+                  *,
                   backend: object = None,
                   trace:   object = None,
                   timeout: float  = 60.0,
@@ -783,21 +785,24 @@ class Workflow:
 
         Parameters
         ----------
+        llm     : compact LLM spec such as ``"mock"``, ``"openai:gpt-4o"``,
+                  or ``"ollama:qwen2.5:7b"``.  A mapping routes individual
+                  lifelines by name.  This may also be passed positionally:
+                  ``workflow.configure("openai:gpt-4o", ui=True)``.
         backend : LLM backend callable ``(action, inputs_dict) → outputs_dict``.
                   Defaults to the built-in mock backend.
         trace   : trace callable passed to ``run()``.
         timeout : per-thread timeout in seconds (default 60).
-        llms    : ``"mock"``, a provider name like ``"openai"`` / ``"mistral"``,
-                  or a mapping ``lifeline_name -> provider``.
+        llms    : backward-compatible alias for ``llm``.
         ui      : if true, start ZipperChat and mirror the execution there.
-        mock_delay : delay range used by the mock backend when ``llms="mock"``.
+        mock_delay : delay range used by the mock backend when ``llm="mock"``.
         show_decisions : if true, show decision/control-broadcast markers in ZipperChat.
         execution : ``"sqlite"`` (default) or ``"memory"`` for the legacy
                     in-process runner.
         store_path : optional SQLite store path used when ``execution="sqlite"``.
         """
         from zippergen.runtime import _workflow_configure
-        return _workflow_configure(self, backend=backend, trace=trace, timeout=timeout,
+        return _workflow_configure(self, llm=llm, backend=backend, trace=trace, timeout=timeout,
                                    llms=llms, ui=ui, mock_delay=mock_delay,
                                    show_decisions=show_decisions,
                                    execution=execution, store_path=store_path)
