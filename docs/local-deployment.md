@@ -1,22 +1,151 @@
-# Local Deployment
+# Local Deployment Booklet
 
-This is the current recommended shape for a simple local ZipperGen deployment:
+This guide is for a developer who wants to run a simple ZipperGen system on one
+local machine for a long time.
 
-1. Run the workflow through one persistent SQLite store.
-2. Run one or more notification adapters against the same store.
-3. Let the operating system supervise both processes.
-4. Inspect the store with `status`, `tasks`, and `trace`.
+The recommended deployment shape is:
 
-SQLite is the coordination boundary. The workflow process, CLI approval tools,
-Telegram adapter, and future adapters all communicate through the same store.
-ZipperChat may still be used for visualization, but browser-based approval is
-legacy and should not be the primary approval path for deployed systems.
+1. One workflow process runs with `zippergen run`.
+2. The workflow uses one persistent SQLite file as its store.
+3. Human approvals are completed through SQLite-backed adapters, such as the
+   CLI or Telegram.
+4. The operating system keeps the workflow and notifier processes alive.
+5. You inspect the system with `zippergen status`, `zippergen tasks`, and
+   `zippergen trace`.
 
-`zippergen serve` is also a legacy low-level per-role entry point. Prefer
-`zippergen run`, which supervises all lifelines locally against one SQLite
-store.
+ZipperChat can still be useful for visualization, but browser approval is
+legacy. For deployed systems, SQLite is the source of truth.
 
-## Local Smoke Test
+`zippergen serve` is also legacy. It is a low-level per-role command. Prefer
+`zippergen run`, which starts all lifelines locally against one SQLite store.
+
+## The Big Idea
+
+When a workflow runs, ZipperGen records the deployment-relevant history in
+SQLite:
+
+- messages between lifelines
+- replay cursors
+- snapshots
+- LLM/action/effect journal results
+- branch decisions
+- human tasks
+- human approval tokens
+- notification adapter state
+- trace events
+- final workflow result, if the workflow terminates
+
+If the process stops and starts again with the same SQLite store, ZipperGen
+reconstructs the committed state and continues from there.
+
+This does not mean every external-world byte must live in SQLite. For normal
+text, prompts, approvals, draft bodies, and trace events, SQLite is fine. For
+large attachments, PDFs, retrieved corpora, or long contexts, pass references
+through the workflow instead:
+
+```text
+gmail:message:abc123
+file:/Users/me/.zippergen/blobs/context-001.json
+calendar:event:xyz789
+```
+
+SQLite should store the coordination state, durable IDs, and hashes. Large data
+can live outside SQLite.
+
+## The Commands You Will Use
+
+Run a workflow:
+
+```bash
+uv run zippergen run <module-or-path>:<workflow> \
+  --store <sqlite-store> \
+  --llm <llm-spec> \
+  --timeout 0
+```
+
+Inspect a workflow:
+
+```bash
+uv run zippergen status --store <sqlite-store>
+uv run zippergen tasks --store <sqlite-store>
+uv run zippergen trace --store <sqlite-store> --tail 50
+```
+
+Approve a human task from the CLI:
+
+```bash
+uv run zippergen tasks --store <sqlite-store> --tokens
+uv run zippergen approve --store <sqlite-store> --token <token>
+uv run zippergen approve --store <sqlite-store> --token <token> --no
+uv run zippergen approve --store <sqlite-store> --token <token> --value "edited text"
+```
+
+Run Telegram approvals:
+
+```bash
+uv run zippergen notify telegram --store <sqlite-store> --watch
+```
+
+`--timeout 0` means no deadline. Use it for workflows that should keep running.
+
+## Important Terms
+
+Store:
+The SQLite file for one deployed workflow run. Example:
+
+```text
+~/.zippergen/runs/command-center.sqlite
+```
+
+Workflow process:
+The long-running `zippergen run ...` process.
+
+Notifier process:
+A separate process that watches the same SQLite store and delivers human tasks
+to some channel. Today that can be `stdout` or Telegram.
+
+Human task:
+A durable approval/edit/input request stored in SQLite.
+
+Token:
+A durable external approval credential. Telegram and future adapters should use
+tokens instead of raw task IDs.
+
+Trace:
+The recorded runtime events, useful for understanding what happened.
+
+Replay:
+Restarting from the committed SQLite history instead of starting from scratch.
+
+## Safety Rules For A First Deployment
+
+Follow these rules for the first real run:
+
+1. Use one stable SQLite store path.
+2. Start manually in terminals before using `launchd` or `systemd`.
+3. Keep human approvals out-of-band through SQLite tasks.
+4. Prefer creating email drafts over sending email automatically.
+5. Avoid passing huge attachments or PDFs as workflow variables.
+6. Check `status`, `tasks`, and `trace` often during the first run.
+7. Restart once manually to confirm replay works.
+
+Email drafts are acceptable for early deployment. A crash at the wrong moment can
+create duplicate drafts, but duplicate drafts are usually manageable. Automatic
+sending is different: duplicate sent emails are much more serious and should
+have idempotency protection before being trusted.
+
+## Part 1: Local Smoke Test
+
+Do this before using the command center. It proves that the deployment loop
+works on your machine:
+
+- workflow starts
+- SQLite store is created
+- human task appears
+- approval is completed through SQLite
+- workflow resumes
+
+### Terminal 1: Start The Workflow
 
 ```bash
 uv run zippergen run examples/local_approval_deployment.py:local_approval \
@@ -26,92 +155,366 @@ uv run zippergen run examples/local_approval_deployment.py:local_approval \
   --timeout 0
 ```
 
-In another terminal, inspect and approve through the CLI:
+This command should keep running and wait for a human approval.
+
+### Terminal 2: Inspect The Store
 
 ```bash
 uv run zippergen status --store ~/.zippergen/runs/local-approval.sqlite
-uv run zippergen tasks --store ~/.zippergen/runs/local-approval.sqlite --tokens
-uv run zippergen approve --store ~/.zippergen/runs/local-approval.sqlite --token <token>
-uv run zippergen trace --store ~/.zippergen/runs/local-approval.sqlite --tail 50
 ```
 
-`--timeout 0` means the runner has no deadline. Use it for workflows that are
-meant to keep running under `launchd` or `systemd`.
+You should see a state like:
 
-## Telegram Approvals
+```text
+State: waiting (waiting for 1 human task(s))
+```
 
-Create a bot with `@BotFather`, send your bot one message, then set:
+Now list the pending task:
+
+```bash
+uv run zippergen tasks --store ~/.zippergen/runs/local-approval.sqlite --tokens
+```
+
+Copy the token shown by the command.
+
+Approve the task:
+
+```bash
+uv run zippergen approve \
+  --store ~/.zippergen/runs/local-approval.sqlite \
+  --token <token>
+```
+
+Terminal 1 should finish and print a JSON result.
+
+### Inspect The Trace
+
+```bash
+uv run zippergen trace \
+  --store ~/.zippergen/runs/local-approval.sqlite \
+  --tail 50
+```
+
+This shows recent runtime events.
+
+### Restart Test
+
+Run the same workflow command again with the same store:
+
+```bash
+uv run zippergen run examples/local_approval_deployment.py:local_approval \
+  --store ~/.zippergen/runs/local-approval.sqlite \
+  --input request="Create the Friday demo event" \
+  --llm mock \
+  --timeout 0
+```
+
+Because the workflow already finished, it should restore the recorded result
+rather than asking for the same approval again.
+
+## Part 2: Telegram Approvals
+
+Telegram is the first real out-of-band approval adapter.
+
+The workflow process and Telegram process are separate. They talk only through
+SQLite.
+
+### Create A Telegram Bot
+
+1. Open Telegram.
+2. Message `@BotFather`.
+3. Send `/newbot`.
+4. Follow the prompts.
+5. Copy the bot token.
+6. Send any message to your new bot. This opens the chat.
+
+Set the token:
 
 ```bash
 export ZIPPERGEN_TELEGRAM_TOKEN=<bot-token>
-export ZIPPERGEN_TELEGRAM_CHAT_ID=<your-chat-id>
 ```
 
-If you do not know the chat id yet, temporarily run:
+Find your chat ID:
 
 ```bash
 curl -s "https://api.telegram.org/bot$ZIPPERGEN_TELEGRAM_TOKEN/getUpdates"
 ```
 
-Then start the adapter:
+Look for the message object and find:
+
+```text
+"chat":{"id":123456789,...}
+```
+
+Set it:
 
 ```bash
+export ZIPPERGEN_TELEGRAM_CHAT_ID=123456789
+```
+
+### Start A Workflow
+
+Use the local approval example again:
+
+```bash
+uv run zippergen run examples/local_approval_deployment.py:local_approval \
+  --store ~/.zippergen/runs/local-approval-telegram.sqlite \
+  --input request="Approve the Telegram deployment test" \
+  --llm mock \
+  --timeout 0
+```
+
+### Start The Telegram Notifier
+
+In another terminal:
+
+```bash
+export ZIPPERGEN_TELEGRAM_TOKEN=<bot-token>
+export ZIPPERGEN_TELEGRAM_CHAT_ID=<chat-id>
+
 uv run zippergen notify telegram \
-  --store ~/.zippergen/runs/local-approval.sqlite \
+  --store ~/.zippergen/runs/local-approval-telegram.sqlite \
   --watch
 ```
 
-Boolean tasks get Telegram buttons. Text/edit tasks can be completed by sending:
+You should receive a Telegram message with approval buttons.
+
+For boolean tasks, press the Telegram button.
+
+For text/edit tasks, reply:
 
 ```text
 /zg <token> <your text>
 ```
 
-The adapter records sent notifications in SQLite, so restarting it does not
-resend the same pending task by default. Use `--resend` when you intentionally
-want another copy.
+The notifier records sent notifications in SQLite. If the notifier restarts, it
+does not resend the same pending task by default. Use `--resend` only when you
+intentionally want another copy.
 
-## Command Center
+## Part 3: Command Center Manual Deployment
 
-For command center with live services and hosted OpenAI:
+Do this manually before using `launchd` or `systemd`.
+
+### Decide On One Store Path
+
+Use one stable path:
+
+```bash
+export ZG_STORE="$HOME/.zippergen/runs/command-center.sqlite"
+```
+
+Create the directory:
+
+```bash
+mkdir -p "$HOME/.zippergen/runs"
+```
+
+### Set Credentials
+
+For OpenAI:
+
+```bash
+export OPENAI_API_KEY=<your-openai-key>
+```
+
+For Telegram:
+
+```bash
+export ZIPPERGEN_TELEGRAM_TOKEN=<bot-token>
+export ZIPPERGEN_TELEGRAM_CHAT_ID=<chat-id>
+```
+
+For live Gmail and Calendar, run the setup commands used by the example:
+
+```bash
+uv run python examples/gmail_client.py --setup
+uv run python examples/google_calendar_client.py --setup
+```
+
+### Terminal 1: Start Command Center
+
+Hosted OpenAI:
 
 ```bash
 uv run zippergen run examples/command_center.py:command_center \
-  --store ~/.zippergen/runs/command-center.sqlite \
+  --store "$ZG_STORE" \
   --llm openai:gpt-4o \
+  --services live \
+  --timeout 0
+```
+
+Local Ollama:
+
+```bash
+uv run zippergen run examples/command_center.py:command_center \
+  --store "$ZG_STORE" \
+  --llm ollama:qwen2.5:7b \
   --services live \
   --llm-idle-timeout 300 \
   --timeout 0
 ```
 
-Then run Telegram approvals:
+`--llm-idle-timeout 300` means a managed local model can be released after five
+minutes of inactivity.
+
+### Terminal 2: Start Telegram Approvals
 
 ```bash
 uv run zippergen notify telegram \
-  --store ~/.zippergen/runs/command-center.sqlite \
+  --store "$ZG_STORE" \
   --watch
 ```
 
-For local models, use an Ollama spec such as `--llm ollama:qwen2.5:7b`. The
-idle timeout releases the model after inactivity.
-
-## macOS `launchd`
-
-Copy the templates in `deploy/launchd/`, replace the placeholder paths and
-environment values, create the log directory, then load them:
+### Terminal 3: Observe
 
 ```bash
-mkdir -p ~/.zippergen/logs ~/Library/LaunchAgents
-launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/com.zippergen.workflow.plist
-launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/com.zippergen.telegram-notifier.plist
+uv run zippergen status --store "$ZG_STORE"
+uv run zippergen tasks --store "$ZG_STORE"
+uv run zippergen trace --store "$ZG_STORE" --tail 50
 ```
 
-Use absolute paths for `uv` if `launchd` cannot find it.
+During the first deployment, keep this terminal open.
 
-## Linux `systemd --user`
+### Manual Restart Test
 
-Copy the templates in `deploy/systemd/` to `~/.config/systemd/user/`, edit paths
-and environment values, then run:
+Stop the workflow with `Ctrl-C`.
+
+Start the exact same command again with the same store path.
+
+Then check:
+
+```bash
+uv run zippergen status --store "$ZG_STORE"
+uv run zippergen trace --store "$ZG_STORE" --tail 50
+```
+
+The workflow should continue from SQLite. It should not start from an empty
+history.
+
+## Part 4: Run Under macOS `launchd`
+
+Only do this after the manual deployment works.
+
+Templates live here:
+
+```text
+deploy/launchd/com.zippergen.workflow.plist
+deploy/launchd/com.zippergen.telegram-notifier.plist
+```
+
+### Step 1: Copy The Templates
+
+```bash
+mkdir -p ~/Library/LaunchAgents ~/.zippergen/logs
+
+cp deploy/launchd/com.zippergen.workflow.plist \
+  ~/Library/LaunchAgents/com.zippergen.workflow.plist
+
+cp deploy/launchd/com.zippergen.telegram-notifier.plist \
+  ~/Library/LaunchAgents/com.zippergen.telegram-notifier.plist
+```
+
+### Step 2: Edit The Files
+
+Open both files and replace:
+
+```text
+/Users/YOU/path/to/zippergen
+/Users/YOU/.zippergen/runs/command-center.sqlite
+REPLACE_ME
+```
+
+Use absolute paths. `launchd` does not load your ordinary shell environment.
+
+If `launchd` cannot find `uv`, replace:
+
+```text
+/usr/bin/env
+uv
+```
+
+with the absolute path to `uv`. Find it with:
+
+```bash
+which uv
+```
+
+### Step 3: Start The Services
+
+```bash
+launchctl bootstrap "gui/$(id -u)" \
+  ~/Library/LaunchAgents/com.zippergen.workflow.plist
+
+launchctl bootstrap "gui/$(id -u)" \
+  ~/Library/LaunchAgents/com.zippergen.telegram-notifier.plist
+```
+
+### Step 4: Check Status
+
+```bash
+launchctl print "gui/$(id -u)/com.zippergen.workflow"
+launchctl print "gui/$(id -u)/com.zippergen.telegram-notifier"
+```
+
+Check logs:
+
+```bash
+tail -f ~/.zippergen/logs/workflow.err.log
+tail -f ~/.zippergen/logs/telegram-notifier.err.log
+```
+
+Check ZipperGen state:
+
+```bash
+uv run zippergen status --store ~/.zippergen/runs/command-center.sqlite
+```
+
+### Stop The Services
+
+```bash
+launchctl bootout "gui/$(id -u)" \
+  ~/Library/LaunchAgents/com.zippergen.workflow.plist
+
+launchctl bootout "gui/$(id -u)" \
+  ~/Library/LaunchAgents/com.zippergen.telegram-notifier.plist
+```
+
+## Part 5: Run Under Linux `systemd --user`
+
+Only do this after the manual deployment works.
+
+Templates live here:
+
+```text
+deploy/systemd/zippergen-workflow.service
+deploy/systemd/zippergen-telegram-notifier.service
+```
+
+### Step 1: Copy The Templates
+
+```bash
+mkdir -p ~/.config/systemd/user ~/.zippergen/runs
+
+cp deploy/systemd/zippergen-workflow.service \
+  ~/.config/systemd/user/zippergen-workflow.service
+
+cp deploy/systemd/zippergen-telegram-notifier.service \
+  ~/.config/systemd/user/zippergen-telegram-notifier.service
+```
+
+### Step 2: Edit The Files
+
+Replace:
+
+```text
+%h/path/to/zippergen
+REPLACE_ME
+```
+
+Make sure the `ExecStart` commands contain the exact workflow and store path you
+tested manually.
+
+### Step 3: Start The Services
 
 ```bash
 systemctl --user daemon-reload
@@ -119,12 +522,253 @@ systemctl --user enable --now zippergen-workflow.service
 systemctl --user enable --now zippergen-telegram-notifier.service
 ```
 
-## Remaining External Effect Rule
+### Step 4: Check Status And Logs
 
-ZipperGen journals effect results after the Python effect returns. If the
-process crashes after a real external side effect but before the journal commit,
-the effect may run again on restart. Effects that talk to external systems
-should therefore use an idempotency key when the external system supports one,
-or check local/external state before repeating the side effect. The
-`examples/local_approval_deployment.py` example uses this pattern for its local
-audit file.
+```bash
+systemctl --user status zippergen-workflow.service
+systemctl --user status zippergen-telegram-notifier.service
+
+journalctl --user -u zippergen-workflow.service -f
+journalctl --user -u zippergen-telegram-notifier.service -f
+```
+
+Check ZipperGen state:
+
+```bash
+uv run zippergen status --store ~/.zippergen/runs/command-center.sqlite
+```
+
+### Stop The Services
+
+```bash
+systemctl --user stop zippergen-workflow.service
+systemctl --user stop zippergen-telegram-notifier.service
+```
+
+## Part 6: What Happens After A Crash
+
+On restart with the same SQLite store, ZipperGen does not simply re-execute
+everything.
+
+It reads the committed history and reconstructs the workflow state:
+
+- recorded messages are replayed from SQLite
+- completed human tasks are reused
+- LLM results are reused if already journaled
+- branch decisions are reused if already journaled
+- effect results are reused if already journaled
+- pure actions may be recomputed because they are assumed deterministic
+
+The risky window is:
+
+```text
+external effect succeeds
+process crashes before SQLite records the effect result
+```
+
+In that case, ZipperGen cannot know the effect succeeded, so it may run the
+effect again.
+
+For Gmail drafts, this can create duplicate drafts. That is acceptable for an
+early local deployment. For automatically sent email, payments, or destructive
+operations, add idempotency protection before trusting the system.
+
+## Part 7: Effects And Idempotency
+
+An effect is a Python action that touches the outside world.
+
+Examples:
+
+- create Gmail draft
+- send email
+- create calendar event
+- delete calendar event
+- post to Slack
+- write a file
+
+Safer effects have stable IDs or idempotency keys. For example:
+
+```text
+action = "create_draft"
+input_hash = "abc123"
+external_marker = "zippergen:create_draft:abc123"
+```
+
+Then the effect can check whether it already ran before doing it again.
+
+For the first deployment, this rule is enough:
+
+```text
+Drafts are okay.
+Automatic sends and destructive effects need more care.
+```
+
+## Part 8: Large Data
+
+SQLite is fine for normal coordination data:
+
+- email text
+- approval context
+- draft text
+- LLM outputs
+- trace events
+
+Avoid putting huge data directly in workflow variables:
+
+- attachments
+- PDFs
+- long documents
+- large RAG contexts
+- binary files
+
+Pass references instead:
+
+```text
+file:/Users/me/.zippergen/blobs/doc-001.pdf
+gmail:message:abc123
+s3://bucket/key
+vector-store:item:xyz
+```
+
+If the reference matters for replay, store a hash too.
+
+## Part 9: Common Problems
+
+### The Workflow Does Nothing
+
+Check status:
+
+```bash
+uv run zippergen status --store <store>
+```
+
+Check pending tasks:
+
+```bash
+uv run zippergen tasks --store <store>
+```
+
+Check recent trace:
+
+```bash
+uv run zippergen trace --store <store> --tail 50
+```
+
+### Telegram Sends Nothing
+
+Check:
+
+```bash
+echo "$ZIPPERGEN_TELEGRAM_TOKEN"
+echo "$ZIPPERGEN_TELEGRAM_CHAT_ID"
+```
+
+Make sure there is a pending task:
+
+```bash
+uv run zippergen tasks --store <store>
+```
+
+Run one notifier pass without `--watch`:
+
+```bash
+uv run zippergen notify telegram --store <store>
+```
+
+Use `--resend` only if a task was already notified and you need another copy:
+
+```bash
+uv run zippergen notify telegram --store <store> --resend
+```
+
+### The Store Path Is Wrong
+
+If the workflow and notifier use different SQLite files, they will not see each
+other.
+
+Use the same absolute path in every command:
+
+```bash
+export ZG_STORE="$HOME/.zippergen/runs/command-center.sqlite"
+```
+
+Then use:
+
+```bash
+--store "$ZG_STORE"
+```
+
+### `launchd` Cannot Find `uv`
+
+Use an absolute path. Find it with:
+
+```bash
+which uv
+```
+
+Then edit the plist.
+
+### The Workflow Repeats Something After Restart
+
+Check whether the thing that repeated was already committed to SQLite:
+
+```bash
+uv run zippergen trace --store <store> --tail 100
+```
+
+If an external effect succeeded but crashed before the SQLite journal commit,
+the effect may run again. This is why early deployments should prefer drafts and
+non-destructive actions.
+
+## Part 10: First Deployment Checklist
+
+Before using an OS supervisor:
+
+- [ ] `uv run zippergen run ... --timeout 0` works manually.
+- [ ] `uv run zippergen notify telegram ... --watch` works manually.
+- [ ] `zippergen status` shows the expected store.
+- [ ] `zippergen tasks` shows pending human tasks.
+- [ ] Telegram approval completes a task.
+- [ ] `zippergen trace --tail 50` shows recent events.
+- [ ] Stopping and restarting the workflow uses the same store.
+- [ ] You know where logs will go.
+- [ ] You understand that duplicate drafts can happen after a crash.
+- [ ] You are not automatically sending email without idempotency protection.
+
+After that, move the exact same commands into `launchd` or `systemd`.
+
+## Recommended First Real Run
+
+Use hosted OpenAI first because it removes local model memory management from
+the first deployment:
+
+```bash
+export ZG_STORE="$HOME/.zippergen/runs/command-center.sqlite"
+export OPENAI_API_KEY=<your-openai-key>
+export ZIPPERGEN_TELEGRAM_TOKEN=<bot-token>
+export ZIPPERGEN_TELEGRAM_CHAT_ID=<chat-id>
+
+uv run zippergen run examples/command_center.py:command_center \
+  --store "$ZG_STORE" \
+  --llm openai:gpt-4o \
+  --services live \
+  --timeout 0
+```
+
+In another terminal:
+
+```bash
+uv run zippergen notify telegram \
+  --store "$ZG_STORE" \
+  --watch
+```
+
+In a third terminal:
+
+```bash
+uv run zippergen status --store "$ZG_STORE"
+uv run zippergen tasks --store "$ZG_STORE"
+uv run zippergen trace --store "$ZG_STORE" --tail 50
+```
+
+Once this works, move to `launchd` or `systemd`.

@@ -253,8 +253,9 @@ zippergen notify telegram --store ~/.zippergen/runs/command-center.sqlite --watc
 ```
 
 For continuous local deployments, run the workflow with `--timeout 0` and use
-the `launchd`/`systemd` templates in `deploy/`. See
-[`docs/local-deployment.md`](docs/local-deployment.md) for the full recipe.
+the `launchd`/`systemd` templates in `deploy/`. See the beginner deployment
+booklet in [`docs/local-deployment.md`](docs/local-deployment.md) for the full
+step-by-step recipe.
 
 Workflow modules may define an optional setup hook:
 
