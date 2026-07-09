@@ -209,6 +209,25 @@ zippergen run examples/hello.py:hello \
 
 The workflow spec can be `module:workflow` or `path.py:workflow`. If `--store` is omitted, `zippergen run` creates a stable local store under `~/.zippergen/runs/`. Restart the same command with the same store to replay committed work and continue from SQLite.
 
+Workflow modules may define an optional setup hook:
+
+```python
+def zippergen_setup(config):
+    if config.option("services", "fake") == "live":
+        ...
+```
+
+Pass hook options with `--option name=value`. For the command center:
+
+```bash
+zippergen run examples/command_center.py:command_center \
+  --llm openai:gpt-4o \
+  --services live \
+  --store ~/.zippergen/runs/command-center.sqlite \
+  --ui \
+  --timeout 3600
+```
+
 ## Formal foundation
 
 The implementation is based on the theory of [Message Sequence Charts](https://en.wikipedia.org/wiki/Message_sequence_chart) and [choreographic programming](https://en.wikipedia.org/wiki/Choreographic_programming). A workflow is written from a global point of view and projected to local participants; ZipperGen adapts this to LLM actions, tool calls, human control points, and runtime inspection.

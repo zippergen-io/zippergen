@@ -984,23 +984,48 @@ def command_center():
                     Chat: _ = wait_briefly()
 
 
+def _load_service_module(name: str):
+    import importlib.util
+    from pathlib import Path
+
+    spec = importlib.util.spec_from_file_location(
+        name, Path(__file__).parent / f"{name}.py"
+    )
+    assert spec and spec.loader, f"Could not load {name}.py"
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)  # type: ignore[union-attr]
+    return mod
+
+
+def _setup_services(services: object) -> None:
+    global _gmail, _gcal, _gchat
+
+    services = str(services or "fake")
+    if services not in {"fake", "live"}:
+        raise ValueError("services must be 'fake' or 'live'.")
+    if services == "fake":
+        _gmail = None
+        _gcal = None
+        _gchat = None
+        return
+
+    _gmail = _load_service_module("gmail_client")
+    _gcal = _load_service_module("google_calendar_client")
+    _gchat = _load_service_module("telegram_client")
+
+
+def zippergen_setup(config) -> None:
+    """Hook called by ``zippergen run`` before configuring the workflow."""
+
+    _setup_services(config.option("services", "fake"))
+
+
 # ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     import argparse
-    import importlib.util
-    from pathlib import Path
-
-    def _load(name: str):
-        spec = importlib.util.spec_from_file_location(
-            name, Path(__file__).parent / f"{name}.py"
-        )
-        assert spec and spec.loader, f"Could not load {name}.py"
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)  # type: ignore[union-attr]
-        return mod
 
     parser = argparse.ArgumentParser(description="Run the ZipperGen command center.")
     parser.add_argument(
@@ -1040,10 +1065,7 @@ if __name__ == "__main__":
         llm_spec = args.llm or "ollama:qwen2.5:7b"
         services = args.services or "fake"
 
-    if services == "live":
-        _gmail = _load("gmail_client")
-        _gcal = _load("google_calendar_client")
-        _gchat = _load("telegram_client")
+    _setup_services(services)
 
     print(f"LLM: {llm_spec}")
     print(f"Services: {services}")

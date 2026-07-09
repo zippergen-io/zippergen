@@ -48,12 +48,33 @@ import importlib.util
 import json
 import re
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
 
 from zippergen.syntax import Workflow, Lifeline
 from zippergen.projection import project
 from zippergen.store import open_store
+
+
+@dataclass(frozen=True)
+class RunConfig:
+    """Configuration passed to an optional module-level ``zippergen_setup`` hook."""
+
+    workflow_spec: str
+    workflow: Workflow
+    module: ModuleType
+    llm: str | None
+    store_path: str | None
+    inputs: dict[str, object]
+    options: dict[str, object]
+    ui: bool
+    timeout: float
+    execution: str
+    show_decisions: bool
+
+    def option(self, name: str, default: object = None) -> object:
+        return self.options.get(name, default)
 
 
 def _import_module_path(module_path: str) -> ModuleType:
@@ -182,6 +203,16 @@ def _parse_input_json(text: str | None) -> dict:
     return value
 
 
+def _parse_options(pairs: list[str], *, services: str | None = None) -> dict:
+    options = _parse_inputs(pairs)
+    if services is not None:
+        existing = options.get("services")
+        if existing is not None and existing != services:
+            raise SystemExit("Use either --services or --option services=..., not both.")
+        options["services"] = services
+    return options
+
+
 def _seed_inputs(wf: Workflow, inputs: dict) -> dict:
     """Var defaults from the workflow namespace, overlaid by caller inputs —
     parity with the in-process run() seeding (runtime.py:1014)."""
@@ -211,10 +242,20 @@ def _ensure_store_parent(path: str) -> str:
     return str(expanded)
 
 
+def _call_setup_hook(module: ModuleType, config: RunConfig) -> None:
+    setup = getattr(module, "zippergen_setup", None)
+    if setup is None:
+        return
+    if not callable(setup):
+        raise SystemExit("zippergen_setup exists but is not callable.")
+    setup(config)
+
+
 def _run_workflow_command(args) -> int:
-    wf, _module = load_workflow_spec(args.workflow)
+    wf, module = load_workflow_spec(args.workflow)
     inputs = _parse_input_json(args.input_json)
     inputs.update(_parse_inputs(args.input))
+    options = _parse_options(args.option, services=args.services)
 
     store_path = args.store
     if args.execution == "sqlite":
@@ -222,6 +263,21 @@ def _run_workflow_command(args) -> int:
         print(f"Store: {store_path}", file=sys.stderr)
     elif store_path:
         print("--store is ignored when --execution memory is used.", file=sys.stderr)
+
+    config = RunConfig(
+        workflow_spec=args.workflow,
+        workflow=wf,
+        module=module,
+        llm=args.llm,
+        store_path=store_path,
+        inputs=inputs,
+        options=options,
+        ui=args.ui,
+        timeout=args.timeout,
+        execution=args.execution,
+        show_decisions=args.show_decisions,
+    )
+    _call_setup_hook(module, config)
 
     configure_kwargs = {
         "ui": args.ui,
@@ -251,6 +307,8 @@ def main(argv=None) -> int:
     rn.add_argument("--store", help="SQLite store path. Defaults to ~/.zippergen/runs/<workflow>.sqlite")
     rn.add_argument("--input", action="append", default=[], metavar="name=value", help="Workflow input value.")
     rn.add_argument("--input-json", help="Workflow inputs as a JSON object.")
+    rn.add_argument("--option", action="append", default=[], metavar="name=value", help="Option passed to zippergen_setup(config).")
+    rn.add_argument("--services", choices=("fake", "live"), help="Shortcut for --option services=<value>.")
     rn.add_argument("--ui", action="store_true", help="Start ZipperChat and attach it to the run store.")
     rn.add_argument("--timeout", type=float, default=60.0, help="Workflow timeout in seconds.")
     rn.add_argument("--execution", choices=("sqlite", "memory"), default="sqlite", help="Execution backend.")
