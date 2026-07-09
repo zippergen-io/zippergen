@@ -140,7 +140,9 @@ The practical consequence: the global protocol is also a complete audit trail of
 
 ## ZipperChat
 
-Each lifeline gets its own column. Actions, messages, and human control points appear as cards as they happen. Start a workflow with `ui=True` and open **http://localhost:8765**. Pass `show_decisions=True` to also show branch decisions and control broadcasts.
+Each lifeline gets its own column. Actions, messages, and human task events appear as cards as they happen. ZipperChat is now treated as a legacy visualization surface, not the primary deployment approval channel. For deployed systems, human approvals should go through SQLite-backed adapters such as `zippergen approve`, `zippergen notify telegram`, email, or Slack.
+
+For local visualization, start a workflow with `ui=True` and open **http://localhost:8765**. Pass `show_decisions=True` to also show branch decisions and control broadcasts.
 
 For applications that run several workflows from ordinary Python code, ZipperChat can show multiple independent runs on the same page:
 
@@ -160,7 +162,7 @@ Start without API keys:
 python examples/hello.py                        # two lifelines, one LLM call
 python examples/write_tweet.py                  # owned-decision loop
 python examples/parallel.py                     # fan-out / fan-in across branches
-python examples/human_approval.py               # browser-based human approval in ZipperChat
+python examples/human_approval.py               # legacy browser approval demo
 python examples/command_center.py --llm mock    # long-running dashboard with two event loops
 ```
 
@@ -203,11 +205,12 @@ Run a workflow from the command line with a persistent SQLite store:
 zippergen run examples/hello.py:hello \
   --llm openai:gpt-4o \
   --store ~/.zippergen/runs/hello.sqlite \
-  --input topic="Say hello to ZipperGen" \
-  --ui
+  --input topic="Say hello to ZipperGen"
 ```
 
 The workflow spec can be `module:workflow` or `path.py:workflow`. If `--store` is omitted, `zippergen run` creates a stable local store under `~/.zippergen/runs/`. Restart the same command with the same store to replay committed work and continue from SQLite.
+
+Use `--ui` only when you want the legacy ZipperChat visualization attached to the run. Deployment approvals are still owned by SQLite tasks and notification adapters.
 
 Inspect a local deployment store:
 
@@ -268,8 +271,7 @@ zippergen run examples/command_center.py:command_center \
   --llm openai:gpt-4o \
   --services live \
   --store ~/.zippergen/runs/command-center.sqlite \
-  --ui \
-  --timeout 3600
+  --timeout 0
 ```
 
 For local models, add an idle timeout so the model can be released while the workflow keeps running:
@@ -280,8 +282,7 @@ zippergen run examples/command_center.py:command_center \
   --services live \
   --llm-idle-timeout 300 \
   --store ~/.zippergen/runs/command-center.sqlite \
-  --ui \
-  --timeout 3600
+  --timeout 0
 ```
 
 ## Formal foundation

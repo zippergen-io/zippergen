@@ -17,6 +17,13 @@ class ReplayMismatch(Exception):
     (different payload/locator/kind). Raised loudly rather than corrupting state."""
 
 
+def _lastrowid(cur) -> int:
+    rowid = cur.lastrowid
+    if rowid is None:
+        raise RuntimeError("SQLite did not return a lastrowid for an inserted event.")
+    return int(rowid)
+
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS events (
   rowid        INTEGER PRIMARY KEY,
@@ -227,7 +234,7 @@ def record_trace_event(conn, role: str, event: dict) -> int:
         "VALUES(?,?,?,?,?,?)",
         (role, None, None, "trace", json.dumps(_json_safe(event)), None),
     )
-    return int(cur.lastrowid)
+    return _lastrowid(cur)
 
 
 def list_trace_events(conn, after_rowid: int = 0) -> list[dict]:
@@ -594,7 +601,7 @@ class DurableChannel:
             "VALUES(?,?,?,?,?,?)",
             (self.role, None, None, "act", json.dumps(payload), None),
         )
-        return int(cur.lastrowid)
+        return _lastrowid(cur)
 
     def record_decision(self, payload: dict) -> int:
         """INSERT a decision-journal row and advance the cursor past it (the
@@ -604,7 +611,7 @@ class DurableChannel:
             "VALUES(?,?,?,?,?,?)",
             (self.role, None, None, "decision", json.dumps(payload), None),
         )
-        rowid = int(cur.lastrowid)
+        rowid = _lastrowid(cur)
         self._journal_seen.add(rowid)
         self._journal_consumed = max(self._journal_consumed, rowid)
         return rowid
@@ -681,7 +688,7 @@ class DurableChannel:
             (sender, receiver, channel, "msg", json.dumps(list(values)),
              _encode_causal_stamp(vc, view, field_view)),
         )
-        return int(cur.lastrowid)
+        return _lastrowid(cur)
 
     def try_get(self, sender: str, receiver: str, channel: str) -> Item | None:
         key = (sender, receiver, channel)

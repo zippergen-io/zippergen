@@ -1,7 +1,8 @@
 """Reusable durable role runner.
 
-This module owns the per-role replay/live loop shared by deployed execution
-(`zippergen serve`) and the future local SQLite supervisor.
+This module owns the per-role replay/live loop used by the local SQLite
+supervisor. `zippergen serve` still exposes the same machinery as a legacy
+low-level entry point.
 """
 from __future__ import annotations
 
@@ -9,6 +10,7 @@ import sqlite3
 import threading
 import time
 from dataclasses import dataclass
+from typing import Any, cast
 
 from zippergen.locator import action_node_paths, loop_node_paths, resolve_path
 from zippergen.runtime import (
@@ -25,7 +27,7 @@ from zippergen.store import (
     human_task_id,
     load_human_task,
 )
-from zippergen.syntax import EmptyStmt, HumanAction, WhileRecvStmt, WhileStmt
+from zippergen.syntax import ActStmt, EmptyStmt, HumanAction, WhileRecvStmt, WhileStmt
 
 
 @dataclass
@@ -178,11 +180,12 @@ class RoleRunner:
         *,
         human_task: str | None = None,
     ) -> None:
+        node = cast(ActStmt, pending.node)
         loc = self.journal.act_paths[id(pending.node)]
         payload = {
             "status": "done",
             "locator": loc,
-            "action": pending.node.action.name,
+            "action": node.action.name,
             "input_hash": _input_hash(pending.inputs),
             "outputs": out_map,
         }
@@ -211,10 +214,11 @@ class RoleRunner:
             time.sleep(0.05)
 
     def _resolve_human_task(self, pending: PendingExternal) -> tuple[dict, str]:
-        action = pending.node.action
+        node = cast(ActStmt, pending.node)
+        action = node.action
         assert isinstance(action, HumanAction)
-        outs = pending.node.outputs
-        loc = self.journal.act_paths[id(pending.node)]
+        outs = node.outputs
+        loc = self.journal.act_paths[id(node)]
         input_hash = _input_hash(pending.inputs)
         task_id = human_task_id(self.role, loc, input_hash, self.channel.journal_position())
         spec = _human_task_spec(action, pending.inputs)
@@ -253,10 +257,11 @@ class RoleRunner:
         return {outs[0].name: result[action.output]}, task_id
 
     def _resolve_external(self, pending: PendingExternal) -> tuple[dict, str | None]:
-        action = pending.node.action
+        node = cast(ActStmt, pending.node)
+        action = node.action
         if isinstance(action, HumanAction) and action.visible:
             return self._resolve_human_task(pending)
-        outs = pending.node.outputs
+        outs = node.outputs
         return external_out_map(
             action,
             pending.inputs,
@@ -269,7 +274,7 @@ class RoleRunner:
         return _step(
             residual,
             self.env,
-            self.channel,
+            cast(Any, self.channel),
             self.ns,
             self.llm_backend,
             self.human_backend,

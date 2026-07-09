@@ -40,6 +40,7 @@ from zippergen.role_runner import (
 # CLI:
 #   `zippergen run MODULE_OR_PATH:WORKFLOW [--llm SPEC] [--store PATH] [--input k=v]`
 #   `zippergen serve --workflow PATH --role NAME --store PATH [--input k=v]`
+#       Legacy low-level per-role entry point; prefer `zippergen run`.
 # ---------------------------------------------------------------------------
 import argparse
 import hashlib
@@ -807,7 +808,7 @@ def main(argv=None) -> int:
     rn.add_argument("--input-json", help="Workflow inputs as a JSON object.")
     rn.add_argument("--option", action="append", default=[], metavar="name=value", help="Option passed to zippergen_setup(config).")
     rn.add_argument("--services", choices=("fake", "live"), help="Shortcut for --option services=<value>.")
-    rn.add_argument("--ui", action="store_true", help="Start ZipperChat and attach it to the run store.")
+    rn.add_argument("--ui", action="store_true", help="Start legacy ZipperChat visualization; approvals still live in SQLite.")
     rn.add_argument("--timeout", type=float, default=60.0, help="Workflow timeout in seconds; use 0 for no deadline.")
     rn.add_argument("--execution", choices=("sqlite", "memory"), default="sqlite", help="Execution backend.")
     rn.add_argument("--show-decisions", action="store_true", help="Show branch/control events in ZipperChat.")
@@ -863,7 +864,11 @@ def main(argv=None) -> int:
     tg.add_argument("--resend", action="store_true", help="Resend already-notified pending tasks.")
     tg.add_argument("--quiet", action="store_true", help="Suppress progress messages.")
 
-    sv = sub.add_parser("serve", help="run one role as a durable process")
+    sv = sub.add_parser(
+        "serve",
+        help="legacy: run one role as a durable process",
+        description="Legacy low-level per-role runner. Prefer `zippergen run` for local deployment.",
+    )
     sv.add_argument("--workflow", required=True)
     sv.add_argument("--role", required=True)
     sv.add_argument("--store", required=True)
@@ -885,6 +890,7 @@ def main(argv=None) -> int:
     if args.cmd == "notify" and args.adapter == "telegram":
         return _notify_telegram_command(args)
 
+    print("Warning: `zippergen serve` is a legacy low-level command; prefer `zippergen run`.", file=sys.stderr)
     wf, role_ll = load_workflow(args.workflow, args.role)
     lifelines = _workflow_lifelines(wf)
     from zippergen.runtime import _build_formula_monitors

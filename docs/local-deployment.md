@@ -9,6 +9,12 @@ This is the current recommended shape for a simple local ZipperGen deployment:
 
 SQLite is the coordination boundary. The workflow process, CLI approval tools,
 Telegram adapter, and future adapters all communicate through the same store.
+ZipperChat may still be used for visualization, but browser-based approval is
+legacy and should not be the primary approval path for deployed systems.
+
+`zippergen serve` is also a legacy low-level per-role entry point. Prefer
+`zippergen run`, which supervises all lifelines locally against one SQLite
+store.
 
 ## Local Smoke Test
 

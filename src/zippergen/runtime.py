@@ -941,6 +941,8 @@ def _exec(stmt: LocalStmt, env: Env, ch: InProcessChannel, ns: dict, llm_backend
                         branch, env, ch, ns, llm_backend, human_backend, monitor,
                         branch_trace, formula_conditions, stop,
                     )
+                    if isinstance(next_branch, PendingExternal):
+                        raise RuntimeError("Unexpected pending external action in in-memory parallel execution.")
                     residuals[i] = next_branch
                     if did_step:
                         progressed = True

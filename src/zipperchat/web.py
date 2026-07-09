@@ -480,7 +480,7 @@ class WebTrace:
                     task = load_human_task(conn, task_id)
                     if task is None:
                         continue
-                    status = task.get("status")
+                    status = str(task.get("status") or "")
                     key = (store_path, task_id)
                     with self._store_lock:
                         previous = self._store_seen.get(key)
