@@ -414,6 +414,38 @@ def _print_tasks(tasks: list[dict], *, heading: str) -> None:
             print(f"  prefill: {_short_text(prefill)}")
 
 
+def _notify_stdout_task(task: dict, *, store_path: str) -> None:
+    spec = task.get("spec") or {}
+    rendered = spec.get("rendered") or {}
+    token = task.get("token")
+    print("=" * 72)
+    print(f"Human task: {task['task_id']}")
+    if token:
+        print(f"Token: {token}")
+    print(f"Action: {task['role']}.{task['action']} ({spec.get('kind', 'human')})")
+    instruction = rendered.get("instruction")
+    context = rendered.get("context")
+    prefill = rendered.get("prefill")
+    if instruction:
+        print("\nInstruction:")
+        print(instruction)
+    if context:
+        print("\nContext:")
+        print(context)
+    if prefill:
+        print("\nPrefill:")
+        print(prefill)
+    if token:
+        print("\nApprove:")
+        print(f"  zippergen approve --store {store_path} --token {token}")
+        if spec.get("output_type") == "bool":
+            print("Decline:")
+            print(f"  zippergen approve --store {store_path} --token {token} --no")
+        else:
+            print("Respond:")
+            print(f"  zippergen approve --store {store_path} --token {token} --value '<value>'")
+
+
 def _print_status(status: dict[str, object]) -> None:
     print(f"Store: {status['store']}")
     print(f"State: {status['state']} ({status['summary']})")
@@ -613,6 +645,34 @@ def _approve_command(args) -> int:
     return 0
 
 
+def _notify_stdout_command(args) -> int:
+    store_path = str(Path(args.store).expanduser())
+    if not Path(store_path).exists():
+        raise SystemExit(f"Store does not exist: {args.store}")
+    seen: set[str] = set()
+    while True:
+        tasks = _load_human_tasks(
+            store_path,
+            status="pending",
+            limit=args.limit,
+            with_tokens=True,
+            token_channel=args.channel,
+        )
+        emitted = 0
+        for task in tasks:
+            token = task.get("token") or task["task_id"]
+            if token in seen:
+                continue
+            _notify_stdout_task(task, store_path=store_path)
+            seen.add(token)
+            emitted += 1
+        if not args.watch:
+            if emitted == 0 and not args.quiet:
+                print("No pending human tasks.")
+            return 0
+        time.sleep(args.interval)
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="zippergen")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -653,6 +713,16 @@ def main(argv=None) -> int:
     apv.add_argument("--result-json", help="Complete with an explicit JSON object result.")
     apv.add_argument("--json", action="store_true", help="Print the completed task as JSON.")
 
+    nt = sub.add_parser("notify", help="run a notification adapter")
+    notify_sub = nt.add_subparsers(dest="adapter", required=True)
+    out = notify_sub.add_parser("stdout", help="print pending human tasks with approval tokens")
+    out.add_argument("--store", required=True, help="SQLite store path.")
+    out.add_argument("--channel", default="stdout", help="Approval token channel name.")
+    out.add_argument("--watch", action="store_true", help="Keep polling for new pending tasks.")
+    out.add_argument("--interval", type=float, default=2.0, help="Polling interval in seconds for --watch.")
+    out.add_argument("--limit", type=int, help="Maximum number of tasks to notify per poll.")
+    out.add_argument("--quiet", action="store_true", help="Suppress the no-pending-tasks message in one-shot mode.")
+
     sv = sub.add_parser("serve", help="run one role as a durable process")
     sv.add_argument("--workflow", required=True)
     sv.add_argument("--role", required=True)
@@ -668,6 +738,8 @@ def main(argv=None) -> int:
         return _tasks_command(args)
     if args.cmd == "approve":
         return _approve_command(args)
+    if args.cmd == "notify" and args.adapter == "stdout":
+        return _notify_stdout_command(args)
 
     wf, role_ll = load_workflow(args.workflow, args.role)
     lifelines = _workflow_lifelines(wf)

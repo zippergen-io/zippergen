@@ -354,3 +354,58 @@ def test_approve_command_completes_task_by_token(tmp_path, capsys):
         assert load_human_task_token(conn, token)["used_at"] is not None
     finally:
         conn.close()
+
+
+def test_notify_stdout_prints_pending_task_with_token(tmp_path, capsys):
+    store_path = tmp_path / "notify.sqlite"
+    conn = open_store(str(store_path))
+    ensure_human_task(
+        conn,
+        task_id="task-1",
+        role="User",
+        locator=[0],
+        action="approve",
+        input_hash=None,
+        inputs={"prompt": "Approve?"},
+        spec={
+            "kind": "confirm",
+            "output": "approved",
+            "output_type": "bool",
+            "rendered": {
+                "instruction": "Approve the deployment?",
+                "context": "Production rollout",
+            },
+        },
+    )
+    conn.close()
+
+    rc = main([
+        "notify",
+        "stdout",
+        "--store",
+        str(store_path),
+        "--channel",
+        "slack",
+    ])
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "Human task: task-1" in captured.out
+    assert "Token: zg_" in captured.out
+    assert "Action: User.approve (confirm)" in captured.out
+    assert "Approve the deployment?" in captured.out
+    assert "Production rollout" in captured.out
+    assert "zippergen approve --store" in captured.out
+    assert "--token zg_" in captured.out
+    assert "--no" in captured.out
+
+
+def test_notify_stdout_reports_no_pending_tasks(tmp_path, capsys):
+    store_path = tmp_path / "notify-empty.sqlite"
+    open_store(str(store_path)).close()
+
+    rc = main(["notify", "stdout", "--store", str(store_path)])
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "No pending human tasks." in captured.out

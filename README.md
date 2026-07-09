@@ -232,6 +232,13 @@ zippergen tasks --store ~/.zippergen/runs/command-center.sqlite --tokens --chann
 zippergen approve --store ~/.zippergen/runs/command-center.sqlite --token <token>
 ```
 
+The first notification adapter prints pending tasks with approval commands:
+
+```bash
+zippergen notify stdout --store ~/.zippergen/runs/command-center.sqlite --channel telegram
+zippergen notify stdout --store ~/.zippergen/runs/command-center.sqlite --channel telegram --watch
+```
+
 Workflow modules may define an optional setup hook:
 
 ```python
