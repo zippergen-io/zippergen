@@ -1,7 +1,7 @@
 import json
 
 from zippergen.serve import main
-from zippergen.store import ensure_human_task, open_store
+from zippergen.store import ensure_human_task, load_human_task, open_store
 
 
 WORKFLOW_SOURCE = """
@@ -184,3 +184,113 @@ def test_status_command_reports_missing_store(tmp_path, capsys):
         "state": "missing",
         "summary": "store does not exist",
     }
+
+
+def test_tasks_command_lists_pending_tasks(tmp_path, capsys):
+    store_path = tmp_path / "tasks.sqlite"
+    conn = open_store(str(store_path))
+    ensure_human_task(
+        conn,
+        task_id="task-1",
+        role="User",
+        locator=[0],
+        action="approve",
+        input_hash=None,
+        inputs={"prompt": "Approve?"},
+        spec={
+            "kind": "confirm",
+            "output": "approved",
+            "output_type": "bool",
+            "rendered": {"instruction": "Approve this?"},
+        },
+    )
+    conn.close()
+
+    rc = main(["tasks", "--store", str(store_path)])
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "Pending human tasks: 1" in captured.out
+    assert "task-1 User.approve confirm -> approved: bool" in captured.out
+    assert "instruction: Approve this?" in captured.out
+
+
+def test_approve_command_completes_boolean_task(tmp_path, capsys):
+    store_path = tmp_path / "approve.sqlite"
+    conn = open_store(str(store_path))
+    ensure_human_task(
+        conn,
+        task_id="task-1",
+        role="User",
+        locator=[0],
+        action="approve",
+        input_hash=None,
+        inputs={"prompt": "Approve?"},
+        spec={"kind": "confirm", "output": "approved", "output_type": "bool"},
+    )
+    conn.close()
+
+    rc = main(["approve", "--store", str(store_path), "--task", "task-1", "--no"])
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert 'Completed human task task-1: {"approved": false}' in captured.out
+    conn = open_store(str(store_path))
+    try:
+        assert load_human_task(conn, "task-1")["result"] == {"approved": False}
+    finally:
+        conn.close()
+
+
+def test_approve_command_completes_string_task(tmp_path, capsys):
+    store_path = tmp_path / "approve-string.sqlite"
+    conn = open_store(str(store_path))
+    ensure_human_task(
+        conn,
+        task_id="task-1",
+        role="User",
+        locator=[0],
+        action="edit_reply",
+        input_hash=None,
+        inputs={"draft": "Hello"},
+        spec={"kind": "edit", "output": "reply", "output_type": "str"},
+    )
+    conn.close()
+
+    rc = main([
+        "approve",
+        "--store",
+        str(store_path),
+        "--task",
+        "task-1",
+        "--value",
+        "Looks good.",
+        "--json",
+    ])
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert json.loads(captured.out)["result"] == {"reply": "Looks good."}
+
+
+def test_approve_command_requires_value_for_string_task(tmp_path):
+    store_path = tmp_path / "approve-missing-value.sqlite"
+    conn = open_store(str(store_path))
+    ensure_human_task(
+        conn,
+        task_id="task-1",
+        role="User",
+        locator=[0],
+        action="edit_reply",
+        input_hash=None,
+        inputs={"draft": "Hello"},
+        spec={"kind": "edit", "output": "reply", "output_type": "str"},
+    )
+    conn.close()
+
+    try:
+        main(["approve", "--store", str(store_path), "--task", "task-1"])
+    except SystemExit as exc:
+        assert "requires --value" in str(exc)
+    else:
+        raise AssertionError("approve should reject string tasks without --value")

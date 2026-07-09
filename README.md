@@ -216,6 +216,15 @@ zippergen status --store ~/.zippergen/runs/hello.sqlite
 zippergen status --store ~/.zippergen/runs/hello.sqlite --json
 ```
 
+List and complete human approvals without the browser UI:
+
+```bash
+zippergen tasks --store ~/.zippergen/runs/command-center.sqlite
+zippergen approve --store ~/.zippergen/runs/command-center.sqlite --task <task-id>
+zippergen approve --store ~/.zippergen/runs/command-center.sqlite --task <task-id> --no
+zippergen approve --store ~/.zippergen/runs/command-center.sqlite --task <task-id> --value "edited reply"
+```
+
 Workflow modules may define an optional setup hook:
 
 ```python

@@ -55,7 +55,7 @@ from types import ModuleType
 
 from zippergen.syntax import Workflow, Lifeline
 from zippergen.projection import project
-from zippergen.store import list_workflow_results, open_store
+from zippergen.store import complete_human_task, list_workflow_results, load_human_task, open_store
 
 
 @dataclass(frozen=True)
@@ -342,6 +342,57 @@ def _store_status(store_path: str) -> dict[str, object]:
     }
 
 
+def _load_human_tasks(store_path: str, *, status: str | None = "pending", limit: int | None = None) -> list[dict]:
+    conn = open_store(str(Path(store_path).expanduser()))
+    try:
+        query = (
+            "SELECT task_id FROM human_tasks "
+            + ("WHERE status=? " if status is not None else "")
+            + "ORDER BY updated_at DESC, task_id"
+        )
+        params: tuple[object, ...] = (status,) if status is not None else ()
+        if limit is not None:
+            query += " LIMIT ?"
+            params = (*params, limit)
+        rows = conn.execute(query, params).fetchall()
+        tasks = []
+        for row in rows:
+            task = load_human_task(conn, row[0])
+            if task is not None:
+                tasks.append(task)
+        return tasks
+    finally:
+        conn.close()
+
+
+def _short_text(value: object, *, limit: int = 120) -> str:
+    text = "" if value is None else str(value).replace("\n", " ")
+    return text if len(text) <= limit else text[: limit - 1] + "..."
+
+
+def _print_tasks(tasks: list[dict], *, heading: str) -> None:
+    print(f"{heading}: {len(tasks)}")
+    for task in tasks:
+        spec = task.get("spec") or {}
+        rendered = spec.get("rendered") or {}
+        output = spec.get("output")
+        output_type = spec.get("output_type")
+        print(
+            f"{task['task_id']} {task['role']}.{task['action']} "
+            f"{spec.get('kind', 'human')} -> {output}: {output_type} "
+            f"status={task['status']} updated={_fmt_time(task['updated_at'])}"
+        )
+        instruction = rendered.get("instruction")
+        context = rendered.get("context")
+        prefill = rendered.get("prefill")
+        if instruction:
+            print(f"  instruction: {_short_text(instruction)}")
+        if context:
+            print(f"  context: {_short_text(context)}")
+        if prefill:
+            print(f"  prefill: {_short_text(prefill)}")
+
+
 def _print_status(status: dict[str, object]) -> None:
     print(f"Store: {status['store']}")
     print(f"State: {status['state']} ({status['summary']})")
@@ -434,6 +485,98 @@ def _status_command(args) -> int:
     return 0
 
 
+def _tasks_command(args) -> int:
+    if not Path(args.store).expanduser().exists():
+        raise SystemExit(f"Store does not exist: {args.store}")
+    status = None if args.all else "pending"
+    tasks = _load_human_tasks(args.store, status=status, limit=args.limit)
+    if args.json:
+        print(json.dumps(tasks, default=str))
+    else:
+        _print_tasks(tasks, heading="Human tasks" if args.all else "Pending human tasks")
+    return 0
+
+
+def _parse_bool_value(raw: object) -> bool:
+    if isinstance(raw, bool):
+        return raw
+    text = str(raw).strip().lower()
+    if text in {"true", "yes", "1", "y", "approve", "approved", "ack"}:
+        return True
+    if text in {"false", "no", "0", "n", "decline", "declined", "reject", "rejected"}:
+        return False
+    raise SystemExit(f"Cannot parse boolean human response: {raw!r}")
+
+
+def _approve_result_from_args(task: dict, args) -> dict:
+    spec = task.get("spec") or {}
+    output = spec.get("output")
+    if not output:
+        raise SystemExit(f"Task {task['task_id']} has no output field in its spec.")
+    output_type = spec.get("output_type", "str")
+
+    if args.result_json is not None:
+        try:
+            result = json.loads(args.result_json)
+        except json.JSONDecodeError as exc:
+            raise SystemExit(f"--result-json must be valid JSON: {exc.msg}") from exc
+        if not isinstance(result, dict):
+            raise SystemExit("--result-json must be a JSON object.")
+        if output not in result:
+            raise SystemExit(f"--result-json must include output key {output!r}.")
+        result[output] = _parse_bool_value(result[output]) if output_type == "bool" else str(result[output])
+        return result
+
+    if args.yes and args.no:
+        raise SystemExit("Use only one of --yes or --no.")
+    if args.value is not None and (args.yes or args.no):
+        raise SystemExit("Use either --value or --yes/--no, not both.")
+
+    if output_type == "bool":
+        if args.no:
+            value = False
+        elif args.value is not None:
+            value = _parse_bool_value(args.value)
+        else:
+            value = True
+    else:
+        if args.yes or args.no:
+            raise SystemExit("--yes/--no can only be used for boolean human tasks.")
+        if args.value is None:
+            raise SystemExit(f"Task {task['task_id']} requires --value for output {output!r}.")
+        value = args.value
+    return {output: value}
+
+
+def _approve_command(args) -> int:
+    store_path = str(Path(args.store).expanduser())
+    if not Path(store_path).exists():
+        raise SystemExit(f"Store does not exist: {args.store}")
+    conn = open_store(store_path)
+    try:
+        task = load_human_task(conn, args.task)
+        if task is None:
+            raise SystemExit(f"Human task not found: {args.task}")
+        if task["status"] != "pending":
+            raise SystemExit(f"Human task {args.task} is already {task['status']}.")
+        result = _approve_result_from_args(task, args)
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            task = complete_human_task(conn, args.task, result)
+            conn.execute("COMMIT")
+        except BaseException:
+            conn.execute("ROLLBACK")
+            raise
+    finally:
+        conn.close()
+
+    if args.json:
+        print(json.dumps(task, default=str))
+    else:
+        print(f"Completed human task {task['task_id']}: {json.dumps(task['result'], default=str)}")
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="zippergen")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -455,6 +598,21 @@ def main(argv=None) -> int:
     st.add_argument("--store", required=True, help="SQLite store path.")
     st.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
 
+    tk = sub.add_parser("tasks", help="list human tasks in a local SQLite store")
+    tk.add_argument("--store", required=True, help="SQLite store path.")
+    tk.add_argument("--all", action="store_true", help="Include completed tasks.")
+    tk.add_argument("--limit", type=int, help="Maximum number of tasks to show.")
+    tk.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+
+    apv = sub.add_parser("approve", help="complete a pending human task")
+    apv.add_argument("--store", required=True, help="SQLite store path.")
+    apv.add_argument("--task", required=True, help="Human task id.")
+    apv.add_argument("--yes", action="store_true", help="Complete a boolean task with true.")
+    apv.add_argument("--no", action="store_true", help="Complete a boolean task with false.")
+    apv.add_argument("--value", help="Value for string tasks, or explicit true/false for boolean tasks.")
+    apv.add_argument("--result-json", help="Complete with an explicit JSON object result.")
+    apv.add_argument("--json", action="store_true", help="Print the completed task as JSON.")
+
     sv = sub.add_parser("serve", help="run one role as a durable process")
     sv.add_argument("--workflow", required=True)
     sv.add_argument("--role", required=True)
@@ -466,6 +624,10 @@ def main(argv=None) -> int:
         return _run_workflow_command(args)
     if args.cmd == "status":
         return _status_command(args)
+    if args.cmd == "tasks":
+        return _tasks_command(args)
+    if args.cmd == "approve":
+        return _approve_command(args)
 
     wf, role_ll = load_workflow(args.workflow, args.role)
     lifelines = _workflow_lifelines(wf)
