@@ -37,24 +37,93 @@ from zippergen.role_runner import (
 
 
 # ---------------------------------------------------------------------------
-# CLI: `zippergen serve --workflow PATH --role NAME --store PATH [--input k=v]`
+# CLI:
+#   `zippergen run MODULE_OR_PATH:WORKFLOW [--llm SPEC] [--store PATH] [--input k=v]`
+#   `zippergen serve --workflow PATH --role NAME --store PATH [--input k=v]`
 # ---------------------------------------------------------------------------
 import argparse
+import hashlib
+import importlib
 import importlib.util
 import json
+import re
 import sys
+from pathlib import Path
+from types import ModuleType
 
 from zippergen.syntax import Workflow, Lifeline
 from zippergen.projection import project
 from zippergen.store import open_store
 
 
-def load_workflow(module_path: str, role_name: str) -> tuple[Workflow, Lifeline]:
-    spec = importlib.util.spec_from_file_location("_zippergen_wf", module_path)
+def _import_module_path(module_path: str) -> ModuleType:
+    path = Path(module_path).expanduser()
+    spec = importlib.util.spec_from_file_location(
+        f"_zippergen_wf_{hashlib.sha1(str(path).encode()).hexdigest()[:12]}",
+        path,
+    )
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    wf = next(v for v in vars(module).values() if isinstance(v, Workflow))
+    sys.path.insert(0, str(path.parent))
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        try:
+            sys.path.remove(str(path.parent))
+        except ValueError:
+            pass
+    return module
+
+
+def _looks_like_path(name: str) -> bool:
+    return name.endswith(".py") or "/" in name or "\\" in name or Path(name).exists()
+
+
+def _import_workflow_module(module_ref: str) -> ModuleType:
+    if _looks_like_path(module_ref):
+        return _import_module_path(module_ref)
+    return importlib.import_module(module_ref)
+
+
+def load_workflow_spec(spec_text: str) -> tuple[Workflow, ModuleType]:
+    """Load ``module:workflow`` or ``path.py:workflow``.
+
+    If no workflow name is supplied, the module must define exactly one
+    ``Workflow`` object.
+    """
+
+    module_ref, sep, workflow_name = spec_text.partition(":")
+    if not module_ref:
+        raise SystemExit("Workflow spec must be MODULE:WORKFLOW or PATH.py:WORKFLOW.")
+    module = _import_workflow_module(module_ref)
+    if sep:
+        try:
+            value = getattr(module, workflow_name)
+        except AttributeError as exc:
+            raise SystemExit(f"Workflow {workflow_name!r} not found in {module_ref!r}.") from exc
+        if not isinstance(value, Workflow):
+            raise SystemExit(f"{module_ref}:{workflow_name} is not a ZipperGen Workflow.")
+        return value, module
+
+    workflows = {
+        name: value
+        for name, value in vars(module).items()
+        if isinstance(value, Workflow)
+    }
+    if len(workflows) == 1:
+        return next(iter(workflows.values())), module
+    if not workflows:
+        raise SystemExit(f"No ZipperGen Workflow found in {module_ref!r}.")
+    names = ", ".join(sorted(workflows))
+    raise SystemExit(f"Multiple workflows found in {module_ref!r}: {names}. Use MODULE:WORKFLOW.")
+
+
+def load_workflow(module_path: str, role_name: str) -> tuple[Workflow, Lifeline]:
+    module = _import_module_path(module_path)
+    workflows = [value for value in vars(module).values() if isinstance(value, Workflow)]
+    if not workflows:
+        raise SystemExit(f"No ZipperGen Workflow found in {module_path!r}.")
+    wf = workflows[0]
     lifelines = {ll.name: ll for ll in _workflow_lifelines(wf)}
     if role_name not in lifelines:
         raise SystemExit(f"role {role_name!r} not in workflow lifelines {sorted(lifelines)}")
@@ -92,11 +161,25 @@ def _parse_inputs(pairs: list[str]) -> dict:
     out: dict = {}
     for p in pairs or []:
         k, _, v = p.partition("=")
+        if not k or not _:
+            raise SystemExit(f"Invalid --input {p!r}; expected name=value.")
         try:
             out[k] = json.loads(v)      # 7 -> int, "true" via JSON, '"s"' -> str
         except json.JSONDecodeError:
             out[k] = v                  # bare string fallback
     return out
+
+
+def _parse_input_json(text: str | None) -> dict:
+    if not text:
+        return {}
+    try:
+        value = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"--input-json must be valid JSON: {exc.msg}") from exc
+    if not isinstance(value, dict):
+        raise SystemExit("--input-json must be a JSON object.")
+    return value
 
 
 def _seed_inputs(wf: Workflow, inputs: dict) -> dict:
@@ -108,15 +191,80 @@ def _seed_inputs(wf: Workflow, inputs: dict) -> dict:
     return env
 
 
+def _slug(text: str) -> str:
+    text = re.sub(r"[^A-Za-z0-9_.-]+", "-", text.strip()).strip("-._")
+    return text or "workflow"
+
+
+def _default_store_path(workflow_spec: str, wf: Workflow) -> str:
+    base = workflow_spec.split(":", 1)[0]
+    if _looks_like_path(base):
+        label = f"{Path(base).stem}.{wf.name}"
+    else:
+        label = f"{base}.{wf.name}"
+    return str(Path.home() / ".zippergen" / "runs" / f"{_slug(label)}.sqlite")
+
+
+def _ensure_store_parent(path: str) -> str:
+    expanded = Path(path).expanduser()
+    expanded.parent.mkdir(parents=True, exist_ok=True)
+    return str(expanded)
+
+
+def _run_workflow_command(args) -> int:
+    wf, _module = load_workflow_spec(args.workflow)
+    inputs = _parse_input_json(args.input_json)
+    inputs.update(_parse_inputs(args.input))
+
+    store_path = args.store
+    if args.execution == "sqlite":
+        store_path = _ensure_store_parent(store_path or _default_store_path(args.workflow, wf))
+        print(f"Store: {store_path}", file=sys.stderr)
+    elif store_path:
+        print("--store is ignored when --execution memory is used.", file=sys.stderr)
+
+    configure_kwargs = {
+        "ui": args.ui,
+        "timeout": args.timeout,
+        "execution": args.execution,
+        "store_path": store_path,
+        "show_decisions": args.show_decisions,
+    }
+    if args.llm:
+        wf.configure(args.llm, **configure_kwargs)
+    else:
+        wf.configure(**configure_kwargs)
+
+    result = wf(**inputs)
+    print(json.dumps({"result": result}, default=str))
+    if args.ui and sys.stdin.isatty():
+        input("ZipperChat running at http://localhost:8765. Press Enter to exit. ")
+    return 0
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="zippergen")
     sub = ap.add_subparsers(dest="cmd", required=True)
+    rn = sub.add_parser("run", help="run a workflow locally through SQLite")
+    rn.add_argument("workflow", help="Workflow spec: module:workflow or path.py:workflow")
+    rn.add_argument("--llm", metavar="SPEC", help="LLM spec: mock, openai:gpt-4o, ollama:qwen2.5:7b, ...")
+    rn.add_argument("--store", help="SQLite store path. Defaults to ~/.zippergen/runs/<workflow>.sqlite")
+    rn.add_argument("--input", action="append", default=[], metavar="name=value", help="Workflow input value.")
+    rn.add_argument("--input-json", help="Workflow inputs as a JSON object.")
+    rn.add_argument("--ui", action="store_true", help="Start ZipperChat and attach it to the run store.")
+    rn.add_argument("--timeout", type=float, default=60.0, help="Workflow timeout in seconds.")
+    rn.add_argument("--execution", choices=("sqlite", "memory"), default="sqlite", help="Execution backend.")
+    rn.add_argument("--show-decisions", action="store_true", help="Show branch/control events in ZipperChat.")
+
     sv = sub.add_parser("serve", help="run one role as a durable process")
     sv.add_argument("--workflow", required=True)
     sv.add_argument("--role", required=True)
     sv.add_argument("--store", required=True)
     sv.add_argument("--input", action="append", default=[], metavar="k=v")
     args = ap.parse_args(argv)
+
+    if args.cmd == "run":
+        return _run_workflow_command(args)
 
     wf, role_ll = load_workflow(args.workflow, args.role)
     lifelines = _workflow_lifelines(wf)

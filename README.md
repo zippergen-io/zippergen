@@ -195,6 +195,20 @@ workflow.configure("openai:gpt-4o", ui=True, timeout=600)
 
 Supported specs: `"mock"`, `"openai:<model>"`, `"ollama:<model>"`, `"mistral:<model>"`, `"claude:<model>"`. You can omit the model and use env defaults, for example `"openai"`. For per-agent routing: `llm={"Writer": "openai:gpt-4o", "Editor": "mistral"}`.
 
+## Local Deployment
+
+Run a workflow from the command line with a persistent SQLite store:
+
+```bash
+zippergen run examples/hello.py:hello \
+  --llm openai:gpt-4o \
+  --store ~/.zippergen/runs/hello.sqlite \
+  --input topic="Say hello to ZipperGen" \
+  --ui
+```
+
+The workflow spec can be `module:workflow` or `path.py:workflow`. If `--store` is omitted, `zippergen run` creates a stable local store under `~/.zippergen/runs/`. Restart the same command with the same store to replay committed work and continue from SQLite.
+
 ## Formal foundation
 
 The implementation is based on the theory of [Message Sequence Charts](https://en.wikipedia.org/wiki/Message_sequence_chart) and [choreographic programming](https://en.wikipedia.org/wiki/Choreographic_programming). A workflow is written from a global point of view and projected to local participants; ZipperGen adapts this to LLM actions, tool calls, human control points, and runtime inspection.
