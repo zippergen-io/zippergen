@@ -11,6 +11,7 @@ from urllib import request
 from urllib.error import HTTPError, URLError
 
 __all__ = [
+    "ManagedBackend",
     "backend_from_spec",
     "make_mistral_backend",
     "make_openai_backend",
@@ -193,6 +194,107 @@ def _parse_response(action, content: str) -> dict[str, object]:
         ) from exc
 
 
+class ManagedBackend:
+    """Lazy backend wrapper with optional idle release.
+
+    The backend factory is called only when an LLM action reaches this backend.
+    If ``idle_timeout`` is set, ``release`` is called after the backend has been
+    idle for that many seconds. A timeout of ``0`` releases immediately after
+    each call.
+    """
+
+    def __init__(
+        self,
+        factory: Callable[[], Callable],
+        *,
+        release: Callable[[], None] | None = None,
+        idle_timeout: float | None = None,
+    ):
+        if idle_timeout is not None and idle_timeout < 0:
+            raise ValueError("idle_timeout must be non-negative.")
+        self._factory = factory
+        self._release = release
+        self._idle_timeout = idle_timeout
+        self._backend: Callable | None = None
+        self._timer: threading.Timer | None = None
+        self._lock = threading.RLock()
+        self._active = 0
+        self._last_used = 0.0
+
+    @property
+    def loaded(self) -> bool:
+        with self._lock:
+            return self._backend is not None
+
+    def __call__(self, action, inputs: dict[str, object]) -> dict[str, object]:
+        backend = self._acquire()
+        try:
+            return backend(action, inputs)
+        finally:
+            self._finish_call()
+
+    def close(self) -> None:
+        self.release()
+
+    def release(self) -> None:
+        release = None
+        with self._lock:
+            if self._timer is not None:
+                self._timer.cancel()
+                self._timer = None
+            if self._backend is not None:
+                self._backend = None
+                release = self._release
+        if release is not None:
+            release()
+
+    def _acquire(self) -> Callable:
+        with self._lock:
+            if self._timer is not None:
+                self._timer.cancel()
+                self._timer = None
+            if self._backend is None:
+                self._backend = self._factory()
+            self._active += 1
+            return self._backend
+
+    def _finish_call(self) -> None:
+        release_now = None
+        with self._lock:
+            self._active -= 1
+            self._last_used = time.monotonic()
+            if self._active != 0 or self._idle_timeout is None:
+                return
+            if self._idle_timeout == 0:
+                self._backend = None
+                release_now = self._release
+            else:
+                self._timer = threading.Timer(self._idle_timeout, self._release_if_idle)
+                self._timer.daemon = True
+                self._timer.start()
+        if release_now is not None:
+            release_now()
+
+    def _release_if_idle(self) -> None:
+        release = None
+        with self._lock:
+            if self._backend is None or self._active:
+                return
+            assert self._idle_timeout is not None
+            elapsed = time.monotonic() - self._last_used
+            remaining = self._idle_timeout - elapsed
+            if remaining > 0:
+                self._timer = threading.Timer(remaining, self._release_if_idle)
+                self._timer.daemon = True
+                self._timer.start()
+                return
+            self._timer = None
+            self._backend = None
+            release = self._release
+        if release is not None:
+            release()
+
+
 def make_mistral_backend(
     *,
     api_key: str,
@@ -368,6 +470,19 @@ def _env_float(name: str, default: float) -> float:
         raise RuntimeError(f"{name} must be a number, got {raw!r}.") from exc
 
 
+def _env_optional_float(name: str) -> float | None:
+    raw = os.environ.get(name)
+    if raw is None or raw == "":
+        return None
+    try:
+        value = float(raw)
+    except ValueError as exc:
+        raise RuntimeError(f"{name} must be a number, got {raw!r}.") from exc
+    if value < 0:
+        raise RuntimeError(f"{name} must be non-negative, got {raw!r}.")
+    return value
+
+
 def _split_llm_spec(spec: str) -> tuple[str, str | None]:
     provider, sep, model = spec.strip().partition(":")
     provider = provider.strip().lower()
@@ -379,7 +494,38 @@ def _split_llm_spec(spec: str) -> tuple[str, str | None]:
     return provider, model
 
 
-def backend_from_spec(spec: str, *, fallback: Callable | None = None) -> tuple[Callable, str]:
+def _ollama_native_base_url(openai_base_url: str) -> str:
+    base = openai_base_url.rstrip("/")
+    return base[:-3] if base.endswith("/v1") else base
+
+
+def _make_ollama_release(*, model: str, base_url: str, timeout: float) -> Callable[[], None]:
+    endpoint = _ollama_native_base_url(base_url) + "/api/chat"
+
+    def release() -> None:
+        payload = {"model": model, "messages": [], "keep_alive": 0}
+        req = request.Request(
+            endpoint,
+            data=json.dumps(payload).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            _retry_json_request(req, timeout=timeout, max_retries=0)
+        except RuntimeError:
+            # Best effort: model release should not make a workflow fail after
+            # the LLM action already completed successfully.
+            pass
+
+    return release
+
+
+def backend_from_spec(
+    spec: str,
+    *,
+    fallback: Callable | None = None,
+    idle_timeout: float | None = None,
+) -> tuple[Callable, str]:
     """Build an LLM backend from a compact spec such as ``"openai:gpt-4o"``.
 
     Supported specs:
@@ -433,13 +579,26 @@ def backend_from_spec(spec: str, *, fallback: Callable | None = None) -> tuple[C
         model = model or os.environ.get("OLLAMA_MODEL", "qwen2.5:7b")
         base_url = os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434/v1")
         api_key = os.environ.get("OLLAMA_API_KEY", "ollama")
+        max_tokens = _env_int("OLLAMA_MAX_TOKENS", 512)
+        timeout = _env_float("OLLAMA_TIMEOUT", 120.0)
+        if idle_timeout is None:
+            idle_timeout = _env_optional_float("OLLAMA_IDLE_TIMEOUT")
+        release_timeout = _env_float("OLLAMA_RELEASE_TIMEOUT", 5.0)
         return (
-            make_openai_backend(
-                api_key=api_key,
-                model=model,
-                base_url=base_url,
-                max_tokens=_env_int("OLLAMA_MAX_TOKENS", 512),
-                timeout=_env_float("OLLAMA_TIMEOUT", 120.0),
+            ManagedBackend(
+                lambda: make_openai_backend(
+                    api_key=api_key,
+                    model=model,
+                    base_url=base_url,
+                    max_tokens=max_tokens,
+                    timeout=timeout,
+                ),
+                release=_make_ollama_release(
+                    model=model,
+                    base_url=base_url,
+                    timeout=release_timeout,
+                ),
+                idle_timeout=idle_timeout,
             ),
             f"Ollama ({model})",
         )
@@ -468,6 +627,7 @@ def router_from_specs(
     *,
     fallback: Callable | None = None,
     fallback_label: str = "mock LLM",
+    idle_timeout: float | None = None,
 ) -> tuple[Callable, str]:
     """Build a per-lifeline backend router from compact LLM specs.
 
@@ -488,7 +648,11 @@ def router_from_specs(
             built_backends[lifeline_name] = provider
             labels.append(f"{lifeline_name}=custom")
         else:
-            backend, label = backend_from_spec(provider, fallback=fallback)
+            backend, label = backend_from_spec(
+                provider,
+                fallback=fallback,
+                idle_timeout=idle_timeout,
+            )
             built_backends[lifeline_name] = backend
             labels.append(f"{lifeline_name}={label}")
     return make_lifeline_router(built_backends), ", ".join(labels)
@@ -499,7 +663,13 @@ def router_from_env(
     *,
     fallback: Callable | None = None,
     fallback_label: str = "mock LLM",
+    idle_timeout: float | None = None,
 ) -> tuple[Callable, str]:
     """Backward-compatible alias for :func:`router_from_specs`."""
 
-    return router_from_specs(routes, fallback=fallback, fallback_label=fallback_label)
+    return router_from_specs(
+        routes,
+        fallback=fallback,
+        fallback_label=fallback_label,
+        idle_timeout=idle_timeout,
+    )

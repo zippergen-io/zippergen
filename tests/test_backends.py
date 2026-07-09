@@ -4,7 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 from zippergen import Lifeline, llm, workflow
-from zippergen.backends import backend_from_spec, make_openai_backend
+from zippergen.backends import ManagedBackend, backend_from_spec, make_openai_backend
 
 
 ConfigUser = Lifeline("ConfigUser")
@@ -72,6 +72,30 @@ def test_openai_backend_accepts_custom_base_url(monkeypatch):
     assert seen["payload"]["model"] == "Qwen/Qwen2.5-7B-Instruct"
 
 
+def test_managed_backend_is_lazy_and_releases_after_call():
+    calls = []
+
+    def factory():
+        calls.append("factory")
+
+        def backend(action, inputs):
+            calls.append("call")
+            return {"text": "done"}
+
+        return backend
+
+    def release():
+        calls.append("release")
+
+    backend = ManagedBackend(factory, release=release, idle_timeout=0)
+    assert backend.loaded is False
+
+    assert backend(None, {}) == {"text": "done"}
+
+    assert backend.loaded is False
+    assert calls == ["factory", "call", "release"]
+
+
 def test_backend_from_spec_accepts_inline_openai_model(monkeypatch):
     seen = {}
 
@@ -136,6 +160,41 @@ def test_backend_from_spec_accepts_ollama_model_with_colon(monkeypatch):
     assert seen["payload"]["max_tokens"] == 512
 
 
+def test_ollama_backend_idle_timeout_unloads_model(monkeypatch):
+    requests = []
+
+    def fake_urlopen(req, *, timeout):
+        requests.append({
+            "url": req.full_url,
+            "timeout": timeout,
+            "payload": json.loads(req.data.decode("utf-8")),
+        })
+        return _Response()
+
+    monkeypatch.setattr("zippergen.backends.request.urlopen", fake_urlopen)
+
+    backend, label = backend_from_spec("ollama:qwen2.5:7b", idle_timeout=0)
+    action = SimpleNamespace(
+        name="say",
+        system_prompt="You are concise.",
+        user_prompt="Say hello.",
+        outputs=(("text", str),),
+        parse_format="text",
+    )
+
+    assert backend(action, {}) == {"text": "hello"}
+    assert label == "Ollama (qwen2.5:7b)"
+    assert [item["url"] for item in requests] == [
+        "http://127.0.0.1:11434/v1/chat/completions",
+        "http://127.0.0.1:11434/api/chat",
+    ]
+    assert requests[1]["payload"] == {
+        "model": "qwen2.5:7b",
+        "messages": [],
+        "keep_alive": 0,
+    }
+
+
 def test_workflow_configure_accepts_positional_llm_spec():
     config_workflow.configure("mock", ui=False, execution="memory", timeout=5)
 
@@ -145,3 +204,8 @@ def test_workflow_configure_accepts_positional_llm_spec():
 def test_workflow_configure_rejects_llm_and_llms_together():
     with pytest.raises(ValueError, match="either 'llm'"):
         config_conflict.configure(llm="mock", llms="mock")
+
+
+def test_workflow_configure_rejects_negative_llm_idle_timeout():
+    with pytest.raises(ValueError, match="llm_idle_timeout"):
+        config_conflict.configure(llm="mock", llm_idle_timeout=-1)

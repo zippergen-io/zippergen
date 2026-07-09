@@ -1295,6 +1295,7 @@ def _workflow_configure(
     llms=None,
     ui: bool | None = None,
     mock_delay: tuple[float, float] = (1.0, 2.0),
+    llm_idle_timeout: float | None = None,
     show_decisions: bool = False,
     execution: str | None = None,
     store_path: str | None = None,
@@ -1303,6 +1304,8 @@ def _workflow_configure(
 
     if llm is not None and llms is not None:
         raise ValueError("Use either 'llm' or the legacy 'llms' option, not both.")
+    if llm_idle_timeout is not None and llm_idle_timeout < 0:
+        raise ValueError("llm_idle_timeout must be non-negative.")
     if callable(llm):
         if backend is not None:
             raise ValueError("Use either positional backend/llm or 'backend=', not both.")
@@ -1328,6 +1331,7 @@ def _workflow_configure(
         built_backend, _label = router_from_specs(
             routes,
             fallback=lambda a, i: mock_llm(a, i, min_delay=mock_delay[0], max_delay=mock_delay[1]),
+            idle_timeout=llm_idle_timeout,
         )
         wf._rt._backend = built_backend
     if backend is not None:

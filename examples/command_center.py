@@ -25,6 +25,7 @@ Modes
            python examples/gmail_client.py --setup
            python examples/google_calendar_client.py --setup
            # Telegram: message @BotFather → /newbot → set ZIPPERGEN_TELEGRAM_TOKEN
+          Add --llm-idle-timeout 300 to release the local model while idle.
 default   Fake services + local Ollama model.
 
 Backward-compatible shortcuts:
@@ -1043,6 +1044,7 @@ if __name__ == "__main__":
     parser.add_argument("--live", action="store_true", help="Shortcut for --llm ollama:qwen2.5:7b --services live.")
     parser.add_argument("--no-ui", action="store_true", help="Run without ZipperChat.")
     parser.add_argument("--timeout", type=float, default=3600.0, help="Workflow timeout in seconds.")
+    parser.add_argument("--llm-idle-timeout", type=float, help="Release a managed local LLM after this many idle seconds.")
     parser.add_argument("--store", dest="store_path", help="SQLite store path.")
     parser.add_argument("--execution", choices=("sqlite", "memory"), help="Execution backend.")
     parser.add_argument("--show-decisions", action="store_true", help="Show branch/control events in ZipperChat.")
@@ -1073,6 +1075,7 @@ if __name__ == "__main__":
         llm_spec,
         ui=not args.no_ui,
         timeout=args.timeout,
+        llm_idle_timeout=args.llm_idle_timeout,
         show_decisions=args.show_decisions,
         execution=args.execution,
         store_path=args.store_path,

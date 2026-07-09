@@ -16,6 +16,7 @@ def run_demo(
     ui: bool = True,
     timeout: float = 60.0,
     mock_delay: tuple[float, float] = (1.0, 2.0),
+    llm_idle_timeout: float | None = None,
     show_decisions: bool = False,
 ):
     """
@@ -48,6 +49,7 @@ def run_demo(
         ui=ui,
         timeout=timeout,
         mock_delay=mock_delay,
+        llm_idle_timeout=llm_idle_timeout,
         show_decisions=show_decisions,
     )
     result = workflow(**inputs)

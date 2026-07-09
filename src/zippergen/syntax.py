@@ -778,6 +778,7 @@ class Workflow:
                   llms: str | Mapping[str, str | Callable] | None = None,
                   ui: bool | None = None,
                   mock_delay: tuple[float, float] = (1.0, 2.0),
+                  llm_idle_timeout: float | None = None,
                   show_decisions: bool = False,
                   execution: str | None = None,
                   store_path: str | None = None) -> "Workflow":
@@ -796,6 +797,8 @@ class Workflow:
         llms    : backward-compatible alias for ``llm``.
         ui      : if true, start ZipperChat and mirror the execution there.
         mock_delay : delay range used by the mock backend when ``llm="mock"``.
+        llm_idle_timeout : for local managed backends such as Ollama, release
+                  the model after this many seconds without LLM calls.
         show_decisions : if true, show decision/control-broadcast markers in ZipperChat.
         execution : ``"sqlite"`` (default) or ``"memory"`` for the legacy
                     in-process runner.
@@ -804,6 +807,7 @@ class Workflow:
         from zippergen.runtime import _workflow_configure
         return _workflow_configure(self, llm=llm, backend=backend, trace=trace, timeout=timeout,
                                    llms=llms, ui=ui, mock_delay=mock_delay,
+                                   llm_idle_timeout=llm_idle_timeout,
                                    show_decisions=show_decisions,
                                    execution=execution, store_path=store_path)
 

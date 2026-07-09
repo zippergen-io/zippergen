@@ -65,6 +65,7 @@ class RunConfig:
     workflow: Workflow
     module: ModuleType
     llm: str | None
+    llm_idle_timeout: float | None
     store_path: str | None
     inputs: dict[str, object]
     options: dict[str, object]
@@ -269,6 +270,7 @@ def _run_workflow_command(args) -> int:
         workflow=wf,
         module=module,
         llm=args.llm,
+        llm_idle_timeout=args.llm_idle_timeout,
         store_path=store_path,
         inputs=inputs,
         options=options,
@@ -282,6 +284,7 @@ def _run_workflow_command(args) -> int:
     configure_kwargs = {
         "ui": args.ui,
         "timeout": args.timeout,
+        "llm_idle_timeout": args.llm_idle_timeout,
         "execution": args.execution,
         "store_path": store_path,
         "show_decisions": args.show_decisions,
@@ -304,6 +307,7 @@ def main(argv=None) -> int:
     rn = sub.add_parser("run", help="run a workflow locally through SQLite")
     rn.add_argument("workflow", help="Workflow spec: module:workflow or path.py:workflow")
     rn.add_argument("--llm", metavar="SPEC", help="LLM spec: mock, openai:gpt-4o, ollama:qwen2.5:7b, ...")
+    rn.add_argument("--llm-idle-timeout", type=float, help="Release a managed local LLM after this many idle seconds.")
     rn.add_argument("--store", help="SQLite store path. Defaults to ~/.zippergen/runs/<workflow>.sqlite")
     rn.add_argument("--input", action="append", default=[], metavar="name=value", help="Workflow input value.")
     rn.add_argument("--input-json", help="Workflow inputs as a JSON object.")

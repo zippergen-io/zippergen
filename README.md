@@ -228,6 +228,18 @@ zippergen run examples/command_center.py:command_center \
   --timeout 3600
 ```
 
+For local models, add an idle timeout so the model can be released while the workflow keeps running:
+
+```bash
+zippergen run examples/command_center.py:command_center \
+  --llm ollama:qwen2.5:7b \
+  --services live \
+  --llm-idle-timeout 300 \
+  --store ~/.zippergen/runs/command-center.sqlite \
+  --ui \
+  --timeout 3600
+```
+
 ## Formal foundation
 
 The implementation is based on the theory of [Message Sequence Charts](https://en.wikipedia.org/wiki/Message_sequence_chart) and [choreographic programming](https://en.wikipedia.org/wiki/Choreographic_programming). A workflow is written from a global point of view and projected to local participants; ZipperGen adapts this to LLM actions, tool calls, human control points, and runtime inspection.
