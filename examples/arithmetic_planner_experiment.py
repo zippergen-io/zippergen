@@ -61,8 +61,20 @@ MODELS = [
         api_key_env="OPENAI_API_KEY",
     ),
     ModelConfig(
+        label="gpt-4.1-mini",
+        model="gpt-4.1-mini",
+        base_url="https://api.openai.com/v1",
+        api_key_env="OPENAI_API_KEY",
+    ),
+    ModelConfig(
         label="gpt-4o",
         model="gpt-4o",
+        base_url="https://api.openai.com/v1",
+        api_key_env="OPENAI_API_KEY",
+    ),
+    ModelConfig(
+        label="gpt-4.1",
+        model="gpt-4.1",
         base_url="https://api.openai.com/v1",
         api_key_env="OPENAI_API_KEY",
     ),
@@ -72,7 +84,27 @@ MODELS = [
         base_url="http://127.0.0.1:11434/v1",
         api_key_default="ollama",
     ),
+    ModelConfig(
+        label="qwen2.5:14b-local",
+        model="qwen2.5:14b",
+        base_url="http://127.0.0.1:11434/v1",
+        api_key_default="ollama",
+    ),
 ]
+
+
+def _load_env_file(path: Path) -> None:
+    if not path.exists():
+        return
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        key, value = stripped.split("=", 1)
+        key = key.strip()
+        value = value.strip().strip("'\"")
+        if key and key not in os.environ:
+            os.environ[key] = value
 
 
 def _slug(text: str) -> str:
@@ -212,8 +244,17 @@ def _print_summary(rows: list[dict]) -> None:
 
 
 def main() -> None:
+    _load_env_file(ROOT / ".env")
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--runs", type=int, default=1, help="runs per model/expression")
+    parser.add_argument(
+        "--models",
+        nargs="+",
+        choices=[config.label for config in MODELS],
+        default=None,
+        help="model labels to run; defaults to all configured models",
+    )
     parser.add_argument("--temperature", type=float, default=0.0)
     parser.add_argument("--max-tokens", type=int, default=2048)
     parser.add_argument("--timeout", type=float, default=180.0)
@@ -233,8 +274,10 @@ def main() -> None:
     (args.out_dir / "logs").mkdir(exist_ok=True)
     (args.out_dir / "workflows").mkdir(exist_ok=True)
 
+    selected_models = [config for config in MODELS if args.models is None or config.label in args.models]
+
     rows: list[dict] = []
-    for config in MODELS:
+    for config in selected_models:
         for case in EXPRESSIONS:
             for run_index in range(1, args.runs + 1):
                 print(f"Running {config.label}, {case['case']}, run {run_index}...")
