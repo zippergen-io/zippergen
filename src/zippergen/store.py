@@ -708,6 +708,52 @@ class DurableChannel:
         self._tentative[key] = rowid
         return self._row_to_item(rowid, payload, stamp)
 
+    def try_get_any(
+        self,
+        receiver: str,
+        senders: set[str],
+        channel: str,
+    ) -> tuple[str, Item] | None:
+        """Return the earliest available head message across candidate senders.
+
+        Each individual sender/receiver/channel stream is FIFO. For receive-any
+        constructs, durable execution also needs a deterministic cross-stream
+        choice when multiple stream heads are available. SQLite rowid is the
+        committed global order, so choose the smallest head rowid and tentatively
+        advance only that stream's cursor.
+        """
+
+        candidates: list[tuple[int, str, object, object]] = []
+        for sender in senders:
+            key = (sender, receiver, channel)
+            dq = self._replay_inbox.get(key)
+            if dq:
+                rowid, payload, stamp = dq[0]
+                candidates.append((rowid, sender, payload, stamp))
+                continue
+            floor = self._tentative.get(key, self._consumed.get(key, 0))
+            row = self.conn.execute(
+                "SELECT rowid, payload, causal_stamp FROM events "
+                "WHERE sender=? AND receiver=? AND channel=? AND rowid>? "
+                "ORDER BY rowid LIMIT 1",
+                (sender, receiver, channel, floor),
+            ).fetchone()
+            if row is not None:
+                rowid, payload, stamp = row
+                candidates.append((rowid, sender, payload, stamp))
+
+        if not candidates:
+            return None
+
+        rowid, sender, payload, stamp = min(candidates, key=lambda candidate: candidate[0])
+        key = (sender, receiver, channel)
+        dq = self._replay_inbox.get(key)
+        if dq and dq[0][0] == rowid:
+            dq.popleft()
+        else:
+            self._tentative[key] = rowid
+        return sender, self._row_to_item(rowid, payload, stamp)
+
     def get(self, sender: str, receiver: str, channel: str, *,
             stop: threading.Event | None = None) -> Item:
         while True:

@@ -291,6 +291,66 @@ def test_durable_rollback_does_not_advance_cursor(tmp_path):
     b2 = DurableChannel(conn, "B")
     conn.execute("BEGIN"); assert b2.try_get("A", "B", "main")[1] == (9,); b2.rollback_txn()
 
+
+def test_durable_try_get_any_selects_lowest_rowid_across_senders(tmp_path):
+    conn = open_store(str(tmp_path / "s.sqlite"))
+    z = DurableChannel(conn, "Z")
+    a = DurableChannel(conn, "A")
+    conn.execute("BEGIN")
+    z_rowid = z.put("Z", "R", "main", ("z",))
+    z.commit_txn()
+    conn.execute("BEGIN")
+    a_rowid = a.put("A", "R", "main", ("a",))
+    a.commit_txn()
+
+    r = DurableChannel(conn, "R")
+    conn.execute("BEGIN")
+    first = r.try_get_any("R", {"A", "Z"}, "main")
+    second = r.try_get_any("R", {"A", "Z"}, "main")
+    r.commit_txn()
+
+    assert first is not None
+    assert second is not None
+    first_sender, first_item = first
+    second_sender, second_item = second
+    assert z_rowid < a_rowid
+    assert first_sender == "Z"
+    assert first_item[0] == z_rowid
+    assert first_item[1] == ("z",)
+    assert second_sender == "A"
+    assert second_item[0] == a_rowid
+    assert second_item[1] == ("a",)
+
+
+def test_durable_try_get_any_replays_lowest_rowid_across_senders(tmp_path):
+    conn = open_store(str(tmp_path / "s.sqlite"))
+    z = DurableChannel(conn, "Z")
+    a = DurableChannel(conn, "A")
+    conn.execute("BEGIN")
+    z.put("Z", "R", "main", ("z",))
+    z.commit_txn()
+    conn.execute("BEGIN")
+    a.put("A", "R", "main", ("a",))
+    a.commit_txn()
+
+    r = DurableChannel(conn, "R")
+    conn.execute("BEGIN")
+    assert r.try_get_any("R", {"A", "Z"}, "main") is not None
+    assert r.try_get_any("R", {"A", "Z"}, "main") is not None
+    r.commit_txn()
+
+    r_restart = DurableChannel(conn, "R")
+    first = r_restart.try_get_any("R", {"A", "Z"}, "main")
+    second = r_restart.try_get_any("R", {"A", "Z"}, "main")
+    assert first is not None
+    assert second is not None
+    assert first[0] == "Z"
+    assert first[1][1] == ("z",)
+    assert second[0] == "A"
+    assert second[1][1] == ("a",)
+    assert r_restart.replaying() is False
+
+
 def test_durable_replay_reserves_recorded_sends_and_recvs(tmp_path):
     conn = open_store(str(tmp_path / "s.sqlite"))
     # Simulate a prior committed history: A sent (1,), and B consumed it.

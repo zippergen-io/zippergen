@@ -2,6 +2,7 @@ from zippergen.runtime import run
 from zippergen.sqlite_runner import LocalSupervisor, run_sqlite
 from zippergen.store import (
     complete_human_task,
+    DurableChannel,
     ensure_human_task,
     human_task_id,
     list_trace_events,
@@ -15,6 +16,7 @@ from zippergen.locator import action_node_paths
 from zippergen.projection import project
 from zippergen.role_runner import RoleRunner, _begin_immediate
 from zippergen.runtime import _input_hash
+from zippergen.syntax import ReceiveAnyStmt, VarExpr
 from zipperchat import WebTrace
 from tests.loop_fixture import counter_loop, A as LoopA, B as LoopB
 from tests.test_examples_regression import _two_role_branch_workflow, A, B
@@ -37,6 +39,9 @@ SQLiteCPLExecutor = Lifeline("SQLiteCPLExecutor")
 SQLiteFieldSource = Lifeline("SQLiteFieldSource")
 SQLiteFieldGate = Lifeline("SQLiteFieldGate")
 SQLiteFormulaLoopOwner = Lifeline("SQLiteFormulaLoopOwner")
+SQLiteAnyA = Lifeline("SQLiteAnyA")
+SQLiteAnyZ = Lifeline("SQLiteAnyZ")
+SQLiteAnyR = Lifeline("SQLiteAnyR")
 
 p_total = Var("p_total", int, default=0)
 p_m = Var("p_m", int, default=0)
@@ -44,6 +49,8 @@ p_label = Var("p_label", int, default=0)
 p_got = Var("p_got", int, default=0)
 p_approved = Var("p_approved", bool, default=False)
 p_effect_value = Var("p_effect_value", int, default=0)
+sqlite_any_a = Var("sqlite_any_a", int, default=0)
+sqlite_any_z = Var("sqlite_any_z", int, default=0)
 
 
 @pure
@@ -296,6 +303,48 @@ def test_run_sqlite_parallel_matches_inprocess():
     assert run_sqlite(sqlite_parallel_sum, [PUser, POwner, PCompute], initial, timeout=10) == run(
         sqlite_parallel_sum, [PUser, POwner, PCompute], initial, timeout=10
     )
+
+
+def test_role_runner_receive_any_uses_sqlite_rowid_order(tmp_path):
+    path = str(tmp_path / "receive-any.sqlite")
+    conn = open_store(path)
+    z_sender = DurableChannel(conn, SQLiteAnyZ.name)
+    a_sender = DurableChannel(conn, SQLiteAnyA.name)
+    conn.execute("BEGIN")
+    z_rowid = z_sender.put(SQLiteAnyZ.name, SQLiteAnyR.name, "main", (9,))
+    z_sender.commit_txn()
+    conn.execute("BEGIN")
+    a_rowid = a_sender.put(SQLiteAnyA.name, SQLiteAnyR.name, "main", (1,))
+    a_sender.commit_txn()
+
+    local_stmt = ReceiveAnyStmt(
+        SQLiteAnyR,
+        (
+            (SQLiteAnyA, (VarExpr(sqlite_any_a),)),
+            (SQLiteAnyZ, (VarExpr(sqlite_any_z),)),
+        ),
+    )
+    events = []
+    runner = RoleRunner(
+        conn,
+        SQLiteAnyR.name,
+        local_stmt,
+        {},
+        {"sqlite_any_a": sqlite_any_a, "sqlite_any_z": sqlite_any_z},
+        trace=events.append,
+    )
+
+    env = runner.run()
+    recv_events = [
+        event
+        for event in events
+        if event["type"] == "recv" and event["to"] == SQLiteAnyR.name
+    ]
+
+    assert z_rowid < a_rowid
+    assert [event["from"] for event in recv_events] == [SQLiteAnyZ.name, SQLiteAnyA.name]
+    assert env["sqlite_any_z"] == 9
+    assert env["sqlite_any_a"] == 1
 
 
 def test_run_sqlite_persists_final_result(tmp_path):

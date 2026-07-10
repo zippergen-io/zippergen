@@ -345,6 +345,11 @@ def _receive_any(
     stop: threading.Event | None = None,
 ) -> tuple[str, tuple[int, tuple, dict | None, dict | None, dict | None]]:
     while True:
+        try_get_any = getattr(ch, "try_get_any", None)
+        if try_get_any is not None:
+            selected = try_get_any(receiver, pending_senders, channel)
+            if selected is not None:
+                return selected
         for sender in sorted(pending_senders):
             item = ch.try_get(sender, receiver, channel)
             if item is not None:
@@ -361,6 +366,17 @@ def _receive_any(
 
 def _try_channel_get(ch, sender: str, receiver: str, channel: str):
     return ch.try_get(sender, receiver, channel)
+
+
+def _try_channel_get_any(ch, receiver: str, pending_senders: set[str], channel: str):
+    try_get_any = getattr(ch, "try_get_any", None)
+    if try_get_any is not None:
+        return try_get_any(receiver, pending_senders, channel)
+    for sender in sorted(pending_senders):
+        item = ch.try_get(sender, receiver, channel)
+        if item is not None:
+            return sender, item
+    return None
 
 
 def _with_parallel_branch(trace, label: str):
@@ -543,10 +559,11 @@ def _step(
             return EmptyStmt(), True
 
         case ReceiveAnyStmt(lifeline=A, receives=receives, channel=channel):
-            for sender, ys in receives:
-                item = _try_channel_get(ch, sender.name, A.name, channel)
-                if item is None:
-                    continue
+            pending = {sender.name: (sender, ys) for sender, ys in receives}
+            selected = _try_channel_get_any(ch, A.name, set(pending), channel)
+            if selected is not None:
+                sender_name, item = selected
+                sender, ys = pending[sender_name]
                 seq_no, values, recv_vc, recv_view, recv_field_view = item
                 _bind(ys, values, env)
                 if monitor:
@@ -560,7 +577,7 @@ def _step(
                         "seq": seq_no,
                         **_recv_trace_fields(monitor, recv_vc),
                     })
-                remaining = tuple((s, b) for s, b in receives if s != sender)
+                remaining = tuple((s, b) for s, b in receives if s.name != sender_name)
                 if not remaining:
                     return EmptyStmt(), True
                 return ReceiveAnyStmt(A, remaining, channel), True

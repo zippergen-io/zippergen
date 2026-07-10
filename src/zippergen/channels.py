@@ -1,7 +1,8 @@
 """Channel abstraction shared by the in-process and durable runtimes.
 
-The interpreter (`_step` / `_exec`) touches channels only through three
-operations: put (send), try_get (non-blocking recv), get (blocking recv).
+The interpreter (`_step` / `_exec`) touches channels through put (send),
+try_get (non-blocking recv), get (blocking recv), and optional try_get_any
+(deterministic receive-any when a channel can provide a global order).
 Items are 5-tuples ``(seq, values, vc, view, field_view)``; vc/view/field_view
 are the sender's monitor snapshot, or None when monitoring is inactive.
 """
