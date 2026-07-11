@@ -287,10 +287,13 @@ zippergen run examples/command_center.py:command_center \
 ```
 
 The call-intake deployment example watches certified email senders, extracts
-calls for projects/positions/grants into a CSV table, replies with JSON, and
-accepts corrected replies:
+calls for projects/positions/grants into a CSV table, sends JSON replies, and
+accepts corrected replies. Automatic sending is capped at 10 emails per hour:
 
 ```bash
+export ZIPPERGEN_CALL_INTAKE_SEND_MODE=send
+export ZIPPERGEN_CALL_INTAKE_MAX_EMAILS_PER_HOUR=10
+
 zippergen run examples/call_intake.py:call_intake \
   --llm openai:gpt-4o \
   --services live \

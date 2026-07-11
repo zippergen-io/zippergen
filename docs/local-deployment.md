@@ -396,10 +396,11 @@ history.
 The call intake example watches a Gmail inbox for calls for projects, grants,
 positions, fellowships, and similar opportunities. It only sends certified
 senders to the LLM. Accepted messages are classified, converted to JSON, written
-to a CSV table, and answered by email with the extracted JSON.
+to a CSV table, and answered automatically by email with the extracted JSON.
 
-By default, use Gmail drafts first. Real sending is available, but drafts are
-safer for the first deployment.
+Automatic sending has a built-in safeguard: the send effect will not send more
+than 10 emails per hour. If the limit is reached, the workflow waits outside the
+SQLite transaction until another send slot is available.
 
 ### Files And State
 
@@ -409,12 +410,14 @@ Use stable paths:
 export ZG_CALL_STORE="$HOME/.zippergen/runs/call-intake.sqlite"
 export ZIPPERGEN_CALL_TABLE="$HOME/.zippergen/calls.csv"
 export ZIPPERGEN_CALL_INTAKE_RESPONSE_LOG="$HOME/.zippergen/call-intake-responses.jsonl"
+export ZIPPERGEN_CALL_INTAKE_SEND_MODE=send
+export ZIPPERGEN_CALL_INTAKE_MAX_EMAILS_PER_HOUR=10
 mkdir -p "$HOME/.zippergen/runs"
 ```
 
 The CSV table is the user-facing file. The SQLite store is the deployment
 history. The JSONL response log is a lightweight idempotency aid for replies and
-drafts.
+the source of the hourly send counter.
 
 ### Certified Senders
 
@@ -437,11 +440,12 @@ uv run python examples/call_intake_email_client.py --setup
 The client fetches unread mail without marking it read. The workflow marks a
 message read only after it has been ignored, recorded, or replied to.
 
-### Start With Drafts
+### Start Automatic Sending
 
 ```bash
 export OPENAI_API_KEY=<your-openai-key>
-export ZIPPERGEN_CALL_INTAKE_SEND_MODE=draft
+export ZIPPERGEN_CALL_INTAKE_SEND_MODE=send
+export ZIPPERGEN_CALL_INTAKE_MAX_EMAILS_PER_HOUR=10
 
 uv run zippergen run examples/call_intake.py:call_intake \
   --store "$ZG_CALL_STORE" \
@@ -449,6 +453,12 @@ uv run zippergen run examples/call_intake.py:call_intake \
   --services live \
   --llm-idle-timeout 300 \
   --timeout 0
+```
+
+For a dry run, use drafts instead of sending:
+
+```bash
+export ZIPPERGEN_CALL_INTAKE_SEND_MODE=draft
 ```
 
 `--llm-idle-timeout 300` matters for local models. It lets a managed local
@@ -466,20 +476,10 @@ uv run zippergen run examples/call_intake.py:call_intake \
   --timeout 0
 ```
 
-### Enable Real Sending
-
-After drafts look right, switch from drafts to actual replies:
-
-```bash
-export ZIPPERGEN_CALL_INTAKE_SEND_MODE=send
-```
-
-Then restart the exact same workflow command with the same SQLite store.
-
 Email is still an external side effect. The response log prevents ordinary
 duplicates after a successful logged response, but it is not a perfect
-transaction with Gmail. For critical use, keep draft mode until you are
-comfortable with the run.
+transaction with Gmail. The hourly rate limit is enforced from successful
+`mode=send` entries in the response log.
 
 ### Corrections
 

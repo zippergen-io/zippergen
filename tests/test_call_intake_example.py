@@ -102,6 +102,63 @@ def test_upsert_call_record_updates_existing_row(tmp_path):
     assert rows[0]["status"] == "corrected"
 
 
+def test_send_rate_limit_delay_uses_recent_send_log(tmp_path):
+    module = _load_call_intake()
+    response_log = tmp_path / "responses.jsonl"
+    module.reset_for_tests(
+        fake_inbox=[],
+        certified_senders="alice@example.com",
+        table_path=tmp_path / "calls.csv",
+        response_log_path=response_log,
+        send_mode="send",
+        send_limit_per_hour=1,
+    )
+    response_log.write_text(json.dumps({
+        "key": "sent-1",
+        "mode": "send",
+        "sent_at": 100.0,
+    }) + "\n")
+
+    assert module._send_rate_limit_delay(now=200.0) == 3500.0
+    assert module._send_rate_limit_delay(now=3701.0) == 0.0
+
+
+def test_send_response_uses_gmail_send_and_records_timestamp(tmp_path):
+    module = _load_call_intake()
+    response_log = tmp_path / "responses.jsonl"
+    module.reset_for_tests(
+        fake_inbox=[],
+        certified_senders="alice@example.com",
+        table_path=tmp_path / "calls.csv",
+        response_log_path=response_log,
+        send_mode="send",
+        send_limit_per_hour=10,
+    )
+
+    class FakeEmailClient:
+        def __init__(self):
+            self.sent = []
+
+        def send_email(self, meta, subject, body):
+            self.sent.append((meta, subject, body))
+            return "gmail-sent-1"
+
+    fake_client = FakeEmailClient()
+    module._email_client = fake_client
+    email = "From: Alice <alice@example.com>\nSubject: ERC call\nMessage-ID: <m1@example.com>\n\nBody"
+    call_json = module.normalize_call_json.fn(email, json.dumps({"call_id": "call_erc", "title": "ERC"}))
+
+    status = module.send_call_json_response.fn(email, call_json, "created:call_erc")
+    records = [json.loads(line) for line in response_log.read_text().splitlines()]
+
+    assert status == "send:gmail-sent-1"
+    assert len(fake_client.sent) == 1
+    assert fake_client.sent[0][1] == "Extracted call JSON: call_erc"
+    assert records[0]["mode"] == "send"
+    assert records[0]["external_id"] == "gmail-sent-1"
+    assert isinstance(records[0]["sent_at"], float)
+
+
 def test_call_intake_skips_llm_for_uncertified_sender(tmp_path):
     module = _load_call_intake()
     module.reset_for_tests(

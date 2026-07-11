@@ -13,7 +13,8 @@ Manual deployment:
 
     export ZIPPERGEN_CERTIFIED_SENDERS="alice@example.com,@trusted-lab.org"
     export ZIPPERGEN_CALL_TABLE="$HOME/.zippergen/calls.csv"
-    export ZIPPERGEN_CALL_INTAKE_SEND_MODE=draft
+    export ZIPPERGEN_CALL_INTAKE_SEND_MODE=send
+    export ZIPPERGEN_CALL_INTAKE_MAX_EMAILS_PER_HOUR=10
 
     uv run zippergen run examples/call_intake.py:call_intake \
       --store "$HOME/.zippergen/runs/call-intake.sqlite" \
@@ -71,7 +72,8 @@ _processed_count = 0
 _max_messages: int | None = None
 _table_path: Path = Path.home() / ".zippergen" / "calls.csv"
 _response_log_path: Path = Path.home() / ".zippergen" / "call-intake-responses.jsonl"
-_send_mode = "draft"
+_send_mode = "send"
+_send_limit_per_hour = 10
 _poll_seconds = 5.0
 
 
@@ -122,6 +124,17 @@ def _parse_int(value: object) -> int | None:
     return parsed if parsed >= 0 else None
 
 
+def _parse_send_limit(value: object) -> int:
+    if value is None or value == "":
+        return 10
+    parsed = int(value)
+    if parsed <= 0:
+        raise ValueError("send_limit_per_hour must be greater than zero.")
+    if parsed > 10:
+        raise ValueError("send_limit_per_hour may not exceed 10.")
+    return parsed
+
+
 def _split_senders(value: object) -> set[str]:
     if value is None:
         return set()
@@ -147,7 +160,7 @@ def _load_json_or_lines(path: Path) -> list[str]:
 
 def _reset_state() -> None:
     global _email_client, _fake_inbox, _certified_senders, _processed_count
-    global _max_messages, _table_path, _response_log_path, _send_mode, _poll_seconds
+    global _max_messages, _table_path, _response_log_path, _send_mode, _send_limit_per_hour, _poll_seconds
     _email_client = None
     _fake_inbox = list(DEFAULT_FAKE_INBOX)
     _certified_senders = {"alice@example.com"}
@@ -155,7 +168,8 @@ def _reset_state() -> None:
     _max_messages = None
     _table_path = Path.home() / ".zippergen" / "calls.csv"
     _response_log_path = Path.home() / ".zippergen" / "call-intake-responses.jsonl"
-    _send_mode = "draft"
+    _send_mode = "send"
+    _send_limit_per_hour = 10
     _poll_seconds = 5.0
 
 
@@ -167,13 +181,14 @@ def configure_call_intake(
     response_log_path: object = None,
     fake_inbox_path: object = None,
     send_mode: object = None,
+    send_limit_per_hour: object = None,
     max_messages: object = None,
     poll_seconds: object = None,
 ) -> None:
     """Configure globals used by the deployment example and tests."""
 
     global _email_client, _fake_inbox, _certified_senders, _processed_count
-    global _max_messages, _table_path, _response_log_path, _send_mode, _poll_seconds
+    global _max_messages, _table_path, _response_log_path, _send_mode, _send_limit_per_hour, _poll_seconds
 
     services_text = str(services or "fake")
     if services_text not in {"fake", "live"}:
@@ -189,9 +204,13 @@ def configure_call_intake(
         "ZIPPERGEN_CALL_INTAKE_RESPONSE_LOG",
         str(Path.home() / ".zippergen" / "call-intake-responses.jsonl"),
     )))
-    _send_mode = str(send_mode or os.environ.get("ZIPPERGEN_CALL_INTAKE_SEND_MODE", "draft")).strip().lower()
+    _send_mode = str(send_mode or os.environ.get("ZIPPERGEN_CALL_INTAKE_SEND_MODE", "send")).strip().lower()
     if _send_mode not in {"draft", "send", "log"}:
         raise ValueError("send_mode must be 'draft', 'send', or 'log'.")
+    raw_limit = send_limit_per_hour
+    if raw_limit is None:
+        raw_limit = os.environ.get("ZIPPERGEN_CALL_INTAKE_MAX_EMAILS_PER_HOUR", "10")
+    _send_limit_per_hour = _parse_send_limit(raw_limit)
     _poll_seconds = float(poll_seconds or os.environ.get("ZIPPERGEN_CALL_INTAKE_POLL_SECONDS", "5"))
 
     raw_senders = certified_senders
@@ -219,6 +238,7 @@ def reset_for_tests(
     table_path: object = None,
     response_log_path: object = None,
     send_mode: object = "log",
+    send_limit_per_hour: object = 10,
     max_messages: object = 1,
 ) -> None:
     configure_call_intake(
@@ -227,6 +247,7 @@ def reset_for_tests(
         table_path=table_path,
         response_log_path=response_log_path,
         send_mode=send_mode,
+        send_limit_per_hour=send_limit_per_hour,
         max_messages=max_messages,
     )
     global _fake_inbox
@@ -254,6 +275,7 @@ def zippergen_setup(config) -> None:
         table_path=config.option("table", None),
         response_log_path=config.option("response_log", None),
         send_mode=config.option("send_mode", None),
+        send_limit_per_hour=config.option("send_limit_per_hour", None),
         max_messages=config.option("max_messages", None),
         poll_seconds=config.option("poll_seconds", None),
     )
@@ -440,19 +462,61 @@ def _append_response_log_once(key: str, payload: dict) -> bool:
     return True
 
 
+def _response_log_records() -> list[dict]:
+    if not _response_log_path.exists():
+        return []
+    records: list[dict] = []
+    for line in _response_log_path.read_text().splitlines():
+        if not line.strip():
+            continue
+        try:
+            value = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict):
+            records.append(value)
+    return records
+
+
 def _response_log_contains(key: str) -> bool:
-    seen: set[str] = set()
-    if _response_log_path.exists():
-        for line in _response_log_path.read_text().splitlines():
-            if not line.strip():
-                continue
-            try:
-                seen.add(str(json.loads(line).get("key", "")))
-            except json.JSONDecodeError:
-                continue
-    if key in seen:
-        return True
-    return False
+    return any(str(record.get("key", "")) == key for record in _response_log_records())
+
+
+def _recent_send_timestamps(now: float) -> list[float]:
+    cutoff = now - 3600.0
+    timestamps: list[float] = []
+    for record in _response_log_records():
+        if record.get("mode") != "send":
+            continue
+        raw = record.get("sent_at")
+        if not isinstance(raw, (int, float)):
+            continue
+        stamp = float(raw)
+        if stamp > cutoff:
+            timestamps.append(stamp)
+    return sorted(timestamps)
+
+
+def _send_rate_limit_delay(now: float | None = None) -> float:
+    now = time.time() if now is None else now
+    timestamps = _recent_send_timestamps(now)
+    if len(timestamps) < _send_limit_per_hour:
+        return 0.0
+    oldest_blocking_send = timestamps[-_send_limit_per_hour]
+    return max(0.0, oldest_blocking_send + 3600.0 - now)
+
+
+def _wait_for_send_rate_limit() -> None:
+    while True:
+        delay = _send_rate_limit_delay()
+        if delay <= 0:
+            return
+        wait_for = min(delay, 60.0)
+        print(
+            f"[CallIntake] Email send limit reached "
+            f"({_send_limit_per_hour}/hour); waiting {wait_for:.0f}s."
+        )
+        time.sleep(wait_for)
 
 
 # ---------------------------------------------------------------------------
@@ -595,13 +659,19 @@ def _send_response(email: str, call_json_text: str, table_status_text: str, *, c
 
     if _email_client is not None and _send_mode in {"draft", "send"}:
         if _send_mode == "send":
+            _wait_for_send_rate_limit()
             external_id = _email_client.send_email(meta, subject, body)  # type: ignore[union-attr]
+            _append_response_log_once(
+                key,
+                {**payload, "mode": "send", "external_id": external_id, "sent_at": time.time()},
+            )
+            return f"send:{external_id}"
         else:
             external_id = _email_client.create_draft(meta, subject, body)  # type: ignore[union-attr]
-        _append_response_log_once(key, {**payload, "external_id": external_id})
-        return f"{_send_mode}:{external_id}"
+            _append_response_log_once(key, {**payload, "mode": "draft", "external_id": external_id})
+            return f"draft:{external_id}"
 
-    _append_response_log_once(key, payload)
+    _append_response_log_once(key, {**payload, "mode": "log"})
     print(f"[CallIntake] Response for {call_id} logged at {_response_log_path}")
     return f"logged:{call_id}"
 
@@ -756,6 +826,7 @@ if __name__ == "__main__":
     parser.add_argument("--table", dest="table_path")
     parser.add_argument("--certified", dest="certified_senders")
     parser.add_argument("--send-mode", choices=("draft", "send", "log"), default=None)
+    parser.add_argument("--send-limit-per-hour", type=int, default=None)
     parser.add_argument("--max-messages", type=int)
     parser.add_argument("--timeout", type=float, default=0.0)
     parser.add_argument("--llm-idle-timeout", type=float)
@@ -767,6 +838,7 @@ if __name__ == "__main__":
         certified_senders=args.certified_senders,
         table_path=args.table_path,
         send_mode=args.send_mode,
+        send_limit_per_hour=args.send_limit_per_hour,
         max_messages=args.max_messages,
     )
     call_intake.configure(
