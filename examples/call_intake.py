@@ -15,6 +15,7 @@ Manual deployment:
     export ZIPPERGEN_CALL_TABLE="$HOME/.zippergen/calls.csv"
     export ZIPPERGEN_CALL_INTAKE_SEND_MODE=send
     export ZIPPERGEN_CALL_INTAKE_MAX_EMAILS_PER_HOUR=10
+    export ZIPPERGEN_CALL_INTAKE_POLL_SECONDS=60
 
     uv run zippergen run examples/call_intake.py:call_intake \
       --store "$HOME/.zippergen/runs/call-intake.sqlite" \
@@ -74,7 +75,7 @@ _table_path: Path = Path.home() / ".zippergen" / "calls.csv"
 _response_log_path: Path = Path.home() / ".zippergen" / "call-intake-responses.jsonl"
 _send_mode = "send"
 _send_limit_per_hour = 10
-_poll_seconds = 5.0
+_poll_seconds = 60.0
 
 
 CALL_FIELDS = [
@@ -170,7 +171,7 @@ def _reset_state() -> None:
     _response_log_path = Path.home() / ".zippergen" / "call-intake-responses.jsonl"
     _send_mode = "send"
     _send_limit_per_hour = 10
-    _poll_seconds = 5.0
+    _poll_seconds = 60.0
 
 
 def configure_call_intake(
@@ -211,7 +212,7 @@ def configure_call_intake(
     if raw_limit is None:
         raw_limit = os.environ.get("ZIPPERGEN_CALL_INTAKE_MAX_EMAILS_PER_HOUR", "10")
     _send_limit_per_hour = _parse_send_limit(raw_limit)
-    _poll_seconds = float(poll_seconds or os.environ.get("ZIPPERGEN_CALL_INTAKE_POLL_SECONDS", "5"))
+    _poll_seconds = float(poll_seconds or os.environ.get("ZIPPERGEN_CALL_INTAKE_POLL_SECONDS", "60"))
 
     raw_senders = certified_senders
     if raw_senders is None:
@@ -827,6 +828,7 @@ if __name__ == "__main__":
     parser.add_argument("--certified", dest="certified_senders")
     parser.add_argument("--send-mode", choices=("draft", "send", "log"), default=None)
     parser.add_argument("--send-limit-per-hour", type=int, default=None)
+    parser.add_argument("--poll-seconds", type=float, default=None)
     parser.add_argument("--max-messages", type=int)
     parser.add_argument("--timeout", type=float, default=0.0)
     parser.add_argument("--llm-idle-timeout", type=float)
@@ -839,6 +841,7 @@ if __name__ == "__main__":
         table_path=args.table_path,
         send_mode=args.send_mode,
         send_limit_per_hour=args.send_limit_per_hour,
+        poll_seconds=args.poll_seconds,
         max_messages=args.max_messages,
     )
     call_intake.configure(

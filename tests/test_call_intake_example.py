@@ -38,6 +38,32 @@ def test_certified_sender_accepts_exact_and_domain(tmp_path):
     assert module.is_certified_sender.fn("From: Eve <eve@other.example>\n\nHi") is False
 
 
+def test_poll_interval_defaults_to_email_scale_and_can_be_overridden(tmp_path):
+    module = _load_call_intake()
+    module.configure_call_intake(
+        services="fake",
+        certified_senders="alice@example.com",
+        table_path=tmp_path / "calls.csv",
+        response_log_path=tmp_path / "responses.jsonl",
+        fake_inbox_path=tmp_path / "missing.json",
+        send_mode="log",
+        max_messages=1,
+    )
+    assert module._poll_seconds == 60.0
+
+    module.configure_call_intake(
+        services="fake",
+        certified_senders="alice@example.com",
+        table_path=tmp_path / "calls.csv",
+        response_log_path=tmp_path / "responses.jsonl",
+        fake_inbox_path=tmp_path / "missing.json",
+        send_mode="log",
+        max_messages=1,
+        poll_seconds=300,
+    )
+    assert module._poll_seconds == 300.0
+
+
 def test_normalize_call_json_adds_call_id_and_source_fields(tmp_path):
     module = _load_call_intake()
     email = """From: Alice <alice@example.com>

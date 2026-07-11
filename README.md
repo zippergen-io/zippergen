@@ -293,6 +293,7 @@ accepts corrected replies. Automatic sending is capped at 10 emails per hour:
 ```bash
 export ZIPPERGEN_CALL_INTAKE_SEND_MODE=send
 export ZIPPERGEN_CALL_INTAKE_MAX_EMAILS_PER_HOUR=10
+export ZIPPERGEN_CALL_INTAKE_POLL_SECONDS=60
 
 zippergen run examples/call_intake.py:call_intake \
   --llm openai:gpt-4o \

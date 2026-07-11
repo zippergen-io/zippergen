@@ -412,6 +412,7 @@ export ZIPPERGEN_CALL_TABLE="$HOME/.zippergen/calls.csv"
 export ZIPPERGEN_CALL_INTAKE_RESPONSE_LOG="$HOME/.zippergen/call-intake-responses.jsonl"
 export ZIPPERGEN_CALL_INTAKE_SEND_MODE=send
 export ZIPPERGEN_CALL_INTAKE_MAX_EMAILS_PER_HOUR=10
+export ZIPPERGEN_CALL_INTAKE_POLL_SECONDS=60
 mkdir -p "$HOME/.zippergen/runs"
 ```
 
@@ -446,6 +447,7 @@ message read only after it has been ignored, recorded, or replied to.
 export OPENAI_API_KEY=<your-openai-key>
 export ZIPPERGEN_CALL_INTAKE_SEND_MODE=send
 export ZIPPERGEN_CALL_INTAKE_MAX_EMAILS_PER_HOUR=10
+export ZIPPERGEN_CALL_INTAKE_POLL_SECONDS=60
 
 uv run zippergen run examples/call_intake.py:call_intake \
   --store "$ZG_CALL_STORE" \
@@ -453,6 +455,14 @@ uv run zippergen run examples/call_intake.py:call_intake \
   --services live \
   --llm-idle-timeout 300 \
   --timeout 0
+```
+
+The workflow checks the inbox, handles all currently available work one message
+at a time, and sleeps when no message is available. The default empty-inbox
+sleep is 60 seconds. For very low-volume inboxes, 300 seconds is also reasonable:
+
+```bash
+export ZIPPERGEN_CALL_INTAKE_POLL_SECONDS=300
 ```
 
 For a dry run, use drafts instead of sending:
