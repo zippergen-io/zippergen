@@ -391,7 +391,112 @@ uv run zippergen trace --store "$ZG_STORE" --tail 50
 The workflow should continue from SQLite. It should not start from an empty
 history.
 
-## Part 4: Run Under macOS `launchd`
+## Part 4: Call Intake Manual Deployment
+
+The call intake example watches a Gmail inbox for calls for projects, grants,
+positions, fellowships, and similar opportunities. It only sends certified
+senders to the LLM. Accepted messages are classified, converted to JSON, written
+to a CSV table, and answered by email with the extracted JSON.
+
+By default, use Gmail drafts first. Real sending is available, but drafts are
+safer for the first deployment.
+
+### Files And State
+
+Use stable paths:
+
+```bash
+export ZG_CALL_STORE="$HOME/.zippergen/runs/call-intake.sqlite"
+export ZIPPERGEN_CALL_TABLE="$HOME/.zippergen/calls.csv"
+export ZIPPERGEN_CALL_INTAKE_RESPONSE_LOG="$HOME/.zippergen/call-intake-responses.jsonl"
+mkdir -p "$HOME/.zippergen/runs"
+```
+
+The CSV table is the user-facing file. The SQLite store is the deployment
+history. The JSONL response log is a lightweight idempotency aid for replies and
+drafts.
+
+### Certified Senders
+
+Set exact email addresses or whole domains:
+
+```bash
+export ZIPPERGEN_CERTIFIED_SENDERS="alice@example.com,@trusted-lab.org"
+```
+
+Messages from other senders are marked processed without calling the LLM.
+
+### Gmail Setup
+
+Run the call-intake Gmail OAuth setup:
+
+```bash
+uv run python examples/call_intake_email_client.py --setup
+```
+
+The client fetches unread mail without marking it read. The workflow marks a
+message read only after it has been ignored, recorded, or replied to.
+
+### Start With Drafts
+
+```bash
+export OPENAI_API_KEY=<your-openai-key>
+export ZIPPERGEN_CALL_INTAKE_SEND_MODE=draft
+
+uv run zippergen run examples/call_intake.py:call_intake \
+  --store "$ZG_CALL_STORE" \
+  --llm openai:gpt-4o \
+  --services live \
+  --llm-idle-timeout 300 \
+  --timeout 0
+```
+
+`--llm-idle-timeout 300` matters for local models. It lets a managed local
+backend release the model after five idle minutes. Hosted models such as OpenAI
+do not hold local model memory.
+
+For local Ollama:
+
+```bash
+uv run zippergen run examples/call_intake.py:call_intake \
+  --store "$ZG_CALL_STORE" \
+  --llm ollama:qwen2.5:7b \
+  --services live \
+  --llm-idle-timeout 300 \
+  --timeout 0
+```
+
+### Enable Real Sending
+
+After drafts look right, switch from drafts to actual replies:
+
+```bash
+export ZIPPERGEN_CALL_INTAKE_SEND_MODE=send
+```
+
+Then restart the exact same workflow command with the same SQLite store.
+
+Email is still an external side effect. The response log prevents ordinary
+duplicates after a successful logged response, but it is not a perfect
+transaction with Gmail. For critical use, keep draft mode until you are
+comfortable with the run.
+
+### Corrections
+
+The response email contains the extracted JSON and a `call_id`. If the sender
+finds an error, they can reply with corrected JSON or corrected fields. The
+workflow treats that as a correction, keeps the `call_id`, and updates the CSV
+row.
+
+### Observe
+
+```bash
+uv run zippergen status --store "$ZG_CALL_STORE"
+uv run zippergen trace --store "$ZG_CALL_STORE" --tail 50
+cat "$ZIPPERGEN_CALL_TABLE"
+```
+
+## Part 5: Run Under macOS `launchd`
 
 Only do this after the manual deployment works.
 
@@ -479,7 +584,7 @@ launchctl bootout "gui/$(id -u)" \
   ~/Library/LaunchAgents/com.zippergen.telegram-notifier.plist
 ```
 
-## Part 5: Run Under Linux `systemd --user`
+## Part 6: Run Under Linux `systemd --user`
 
 Only do this after the manual deployment works.
 
@@ -545,7 +650,7 @@ systemctl --user stop zippergen-workflow.service
 systemctl --user stop zippergen-telegram-notifier.service
 ```
 
-## Part 6: What Happens After A Crash
+## Part 7: What Happens After A Crash
 
 On restart with the same SQLite store, ZipperGen does not simply re-execute
 everything.
@@ -573,7 +678,7 @@ For Gmail drafts, this can create duplicate drafts. That is acceptable for an
 early local deployment. For automatically sent email, payments, or destructive
 operations, add idempotency protection before trusting the system.
 
-## Part 7: Effects And Idempotency
+## Part 8: Effects And Idempotency
 
 An effect is a Python action that touches the outside world.
 
@@ -603,7 +708,7 @@ Drafts are okay.
 Automatic sends and destructive effects need more care.
 ```
 
-## Part 8: Large Data
+## Part 9: Large Data
 
 SQLite is fine for normal coordination data:
 
@@ -632,7 +737,7 @@ vector-store:item:xyz
 
 If the reference matters for replay, store a hash too.
 
-## Part 9: Common Problems
+## Part 10: Common Problems
 
 ### The Workflow Does Nothing
 
@@ -720,7 +825,7 @@ If an external effect succeeded but crashed before the SQLite journal commit,
 the effect may run again. This is why early deployments should prefer drafts and
 non-destructive actions.
 
-## Part 10: First Deployment Checklist
+## Part 11: First Deployment Checklist
 
 Before using an OS supervisor:
 

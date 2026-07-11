@@ -286,6 +286,18 @@ zippergen run examples/command_center.py:command_center \
   --timeout 0
 ```
 
+The call-intake deployment example watches certified email senders, extracts
+calls for projects/positions/grants into a CSV table, replies with JSON, and
+accepts corrected replies:
+
+```bash
+zippergen run examples/call_intake.py:call_intake \
+  --llm openai:gpt-4o \
+  --services live \
+  --store ~/.zippergen/runs/call-intake.sqlite \
+  --timeout 0
+```
+
 ## Formal foundation
 
 The implementation is based on the theory of [Message Sequence Charts](https://en.wikipedia.org/wiki/Message_sequence_chart) and [choreographic programming](https://en.wikipedia.org/wiki/Choreographic_programming). A workflow is written from a global point of view and projected to local participants; ZipperGen adapts this to LLM actions, tool calls, human control points, and runtime inspection.

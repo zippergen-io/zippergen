@@ -1,0 +1,780 @@
+# pyright: reportInvalidTypeForm=false, reportGeneralTypeIssues=false, reportOperatorIssue=false, reportCallIssue=false, reportAttributeAccessIssue=false, reportUnusedExpression=false, reportUnboundVariable=false, reportReturnType=false, reportArgumentType=false
+
+"""Call/project intake workflow for local deployment.
+
+The workflow watches an email inbox, accepts messages only from certified
+senders, asks an LLM to classify/extract calls, replies with the extracted JSON,
+and upserts a local CSV table. Corrections are handled by replying to the JSON
+email with corrected fields, preferably keeping the same call_id.
+
+Manual deployment:
+
+    uv run python examples/call_intake_email_client.py --setup
+
+    export ZIPPERGEN_CERTIFIED_SENDERS="alice@example.com,@trusted-lab.org"
+    export ZIPPERGEN_CALL_TABLE="$HOME/.zippergen/calls.csv"
+    export ZIPPERGEN_CALL_INTAKE_SEND_MODE=draft
+
+    uv run zippergen run examples/call_intake.py:call_intake \
+      --store "$HOME/.zippergen/runs/call-intake.sqlite" \
+      --llm openai:gpt-4o \
+      --services live \
+      --llm-idle-timeout 300 \
+      --timeout 0
+"""
+
+import csv
+import hashlib
+import json
+import os
+import re
+import time
+from email.utils import parseaddr
+from pathlib import Path
+
+from zippergen import Lifeline, Var, effect, llm, pure, workflow
+
+
+# ---------------------------------------------------------------------------
+# Lifelines
+# ---------------------------------------------------------------------------
+
+Mailbox = Lifeline("Mailbox")
+Gatekeeper = Lifeline("Gatekeeper")
+Extractor = Lifeline("Extractor")
+Table = Lifeline("Table")
+
+
+# ---------------------------------------------------------------------------
+# Variables
+# ---------------------------------------------------------------------------
+
+email = Var("email", str, default="")
+certified = Var("certified", bool, default=False)
+intake_kind = Var("intake_kind", str, default="")
+call_json = Var("call_json", str, default="{}")
+table_status = Var("table_status", str, default="")
+response_status = Var("response_status", str, default="")
+mail_status = Var("mail_status", str, default="")
+intake_status = Var("intake_status", str, default="")
+_ = Var("_", str, default="")
+
+
+# ---------------------------------------------------------------------------
+# Runtime configuration
+# ---------------------------------------------------------------------------
+
+_email_client: object = None
+_fake_inbox: list[str] = []
+_certified_senders: set[str] = set()
+_processed_count = 0
+_max_messages: int | None = None
+_table_path: Path = Path.home() / ".zippergen" / "calls.csv"
+_response_log_path: Path = Path.home() / ".zippergen" / "call-intake-responses.jsonl"
+_send_mode = "draft"
+_poll_seconds = 5.0
+
+
+CALL_FIELDS = [
+    "call_id",
+    "status",
+    "type",
+    "title",
+    "funding_organism",
+    "domain_topic",
+    "opening_date",
+    "deadline",
+    "amount_of_funding",
+    "duration",
+    "url",
+    "summary",
+    "extra_json",
+    "source_sender",
+    "source_subject",
+    "source_message_id",
+    "updated_at",
+]
+
+
+DEFAULT_FAKE_INBOX = [
+    """From: Alice Example <alice@example.com>
+Subject: ERC Starting Grant call in formal methods
+Message-ID: <fake-call-1@example.com>
+
+Dear team,
+
+The ERC Starting Grant call for formal methods and programming languages is open.
+Deadline: 2026-10-15. Funding up to EUR 1.5M for five years.
+More information: https://erc.europa.eu/apply-grant/starting-grant
+"""
+]
+
+
+def _as_path(value: object, default: Path) -> Path:
+    text = str(value or "").strip()
+    return Path(text).expanduser() if text else default
+
+
+def _parse_int(value: object) -> int | None:
+    if value is None or value == "":
+        return None
+    parsed = int(value)
+    return parsed if parsed >= 0 else None
+
+
+def _split_senders(value: object) -> set[str]:
+    if value is None:
+        return set()
+    if isinstance(value, (list, tuple, set)):
+        items = value
+    else:
+        items = str(value).replace("\n", ",").split(",")
+    return {str(item).strip().lower() for item in items if str(item).strip()}
+
+
+def _load_json_or_lines(path: Path) -> list[str]:
+    if not path.exists():
+        return []
+    text = path.read_text()
+    try:
+        value = json.loads(text)
+    except json.JSONDecodeError:
+        return [line for line in text.splitlines() if line.strip()]
+    if isinstance(value, list):
+        return [str(item) for item in value]
+    raise ValueError(f"Fake inbox file must contain a JSON list or non-empty lines: {path}")
+
+
+def _reset_state() -> None:
+    global _email_client, _fake_inbox, _certified_senders, _processed_count
+    global _max_messages, _table_path, _response_log_path, _send_mode, _poll_seconds
+    _email_client = None
+    _fake_inbox = list(DEFAULT_FAKE_INBOX)
+    _certified_senders = {"alice@example.com"}
+    _processed_count = 0
+    _max_messages = None
+    _table_path = Path.home() / ".zippergen" / "calls.csv"
+    _response_log_path = Path.home() / ".zippergen" / "call-intake-responses.jsonl"
+    _send_mode = "draft"
+    _poll_seconds = 5.0
+
+
+def configure_call_intake(
+    *,
+    services: object = "fake",
+    certified_senders: object = None,
+    table_path: object = None,
+    response_log_path: object = None,
+    fake_inbox_path: object = None,
+    send_mode: object = None,
+    max_messages: object = None,
+    poll_seconds: object = None,
+) -> None:
+    """Configure globals used by the deployment example and tests."""
+
+    global _email_client, _fake_inbox, _certified_senders, _processed_count
+    global _max_messages, _table_path, _response_log_path, _send_mode, _poll_seconds
+
+    services_text = str(services or "fake")
+    if services_text not in {"fake", "live"}:
+        raise ValueError("services must be 'fake' or 'live'.")
+
+    _processed_count = 0
+    _max_messages = _parse_int(max_messages)
+    _table_path = _as_path(table_path, Path(os.environ.get(
+        "ZIPPERGEN_CALL_TABLE",
+        str(Path.home() / ".zippergen" / "calls.csv"),
+    )))
+    _response_log_path = _as_path(response_log_path, Path(os.environ.get(
+        "ZIPPERGEN_CALL_INTAKE_RESPONSE_LOG",
+        str(Path.home() / ".zippergen" / "call-intake-responses.jsonl"),
+    )))
+    _send_mode = str(send_mode or os.environ.get("ZIPPERGEN_CALL_INTAKE_SEND_MODE", "draft")).strip().lower()
+    if _send_mode not in {"draft", "send", "log"}:
+        raise ValueError("send_mode must be 'draft', 'send', or 'log'.")
+    _poll_seconds = float(poll_seconds or os.environ.get("ZIPPERGEN_CALL_INTAKE_POLL_SECONDS", "5"))
+
+    raw_senders = certified_senders
+    if raw_senders is None:
+        raw_senders = os.environ.get("ZIPPERGEN_CERTIFIED_SENDERS")
+    _certified_senders = _split_senders(raw_senders)
+    if not _certified_senders and services_text == "fake":
+        _certified_senders = {"alice@example.com"}
+
+    if services_text == "live":
+        _email_client = _load_service_module("call_intake_email_client")
+        _fake_inbox = []
+    else:
+        _email_client = None
+        inbox_path = _as_path(fake_inbox_path, Path(os.environ.get("ZIPPERGEN_CALL_INTAKE_FAKE_INBOX", "")))
+        _fake_inbox = _load_json_or_lines(inbox_path) if str(inbox_path) != "." else []
+        if not _fake_inbox:
+            _fake_inbox = list(DEFAULT_FAKE_INBOX)
+
+
+def reset_for_tests(
+    *,
+    fake_inbox: list[str] | None = None,
+    certified_senders: object = "alice@example.com",
+    table_path: object = None,
+    response_log_path: object = None,
+    send_mode: object = "log",
+    max_messages: object = 1,
+) -> None:
+    configure_call_intake(
+        services="fake",
+        certified_senders=certified_senders,
+        table_path=table_path,
+        response_log_path=response_log_path,
+        send_mode=send_mode,
+        max_messages=max_messages,
+    )
+    global _fake_inbox
+    _fake_inbox = list(fake_inbox or [])
+
+
+def _load_service_module(name: str):
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        name, Path(__file__).parent / f"{name}.py"
+    )
+    assert spec and spec.loader, f"Could not load {name}.py"
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)  # type: ignore[union-attr]
+    return mod
+
+
+def zippergen_setup(config) -> None:
+    """Hook called by ``zippergen run`` before configuring the workflow."""
+
+    configure_call_intake(
+        services=config.option("services", "fake"),
+        certified_senders=config.option("certified", None),
+        table_path=config.option("table", None),
+        response_log_path=config.option("response_log", None),
+        send_mode=config.option("send_mode", None),
+        max_messages=config.option("max_messages", None),
+        poll_seconds=config.option("poll_seconds", None),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Email and JSON helpers
+# ---------------------------------------------------------------------------
+
+def _parse_email_text(text: str) -> dict[str, str]:
+    headers: dict[str, str] = {}
+    raw_headers, sep, body = text.partition("\n\n")
+    if not sep:
+        body = text
+    current = ""
+    for line in raw_headers.splitlines():
+        if line.startswith((" ", "\t")) and current:
+            headers[current] = (headers[current] + " " + line.strip()).strip()
+            continue
+        name, colon, value = line.partition(":")
+        if colon:
+            current = name.strip().lower()
+            headers[current] = value.strip()
+    sender = headers.get("from", "")
+    return {
+        "sender": sender,
+        "sender_email": parseaddr(sender)[1].lower(),
+        "subject": headers.get("subject", ""),
+        "message_id": headers.get("message-id", ""),
+        "thread_id": headers.get("thread-id", ""),
+        "in_reply_to": headers.get("in-reply-to", ""),
+        "references": headers.get("references", ""),
+        "body": body.strip(),
+    }
+
+
+def _format_email(meta: dict) -> str:
+    lines = [
+        f"From: {meta.get('sender', '')}",
+        f"Subject: {meta.get('subject', '(no subject)')}",
+    ]
+    for source_key, header in [
+        ("id", "Gmail-ID"),
+        ("thread_id", "Thread-ID"),
+        ("message_id", "Message-ID"),
+        ("in_reply_to", "In-Reply-To"),
+        ("references", "References"),
+    ]:
+        value = meta.get(source_key)
+        if value:
+            lines.append(f"{header}: {value}")
+    return "\n".join(lines) + "\n\n" + str(meta.get("body", "")).strip()
+
+
+def _extract_json_object(text: str) -> dict:
+    cleaned = text.strip()
+    cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"\s*```$", "", cleaned)
+    decoder = json.JSONDecoder()
+    for idx, char in enumerate(cleaned):
+        if char != "{":
+            continue
+        try:
+            value, _end = decoder.raw_decode(cleaned[idx:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(value, dict):
+            return value
+    raise ValueError("No JSON object found.")
+
+
+def _short_hash(text: str) -> str:
+    return hashlib.sha1(text.encode("utf-8")).hexdigest()[:12]
+
+
+def _sanitize_call_id(value: object) -> str:
+    text = str(value or "").strip()
+    text = re.sub(r"[^A-Za-z0-9_.-]+", "-", text).strip("-._")
+    return text[:80]
+
+
+def _find_call_id(email_text: str, data: dict) -> str:
+    explicit = _sanitize_call_id(data.get("call_id"))
+    if explicit:
+        return explicit
+    match = re.search(r"\bcall_[A-Za-z0-9_.-]{8,80}\b", email_text)
+    if match:
+        return _sanitize_call_id(match.group(0))
+    meta = _parse_email_text(email_text)
+    key = "\n".join([
+        meta.get("sender_email", ""),
+        meta.get("subject", ""),
+        str(data.get("title") or ""),
+        str(data.get("url") or ""),
+        str(data.get("deadline") or ""),
+    ])
+    return "call_" + _short_hash(key)
+
+
+def _string_field(data: dict, *names: str) -> str:
+    for name in names:
+        value = data.get(name)
+        if value not in (None, ""):
+            return str(value).strip()
+    return ""
+
+
+def _normalise_payload(email_text: str, raw_json: str, *, status: str) -> str:
+    try:
+        data = _extract_json_object(raw_json)
+    except ValueError:
+        data = {"summary": raw_json.strip(), "extra": {"unparsed": raw_json.strip()}}
+
+    meta = _parse_email_text(email_text)
+    standard = {
+        "call_id": _find_call_id(email_text, data),
+        "status": status,
+        "type": _string_field(data, "type", "call_type"),
+        "title": _string_field(data, "title", "name"),
+        "funding_organism": _string_field(data, "funding_organism", "funding_agency", "funder"),
+        "domain_topic": _string_field(data, "domain_topic", "domain", "topic"),
+        "opening_date": _string_field(data, "opening_date", "opens"),
+        "deadline": _string_field(data, "deadline", "due_date"),
+        "amount_of_funding": _string_field(data, "amount_of_funding", "amount", "funding_amount"),
+        "duration": _string_field(data, "duration", "project_duration"),
+        "url": _string_field(data, "url", "link"),
+        "summary": _string_field(data, "summary", "description", "notes"),
+        "source_sender": meta.get("sender_email", ""),
+        "source_subject": meta.get("subject", ""),
+        "source_message_id": meta.get("message_id", "") or meta.get("thread_id", ""),
+        "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+    }
+    known = {
+        "call_id", "status", "type", "call_type", "title", "name",
+        "funding_organism", "funding_agency", "funder", "domain_topic",
+        "domain", "topic", "opening_date", "opens", "deadline", "due_date",
+        "amount_of_funding", "amount", "funding_amount", "duration",
+        "project_duration", "url", "link", "summary", "description", "notes",
+    }
+    extra = {key: value for key, value in data.items() if key not in known}
+    standard["extra_json"] = json.dumps(extra, sort_keys=True) if extra else ""
+    return json.dumps(standard, sort_keys=True)
+
+
+def _record_from_json(call_json_text: str) -> dict[str, str]:
+    data = _extract_json_object(call_json_text)
+    return {field: str(data.get(field, "") or "") for field in CALL_FIELDS}
+
+
+def _read_table(path: Path) -> list[dict[str, str]]:
+    if not path.exists():
+        return []
+    with path.open(newline="") as f:
+        return [
+            {field: str(row.get(field, "") or "") for field in CALL_FIELDS}
+            for row in csv.DictReader(f)
+        ]
+
+
+def _write_table(path: Path, rows: list[dict[str, str]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=CALL_FIELDS)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({field: row.get(field, "") for field in CALL_FIELDS})
+
+
+def _merge_row(existing: dict[str, str], incoming: dict[str, str]) -> dict[str, str]:
+    merged = dict(existing)
+    for field in CALL_FIELDS:
+        value = incoming.get(field, "")
+        if value or field in {"status", "updated_at"}:
+            merged[field] = value
+    return merged
+
+
+def _append_response_log_once(key: str, payload: dict) -> bool:
+    _response_log_path.parent.mkdir(parents=True, exist_ok=True)
+    if _response_log_contains(key):
+        return False
+    with _response_log_path.open("a") as f:
+        f.write(json.dumps({"key": key, **payload}, sort_keys=True) + "\n")
+    return True
+
+
+def _response_log_contains(key: str) -> bool:
+    seen: set[str] = set()
+    if _response_log_path.exists():
+        for line in _response_log_path.read_text().splitlines():
+            if not line.strip():
+                continue
+            try:
+                seen.add(str(json.loads(line).get("key", "")))
+            except json.JSONDecodeError:
+                continue
+    if key in seen:
+        return True
+    return False
+
+
+# ---------------------------------------------------------------------------
+# Polling and side effects
+# ---------------------------------------------------------------------------
+
+def intake_should_continue() -> bool:
+    return _max_messages is None or _processed_count < _max_messages
+
+
+def mail_present() -> bool:
+    if _max_messages is not None and _processed_count >= _max_messages:
+        return False
+    if _email_client is not None:
+        return _email_client.count_unread() > 0  # type: ignore[union-attr]
+    return bool(_fake_inbox)
+
+
+@effect
+def pop_pending_email() -> str:
+    global _processed_count
+    if _email_client is not None:
+        meta = _email_client.fetch_one_unread()  # type: ignore[union-attr]
+        if meta is None:
+            return ""
+        _processed_count += 1
+        return _format_email(meta)
+    _processed_count += 1
+    return _fake_inbox.pop(0) if _fake_inbox else ""
+
+
+@effect(visible=False)
+def wait_briefly() -> str:
+    time.sleep(_poll_seconds)
+    return ""
+
+
+@pure
+def is_certified_sender(email: str) -> bool:
+    sender = _parse_email_text(email).get("sender_email", "")
+    if "*" in _certified_senders:
+        return True
+    for allowed in _certified_senders:
+        if allowed.startswith("@") and sender.endswith(allowed):
+            return True
+        if sender == allowed:
+            return True
+    return False
+
+
+@pure
+def normalize_intake_kind(intake_kind: str) -> str:
+    text = intake_kind.strip().lower()
+    if "correction" in text or text in {"update", "corrected"}:
+        return "correction"
+    if "call" in text or text in {"project", "position", "funding"}:
+        return "call"
+    return "other"
+
+
+@pure
+def normalize_call_json(email: str, call_json: str) -> str:
+    return _normalise_payload(email, call_json, status="new")
+
+
+@pure
+def normalize_correction_json(email: str, call_json: str) -> str:
+    return _normalise_payload(email, call_json, status="corrected")
+
+
+@effect
+def upsert_call_record(email: str, call_json: str) -> str:
+    incoming = _record_from_json(call_json)
+    rows = _read_table(_table_path)
+    updated = False
+    for index, row in enumerate(rows):
+        if row.get("call_id") == incoming["call_id"]:
+            rows[index] = _merge_row(row, incoming)
+            updated = True
+            break
+    if not updated:
+        rows.append(incoming)
+    _write_table(_table_path, rows)
+    verb = "updated" if updated else "created"
+    print(f"[CallIntake] {verb} {incoming['call_id']} in {_table_path}")
+    return f"{verb}:{incoming['call_id']}"
+
+
+@effect
+def record_non_call(email: str) -> str:
+    meta = _parse_email_text(email)
+    print(f"[CallIntake] Ignored non-call from {meta.get('sender_email', '')}: {meta.get('subject', '')}")
+    return "ignored_non_call"
+
+
+@effect
+def ignore_uncertified(email: str) -> str:
+    meta = _parse_email_text(email)
+    print(f"[CallIntake] Ignored uncertified sender {meta.get('sender_email', '')}")
+    if _email_client is not None:
+        _email_client.mark_processed(meta)  # type: ignore[union-attr]
+    return "ignored_uncertified"
+
+
+def _response_body(call_json_text: str, table_status_text: str, *, correction: bool) -> str:
+    data = _extract_json_object(call_json_text)
+    pretty = json.dumps(data, indent=2, sort_keys=True)
+    heading = "I updated the call table with this corrected JSON." if correction else "I recorded this call with the following JSON."
+    return (
+        f"Hello,\n\n{heading}\n\n"
+        f"{pretty}\n\n"
+        "If anything is wrong, reply to this email with corrected JSON. "
+        "Please keep the call_id unchanged.\n\n"
+        f"Table status: {table_status_text}\n"
+    )
+
+
+def _send_response(email: str, call_json_text: str, table_status_text: str, *, correction: bool) -> str:
+    meta = _parse_email_text(email)
+    data = _extract_json_object(call_json_text)
+    call_id = str(data.get("call_id", "call"))
+    purpose = "correction" if correction else "extraction"
+    key = _short_hash("\n".join([purpose, meta.get("message_id", ""), call_id, call_json_text]))
+    subject_prefix = "Updated call JSON" if correction else "Extracted call JSON"
+    subject = f"{subject_prefix}: {call_id}"
+    body = _response_body(call_json_text, table_status_text, correction=correction)
+
+    if _response_log_contains(key):
+        return f"already_recorded:{call_id}"
+
+    payload = {
+        "call_id": call_id,
+        "mode": _send_mode,
+        "purpose": purpose,
+        "recipient": meta.get("sender_email", ""),
+        "subject": subject,
+        "body": body,
+        "created_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+    }
+
+    if _email_client is not None and _send_mode in {"draft", "send"}:
+        if _send_mode == "send":
+            external_id = _email_client.send_email(meta, subject, body)  # type: ignore[union-attr]
+        else:
+            external_id = _email_client.create_draft(meta, subject, body)  # type: ignore[union-attr]
+        _append_response_log_once(key, {**payload, "external_id": external_id})
+        return f"{_send_mode}:{external_id}"
+
+    _append_response_log_once(key, payload)
+    print(f"[CallIntake] Response for {call_id} logged at {_response_log_path}")
+    return f"logged:{call_id}"
+
+
+@effect
+def send_call_json_response(email: str, call_json: str, table_status: str) -> str:
+    return _send_response(email, call_json, table_status, correction=False)
+
+
+@effect
+def send_correction_response(email: str, call_json: str, table_status: str) -> str:
+    return _send_response(email, call_json, table_status, correction=True)
+
+
+@effect
+def finish_email(email: str, status: str) -> str:
+    meta = _parse_email_text(email)
+    if _email_client is not None:
+        _email_client.mark_processed(meta)  # type: ignore[union-attr]
+    return f"processed:{status}"
+
+
+@pure
+def intake_finished() -> str:
+    return f"processed:{_processed_count}"
+
+
+# ---------------------------------------------------------------------------
+# LLM actions
+# ---------------------------------------------------------------------------
+
+@llm(
+    system="""
+You classify emails for a research call intake system.
+Return exactly one label:
+  call       - a call for projects, funding, grants, positions, fellowships, jobs, proposals, or applications
+  correction - a reply correcting previously extracted call JSON
+  other      - anything else
+Return only the label.
+""".strip(),
+    user="{email}",
+    parse="text",
+    outputs=(("intake_kind", str),),
+)
+def classify_intake(email: str) -> None: ...
+
+
+@llm(
+    system="""
+Extract call details from the email.
+Return only one JSON object. Use empty strings for unknown fields.
+
+Schema:
+{
+  "type": "project | position | fellowship | grant | other",
+  "title": "",
+  "funding_organism": "",
+  "domain_topic": "",
+  "opening_date": "",
+  "deadline": "",
+  "amount_of_funding": "",
+  "duration": "",
+  "url": "",
+  "summary": "",
+  "extra": {}
+}
+""".strip(),
+    user="{email}",
+    parse="text",
+    outputs=(("call_json", str),),
+)
+def extract_call_json(email: str) -> None: ...
+
+
+@llm(
+    system="""
+Extract corrected call details from this reply.
+Return only one JSON object.
+
+Rules:
+- Preserve any call_id present in the email.
+- Include only corrected or clearly restated fields.
+- Use the same field names as the original call JSON when possible.
+""".strip(),
+    user="{email}",
+    parse="text",
+    outputs=(("call_json", str),),
+)
+def extract_correction_json(email: str) -> None: ...
+
+
+# ---------------------------------------------------------------------------
+# Workflow
+# ---------------------------------------------------------------------------
+
+@workflow
+def call_intake() -> str:
+    while intake_should_continue() @ Mailbox:
+        if mail_present() @ Mailbox:
+            Mailbox: email = pop_pending_email()
+            Mailbox(email) >> Gatekeeper(email)
+            Gatekeeper: certified = is_certified_sender(email)
+
+            if certified @ Gatekeeper:
+                Gatekeeper(email) >> Extractor(email)
+                Extractor: intake_kind = classify_intake(email)
+                Extractor: intake_kind = normalize_intake_kind(intake_kind)
+
+                if (intake_kind == "call") @ Extractor:
+                    Extractor: call_json = extract_call_json(email)
+                    Extractor: call_json = normalize_call_json(email, call_json)
+                    Extractor(email, call_json) >> Table(email, call_json)
+                    Table: table_status = upsert_call_record(email, call_json)
+                    Table(email, call_json, table_status) >> Mailbox(email, call_json, table_status)
+                    Mailbox: response_status = send_call_json_response(email, call_json, table_status)
+                    Mailbox: mail_status = finish_email(email, response_status)
+
+                elif (intake_kind == "correction") @ Extractor:
+                    Extractor: call_json = extract_correction_json(email)
+                    Extractor: call_json = normalize_correction_json(email, call_json)
+                    Extractor(email, call_json) >> Table(email, call_json)
+                    Table: table_status = upsert_call_record(email, call_json)
+                    Table(email, call_json, table_status) >> Mailbox(email, call_json, table_status)
+                    Mailbox: response_status = send_correction_response(email, call_json, table_status)
+                    Mailbox: mail_status = finish_email(email, response_status)
+
+                else:
+                    Extractor(email) >> Table(email)
+                    Table: table_status = record_non_call(email)
+                    Table(email, table_status) >> Mailbox(email, table_status)
+                    Mailbox: mail_status = finish_email(email, table_status)
+            else:
+                Gatekeeper(email) >> Mailbox(email)
+                Mailbox: mail_status = ignore_uncertified(email)
+        else:
+            Mailbox: _ = wait_briefly()
+
+    Mailbox: intake_status = intake_finished()
+    return intake_status @ Mailbox
+
+
+_reset_state()
+
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Run the call intake workflow.")
+    parser.add_argument("--llm", default="openai:gpt-4o")
+    parser.add_argument("--services", choices=("fake", "live"), default="fake")
+    parser.add_argument("--store", dest="store_path")
+    parser.add_argument("--table", dest="table_path")
+    parser.add_argument("--certified", dest="certified_senders")
+    parser.add_argument("--send-mode", choices=("draft", "send", "log"), default=None)
+    parser.add_argument("--max-messages", type=int)
+    parser.add_argument("--timeout", type=float, default=0.0)
+    parser.add_argument("--llm-idle-timeout", type=float)
+    parser.add_argument("--no-ui", action="store_true")
+    args = parser.parse_args()
+
+    configure_call_intake(
+        services=args.services,
+        certified_senders=args.certified_senders,
+        table_path=args.table_path,
+        send_mode=args.send_mode,
+        max_messages=args.max_messages,
+    )
+    call_intake.configure(
+        args.llm,
+        execution="sqlite",
+        store_path=args.store_path,
+        timeout=args.timeout,
+        ui=not args.no_ui,
+        llm_idle_timeout=args.llm_idle_timeout,
+    )
+    call_intake()
