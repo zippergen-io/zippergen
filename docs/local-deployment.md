@@ -52,6 +52,11 @@ calendar:event:xyz789
 SQLite should store the coordination state, durable IDs, and hashes. Large data
 can live outside SQLite.
 
+Internal workflow receives also use SQLite polling. A waiting role starts with a
+short sleep for responsiveness and backs off up to one second while no matching
+message is available. As soon as the role makes progress, the sleep resets to
+the short value.
+
 ## The Commands You Will Use
 
 Run a workflow:

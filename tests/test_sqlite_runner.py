@@ -267,6 +267,26 @@ def test_begin_immediate_retries_database_locked(monkeypatch):
     assert sleeps == [0.05, 0.05]
 
 
+def test_role_runner_idle_backoff_grows_and_resets(monkeypatch, tmp_path):
+    sleeps = []
+    monkeypatch.setattr("zippergen.role_runner.time.sleep", lambda seconds: sleeps.append(seconds))
+    runner = RoleRunner(
+        open_store(str(tmp_path / "idle.sqlite")),
+        PAsk.name,
+        project(sqlite_external_round, PAsk),
+        {"n": 1},
+        sqlite_external_round.ns,
+    )
+
+    for _ in range(8):
+        runner._sleep_after_idle_step()
+
+    assert sleeps == pytest.approx([0.02, 0.04, 0.08, 0.16, 0.32, 0.64, 1.0, 1.0])
+    runner._reset_idle_backoff()
+    runner._sleep_after_idle_step()
+    assert sleeps[-1] == pytest.approx(0.02)
+
+
 def test_workflow_call_uses_sqlite_execution_by_default():
     wf = _two_role_branch_workflow()
     assert wf._execution == "sqlite"

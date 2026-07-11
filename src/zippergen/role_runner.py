@@ -121,6 +121,10 @@ def _human_task_spec(action: HumanAction, inputs: dict) -> dict:
 class RoleRunner:
     """Run one projected local program against the durable SQLite store."""
 
+    _IDLE_SLEEP_INITIAL = 0.02
+    _IDLE_SLEEP_MAX = 1.0
+    _IDLE_SLEEP_FACTOR = 2.0
+
     def __init__(
         self,
         conn,
@@ -164,6 +168,7 @@ class RoleRunner:
         self.channel = DurableChannel(conn, role, since=since)
         self.journal = JournalContext(self.channel, action_node_paths(local_stmt))
         self.trace = self._make_trace(trace)
+        self._idle_sleep = self._IDLE_SLEEP_INITIAL
 
     def _make_trace(self, trace):
         def durable_trace(event: dict) -> None:
@@ -296,6 +301,14 @@ class RoleRunner:
                 break            # blocked on live input at the replay boundary
             self.residual = out
 
+    def _reset_idle_backoff(self) -> None:
+        self._idle_sleep = self._IDLE_SLEEP_INITIAL
+
+    def _sleep_after_idle_step(self) -> None:
+        delay = self._idle_sleep
+        time.sleep(delay)
+        self._idle_sleep = min(self._IDLE_SLEEP_MAX, delay * self._IDLE_SLEEP_FACTOR)
+
     def run_live(self) -> None:
         while not isinstance(self.residual, EmptyStmt):
             if self.stop is not None and self.stop.is_set():
@@ -323,10 +336,12 @@ class RoleRunner:
                         self.loop_paths[id(self.residual)],
                         self.channel,
                     )
+                self._reset_idle_backoff()
                 continue
             if progressed:
                 self.channel.commit_txn()
                 self.residual = out
+                self._reset_idle_backoff()
                 # At a loop-iteration boundary the residual is (by identity) a loop
                 # node in the projected program; checkpoint env + position there.
                 if self.monitor is None and id(self.residual) in self.loop_paths:
@@ -341,7 +356,7 @@ class RoleRunner:
                 self.channel.rollback_txn()
                 if self.stop is not None and self.stop.is_set():
                     raise RuntimeError("Workflow cancelled")
-                time.sleep(0.02)
+                self._sleep_after_idle_step()
 
     def run(self) -> dict:
         self.replay_committed()
