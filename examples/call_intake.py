@@ -4,8 +4,8 @@
 
 The workflow watches an email inbox, accepts messages only from certified
 senders, asks an LLM to classify/extract calls, replies with the extracted JSON,
-and upserts a local CSV table. Corrections are handled by replying to the JSON
-email with corrected fields, preferably keeping the same call_id.
+and records new calls in a local CSV table. Corrections are handled by replying
+to the JSON email with corrected fields, preferably keeping the same call_id.
 
 Manual deployment:
 
@@ -307,6 +307,7 @@ def _parse_email_text(text: str) -> dict[str, str]:
         "subject": headers.get("subject", ""),
         "message_id": headers.get("message-id", ""),
         "thread_id": headers.get("thread-id", ""),
+        "gmail_id": headers.get("gmail-id", ""),
         "in_reply_to": headers.get("in-reply-to", ""),
         "references": headers.get("references", ""),
         "body": body.strip(),
@@ -406,7 +407,11 @@ def _normalise_payload(email_text: str, raw_json: str, *, status: str) -> str:
         "summary": _string_field(data, "summary", "description", "notes"),
         "source_sender": meta.get("sender_email", ""),
         "source_subject": meta.get("subject", ""),
-        "source_message_id": meta.get("message_id", "") or meta.get("thread_id", ""),
+        "source_message_id": (
+            meta.get("message_id", "")
+            or meta.get("thread_id", "")
+            or meta.get("gmail_id", "")
+        ),
         "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
     }
     known = {
@@ -452,6 +457,11 @@ def _merge_row(existing: dict[str, str], incoming: dict[str, str]) -> dict[str, 
         if value or field in {"status", "updated_at"}:
             merged[field] = value
     return merged
+
+
+def _same_source_message(existing: dict[str, str], incoming: dict[str, str]) -> bool:
+    source_id = incoming.get("source_message_id", "")
+    return bool(source_id) and existing.get("source_message_id", "") == source_id
 
 
 def _append_response_log_once(key: str, payload: dict) -> bool:
@@ -589,21 +599,34 @@ def normalize_correction_json(email: str, call_json: str) -> str:
 
 
 @effect
-def upsert_call_record(email: str, call_json: str) -> str:
+def insert_call_record(email: str, call_json: str) -> str:
     incoming = _record_from_json(call_json)
     rows = _read_table(_table_path)
-    updated = False
+    for row in rows:
+        if row.get("call_id") == incoming["call_id"]:
+            if _same_source_message(row, incoming):
+                print(f"[CallIntake] {incoming['call_id']} is already recorded from this message")
+                return f"created:{incoming['call_id']}"
+            print(f"[CallIntake] Duplicate {incoming['call_id']} ignored in {_table_path}")
+            return f"duplicate:{incoming['call_id']}"
+    rows.append(incoming)
+    _write_table(_table_path, rows)
+    print(f"[CallIntake] created {incoming['call_id']} in {_table_path}")
+    return f"created:{incoming['call_id']}"
+
+
+@effect
+def apply_call_correction(email: str, call_json: str) -> str:
+    incoming = _record_from_json(call_json)
+    rows = _read_table(_table_path)
     for index, row in enumerate(rows):
         if row.get("call_id") == incoming["call_id"]:
             rows[index] = _merge_row(row, incoming)
-            updated = True
-            break
-    if not updated:
-        rows.append(incoming)
-    _write_table(_table_path, rows)
-    verb = "updated" if updated else "created"
-    print(f"[CallIntake] {verb} {incoming['call_id']} in {_table_path}")
-    return f"{verb}:{incoming['call_id']}"
+            _write_table(_table_path, rows)
+            print(f"[CallIntake] updated {incoming['call_id']} in {_table_path}")
+            return f"updated:{incoming['call_id']}"
+    print(f"[CallIntake] Correction for missing {incoming['call_id']} ignored")
+    return f"missing:{incoming['call_id']}"
 
 
 @effect
@@ -622,10 +645,45 @@ def ignore_uncertified(email: str) -> str:
     return "ignored_uncertified"
 
 
+def _response_kind(table_status_text: str, *, correction: bool) -> str:
+    if table_status_text.startswith("duplicate:"):
+        return "duplicate"
+    if correction and table_status_text.startswith("missing:"):
+        return "missing_correction"
+    if correction:
+        return "correction"
+    return "extraction"
+
+
+def _response_subject_prefix(kind: str) -> str:
+    if kind == "duplicate":
+        return "Call already recorded"
+    if kind == "missing_correction":
+        return "Call not found"
+    if kind == "correction":
+        return "Updated call JSON"
+    return "Extracted call JSON"
+
+
+def _response_heading(kind: str) -> str:
+    if kind == "duplicate":
+        return "This call already exists in the table, so I did not add or modify a row."
+    if kind == "missing_correction":
+        return (
+            "I could not find an existing call with this call_id, so I did not "
+            "modify the table. Please reply with the correct call_id or send it "
+            "as a new call."
+        )
+    if kind == "correction":
+        return "I updated the call table with this corrected JSON."
+    return "I recorded this call with the following JSON."
+
+
 def _response_body(call_json_text: str, table_status_text: str, *, correction: bool) -> str:
     data = _extract_json_object(call_json_text)
     pretty = json.dumps(data, indent=2, sort_keys=True)
-    heading = "I updated the call table with this corrected JSON." if correction else "I recorded this call with the following JSON."
+    kind = _response_kind(table_status_text, correction=correction)
+    heading = _response_heading(kind)
     return (
         f"Hello,\n\n{heading}\n\n"
         f"{pretty}\n\n"
@@ -639,9 +697,10 @@ def _send_response(email: str, call_json_text: str, table_status_text: str, *, c
     meta = _parse_email_text(email)
     data = _extract_json_object(call_json_text)
     call_id = str(data.get("call_id", "call"))
-    purpose = "correction" if correction else "extraction"
-    key = _short_hash("\n".join([purpose, meta.get("message_id", ""), call_id, call_json_text]))
-    subject_prefix = "Updated call JSON" if correction else "Extracted call JSON"
+    purpose = _response_kind(table_status_text, correction=correction)
+    message_key = meta.get("message_id", "") or meta.get("thread_id", "") or meta.get("gmail_id", "")
+    key = _short_hash("\n".join([purpose, message_key, call_id, table_status_text, call_json_text]))
+    subject_prefix = _response_subject_prefix(purpose)
     subject = f"{subject_prefix}: {call_id}"
     body = _response_body(call_json_text, table_status_text, correction=correction)
 
@@ -785,7 +844,7 @@ def call_intake() -> str:
                     Extractor: call_json = extract_call_json(email)
                     Extractor: call_json = normalize_call_json(email, call_json)
                     Extractor(email, call_json) >> Table(email, call_json)
-                    Table: table_status = upsert_call_record(email, call_json)
+                    Table: table_status = insert_call_record(email, call_json)
                     Table(email, call_json, table_status) >> Mailbox(email, call_json, table_status)
                     Mailbox: response_status = send_call_json_response(email, call_json, table_status)
                     Mailbox: mail_status = finish_email(email, response_status)
@@ -794,7 +853,7 @@ def call_intake() -> str:
                     Extractor: call_json = extract_correction_json(email)
                     Extractor: call_json = normalize_correction_json(email, call_json)
                     Extractor(email, call_json) >> Table(email, call_json)
-                    Table: table_status = upsert_call_record(email, call_json)
+                    Table: table_status = apply_call_correction(email, call_json)
                     Table(email, call_json, table_status) >> Mailbox(email, call_json, table_status)
                     Mailbox: response_status = send_correction_response(email, call_json, table_status)
                     Mailbox: mail_status = finish_email(email, response_status)

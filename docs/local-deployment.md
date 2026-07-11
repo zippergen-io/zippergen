@@ -501,7 +501,17 @@ transaction with Gmail. The hourly rate limit is enforced from successful
 The response email contains the extracted JSON and a `call_id`. If the sender
 finds an error, they can reply with corrected JSON or corrected fields. The
 workflow treats that as a correction, keeps the `call_id`, and updates the CSV
-row.
+row only if that `call_id` already exists.
+
+This distinction matters:
+
+- A new call with an existing `call_id` is treated as a duplicate. The workflow
+  does not add a second row and does not modify the existing row. It emails the
+  sender that the call is already recorded.
+- A correction with an existing `call_id` updates the row.
+- A correction with a missing `call_id` does not create a new row. It emails the
+  sender that the call could not be found, so they can reply with the right
+  `call_id` or send the message as a new call.
 
 ### Observe
 

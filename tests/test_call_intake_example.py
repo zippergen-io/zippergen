@@ -92,7 +92,22 @@ Deadline is 2026-12-01.
     assert json.loads(normalized["extra_json"]) == {"extra": {"instrument": "PRC"}}
 
 
-def test_upsert_call_record_updates_existing_row(tmp_path):
+def test_normalize_call_json_uses_gmail_id_when_message_id_is_missing(tmp_path):
+    module = _load_call_intake()
+    email = """From: Alice <alice@example.com>
+Subject: ANR call
+Gmail-ID: gmail-message-1
+
+Deadline is 2026-12-01.
+"""
+    raw = json.dumps({"call_id": "call_demo", "title": "ANR AI systems"})
+
+    normalized = json.loads(module.normalize_call_json.fn(email, raw))
+
+    assert normalized["source_message_id"] == "gmail-message-1"
+
+
+def test_insert_call_record_skips_duplicate_without_mutation(tmp_path):
     module = _load_call_intake()
     table = tmp_path / "calls.csv"
     module.reset_for_tests(
@@ -101,31 +116,105 @@ def test_upsert_call_record_updates_existing_row(tmp_path):
         table_path=table,
         response_log_path=tmp_path / "responses.jsonl",
     )
-    email = "From: Alice <alice@example.com>\nSubject: Call\n\nBody"
+    first_email = "From: Alice <alice@example.com>\nSubject: Call\nMessage-ID: <m1@example.com>\n\nBody"
+    duplicate_email = "From: Alice <alice@example.com>\nSubject: Call\nMessage-ID: <m2@example.com>\n\nBody"
     first = json.dumps({
         "call_id": "call_demo",
         "type": "project",
         "title": "Old title",
         "deadline": "2026-10-01",
     })
-    second = json.dumps({
+    duplicate = json.dumps({
         "call_id": "call_demo",
         "title": "New title",
         "amount_of_funding": "EUR 1M",
     })
 
-    first_status = module.upsert_call_record.fn(email, module.normalize_call_json.fn(email, first))
-    second_status = module.upsert_call_record.fn(email, module.normalize_correction_json.fn(email, second))
+    first_status = module.insert_call_record.fn(first_email, module.normalize_call_json.fn(first_email, first))
+    retry_status = module.insert_call_record.fn(first_email, module.normalize_call_json.fn(first_email, first))
+    duplicate_status = module.insert_call_record.fn(
+        duplicate_email,
+        module.normalize_call_json.fn(duplicate_email, duplicate),
+    )
     rows = _rows(table)
 
     assert first_status == "created:call_demo"
-    assert second_status == "updated:call_demo"
+    assert retry_status == "created:call_demo"
+    assert duplicate_status == "duplicate:call_demo"
+    assert len(rows) == 1
+    assert rows[0]["call_id"] == "call_demo"
+    assert rows[0]["title"] == "Old title"
+    assert rows[0]["deadline"] == "2026-10-01"
+    assert rows[0]["amount_of_funding"] == ""
+    assert rows[0]["status"] == "new"
+    assert rows[0]["source_message_id"] == "<m1@example.com>"
+
+
+def test_apply_call_correction_updates_existing_row(tmp_path):
+    module = _load_call_intake()
+    table = tmp_path / "calls.csv"
+    module.reset_for_tests(
+        fake_inbox=[],
+        certified_senders="alice@example.com",
+        table_path=table,
+        response_log_path=tmp_path / "responses.jsonl",
+    )
+    original_email = "From: Alice <alice@example.com>\nSubject: Call\nMessage-ID: <m1@example.com>\n\nBody"
+    correction_email = "From: Alice <alice@example.com>\nSubject: Re: Call\nMessage-ID: <m2@example.com>\n\nBody"
+    first = json.dumps({
+        "call_id": "call_demo",
+        "type": "project",
+        "title": "Old title",
+        "deadline": "2026-10-01",
+    })
+    correction = json.dumps({
+        "call_id": "call_demo",
+        "title": "New title",
+        "amount_of_funding": "EUR 1M",
+    })
+
+    first_status = module.insert_call_record.fn(
+        original_email,
+        module.normalize_call_json.fn(original_email, first),
+    )
+    correction_status = module.apply_call_correction.fn(
+        correction_email,
+        module.normalize_correction_json.fn(correction_email, correction),
+    )
+    rows = _rows(table)
+
+    assert first_status == "created:call_demo"
+    assert correction_status == "updated:call_demo"
     assert len(rows) == 1
     assert rows[0]["call_id"] == "call_demo"
     assert rows[0]["title"] == "New title"
     assert rows[0]["deadline"] == "2026-10-01"
     assert rows[0]["amount_of_funding"] == "EUR 1M"
     assert rows[0]["status"] == "corrected"
+
+
+def test_apply_call_correction_missing_does_not_create_row(tmp_path):
+    module = _load_call_intake()
+    table = tmp_path / "calls.csv"
+    module.reset_for_tests(
+        fake_inbox=[],
+        certified_senders="alice@example.com",
+        table_path=table,
+        response_log_path=tmp_path / "responses.jsonl",
+    )
+    correction_email = "From: Alice <alice@example.com>\nSubject: Re: Call\nMessage-ID: <m2@example.com>\n\nBody"
+    correction = json.dumps({
+        "call_id": "call_missing",
+        "title": "Missing call",
+    })
+
+    correction_status = module.apply_call_correction.fn(
+        correction_email,
+        module.normalize_correction_json.fn(correction_email, correction),
+    )
+
+    assert correction_status == "missing:call_missing"
+    assert not table.exists()
 
 
 def test_send_rate_limit_delay_uses_recent_send_log(tmp_path):
@@ -241,6 +330,54 @@ def test_call_intake_records_certified_call_and_response(tmp_path):
     assert "call_erc" in response_lines[0]
 
 
+def test_call_intake_reports_duplicate_without_mutating_table(tmp_path):
+    module = _load_call_intake()
+    table = tmp_path / "calls.csv"
+    response_log = tmp_path / "responses.jsonl"
+    module.reset_for_tests(
+        fake_inbox=[
+            "From: Alice <alice@example.com>\nSubject: Duplicate call\nMessage-ID: <m2@example.com>\n\nSecond copy"
+        ],
+        certified_senders="alice@example.com",
+        table_path=table,
+        response_log_path=response_log,
+    )
+    existing_email = (
+        "From: Alice <alice@example.com>\n"
+        "Subject: Original call\n"
+        "Message-ID: <m1@example.com>\n\nBody"
+    )
+    existing = json.dumps({
+        "call_id": "call_demo",
+        "type": "project",
+        "title": "Original title",
+        "deadline": "2026-10-01",
+    })
+    module.insert_call_record.fn(
+        existing_email,
+        module.normalize_call_json.fn(existing_email, existing),
+    )
+
+    def backend(action, inputs):
+        if action.name == "classify_intake":
+            return {"intake_kind": "call"}
+        if action.name == "extract_call_json":
+            return {"call_json": json.dumps({"call_id": "call_demo", "title": "Changed title"})}
+        raise AssertionError(action.name)
+
+    result = run(module.call_intake, _lifelines(module), {}, llm_backend=backend, timeout=5)
+    rows = _rows(table)
+    response = json.loads(response_log.read_text().splitlines()[0])
+
+    assert result == "processed:1"
+    assert len(rows) == 1
+    assert rows[0]["call_id"] == "call_demo"
+    assert rows[0]["title"] == "Original title"
+    assert response["purpose"] == "duplicate"
+    assert response["subject"] == "Call already recorded: call_demo"
+    assert "already exists" in response["body"]
+
+
 def test_call_intake_correction_updates_existing_row(tmp_path):
     module = _load_call_intake()
     table = tmp_path / "calls.csv"
@@ -259,7 +396,7 @@ def test_call_intake_correction_updates_existing_row(tmp_path):
         "title": "Demo call",
         "deadline": "2026-10-01",
     })
-    module.upsert_call_record.fn(
+    module.insert_call_record.fn(
         "From: Alice <alice@example.com>\nSubject: Original\n\nBody",
         module.normalize_call_json.fn("From: Alice <alice@example.com>\nSubject: Original\n\nBody", existing),
     )
@@ -280,3 +417,33 @@ def test_call_intake_correction_updates_existing_row(tmp_path):
     assert rows[0]["title"] == "Demo call"
     assert rows[0]["deadline"] == "2026-11-01"
     assert rows[0]["status"] == "corrected"
+
+
+def test_call_intake_reports_missing_correction_without_creating_row(tmp_path):
+    module = _load_call_intake()
+    table = tmp_path / "calls.csv"
+    response_log = tmp_path / "responses.jsonl"
+    module.reset_for_tests(
+        fake_inbox=[
+            "From: Alice <alice@example.com>\nSubject: Re: Extracted call JSON: call_missing\nMessage-ID: <m2@example.com>\n\nPlease update the deadline"
+        ],
+        certified_senders="alice@example.com",
+        table_path=table,
+        response_log_path=response_log,
+    )
+
+    def backend(action, inputs):
+        if action.name == "classify_intake":
+            return {"intake_kind": "correction"}
+        if action.name == "extract_correction_json":
+            return {"call_json": json.dumps({"call_id": "call_missing", "deadline": "2026-11-01"})}
+        raise AssertionError(action.name)
+
+    result = run(module.call_intake, _lifelines(module), {}, llm_backend=backend, timeout=5)
+    response = json.loads(response_log.read_text().splitlines()[0])
+
+    assert result == "processed:1"
+    assert not table.exists()
+    assert response["purpose"] == "missing_correction"
+    assert response["subject"] == "Call not found: call_missing"
+    assert "could not find" in response["body"]
