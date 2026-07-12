@@ -65,6 +65,7 @@ table_status = Var("table_status", str, default="")
 response_status = Var("response_status", str, default="")
 mail_status = Var("mail_status", str, default="")
 intake_status = Var("intake_status", str, default="")
+processed_count = Var("processed_count", int, default=0)
 _ = Var("_", str, default="")
 
 
@@ -77,8 +78,7 @@ _sheets_client: object = None
 _fake_inbox: list[str] = []
 _certified_senders: set[str] = set()
 _intake_recipients: set[str] = set()
-_processed_count = 0
-_max_messages: int | None = None
+_message_limit = 2**31 - 1
 _table_path: Path = Path.home() / ".zippergen" / "calls.csv"
 _sheet_id = ""
 _sheet_name = "Calls"
@@ -185,16 +185,15 @@ def _load_json_or_lines(path: Path) -> list[str]:
 
 
 def _reset_state() -> None:
-    global _email_client, _sheets_client, _fake_inbox, _certified_senders, _intake_recipients, _processed_count
-    global _max_messages, _table_path, _sheet_id, _sheet_name, _table_targets
+    global _email_client, _sheets_client, _fake_inbox, _certified_senders, _intake_recipients
+    global _message_limit, _table_path, _sheet_id, _sheet_name, _table_targets
     global _response_log_path, _send_mode, _send_limit_per_hour, _poll_seconds
     _email_client = None
     _sheets_client = None
     _fake_inbox = list(DEFAULT_FAKE_INBOX)
     _certified_senders = {"alice@example.com"}
     _intake_recipients = set()
-    _processed_count = 0
-    _max_messages = None
+    _message_limit = 2**31 - 1
     _table_path = Path.home() / ".zippergen" / "calls.csv"
     _sheet_id = ""
     _sheet_name = "Calls"
@@ -223,16 +222,16 @@ def configure_call_intake(
 ) -> None:
     """Configure globals used by the deployment example and tests."""
 
-    global _email_client, _sheets_client, _fake_inbox, _certified_senders, _intake_recipients, _processed_count
-    global _max_messages, _table_path, _sheet_id, _sheet_name, _table_targets
+    global _email_client, _sheets_client, _fake_inbox, _certified_senders, _intake_recipients
+    global _message_limit, _table_path, _sheet_id, _sheet_name, _table_targets
     global _response_log_path, _send_mode, _send_limit_per_hour, _poll_seconds
 
     services_text = str(services or "fake")
     if services_text not in {"fake", "live"}:
         raise ValueError("services must be 'fake' or 'live'.")
 
-    _processed_count = 0
-    _max_messages = _parse_int(max_messages)
+    parsed_max_messages = _parse_int(max_messages)
+    _message_limit = parsed_max_messages if parsed_max_messages is not None else 2**31 - 1
     _table_path = _as_path(table_path, Path(os.environ.get(
         "ZIPPERGEN_CALL_TABLE",
         str(Path.home() / ".zippergen" / "calls.csv"),
@@ -649,6 +648,12 @@ def _response_log_contains(key: str) -> bool:
     return any(str(record.get("key", "")) == key for record in _response_log_records())
 
 
+def _response_log_contains_source(message_key: str) -> bool:
+    if not message_key:
+        return False
+    return any(str(record.get("source_message_key", "")) == message_key for record in _response_log_records())
+
+
 def _recent_send_timestamps(now: float) -> list[float]:
     cutoff = now - 3600.0
     timestamps: list[float] = []
@@ -690,13 +695,7 @@ def _wait_for_send_rate_limit() -> None:
 # Polling and side effects
 # ---------------------------------------------------------------------------
 
-def intake_should_continue() -> bool:
-    return _max_messages is None or _processed_count < _max_messages
-
-
 def mail_present() -> bool:
-    if _max_messages is not None and _processed_count >= _max_messages:
-        return False
     if _email_client is not None:
         return _email_client.count_unread() > 0  # type: ignore[union-attr]
     return bool(_fake_inbox)
@@ -704,15 +703,17 @@ def mail_present() -> bool:
 
 @effect
 def pop_pending_email() -> str:
-    global _processed_count
     if _email_client is not None:
         meta = _email_client.fetch_one_unread()  # type: ignore[union-attr]
         if meta is None:
             return ""
-        _processed_count += 1
         return _format_email(meta)
-    _processed_count += 1
     return _fake_inbox.pop(0) if _fake_inbox else ""
+
+
+@pure
+def increment_processed_count(count: int) -> int:
+    return count + 1
 
 
 @effect(visible=False)
@@ -765,6 +766,13 @@ def normalize_correction_json(email: str, call_json: str) -> str:
 def insert_call_record(email: str, call_json: str) -> str:
     incoming = _record_from_json(call_json)
     rows = _read_records()
+    incoming_source_id = incoming.get("source_message_id", "")
+    if incoming_source_id:
+        for row in rows:
+            if row.get("source_message_id", "") == incoming_source_id:
+                existing_id = row.get("call_id") or incoming["call_id"]
+                print(f"[CallIntake] {existing_id} is already recorded from this message")
+                return f"created:{existing_id}"
     for row in rows:
         if row.get("call_id") == incoming["call_id"]:
             if _same_source_message(row, incoming):
@@ -879,7 +887,7 @@ def _send_response(email: str, call_json_text: str, table_status_text: str, *, c
     subject = f"{subject_prefix}: {call_id}"
     body = _response_body(call_json_text, table_status_text, correction=correction)
 
-    if _response_log_contains(key):
+    if _response_log_contains(key) or _response_log_contains_source(message_key):
         return f"already_recorded:{call_id}"
 
     payload = {
@@ -889,6 +897,7 @@ def _send_response(email: str, call_json_text: str, table_status_text: str, *, c
         "recipient": recipient,
         "subject": subject,
         "body": body,
+        "source_message_key": message_key,
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
     }
 
@@ -931,8 +940,8 @@ def finish_email(email: str, status: str) -> str:
 
 
 @pure
-def intake_finished() -> str:
-    return f"processed:{_processed_count}"
+def intake_finished(count: int) -> str:
+    return f"processed:{count}"
 
 
 # ---------------------------------------------------------------------------
@@ -1005,7 +1014,7 @@ def extract_correction_json(email: str) -> None: ...
 
 @workflow
 def call_intake() -> str:
-    while intake_should_continue() @ Mailbox:
+    while (processed_count < _message_limit) @ Mailbox:
         if mail_present() @ Mailbox:
             Mailbox: email = pop_pending_email()
             Mailbox(email) >> Gatekeeper(email)
@@ -1027,6 +1036,7 @@ def call_intake() -> str:
                         Table(email, call_json, table_status) >> Mailbox(email, call_json, table_status)
                         Mailbox: response_status = send_call_json_response(email, call_json, table_status)
                         Mailbox: mail_status = finish_email(email, response_status)
+                        Mailbox: processed_count = increment_processed_count(processed_count)
 
                     elif (intake_kind == "correction") @ Extractor:
                         Extractor: call_json = extract_correction_json(email)
@@ -1036,22 +1046,26 @@ def call_intake() -> str:
                         Table(email, call_json, table_status) >> Mailbox(email, call_json, table_status)
                         Mailbox: response_status = send_correction_response(email, call_json, table_status)
                         Mailbox: mail_status = finish_email(email, response_status)
+                        Mailbox: processed_count = increment_processed_count(processed_count)
 
                     else:
                         Extractor(email) >> Table(email)
                         Table: table_status = record_non_call(email)
                         Table(email, table_status) >> Mailbox(email, table_status)
                         Mailbox: mail_status = finish_email(email, table_status)
+                        Mailbox: processed_count = increment_processed_count(processed_count)
                 else:
                     Gatekeeper(email) >> Mailbox(email)
                     Mailbox: mail_status = ignore_uncertified(email)
+                    Mailbox: processed_count = increment_processed_count(processed_count)
             else:
                 Gatekeeper(email) >> Mailbox(email)
                 Mailbox: mail_status = ignore_unexpected_recipient(email)
+                Mailbox: processed_count = increment_processed_count(processed_count)
         else:
             Mailbox: _ = wait_briefly()
 
-    Mailbox: intake_status = intake_finished()
+    Mailbox: intake_status = intake_finished(processed_count)
     return intake_status @ Mailbox
 
 

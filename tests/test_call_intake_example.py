@@ -203,6 +203,30 @@ def test_insert_call_record_skips_duplicate_without_mutation(tmp_path):
     assert rows[0]["source_message_id"] == "<m1@example.com>"
 
 
+def test_insert_call_record_skips_same_source_even_with_changed_call_id(tmp_path):
+    module = _load_call_intake()
+    table = tmp_path / "calls.csv"
+    module.reset_for_tests(
+        fake_inbox=[],
+        certified_senders="alice@example.com",
+        table_path=table,
+        response_log_path=tmp_path / "responses.jsonl",
+    )
+    email = "From: Alice <alice@example.com>\nSubject: Call\nMessage-ID: <m1@example.com>\n\nBody"
+    first = json.dumps({"call_id": "call_original", "title": "Original title"})
+    retry = json.dumps({"call_id": "call_changed", "title": "Changed title"})
+
+    first_status = module.insert_call_record.fn(email, module.normalize_call_json.fn(email, first))
+    retry_status = module.insert_call_record.fn(email, module.normalize_call_json.fn(email, retry))
+    rows = _rows(table)
+
+    assert first_status == "created:call_original"
+    assert retry_status == "created:call_original"
+    assert len(rows) == 1
+    assert rows[0]["call_id"] == "call_original"
+    assert rows[0]["title"] == "Original title"
+
+
 def test_insert_call_record_mirrors_to_google_sheet_and_csv(tmp_path):
     module = _load_call_intake()
     table = tmp_path / "calls.csv"
@@ -429,7 +453,46 @@ def test_send_response_uses_gmail_send_and_records_timestamp(tmp_path):
     assert records[0]["mode"] == "send"
     assert records[0]["recipient"] == "alice@example.com"
     assert records[0]["external_id"] == "gmail-sent-1"
+    assert records[0]["source_message_key"] == "<m1@example.com>"
     assert isinstance(records[0]["sent_at"], float)
+
+
+def test_send_response_skips_same_source_message_even_with_changed_call_id(tmp_path):
+    module = _load_call_intake()
+    response_log = tmp_path / "responses.jsonl"
+    module.reset_for_tests(
+        fake_inbox=[],
+        certified_senders="alice@example.com",
+        table_path=tmp_path / "calls.csv",
+        response_log_path=response_log,
+        send_mode="send",
+        send_limit_per_hour=10,
+    )
+    response_log.write_text(json.dumps({
+        "key": "old-key",
+        "mode": "send",
+        "source_message_key": "<m1@example.com>",
+        "sent_at": 100.0,
+    }) + "\n")
+
+    class FakeEmailClient:
+        def __init__(self):
+            self.sent = []
+
+        def send_email(self, meta, subject, body):
+            self.sent.append((meta, subject, body))
+            return "gmail-sent-2"
+
+    fake_client = FakeEmailClient()
+    module._email_client = fake_client
+    email = "From: Alice <alice@example.com>\nSubject: ERC call\nMessage-ID: <m1@example.com>\n\nBody"
+    call_json = module.normalize_call_json.fn(email, json.dumps({"call_id": "call_changed", "title": "ERC"}))
+
+    status = module.send_call_json_response.fn(email, call_json, "created:call_changed")
+
+    assert status == "already_recorded:call_changed"
+    assert fake_client.sent == []
+    assert len(response_log.read_text().splitlines()) == 1
 
 
 def test_send_response_rejects_missing_sender_address(tmp_path):
