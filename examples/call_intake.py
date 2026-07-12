@@ -702,19 +702,37 @@ def _wait_for_send_rate_limit() -> None:
 # Polling and side effects
 # ---------------------------------------------------------------------------
 
+def _mailbox_retry_delay() -> float:
+    return min(max(_poll_seconds, 0.0), 60.0)
+
+
+def _log_mailbox_api_error(operation: str, exc: Exception) -> None:
+    print(f"[CallIntake] Gmail {operation} failed ({type(exc).__name__}: {exc}); retrying.")
+
+
 def mail_present() -> bool:
     if _email_client is not None:
-        return _email_client.count_unread() > 0  # type: ignore[union-attr]
+        try:
+            return _email_client.count_unread() > 0  # type: ignore[union-attr]
+        except Exception as exc:
+            _log_mailbox_api_error("poll", exc)
+            return False
     return bool(_fake_inbox)
 
 
 @effect
 def pop_pending_email() -> str:
     if _email_client is not None:
-        meta = _email_client.fetch_one_unread()  # type: ignore[union-attr]
-        if meta is None:
-            return ""
-        return _format_email(meta)
+        while True:
+            try:
+                meta = _email_client.fetch_one_unread()  # type: ignore[union-attr]
+            except Exception as exc:
+                _log_mailbox_api_error("fetch", exc)
+                time.sleep(_mailbox_retry_delay())
+                continue
+            if meta is None:
+                return ""
+            return _format_email(meta)
     return _fake_inbox.pop(0) if _fake_inbox else ""
 
 

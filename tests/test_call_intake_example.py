@@ -117,6 +117,61 @@ def test_poll_interval_defaults_to_email_scale_and_can_be_overridden(tmp_path):
     assert module._poll_seconds == 300.0
 
 
+def test_mail_present_treats_gmail_poll_failure_as_no_mail(tmp_path):
+    module = _load_call_intake()
+    module.reset_for_tests(
+        fake_inbox=[],
+        certified_senders="alice@example.com",
+        table_path=tmp_path / "calls.csv",
+        response_log_path=tmp_path / "responses.jsonl",
+    )
+
+    class FailingEmailClient:
+        def count_unread(self):
+            raise RuntimeError("temporary dns failure")
+
+    module._email_client = FailingEmailClient()
+
+    assert module.mail_present() is False
+
+
+def test_pop_pending_email_retries_transient_fetch_failure(tmp_path):
+    module = _load_call_intake()
+    module.reset_for_tests(
+        fake_inbox=[],
+        certified_senders="alice@example.com",
+        table_path=tmp_path / "calls.csv",
+        response_log_path=tmp_path / "responses.jsonl",
+    )
+    module._poll_seconds = 0
+
+    class FlakyEmailClient:
+        def __init__(self):
+            self.calls = 0
+
+        def fetch_one_unread(self):
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("temporary gmail failure")
+            return {
+                "sender": "Alice <alice@example.com>",
+                "sender_email": "alice@example.com",
+                "to": "zippergen.sandbox+calls@gmail.com",
+                "subject": "Call",
+                "body": "Deadline 2026-10-15",
+                "message_id": "<m1@example.com>",
+            }
+
+    client = FlakyEmailClient()
+    module._email_client = client
+
+    email = module.pop_pending_email.fn()
+
+    assert client.calls == 2
+    assert "From: Alice <alice@example.com>" in email
+    assert "Message-ID: <m1@example.com>" in email
+
+
 def test_normalize_call_json_adds_call_id_and_source_fields(tmp_path):
     module = _load_call_intake()
     email = """From: Alice <alice@example.com>
