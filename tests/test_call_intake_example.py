@@ -33,6 +33,21 @@ def _rows(path: Path) -> list[dict[str, str]]:
         return list(csv.DictReader(f))
 
 
+class FakeSheetsClient:
+    def __init__(self, rows=None):
+        self.rows = [dict(row) for row in (rows or [])]
+        self.reads = []
+        self.writes = []
+
+    def read_rows(self, spreadsheet_id, sheet_name, fields):
+        self.reads.append((spreadsheet_id, sheet_name, tuple(fields)))
+        return [dict(row) for row in self.rows]
+
+    def write_rows(self, spreadsheet_id, sheet_name, fields, rows):
+        self.writes.append((spreadsheet_id, sheet_name, tuple(fields), [dict(row) for row in rows]))
+        self.rows = [dict(row) for row in rows]
+
+
 def test_certified_sender_accepts_exact_and_domain(tmp_path):
     module = _load_call_intake()
     module.reset_for_tests(
@@ -188,6 +203,70 @@ def test_insert_call_record_skips_duplicate_without_mutation(tmp_path):
     assert rows[0]["source_message_id"] == "<m1@example.com>"
 
 
+def test_insert_call_record_mirrors_to_google_sheet_and_csv(tmp_path):
+    module = _load_call_intake()
+    table = tmp_path / "calls.csv"
+    fake_sheets = FakeSheetsClient()
+    module.reset_for_tests(
+        fake_inbox=[],
+        certified_senders="alice@example.com",
+        table_path=table,
+        response_log_path=tmp_path / "responses.jsonl",
+        sheet_id="sheet-1",
+        sheet_name="Calls",
+        table_targets="both",
+    )
+    module._sheets_client = fake_sheets
+    email = "From: Alice <alice@example.com>\nSubject: Call\nMessage-ID: <m1@example.com>\n\nBody"
+    call = json.dumps({
+        "call_id": "call_demo",
+        "type": "project",
+        "title": "Sheet title",
+    })
+
+    status = module.insert_call_record.fn(email, module.normalize_call_json.fn(email, call))
+
+    assert status == "created:call_demo"
+    assert _rows(table)[0]["title"] == "Sheet title"
+    assert fake_sheets.rows[0]["call_id"] == "call_demo"
+    assert fake_sheets.rows[0]["title"] == "Sheet title"
+    assert fake_sheets.writes[0][0] == "sheet-1"
+    assert fake_sheets.writes[0][1] == "Calls"
+
+
+def test_insert_call_record_detects_duplicate_from_google_sheet(tmp_path):
+    module = _load_call_intake()
+    table = tmp_path / "calls.csv"
+    fake_sheets = FakeSheetsClient(rows=[{
+        "call_id": "call_demo",
+        "status": "new",
+        "title": "Existing sheet title",
+        "source_message_id": "<m1@example.com>",
+    }])
+    module.reset_for_tests(
+        fake_inbox=[],
+        certified_senders="alice@example.com",
+        table_path=table,
+        response_log_path=tmp_path / "responses.jsonl",
+        sheet_id="sheet-1",
+        sheet_name="Calls",
+        table_targets="sheets",
+    )
+    module._sheets_client = fake_sheets
+    email = "From: Alice <alice@example.com>\nSubject: Call\nMessage-ID: <m2@example.com>\n\nBody"
+    duplicate = json.dumps({
+        "call_id": "call_demo",
+        "title": "Changed title",
+    })
+
+    status = module.insert_call_record.fn(email, module.normalize_call_json.fn(email, duplicate))
+
+    assert status == "duplicate:call_demo"
+    assert fake_sheets.rows[0]["title"] == "Existing sheet title"
+    assert fake_sheets.writes == []
+    assert not table.exists()
+
+
 def test_apply_call_correction_updates_existing_row(tmp_path):
     module = _load_call_intake()
     table = tmp_path / "calls.csv"
@@ -229,6 +308,45 @@ def test_apply_call_correction_updates_existing_row(tmp_path):
     assert rows[0]["deadline"] == "2026-10-01"
     assert rows[0]["amount_of_funding"] == "EUR 1M"
     assert rows[0]["status"] == "corrected"
+
+
+def test_apply_call_correction_updates_google_sheet(tmp_path):
+    module = _load_call_intake()
+    fake_sheets = FakeSheetsClient(rows=[{
+        "call_id": "call_demo",
+        "status": "new",
+        "type": "project",
+        "title": "Old title",
+        "deadline": "2026-10-01",
+    }])
+    module.reset_for_tests(
+        fake_inbox=[],
+        certified_senders="alice@example.com",
+        table_path=tmp_path / "calls.csv",
+        response_log_path=tmp_path / "responses.jsonl",
+        sheet_id="sheet-1",
+        sheet_name="Calls",
+        table_targets="sheets",
+    )
+    module._sheets_client = fake_sheets
+    correction_email = "From: Alice <alice@example.com>\nSubject: Re: Call\nMessage-ID: <m2@example.com>\n\nBody"
+    correction = json.dumps({
+        "call_id": "call_demo",
+        "deadline": "2026-11-01",
+        "amount_of_funding": "EUR 1M",
+    })
+
+    correction_status = module.apply_call_correction.fn(
+        correction_email,
+        module.normalize_correction_json.fn(correction_email, correction),
+    )
+
+    assert correction_status == "updated:call_demo"
+    assert fake_sheets.rows[0]["title"] == "Old title"
+    assert fake_sheets.rows[0]["deadline"] == "2026-11-01"
+    assert fake_sheets.rows[0]["amount_of_funding"] == "EUR 1M"
+    assert fake_sheets.rows[0]["status"] == "corrected"
+    assert fake_sheets.writes[0][0] == "sheet-1"
 
 
 def test_apply_call_correction_missing_does_not_create_row(tmp_path):

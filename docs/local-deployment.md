@@ -418,6 +418,9 @@ Use stable paths:
 export ZG_CALL_STORE="$HOME/.zippergen/runs/call-intake.sqlite"
 export ZIPPERGEN_CALL_TABLE="$HOME/.zippergen/calls.csv"
 export ZIPPERGEN_CALL_INTAKE_RESPONSE_LOG="$HOME/.zippergen/call-intake-responses.jsonl"
+export ZIPPERGEN_CALL_SHEET_ID="<google-sheet-id>"
+export ZIPPERGEN_CALL_SHEET_NAME="Calls"
+export ZIPPERGEN_CALL_TABLE_TARGETS=both
 export ZIPPERGEN_CALL_INTAKE_RECIPIENTS="zippergen.sandbox+calls@gmail.com"
 export ZIPPERGEN_CALL_GMAIL_QUERY="is:unread in:inbox to:zippergen.sandbox+calls@gmail.com"
 export ZIPPERGEN_CALL_INTAKE_SEND_MODE=send
@@ -426,9 +429,10 @@ export ZIPPERGEN_CALL_INTAKE_POLL_SECONDS=60
 mkdir -p "$HOME/.zippergen/runs"
 ```
 
-The CSV table is the user-facing file. The SQLite store is the deployment
-history. The JSONL response log is a lightweight idempotency aid for replies and
-the source of the hourly send counter.
+The SQLite store is the deployment history. The JSONL response log is a
+lightweight idempotency aid for replies and the source of the hourly send
+counter. With `ZIPPERGEN_CALL_TABLE_TARGETS=both`, the Google Sheet is the
+shareable user-facing table and the CSV remains a local backup.
 
 ### Certified Senders
 
@@ -461,6 +465,44 @@ again (`To`, `Cc`, `Delivered-To`, `X-Original-To`, and `Envelope-To`) before it
 calls the LLM. If the configured intake address is not present, the message is
 ignored.
 
+### Google Sheet Table
+
+Create a Google Sheet in the same Google account. Rename the tab to:
+
+```text
+Calls
+```
+
+Copy the spreadsheet ID from the URL:
+
+```text
+https://docs.google.com/spreadsheets/d/<spreadsheet-id>/edit
+```
+
+Then set:
+
+```bash
+export ZIPPERGEN_CALL_SHEET_ID="<spreadsheet-id>"
+export ZIPPERGEN_CALL_SHEET_NAME="Calls"
+export ZIPPERGEN_CALL_TABLE_TARGETS=both
+export ZIPPERGEN_CALL_SHEETS_CREDENTIALS="$ZIPPERGEN_CALL_GMAIL_CREDENTIALS"
+export ZIPPERGEN_CALL_SHEETS_TOKEN="$HOME/.zippergen/call-sheets-token.json"
+```
+
+Run the Sheets OAuth setup once:
+
+```bash
+uv run \
+  --with google-auth \
+  --with google-auth-oauthlib \
+  --with google-api-python-client \
+  python examples/call_intake_sheets_client.py --setup
+```
+
+The workflow owns the first row of the sheet and uses it as the table header. Do
+not rename those columns. Share the sheet from Google Drive with view access for
+readers. They do not need edit access.
+
 ### Gmail Setup
 
 Run the call-intake Gmail OAuth setup:
@@ -476,6 +518,9 @@ message read only after it has been ignored, recorded, or replied to.
 
 ```bash
 export OPENAI_API_KEY=<your-openai-key>
+export ZIPPERGEN_CALL_SHEET_ID="<google-sheet-id>"
+export ZIPPERGEN_CALL_SHEET_NAME="Calls"
+export ZIPPERGEN_CALL_TABLE_TARGETS=both
 export ZIPPERGEN_CALL_INTAKE_RECIPIENTS="zippergen.sandbox+calls@gmail.com"
 export ZIPPERGEN_CALL_GMAIL_QUERY="is:unread in:inbox to:zippergen.sandbox+calls@gmail.com"
 export ZIPPERGEN_CALL_INTAKE_SEND_MODE=send

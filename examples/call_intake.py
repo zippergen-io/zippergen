@@ -15,6 +15,8 @@ Manual deployment:
     export ZIPPERGEN_CALL_INTAKE_RECIPIENTS="zippergen.sandbox+calls@gmail.com"
     export ZIPPERGEN_CALL_GMAIL_QUERY="is:unread in:inbox to:zippergen.sandbox+calls@gmail.com"
     export ZIPPERGEN_CALL_TABLE="$HOME/.zippergen/calls.csv"
+    export ZIPPERGEN_CALL_SHEET_ID="<google-sheet-id>"
+    export ZIPPERGEN_CALL_TABLE_TARGETS=both
     export ZIPPERGEN_CALL_INTAKE_SEND_MODE=send
     export ZIPPERGEN_CALL_INTAKE_MAX_EMAILS_PER_HOUR=10
     export ZIPPERGEN_CALL_INTAKE_POLL_SECONDS=60
@@ -71,12 +73,16 @@ _ = Var("_", str, default="")
 # ---------------------------------------------------------------------------
 
 _email_client: object = None
+_sheets_client: object = None
 _fake_inbox: list[str] = []
 _certified_senders: set[str] = set()
 _intake_recipients: set[str] = set()
 _processed_count = 0
 _max_messages: int | None = None
 _table_path: Path = Path.home() / ".zippergen" / "calls.csv"
+_sheet_id = ""
+_sheet_name = "Calls"
+_table_targets: set[str] = {"csv"}
 _response_log_path: Path = Path.home() / ".zippergen" / "call-intake-responses.jsonl"
 _send_mode = "send"
 _send_limit_per_hour = 10
@@ -151,6 +157,20 @@ def _split_senders(value: object) -> set[str]:
     return {str(item).strip().lower() for item in items if str(item).strip()}
 
 
+def _parse_table_targets(value: object, sheet_id: str) -> set[str]:
+    if value is None or value == "":
+        return {"csv", "sheets"} if sheet_id else {"csv"}
+    text = str(value).strip().lower()
+    if text == "both":
+        return {"csv", "sheets"}
+    targets = {item.strip() for item in text.replace("\n", ",").split(",") if item.strip()}
+    if not targets <= {"csv", "sheets"}:
+        raise ValueError("table_targets must be 'csv', 'sheets', or 'both'.")
+    if "sheets" in targets and not sheet_id:
+        raise ValueError("table_targets includes 'sheets' but no sheet_id was configured.")
+    return targets or {"csv"}
+
+
 def _load_json_or_lines(path: Path) -> list[str]:
     if not path.exists():
         return []
@@ -165,15 +185,20 @@ def _load_json_or_lines(path: Path) -> list[str]:
 
 
 def _reset_state() -> None:
-    global _email_client, _fake_inbox, _certified_senders, _intake_recipients, _processed_count
-    global _max_messages, _table_path, _response_log_path, _send_mode, _send_limit_per_hour, _poll_seconds
+    global _email_client, _sheets_client, _fake_inbox, _certified_senders, _intake_recipients, _processed_count
+    global _max_messages, _table_path, _sheet_id, _sheet_name, _table_targets
+    global _response_log_path, _send_mode, _send_limit_per_hour, _poll_seconds
     _email_client = None
+    _sheets_client = None
     _fake_inbox = list(DEFAULT_FAKE_INBOX)
     _certified_senders = {"alice@example.com"}
     _intake_recipients = set()
     _processed_count = 0
     _max_messages = None
     _table_path = Path.home() / ".zippergen" / "calls.csv"
+    _sheet_id = ""
+    _sheet_name = "Calls"
+    _table_targets = {"csv"}
     _response_log_path = Path.home() / ".zippergen" / "call-intake-responses.jsonl"
     _send_mode = "send"
     _send_limit_per_hour = 10
@@ -192,11 +217,15 @@ def configure_call_intake(
     max_messages: object = None,
     poll_seconds: object = None,
     intake_recipients: object = None,
+    sheet_id: object = None,
+    sheet_name: object = None,
+    table_targets: object = None,
 ) -> None:
     """Configure globals used by the deployment example and tests."""
 
-    global _email_client, _fake_inbox, _certified_senders, _intake_recipients, _processed_count
-    global _max_messages, _table_path, _response_log_path, _send_mode, _send_limit_per_hour, _poll_seconds
+    global _email_client, _sheets_client, _fake_inbox, _certified_senders, _intake_recipients, _processed_count
+    global _max_messages, _table_path, _sheet_id, _sheet_name, _table_targets
+    global _response_log_path, _send_mode, _send_limit_per_hour, _poll_seconds
 
     services_text = str(services or "fake")
     if services_text not in {"fake", "live"}:
@@ -208,6 +237,19 @@ def configure_call_intake(
         "ZIPPERGEN_CALL_TABLE",
         str(Path.home() / ".zippergen" / "calls.csv"),
     )))
+    raw_sheet_id = sheet_id
+    if raw_sheet_id is None:
+        raw_sheet_id = os.environ.get("ZIPPERGEN_CALL_SHEET_ID", "")
+    _sheet_id = str(raw_sheet_id or "").strip()
+    _sheet_name = str(
+        sheet_name
+        or os.environ.get("ZIPPERGEN_CALL_SHEET_NAME", "Calls")
+        or "Calls"
+    ).strip()
+    _table_targets = _parse_table_targets(
+        table_targets if table_targets is not None else os.environ.get("ZIPPERGEN_CALL_TABLE_TARGETS"),
+        _sheet_id,
+    )
     _response_log_path = _as_path(response_log_path, Path(os.environ.get(
         "ZIPPERGEN_CALL_INTAKE_RESPONSE_LOG",
         str(Path.home() / ".zippergen" / "call-intake-responses.jsonl"),
@@ -238,9 +280,11 @@ def configure_call_intake(
 
     if services_text == "live":
         _email_client = _load_service_module("call_intake_email_client")
+        _sheets_client = _load_service_module("call_intake_sheets_client") if "sheets" in _table_targets else None
         _fake_inbox = []
     else:
         _email_client = None
+        _sheets_client = None
         inbox_path = _as_path(fake_inbox_path, Path(os.environ.get("ZIPPERGEN_CALL_INTAKE_FAKE_INBOX", "")))
         _fake_inbox = _load_json_or_lines(inbox_path) if str(inbox_path) != "." else []
         if not _fake_inbox:
@@ -257,6 +301,9 @@ def reset_for_tests(
     send_limit_per_hour: object = 10,
     max_messages: object = 1,
     intake_recipients: object = None,
+    sheet_id: object = None,
+    sheet_name: object = None,
+    table_targets: object = None,
 ) -> None:
     configure_call_intake(
         services="fake",
@@ -267,6 +314,9 @@ def reset_for_tests(
         send_limit_per_hour=send_limit_per_hour,
         max_messages=max_messages,
         intake_recipients=intake_recipients,
+        sheet_id=sheet_id,
+        sheet_name=sheet_name,
+        table_targets=table_targets,
     )
     global _fake_inbox
     _fake_inbox = list(fake_inbox or [])
@@ -290,6 +340,9 @@ def zippergen_setup(config) -> None:
     intake_recipients = config.option("recipient", None)
     if intake_recipients is None:
         intake_recipients = config.option("recipients", None)
+    sheet_id = config.option("sheet_id", None)
+    if sheet_id is None:
+        sheet_id = config.option("sheet", None)
     configure_call_intake(
         services=config.option("services", "fake"),
         certified_senders=config.option("certified", None),
@@ -300,6 +353,9 @@ def zippergen_setup(config) -> None:
         max_messages=config.option("max_messages", None),
         poll_seconds=config.option("poll_seconds", None),
         intake_recipients=intake_recipients,
+        sheet_id=sheet_id,
+        sheet_name=config.option("sheet_name", None),
+        table_targets=config.option("table_targets", None),
     )
 
 
@@ -520,6 +576,36 @@ def _write_table(path: Path, rows: list[dict[str, str]]) -> None:
             writer.writerow({field: row.get(field, "") for field in CALL_FIELDS})
 
 
+def _sheet_enabled() -> bool:
+    return "sheets" in _table_targets and bool(_sheet_id)
+
+
+def _read_records() -> list[dict[str, str]]:
+    if _sheet_enabled():
+        if _sheets_client is None:
+            raise RuntimeError("Google Sheets table target is configured, but the Sheets client is not loaded.")
+        return _sheets_client.read_rows(_sheet_id, _sheet_name, CALL_FIELDS)  # type: ignore[union-attr]
+    return _read_table(_table_path)
+
+
+def _write_records(rows: list[dict[str, str]]) -> None:
+    if "csv" in _table_targets:
+        _write_table(_table_path, rows)
+    if _sheet_enabled():
+        if _sheets_client is None:
+            raise RuntimeError("Google Sheets table target is configured, but the Sheets client is not loaded.")
+        _sheets_client.write_rows(_sheet_id, _sheet_name, CALL_FIELDS, rows)  # type: ignore[union-attr]
+
+
+def _table_location_text() -> str:
+    parts: list[str] = []
+    if "csv" in _table_targets:
+        parts.append(str(_table_path))
+    if _sheet_enabled():
+        parts.append(f"Google Sheet {_sheet_id}/{_sheet_name}")
+    return " and ".join(parts) if parts else str(_table_path)
+
+
 def _merge_row(existing: dict[str, str], incoming: dict[str, str]) -> dict[str, str]:
     merged = dict(existing)
     for field in CALL_FIELDS:
@@ -678,29 +764,29 @@ def normalize_correction_json(email: str, call_json: str) -> str:
 @effect
 def insert_call_record(email: str, call_json: str) -> str:
     incoming = _record_from_json(call_json)
-    rows = _read_table(_table_path)
+    rows = _read_records()
     for row in rows:
         if row.get("call_id") == incoming["call_id"]:
             if _same_source_message(row, incoming):
                 print(f"[CallIntake] {incoming['call_id']} is already recorded from this message")
                 return f"created:{incoming['call_id']}"
-            print(f"[CallIntake] Duplicate {incoming['call_id']} ignored in {_table_path}")
+            print(f"[CallIntake] Duplicate {incoming['call_id']} ignored in {_table_location_text()}")
             return f"duplicate:{incoming['call_id']}"
     rows.append(incoming)
-    _write_table(_table_path, rows)
-    print(f"[CallIntake] created {incoming['call_id']} in {_table_path}")
+    _write_records(rows)
+    print(f"[CallIntake] created {incoming['call_id']} in {_table_location_text()}")
     return f"created:{incoming['call_id']}"
 
 
 @effect
 def apply_call_correction(email: str, call_json: str) -> str:
     incoming = _record_from_json(call_json)
-    rows = _read_table(_table_path)
+    rows = _read_records()
     for index, row in enumerate(rows):
         if row.get("call_id") == incoming["call_id"]:
             rows[index] = _merge_row(row, incoming)
-            _write_table(_table_path, rows)
-            print(f"[CallIntake] updated {incoming['call_id']} in {_table_path}")
+            _write_records(rows)
+            print(f"[CallIntake] updated {incoming['call_id']} in {_table_location_text()}")
             return f"updated:{incoming['call_id']}"
     print(f"[CallIntake] Correction for missing {incoming['call_id']} ignored")
     return f"missing:{incoming['call_id']}"
@@ -980,6 +1066,9 @@ if __name__ == "__main__":
     parser.add_argument("--services", choices=("fake", "live"), default="fake")
     parser.add_argument("--store", dest="store_path")
     parser.add_argument("--table", dest="table_path")
+    parser.add_argument("--sheet-id", dest="sheet_id")
+    parser.add_argument("--sheet-name", dest="sheet_name")
+    parser.add_argument("--table-targets", dest="table_targets")
     parser.add_argument("--certified", dest="certified_senders")
     parser.add_argument("--recipient", dest="intake_recipients")
     parser.add_argument("--send-mode", choices=("draft", "send", "log"), default=None)
@@ -996,6 +1085,9 @@ if __name__ == "__main__":
         certified_senders=args.certified_senders,
         intake_recipients=args.intake_recipients,
         table_path=args.table_path,
+        sheet_id=args.sheet_id,
+        sheet_name=args.sheet_name,
+        table_targets=args.table_targets,
         send_mode=args.send_mode,
         send_limit_per_hour=args.send_limit_per_hour,
         poll_seconds=args.poll_seconds,
