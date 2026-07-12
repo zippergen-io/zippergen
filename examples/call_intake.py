@@ -12,6 +12,8 @@ Manual deployment:
     uv run python examples/call_intake_email_client.py --setup
 
     export ZIPPERGEN_CERTIFIED_SENDERS="alice@example.com,@trusted-lab.org"
+    export ZIPPERGEN_CALL_INTAKE_RECIPIENTS="zippergen.sandbox+calls@gmail.com"
+    export ZIPPERGEN_CALL_GMAIL_QUERY="is:unread in:inbox to:zippergen.sandbox+calls@gmail.com"
     export ZIPPERGEN_CALL_TABLE="$HOME/.zippergen/calls.csv"
     export ZIPPERGEN_CALL_INTAKE_SEND_MODE=send
     export ZIPPERGEN_CALL_INTAKE_MAX_EMAILS_PER_HOUR=10
@@ -31,6 +33,7 @@ import json
 import os
 import re
 import time
+from email.utils import getaddresses
 from email.utils import parseaddr
 from pathlib import Path
 
@@ -53,6 +56,7 @@ Table = Lifeline("Table")
 
 email = Var("email", str, default="")
 certified = Var("certified", bool, default=False)
+expected_recipient = Var("expected_recipient", bool, default=False)
 intake_kind = Var("intake_kind", str, default="")
 call_json = Var("call_json", str, default="{}")
 table_status = Var("table_status", str, default="")
@@ -69,6 +73,7 @@ _ = Var("_", str, default="")
 _email_client: object = None
 _fake_inbox: list[str] = []
 _certified_senders: set[str] = set()
+_intake_recipients: set[str] = set()
 _processed_count = 0
 _max_messages: int | None = None
 _table_path: Path = Path.home() / ".zippergen" / "calls.csv"
@@ -160,11 +165,12 @@ def _load_json_or_lines(path: Path) -> list[str]:
 
 
 def _reset_state() -> None:
-    global _email_client, _fake_inbox, _certified_senders, _processed_count
+    global _email_client, _fake_inbox, _certified_senders, _intake_recipients, _processed_count
     global _max_messages, _table_path, _response_log_path, _send_mode, _send_limit_per_hour, _poll_seconds
     _email_client = None
     _fake_inbox = list(DEFAULT_FAKE_INBOX)
     _certified_senders = {"alice@example.com"}
+    _intake_recipients = set()
     _processed_count = 0
     _max_messages = None
     _table_path = Path.home() / ".zippergen" / "calls.csv"
@@ -185,10 +191,11 @@ def configure_call_intake(
     send_limit_per_hour: object = None,
     max_messages: object = None,
     poll_seconds: object = None,
+    intake_recipients: object = None,
 ) -> None:
     """Configure globals used by the deployment example and tests."""
 
-    global _email_client, _fake_inbox, _certified_senders, _processed_count
+    global _email_client, _fake_inbox, _certified_senders, _intake_recipients, _processed_count
     global _max_messages, _table_path, _response_log_path, _send_mode, _send_limit_per_hour, _poll_seconds
 
     services_text = str(services or "fake")
@@ -221,6 +228,14 @@ def configure_call_intake(
     if not _certified_senders and services_text == "fake":
         _certified_senders = {"alice@example.com"}
 
+    raw_recipients = intake_recipients
+    if raw_recipients is None:
+        raw_recipients = os.environ.get(
+            "ZIPPERGEN_CALL_INTAKE_RECIPIENTS",
+            os.environ.get("ZIPPERGEN_CALL_INTAKE_ADDRESS"),
+        )
+    _intake_recipients = _split_senders(raw_recipients)
+
     if services_text == "live":
         _email_client = _load_service_module("call_intake_email_client")
         _fake_inbox = []
@@ -241,6 +256,7 @@ def reset_for_tests(
     send_mode: object = "log",
     send_limit_per_hour: object = 10,
     max_messages: object = 1,
+    intake_recipients: object = None,
 ) -> None:
     configure_call_intake(
         services="fake",
@@ -250,6 +266,7 @@ def reset_for_tests(
         send_mode=send_mode,
         send_limit_per_hour=send_limit_per_hour,
         max_messages=max_messages,
+        intake_recipients=intake_recipients,
     )
     global _fake_inbox
     _fake_inbox = list(fake_inbox or [])
@@ -270,6 +287,9 @@ def _load_service_module(name: str):
 def zippergen_setup(config) -> None:
     """Hook called by ``zippergen run`` before configuring the workflow."""
 
+    intake_recipients = config.option("recipient", None)
+    if intake_recipients is None:
+        intake_recipients = config.option("recipients", None)
     configure_call_intake(
         services=config.option("services", "fake"),
         certified_senders=config.option("certified", None),
@@ -279,6 +299,7 @@ def zippergen_setup(config) -> None:
         send_limit_per_hour=config.option("send_limit_per_hour", None),
         max_messages=config.option("max_messages", None),
         poll_seconds=config.option("poll_seconds", None),
+        intake_recipients=intake_recipients,
     )
 
 
@@ -304,6 +325,11 @@ def _parse_email_text(text: str) -> dict[str, str]:
     return {
         "sender": sender,
         "sender_email": parseaddr(sender)[1].lower(),
+        "to": headers.get("to", ""),
+        "cc": headers.get("cc", ""),
+        "delivered_to": headers.get("delivered-to", ""),
+        "x_original_to": headers.get("x-original-to", ""),
+        "envelope_to": headers.get("envelope-to", ""),
         "subject": headers.get("subject", ""),
         "message_id": headers.get("message-id", ""),
         "thread_id": headers.get("thread-id", ""),
@@ -317,9 +343,14 @@ def _parse_email_text(text: str) -> dict[str, str]:
 def _format_email(meta: dict) -> str:
     lines = [
         f"From: {meta.get('sender', '')}",
+        f"To: {meta.get('to', '')}",
         f"Subject: {meta.get('subject', '(no subject)')}",
     ]
     for source_key, header in [
+        ("cc", "Cc"),
+        ("delivered_to", "Delivered-To"),
+        ("x_original_to", "X-Original-To"),
+        ("envelope_to", "Envelope-To"),
         ("id", "Gmail-ID"),
         ("thread_id", "Thread-ID"),
         ("message_id", "Message-ID"),
@@ -330,6 +361,45 @@ def _format_email(meta: dict) -> str:
         if value:
             lines.append(f"{header}: {value}")
     return "\n".join(lines) + "\n\n" + str(meta.get("body", "")).strip()
+
+
+def _looks_like_email_address(address: str) -> bool:
+    local, sep, domain = address.partition("@")
+    return bool(local and sep and domain)
+
+
+def _header_addresses(*values: str) -> set[str]:
+    return {
+        address.strip().lower()
+        for _name, address in getaddresses([value for value in values if value])
+        if _looks_like_email_address(address.strip().lower())
+    }
+
+
+def _recipient_addresses(meta: dict[str, str]) -> set[str]:
+    return _header_addresses(
+        meta.get("to", ""),
+        meta.get("cc", ""),
+        meta.get("delivered_to", ""),
+        meta.get("x_original_to", ""),
+        meta.get("envelope_to", ""),
+    )
+
+
+def _validated_reply_recipient(meta: dict[str, str]) -> str:
+    sender = str(meta.get("sender", "")).strip()
+    parsed_sender = parseaddr(sender)[1].strip().lower()
+    sender_email = str(meta.get("sender_email", "")).strip().lower()
+    if not sender_email:
+        sender_email = parsed_sender
+    if not _looks_like_email_address(sender_email):
+        raise ValueError("Refusing to send response: sender email address is not valid.")
+    if parsed_sender and parsed_sender != sender_email:
+        raise ValueError(
+            "Refusing to send response: parsed sender address does not match "
+            "the response recipient."
+        )
+    return sender_email
 
 
 def _extract_json_object(text: str) -> dict:
@@ -579,6 +649,13 @@ def is_certified_sender(email: str) -> bool:
 
 
 @pure
+def is_expected_intake_recipient(email: str) -> bool:
+    if not _intake_recipients:
+        return True
+    return bool(_recipient_addresses(_parse_email_text(email)) & _intake_recipients)
+
+
+@pure
 def normalize_intake_kind(intake_kind: str) -> str:
     text = intake_kind.strip().lower()
     if "correction" in text or text in {"update", "corrected"}:
@@ -645,6 +722,17 @@ def ignore_uncertified(email: str) -> str:
     return "ignored_uncertified"
 
 
+@effect
+def ignore_unexpected_recipient(email: str) -> str:
+    meta = _parse_email_text(email)
+    found = ", ".join(sorted(_recipient_addresses(meta))) or "(none)"
+    expected = ", ".join(sorted(_intake_recipients)) or "(none)"
+    print(f"[CallIntake] Ignored message for {found}; expected {expected}")
+    if _email_client is not None:
+        _email_client.mark_processed(meta)  # type: ignore[union-attr]
+    return "ignored_unexpected_recipient"
+
+
 def _response_kind(table_status_text: str, *, correction: bool) -> str:
     if table_status_text.startswith("duplicate:"):
         return "duplicate"
@@ -695,6 +783,7 @@ def _response_body(call_json_text: str, table_status_text: str, *, correction: b
 
 def _send_response(email: str, call_json_text: str, table_status_text: str, *, correction: bool) -> str:
     meta = _parse_email_text(email)
+    recipient = _validated_reply_recipient(meta)
     data = _extract_json_object(call_json_text)
     call_id = str(data.get("call_id", "call"))
     purpose = _response_kind(table_status_text, correction=correction)
@@ -711,23 +800,24 @@ def _send_response(email: str, call_json_text: str, table_status_text: str, *, c
         "call_id": call_id,
         "mode": _send_mode,
         "purpose": purpose,
-        "recipient": meta.get("sender_email", ""),
+        "recipient": recipient,
         "subject": subject,
         "body": body,
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
     }
 
     if _email_client is not None and _send_mode in {"draft", "send"}:
+        reply_meta = {**meta, "sender_email": recipient}
         if _send_mode == "send":
             _wait_for_send_rate_limit()
-            external_id = _email_client.send_email(meta, subject, body)  # type: ignore[union-attr]
+            external_id = _email_client.send_email(reply_meta, subject, body)  # type: ignore[union-attr]
             _append_response_log_once(
                 key,
                 {**payload, "mode": "send", "external_id": external_id, "sent_at": time.time()},
             )
             return f"send:{external_id}"
         else:
-            external_id = _email_client.create_draft(meta, subject, body)  # type: ignore[union-attr]
+            external_id = _email_client.create_draft(reply_meta, subject, body)  # type: ignore[union-attr]
             _append_response_log_once(key, {**payload, "mode": "draft", "external_id": external_id})
             return f"draft:{external_id}"
 
@@ -833,39 +923,45 @@ def call_intake() -> str:
         if mail_present() @ Mailbox:
             Mailbox: email = pop_pending_email()
             Mailbox(email) >> Gatekeeper(email)
-            Gatekeeper: certified = is_certified_sender(email)
+            Gatekeeper: expected_recipient = is_expected_intake_recipient(email)
 
-            if certified @ Gatekeeper:
-                Gatekeeper(email) >> Extractor(email)
-                Extractor: intake_kind = classify_intake(email)
-                Extractor: intake_kind = normalize_intake_kind(intake_kind)
+            if expected_recipient @ Gatekeeper:
+                Gatekeeper: certified = is_certified_sender(email)
 
-                if (intake_kind == "call") @ Extractor:
-                    Extractor: call_json = extract_call_json(email)
-                    Extractor: call_json = normalize_call_json(email, call_json)
-                    Extractor(email, call_json) >> Table(email, call_json)
-                    Table: table_status = insert_call_record(email, call_json)
-                    Table(email, call_json, table_status) >> Mailbox(email, call_json, table_status)
-                    Mailbox: response_status = send_call_json_response(email, call_json, table_status)
-                    Mailbox: mail_status = finish_email(email, response_status)
+                if certified @ Gatekeeper:
+                    Gatekeeper(email) >> Extractor(email)
+                    Extractor: intake_kind = classify_intake(email)
+                    Extractor: intake_kind = normalize_intake_kind(intake_kind)
 
-                elif (intake_kind == "correction") @ Extractor:
-                    Extractor: call_json = extract_correction_json(email)
-                    Extractor: call_json = normalize_correction_json(email, call_json)
-                    Extractor(email, call_json) >> Table(email, call_json)
-                    Table: table_status = apply_call_correction(email, call_json)
-                    Table(email, call_json, table_status) >> Mailbox(email, call_json, table_status)
-                    Mailbox: response_status = send_correction_response(email, call_json, table_status)
-                    Mailbox: mail_status = finish_email(email, response_status)
+                    if (intake_kind == "call") @ Extractor:
+                        Extractor: call_json = extract_call_json(email)
+                        Extractor: call_json = normalize_call_json(email, call_json)
+                        Extractor(email, call_json) >> Table(email, call_json)
+                        Table: table_status = insert_call_record(email, call_json)
+                        Table(email, call_json, table_status) >> Mailbox(email, call_json, table_status)
+                        Mailbox: response_status = send_call_json_response(email, call_json, table_status)
+                        Mailbox: mail_status = finish_email(email, response_status)
 
+                    elif (intake_kind == "correction") @ Extractor:
+                        Extractor: call_json = extract_correction_json(email)
+                        Extractor: call_json = normalize_correction_json(email, call_json)
+                        Extractor(email, call_json) >> Table(email, call_json)
+                        Table: table_status = apply_call_correction(email, call_json)
+                        Table(email, call_json, table_status) >> Mailbox(email, call_json, table_status)
+                        Mailbox: response_status = send_correction_response(email, call_json, table_status)
+                        Mailbox: mail_status = finish_email(email, response_status)
+
+                    else:
+                        Extractor(email) >> Table(email)
+                        Table: table_status = record_non_call(email)
+                        Table(email, table_status) >> Mailbox(email, table_status)
+                        Mailbox: mail_status = finish_email(email, table_status)
                 else:
-                    Extractor(email) >> Table(email)
-                    Table: table_status = record_non_call(email)
-                    Table(email, table_status) >> Mailbox(email, table_status)
-                    Mailbox: mail_status = finish_email(email, table_status)
+                    Gatekeeper(email) >> Mailbox(email)
+                    Mailbox: mail_status = ignore_uncertified(email)
             else:
                 Gatekeeper(email) >> Mailbox(email)
-                Mailbox: mail_status = ignore_uncertified(email)
+                Mailbox: mail_status = ignore_unexpected_recipient(email)
         else:
             Mailbox: _ = wait_briefly()
 
@@ -885,6 +981,7 @@ if __name__ == "__main__":
     parser.add_argument("--store", dest="store_path")
     parser.add_argument("--table", dest="table_path")
     parser.add_argument("--certified", dest="certified_senders")
+    parser.add_argument("--recipient", dest="intake_recipients")
     parser.add_argument("--send-mode", choices=("draft", "send", "log"), default=None)
     parser.add_argument("--send-limit-per-hour", type=int, default=None)
     parser.add_argument("--poll-seconds", type=float, default=None)
@@ -897,6 +994,7 @@ if __name__ == "__main__":
     configure_call_intake(
         services=args.services,
         certified_senders=args.certified_senders,
+        intake_recipients=args.intake_recipients,
         table_path=args.table_path,
         send_mode=args.send_mode,
         send_limit_per_hour=args.send_limit_per_hour,

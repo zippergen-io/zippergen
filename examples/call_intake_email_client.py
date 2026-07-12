@@ -21,6 +21,7 @@ import base64
 import email.mime.text
 import os
 import sys
+from email.utils import parseaddr
 from pathlib import Path
 from typing import TypedDict
 
@@ -49,6 +50,12 @@ class EmailMeta(TypedDict, total=False):
     id: str
     thread_id: str
     sender: str
+    sender_email: str
+    to: str
+    cc: str
+    delivered_to: str
+    x_original_to: str
+    envelope_to: str
     subject: str
     body: str
     message_id: str
@@ -152,10 +159,17 @@ def fetch_one_unread() -> EmailMeta | None:
         format="full",
     ).execute()
     headers = _headers(msg["payload"])
+    sender = headers.get("from", "")
     return EmailMeta(
         id=msg_id,
         thread_id=msg.get("threadId", ""),
-        sender=headers.get("from", ""),
+        sender=sender,
+        sender_email=parseaddr(sender)[1].lower(),
+        to=headers.get("to", ""),
+        cc=headers.get("cc", ""),
+        delivered_to=headers.get("delivered-to", ""),
+        x_original_to=headers.get("x-original-to", ""),
+        envelope_to=headers.get("envelope-to", ""),
         subject=headers.get("subject", "(no subject)"),
         body=_extract_body(msg["payload"]).strip(),
         message_id=headers.get("message-id", ""),
@@ -164,9 +178,30 @@ def fetch_one_unread() -> EmailMeta | None:
     )
 
 
+def _looks_like_email_address(address: str) -> bool:
+    local, sep, domain = address.partition("@")
+    return bool(local and sep and domain)
+
+
+def _validated_reply_recipient(meta: dict) -> str:
+    sender = str(meta.get("sender", "")).strip()
+    parsed_sender = parseaddr(sender)[1].strip().lower()
+    sender_email = str(meta.get("sender_email", "")).strip().lower()
+    if not sender_email:
+        sender_email = parsed_sender
+    if not _looks_like_email_address(sender_email):
+        raise ValueError("Refusing to send response: sender email address is not valid.")
+    if parsed_sender and parsed_sender != sender_email:
+        raise ValueError(
+            "Refusing to send response: parsed sender address does not match "
+            "the response recipient."
+        )
+    return sender_email
+
+
 def _message_for_reply(meta: dict, subject: str, body: str) -> email.mime.text.MIMEText:
     msg = email.mime.text.MIMEText(body)
-    msg["To"] = meta.get("sender_email") or meta.get("sender") or ""
+    msg["To"] = _validated_reply_recipient(meta)
     msg["Subject"] = subject if subject.lower().startswith("re:") else f"Re: {subject}"
     original_message_id = meta.get("message_id")
     references = meta.get("references") or original_message_id
@@ -202,7 +237,7 @@ def send_email(meta: dict, subject: str, body: str) -> str:
 
 
 def mark_processed(meta: dict) -> None:
-    msg_id = meta.get("id") or meta.get("gmail-id")
+    msg_id = meta.get("id") or meta.get("gmail_id") or meta.get("gmail-id")
     if not msg_id:
         return
     service = _get_service()

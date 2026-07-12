@@ -15,6 +15,15 @@ def _load_call_intake():
     return module
 
 
+def _load_call_intake_email_client():
+    path = Path(__file__).parents[1] / "examples" / "call_intake_email_client.py"
+    spec = importlib.util.spec_from_file_location("call_intake_email_client_example", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _lifelines(module):
     return [module.Mailbox, module.Gatekeeper, module.Extractor, module.Table]
 
@@ -36,6 +45,35 @@ def test_certified_sender_accepts_exact_and_domain(tmp_path):
     assert module.is_certified_sender.fn("From: Alice <alice@example.com>\n\nHi") is True
     assert module.is_certified_sender.fn("From: Bob <bob@trusted.example>\n\nHi") is True
     assert module.is_certified_sender.fn("From: Eve <eve@other.example>\n\nHi") is False
+
+
+def test_expected_recipient_matches_to_cc_and_delivery_headers(tmp_path):
+    module = _load_call_intake()
+    module.reset_for_tests(
+        fake_inbox=[],
+        certified_senders="alice@example.com",
+        intake_recipients="zippergen.sandbox+calls@gmail.com",
+        table_path=tmp_path / "calls.csv",
+        response_log_path=tmp_path / "responses.jsonl",
+    )
+
+    assert module.is_expected_intake_recipient.fn(
+        "From: Alice <alice@example.com>\n"
+        "To: ZipperGen Calls <zippergen.sandbox+calls@gmail.com>\n\nBody"
+    ) is True
+    assert module.is_expected_intake_recipient.fn(
+        "From: Alice <alice@example.com>\n"
+        "To: someone@example.com\n"
+        "Cc: zippergen.sandbox+calls@gmail.com\n\nBody"
+    ) is True
+    assert module.is_expected_intake_recipient.fn(
+        "From: Alice <alice@example.com>\n"
+        "Delivered-To: zippergen.sandbox+calls@gmail.com\n\nBody"
+    ) is True
+    assert module.is_expected_intake_recipient.fn(
+        "From: Alice <alice@example.com>\n"
+        "To: other@example.com\n\nBody"
+    ) is False
 
 
 def test_poll_interval_defaults_to_email_scale_and_can_be_overridden(tmp_path):
@@ -269,9 +307,61 @@ def test_send_response_uses_gmail_send_and_records_timestamp(tmp_path):
     assert status == "send:gmail-sent-1"
     assert len(fake_client.sent) == 1
     assert fake_client.sent[0][1] == "Extracted call JSON: call_erc"
+    assert fake_client.sent[0][0]["sender_email"] == "alice@example.com"
     assert records[0]["mode"] == "send"
+    assert records[0]["recipient"] == "alice@example.com"
     assert records[0]["external_id"] == "gmail-sent-1"
     assert isinstance(records[0]["sent_at"], float)
+
+
+def test_send_response_rejects_missing_sender_address(tmp_path):
+    module = _load_call_intake()
+    response_log = tmp_path / "responses.jsonl"
+    module.reset_for_tests(
+        fake_inbox=[],
+        certified_senders="alice@example.com",
+        table_path=tmp_path / "calls.csv",
+        response_log_path=response_log,
+        send_mode="send",
+    )
+
+    class FakeEmailClient:
+        def send_email(self, meta, subject, body):
+            raise AssertionError("send_email should not be called")
+
+    module._email_client = FakeEmailClient()
+    email = "From: No Address\nSubject: ERC call\nMessage-ID: <m1@example.com>\n\nBody"
+    call_json = module.normalize_call_json.fn(email, json.dumps({"call_id": "call_erc", "title": "ERC"}))
+
+    try:
+        module.send_call_json_response.fn(email, call_json, "created:call_erc")
+    except ValueError as exc:
+        assert "sender email address is not valid" in str(exc)
+    else:
+        raise AssertionError("Expected invalid recipient to be rejected")
+    assert not response_log.exists()
+
+
+def test_gmail_reply_message_requires_sender_recipient_match():
+    client = _load_call_intake_email_client()
+
+    msg = client._message_for_reply(
+        {"sender": "Alice <alice@example.com>", "sender_email": "alice@example.com"},
+        "Extracted call JSON: call_erc",
+        "Body",
+    )
+    assert msg["To"] == "alice@example.com"
+
+    try:
+        client._message_for_reply(
+            {"sender": "Alice <alice@example.com>", "sender_email": "bob@example.com"},
+            "Extracted call JSON: call_erc",
+            "Body",
+        )
+    except ValueError as exc:
+        assert "does not match" in str(exc)
+    else:
+        raise AssertionError("Expected mismatched recipient to be rejected")
 
 
 def test_call_intake_skips_llm_for_uncertified_sender(tmp_path):
@@ -290,6 +380,31 @@ def test_call_intake_skips_llm_for_uncertified_sender(tmp_path):
 
     assert result == "processed:1"
     assert not (tmp_path / "calls.csv").exists()
+
+
+def test_call_intake_skips_llm_for_unexpected_recipient(tmp_path):
+    module = _load_call_intake()
+    response_log = tmp_path / "responses.jsonl"
+    module.reset_for_tests(
+        fake_inbox=[
+            "From: Alice <alice@example.com>\n"
+            "To: other@example.com\n"
+            "Subject: Grant\n\nDeadline tomorrow"
+        ],
+        certified_senders="alice@example.com",
+        intake_recipients="zippergen.sandbox+calls@gmail.com",
+        table_path=tmp_path / "calls.csv",
+        response_log_path=response_log,
+    )
+
+    def backend(action, inputs):
+        raise AssertionError(f"LLM should not be called for {action.name}")
+
+    result = run(module.call_intake, _lifelines(module), {}, llm_backend=backend, timeout=5)
+
+    assert result == "processed:1"
+    assert not (tmp_path / "calls.csv").exists()
+    assert not response_log.exists()
 
 
 def test_call_intake_records_certified_call_and_response(tmp_path):

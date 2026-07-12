@@ -405,7 +405,10 @@ to a CSV table, and answered automatically by email with the extracted JSON.
 
 Automatic sending has a built-in safeguard: the send effect will not send more
 than 10 emails per hour. If the limit is reached, the workflow waits outside the
-SQLite transaction until another send slot is available.
+SQLite transaction until another send slot is available. Before creating a draft
+or sending, the workflow also checks that the reply recipient is exactly the
+parsed sender address from the incoming email. If the sender address is missing
+or inconsistent, the response is refused.
 
 ### Files And State
 
@@ -415,6 +418,8 @@ Use stable paths:
 export ZG_CALL_STORE="$HOME/.zippergen/runs/call-intake.sqlite"
 export ZIPPERGEN_CALL_TABLE="$HOME/.zippergen/calls.csv"
 export ZIPPERGEN_CALL_INTAKE_RESPONSE_LOG="$HOME/.zippergen/call-intake-responses.jsonl"
+export ZIPPERGEN_CALL_INTAKE_RECIPIENTS="zippergen.sandbox+calls@gmail.com"
+export ZIPPERGEN_CALL_GMAIL_QUERY="is:unread in:inbox to:zippergen.sandbox+calls@gmail.com"
 export ZIPPERGEN_CALL_INTAKE_SEND_MODE=send
 export ZIPPERGEN_CALL_INTAKE_MAX_EMAILS_PER_HOUR=10
 export ZIPPERGEN_CALL_INTAKE_POLL_SECONDS=60
@@ -435,6 +440,27 @@ export ZIPPERGEN_CERTIFIED_SENDERS="alice@example.com,@trusted-lab.org"
 
 Messages from other senders are marked processed without calling the LLM.
 
+### Intake Address
+
+If you use a Gmail plus address such as:
+
+```text
+zippergen.sandbox+calls@gmail.com
+```
+
+configure it in two places:
+
+```bash
+export ZIPPERGEN_CALL_INTAKE_RECIPIENTS="zippergen.sandbox+calls@gmail.com"
+export ZIPPERGEN_CALL_GMAIL_QUERY="is:unread in:inbox to:zippergen.sandbox+calls@gmail.com"
+```
+
+The Gmail query is the first filter: the client fetches only unread inbox
+messages sent to that address. The workflow then checks the message headers
+again (`To`, `Cc`, `Delivered-To`, `X-Original-To`, and `Envelope-To`) before it
+calls the LLM. If the configured intake address is not present, the message is
+ignored.
+
 ### Gmail Setup
 
 Run the call-intake Gmail OAuth setup:
@@ -450,6 +476,8 @@ message read only after it has been ignored, recorded, or replied to.
 
 ```bash
 export OPENAI_API_KEY=<your-openai-key>
+export ZIPPERGEN_CALL_INTAKE_RECIPIENTS="zippergen.sandbox+calls@gmail.com"
+export ZIPPERGEN_CALL_GMAIL_QUERY="is:unread in:inbox to:zippergen.sandbox+calls@gmail.com"
 export ZIPPERGEN_CALL_INTAKE_SEND_MODE=send
 export ZIPPERGEN_CALL_INTAKE_MAX_EMAILS_PER_HOUR=10
 export ZIPPERGEN_CALL_INTAKE_POLL_SECONDS=60
