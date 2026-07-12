@@ -424,6 +424,7 @@ def test_send_response_uses_gmail_send_and_records_timestamp(tmp_path):
     module.reset_for_tests(
         fake_inbox=[],
         certified_senders="alice@example.com",
+        intake_recipients="zippergen.sandbox+calls@gmail.com",
         table_path=tmp_path / "calls.csv",
         response_log_path=response_log,
         send_mode="send",
@@ -450,6 +451,7 @@ def test_send_response_uses_gmail_send_and_records_timestamp(tmp_path):
     assert len(fake_client.sent) == 1
     assert fake_client.sent[0][1] == "Extracted call JSON: call_erc"
     assert fake_client.sent[0][0]["sender_email"] == "alice@example.com"
+    assert "reply to zippergen.sandbox+calls@gmail.com" in fake_client.sent[0][2]
     assert records[0]["mode"] == "send"
     assert records[0]["recipient"] == "alice@example.com"
     assert records[0]["external_id"] == "gmail-sent-1"
@@ -523,8 +525,9 @@ def test_send_response_rejects_missing_sender_address(tmp_path):
     assert not response_log.exists()
 
 
-def test_gmail_reply_message_requires_sender_recipient_match():
+def test_gmail_reply_message_requires_sender_recipient_match(monkeypatch):
     client = _load_call_intake_email_client()
+    monkeypatch.setenv("ZIPPERGEN_CALL_INTAKE_RECIPIENTS", "zippergen.sandbox+calls@gmail.com")
 
     msg = client._message_for_reply(
         {"sender": "Alice <alice@example.com>", "sender_email": "alice@example.com"},
@@ -532,6 +535,7 @@ def test_gmail_reply_message_requires_sender_recipient_match():
         "Body",
     )
     assert msg["To"] == "alice@example.com"
+    assert msg["Reply-To"] == "zippergen.sandbox+calls@gmail.com"
 
     try:
         client._message_for_reply(

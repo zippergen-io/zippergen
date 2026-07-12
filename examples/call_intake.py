@@ -457,6 +457,13 @@ def _validated_reply_recipient(meta: dict[str, str]) -> str:
     return sender_email
 
 
+def _intake_reply_address() -> str:
+    explicit = os.environ.get("ZIPPERGEN_CALL_INTAKE_REPLY_TO", "").strip().lower()
+    if explicit and _looks_like_email_address(explicit):
+        return explicit
+    return sorted(_intake_recipients)[0] if _intake_recipients else ""
+
+
 def _extract_json_object(text: str) -> dict:
     cleaned = text.strip()
     cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE)
@@ -866,11 +873,16 @@ def _response_body(call_json_text: str, table_status_text: str, *, correction: b
     pretty = json.dumps(data, indent=2, sort_keys=True)
     kind = _response_kind(table_status_text, correction=correction)
     heading = _response_heading(kind)
+    reply_to = _intake_reply_address()
+    correction_instruction = (
+        f"If anything is wrong, reply to {reply_to} with corrected JSON. "
+        if reply_to
+        else "If anything is wrong, reply to this email with corrected JSON. "
+    )
     return (
         f"Hello,\n\n{heading}\n\n"
         f"{pretty}\n\n"
-        "If anything is wrong, reply to this email with corrected JSON. "
-        "Please keep the call_id unchanged.\n\n"
+        f"{correction_instruction}Please keep the call_id unchanged.\n\n"
         f"Table status: {table_status_text}\n"
     )
 

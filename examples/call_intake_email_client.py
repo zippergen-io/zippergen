@@ -21,7 +21,7 @@ import base64
 import email.mime.text
 import os
 import sys
-from email.utils import parseaddr
+from email.utils import getaddresses, parseaddr
 from pathlib import Path
 from typing import TypedDict
 
@@ -183,6 +183,21 @@ def _looks_like_email_address(address: str) -> bool:
     return bool(local and sep and domain)
 
 
+def _configured_reply_to() -> str:
+    raw = (
+        os.environ.get("ZIPPERGEN_CALL_INTAKE_REPLY_TO")
+        or os.environ.get("ZIPPERGEN_CALL_INTAKE_RECIPIENTS")
+        or os.environ.get("ZIPPERGEN_CALL_INTAKE_ADDRESS")
+        or ""
+    )
+    addresses = [
+        address.strip().lower()
+        for _name, address in getaddresses([raw])
+        if _looks_like_email_address(address.strip().lower())
+    ]
+    return addresses[0] if addresses else ""
+
+
 def _validated_reply_recipient(meta: dict) -> str:
     sender = str(meta.get("sender", "")).strip()
     parsed_sender = parseaddr(sender)[1].strip().lower()
@@ -202,6 +217,9 @@ def _validated_reply_recipient(meta: dict) -> str:
 def _message_for_reply(meta: dict, subject: str, body: str) -> email.mime.text.MIMEText:
     msg = email.mime.text.MIMEText(body)
     msg["To"] = _validated_reply_recipient(meta)
+    reply_to = _configured_reply_to()
+    if reply_to:
+        msg["Reply-To"] = reply_to
     msg["Subject"] = subject if subject.lower().startswith("re:") else f"Re: {subject}"
     original_message_id = meta.get("message_id")
     references = meta.get("references") or original_message_id
