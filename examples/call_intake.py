@@ -637,6 +637,19 @@ def _leading_reply_text(text: str) -> tuple[str, str]:
     return leading or plain, plain
 
 
+def _dequote_reply_text(text: str) -> str:
+    plain = _html_to_text(text).strip()
+    lines: list[str] = []
+    for line in plain.splitlines():
+        if _looks_like_reply_quote_header(line):
+            continue
+        stripped = line.lstrip()
+        while stripped.startswith(">"):
+            stripped = stripped[1:].lstrip()
+        lines.append(stripped)
+    return "\n".join(lines).strip()
+
+
 def _extract_correction_data_from_text(text: str) -> dict:
     stripped = text.strip()
     if not stripped:
@@ -661,6 +674,12 @@ def _extract_sender_correction_object(text: str) -> dict:
     except ValueError:
         if leading != plain:
             raise
+    dequoted = _dequote_reply_text(plain)
+    if dequoted and dequoted != plain:
+        try:
+            return _extract_correction_data_from_text(dequoted)
+        except ValueError:
+            pass
     return _extract_correction_data_from_text(plain)
 
 
