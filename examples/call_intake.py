@@ -471,7 +471,7 @@ def _intake_reply_address() -> str:
 
 
 def _extract_json_object(text: str) -> dict:
-    cleaned = text.strip()
+    cleaned = _normalise_email_text(text).strip()
     cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE)
     cleaned = re.sub(r"\s*```$", "", cleaned)
     decoder = json.JSONDecoder()
@@ -527,8 +527,22 @@ CORRECTION_FIELD_CANONICAL = {
 CORRECTION_FIELD_ALIASES = set(CORRECTION_FIELD_CANONICAL)
 
 
+def _normalise_email_text(text: str) -> str:
+    return (
+        text
+        .replace("\u201c", '"')
+        .replace("\u201d", '"')
+        .replace("\u201e", '"')
+        .replace("\u201f", '"')
+        .replace("\u2033", '"')
+        .replace("\u2018", "'")
+        .replace("\u2019", "'")
+        .replace("\u2032", "'")
+    )
+
+
 def _parse_fragment_value(raw: str) -> object:
-    text = raw.strip().rstrip(",").strip()
+    text = _normalise_email_text(raw).strip().rstrip(",").strip()
     try:
         value, _end = json.JSONDecoder().raw_decode(text)
         return value
@@ -547,17 +561,19 @@ def _parse_fragment_value(raw: str) -> object:
 
 
 def _extract_json_like_fields(text: str) -> dict:
+    text = _normalise_email_text(text)
     key_pattern = re.compile(
-        r'(?m)(?P<prefix>^|[,{]\s*)"?(?P<key>[A-Za-z_][A-Za-z0-9_]*)"?\s*:'
+        r'(?im)(?P<prefix>^|[,{]\s*|^\s*[-*]\s*)'
+        r'"?(?P<key>[A-Za-z_][A-Za-z0-9_]*)"?\s*(?::|=)'
     )
     matches = [
         match for match in key_pattern.finditer(text)
-        if match.group("key") in CORRECTION_FIELD_ALIASES
+        if match.group("key").lower() in CORRECTION_FIELD_ALIASES
     ]
     fields: dict[str, object] = {}
     seen_canonical: set[str] = set()
     for index, match in enumerate(matches):
-        key = match.group("key")
+        key = match.group("key").lower()
         canonical = CORRECTION_FIELD_CANONICAL[key]
         if canonical in seen_canonical:
             continue
@@ -572,12 +588,29 @@ def _extract_json_like_fields(text: str) -> dict:
     raise ValueError("No JSON-like correction fields found.")
 
 
+def _extract_natural_deadline_field(text: str) -> dict:
+    plain = _normalise_email_text(text)
+    patterns = [
+        r"\b(?:submission\s+deadline|application\s+deadline|closing\s+deadline|deadline|due\s+date)\b"
+        r"\s*(?:is|should\s+be|should\s+become|becomes|to|:|=)?\s*"
+        r"(?P<value>\d{4}-\d{2}-\d{2}(?:[T ][0-9]{2}:[0-9]{2}(?::[0-9]{2})?(?:Z|[+-][0-9]{2}:?[0-9]{2})?)?)",
+        r"\bdate\s+limite(?:\s+de\s+(?:soumission|candidature))?\b"
+        r"\s*(?:est|devient|:|=)?\s*"
+        r"(?P<value>\d{4}-\d{2}-\d{2}(?:[T ][0-9]{2}:[0-9]{2}(?::[0-9]{2})?(?:Z|[+-][0-9]{2}:?[0-9]{2})?)?)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, plain, flags=re.IGNORECASE)
+        if match:
+            return {"deadline": match.group("value")}
+    raise ValueError("No natural-language deadline correction found.")
+
+
 def _html_to_text(text: str) -> str:
     if re.search(r"(?is)<(?:html|body|div|br|p|blockquote|span|table|tr|td|a)\b", text):
         text = re.sub(r"(?is)<(br|/p|/div|/li|/tr)\b[^>]*>", "\n", text)
         text = re.sub(r"(?is)<(script|style)\b[^>]*>.*?</\1>", "", text)
         text = re.sub(r"(?is)<[^>]+>", "", text)
-    return html.unescape(text).replace("\xa0", " ")
+    return _normalise_email_text(html.unescape(text).replace("\xa0", " "))
 
 
 def _looks_like_reply_quote_header(line: str) -> bool:
@@ -609,9 +642,9 @@ def _extract_correction_data_from_text(text: str) -> dict:
     if not stripped:
         raise ValueError("No correction text found.")
     parsers = (
-        (_extract_json_object, _extract_json_like_fields)
+        (_extract_json_object, _extract_json_like_fields, _extract_natural_deadline_field)
         if stripped.startswith("{")
-        else (_extract_json_like_fields, _extract_json_object)
+        else (_extract_json_like_fields, _extract_json_object, _extract_natural_deadline_field)
     )
     for parser in parsers:
         try:

@@ -268,6 +268,44 @@ def test_normalize_correction_json_accepts_sender_field_fragment(tmp_path):
     assert normalized["deadline"] == "2026-09-01T12:00:00Z"
 
 
+def test_normalize_correction_json_accepts_curly_quoted_sender_field(tmp_path):
+    module = _load_call_intake()
+    email = (
+        "From: Alice <alice@example.com>\n"
+        "Subject: Re: Extracted call JSON: call_demo\n"
+        "Message-ID: <m2@example.com>\n\n"
+        "\u201cdeadline\u201d: \u201c2026-09-01T12:00:00Z\u201d,"
+    )
+    llm_output = json.dumps({
+        "call_id": "call_demo",
+        "deadline": "2026-09-04T12:00:00Z",
+    })
+
+    normalized = json.loads(module.normalize_correction_json.fn(email, llm_output))
+
+    assert normalized["call_id"] == "call_demo"
+    assert normalized["deadline"] == "2026-09-01T12:00:00Z"
+
+
+def test_normalize_correction_json_accepts_natural_deadline_text(tmp_path):
+    module = _load_call_intake()
+    email = (
+        "From: Alice <alice@example.com>\n"
+        "Subject: Re: Extracted call JSON: call_demo\n"
+        "Message-ID: <m2@example.com>\n\n"
+        "The deadline should be 2026-09-01T12:00:00Z."
+    )
+    llm_output = json.dumps({
+        "call_id": "call_demo",
+        "deadline": "2026-09-04T12:00:00Z",
+    })
+
+    normalized = json.loads(module.normalize_correction_json.fn(email, llm_output))
+
+    assert normalized["call_id"] == "call_demo"
+    assert normalized["deadline"] == "2026-09-01T12:00:00Z"
+
+
 def test_normalize_correction_json_keeps_sender_fragment_before_quoted_old_json(tmp_path):
     module = _load_call_intake()
     email = (
@@ -1103,6 +1141,48 @@ def test_call_intake_correction_keeps_sender_fragment_when_llm_changes_date(tmp_
             "Subject: Re: Extracted call JSON: call_demo\n"
             "Message-ID: <m2@example.com>\n\n"
             '"deadline": "2026-09-01T12:00:00Z",'
+        ],
+        certified_senders="alice@example.com",
+        table_path=table,
+        response_log_path=tmp_path / "responses.jsonl",
+    )
+    existing = json.dumps({
+        "call_id": "call_demo",
+        "type": "project",
+        "title": "Demo call",
+        "deadline": "2026-08-01T12:00:00Z",
+    })
+    module.insert_call_record.fn(
+        "From: Alice <alice@example.com>\nSubject: Original\n\nBody",
+        module.normalize_call_json.fn("From: Alice <alice@example.com>\nSubject: Original\n\nBody", existing),
+    )
+
+    def backend(action, inputs):
+        if action.name == "classify_intake":
+            return {"intake_kind": "correction"}
+        if action.name == "extract_correction_json":
+            return {"call_json": json.dumps({
+                "call_id": "call_demo",
+                "deadline": "2026-09-04T12:00:00Z",
+            })}
+        raise AssertionError(action.name)
+
+    result = run(module.call_intake, _lifelines(module), {}, llm_backend=backend, timeout=5)
+    rows = _rows(table)
+
+    assert result == "processed:1"
+    assert rows[0]["deadline"] == "2026-09-01T12:00:00Z"
+
+
+def test_call_intake_correction_keeps_sender_natural_deadline_when_llm_changes_date(tmp_path):
+    module = _load_call_intake()
+    table = tmp_path / "calls.csv"
+    module.reset_for_tests(
+        fake_inbox=[
+            "From: Alice <alice@example.com>\n"
+            "Subject: Re: Extracted call JSON: call_demo\n"
+            "Message-ID: <m2@example.com>\n\n"
+            "deadline should be 2026-09-01T12:00:00Z"
         ],
         certified_senders="alice@example.com",
         table_path=table,
