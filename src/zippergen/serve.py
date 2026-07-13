@@ -91,6 +91,23 @@ class RunConfig:
         return self.options.get(name, default)
 
 
+@dataclass(frozen=True)
+class DoctorConfig:
+    """Context passed to an optional module-level ``zippergen_doctor`` hook."""
+
+    deployment_name: str
+    profile: dict[str, object]
+    workflow: Workflow
+    module: ModuleType
+    store_path: str
+    log_path: str
+    options: dict[str, object]
+    services: str | None
+
+    def option(self, name: str, default: object = None) -> object:
+        return self.options.get(name, default)
+
+
 def _import_module_path(module_path: str) -> ModuleType:
     path = Path(module_path).expanduser()
     spec = importlib.util.spec_from_file_location(
@@ -452,6 +469,202 @@ def _logs_command(args) -> int:
         for line in lines[seen:]:
             print(line)
         seen = len(lines)
+
+
+def _doctor_check(status: str, name: str, detail: str, **extra: object) -> dict[str, object]:
+    return {"status": status, "name": name, "detail": detail, **extra}
+
+
+def _path_parent_check(label: str, path: Path) -> dict[str, object]:
+    parent = path.expanduser().parent
+    if not parent.exists():
+        return _doctor_check("fail", label, f"parent directory does not exist: {parent}")
+    if not parent.is_dir():
+        return _doctor_check("fail", label, f"parent path is not a directory: {parent}")
+    if not os.access(parent, os.W_OK):
+        return _doctor_check("fail", label, f"parent directory is not writable: {parent}")
+    return _doctor_check("ok", label, f"parent directory is writable: {parent}")
+
+
+def _profile_options(profile: dict[str, object]) -> dict[str, object]:
+    raw = profile.get("options") or {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def _systemd_active_check(name: str) -> dict[str, object]:
+    unit = _systemd_unit_name(name)
+    try:
+        result = subprocess.run(
+            _systemctl_command("is-active", unit),
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except FileNotFoundError:
+        return _doctor_check("warn", "systemd active", "systemctl was not found")
+    except subprocess.TimeoutExpired:
+        return _doctor_check("warn", "systemd active", "systemctl timed out")
+
+    state = (result.stdout or result.stderr or "").strip() or f"exit {result.returncode}"
+    if result.returncode == 0:
+        return _doctor_check("ok", "systemd active", f"{unit} is active", state=state)
+    return _doctor_check("warn", "systemd active", f"{unit} is not active: {state}", state=state)
+
+
+def _call_doctor_hook(
+    module: ModuleType,
+    config: DoctorConfig,
+) -> list[dict[str, object]]:
+    hook = getattr(module, "zippergen_doctor", None)
+    if hook is None:
+        return []
+    if not callable(hook):
+        return [_doctor_check("fail", "workflow doctor hook", "zippergen_doctor exists but is not callable")]
+    try:
+        result = hook(config)
+    except Exception as exc:
+        return [_doctor_check("fail", "workflow doctor hook", f"{type(exc).__name__}: {exc}")]
+    if result is None:
+        return []
+    if not isinstance(result, list):
+        return [_doctor_check("fail", "workflow doctor hook", "zippergen_doctor must return a list or None")]
+    checks: list[dict[str, object]] = []
+    for item in result:
+        if not isinstance(item, dict):
+            checks.append(_doctor_check("fail", "workflow doctor hook", f"invalid check item: {item!r}"))
+            continue
+        status = str(item.get("status", "warn"))
+        if status not in {"ok", "warn", "fail"}:
+            status = "warn"
+        checks.append({
+            "status": status,
+            "name": str(item.get("name", "workflow hook")),
+            "detail": str(item.get("detail", "")),
+            **{k: v for k, v in item.items() if k not in {"status", "name", "detail"}},
+        })
+    return checks
+
+
+def _doctor_checks(name: str, *, include_systemd: bool = True) -> list[dict[str, object]]:
+    profile_path = _deployment_profile_path(name)
+    checks: list[dict[str, object]] = []
+    profile = _load_deployment_profile(name)
+    profile_name = str(profile.get("name") or name)
+    checks.append(_doctor_check("ok", "profile", f"loaded {profile_path}", path=str(profile_path)))
+
+    for field in ["workflow", "cwd", "store", "log"]:
+        if profile.get(field):
+            checks.append(_doctor_check("ok", f"profile.{field}", str(profile[field])))
+        else:
+            checks.append(_doctor_check("fail", f"profile.{field}", "required field is missing"))
+
+    cwd = Path(str(profile.get("cwd") or ".")).expanduser()
+    if cwd.exists() and cwd.is_dir():
+        checks.append(_doctor_check("ok", "working directory", str(cwd)))
+    else:
+        checks.append(_doctor_check("fail", "working directory", f"directory does not exist: {cwd}"))
+
+    store_path = Path(str(profile.get("store") or _default_deployment_store_path(profile_name))).expanduser()
+    log_path = Path(str(profile.get("log") or _default_deployment_log_path(profile_name))).expanduser()
+    checks.append(_path_parent_check("store path", store_path))
+    checks.append(_path_parent_check("log path", log_path))
+
+    if store_path.exists():
+        try:
+            status = _store_status(str(store_path))
+        except Exception as exc:
+            checks.append(_doctor_check("fail", "sqlite store", f"{type(exc).__name__}: {exc}"))
+        else:
+            checks.append(_doctor_check("ok", "sqlite store", str(status["summary"]), state=status["state"]))
+    else:
+        checks.append(_doctor_check("warn", "sqlite store", f"store does not exist yet: {store_path}"))
+
+    if log_path.exists():
+        checks.append(_doctor_check("ok", "log file", str(log_path)))
+    else:
+        checks.append(_doctor_check("warn", "log file", f"log does not exist yet: {log_path}"))
+
+    script_path = _deployment_script_path(profile_name)
+    if script_path.exists() and os.access(script_path, os.X_OK):
+        checks.append(_doctor_check("ok", "run script", str(script_path)))
+    elif script_path.exists():
+        checks.append(_doctor_check("fail", "run script", f"script is not executable: {script_path}"))
+    else:
+        checks.append(_doctor_check("fail", "run script", f"script does not exist: {script_path}"))
+
+    template_path = _deployment_service_path(profile_name)
+    if template_path.exists():
+        checks.append(_doctor_check("ok", "systemd template", str(template_path)))
+    else:
+        checks.append(_doctor_check("warn", "systemd template", f"template does not exist: {template_path}"))
+
+    installed_path = _installed_systemd_service_path(profile_name)
+    if installed_path.exists():
+        checks.append(_doctor_check("ok", "systemd installed", str(installed_path)))
+    else:
+        checks.append(_doctor_check("warn", "systemd installed", f"service is not installed: {installed_path}"))
+
+    workflow = None
+    module = None
+    if cwd.exists() and cwd.is_dir() and profile.get("workflow"):
+        old_cwd = Path.cwd()
+        try:
+            os.chdir(cwd)
+            workflow, module = load_workflow_spec(str(profile["workflow"]))
+        except SystemExit as exc:
+            checks.append(_doctor_check("fail", "workflow import", str(exc)))
+        except Exception as exc:
+            checks.append(_doctor_check("fail", "workflow import", f"{type(exc).__name__}: {exc}"))
+        else:
+            checks.append(_doctor_check("ok", "workflow import", f"{profile['workflow']} -> {workflow.name}"))
+        finally:
+            os.chdir(old_cwd)
+
+    python_path = Path(str(profile.get("python") or sys.executable)).expanduser()
+    if python_path.exists():
+        checks.append(_doctor_check("ok", "python", str(python_path)))
+    else:
+        checks.append(_doctor_check("warn", "python", f"recorded Python does not exist: {python_path}"))
+
+    if include_systemd and installed_path.exists():
+        checks.append(_systemd_active_check(profile_name))
+
+    if workflow is not None and module is not None:
+        config = DoctorConfig(
+            deployment_name=profile_name,
+            profile=profile,
+            workflow=workflow,
+            module=module,
+            store_path=str(store_path),
+            log_path=str(log_path),
+            options=_profile_options(profile),
+            services=str(profile.get("services") or "") or None,
+        )
+        checks.extend(_call_doctor_hook(module, config))
+
+    return checks
+
+
+def _print_doctor(name: str, checks: list[dict[str, object]]) -> None:
+    print(f"Doctor: {name}")
+    for check in checks:
+        status = str(check.get("status", "warn")).upper()
+        print(f"{status:4} {check.get('name')}: {check.get('detail')}")
+    counts = {
+        status: sum(1 for check in checks if check.get("status") == status)
+        for status in ("ok", "warn", "fail")
+    }
+    print(f"Summary: {counts['ok']} ok, {counts['warn']} warn, {counts['fail']} fail")
+
+
+def _doctor_command(args) -> int:
+    checks = _doctor_checks(args.name, include_systemd=not args.no_systemd)
+    if args.json:
+        print(json.dumps({"deployment": args.name, "checks": checks}, default=str, sort_keys=True))
+    else:
+        _print_doctor(args.name, checks)
+    return 1 if any(check.get("status") == "fail" for check in checks) else 0
 
 
 def _resolve_store_arg(args) -> str:
@@ -1133,6 +1346,11 @@ def main(argv=None) -> int:
     logs.add_argument("--follow", action="store_true", help="Keep watching the log file.")
     logs.add_argument("--interval", type=float, default=1.0, help="Polling interval in seconds for --follow.")
 
+    doctor = sub.add_parser("doctor", help="check a named local deployment for common problems")
+    doctor.add_argument("name", help="Deployment name.")
+    doctor.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    doctor.add_argument("--no-systemd", action="store_true", help="Skip live systemd active-state checks.")
+
     st = sub.add_parser("status", help="show local SQLite deployment status")
     st.add_argument("deployment", nargs="?", help="Deployment name.")
     st.add_argument("--store", help="SQLite store path.")
@@ -1211,6 +1429,8 @@ def main(argv=None) -> int:
         return _deployment_lifecycle_command(args, "restart")
     if args.cmd == "logs":
         return _logs_command(args)
+    if args.cmd == "doctor":
+        return _doctor_command(args)
     if args.cmd == "status":
         return _status_command(args)
     if args.cmd == "trace":

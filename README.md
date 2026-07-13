@@ -231,6 +231,7 @@ zippergen deploy-local examples/hello.py:hello \
   --input topic="Say hello to ZipperGen"
 
 zippergen run-deployment hello
+zippergen doctor hello
 zippergen status hello
 zippergen trace hello --tail 50
 zippergen logs hello --tail 100

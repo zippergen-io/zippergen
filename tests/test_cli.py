@@ -240,6 +240,56 @@ def test_logs_command_tails_deployment_log(tmp_path, monkeypatch, capsys):
     assert captured.out.splitlines() == ["second", "third"]
 
 
+def test_doctor_reports_deployment_checks(tmp_path, monkeypatch, capsys):
+    workflow_path = tmp_path / "deploy_workflow.py"
+    workflow_path.write_text(WORKFLOW_SOURCE)
+    zippergen_home = tmp_path / "zg-home"
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(zippergen_home))
+    main([
+        "deploy-local",
+        f"{workflow_path}:hello",
+        "--name",
+        "hello-prod",
+    ])
+    capsys.readouterr()
+
+    rc = main(["doctor", "hello-prod", "--json", "--no-systemd"])
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    checks = {check["name"]: check for check in payload["checks"]}
+    assert rc == 0
+    assert checks["profile"]["status"] == "ok"
+    assert checks["workflow import"]["status"] == "ok"
+    assert checks["run script"]["status"] == "ok"
+    assert checks["systemd template"]["status"] == "ok"
+    assert checks["sqlite store"]["status"] == "warn"
+
+
+def test_doctor_returns_failure_for_broken_profile(tmp_path, monkeypatch, capsys):
+    zippergen_home = tmp_path / "zg-home"
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(zippergen_home))
+    deployments = zippergen_home / "deployments"
+    deployments.mkdir(parents=True)
+    (deployments / "broken.json").write_text(json.dumps({
+        "name": "broken",
+        "workflow": "missing.py:hello",
+        "cwd": str(tmp_path / "missing-cwd"),
+        "store": str(tmp_path / "runs" / "broken.sqlite"),
+        "log": str(tmp_path / "logs" / "broken.log"),
+        "python": str(tmp_path / "missing-python"),
+    }))
+
+    rc = main(["doctor", "broken", "--json", "--no-systemd"])
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    failures = [check for check in payload["checks"] if check["status"] == "fail"]
+    assert rc == 1
+    assert any(check["name"] == "working directory" for check in failures)
+    assert any(check["name"] == "run script" for check in failures)
+
+
 def test_status_rejects_deployment_and_store_together(tmp_path, monkeypatch):
     zippergen_home = tmp_path / "zg-home"
     monkeypatch.setenv("ZIPPERGEN_HOME", str(zippergen_home))
