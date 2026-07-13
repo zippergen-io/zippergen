@@ -486,6 +486,77 @@ def _extract_json_object(text: str) -> dict:
     raise ValueError("No JSON object found.")
 
 
+CORRECTION_FIELD_ALIASES = {
+    "call_id",
+    "status",
+    "type",
+    "call_type",
+    "title",
+    "name",
+    "funding_organism",
+    "funding_agency",
+    "funder",
+    "domain_topic",
+    "domain",
+    "topic",
+    "opening_date",
+    "opens",
+    "deadline",
+    "submission_deadline",
+    "application_deadline",
+    "due_date",
+    "closing_date",
+    "closing_deadline",
+    "submission_due_date",
+    "date_limite",
+    "date_limite_soumission",
+    "date_limite_candidature",
+    "amount_of_funding",
+    "amount",
+    "funding_amount",
+    "duration",
+    "project_duration",
+    "url",
+    "link",
+    "summary",
+    "description",
+    "notes",
+}
+
+
+def _parse_fragment_value(raw: str) -> object:
+    text = raw.strip().rstrip(",").strip()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return text.strip("\"'")
+
+
+def _extract_sender_correction_object(text: str) -> dict:
+    try:
+        return _extract_json_object(text)
+    except ValueError:
+        pass
+
+    fields: dict[str, object] = {}
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith(">"):
+            continue
+        match = re.match(r'^"(?P<key>[A-Za-z_][A-Za-z0-9_]*)"\s*:\s*(?P<value>.+?)\s*,?\s*$', stripped)
+        if match is None:
+            match = re.match(r"^(?P<key>[A-Za-z_][A-Za-z0-9_]*)\s*:\s*(?P<value>.+?)\s*$", stripped)
+        if match is None:
+            continue
+        key = match.group("key")
+        if key not in CORRECTION_FIELD_ALIASES:
+            continue
+        fields[key] = _parse_fragment_value(match.group("value"))
+    if fields:
+        return fields
+    raise ValueError("No sender correction fields found.")
+
+
 def _short_hash(text: str) -> str:
     return hashlib.sha1(text.encode("utf-8")).hexdigest()[:12]
 
@@ -500,7 +571,7 @@ def _find_call_id(email_text: str, data: dict) -> str:
     explicit = _sanitize_call_id(data.get("call_id"))
     if explicit:
         return explicit
-    match = re.search(r"\bcall_[A-Za-z0-9_.-]{8,80}\b", email_text)
+    match = re.search(r"\bcall_[A-Za-z0-9_.-]{1,80}\b", email_text)
     if match:
         return _sanitize_call_id(match.group(0))
     meta = _parse_email_text(email_text)
@@ -821,7 +892,7 @@ def normalize_call_json(email: str, call_json: str) -> str:
 def normalize_correction_json(email: str, call_json: str) -> str:
     body = _parse_email_text(email).get("body", "")
     try:
-        explicit_json = _extract_json_object(body)
+        explicit_json = _extract_sender_correction_object(body)
     except ValueError:
         source_json = call_json
     else:
