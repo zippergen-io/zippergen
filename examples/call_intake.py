@@ -31,6 +31,7 @@ Manual deployment:
 
 import csv
 import hashlib
+import html
 import json
 import os
 import re
@@ -486,46 +487,53 @@ def _extract_json_object(text: str) -> dict:
     raise ValueError("No JSON object found.")
 
 
-CORRECTION_FIELD_ALIASES = {
-    "call_id",
-    "status",
-    "type",
-    "call_type",
-    "title",
-    "name",
-    "funding_organism",
-    "funding_agency",
-    "funder",
-    "domain_topic",
-    "domain",
-    "topic",
-    "opening_date",
-    "opens",
-    "deadline",
-    "submission_deadline",
-    "application_deadline",
-    "due_date",
-    "closing_date",
-    "closing_deadline",
-    "submission_due_date",
-    "date_limite",
-    "date_limite_soumission",
-    "date_limite_candidature",
-    "amount_of_funding",
-    "amount",
-    "funding_amount",
-    "duration",
-    "project_duration",
-    "url",
-    "link",
-    "summary",
-    "description",
-    "notes",
+CORRECTION_FIELD_CANONICAL = {
+    "call_id": "call_id",
+    "status": "status",
+    "type": "type",
+    "call_type": "type",
+    "title": "title",
+    "name": "title",
+    "funding_organism": "funding_organism",
+    "funding_agency": "funding_organism",
+    "funder": "funding_organism",
+    "domain_topic": "domain_topic",
+    "domain": "domain_topic",
+    "topic": "domain_topic",
+    "opening_date": "opening_date",
+    "opens": "opening_date",
+    "deadline": "deadline",
+    "submission_deadline": "deadline",
+    "application_deadline": "deadline",
+    "due_date": "deadline",
+    "closing_date": "deadline",
+    "closing_deadline": "deadline",
+    "submission_due_date": "deadline",
+    "date_limite": "deadline",
+    "date_limite_soumission": "deadline",
+    "date_limite_candidature": "deadline",
+    "amount_of_funding": "amount_of_funding",
+    "amount": "amount_of_funding",
+    "funding_amount": "amount_of_funding",
+    "duration": "duration",
+    "project_duration": "duration",
+    "url": "url",
+    "link": "url",
+    "summary": "summary",
+    "description": "summary",
+    "notes": "summary",
 }
+
+CORRECTION_FIELD_ALIASES = set(CORRECTION_FIELD_CANONICAL)
 
 
 def _parse_fragment_value(raw: str) -> object:
     text = raw.strip().rstrip(",").strip()
+    try:
+        value, _end = json.JSONDecoder().raw_decode(text)
+        return value
+    except json.JSONDecodeError:
+        pass
     while text.endswith("}"):
         text = text[:-1].rstrip().rstrip(",").strip()
     try:
@@ -547,25 +555,80 @@ def _extract_json_like_fields(text: str) -> dict:
         if match.group("key") in CORRECTION_FIELD_ALIASES
     ]
     fields: dict[str, object] = {}
+    seen_canonical: set[str] = set()
     for index, match in enumerate(matches):
         key = match.group("key")
+        canonical = CORRECTION_FIELD_CANONICAL[key]
+        if canonical in seen_canonical:
+            continue
         value_start = match.end()
         value_end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
         raw_value = text[value_start:value_end].strip()
         if raw_value:
             fields[key] = _parse_fragment_value(raw_value)
+            seen_canonical.add(canonical)
     if fields:
         return fields
     raise ValueError("No JSON-like correction fields found.")
 
 
-def _extract_sender_correction_object(text: str) -> dict:
-    try:
-        return _extract_json_object(text)
-    except ValueError:
-        pass
+def _html_to_text(text: str) -> str:
+    if re.search(r"(?is)<(?:html|body|div|br|p|blockquote|span|table|tr|td|a)\b", text):
+        text = re.sub(r"(?is)<(br|/p|/div|/li|/tr)\b[^>]*>", "\n", text)
+        text = re.sub(r"(?is)<(script|style)\b[^>]*>.*?</\1>", "", text)
+        text = re.sub(r"(?is)<[^>]+>", "", text)
+    return html.unescape(text).replace("\xa0", " ")
 
-    return _extract_json_like_fields(text)
+
+def _looks_like_reply_quote_header(line: str) -> bool:
+    text = re.sub(r"\s+", " ", line.strip().lower())
+    if not text:
+        return False
+    if text.startswith(("-----original message-----", "---------- forwarded message")):
+        return True
+    reply_openers = ("on ", "le ", "am ", "el ", "il ", "op ")
+    reply_markers = ("wrote:", "a écrit", "schrieb", "escribió", "ha scritto")
+    return text.startswith(reply_openers) and any(marker in text for marker in reply_markers)
+
+
+def _leading_reply_text(text: str) -> tuple[str, str]:
+    plain = _html_to_text(text).strip()
+    lines: list[str] = []
+    for line in plain.splitlines():
+        if _looks_like_reply_quote_header(line):
+            break
+        if line.lstrip().startswith(">"):
+            continue
+        lines.append(line)
+    leading = "\n".join(lines).strip()
+    return leading or plain, plain
+
+
+def _extract_correction_data_from_text(text: str) -> dict:
+    stripped = text.strip()
+    if not stripped:
+        raise ValueError("No correction text found.")
+    parsers = (
+        (_extract_json_object, _extract_json_like_fields)
+        if stripped.startswith("{")
+        else (_extract_json_like_fields, _extract_json_object)
+    )
+    for parser in parsers:
+        try:
+            return parser(stripped)
+        except ValueError:
+            continue
+    raise ValueError("No sender correction object found.")
+
+
+def _extract_sender_correction_object(text: str) -> dict:
+    leading, plain = _leading_reply_text(text)
+    try:
+        return _extract_correction_data_from_text(leading)
+    except ValueError:
+        if leading != plain:
+            raise
+    return _extract_correction_data_from_text(plain)
 
 
 def _short_hash(text: str) -> str:

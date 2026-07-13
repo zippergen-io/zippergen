@@ -268,6 +268,54 @@ def test_normalize_correction_json_accepts_sender_field_fragment(tmp_path):
     assert normalized["deadline"] == "2026-09-01T12:00:00Z"
 
 
+def test_normalize_correction_json_keeps_sender_fragment_before_quoted_old_json(tmp_path):
+    module = _load_call_intake()
+    email = (
+        "From: Alice <alice@example.com>\n"
+        "Subject: Re: Extracted call JSON: call_demo\n"
+        "Message-ID: <m2@example.com>\n\n"
+        '"deadline": "2026-09-01T12:00:00Z",\n\n'
+        "On Mon, Jul 13, 2026 at 12:00 ZipperGen <zippergen.sandbox@gmail.com> wrote:\n"
+        "{\n"
+        '  "call_id": "call_demo",\n'
+        '  "deadline": "2026-09-04T12:00:00Z"\n'
+        "}"
+    )
+    llm_output = json.dumps({
+        "call_id": "call_demo",
+        "deadline": "2026-09-04T12:00:00Z",
+    })
+
+    normalized = json.loads(module.normalize_correction_json.fn(email, llm_output))
+
+    assert normalized["call_id"] == "call_demo"
+    assert normalized["deadline"] == "2026-09-01T12:00:00Z"
+
+
+def test_normalize_correction_json_keeps_sender_alias_before_unstripped_old_json(tmp_path):
+    module = _load_call_intake()
+    email = (
+        "From: Alice <alice@example.com>\n"
+        "Subject: Re: Extracted call JSON: call_demo\n"
+        "Message-ID: <m2@example.com>\n\n"
+        '"submission_deadline": "2026-09-01T12:00:00Z",\n\n'
+        "Previous response:\n"
+        "{\n"
+        '  "call_id": "call_demo",\n'
+        '  "deadline": "2026-09-04T12:00:00Z"\n'
+        "}"
+    )
+    llm_output = json.dumps({
+        "call_id": "call_demo",
+        "deadline": "2026-09-04T12:00:00Z",
+    })
+
+    normalized = json.loads(module.normalize_correction_json.fn(email, llm_output))
+
+    assert normalized["call_id"] == "call_demo"
+    assert normalized["deadline"] == "2026-09-01T12:00:00Z"
+
+
 def test_normalize_correction_json_recovers_email_wrapped_json(tmp_path):
     module = _load_call_intake()
     email = (
@@ -812,6 +860,26 @@ def test_gmail_client_strips_quoted_previous_response():
     stripped = client._strip_quoted_reply(body)
 
     assert stripped == "Please change the deadline to 2026-11-01."
+
+
+def test_gmail_client_converts_html_before_stripping_quoted_response():
+    client = _load_call_intake_email_client()
+    body = (
+        '<div>"deadline": "2026-09-01T12:00:00Z",</div>'
+        '<div class="gmail_quote">'
+        '<div dir="ltr">On Sun, Jul 12, 2026 at 8:00 PM ZipperGen '
+        "&lt;zippergen.sandbox@gmail.com&gt; wrote:</div>"
+        "<blockquote>"
+        "{<br>"
+        '&quot;deadline&quot;: &quot;2026-09-04T12:00:00Z&quot;<br>'
+        "}"
+        "</blockquote>"
+        "</div>"
+    )
+
+    stripped = client._strip_quoted_reply(client._html_to_text(body))
+
+    assert stripped == '"deadline": "2026-09-01T12:00:00Z",'
 
 
 def test_call_intake_skips_llm_for_uncertified_sender(tmp_path):

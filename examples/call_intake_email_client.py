@@ -20,8 +20,10 @@ from __future__ import annotations
 import base64
 import email.mime.text
 import os
+import re
 import sys
 from email.utils import getaddresses, parseaddr
+from html import unescape
 from pathlib import Path
 from typing import TypedDict
 
@@ -114,7 +116,7 @@ def _extract_body(payload: dict) -> str:
     if mime_type == "text/html":
         raw = payload.get("body", {}).get("data", "")
         if raw:
-            return base64.urlsafe_b64decode(raw).decode("utf-8", errors="replace")
+            return _html_to_text(base64.urlsafe_b64decode(raw).decode("utf-8", errors="replace"))
     for part in payload.get("parts", []):
         text = _extract_body(part)
         if text:
@@ -122,10 +124,19 @@ def _extract_body(payload: dict) -> str:
     return ""
 
 
+def _html_to_text(text: str) -> str:
+    text = re.sub(r"(?is)<(br|/p|/div|/li|/tr)\b[^>]*>", "\n", text)
+    text = re.sub(r"(?is)<(script|style)\b[^>]*>.*?</\1>", "", text)
+    text = re.sub(r"(?is)<[^>]+>", "", text)
+    return unescape(text).replace("\xa0", " ")
+
+
 def _looks_like_reply_quote_header(line: str) -> bool:
-    text = line.strip().lower()
+    text = re.sub(r"\s+", " ", line.strip().lower())
     if not text:
         return False
+    if text.startswith(("-----original message-----", "---------- forwarded message")):
+        return True
     reply_openers = ("on ", "le ", "am ", "el ", "il ", "op ")
     reply_markers = ("wrote:", "a écrit", "schrieb", "escribió", "ha scritto")
     return text.startswith(reply_openers) and any(marker in text for marker in reply_markers)
