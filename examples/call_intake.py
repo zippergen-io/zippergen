@@ -526,10 +526,37 @@ CORRECTION_FIELD_ALIASES = {
 
 def _parse_fragment_value(raw: str) -> object:
     text = raw.strip().rstrip(",").strip()
+    while text.endswith("}"):
+        text = text[:-1].rstrip().rstrip(",").strip()
     try:
         return json.loads(text)
     except json.JSONDecodeError:
-        return text.strip("\"'")
+        if text.startswith('"') and text.endswith('"'):
+            text = text[1:-1]
+        else:
+            text = text.strip("\"'")
+        return re.sub(r"\s*\n\s*", " ", text).strip()
+
+
+def _extract_json_like_fields(text: str) -> dict:
+    key_pattern = re.compile(
+        r'(?m)(?P<prefix>^|[,{]\s*)"?(?P<key>[A-Za-z_][A-Za-z0-9_]*)"?\s*:'
+    )
+    matches = [
+        match for match in key_pattern.finditer(text)
+        if match.group("key") in CORRECTION_FIELD_ALIASES
+    ]
+    fields: dict[str, object] = {}
+    for index, match in enumerate(matches):
+        key = match.group("key")
+        value_start = match.end()
+        value_end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        raw_value = text[value_start:value_end].strip()
+        if raw_value:
+            fields[key] = _parse_fragment_value(raw_value)
+    if fields:
+        return fields
+    raise ValueError("No JSON-like correction fields found.")
 
 
 def _extract_sender_correction_object(text: str) -> dict:
@@ -538,23 +565,7 @@ def _extract_sender_correction_object(text: str) -> dict:
     except ValueError:
         pass
 
-    fields: dict[str, object] = {}
-    for line in text.splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith(">"):
-            continue
-        match = re.match(r'^"(?P<key>[A-Za-z_][A-Za-z0-9_]*)"\s*:\s*(?P<value>.+?)\s*,?\s*$', stripped)
-        if match is None:
-            match = re.match(r"^(?P<key>[A-Za-z_][A-Za-z0-9_]*)\s*:\s*(?P<value>.+?)\s*$", stripped)
-        if match is None:
-            continue
-        key = match.group("key")
-        if key not in CORRECTION_FIELD_ALIASES:
-            continue
-        fields[key] = _parse_fragment_value(match.group("value"))
-    if fields:
-        return fields
-    raise ValueError("No sender correction fields found.")
+    return _extract_json_like_fields(text)
 
 
 def _short_hash(text: str) -> str:
@@ -605,7 +616,14 @@ def _normalise_payload(email_text: str, raw_json: str, *, status: str) -> str:
     try:
         data = _extract_json_object(raw_json)
     except ValueError:
-        data = {"summary": raw_json.strip(), "extra": {"unparsed": raw_json.strip()}}
+        stripped = raw_json.strip()
+        try:
+            data = _extract_json_like_fields(stripped)
+        except ValueError:
+            if stripped.startswith("{"):
+                data = {"extra": {"unparsed": stripped}}
+            else:
+                data = {"summary": stripped, "extra": {"unparsed": stripped}}
 
     meta = _parse_email_text(email_text)
     standard = {

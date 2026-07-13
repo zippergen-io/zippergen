@@ -268,6 +268,36 @@ def test_normalize_correction_json_accepts_sender_field_fragment(tmp_path):
     assert normalized["deadline"] == "2026-09-01T12:00:00Z"
 
 
+def test_normalize_correction_json_recovers_email_wrapped_json(tmp_path):
+    module = _load_call_intake()
+    email = (
+        "From: Alice <alice@example.com>\n"
+        "Subject: Re: Extracted call JSON: call_demo\n"
+        "Message-ID: <m2@example.com>\n\n"
+        "Please see below."
+    )
+    wrapped = (
+        "{\n"
+        '  "amount_of_funding": "<10k",\n'
+        '  "call_id": "call_demo",\n'
+        '  "deadline": "2026-09-01T12:00:00Z",\n'
+        '  "domain_topic": "Project with small budget\n'
+        'such as support for collaborations and missions",\n'
+        '  "funding_organism": "Computer Science Graduate School",\n'
+        '  "url": "https://example.org/call"\n'
+        "}"
+    )
+
+    normalized = json.loads(module.normalize_correction_json.fn(email, wrapped))
+
+    assert normalized["call_id"] == "call_demo"
+    assert normalized["deadline"] == "2026-09-01T12:00:00Z"
+    assert normalized["amount_of_funding"] == "<10k"
+    assert normalized["domain_topic"] == "Project with small budget such as support for collaborations and missions"
+    assert normalized["summary"] == ""
+    assert "unparsed" not in json.loads(normalized["extra_json"] or "{}")
+
+
 def test_insert_call_record_skips_duplicate_without_mutation(tmp_path):
     module = _load_call_intake()
     table = tmp_path / "calls.csv"
@@ -997,6 +1027,55 @@ def test_call_intake_correction_keeps_sender_fragment_when_llm_changes_date(tmp_
 
     assert result == "processed:1"
     assert rows[0]["deadline"] == "2026-09-01T12:00:00Z"
+
+
+def test_call_intake_correction_recovers_wrapped_json_without_summary_blob(tmp_path):
+    module = _load_call_intake()
+    table = tmp_path / "calls.csv"
+    module.reset_for_tests(
+        fake_inbox=[
+            "From: Alice <alice@example.com>\n"
+            "Subject: Re: Extracted call JSON: call_demo\n"
+            "Message-ID: <m2@example.com>\n\n"
+            "deadline should change"
+        ],
+        certified_senders="alice@example.com",
+        table_path=table,
+        response_log_path=tmp_path / "responses.jsonl",
+    )
+    existing = json.dumps({
+        "call_id": "call_demo",
+        "type": "project",
+        "title": "Demo call",
+        "deadline": "2026-08-01T12:00:00Z",
+        "summary": "Original summary",
+    })
+    module.insert_call_record.fn(
+        "From: Alice <alice@example.com>\nSubject: Original\n\nBody",
+        module.normalize_call_json.fn("From: Alice <alice@example.com>\nSubject: Original\n\nBody", existing),
+    )
+
+    def backend(action, inputs):
+        if action.name == "classify_intake":
+            return {"intake_kind": "correction"}
+        if action.name == "extract_correction_json":
+            return {"call_json": (
+                "{\n"
+                '  "call_id": "call_demo",\n'
+                '  "deadline": "2026-09-01T12:00:00Z",\n'
+                '  "domain_topic": "Project with small budget\n'
+                'such as support for missions"\n'
+                "}"
+            )}
+        raise AssertionError(action.name)
+
+    result = run(module.call_intake, _lifelines(module), {}, llm_backend=backend, timeout=5)
+    rows = _rows(table)
+
+    assert result == "processed:1"
+    assert rows[0]["deadline"] == "2026-09-01T12:00:00Z"
+    assert rows[0]["domain_topic"] == "Project with small budget such as support for missions"
+    assert rows[0]["summary"] == "Original summary"
 
 
 def test_call_intake_reports_missing_correction_without_creating_row(tmp_path):
