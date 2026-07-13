@@ -215,6 +215,21 @@ Deadline is 2026-12-01.
     assert normalized["source_message_id"] == "gmail-message-1"
 
 
+def test_normalize_call_json_maps_submission_deadline_alias(tmp_path):
+    module = _load_call_intake()
+    email = "From: Alice <alice@example.com>\nSubject: ANR call\nMessage-ID: <m1@example.com>\n\nBody"
+    raw = json.dumps({
+        "call_id": "call_demo",
+        "title": "ANR AI systems",
+        "submission_deadline": "2026-12-15",
+    })
+
+    normalized = json.loads(module.normalize_call_json.fn(email, raw))
+
+    assert normalized["deadline"] == "2026-12-15"
+    assert "submission_deadline" not in json.loads(normalized["extra_json"] or "{}")
+
+
 def test_insert_call_record_skips_duplicate_without_mutation(tmp_path):
     module = _load_call_intake()
     table = tmp_path / "calls.csv"
@@ -460,6 +475,42 @@ def test_apply_call_correction_updates_google_sheet(tmp_path):
     assert fake_sheets.rows[0]["title"] == "Old title"
     assert fake_sheets.rows[0]["deadline"] == "2026-11-01"
     assert fake_sheets.rows[0]["amount_of_funding"] == "EUR 1M"
+    assert fake_sheets.rows[0]["status"] == "corrected"
+    assert fake_sheets.writes[0][0] == "sheet-1"
+
+
+def test_apply_call_correction_maps_submission_deadline_to_deadline(tmp_path):
+    module = _load_call_intake()
+    fake_sheets = FakeSheetsClient(rows=[{
+        "call_id": "call_demo",
+        "status": "new",
+        "type": "project",
+        "title": "Old title",
+        "deadline": "2026-10-01",
+    }])
+    module.reset_for_tests(
+        fake_inbox=[],
+        certified_senders="alice@example.com",
+        table_path=tmp_path / "calls.csv",
+        response_log_path=tmp_path / "responses.jsonl",
+        sheet_id="sheet-1",
+        sheet_name="Calls",
+        table_targets="sheets",
+    )
+    module._sheets_client = fake_sheets
+    correction_email = "From: Alice <alice@example.com>\nSubject: Re: Call\nMessage-ID: <m2@example.com>\n\nBody"
+    correction = json.dumps({
+        "call_id": "call_demo",
+        "submission_deadline": "2026-11-15",
+    })
+
+    correction_status = module.apply_call_correction.fn(
+        correction_email,
+        module.normalize_correction_json.fn(correction_email, correction),
+    )
+
+    assert correction_status == "updated:call_demo"
+    assert fake_sheets.rows[0]["deadline"] == "2026-11-15"
     assert fake_sheets.rows[0]["status"] == "corrected"
     assert fake_sheets.writes[0][0] == "sheet-1"
 

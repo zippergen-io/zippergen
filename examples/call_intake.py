@@ -509,7 +509,15 @@ def _find_call_id(email_text: str, data: dict) -> str:
         meta.get("subject", ""),
         str(data.get("title") or ""),
         str(data.get("url") or ""),
-        str(data.get("deadline") or ""),
+        _string_field(
+            data,
+            "deadline",
+            "submission_deadline",
+            "application_deadline",
+            "due_date",
+            "closing_date",
+            "date_limite",
+        ),
     ])
     return "call_" + _short_hash(key)
 
@@ -537,7 +545,19 @@ def _normalise_payload(email_text: str, raw_json: str, *, status: str) -> str:
         "funding_organism": _string_field(data, "funding_organism", "funding_agency", "funder"),
         "domain_topic": _string_field(data, "domain_topic", "domain", "topic"),
         "opening_date": _string_field(data, "opening_date", "opens"),
-        "deadline": _string_field(data, "deadline", "due_date"),
+        "deadline": _string_field(
+            data,
+            "deadline",
+            "submission_deadline",
+            "application_deadline",
+            "due_date",
+            "closing_date",
+            "closing_deadline",
+            "submission_due_date",
+            "date_limite",
+            "date_limite_soumission",
+            "date_limite_candidature",
+        ),
         "amount_of_funding": _string_field(data, "amount_of_funding", "amount", "funding_amount"),
         "duration": _string_field(data, "duration", "project_duration"),
         "url": _string_field(data, "url", "link"),
@@ -554,7 +574,10 @@ def _normalise_payload(email_text: str, raw_json: str, *, status: str) -> str:
     known = {
         "call_id", "status", "type", "call_type", "title", "name",
         "funding_organism", "funding_agency", "funder", "domain_topic",
-        "domain", "topic", "opening_date", "opens", "deadline", "due_date",
+        "domain", "topic", "opening_date", "opens", "deadline",
+        "submission_deadline", "application_deadline", "due_date",
+        "closing_date", "closing_deadline", "submission_due_date",
+        "date_limite", "date_limite_soumission", "date_limite_candidature",
         "amount_of_funding", "amount", "funding_amount", "duration",
         "project_duration", "url", "link", "summary", "description", "notes",
     }
@@ -1039,6 +1062,8 @@ Schema:
   "summary": "",
   "extra": {}
 }
+
+Map submission deadline, application deadline, closing date, and date limite de candidature/soumission to "deadline".
 """.strip(),
     user="{email}",
     parse="text",
@@ -1058,6 +1083,7 @@ Rules:
 - Preserve any call_id present in the email.
 - Include only corrected or clearly restated fields.
 - Use the same field names as the original call JSON when possible.
+- Map submission deadline, application deadline, closing date, and date limite de candidature/soumission to "deadline".
 """.strip(),
     user="{email}",
     parse="text",
