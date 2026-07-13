@@ -122,6 +122,27 @@ def _extract_body(payload: dict) -> str:
     return ""
 
 
+def _looks_like_reply_quote_header(line: str) -> bool:
+    text = line.strip().lower()
+    if not text:
+        return False
+    reply_openers = ("on ", "le ", "am ", "el ", "il ", "op ")
+    reply_markers = ("wrote:", "a écrit", "schrieb", "escribió", "ha scritto")
+    return text.startswith(reply_openers) and any(marker in text for marker in reply_markers)
+
+
+def _strip_quoted_reply(text: str) -> str:
+    lines: list[str] = []
+    for line in text.splitlines():
+        if _looks_like_reply_quote_header(line):
+            break
+        if line.lstrip().startswith(">"):
+            continue
+        lines.append(line)
+    stripped = "\n".join(lines).strip()
+    return stripped or text.strip()
+
+
 def _headers(payload: dict) -> dict[str, str]:
     return {
         str(header.get("name", "")).lower(): str(header.get("value", ""))
@@ -171,7 +192,7 @@ def fetch_one_unread() -> EmailMeta | None:
         x_original_to=headers.get("x-original-to", ""),
         envelope_to=headers.get("envelope-to", ""),
         subject=headers.get("subject", "(no subject)"),
-        body=_extract_body(msg["payload"]).strip(),
+        body=_strip_quoted_reply(_extract_body(msg["payload"])),
         message_id=headers.get("message-id", ""),
         in_reply_to=headers.get("in-reply-to", ""),
         references=headers.get("references", ""),

@@ -109,6 +109,11 @@ CALL_FIELDS = [
     "updated_at",
 ]
 
+MATERIAL_CALL_FIELDS = [
+    field for field in CALL_FIELDS
+    if field not in {"call_id", "status", "source_sender", "source_subject", "source_message_id", "updated_at"}
+]
+
 
 DEFAULT_FAKE_INBOX = [
     """From: Alice Example <alice@example.com>
@@ -621,6 +626,13 @@ def _merge_row(existing: dict[str, str], incoming: dict[str, str]) -> dict[str, 
     return merged
 
 
+def _material_correction_fields(existing: dict[str, str], incoming: dict[str, str]) -> list[str]:
+    return [
+        field for field in MATERIAL_CALL_FIELDS
+        if incoming.get(field, "") and incoming.get(field, "") != existing.get(field, "")
+    ]
+
+
 def _same_source_message(existing: dict[str, str], incoming: dict[str, str]) -> bool:
     source_id = incoming.get("source_message_id", "")
     return bool(source_id) and existing.get("source_message_id", "") == source_id
@@ -817,9 +829,14 @@ def apply_call_correction(email: str, call_json: str) -> str:
     rows = _read_records()
     for index, row in enumerate(rows):
         if row.get("call_id") == incoming["call_id"]:
+            changed_fields = _material_correction_fields(row, incoming)
+            if not changed_fields:
+                print(f"[CallIntake] Correction for {incoming['call_id']} contained no table changes")
+                return f"unchanged:{incoming['call_id']}"
             rows[index] = _merge_row(row, incoming)
             _write_records(rows)
-            print(f"[CallIntake] updated {incoming['call_id']} in {_table_location_text()}")
+            fields_text = ", ".join(changed_fields)
+            print(f"[CallIntake] updated {incoming['call_id']} ({fields_text}) in {_table_location_text()}")
             return f"updated:{incoming['call_id']}"
     print(f"[CallIntake] Correction for missing {incoming['call_id']} ignored")
     return f"missing:{incoming['call_id']}"
@@ -857,6 +874,8 @@ def _response_kind(table_status_text: str, *, correction: bool) -> str:
         return "duplicate"
     if correction and table_status_text.startswith("missing:"):
         return "missing_correction"
+    if correction and table_status_text.startswith("unchanged:"):
+        return "unchanged_correction"
     if correction:
         return "correction"
     return "extraction"
@@ -867,6 +886,8 @@ def _response_subject_prefix(kind: str) -> str:
         return "Call already recorded"
     if kind == "missing_correction":
         return "Call not found"
+    if kind == "unchanged_correction":
+        return "No call changes"
     if kind == "correction":
         return "Updated call JSON"
     return "Extracted call JSON"
@@ -880,6 +901,11 @@ def _response_heading(kind: str) -> str:
             "I could not find an existing call with this call_id, so I did not "
             "modify the table. Please reply with the correct call_id or send it "
             "as a new call."
+        )
+    if kind == "unchanged_correction":
+        return (
+            "I found this call_id, but I did not detect any changed table fields, "
+            "so I did not modify the table."
         )
     if kind == "correction":
         return "I updated the call table with this corrected JSON."
@@ -1027,6 +1053,8 @@ Extract corrected call details from this reply.
 Return only one JSON object.
 
 Rules:
+- Use only the new text written by the sender.
+- Ignore quoted previous emails, quoted ZipperGen responses, and lines starting with ">".
 - Preserve any call_id present in the email.
 - Include only corrected or clearly restated fields.
 - Use the same field names as the original call JSON when possible.

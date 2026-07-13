@@ -389,6 +389,42 @@ def test_apply_call_correction_updates_existing_row(tmp_path):
     assert rows[0]["status"] == "corrected"
 
 
+def test_apply_call_correction_reports_unchanged_without_writing(tmp_path):
+    module = _load_call_intake()
+    fake_sheets = FakeSheetsClient(rows=[{
+        "call_id": "call_demo",
+        "status": "new",
+        "type": "project",
+        "title": "Old title",
+        "deadline": "2026-10-01",
+    }])
+    module.reset_for_tests(
+        fake_inbox=[],
+        certified_senders="alice@example.com",
+        table_path=tmp_path / "calls.csv",
+        response_log_path=tmp_path / "responses.jsonl",
+        sheet_id="sheet-1",
+        sheet_name="Calls",
+        table_targets="sheets",
+    )
+    module._sheets_client = fake_sheets
+    correction_email = "From: Alice <alice@example.com>\nSubject: Re: Call\nMessage-ID: <m2@example.com>\n\nBody"
+    repeated = json.dumps({
+        "call_id": "call_demo",
+        "title": "Old title",
+        "deadline": "2026-10-01",
+    })
+
+    status = module.apply_call_correction.fn(
+        correction_email,
+        module.normalize_correction_json.fn(correction_email, repeated),
+    )
+
+    assert status == "unchanged:call_demo"
+    assert fake_sheets.rows[0]["status"] == "new"
+    assert fake_sheets.writes == []
+
+
 def test_apply_call_correction_updates_google_sheet(tmp_path):
     module = _load_call_intake()
     fake_sheets = FakeSheetsClient(rows=[{
@@ -602,6 +638,22 @@ def test_gmail_reply_message_requires_sender_recipient_match(monkeypatch):
         assert "does not match" in str(exc)
     else:
         raise AssertionError("Expected mismatched recipient to be rejected")
+
+
+def test_gmail_client_strips_quoted_previous_response():
+    client = _load_call_intake_email_client()
+    body = (
+        "Please change the deadline to 2026-11-01.\n\n"
+        "On Sun, Jul 12, 2026 at 8:00 PM ZipperGen <zippergen.sandbox@gmail.com> wrote:\n"
+        "> {\n"
+        ">   \"call_id\": \"call_demo\",\n"
+        ">   \"deadline\": \"2026-10-01\"\n"
+        "> }\n"
+    )
+
+    stripped = client._strip_quoted_reply(body)
+
+    assert stripped == "Please change the deadline to 2026-11-01."
 
 
 def test_call_intake_skips_llm_for_uncertified_sender(tmp_path):
