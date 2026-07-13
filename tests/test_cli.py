@@ -142,6 +142,122 @@ def test_run_command_calls_setup_hook_with_options(tmp_path, capsys):
     assert json.loads(captured.out) == {"result": "live:hook:deploy"}
 
 
+def test_deploy_local_creates_profile_and_runs_by_name(tmp_path, monkeypatch, capsys):
+    workflow_path = tmp_path / "deploy_workflow.py"
+    workflow_path.write_text(WORKFLOW_SOURCE)
+    zippergen_home = tmp_path / "zg-home"
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(zippergen_home))
+
+    rc = main([
+        "deploy-local",
+        f"{workflow_path}:hello",
+        "--name",
+        "hello-prod",
+        "--llm",
+        "mock",
+        "--input",
+        "topic=deploy",
+        "--timeout",
+        "10",
+    ])
+
+    captured = capsys.readouterr()
+    profile_path = zippergen_home / "deployments" / "hello-prod.json"
+    script_path = zippergen_home / "deployments" / "hello-prod.sh"
+    service_path = zippergen_home / "deployments" / "zippergen-hello-prod.service"
+    store_path = zippergen_home / "runs" / "hello-prod.sqlite"
+    profile = json.loads(profile_path.read_text())
+    assert rc == 0
+    assert "Run: zippergen run-deployment hello-prod" in captured.out
+    assert profile["name"] == "hello-prod"
+    assert profile["workflow"] == f"{workflow_path}:hello"
+    assert profile["store"] == str(store_path)
+    assert profile["llm"] == "mock"
+    assert profile["inputs"] == {"topic": "deploy"}
+    assert script_path.exists()
+    assert service_path.exists()
+
+    rc = main(["run-deployment", "hello-prod"])
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert store_path.exists()
+    assert json.loads(captured.out) == {"result": "deploy!"}
+
+    rc = main(["status", "hello-prod", "--json"])
+    captured = capsys.readouterr()
+    status = json.loads(captured.out)
+    assert rc == 0
+    assert status["store"] == str(store_path)
+    assert status["state"] == "done"
+
+
+def test_start_deployment_dry_run_prints_systemd_commands(tmp_path, monkeypatch, capsys):
+    workflow_path = tmp_path / "deploy_workflow.py"
+    workflow_path.write_text(WORKFLOW_SOURCE)
+    zippergen_home = tmp_path / "zg-home"
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(zippergen_home))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    main([
+        "deploy-local",
+        f"{workflow_path}:hello",
+        "--name",
+        "hello-prod",
+    ])
+    capsys.readouterr()
+
+    rc = main(["start", "hello-prod", "--enable", "--dry-run"])
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "Install systemd unit:" in captured.out
+    assert "zippergen-hello-prod.service" in captured.out
+    assert "systemctl --user daemon-reload" in captured.out
+    assert "systemctl --user enable zippergen-hello-prod.service" in captured.out
+    assert "systemctl --user start zippergen-hello-prod.service" in captured.out
+
+
+def test_logs_command_tails_deployment_log(tmp_path, monkeypatch, capsys):
+    workflow_path = tmp_path / "deploy_workflow.py"
+    workflow_path.write_text(WORKFLOW_SOURCE)
+    zippergen_home = tmp_path / "zg-home"
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(zippergen_home))
+    main([
+        "deploy-local",
+        f"{workflow_path}:hello",
+        "--name",
+        "hello-prod",
+    ])
+    capsys.readouterr()
+    profile = json.loads((zippergen_home / "deployments" / "hello-prod.json").read_text())
+    log_path = profile["log"]
+    with open(log_path, "w") as f:
+        f.write("first\nsecond\nthird\n")
+
+    rc = main(["logs", "hello-prod", "--tail", "2"])
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert captured.out.splitlines() == ["second", "third"]
+
+
+def test_status_rejects_deployment_and_store_together(tmp_path, monkeypatch):
+    zippergen_home = tmp_path / "zg-home"
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(zippergen_home))
+    (zippergen_home / "deployments").mkdir(parents=True)
+    (zippergen_home / "deployments" / "demo.json").write_text(json.dumps({
+        "name": "demo",
+        "workflow": "missing.py:demo",
+        "store": str(tmp_path / "demo.sqlite"),
+    }))
+
+    try:
+        main(["status", "demo", "--store", str(tmp_path / "other.sqlite")])
+    except SystemExit as exc:
+        assert "either a deployment name or --store" in str(exc)
+    else:
+        raise AssertionError("status should reject ambiguous store selection")
+
+
 def test_status_command_reports_completed_run(tmp_path, capsys):
     workflow_path = tmp_path / "status_workflow.py"
     workflow_path.write_text(WORKFLOW_SOURCE)

@@ -221,6 +221,36 @@ zippergen trace --store ~/.zippergen/runs/hello.sqlite --tail 50
 zippergen trace --store ~/.zippergen/runs/hello.sqlite --after <rowid> --json
 ```
 
+For long-running local deployments, create a named profile instead of
+remembering the full command:
+
+```bash
+zippergen deploy-local examples/hello.py:hello \
+  --name hello \
+  --llm openai:gpt-4o \
+  --input topic="Say hello to ZipperGen"
+
+zippergen run-deployment hello
+zippergen status hello
+zippergen trace hello --tail 50
+zippergen logs hello --tail 100
+```
+
+The profile is written under `~/.zippergen/deployments/`, with a stable SQLite
+store under `~/.zippergen/runs/`, a log path under `~/.zippergen/logs/`, and a
+generated systemd user-service template. This is the first step toward
+`zippergen deploy`; it avoids operational archaeology while keeping secrets out
+of the repository.
+
+On Linux systems with user-level systemd, ZipperGen can install and control the
+generated service directly:
+
+```bash
+zippergen start hello --enable
+zippergen restart hello
+zippergen stop hello
+```
+
 List and complete human approvals without the browser UI:
 
 ```bash
@@ -252,10 +282,8 @@ export ZIPPERGEN_TELEGRAM_CHAT_ID=<chat-id>
 zippergen notify telegram --store ~/.zippergen/runs/command-center.sqlite --watch
 ```
 
-For continuous local deployments, run the workflow with `--timeout 0` and use
-the `launchd`/`systemd` templates in `deploy/`. See the beginner deployment
-booklet in [`docs/local-deployment.md`](docs/local-deployment.md) for the full
-step-by-step recipe.
+For deeper setup details, see the beginner deployment booklet in
+[`docs/local-deployment.md`](docs/local-deployment.md).
 
 Workflow modules may define an optional setup hook:
 

@@ -47,7 +47,10 @@ import hashlib
 import importlib
 import importlib.util
 import json
+import os
 import re
+import shlex
+import subprocess
 import sys
 import time
 from dataclasses import dataclass
@@ -251,6 +254,217 @@ def _ensure_store_parent(path: str) -> str:
     expanded = Path(path).expanduser()
     expanded.parent.mkdir(parents=True, exist_ok=True)
     return str(expanded)
+
+
+def _zippergen_home() -> Path:
+    return Path(os.environ.get("ZIPPERGEN_HOME", str(Path.home() / ".zippergen"))).expanduser()
+
+
+def _deployments_dir() -> Path:
+    return _zippergen_home() / "deployments"
+
+
+def _deployment_profile_path(name: str) -> Path:
+    return _deployments_dir() / f"{_slug(name)}.json"
+
+
+def _deployment_script_path(name: str) -> Path:
+    return _deployments_dir() / f"{_slug(name)}.sh"
+
+
+def _deployment_service_path(name: str) -> Path:
+    return _deployments_dir() / f"zippergen-{_slug(name)}.service"
+
+
+def _systemd_user_dir() -> Path:
+    config_home = Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config"))).expanduser()
+    return config_home / "systemd" / "user"
+
+
+def _systemd_unit_name(name: str) -> str:
+    return f"zippergen-{_slug(name)}.service"
+
+
+def _installed_systemd_service_path(name: str) -> Path:
+    return _systemd_user_dir() / _systemd_unit_name(name)
+
+
+def _default_deployment_store_path(name: str) -> str:
+    return str(_zippergen_home() / "runs" / f"{_slug(name)}.sqlite")
+
+
+def _default_deployment_log_path(name: str) -> str:
+    return str(_zippergen_home() / "logs" / f"{_slug(name)}.log")
+
+
+def _load_deployment_profile(name: str) -> dict[str, object]:
+    path = _deployment_profile_path(name)
+    if not path.exists():
+        raise SystemExit(f"Deployment profile not found: {name}")
+    try:
+        profile = json.loads(path.read_text())
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"Deployment profile is not valid JSON: {path}") from exc
+    if not isinstance(profile, dict):
+        raise SystemExit(f"Deployment profile is not an object: {path}")
+    return profile
+
+
+def _deployment_name_from_workflow(workflow_spec: str, wf: Workflow) -> str:
+    base = workflow_spec.split(":", 1)[0]
+    stem = Path(base).stem if _looks_like_path(base) else base.rsplit(".", 1)[-1]
+    return _slug(f"{stem}-{wf.name}")
+
+
+def _jsonable_kv_pairs(values: dict[str, object]) -> list[str]:
+    return [f"{key}={json.dumps(value, default=str)}" for key, value in sorted(values.items())]
+
+
+def _run_args_from_deployment(profile: dict[str, object]):
+    timeout_raw = profile.get("timeout", 0.0)
+    timeout = float(timeout_raw) if isinstance(timeout_raw, (int, float, str)) else 0.0
+    return argparse.Namespace(
+        workflow=str(profile["workflow"]),
+        llm=profile.get("llm") or None,
+        llm_idle_timeout=profile.get("llm_idle_timeout"),
+        store=str(profile["store"]),
+        input=[],
+        input_json=json.dumps(profile.get("inputs") or {}, default=str),
+        option=_jsonable_kv_pairs(profile.get("options") or {}),  # type: ignore[arg-type]
+        services=profile.get("services") or None,
+        ui=bool(profile.get("ui", False)),
+        timeout=timeout,
+        execution=str(profile.get("execution", "sqlite")),
+        show_decisions=bool(profile.get("show_decisions", False)),
+    )
+
+
+def _deployment_command(name: str, *, python_executable: str | None = None) -> str:
+    python = python_executable or sys.executable
+    return f"{shlex.quote(python)} -m zippergen.serve run-deployment {shlex.quote(_slug(name))}"
+
+
+def _write_deployment_artifacts(profile: dict[str, object]) -> None:
+    name = str(profile["name"])
+    profile_path = _deployment_profile_path(name)
+    script_path = _deployment_script_path(name)
+    service_path = _deployment_service_path(name)
+    Path(str(profile["store"])).expanduser().parent.mkdir(parents=True, exist_ok=True)
+    Path(str(profile["log"])).expanduser().parent.mkdir(parents=True, exist_ok=True)
+    _deployments_dir().mkdir(parents=True, exist_ok=True)
+
+    profile_path.write_text(json.dumps(profile, indent=2, sort_keys=True) + "\n")
+    script_path.write_text(
+        "#!/bin/sh\n"
+        "set -eu\n"
+        f"cd {shlex.quote(str(profile['cwd']))}\n"
+        f"exec {_deployment_command(name, python_executable=str(profile.get('python') or sys.executable))}\n"
+    )
+    script_path.chmod(0o755)
+    service_path.write_text(
+        "[Unit]\n"
+        f"Description=ZipperGen deployment {name}\n"
+        "After=network-online.target\n\n"
+        "[Service]\n"
+        "Type=simple\n"
+        f"WorkingDirectory={profile['cwd']}\n"
+        f"ExecStart={script_path}\n"
+        "Restart=always\n"
+        "RestartSec=10\n"
+        f"StandardOutput=append:{profile['log']}\n"
+        f"StandardError=append:{profile['log']}\n\n"
+        "[Install]\n"
+        "WantedBy=default.target\n"
+    )
+
+
+def _install_systemd_unit(profile: dict[str, object], *, dry_run: bool = False) -> Path:
+    name = str(profile["name"])
+    _write_deployment_artifacts(profile)
+    source = _deployment_service_path(name)
+    target = _installed_systemd_service_path(name)
+    if dry_run:
+        print(f"Install systemd unit: {source} -> {target}")
+        return target
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(source.read_text())
+    return target
+
+
+def _systemctl_command(*args: str) -> list[str]:
+    systemctl = os.environ.get("ZIPPERGEN_SYSTEMCTL", "systemctl")
+    return [systemctl, "--user", *args]
+
+
+def _run_systemctl(args: list[str], *, dry_run: bool = False) -> None:
+    if dry_run:
+        print(shlex.join(args))
+        return
+    try:
+        subprocess.run(args, check=True)
+    except FileNotFoundError as exc:
+        raise SystemExit("systemctl was not found. Use `run-deployment` directly or install systemd user services.") from exc
+    except subprocess.CalledProcessError as exc:
+        command = shlex.join(args)
+        raise SystemExit(f"Command failed with exit code {exc.returncode}: {command}") from exc
+
+
+def _deployment_lifecycle_command(args, action: str) -> int:
+    profile = _load_deployment_profile(args.name)
+    name = str(profile["name"])
+    unit = _systemd_unit_name(name)
+    if action in {"start", "restart"}:
+        target = _install_systemd_unit(profile, dry_run=args.dry_run)
+        if not args.dry_run:
+            print(f"Installed systemd unit: {target}")
+        _run_systemctl(_systemctl_command("daemon-reload"), dry_run=args.dry_run)
+        if action == "start" and args.enable:
+            _run_systemctl(_systemctl_command("enable", unit), dry_run=args.dry_run)
+    _run_systemctl(_systemctl_command(action, unit), dry_run=args.dry_run)
+    if args.dry_run:
+        return 0
+    done = {"start": "Started", "stop": "Stopped", "restart": "Restarted"}[action]
+    print(f"{done} deployment {name} ({unit}).")
+    return 0
+
+
+def _logs_command(args) -> int:
+    if args.tail <= 0:
+        raise SystemExit("--tail must be greater than 0.")
+    profile = _load_deployment_profile(args.name)
+    log_path = Path(str(profile.get("log") or _default_deployment_log_path(args.name))).expanduser()
+    if not log_path.exists():
+        print(f"Log does not exist yet: {log_path}")
+        return 0
+
+    def print_tail() -> int:
+        lines = log_path.read_text(errors="replace").splitlines()
+        for line in lines[-args.tail:]:
+            print(line)
+        return len(lines)
+
+    seen = print_tail()
+    if not args.follow:
+        return 0
+    while True:
+        time.sleep(args.interval)
+        lines = log_path.read_text(errors="replace").splitlines()
+        for line in lines[seen:]:
+            print(line)
+        seen = len(lines)
+
+
+def _resolve_store_arg(args) -> str:
+    deployment = getattr(args, "deployment", None)
+    store = getattr(args, "store", None)
+    if deployment and store:
+        raise SystemExit("Use either a deployment name or --store, not both.")
+    if deployment:
+        profile = _load_deployment_profile(deployment)
+        return str(profile["store"])
+    if store:
+        return str(store)
+    raise SystemExit("Provide a deployment name or --store.")
 
 
 def _call_setup_hook(module: ModuleType, config: RunConfig) -> None:
@@ -602,8 +816,75 @@ def _run_workflow_command(args) -> int:
     return 0
 
 
+def _deploy_local_command(args) -> int:
+    wf, _module = load_workflow_spec(args.workflow)
+    name = _slug(args.name or _deployment_name_from_workflow(args.workflow, wf))
+    profile_path = _deployment_profile_path(name)
+    if profile_path.exists() and not args.force:
+        raise SystemExit(f"Deployment profile already exists: {name}. Use --force to overwrite.")
+
+    inputs = _parse_input_json(args.input_json)
+    inputs.update(_parse_inputs(args.input))
+    options = _parse_options(args.option)
+    store_path = _ensure_store_parent(args.store or _default_deployment_store_path(name))
+    log_path = str(Path(args.log or _default_deployment_log_path(name)).expanduser())
+    Path(log_path).parent.mkdir(parents=True, exist_ok=True)
+    profile = {
+        "schema_version": 1,
+        "name": name,
+        "workflow": args.workflow,
+        "cwd": str(Path.cwd()),
+        "store": store_path,
+        "log": log_path,
+        "llm": args.llm,
+        "llm_idle_timeout": args.llm_idle_timeout,
+        "services": args.services,
+        "options": options,
+        "inputs": inputs,
+        "timeout": args.timeout,
+        "execution": "sqlite",
+        "ui": args.ui,
+        "show_decisions": args.show_decisions,
+        "created_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "python": sys.executable,
+    }
+    _write_deployment_artifacts(profile)
+
+    if args.json:
+        print(json.dumps({
+            **profile,
+            "profile": str(profile_path),
+            "script": str(_deployment_script_path(name)),
+            "systemd_unit": str(_deployment_service_path(name)),
+        }, default=str, sort_keys=True))
+        return 0
+
+    print(f"Deployment: {name}")
+    print(f"Profile: {profile_path}")
+    print(f"Store: {store_path}")
+    print(f"Log: {log_path}")
+    print(f"Run: zippergen run-deployment {name}")
+    print(f"Status: zippergen status {name}")
+    print(f"Trace: zippergen trace {name}")
+    print(f"Systemd unit template: {_deployment_service_path(name)}")
+    print("Install later with: mkdir -p ~/.config/systemd/user && cp "
+          f"{_deployment_service_path(name)} ~/.config/systemd/user/")
+    return 0
+
+
+def _run_deployment_command(args) -> int:
+    profile = _load_deployment_profile(args.name)
+    cwd = Path(str(profile.get("cwd") or ".")).expanduser()
+    old_cwd = Path.cwd()
+    try:
+        os.chdir(cwd)
+        return _run_workflow_command(_run_args_from_deployment(profile))
+    finally:
+        os.chdir(old_cwd)
+
+
 def _status_command(args) -> int:
-    status = _store_status(args.store)
+    status = _store_status(_resolve_store_arg(args))
     if args.json:
         print(json.dumps(status, default=str))
     else:
@@ -612,7 +893,7 @@ def _status_command(args) -> int:
 
 
 def _trace_command(args) -> int:
-    events = _load_trace_events(args.store, after_rowid=args.after, limit=args.tail)
+    events = _load_trace_events(_resolve_store_arg(args), after_rowid=args.after, limit=args.tail)
     if args.json:
         print(json.dumps(events, default=str))
     else:
@@ -813,12 +1094,53 @@ def main(argv=None) -> int:
     rn.add_argument("--execution", choices=("sqlite", "memory"), default="sqlite", help="Execution backend.")
     rn.add_argument("--show-decisions", action="store_true", help="Show branch/control events in ZipperChat.")
 
+    dl = sub.add_parser("deploy-local", help="create a named local deployment profile")
+    dl.add_argument("workflow", help="Workflow spec: module:workflow or path.py:workflow")
+    dl.add_argument("--name", help="Deployment name. Defaults to a slug derived from the workflow.")
+    dl.add_argument("--llm", metavar="SPEC", help="LLM spec stored in the deployment profile.")
+    dl.add_argument("--llm-idle-timeout", type=float, help="Release a managed local LLM after this many idle seconds.")
+    dl.add_argument("--store", help="SQLite store path. Defaults to $ZIPPERGEN_HOME/runs/<name>.sqlite")
+    dl.add_argument("--log", help="Log path. Defaults to $ZIPPERGEN_HOME/logs/<name>.log")
+    dl.add_argument("--input", action="append", default=[], metavar="name=value", help="Workflow input value.")
+    dl.add_argument("--input-json", help="Workflow inputs as a JSON object.")
+    dl.add_argument("--option", action="append", default=[], metavar="name=value", help="Option passed to zippergen_setup(config).")
+    dl.add_argument("--services", choices=("fake", "live"), help="Shortcut stored as services=<value>.")
+    dl.add_argument("--ui", action="store_true", help="Start legacy ZipperChat visualization when the deployment runs.")
+    dl.add_argument("--timeout", type=float, default=0.0, help="Workflow timeout in seconds; default 0 for no deadline.")
+    dl.add_argument("--show-decisions", action="store_true", help="Show branch/control events in ZipperChat.")
+    dl.add_argument("--force", action="store_true", help="Overwrite an existing deployment profile.")
+    dl.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+
+    rd = sub.add_parser("run-deployment", help="run a named local deployment profile")
+    rd.add_argument("name", help="Deployment name.")
+
+    start = sub.add_parser("start", help="start a named deployment as a systemd user service")
+    start.add_argument("name", help="Deployment name.")
+    start.add_argument("--enable", action="store_true", help="Enable the service to start automatically for this user.")
+    start.add_argument("--dry-run", action="store_true", help="Print the systemd commands without running them.")
+
+    stop = sub.add_parser("stop", help="stop a named deployment systemd user service")
+    stop.add_argument("name", help="Deployment name.")
+    stop.add_argument("--dry-run", action="store_true", help="Print the systemd command without running it.")
+
+    restart = sub.add_parser("restart", help="restart a named deployment systemd user service")
+    restart.add_argument("name", help="Deployment name.")
+    restart.add_argument("--dry-run", action="store_true", help="Print the systemd commands without running them.")
+
+    logs = sub.add_parser("logs", help="show logs for a named deployment")
+    logs.add_argument("name", help="Deployment name.")
+    logs.add_argument("--tail", type=int, default=80, help="Number of log lines to show.")
+    logs.add_argument("--follow", action="store_true", help="Keep watching the log file.")
+    logs.add_argument("--interval", type=float, default=1.0, help="Polling interval in seconds for --follow.")
+
     st = sub.add_parser("status", help="show local SQLite deployment status")
-    st.add_argument("--store", required=True, help="SQLite store path.")
+    st.add_argument("deployment", nargs="?", help="Deployment name.")
+    st.add_argument("--store", help="SQLite store path.")
     st.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
 
     tr = sub.add_parser("trace", help="show recent trace events from a local SQLite store")
-    tr.add_argument("--store", required=True, help="SQLite store path.")
+    tr.add_argument("deployment", nargs="?", help="Deployment name.")
+    tr.add_argument("--store", help="SQLite store path.")
     tr.add_argument("--tail", type=int, default=50, help="Maximum number of trace events to show.")
     tr.add_argument("--after", type=int, default=0, help="Only show trace events after this event rowid.")
     tr.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
@@ -877,6 +1199,18 @@ def main(argv=None) -> int:
 
     if args.cmd == "run":
         return _run_workflow_command(args)
+    if args.cmd == "deploy-local":
+        return _deploy_local_command(args)
+    if args.cmd == "run-deployment":
+        return _run_deployment_command(args)
+    if args.cmd == "start":
+        return _deployment_lifecycle_command(args, "start")
+    if args.cmd == "stop":
+        return _deployment_lifecycle_command(args, "stop")
+    if args.cmd == "restart":
+        return _deployment_lifecycle_command(args, "restart")
+    if args.cmd == "logs":
+        return _logs_command(args)
     if args.cmd == "status":
         return _status_command(args)
     if args.cmd == "trace":
