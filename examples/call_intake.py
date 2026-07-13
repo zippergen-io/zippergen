@@ -819,7 +819,14 @@ def normalize_call_json(email: str, call_json: str) -> str:
 
 @pure
 def normalize_correction_json(email: str, call_json: str) -> str:
-    return _normalise_payload(email, call_json, status="corrected")
+    body = _parse_email_text(email).get("body", "")
+    try:
+        explicit_json = _extract_json_object(body)
+    except ValueError:
+        source_json = call_json
+    else:
+        source_json = json.dumps(explicit_json, sort_keys=True)
+    return _normalise_payload(email, source_json, status="corrected")
 
 
 @effect
@@ -1078,6 +1085,8 @@ Extract corrected call details from this reply.
 Return only one JSON object.
 
 Rules:
+- If the sender wrote a JSON object, copy its fields and values exactly.
+- Do not reinterpret, normalize, or change date/time values from sender-written JSON.
 - Use only the new text written by the sender.
 - Ignore quoted previous emails, quoted ZipperGen responses, and lines starting with ">".
 - Preserve any call_id present in the email.
