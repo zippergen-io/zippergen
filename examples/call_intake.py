@@ -745,6 +745,29 @@ def _material_correction_fields(existing: dict[str, str], incoming: dict[str, st
     ]
 
 
+def _status_call_id(table_status_text: str) -> str:
+    parts = table_status_text.split(":", 2)
+    return parts[1] if len(parts) >= 2 else ""
+
+
+def _status_changed_fields(table_status_text: str) -> list[str]:
+    if not table_status_text.startswith("updated:"):
+        return []
+    parts = table_status_text.split(":", 2)
+    if len(parts) < 3:
+        return []
+    return [field for field in parts[2].split(",") if field]
+
+
+def _record_for_call_id(call_id: str) -> dict[str, str] | None:
+    if not call_id:
+        return None
+    for row in _read_records():
+        if row.get("call_id") == call_id:
+            return row
+    return None
+
+
 def _same_source_message(existing: dict[str, str], incoming: dict[str, str]) -> bool:
     source_id = incoming.get("source_message_id", "")
     return bool(source_id) and existing.get("source_message_id", "") == source_id
@@ -956,7 +979,7 @@ def apply_call_correction(email: str, call_json: str) -> str:
             _write_records(rows)
             fields_text = ", ".join(changed_fields)
             print(f"[CallIntake] updated {incoming['call_id']} ({fields_text}) in {_table_location_text()}")
-            return f"updated:{incoming['call_id']}"
+            return f"updated:{incoming['call_id']}:{','.join(changed_fields)}"
     print(f"[CallIntake] Correction for missing {incoming['call_id']} ignored")
     return f"missing:{incoming['call_id']}"
 
@@ -1031,11 +1054,20 @@ def _response_heading(kind: str) -> str:
     return "I recorded this call with the following JSON."
 
 
-def _response_body(call_json_text: str, table_status_text: str, *, correction: bool) -> str:
-    data = _extract_json_object(call_json_text)
+def _response_body(
+    call_json_text: str,
+    table_status_text: str,
+    *,
+    correction: bool,
+    data: dict | None = None,
+) -> str:
+    if data is None:
+        data = _response_data(call_json_text, table_status_text, correction=correction)
     pretty = json.dumps(data, indent=2, sort_keys=True)
     kind = _response_kind(table_status_text, correction=correction)
     heading = _response_heading(kind)
+    changed_fields = _status_changed_fields(table_status_text)
+    changed_line = f"\nChanged fields: {', '.join(changed_fields)}\n" if changed_fields else ""
     reply_to = _intake_reply_address()
     correction_instruction = (
         f"If anything is wrong, reply to {reply_to} with corrected JSON. "
@@ -1045,22 +1077,33 @@ def _response_body(call_json_text: str, table_status_text: str, *, correction: b
     return (
         f"Hello,\n\n{heading}\n\n"
         f"{pretty}\n\n"
+        f"{changed_line}"
         f"{correction_instruction}Please keep the call_id unchanged.\n\n"
         f"Table status: {table_status_text}\n"
     )
 
 
+def _response_data(call_json_text: str, table_status_text: str, *, correction: bool) -> dict:
+    data = _extract_json_object(call_json_text)
+    if not correction or table_status_text.startswith("missing:"):
+        return data
+    call_id = _status_call_id(table_status_text) or str(data.get("call_id", ""))
+    row = _record_for_call_id(call_id)
+    return row if row is not None else data
+
+
 def _send_response(email: str, call_json_text: str, table_status_text: str, *, correction: bool) -> str:
     meta = _parse_email_text(email)
     recipient = _validated_reply_recipient(meta)
-    data = _extract_json_object(call_json_text)
+    data = _response_data(call_json_text, table_status_text, correction=correction)
     call_id = str(data.get("call_id", "call"))
     purpose = _response_kind(table_status_text, correction=correction)
     message_key = meta.get("message_id", "") or meta.get("thread_id", "") or meta.get("gmail_id", "")
-    key = _short_hash("\n".join([purpose, message_key, call_id, table_status_text, call_json_text]))
+    response_json_text = json.dumps(data, sort_keys=True)
+    key = _short_hash("\n".join([purpose, message_key, call_id, table_status_text, response_json_text]))
     subject_prefix = _response_subject_prefix(purpose)
     subject = f"{subject_prefix}: {call_id}"
-    body = _response_body(call_json_text, table_status_text, correction=correction)
+    body = _response_body(call_json_text, table_status_text, correction=correction, data=data)
 
     if _response_log_contains(key) or _response_log_contains_source(message_key):
         return f"already_recorded:{call_id}"
@@ -1072,6 +1115,7 @@ def _send_response(email: str, call_json_text: str, table_status_text: str, *, c
         "recipient": recipient,
         "subject": subject,
         "body": body,
+        "changed_fields": _status_changed_fields(table_status_text),
         "source_message_key": message_key,
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
     }

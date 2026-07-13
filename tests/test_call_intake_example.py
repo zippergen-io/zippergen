@@ -463,7 +463,7 @@ def test_apply_call_correction_updates_existing_row(tmp_path):
     rows = _rows(table)
 
     assert first_status == "created:call_demo"
-    assert correction_status == "updated:call_demo"
+    assert correction_status == "updated:call_demo:title,amount_of_funding"
     assert len(rows) == 1
     assert rows[0]["call_id"] == "call_demo"
     assert rows[0]["title"] == "New title"
@@ -539,7 +539,7 @@ def test_apply_call_correction_updates_google_sheet(tmp_path):
         module.normalize_correction_json.fn(correction_email, correction),
     )
 
-    assert correction_status == "updated:call_demo"
+    assert correction_status == "updated:call_demo:deadline,amount_of_funding"
     assert fake_sheets.rows[0]["title"] == "Old title"
     assert fake_sheets.rows[0]["deadline"] == "2026-11-01"
     assert fake_sheets.rows[0]["amount_of_funding"] == "EUR 1M"
@@ -577,7 +577,7 @@ def test_apply_call_correction_maps_submission_deadline_to_deadline(tmp_path):
         module.normalize_correction_json.fn(correction_email, correction),
     )
 
-    assert correction_status == "updated:call_demo"
+    assert correction_status == "updated:call_demo:deadline"
     assert fake_sheets.rows[0]["deadline"] == "2026-11-15"
     assert fake_sheets.rows[0]["status"] == "corrected"
     assert fake_sheets.writes[0][0] == "sheet-1"
@@ -667,6 +667,45 @@ def test_send_response_uses_gmail_send_and_records_timestamp(tmp_path):
     assert records[0]["external_id"] == "gmail-sent-1"
     assert records[0]["source_message_key"] == "<m1@example.com>"
     assert isinstance(records[0]["sent_at"], float)
+
+
+def test_send_correction_response_reports_full_row_and_changed_fields(tmp_path):
+    module = _load_call_intake()
+    table = tmp_path / "calls.csv"
+    response_log = tmp_path / "responses.jsonl"
+    module.reset_for_tests(
+        fake_inbox=[],
+        certified_senders="alice@example.com",
+        table_path=table,
+        response_log_path=response_log,
+        send_mode="log",
+    )
+    original_email = "From: Alice <alice@example.com>\nSubject: Call\nMessage-ID: <m1@example.com>\n\nBody"
+    correction_email = "From: Alice <alice@example.com>\nSubject: Re: Call\nMessage-ID: <m2@example.com>\n\nBody"
+    original = json.dumps({
+        "call_id": "call_demo",
+        "type": "project",
+        "title": "Demo call",
+        "deadline": "2026-10-01",
+    })
+    correction = json.dumps({
+        "call_id": "call_demo",
+        "deadline": "2026-11-01",
+    })
+    module.insert_call_record.fn(original_email, module.normalize_call_json.fn(original_email, original))
+    correction_json = module.normalize_correction_json.fn(correction_email, correction)
+    table_status = module.apply_call_correction.fn(correction_email, correction_json)
+
+    response_status = module.send_correction_response.fn(correction_email, correction_json, table_status)
+    record = json.loads(response_log.read_text().splitlines()[0])
+
+    assert table_status == "updated:call_demo:deadline"
+    assert response_status == "logged:call_demo"
+    assert record["changed_fields"] == ["deadline"]
+    assert '"title": "Demo call"' in record["body"]
+    assert '"deadline": "2026-11-01"' in record["body"]
+    assert "Changed fields: deadline" in record["body"]
+    assert "Table status: updated:call_demo:deadline" in record["body"]
 
 
 def test_send_response_skips_same_source_message_even_with_changed_call_id(tmp_path):
