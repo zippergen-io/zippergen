@@ -233,6 +233,57 @@ zippergen validate examples/call_intake.py:call_intake
 zippergen validate examples/call_intake.py:call_intake --json
 ```
 
+Compare workflow meaning instead of relying only on source-line diffs. For two
+separate workflow modules:
+
+```bash
+zippergen diff before.py:workflow after.py:workflow
+zippergen diff before.py:workflow after.py:workflow --format json
+```
+
+When modifying a workflow in place, save a stable semantic baseline first:
+
+```bash
+zippergen snapshot path/to/workflow.py:workflow -o /tmp/workflow-before.json
+# edit path/to/workflow.py using a coding assistant or editor
+zippergen validate path/to/workflow.py:workflow
+zippergen diff /tmp/workflow-before.json path/to/workflow.py:workflow
+```
+
+The diff reports changes to participants, owned inputs and outputs, messages,
+control context, action kinds and implementations, parallel regions, and
+deployment requirements while ignoring irrelevant source layout.
+
+## Creating And Refining Workflows From Prompts
+
+The intended authoring loop is prompt → Python workflow → validated semantic
+views. The coding assistant performs the open-ended translation; ZipperGen
+provides the deterministic protocol validation, projections, views, and diffs.
+This keeps generated workflows as ordinary reviewable code instead of hiding
+them behind a separate visual builder or opaque generation service.
+
+This repository includes a reusable coding-assistant skill at
+`skills/zippergen-workflows/`. Repository-aware assistants are directed to it
+by `AGENTS.md`. Give the assistant one or several prompts such as:
+
+> Create a workflow that watches a support inbox. A triage agent classifies each
+> request, billing and technical specialists work independently when both are
+> needed, and a human approves any refund over €100. Include guided deployment.
+
+For an existing workflow, describe the change and the behavior to preserve:
+
+> Extend `support.py:support` so enterprise refunds also require the account
+> owner's approval. Preserve the current routing for all other requests. Show
+> me the communication-only view and the local projections for Triage and the
+> account owner, then report the semantic diff.
+
+The bundled assistant workflow extracts participants, ownership, messages,
+actions, decisions, concurrency, human authority, and deployment requirements;
+edits the Python module and tests; runs `validate`; renders the requested global
+and local code views; and verifies refinements against a pre-edit semantic
+snapshot. Deployment is still a separate explicit action, so generating code
+does not silently start services or perform live effects.
+
 ## Local Deployment
 
 The guided path configures, validates, and starts a workflow in one command:

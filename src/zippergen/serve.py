@@ -70,6 +70,13 @@ from zippergen.deployment import (
     deployment_spec_from_module,
 )
 from zippergen.view import DETAILS, ViewOptions, render_workflow, workflow_view_data
+from zippergen.semantic import (
+    read_semantic_snapshot,
+    render_semantic_diff,
+    semantic_diff_models,
+    semantic_snapshot,
+    workflow_semantics,
+)
 from zippergen.syntax import Workflow, Lifeline
 from zippergen.projection import project
 from zippergen.store import (
@@ -1496,6 +1503,42 @@ def _validate_command(args) -> int:
     return 0 if result["valid"] else 1
 
 
+def _snapshot_command(args) -> int:
+    workflow, module = load_workflow_spec(args.workflow)
+    payload = json.dumps(semantic_snapshot(workflow, module), indent=2, default=str)
+    if args.output:
+        output_path = Path(args.output).expanduser().resolve()
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(payload + "\n")
+        print(f"Wrote semantic snapshot to {output_path}")
+    else:
+        print(payload)
+    return 0
+
+
+def _semantic_input(spec: str) -> dict[str, object]:
+    candidate = Path(spec).expanduser()
+    if candidate.is_file() and candidate.suffix.lower() == ".json":
+        try:
+            return read_semantic_snapshot(json.loads(candidate.read_text()))
+        except (json.JSONDecodeError, ValueError) as exc:
+            raise SystemExit(f"Invalid semantic snapshot {candidate}: {exc}") from exc
+    workflow, module = load_workflow_spec(spec)
+    return workflow_semantics(workflow, module)
+
+
+def _diff_command(args) -> int:
+    result = semantic_diff_models(
+        _semantic_input(args.before),
+        _semantic_input(args.after),
+    )
+    if args.format == "json":
+        print(json.dumps(result, indent=2, default=str))
+    else:
+        print(render_semantic_diff(result))
+    return 0
+
+
 def _field_enabled(field: DeploymentField, values: dict[str, object]) -> bool:
     if not field.when:
         return True
@@ -2301,6 +2344,15 @@ def main(argv=None) -> int:
     validate.add_argument("workflow", help="Workflow spec: module:workflow or path.py:workflow")
     validate.add_argument("--json", action="store_true", help="Print machine-readable validation results.")
 
+    snapshot = sub.add_parser("snapshot", help="save a stable semantic workflow baseline")
+    snapshot.add_argument("workflow", help="Workflow spec: module:workflow or path.py:workflow")
+    snapshot.add_argument("--output", "-o", help="Write JSON to this path instead of standard output.")
+
+    semantic_diff_parser = sub.add_parser("diff", help="compare two workflows by semantic IR changes")
+    semantic_diff_parser.add_argument("before", help="Original workflow spec or semantic snapshot JSON.")
+    semantic_diff_parser.add_argument("after", help="Modified workflow spec or semantic snapshot JSON.")
+    semantic_diff_parser.add_argument("--format", choices=("code", "json"), default="code", help="Output format.")
+
     deploy = sub.add_parser("deploy", help="configure, validate, and start a workflow deployment")
     deploy.add_argument("target", help="Workflow spec or existing deployment name.")
     deploy.add_argument("--name", help="Deployment name; defaults to the workflow declaration or workflow name.")
@@ -2434,6 +2486,10 @@ def main(argv=None) -> int:
         return _show_command(args)
     if args.cmd == "validate":
         return _validate_command(args)
+    if args.cmd == "snapshot":
+        return _snapshot_command(args)
+    if args.cmd == "diff":
+        return _diff_command(args)
     if args.cmd == "deploy":
         return _deploy_command(args)
     if args.cmd == "configure":

@@ -222,6 +222,83 @@ def test_validate_command_checks_projection_and_deployment_metadata(tmp_path, ca
     assert all(check["status"] == "ok" for check in payload["checks"])
 
 
+def test_diff_command_reports_semantic_changes(tmp_path, capsys):
+    before_path = tmp_path / "before_workflow.py"
+    after_path = tmp_path / "after_workflow.py"
+    before_path.write_text(WORKFLOW_SOURCE)
+    after_path.write_text(WORKFLOW_SOURCE.replace("topic + \"!\"", "topic + \"?\""))
+
+    rc = main([
+        "diff",
+        f"{before_path}:hello",
+        f"{after_path}:hello",
+        "--format",
+        "json",
+    ])
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert rc == 0
+    assert payload["changed"] is True
+    changed = payload["changes"]["action_definitions"]["changed"]
+    assert changed[0]["name"] == "add_suffix"
+    assert "implementation_hash" in changed[0]["fields"]
+
+
+def test_diff_command_ignores_action_formatting_and_comments(tmp_path, capsys):
+    before_path = tmp_path / "before_workflow.py"
+    after_path = tmp_path / "after_workflow.py"
+    before_path.write_text(WORKFLOW_SOURCE)
+    after_path.write_text(
+        WORKFLOW_SOURCE.replace(
+            'return topic + "!"',
+            'return topic+"!"  # same implementation',
+        )
+    )
+
+    rc = main([
+        "diff",
+        f"{before_path}:hello",
+        f"{after_path}:hello",
+        "--format",
+        "json",
+    ])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert rc == 0
+    assert payload["changed"] is False
+
+
+def test_snapshot_then_diff_supports_assistant_refinement_loop(tmp_path, capsys):
+    workflow_path = tmp_path / "workflow.py"
+    snapshot_path = tmp_path / "before.json"
+    workflow_path.write_text(WORKFLOW_SOURCE)
+
+    rc = main([
+        "snapshot",
+        f"{workflow_path}:hello",
+        "--output",
+        str(snapshot_path),
+    ])
+    assert rc == 0
+    assert json.loads(snapshot_path.read_text())["schema"] == "zippergen.workflow-semantics.v1"
+    capsys.readouterr()
+
+    workflow_path.write_text(WORKFLOW_SOURCE.replace("topic + \"!\"", "topic + \"?\""))
+    rc = main([
+        "diff",
+        str(snapshot_path),
+        f"{workflow_path}:hello",
+        "--format",
+        "json",
+    ])
+
+    payload = json.loads(capsys.readouterr().out)
+    assert rc == 0
+    assert payload["changed"] is True
+    assert payload["changes"]["action_definitions"]["changed"][0]["name"] == "add_suffix"
+
+
 def test_deploy_local_creates_profile_and_runs_by_name(tmp_path, monkeypatch, capsys):
     workflow_path = tmp_path / "deploy_workflow.py"
     workflow_path.write_text(WORKFLOW_SOURCE)

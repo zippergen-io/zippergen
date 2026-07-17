@@ -12,6 +12,7 @@ from zippergen.runtime import *         # noqa: F401, F403
 from zippergen.sqlite_runner import *   # noqa: F401, F403
 from zippergen.deployment import *      # noqa: F401, F403
 from zippergen.view import *            # noqa: F401, F403
-from zippergen import syntax, actions, backends, human_backends, formula, demo, builder, projection, runtime, sqlite_runner, deployment, view
+from zippergen.semantic import *        # noqa: F401, F403
+from zippergen import syntax, actions, backends, human_backends, formula, demo, builder, projection, runtime, sqlite_runner, deployment, view, semantic
 
-__all__: list[str] = syntax.__all__ + actions.__all__ + backends.__all__ + human_backends.__all__ + formula.__all__ + demo.__all__ + builder.__all__ + projection.__all__ + runtime.__all__ + sqlite_runner.__all__ + deployment.__all__ + view.__all__  # type: ignore[assignment]
+__all__: list[str] = syntax.__all__ + actions.__all__ + backends.__all__ + human_backends.__all__ + formula.__all__ + demo.__all__ + builder.__all__ + projection.__all__ + runtime.__all__ + sqlite_runner.__all__ + deployment.__all__ + view.__all__ + semantic.__all__  # type: ignore[assignment]
