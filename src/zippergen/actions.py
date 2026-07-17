@@ -151,6 +151,8 @@ def planner(
         Additional coordination guidance, e.g. how to assign roles to workers.
         When omitted the runtime encourages the planner to use as many workers
         as reasonable.
+    max_retries : int, optional
+        Maximum number of generated workflow candidates to validate.
 
     Example::
 

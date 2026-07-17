@@ -1010,8 +1010,9 @@ def _exec_planner(action: PlannerAction, named_inputs: dict, llm_backend, trace=
     }
     known_actions = {name: len(outputs) for name, outputs in known_action_outputs.items()}
     allowed_lifelines = {outer_lifeline_name, *worker_names}
+    max_attempts = max(1, action.max_retries)
     attempts_used = 1
-    for attempt in range(action.max_retries):
+    for attempt in range(1, max_attempts + 1):
         error = _validate_planner_spec(
             spec,
             outer_lifeline_name,
@@ -1021,9 +1022,15 @@ def _exec_planner(action: PlannerAction, named_inputs: dict, llm_backend, trace=
             allowed_lifelines,
         )
         if error is None:
-            attempts_used = attempt + 1
+            attempts_used = attempt
             break
-        print(f"[planner] attempt {attempt + 1} failed: {error}")
+        print(f"[planner] attempt {attempt} failed: {error}")
+        if attempt == max_attempts:
+            attempts_str = f"{max_attempts} attempt{'s' if max_attempts > 1 else ''}"
+            raise RuntimeError(
+                f"Planner failed after {attempts_str}.\n"
+                f"Error: {error}\n\nWorkflow:\n{spec}"
+            )
         hint = ("""
 Hint: a lifeline already has every variable it produced —
 do NOT self-forward those back. Only send variables from OTHER lifelines.
@@ -1043,7 +1050,7 @@ Current (broken) workflow:
 {spec}"""
         spec_result = llm_backend(
             LLMAction(
-                name=f"_generate_spec_retry{attempt + 1}",
+                name=f"_generate_spec_retry{attempt}",
                 inputs=(), outputs=(("workflow_spec", str),),
                 system_prompt=system,
                 user_prompt=correction.replace("{", "{{").replace("}", "}}"),
@@ -1052,20 +1059,6 @@ Current (broken) workflow:
             {},
         )
         spec = _strip_fences(str(spec_result.get("workflow_spec", "")))
-    else:
-        error = _validate_planner_spec(
-            spec,
-            outer_lifeline_name,
-            known_actions,
-            input_types,
-            output_type,
-            allowed_lifelines,
-        )
-        if error:
-            raise RuntimeError(
-                f"Planner failed after {action.max_retries} attempts.\n"
-                f"Error: {error}\n\nWorkflow:\n{spec}"
-            )
 
     attempt_str = f"{attempts_used} attempt{'s' if attempts_used > 1 else ''}"
     print(f"\n{'='*60}\nGENERATED WORKFLOW  ({attempt_str})\n{'='*60}\n{spec}\n{'='*60}\n")

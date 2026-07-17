@@ -297,7 +297,7 @@ class PlannerAction:
     lifelines: tuple      # tuple of Lifeline used in inner workflows
     allow: tuple[str, ...] = ()          # enabled extensions: "pure", "llm", "if", "while"
     instructions: str | None = None      # optional user guidance on worker roles
-    max_retries: int = 3                 # max correction attempts on invalid generated spec
+    max_retries: int = 3                 # max generated specs to validate
 
     def __repr__(self) -> str:
         ins = ", ".join(f"{n}: {t.__name__}" for n, t in self.inputs)

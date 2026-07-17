@@ -1,5 +1,7 @@
 """Execution tests for runtime-generated planner workflows."""
 
+import pytest
+
 from zippergen.actions import planner, pure
 from zippergen.builder import workflow
 from zippergen.syntax import Lifeline
@@ -45,3 +47,35 @@ def generated_workflow() -> float:
 
     assert plan_float.outputs == (("plan_float", float),)
     assert planned_float(expression="2 - 4") == -2.0
+
+
+def test_planner_does_not_validate_extra_candidate_after_attempt_budget():
+    invalid_spec = """\
+@workflow
+def wrong_name() -> float:
+    Calculator: sub1 = subtract_float(2.0, 4.0)
+    Calculator(sub1) >> Planner(result)
+    return result @ Planner
+"""
+    valid_second_spec = """\
+@workflow
+def generated_workflow() -> float:
+    Calculator: sub1 = subtract_float(2.0, 4.0)
+    Calculator(sub1) >> Planner(result)
+    return result @ Planner
+"""
+    calls = []
+
+    def backend(action, inputs):
+        calls.append(action.name)
+        if len(calls) == 1:
+            return {"workflow_spec": invalid_spec}
+        return {"workflow_spec": valid_second_spec}
+
+    planned_float.configure(backend=backend, ui=False, timeout=5)
+
+    with pytest.raises(RuntimeError) as exc:
+        planned_float(expression="2 - 4")
+
+    assert "Planner failed after 1 attempt" in str(exc.value)
+    assert calls == ["_generate_spec"]
