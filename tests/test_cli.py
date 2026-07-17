@@ -1,4 +1,5 @@
 import json
+from pathlib import Path
 
 from zippergen.serve import main
 from zippergen.store import (
@@ -44,6 +45,52 @@ def add_prefix(topic: str) -> str:
 @workflow
 def setup_hello(topic: str @ User) -> str:
     User: reply = add_prefix(topic)
+    return reply @ User
+"""
+
+GUIDED_WORKFLOW_SOURCE = """
+import os
+
+from zippergen import DeploymentField, DeploymentSpec, Lifeline, pure, workflow
+
+User = Lifeline("User")
+PREFIX = ""
+
+zippergen_deployment = DeploymentSpec(
+    name="guided-demo",
+    fields=(
+        DeploymentField("prefix", "Reply prefix", default="guided", required=True),
+        DeploymentField(
+            "demo_token",
+            "Demo token",
+            target="env",
+            env="DEMO_TOKEN",
+            required=True,
+            secret=True,
+        ),
+        DeploymentField(
+            "mode",
+            "Demo mode",
+            target="env",
+            env="DEMO_MODE",
+            default="safe",
+            required=True,
+        ),
+    ),
+)
+
+def zippergen_setup(config):
+    global PREFIX
+    PREFIX = str(config.option("prefix", ""))
+
+@pure
+def describe(topic: str) -> str:
+    token_state = "token" if os.environ.get("DEMO_TOKEN") else "missing"
+    return f"{PREFIX}:{os.environ.get('DEMO_MODE')}:{token_state}:{topic}"
+
+@workflow
+def guided(topic: str @ User) -> str:
+    User: reply = describe(topic)
     return reply @ User
 """
 
@@ -142,6 +189,39 @@ def test_run_command_calls_setup_hook_with_options(tmp_path, capsys):
     assert json.loads(captured.out) == {"result": "live:hook:deploy"}
 
 
+def test_show_command_renders_code_and_agent_projection(tmp_path, capsys):
+    workflow_path = tmp_path / "show_workflow.py"
+    workflow_path.write_text(WORKFLOW_SOURCE)
+
+    rc = main(["show", f"{workflow_path}:hello"])
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "@workflow" in captured.out
+    assert "User: reply = add_suffix(topic)" in captured.out
+
+    rc = main(["show", f"{workflow_path}:hello", "--agent", "User", "--format", "json"])
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert rc == 0
+    assert payload["agent"] == "User"
+    assert "Generated local projection for User" in payload["code"]
+
+
+def test_validate_command_checks_projection_and_deployment_metadata(tmp_path, capsys):
+    workflow_path = tmp_path / "validate_workflow.py"
+    workflow_path.write_text(WORKFLOW_SOURCE)
+
+    rc = main(["validate", f"{workflow_path}:hello", "--json"])
+
+    captured = capsys.readouterr()
+    payload = json.loads(captured.out)
+    assert rc == 0
+    assert payload["valid"] is True
+    assert payload["lifelines"] == ["User"]
+    assert "User" in payload["projections"]
+    assert all(check["status"] == "ok" for check in payload["checks"])
+
+
 def test_deploy_local_creates_profile_and_runs_by_name(tmp_path, monkeypatch, capsys):
     workflow_path = tmp_path / "deploy_workflow.py"
     workflow_path.write_text(WORKFLOW_SOURCE)
@@ -175,6 +255,7 @@ def test_deploy_local_creates_profile_and_runs_by_name(tmp_path, monkeypatch, ca
     assert profile["llm"] == "mock"
     assert profile["inputs"] == {"topic": "deploy"}
     assert script_path.exists()
+    assert f"ZIPPERGEN_HOME={zippergen_home}" in script_path.read_text()
     assert service_path.exists()
 
     rc = main(["run-deployment", "hello-prod"])
@@ -197,6 +278,7 @@ def test_start_deployment_dry_run_prints_systemd_commands(tmp_path, monkeypatch,
     zippergen_home = tmp_path / "zg-home"
     monkeypatch.setenv("ZIPPERGEN_HOME", str(zippergen_home))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    monkeypatch.setenv("ZIPPERGEN_SERVICE_MANAGER", "systemd")
     main([
         "deploy-local",
         f"{workflow_path}:hello",
@@ -214,6 +296,116 @@ def test_start_deployment_dry_run_prints_systemd_commands(tmp_path, monkeypatch,
     assert "systemctl --user daemon-reload" in captured.out
     assert "systemctl --user enable zippergen-hello-prod.service" in captured.out
     assert "systemctl --user start zippergen-hello-prod.service" in captured.out
+
+
+def test_start_deployment_dry_run_prints_launchd_commands(tmp_path, monkeypatch, capsys):
+    workflow_path = tmp_path / "deploy_workflow.py"
+    workflow_path.write_text(WORKFLOW_SOURCE)
+    zippergen_home = tmp_path / "zg-home"
+    launch_agents = tmp_path / "LaunchAgents"
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(zippergen_home))
+    monkeypatch.setenv("ZIPPERGEN_LAUNCH_AGENTS_DIR", str(launch_agents))
+    monkeypatch.setenv("ZIPPERGEN_SERVICE_MANAGER", "launchd")
+    main([
+        "deploy-local",
+        f"{workflow_path}:hello",
+        "--name",
+        "hello-prod",
+    ])
+    capsys.readouterr()
+
+    rc = main(["start", "hello-prod", "--dry-run"])
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "Install launchd agent:" in captured.out
+    assert "io.zippergen.hello-prod.plist" in captured.out
+    assert "launchctl bootout" in captured.out
+    assert "launchctl bootstrap" in captured.out
+
+
+def test_guided_deploy_persists_config_and_private_secrets(tmp_path, monkeypatch, capsys):
+    workflow_path = tmp_path / "guided_workflow.py"
+    workflow_path.write_text(GUIDED_WORKFLOW_SOURCE)
+    zippergen_home = tmp_path / "zg-home"
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(zippergen_home))
+
+    rc = main([
+        "deploy",
+        f"{workflow_path}:guided",
+        "--name",
+        "guided-prod",
+        "--input",
+        "topic=deploy",
+        "--set",
+        "prefix=hello",
+        "--set",
+        "demo_token=top-secret",
+        "--yes",
+        "--no-install",
+        "--no-setup",
+        "--no-doctor",
+        "--no-start",
+    ])
+
+    captured = capsys.readouterr()
+    profile_path = zippergen_home / "deployments" / "guided-prod.json"
+    secrets_path = zippergen_home / "deployments" / "guided-prod.secrets.json"
+    profile_text = profile_path.read_text()
+    profile = json.loads(profile_text)
+    assert rc == 0
+    assert "Deployment: guided-prod" in captured.out
+    assert profile["options"]["prefix"] == "hello"
+    assert profile["environment"] == {"DEMO_MODE": "safe"}
+    assert profile["secret_names"] == ["DEMO_TOKEN"]
+    assert "top-secret" not in profile_text
+    assert json.loads(secrets_path.read_text()) == {"DEMO_TOKEN": "top-secret"}
+    assert secrets_path.stat().st_mode & 0o077 == 0
+    assert (zippergen_home / "deployments" / "io.zippergen.guided-prod.plist").exists()
+    assert Path(profile["bundle"]).exists()
+
+    workflow_path.unlink()
+    rc = main(["run-deployment", "guided-prod"])
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert json.loads(captured.out) == {"result": "hello:safe:token:deploy"}
+
+
+def test_configure_keeps_existing_secret_when_updating_public_field(tmp_path, monkeypatch, capsys):
+    workflow_path = tmp_path / "guided_workflow.py"
+    workflow_path.write_text(GUIDED_WORKFLOW_SOURCE)
+    zippergen_home = tmp_path / "zg-home"
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(zippergen_home))
+    main([
+        "deploy",
+        f"{workflow_path}:guided",
+        "--name",
+        "guided-prod",
+        "--set",
+        "demo_token=top-secret",
+        "--yes",
+        "--no-install",
+        "--no-setup",
+        "--no-doctor",
+        "--no-start",
+    ])
+    capsys.readouterr()
+
+    rc = main([
+        "configure",
+        "guided-prod",
+        "--set",
+        "prefix=updated",
+        "--yes",
+        "--no-doctor",
+    ])
+
+    capsys.readouterr()
+    profile = json.loads((zippergen_home / "deployments" / "guided-prod.json").read_text())
+    secrets = json.loads((zippergen_home / "deployments" / "guided-prod.secrets.json").read_text())
+    assert rc == 0
+    assert profile["options"]["prefix"] == "updated"
+    assert secrets == {"DEMO_TOKEN": "top-secret"}
 
 
 def test_logs_command_tails_deployment_log(tmp_path, monkeypatch, capsys):

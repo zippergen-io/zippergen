@@ -7,7 +7,13 @@ senders, asks an LLM to classify/extract calls, replies with the extracted JSON,
 and records new calls in a local CSV table. Corrections are handled by replying
 to the JSON email with corrected fields, preferably keeping the same call_id.
 
-Manual deployment:
+Guided deployment:
+
+    uv run zippergen deploy examples/call_intake.py:call_intake
+
+The deployment declaration below collects and persists configuration, installs
+the Google clients, guides OAuth, runs readiness checks, and starts launchd or
+systemd. The following remains the equivalent low-level manual setup:
 
     uv run python examples/call_intake_email_client.py --setup
 
@@ -40,7 +46,18 @@ from email.utils import getaddresses
 from email.utils import parseaddr
 from pathlib import Path
 
-from zippergen import Lifeline, Var, effect, llm, pure, workflow
+from zippergen import (
+    DeploymentField,
+    DeploymentPackage,
+    DeploymentSetup,
+    DeploymentSpec,
+    Lifeline,
+    Var,
+    effect,
+    llm,
+    pure,
+    workflow,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -88,6 +105,177 @@ _response_log_path: Path = Path.home() / ".zippergen" / "call-intake-responses.j
 _send_mode = "send"
 _send_limit_per_hour = 10
 _poll_seconds = 60.0
+
+
+zippergen_deployment = DeploymentSpec(
+    name="call-intake",
+    description=(
+        "Watch a Gmail inbox for certified call announcements, extract structured "
+        "records with an LLM, write CSV/Google Sheets, and send controlled replies."
+    ),
+    fields=(
+        DeploymentField(
+            "llm",
+            "LLM provider and model",
+            target="llm",
+            default="openai:gpt-4o",
+            required=True,
+        ),
+        DeploymentField(
+            "openai_api_key",
+            "OpenAI API key",
+            target="env",
+            env="OPENAI_API_KEY",
+            required=True,
+            secret=True,
+            when="llm",
+            when_values=("openai*",),
+        ),
+        DeploymentField(
+            "services",
+            "Use fake or live external services",
+            target="services",
+            default="live",
+            required=True,
+            choices=("fake", "live"),
+        ),
+        DeploymentField(
+            "certified",
+            "Certified sender addresses or @domains (comma-separated)",
+            target="option",
+            required=True,
+        ),
+        DeploymentField(
+            "recipient",
+            "Call-intake recipient address",
+            target="option",
+            required=True,
+        ),
+        DeploymentField(
+            "gmail_query",
+            "Gmail search query",
+            target="env",
+            env="ZIPPERGEN_CALL_GMAIL_QUERY",
+            default="is:unread in:inbox to:{recipient}",
+            required=True,
+        ),
+        DeploymentField(
+            "table_targets",
+            "Table destination: csv, sheets, or both",
+            target="option",
+            default="both",
+            required=True,
+            choices=("csv", "sheets", "both"),
+        ),
+        DeploymentField(
+            "sheet_id",
+            "Google Sheet ID",
+            target="option",
+            required=True,
+            when="table_targets",
+            when_values=("sheets", "both"),
+        ),
+        DeploymentField(
+            "sheet_name",
+            "Google Sheet tab name",
+            target="option",
+            default="Calls",
+            required=True,
+            when="table_targets",
+            when_values=("sheets", "both"),
+        ),
+        DeploymentField(
+            "table",
+            "CSV table path",
+            target="option",
+            default=str(Path.home() / ".zippergen" / "calls.csv"),
+            required=True,
+            when="table_targets",
+            when_values=("csv", "both"),
+        ),
+        DeploymentField(
+            "send_mode",
+            "Reply mode: draft, send, or log",
+            target="option",
+            default="draft",
+            required=True,
+            choices=("draft", "send", "log"),
+        ),
+        DeploymentField(
+            "send_limit_per_hour",
+            "Maximum replies per hour (1-10)",
+            target="option",
+            default=10,
+            required=True,
+        ),
+        DeploymentField(
+            "poll_seconds",
+            "Inbox polling interval in seconds",
+            target="option",
+            default=60,
+            required=True,
+        ),
+        DeploymentField(
+            "google_credentials",
+            "Google OAuth client credentials JSON",
+            target="env",
+            env="ZIPPERGEN_CALL_GMAIL_CREDENTIALS",
+            default=str(Path.home() / ".zippergen_google_credentials.json"),
+            required=True,
+            path_exists=True,
+            when="services",
+            when_values=("live",),
+        ),
+        DeploymentField(
+            "gmail_token",
+            "Gmail OAuth token cache",
+            target="env",
+            env="ZIPPERGEN_CALL_GMAIL_TOKEN",
+            default=str(Path.home() / ".zippergen" / "call-gmail-token.json"),
+            required=True,
+            when="services",
+            when_values=("live",),
+        ),
+        DeploymentField(
+            "sheets_token",
+            "Google Sheets OAuth token cache",
+            target="env",
+            env="ZIPPERGEN_CALL_SHEETS_TOKEN",
+            default=str(Path.home() / ".zippergen" / "call-sheets-token.json"),
+            required=True,
+            when="table_targets",
+            when_values=("sheets", "both"),
+        ),
+    ),
+    packages=(
+        DeploymentPackage("google-auth", "google.auth"),
+        DeploymentPackage("google-auth-oauthlib", "google_auth_oauthlib"),
+        DeploymentPackage("google-api-python-client", "googleapiclient"),
+    ),
+    setup=(
+        DeploymentSetup(
+            "gmail-oauth",
+            "Authorize Gmail access",
+            ("{python}", "examples/call_intake_email_client.py", "--setup"),
+            when="services",
+            when_values=("live",),
+            creates_env="ZIPPERGEN_CALL_GMAIL_TOKEN",
+        ),
+        DeploymentSetup(
+            "sheets-oauth",
+            "Authorize Google Sheets access",
+            ("{python}", "examples/call_intake_sheets_client.py", "--setup"),
+            when="table_targets",
+            when_values=("sheets", "both"),
+            creates_env="ZIPPERGEN_CALL_SHEETS_TOKEN",
+        ),
+    ),
+    files=(
+        "examples/call_intake.py",
+        "examples/call_intake_email_client.py",
+        "examples/call_intake_sheets_client.py",
+    ),
+)
 
 
 CALL_FIELDS = [
@@ -282,6 +470,11 @@ def configure_call_intake(
             os.environ.get("ZIPPERGEN_CALL_INTAKE_ADDRESS"),
         )
     _intake_recipients = _split_senders(raw_recipients)
+    if _intake_recipients:
+        os.environ.setdefault(
+            "ZIPPERGEN_CALL_INTAKE_REPLY_TO",
+            sorted(_intake_recipients)[0],
+        )
 
     if services_text == "live":
         _email_client = _load_service_module("call_intake_email_client")
@@ -362,6 +555,85 @@ def zippergen_setup(config) -> None:
         sheet_name=config.option("sheet_name", None),
         table_targets=config.option("table_targets", None),
     )
+
+
+def zippergen_doctor(config) -> list[dict[str, object]]:
+    """Workflow-specific readiness checks used by ``zippergen doctor``."""
+
+    checks: list[dict[str, object]] = []
+    services = str(config.services or config.option("services", "fake"))
+    certified = _split_senders(config.option("certified", None))
+    recipients = _split_senders(
+        config.option("recipient", config.option("recipients", None))
+    )
+    table_targets = str(config.option("table_targets", "csv"))
+    sheet_id = str(config.option("sheet_id", config.option("sheet", "")) or "").strip()
+    send_mode = str(config.option("send_mode", "draft"))
+
+    checks.append({
+        "status": "ok" if certified else "fail",
+        "name": "certified senders",
+        "detail": f"{len(certified)} sender/domain rule(s)" if certified else "no certified senders configured",
+    })
+    checks.append({
+        "status": "ok" if recipients else "fail",
+        "name": "intake recipients",
+        "detail": ", ".join(sorted(recipients)) if recipients else "no intake recipient configured",
+    })
+    checks.append({
+        "status": "warn" if send_mode == "send" else "ok",
+        "name": "reply mode",
+        "detail": (
+            "live automatic sending is enabled"
+            if send_mode == "send"
+            else f"safe {send_mode!r} mode is configured"
+        ),
+    })
+    if table_targets in {"sheets", "both"}:
+        checks.append({
+            "status": "ok" if sheet_id else "fail",
+            "name": "Google Sheet",
+            "detail": sheet_id or "sheet target selected but no Sheet ID configured",
+        })
+
+    if services == "live":
+        credentials = Path(os.environ.get(
+            "ZIPPERGEN_CALL_GMAIL_CREDENTIALS",
+            str(Path.home() / ".zippergen_google_credentials.json"),
+        )).expanduser()
+        gmail_token = Path(os.environ.get(
+            "ZIPPERGEN_CALL_GMAIL_TOKEN",
+            str(Path.home() / ".zippergen" / "call-gmail-token.json"),
+        )).expanduser()
+        checks.append({
+            "status": "ok" if credentials.exists() else "fail",
+            "name": "Google OAuth credentials",
+            "detail": str(credentials) if credentials.exists() else f"file does not exist: {credentials}",
+        })
+        checks.append({
+            "status": "ok" if gmail_token.exists() else "fail",
+            "name": "Gmail OAuth token",
+            "detail": str(gmail_token) if gmail_token.exists() else f"authorization has not created {gmail_token}",
+        })
+        if table_targets in {"sheets", "both"}:
+            sheets_token = Path(os.environ.get(
+                "ZIPPERGEN_CALL_SHEETS_TOKEN",
+                str(Path.home() / ".zippergen" / "call-sheets-token.json"),
+            )).expanduser()
+            checks.append({
+                "status": "ok" if sheets_token.exists() else "fail",
+                "name": "Sheets OAuth token",
+                "detail": str(sheets_token) if sheets_token.exists() else f"authorization has not created {sheets_token}",
+            })
+
+    llm_spec = str(config.profile.get("llm") or "")
+    if llm_spec.startswith("openai"):
+        checks.append({
+            "status": "ok" if os.environ.get("OPENAI_API_KEY") else "fail",
+            "name": "OpenAI API key",
+            "detail": "configured" if os.environ.get("OPENAI_API_KEY") else "OPENAI_API_KEY is not configured",
+        })
+    return checks
 
 
 # ---------------------------------------------------------------------------

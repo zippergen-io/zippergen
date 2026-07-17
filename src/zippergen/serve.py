@@ -43,20 +43,33 @@ from zippergen.role_runner import (
 #       Legacy low-level per-role entry point; prefer `zippergen run`.
 # ---------------------------------------------------------------------------
 import argparse
+import getpass
 import hashlib
 import importlib
 import importlib.util
 import json
 import os
+import platform
+import plistlib
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import time
+import venv
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
 
+from zippergen.deployment import (
+    DeploymentField,
+    DeploymentSetup,
+    DeploymentSpec,
+    deployment_spec_from_module,
+)
+from zippergen.view import DETAILS, ViewOptions, render_workflow, workflow_view_data
 from zippergen.syntax import Workflow, Lifeline
 from zippergen.projection import project
 from zippergen.store import (
@@ -293,6 +306,22 @@ def _deployment_service_path(name: str) -> Path:
     return _deployments_dir() / f"zippergen-{_slug(name)}.service"
 
 
+def _deployment_launchd_path(name: str) -> Path:
+    return _deployments_dir() / f"io.zippergen.{_slug(name)}.plist"
+
+
+def _deployment_secrets_path(name: str) -> Path:
+    return _deployments_dir() / f"{_slug(name)}.secrets.json"
+
+
+def _deployment_environment_dir(name: str) -> Path:
+    return _zippergen_home() / "environments" / _slug(name)
+
+
+def _deployment_bundles_dir(name: str) -> Path:
+    return _zippergen_home() / "apps" / _slug(name)
+
+
 def _systemd_user_dir() -> Path:
     config_home = Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config"))).expanduser()
     return config_home / "systemd" / "user"
@@ -304,6 +333,21 @@ def _systemd_unit_name(name: str) -> str:
 
 def _installed_systemd_service_path(name: str) -> Path:
     return _systemd_user_dir() / _systemd_unit_name(name)
+
+
+def _launchd_label(name: str) -> str:
+    return f"io.zippergen.{_slug(name)}"
+
+
+def _launch_agents_dir() -> Path:
+    configured = os.environ.get("ZIPPERGEN_LAUNCH_AGENTS_DIR")
+    if configured:
+        return Path(configured).expanduser()
+    return Path.home() / "Library" / "LaunchAgents"
+
+
+def _installed_launchd_path(name: str) -> Path:
+    return _launch_agents_dir() / f"{_launchd_label(name)}.plist"
 
 
 def _default_deployment_store_path(name: str) -> str:
@@ -325,6 +369,55 @@ def _load_deployment_profile(name: str) -> dict[str, object]:
     if not isinstance(profile, dict):
         raise SystemExit(f"Deployment profile is not an object: {path}")
     return profile
+
+
+def _load_deployment_secrets(profile: dict[str, object]) -> dict[str, str]:
+    raw_path = profile.get("secrets_file")
+    if not raw_path:
+        return {}
+    path = Path(str(raw_path)).expanduser()
+    if not path.exists():
+        return {}
+    try:
+        value = json.loads(path.read_text())
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"Deployment secrets file is not valid JSON: {path}") from exc
+    if not isinstance(value, dict):
+        raise SystemExit(f"Deployment secrets file is not an object: {path}")
+    return {str(key): str(item) for key, item in value.items()}
+
+
+def _write_deployment_secrets(path: Path, values: dict[str, str]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = (json.dumps(values, indent=2, sort_keys=True) + "\n").encode()
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "wb") as stream:
+        stream.write(payload)
+    path.chmod(0o600)
+
+
+def _deployment_environment(profile: dict[str, object]) -> dict[str, str]:
+    raw = profile.get("environment") or {}
+    if not isinstance(raw, dict):
+        raise SystemExit("Deployment profile environment must be an object.")
+    values = {str(key): str(value) for key, value in raw.items()}
+    values.update(_load_deployment_secrets(profile))
+    return values
+
+
+@contextmanager
+def _profile_environment(profile: dict[str, object]):
+    values = _deployment_environment(profile)
+    previous = {key: os.environ.get(key) for key in values}
+    os.environ.update(values)
+    try:
+        yield values
+    finally:
+        for key, value in previous.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
 
 
 def _deployment_name_from_workflow(workflow_spec: str, wf: Workflow) -> str:
@@ -366,6 +459,7 @@ def _write_deployment_artifacts(profile: dict[str, object]) -> None:
     profile_path = _deployment_profile_path(name)
     script_path = _deployment_script_path(name)
     service_path = _deployment_service_path(name)
+    launchd_path = _deployment_launchd_path(name)
     Path(str(profile["store"])).expanduser().parent.mkdir(parents=True, exist_ok=True)
     Path(str(profile["log"])).expanduser().parent.mkdir(parents=True, exist_ok=True)
     _deployments_dir().mkdir(parents=True, exist_ok=True)
@@ -375,7 +469,8 @@ def _write_deployment_artifacts(profile: dict[str, object]) -> None:
         "#!/bin/sh\n"
         "set -eu\n"
         f"cd {shlex.quote(str(profile['cwd']))}\n"
-        f"exec {_deployment_command(name, python_executable=str(profile.get('python') or sys.executable))}\n"
+        f"exec env ZIPPERGEN_HOME={shlex.quote(str(_zippergen_home()))} "
+        f"{_deployment_command(name, python_executable=str(profile.get('python') or sys.executable))}\n"
     )
     script_path.chmod(0o755)
     service_path.write_text(
@@ -393,6 +488,18 @@ def _write_deployment_artifacts(profile: dict[str, object]) -> None:
         "[Install]\n"
         "WantedBy=default.target\n"
     )
+    launchd = {
+        "Label": _launchd_label(name),
+        "ProgramArguments": [str(script_path)],
+        "WorkingDirectory": str(profile["cwd"]),
+        "RunAtLoad": True,
+        "KeepAlive": True,
+        "ThrottleInterval": 10,
+        "StandardOutPath": str(profile["log"]),
+        "StandardErrorPath": str(profile["log"]),
+        "ProcessType": "Background",
+    }
+    launchd_path.write_bytes(plistlib.dumps(launchd, sort_keys=True))
 
 
 def _install_systemd_unit(profile: dict[str, object], *, dry_run: bool = False) -> Path:
@@ -405,6 +512,19 @@ def _install_systemd_unit(profile: dict[str, object], *, dry_run: bool = False) 
         return target
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(source.read_text())
+    return target
+
+
+def _install_launchd_agent(profile: dict[str, object], *, dry_run: bool = False) -> Path:
+    name = str(profile["name"])
+    _write_deployment_artifacts(profile)
+    source = _deployment_launchd_path(name)
+    target = _installed_launchd_path(name)
+    if dry_run:
+        print(f"Install launchd agent: {source} -> {target}")
+        return target
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(source.read_bytes())
     return target
 
 
@@ -426,22 +546,92 @@ def _run_systemctl(args: list[str], *, dry_run: bool = False) -> None:
         raise SystemExit(f"Command failed with exit code {exc.returncode}: {command}") from exc
 
 
+def _service_manager() -> str:
+    configured = os.environ.get("ZIPPERGEN_SERVICE_MANAGER", "").strip().lower()
+    if configured:
+        if configured not in {"systemd", "launchd"}:
+            raise SystemExit("ZIPPERGEN_SERVICE_MANAGER must be systemd or launchd.")
+        return configured
+    system = platform.system()
+    if system == "Darwin":
+        return "launchd"
+    if system == "Linux":
+        return "systemd"
+    raise SystemExit(
+        f"No supported deployment service manager for {system or 'this platform'}. "
+        "Use `zippergen run-deployment NAME` directly."
+    )
+
+
+def _launchctl_domain() -> str:
+    return f"gui/{os.getuid()}"
+
+
+def _launchctl_command(*args: str) -> list[str]:
+    launchctl = os.environ.get("ZIPPERGEN_LAUNCHCTL", "launchctl")
+    return [launchctl, *args]
+
+
+def _run_launchctl(
+    args: list[str],
+    *,
+    dry_run: bool = False,
+    check: bool = True,
+) -> subprocess.CompletedProcess | None:
+    if dry_run:
+        print(shlex.join(args))
+        return None
+    try:
+        return subprocess.run(args, check=check, capture_output=not check, text=True)
+    except FileNotFoundError as exc:
+        raise SystemExit(
+            "launchctl was not found. Use `run-deployment` directly or run on macOS."
+        ) from exc
+    except subprocess.CalledProcessError as exc:
+        command = shlex.join(args)
+        raise SystemExit(f"Command failed with exit code {exc.returncode}: {command}") from exc
+
+
 def _deployment_lifecycle_command(args, action: str) -> int:
     profile = _load_deployment_profile(args.name)
     name = str(profile["name"])
-    unit = _systemd_unit_name(name)
-    if action in {"start", "restart"}:
-        target = _install_systemd_unit(profile, dry_run=args.dry_run)
-        if not args.dry_run:
-            print(f"Installed systemd unit: {target}")
-        _run_systemctl(_systemctl_command("daemon-reload"), dry_run=args.dry_run)
-        if action == "start" and args.enable:
-            _run_systemctl(_systemctl_command("enable", unit), dry_run=args.dry_run)
-    _run_systemctl(_systemctl_command(action, unit), dry_run=args.dry_run)
+    manager = _service_manager()
+    if manager == "systemd":
+        unit = _systemd_unit_name(name)
+        if action in {"start", "restart"}:
+            target = _install_systemd_unit(profile, dry_run=args.dry_run)
+            if not args.dry_run:
+                print(f"Installed systemd unit: {target}")
+            _run_systemctl(_systemctl_command("daemon-reload"), dry_run=args.dry_run)
+            if action == "start" and args.enable:
+                _run_systemctl(_systemctl_command("enable", unit), dry_run=args.dry_run)
+        _run_systemctl(_systemctl_command(action, unit), dry_run=args.dry_run)
+        service = unit
+    else:
+        label = _launchd_label(name)
+        domain = _launchctl_domain()
+        service = f"{domain}/{label}"
+        if action in {"start", "restart"}:
+            target = _install_launchd_agent(profile, dry_run=args.dry_run)
+            if not args.dry_run:
+                print(f"Installed launchd agent: {target}")
+            # bootout makes both start and restart idempotent when the agent was
+            # already loaded.  A missing prior agent is expected.
+            _run_launchctl(
+                _launchctl_command("bootout", service),
+                dry_run=args.dry_run,
+                check=False,
+            )
+            _run_launchctl(
+                _launchctl_command("bootstrap", domain, str(target)),
+                dry_run=args.dry_run,
+            )
+        else:
+            _run_launchctl(_launchctl_command("bootout", service), dry_run=args.dry_run)
     if args.dry_run:
         return 0
     done = {"start": "Started", "stop": "Stopped", "restart": "Restarted"}[action]
-    print(f"{done} deployment {name} ({unit}).")
+    print(f"{done} deployment {name} ({service}).")
     return 0
 
 
@@ -487,8 +677,14 @@ def _path_parent_check(label: str, path: Path) -> dict[str, object]:
 
 
 def _profile_options(profile: dict[str, object]) -> dict[str, object]:
-    raw = profile.get("options") or {}
-    return raw if isinstance(raw, dict) else {}
+    return _profile_mapping(profile, "options")
+
+
+def _profile_mapping(profile: dict[str, object], key: str) -> dict[str, object]:
+    raw = profile.get(key)
+    if not isinstance(raw, dict):
+        return {}
+    return {str(name): value for name, value in raw.items()}
 
 
 def _systemd_active_check(name: str) -> dict[str, object]:
@@ -510,6 +706,26 @@ def _systemd_active_check(name: str) -> dict[str, object]:
     if result.returncode == 0:
         return _doctor_check("ok", "systemd active", f"{unit} is active", state=state)
     return _doctor_check("warn", "systemd active", f"{unit} is not active: {state}", state=state)
+
+
+def _launchd_active_check(name: str) -> dict[str, object]:
+    service = f"{_launchctl_domain()}/{_launchd_label(name)}"
+    try:
+        result = subprocess.run(
+            _launchctl_command("print", service),
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except FileNotFoundError:
+        return _doctor_check("warn", "launchd active", "launchctl was not found")
+    except subprocess.TimeoutExpired:
+        return _doctor_check("warn", "launchd active", "launchctl timed out")
+    if result.returncode == 0:
+        return _doctor_check("ok", "launchd active", f"{service} is loaded")
+    detail = (result.stderr or result.stdout or "not loaded").strip().splitlines()[0]
+    return _doctor_check("warn", "launchd active", f"{service} is not loaded: {detail}")
 
 
 def _call_doctor_hook(
@@ -599,11 +815,49 @@ def _doctor_checks(name: str, *, include_systemd: bool = True) -> list[dict[str,
     else:
         checks.append(_doctor_check("warn", "systemd template", f"template does not exist: {template_path}"))
 
-    installed_path = _installed_systemd_service_path(profile_name)
-    if installed_path.exists():
-        checks.append(_doctor_check("ok", "systemd installed", str(installed_path)))
+    launchd_template = _deployment_launchd_path(profile_name)
+    if launchd_template.exists():
+        checks.append(_doctor_check("ok", "launchd template", str(launchd_template)))
     else:
-        checks.append(_doctor_check("warn", "systemd installed", f"service is not installed: {installed_path}"))
+        checks.append(_doctor_check("warn", "launchd template", f"template does not exist: {launchd_template}"))
+
+    try:
+        manager = _service_manager()
+    except SystemExit as exc:
+        manager = ""
+        checks.append(_doctor_check("warn", "service manager", str(exc)))
+    else:
+        checks.append(_doctor_check("ok", "service manager", manager))
+
+    installed_path = (
+        _installed_launchd_path(profile_name)
+        if manager == "launchd"
+        else _installed_systemd_service_path(profile_name)
+    )
+    if installed_path.exists():
+        checks.append(_doctor_check("ok", f"{manager or 'service'} installed", str(installed_path)))
+    else:
+        checks.append(_doctor_check(
+            "warn",
+            f"{manager or 'service'} installed",
+            f"service is not installed: {installed_path}",
+        ))
+
+    secrets_path = profile.get("secrets_file")
+    raw_secret_names = profile.get("secret_names")
+    secret_count = len(raw_secret_names) if isinstance(raw_secret_names, (list, tuple, set)) else 0
+    if secrets_path:
+        secret_file = Path(str(secrets_path)).expanduser()
+        if not secret_file.exists():
+            checks.append(_doctor_check("fail", "secrets file", f"file does not exist: {secret_file}"))
+        elif secret_file.stat().st_mode & 0o077:
+            checks.append(_doctor_check("fail", "secrets file", f"permissions are not private: {secret_file}"))
+        else:
+            checks.append(_doctor_check(
+                "ok",
+                "secrets file",
+                f"{secret_count} secret(s) stored with private permissions",
+            ))
 
     workflow = None
     module = None
@@ -611,7 +865,8 @@ def _doctor_checks(name: str, *, include_systemd: bool = True) -> list[dict[str,
         old_cwd = Path.cwd()
         try:
             os.chdir(cwd)
-            workflow, module = load_workflow_spec(str(profile["workflow"]))
+            with _profile_environment(profile):
+                workflow, module = load_workflow_spec(str(profile["workflow"]))
         except SystemExit as exc:
             checks.append(_doctor_check("fail", "workflow import", str(exc)))
         except Exception as exc:
@@ -627,8 +882,76 @@ def _doctor_checks(name: str, *, include_systemd: bool = True) -> list[dict[str,
     else:
         checks.append(_doctor_check("warn", "python", f"recorded Python does not exist: {python_path}"))
 
+    deployment_spec = DeploymentSpec()
+    if module is not None:
+        try:
+            deployment_spec = deployment_spec_from_module(module)
+        except Exception as exc:
+            checks.append(_doctor_check(
+                "fail",
+                "deployment declaration",
+                f"{type(exc).__name__}: {exc}",
+            ))
+        else:
+            checks.append(_doctor_check(
+                "ok",
+                "deployment declaration",
+                f"{len(deployment_spec.fields)} field(s), "
+                f"{len(deployment_spec.packages)} package(s), "
+                f"{len(deployment_spec.setup)} setup step(s)",
+            ))
+
+    environment = _deployment_environment(profile)
+    declared_values = {
+        field.name: _profile_field_value(profile, field, environment)
+        for field in deployment_spec.fields
+    }
+    for field in deployment_spec.fields:
+        if (
+            field.secret
+            and field.required
+            and _field_enabled(field, declared_values)
+            and not environment.get(field.target_name)
+        ):
+            checks.append(_doctor_check(
+                "fail",
+                f"secret {field.target_name}",
+                "required secret is not configured",
+            ))
+
+    if python_path.exists():
+        for package in deployment_spec.packages:
+            if not package.import_name:
+                continue
+            result = subprocess.run(
+                [
+                    str(python_path),
+                    "-c",
+                    "import importlib.util,sys;sys.exit(0 if importlib.util.find_spec(sys.argv[1]) else 1)",
+                    package.import_name,
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            if result.returncode == 0:
+                checks.append(_doctor_check(
+                    "ok",
+                    f"package {package.requirement}",
+                    f"import {package.import_name} is available",
+                ))
+            else:
+                checks.append(_doctor_check(
+                    "fail",
+                    f"package {package.requirement}",
+                    f"import {package.import_name} is not available in {python_path}",
+                ))
+
     if include_systemd and installed_path.exists():
-        checks.append(_systemd_active_check(profile_name))
+        if manager == "launchd":
+            checks.append(_launchd_active_check(profile_name))
+        elif manager == "systemd":
+            checks.append(_systemd_active_check(profile_name))
 
     if workflow is not None and module is not None:
         config = DoctorConfig(
@@ -641,7 +964,8 @@ def _doctor_checks(name: str, *, include_systemd: bool = True) -> list[dict[str,
             options=_profile_options(profile),
             services=str(profile.get("services") or "") or None,
         )
-        checks.extend(_call_doctor_hook(module, config))
+        with _profile_environment(profile):
+            checks.extend(_call_doctor_hook(module, config))
 
     return checks
 
@@ -1029,6 +1353,635 @@ def _run_workflow_command(args) -> int:
     return 0
 
 
+def _view_options_from_args(args) -> ViewOptions:
+    agents = tuple(
+        name.strip()
+        for name in str(args.agents or "").split(",")
+        if name.strip()
+    )
+    return ViewOptions(
+        detail=args.detail,
+        communications_only=args.communications,
+        agent=args.agent,
+        agents=agents,
+    )
+
+
+def _show_command(args) -> int:
+    workflow, module = load_workflow_spec(args.workflow)
+    options = _view_options_from_args(args)
+    try:
+        data = workflow_view_data(workflow, module, options=options)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    if args.format == "json":
+        print(json.dumps(data, indent=2, default=str))
+    else:
+        print(str(data["code"]))
+    return 0
+
+
+def _validate_workflow(workflow: Workflow, module: ModuleType) -> dict[str, object]:
+    lifelines = _workflow_lifelines(workflow)
+    checks: list[dict[str, object]] = []
+    names = [lifeline.name for lifeline in lifelines]
+    if len(names) != len(set(names)):
+        checks.append({
+            "status": "fail",
+            "name": "lifelines",
+            "detail": "lifeline names are not unique",
+        })
+    else:
+        checks.append({
+            "status": "ok",
+            "name": "lifelines",
+            "detail": f"{len(lifelines)} unique lifeline(s): {', '.join(names)}",
+        })
+
+    projections: dict[str, str] = {}
+    for lifeline in lifelines:
+        try:
+            local = project(workflow, lifeline)
+            code = render_workflow(
+                workflow,
+                module,
+                options=ViewOptions(agent=lifeline.name),
+            )
+        except Exception as exc:
+            checks.append({
+                "status": "fail",
+                "name": f"projection {lifeline.name}",
+                "detail": f"{type(exc).__name__}: {exc}",
+            })
+        else:
+            projections[lifeline.name] = code
+            checks.append({
+                "status": "ok",
+                "name": f"projection {lifeline.name}",
+                "detail": type(local).__name__,
+            })
+
+    try:
+        declaration = deployment_spec_from_module(module)
+    except Exception as exc:
+        checks.append({
+            "status": "fail",
+            "name": "deployment declaration",
+            "detail": f"{type(exc).__name__}: {exc}",
+        })
+        deployment: dict[str, object] | None = None
+    else:
+        deployment = declaration.as_dict()
+        checks.append({
+            "status": "ok",
+            "name": "deployment declaration",
+            "detail": (
+                f"{len(declaration.fields)} field(s), "
+                f"{len(declaration.packages)} package(s), "
+                f"{len(declaration.setup)} setup step(s)"
+            ),
+        })
+
+    try:
+        render_workflow(workflow, module, options=ViewOptions(detail="full"))
+    except Exception as exc:
+        checks.append({
+            "status": "fail",
+            "name": "canonical rendering",
+            "detail": f"{type(exc).__name__}: {exc}",
+        })
+    else:
+        checks.append({
+            "status": "ok",
+            "name": "canonical rendering",
+            "detail": "global and local code views rendered successfully",
+        })
+
+    return {
+        "workflow": workflow.name,
+        "valid": not any(check["status"] == "fail" for check in checks),
+        "lifelines": names,
+        "inputs": [
+            {
+                "name": name,
+                "type": getattr(value_type, "__name__", str(value_type)),
+                "lifeline": lifeline.name if lifeline else None,
+            }
+            for name, value_type, lifeline in workflow.inputs
+        ],
+        "outputs": [
+            {
+                "name": value.name,
+                "type": getattr(value.type, "__name__", str(value.type)),
+                "lifeline": lifeline.name,
+            }
+            for value, lifeline in workflow.outputs
+        ],
+        "deployment": deployment,
+        "checks": checks,
+        "projections": projections,
+    }
+
+
+def _validate_command(args) -> int:
+    workflow, module = load_workflow_spec(args.workflow)
+    result = _validate_workflow(workflow, module)
+    if args.json:
+        print(json.dumps(result, indent=2, default=str))
+    else:
+        verdict = "valid" if result["valid"] else "invalid"
+        print(f"Workflow {workflow.name}: {verdict}")
+        for check in result["checks"]:  # type: ignore[union-attr]
+            print(f"{str(check['status']).upper():4} {check['name']}: {check['detail']}")
+    return 0 if result["valid"] else 1
+
+
+def _field_enabled(field: DeploymentField, values: dict[str, object]) -> bool:
+    if not field.when:
+        return True
+    current = values.get(field.when)
+    if not field.when_values:
+        return bool(current)
+    text = str(current)
+    return any(
+        text.startswith(expected[:-1]) if expected.endswith("*") else text == expected
+        for expected in field.when_values
+    )
+
+
+def _profile_field_value(
+    profile: dict[str, object],
+    field: DeploymentField,
+    secrets: dict[str, str],
+) -> object:
+    if field.target == "llm":
+        return profile.get("llm")
+    if field.target == "services":
+        return profile.get("services")
+    if field.target == "input":
+        values = profile.get("inputs") or {}
+        return values.get(field.target_name) if isinstance(values, dict) else None
+    if field.target == "option":
+        values = profile.get("options") or {}
+        return values.get(field.target_name) if isinstance(values, dict) else None
+    if field.secret:
+        return secrets.get(field.target_name)
+    values = profile.get("environment") or {}
+    return values.get(field.target_name) if isinstance(values, dict) else None
+
+
+def _parse_guided_value(raw: str, default: object) -> object:
+    text = raw.strip()
+    if not text:
+        return default
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        return text
+
+
+class _FormatValues(dict[str, object]):
+    def __missing__(self, key: str) -> str:
+        return "{" + key + "}"
+
+
+def _resolve_field_default(
+    field: DeploymentField,
+    current: object,
+    values: dict[str, object],
+) -> object:
+    if current != field.default or not isinstance(current, str) or "{" not in current:
+        return current
+    try:
+        return current.format_map(_FormatValues(values))
+    except (KeyError, ValueError):
+        return current
+
+
+def _display_default(value: object, *, secret: bool) -> str:
+    if value is None or value == "":
+        return ""
+    if secret:
+        return " [already set]"
+    if isinstance(value, (dict, list, tuple, bool, int, float)):
+        return f" [{json.dumps(value, default=str)}]"
+    return f" [{value}]"
+
+
+def _collect_deployment_fields(
+    spec: DeploymentSpec,
+    profile: dict[str, object],
+    *,
+    overrides: dict[str, object],
+    interactive: bool,
+) -> tuple[dict[str, object], dict[str, str]]:
+    existing_secrets = _load_deployment_secrets(profile)
+    values: dict[str, object] = {}
+    secrets: dict[str, str] = dict(existing_secrets)
+
+    for field in spec.fields:
+        current = _profile_field_value(profile, field, existing_secrets)
+        if current is None and field.target == "env":
+            current = os.environ.get(field.target_name)
+        if current is None:
+            current = field.default
+        if field.name in overrides:
+            current = overrides[field.name]
+        values[field.name] = current
+
+    for field in spec.fields:
+        if not _field_enabled(field, values):
+            continue
+        current = _resolve_field_default(field, values.get(field.name), values)
+        values[field.name] = current
+        if interactive and field.name not in overrides:
+            choices = f" ({'/'.join(field.choices)})" if field.choices else ""
+            label = field.prompt + choices + _display_default(current, secret=field.secret) + ": "
+            if field.secret:
+                entered = getpass.getpass(label)
+            else:
+                entered = input(label)
+            values[field.name] = _parse_guided_value(entered, current)
+        value = values.get(field.name)
+        if field.required and (value is None or str(value).strip() == ""):
+            raise SystemExit(
+                f"Deployment field {field.name!r} is required. "
+                f"Use --set {field.name}=VALUE or run interactively."
+            )
+        if value is not None and field.choices and str(value) not in field.choices:
+            raise SystemExit(
+                f"Deployment field {field.name!r} must be one of "
+                f"{', '.join(field.choices)}; got {value!r}."
+            )
+        if value is not None and value != "" and field.path_exists:
+            path = Path(str(value)).expanduser()
+            if not path.exists():
+                raise SystemExit(f"Deployment field {field.name!r} points to a missing path: {path}")
+
+    options: dict[str, object] = _profile_mapping(profile, "options")
+    inputs: dict[str, object] = _profile_mapping(profile, "inputs")
+    environment = {
+        key: str(value)
+        for key, value in _profile_mapping(profile, "environment").items()
+    }
+    for field in spec.fields:
+        if not _field_enabled(field, values):
+            continue
+        value = values.get(field.name)
+        if value is None:
+            continue
+        if field.target == "llm":
+            profile["llm"] = value
+        elif field.target == "services":
+            profile["services"] = value
+        elif field.target == "input":
+            inputs[field.target_name] = value
+        elif field.target == "option":
+            options[field.target_name] = value
+        elif field.secret:
+            if str(value):
+                secrets[field.target_name] = str(value)
+        else:
+            environment[field.target_name] = str(value)
+    profile["options"] = options
+    profile["inputs"] = inputs
+    profile["environment"] = environment
+    return values, secrets
+
+
+def _deployment_python_path(environment_dir: Path) -> Path:
+    if os.name == "nt":
+        return environment_dir / "Scripts" / "python.exe"
+    return environment_dir / "bin" / "python"
+
+
+def _bundle_relative_path(source: Path, source_root: Path) -> Path:
+    try:
+        return source.relative_to(source_root)
+    except ValueError:
+        digest = hashlib.sha1(str(source).encode()).hexdigest()[:8]
+        return Path("external") / f"{digest}-{source.name}"
+
+
+def _copy_deployment_source(source: Path, target: Path) -> None:
+    if source.is_dir():
+        shutil.copytree(
+            source,
+            target,
+            ignore=shutil.ignore_patterns(".git", ".venv", "__pycache__", "*.pyc"),
+        )
+    else:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, target)
+
+
+def _bundle_deployment(profile: dict[str, object], spec: DeploymentSpec) -> None:
+    source_cwd = Path(str(profile.get("source_cwd") or profile["cwd"])).expanduser().resolve()
+    source_workflow = str(profile.get("source_workflow") or profile["workflow"])
+    module_ref, separator, workflow_name = source_workflow.partition(":")
+    module_path = Path(module_ref).expanduser()
+    if not module_path.is_absolute():
+        module_path = source_cwd / module_path
+    if not module_path.exists():
+        # Importable modules are already versioned Python artifacts.  A later
+        # packaging layer can snapshot their entire distribution; path-based
+        # workflows get a concrete source bundle today.
+        profile.setdefault("source_cwd", str(source_cwd))
+        profile.setdefault("source_workflow", source_workflow)
+        return
+
+    version = f"{time.strftime('%Y%m%d-%H%M%S')}-{time.time_ns() % 1_000_000_000:09d}"
+    bundle_root = _deployment_bundles_dir(str(profile["name"])) / version
+    bundle_root.mkdir(parents=True, exist_ok=False)
+
+    sources = [module_path.resolve()]
+    for declared in spec.files:
+        path = Path(declared).expanduser()
+        if not path.is_absolute():
+            path = source_cwd / path
+        path = path.resolve()
+        if not path.exists():
+            raise SystemExit(f"Declared deployment file does not exist: {path}")
+        if path not in sources:
+            sources.append(path)
+
+    copied: dict[Path, Path] = {}
+    for source in sources:
+        relative = _bundle_relative_path(source, source_cwd)
+        _copy_deployment_source(source, bundle_root / relative)
+        copied[source] = relative
+
+    workflow_relative = copied[module_path.resolve()]
+    profile["source_cwd"] = str(source_cwd)
+    profile["source_workflow"] = source_workflow
+    profile["cwd"] = str(bundle_root)
+    profile["workflow"] = str(workflow_relative) + (f":{workflow_name}" if separator else "")
+    profile["bundle"] = str(bundle_root)
+    profile["bundled_files"] = [str(path) for path in copied.values()]
+
+
+def _zippergen_install_requirement() -> str:
+    project_root = Path(__file__).resolve().parents[2]
+    if (project_root / "pyproject.toml").exists():
+        return str(project_root)
+    try:
+        from importlib.metadata import version
+
+        return f"zippergen=={version('zippergen')}"
+    except Exception:
+        return "zippergen"
+
+
+def _prepare_deployment_environment(
+    profile: dict[str, object],
+    spec: DeploymentSpec,
+    *,
+    skip_install: bool,
+) -> None:
+    requirements = [package.requirement for package in spec.packages]
+    profile["packages"] = requirements
+    if skip_install:
+        profile["python"] = str(profile.get("python") or sys.executable)
+        return
+
+    name = str(profile["name"])
+    environment_dir = _deployment_environment_dir(name)
+    python = _deployment_python_path(environment_dir)
+    if not python.exists():
+        print(f"Creating managed Python environment for {name}...")
+        venv.EnvBuilder(with_pip=True).create(environment_dir)
+
+    install = [str(python), "-m", "pip", "install", _zippergen_install_requirement(), *requirements]
+    print("Installing deployment dependencies...")
+    try:
+        subprocess.run(install, check=True)
+    except subprocess.CalledProcessError as exc:
+        raise SystemExit(f"Dependency installation failed with exit code {exc.returncode}.") from exc
+    profile["python"] = str(python)
+    profile["environment_dir"] = str(environment_dir)
+
+
+def _setup_enabled(step: DeploymentSetup, values: dict[str, object]) -> bool:
+    if not step.when:
+        return True
+    current = values.get(step.when)
+    if not step.when_values:
+        return bool(current)
+    text = str(current)
+    return any(
+        text.startswith(expected[:-1]) if expected.endswith("*") else text == expected
+        for expected in step.when_values
+    )
+
+
+def _run_deployment_setup(
+    profile: dict[str, object],
+    spec: DeploymentSpec,
+    values: dict[str, object],
+    *,
+    skip_setup: bool,
+) -> None:
+    if skip_setup:
+        return
+    environment = {**os.environ, **_deployment_environment(profile)}
+    replacements = {
+        "python": str(profile.get("python") or sys.executable),
+        "cwd": str(profile["cwd"]),
+        "deployment": str(profile["name"]),
+    }
+    for step in spec.setup:
+        if not _setup_enabled(step, values):
+            continue
+        if step.creates_env:
+            created_path = environment.get(step.creates_env, "")
+            if created_path and Path(created_path).expanduser().exists():
+                print(f"Setup already complete: {step.description}")
+                continue
+        command = [part.format(**replacements) for part in step.command]
+        print(f"Setup: {step.description}")
+        try:
+            subprocess.run(
+                command,
+                cwd=str(profile["cwd"]),
+                env=environment,
+                check=True,
+            )
+        except subprocess.CalledProcessError as exc:
+            raise SystemExit(
+                f"Deployment setup {step.name!r} failed with exit code {exc.returncode}."
+            ) from exc
+
+
+def _deployment_context(
+    name: str,
+    *,
+    source: bool = False,
+) -> tuple[dict[str, object], Workflow, ModuleType, DeploymentSpec]:
+    profile = _load_deployment_profile(name)
+    cwd_key = "source_cwd" if source and profile.get("source_cwd") else "cwd"
+    workflow_key = "source_workflow" if source and profile.get("source_workflow") else "workflow"
+    cwd = Path(str(profile.get(cwd_key) or ".")).expanduser()
+    old_cwd = Path.cwd()
+    try:
+        os.chdir(cwd)
+        with _profile_environment(profile):
+            workflow, module = load_workflow_spec(str(profile[workflow_key]))
+    finally:
+        os.chdir(old_cwd)
+    return profile, workflow, module, deployment_spec_from_module(module)
+
+
+def _apply_deploy_arguments(
+    profile: dict[str, object],
+    args,
+    spec: DeploymentSpec,
+) -> tuple[dict[str, object], dict[str, str]]:
+    if args.llm is not None:
+        profile["llm"] = args.llm
+    if args.llm_idle_timeout is not None:
+        profile["llm_idle_timeout"] = args.llm_idle_timeout
+    if args.services is not None:
+        profile["services"] = args.services
+    if args.timeout is not None:
+        profile["timeout"] = args.timeout
+    if args.store is not None:
+        profile["store"] = _ensure_store_parent(args.store)
+    if args.log is not None:
+        profile["log"] = str(Path(args.log).expanduser())
+    if args.ui is not None:
+        profile["ui"] = args.ui
+    if args.show_decisions is not None:
+        profile["show_decisions"] = args.show_decisions
+
+    input_arguments = _parse_input_json(args.input_json)
+    input_arguments.update(_parse_inputs(args.input))
+    inputs: dict[str, object] = _profile_mapping(profile, "inputs")
+    inputs.update(input_arguments)
+    profile["inputs"] = inputs
+    option_arguments = _parse_inputs(args.option)
+    options: dict[str, object] = _profile_mapping(profile, "options")
+    options.update(option_arguments)
+    profile["options"] = options
+
+    overrides = _parse_inputs(args.set)
+    for field in spec.fields:
+        if field.target == "llm" and args.llm is not None:
+            overrides[field.name] = args.llm
+        elif field.target == "services" and args.services is not None:
+            overrides[field.name] = args.services
+        elif field.target == "option" and field.target_name in option_arguments:
+            overrides.setdefault(field.name, option_arguments[field.target_name])
+        elif field.target == "input" and field.target_name in input_arguments:
+            overrides.setdefault(field.name, input_arguments[field.target_name])
+
+    interactive = not args.yes and sys.stdin.isatty()
+    return _collect_deployment_fields(
+        spec,
+        profile,
+        overrides=overrides,
+        interactive=interactive,
+    )
+
+
+def _finalize_guided_deployment(
+    profile: dict[str, object],
+    spec: DeploymentSpec,
+    values: dict[str, object],
+    secrets: dict[str, str],
+    args,
+) -> int:
+    name = str(profile["name"])
+    secret_fields = [field for field in spec.fields if field.secret]
+    if secret_fields or secrets:
+        secrets_path = _deployment_secrets_path(name)
+        _write_deployment_secrets(secrets_path, secrets)
+        profile["secrets_file"] = str(secrets_path)
+        profile["secret_names"] = sorted(secrets)
+    profile["deployment_spec"] = spec.as_dict()
+    profile["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+
+    if not args.no_bundle:
+        _bundle_deployment(profile, spec)
+    # Persist enough state to resume configuration even if dependency install
+    # or an interactive OAuth step fails.
+    _write_deployment_artifacts(profile)
+    _prepare_deployment_environment(profile, spec, skip_install=args.no_install)
+    _write_deployment_artifacts(profile)
+    _run_deployment_setup(profile, spec, values, skip_setup=args.no_setup)
+    _write_deployment_artifacts(profile)
+
+    if not args.no_doctor:
+        checks = _doctor_checks(name, include_systemd=False)
+        _print_doctor(name, checks)
+        if any(check.get("status") == "fail" for check in checks):
+            print(f"Deployment {name} was configured but not started because doctor found failures.")
+            return 1
+
+    if not args.no_start:
+        lifecycle_args = argparse.Namespace(name=name, enable=True, dry_run=False)
+        _deployment_lifecycle_command(lifecycle_args, "start")
+
+    print(f"Deployment: {name}")
+    print(f"Status: zippergen status {name}")
+    print(f"Logs: zippergen logs {name} --follow")
+    print(f"Restart: zippergen restart {name}")
+    return 0
+
+
+def _deploy_command(args) -> int:
+    existing_path = _deployment_profile_path(args.target)
+    if existing_path.exists() and not _looks_like_path(args.target) and ":" not in args.target:
+        profile, workflow, module, spec = _deployment_context(args.target, source=True)
+        if args.name and _slug(args.name) != str(profile["name"]):
+            raise SystemExit("--name cannot rename an existing deployment.")
+    else:
+        workflow, module = load_workflow_spec(args.target)
+        spec = deployment_spec_from_module(module)
+        name = _slug(args.name or spec.name or _deployment_name_from_workflow(args.target, workflow))
+        if _deployment_profile_path(name).exists():
+            profile, workflow, module, spec = _deployment_context(name, source=True)
+        else:
+            profile = {
+                "schema_version": 2,
+                "name": name,
+                "workflow": args.target,
+                "cwd": str(Path.cwd()),
+                "source_workflow": args.target,
+                "source_cwd": str(Path.cwd()),
+                "store": _default_deployment_store_path(name),
+                "log": _default_deployment_log_path(name),
+                "llm": None,
+                "llm_idle_timeout": None,
+                "services": None,
+                "options": {},
+                "inputs": {},
+                "environment": {},
+                "timeout": 0.0,
+                "execution": "sqlite",
+                "ui": False,
+                "show_decisions": False,
+                "created_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                "python": sys.executable,
+            }
+
+    profile["schema_version"] = 2
+    if not args.yes and sys.stdin.isatty() and spec.description:
+        print(spec.description)
+        print()
+    values, secrets = _apply_deploy_arguments(profile, args, spec)
+    return _finalize_guided_deployment(profile, spec, values, secrets, args)
+
+
+def _configure_deployment_command(args) -> int:
+    profile, _workflow, _module, spec = _deployment_context(args.name)
+    values, secrets = _apply_deploy_arguments(profile, args, spec)
+    rc = _finalize_guided_deployment(profile, spec, values, secrets, args)
+    if rc == 0 and args.restart and args.no_start:
+        lifecycle_args = argparse.Namespace(name=args.name, enable=False, dry_run=False)
+        return _deployment_lifecycle_command(lifecycle_args, "restart")
+    return rc
+
+
 def _deploy_local_command(args) -> int:
     wf, _module = load_workflow_spec(args.workflow)
     name = _slug(args.name or _deployment_name_from_workflow(args.workflow, wf))
@@ -1091,7 +2044,8 @@ def _run_deployment_command(args) -> int:
     old_cwd = Path.cwd()
     try:
         os.chdir(cwd)
-        return _run_workflow_command(_run_args_from_deployment(profile))
+        with _profile_environment(profile):
+            return _run_workflow_command(_run_args_from_deployment(profile))
     finally:
         os.chdir(old_cwd)
 
@@ -1290,6 +2244,33 @@ def _notify_telegram_command(args) -> int:
         time.sleep(args.interval)
 
 
+def _add_guided_deployment_arguments(
+    parser: argparse.ArgumentParser,
+    *,
+    configure: bool = False,
+) -> None:
+    parser.add_argument("--llm", metavar="SPEC", help="LLM spec stored in the deployment profile.")
+    parser.add_argument("--llm-idle-timeout", type=float, help="Release a managed local LLM after this idle time.")
+    parser.add_argument("--store", help="SQLite store path.")
+    parser.add_argument("--log", help="Deployment log path.")
+    parser.add_argument("--input", action="append", default=[], metavar="name=value", help="Workflow input value.")
+    parser.add_argument("--input-json", help="Workflow inputs as a JSON object.")
+    parser.add_argument("--option", action="append", default=[], metavar="name=value", help="Workflow setup option.")
+    parser.add_argument("--set", action="append", default=[], metavar="field=value", help="Declared deployment field value.")
+    parser.add_argument("--services", choices=("fake", "live"), help="Workflow service mode.")
+    parser.add_argument("--timeout", type=float, help="Workflow timeout; defaults to 0 (no deadline).")
+    parser.add_argument("--ui", action="store_true", default=None, help="Start legacy ZipperChat visualization.")
+    parser.add_argument("--show-decisions", action="store_true", default=None, help="Show control events in ZipperChat.")
+    parser.add_argument("--yes", action="store_true", help="Accept defaults and existing environment values without prompting.")
+    if configure:
+        parser.add_argument("--install", dest="no_install", action="store_false", help="Update the managed Python environment.")
+        parser.add_argument("--setup", dest="no_setup", action="store_false", help="Run declared one-time setup commands.")
+    else:
+        parser.add_argument("--no-install", action="store_true", help="Do not create/update the managed Python environment.")
+        parser.add_argument("--no-setup", action="store_true", help="Skip declared one-time setup commands.")
+    parser.add_argument("--no-doctor", action="store_true", help="Skip readiness checks.")
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="zippergen")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -1306,6 +2287,32 @@ def main(argv=None) -> int:
     rn.add_argument("--timeout", type=float, default=60.0, help="Workflow timeout in seconds; use 0 for no deadline.")
     rn.add_argument("--execution", choices=("sqlite", "memory"), default="sqlite", help="Execution backend.")
     rn.add_argument("--show-decisions", action="store_true", help="Show branch/control events in ZipperChat.")
+
+    show = sub.add_parser("show", help="render a workflow as a code-first semantic view")
+    show.add_argument("workflow", help="Workflow spec: module:workflow or path.py:workflow")
+    show.add_argument("--detail", choices=DETAILS, default="protocol", help="Amount of implementation detail to include.")
+    show.add_argument("--communications", action="store_true", help="Show communication and control flow only.")
+    focus = show.add_mutually_exclusive_group()
+    focus.add_argument("--agent", help="Show the exact local projection for one agent.")
+    focus.add_argument("--agents", help="Comma-separated agents to retain in a boundary-aware focus view.")
+    show.add_argument("--format", choices=("code", "json"), default="code", help="Output format.")
+
+    validate = sub.add_parser("validate", help="validate loading, projection, rendering, and deployment metadata")
+    validate.add_argument("workflow", help="Workflow spec: module:workflow or path.py:workflow")
+    validate.add_argument("--json", action="store_true", help="Print machine-readable validation results.")
+
+    deploy = sub.add_parser("deploy", help="configure, validate, and start a workflow deployment")
+    deploy.add_argument("target", help="Workflow spec or existing deployment name.")
+    deploy.add_argument("--name", help="Deployment name; defaults to the workflow declaration or workflow name.")
+    _add_guided_deployment_arguments(deploy)
+    deploy.add_argument("--no-bundle", action="store_true", help="Run from source instead of snapshotting declared files.")
+    deploy.add_argument("--no-start", action="store_true", help="Configure the deployment without starting its service.")
+
+    configure = sub.add_parser("configure", help="update a named deployment's persistent configuration")
+    configure.add_argument("name", help="Deployment name.")
+    _add_guided_deployment_arguments(configure, configure=True)
+    configure.add_argument("--restart", action="store_true", help="Restart the service after configuration succeeds.")
+    configure.set_defaults(no_start=True, no_bundle=True, no_install=True, no_setup=True)
 
     dl = sub.add_parser("deploy-local", help="create a named local deployment profile")
     dl.add_argument("workflow", help="Workflow spec: module:workflow or path.py:workflow")
@@ -1327,18 +2334,18 @@ def main(argv=None) -> int:
     rd = sub.add_parser("run-deployment", help="run a named local deployment profile")
     rd.add_argument("name", help="Deployment name.")
 
-    start = sub.add_parser("start", help="start a named deployment as a systemd user service")
+    start = sub.add_parser("start", help="start a named deployment as a supervised user service")
     start.add_argument("name", help="Deployment name.")
     start.add_argument("--enable", action="store_true", help="Enable the service to start automatically for this user.")
-    start.add_argument("--dry-run", action="store_true", help="Print the systemd commands without running them.")
+    start.add_argument("--dry-run", action="store_true", help="Print service-manager commands without running them.")
 
-    stop = sub.add_parser("stop", help="stop a named deployment systemd user service")
+    stop = sub.add_parser("stop", help="stop a named supervised deployment")
     stop.add_argument("name", help="Deployment name.")
-    stop.add_argument("--dry-run", action="store_true", help="Print the systemd command without running it.")
+    stop.add_argument("--dry-run", action="store_true", help="Print the service-manager command without running it.")
 
-    restart = sub.add_parser("restart", help="restart a named deployment systemd user service")
+    restart = sub.add_parser("restart", help="restart a named supervised deployment")
     restart.add_argument("name", help="Deployment name.")
-    restart.add_argument("--dry-run", action="store_true", help="Print the systemd commands without running them.")
+    restart.add_argument("--dry-run", action="store_true", help="Print service-manager commands without running them.")
 
     logs = sub.add_parser("logs", help="show logs for a named deployment")
     logs.add_argument("name", help="Deployment name.")
@@ -1349,7 +2356,13 @@ def main(argv=None) -> int:
     doctor = sub.add_parser("doctor", help="check a named local deployment for common problems")
     doctor.add_argument("name", help="Deployment name.")
     doctor.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
-    doctor.add_argument("--no-systemd", action="store_true", help="Skip live systemd active-state checks.")
+    doctor.add_argument(
+        "--no-service-check",
+        "--no-systemd",
+        dest="no_systemd",
+        action="store_true",
+        help="Skip live launchd/systemd active-state checks.",
+    )
 
     st = sub.add_parser("status", help="show local SQLite deployment status")
     st.add_argument("deployment", nargs="?", help="Deployment name.")
@@ -1417,6 +2430,14 @@ def main(argv=None) -> int:
 
     if args.cmd == "run":
         return _run_workflow_command(args)
+    if args.cmd == "show":
+        return _show_command(args)
+    if args.cmd == "validate":
+        return _validate_command(args)
+    if args.cmd == "deploy":
+        return _deploy_command(args)
+    if args.cmd == "configure":
+        return _configure_deployment_command(args)
     if args.cmd == "deploy-local":
         return _deploy_local_command(args)
     if args.cmd == "run-deployment":

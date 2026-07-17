@@ -48,6 +48,24 @@ class FakeSheetsClient:
         self.rows = [dict(row) for row in rows]
 
 
+def test_call_intake_declares_guided_deployment_requirements():
+    module = _load_call_intake()
+    spec = module.zippergen_deployment
+    fields = {field.name: field for field in spec.fields}
+
+    assert spec.name == "call-intake"
+    assert fields["openai_api_key"].secret is True
+    assert fields["certified"].required is True
+    assert fields["recipient"].required is True
+    assert fields["sheet_id"].when_values == ("sheets", "both")
+    assert {package.import_name for package in spec.packages} == {
+        "google.auth",
+        "google_auth_oauthlib",
+        "googleapiclient",
+    }
+    assert [step.name for step in spec.setup] == ["gmail-oauth", "sheets-oauth"]
+
+
 def test_certified_sender_accepts_exact_and_domain(tmp_path):
     module = _load_call_intake()
     module.reset_for_tests(

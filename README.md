@@ -197,62 +197,108 @@ workflow.configure("openai:gpt-4o", ui=True, timeout=600)
 
 Supported specs: `"mock"`, `"openai:<model>"`, `"ollama:<model>"`, `"mistral:<model>"`, `"claude:<model>"`. You can omit the model and use env defaults, for example `"openai"`. For per-agent routing: `llm={"Writer": "openai:gpt-4o", "Editor": "mistral"}`.
 
+## Inspecting Workflows As Code
+
+ZipperGen can render semantic views directly in the terminal. These views are
+generated from the workflow IR, so they do not require a diagramming tool and
+are suitable for both human review and coding assistants.
+
+```bash
+# Complete global protocol
+zippergen show examples/call_intake.py:call_intake
+
+# Messages and control flow only
+zippergen show examples/call_intake.py:call_intake --communications
+
+# Exact local program produced by formal projection
+zippergen show examples/call_intake.py:call_intake --agent Extractor
+
+# Focus on selected agents; hidden peers remain explicit boundaries
+zippergen show examples/call_intake.py:call_intake \
+  --agents Mailbox,Extractor
+
+# Include action declarations, or everything including prompts and deployment
+zippergen show examples/call_intake.py:call_intake --detail actions
+zippergen show examples/call_intake.py:call_intake --detail full
+```
+
+Detail levels are `overview`, `protocol`, `actions`, and `full`. Add
+`--format json` for structured metadata plus the canonical code view.
+
+Validate loading, every local projection, canonical rendering, and deployment
+metadata before deploying:
+
+```bash
+zippergen validate examples/call_intake.py:call_intake
+zippergen validate examples/call_intake.py:call_intake --json
+```
+
 ## Local Deployment
 
-Run a workflow from the command line with a persistent SQLite store:
+The guided path configures, validates, and starts a workflow in one command:
+
+```bash
+zippergen deploy examples/call_intake.py:call_intake
+```
+
+When a workflow declares deployment requirements, ZipperGen asks for its
+settings and secrets, creates a managed Python environment, installs declared
+packages, runs one-time setup such as OAuth, checks readiness, snapshots the
+workflow files, and starts a user service. It uses launchd on macOS and systemd
+on Linux.
+
+Normal configuration is stored in the deployment profile. Secrets are kept in
+a separate mode-0600 file and loaded before the workflow module is imported;
+they do not appear in the profile or generated service definition.
+
+Day-to-day operation uses the deployment name:
+
+```bash
+zippergen status call-intake
+zippergen logs call-intake --follow
+zippergen doctor call-intake
+zippergen restart call-intake
+zippergen configure call-intake --restart
+```
+
+Run `zippergen deploy call-intake` again to snapshot and deploy updated source.
+The stable SQLite store is retained, so committed workflow work is replayed
+instead of repeated.
+
+Workflow modules describe the guided experience with data-only declarations
+that are also straightforward for workflow-generating LLMs to emit:
+
+```python
+from zippergen import DeploymentField, DeploymentPackage, DeploymentSpec
+
+zippergen_deployment = DeploymentSpec(
+    name="my-workflow",
+    fields=(
+        DeploymentField("llm", "Model", target="llm", default="openai:gpt-4o"),
+        DeploymentField(
+            "openai_key", "OpenAI API key",
+            target="env", env="OPENAI_API_KEY", secret=True, required=True,
+        ),
+    ),
+    packages=(DeploymentPackage("some-client", "some_client"),),
+    files=("workflows/my_workflow.py",),
+)
+```
+
+For quick experiments, `zippergen run` remains available:
 
 ```bash
 zippergen run examples/hello.py:hello \
   --llm openai:gpt-4o \
-  --store ~/.zippergen/runs/hello.sqlite \
   --input topic="Say hello to ZipperGen"
 ```
 
-The workflow spec can be `module:workflow` or `path.py:workflow`. If `--store` is omitted, `zippergen run` creates a stable local store under `~/.zippergen/runs/`. Restart the same command with the same store to replay committed work and continue from SQLite.
+The workflow spec can be `module:workflow` or `path.py:workflow`. Runs and named
+deployments use persistent SQLite stores under `~/.zippergen/runs/` by default.
+Use `--ui` only for the legacy ZipperChat visualization; deployment approvals
+remain in SQLite-backed tasks and notification adapters.
 
-Use `--ui` only when you want the legacy ZipperChat visualization attached to the run. Deployment approvals are still owned by SQLite tasks and notification adapters.
-
-Inspect a local deployment store:
-
-```bash
-zippergen status --store ~/.zippergen/runs/hello.sqlite
-zippergen status --store ~/.zippergen/runs/hello.sqlite --json
-zippergen trace --store ~/.zippergen/runs/hello.sqlite --tail 50
-zippergen trace --store ~/.zippergen/runs/hello.sqlite --after <rowid> --json
-```
-
-For long-running local deployments, create a named profile instead of
-remembering the full command:
-
-```bash
-zippergen deploy-local examples/hello.py:hello \
-  --name hello \
-  --llm openai:gpt-4o \
-  --input topic="Say hello to ZipperGen"
-
-zippergen run-deployment hello
-zippergen doctor hello
-zippergen status hello
-zippergen trace hello --tail 50
-zippergen logs hello --tail 100
-```
-
-The profile is written under `~/.zippergen/deployments/`, with a stable SQLite
-store under `~/.zippergen/runs/`, a log path under `~/.zippergen/logs/`, and a
-generated systemd user-service template. This is the first step toward
-`zippergen deploy`; it avoids operational archaeology while keeping secrets out
-of the repository.
-
-On Linux systems with user-level systemd, ZipperGen can install and control the
-generated service directly:
-
-```bash
-zippergen start hello --enable
-zippergen restart hello
-zippergen stop hello
-```
-
-List and complete human approvals without the browser UI:
+Inspect and complete human approvals without a browser:
 
 ```bash
 zippergen tasks --store ~/.zippergen/runs/command-center.sqlite
@@ -285,51 +331,6 @@ zippergen notify telegram --store ~/.zippergen/runs/command-center.sqlite --watc
 
 For deeper setup details, see the beginner deployment booklet in
 [`docs/local-deployment.md`](docs/local-deployment.md).
-
-Workflow modules may define an optional setup hook:
-
-```python
-def zippergen_setup(config):
-    if config.option("services", "fake") == "live":
-        ...
-```
-
-Pass hook options with `--option name=value`. For the command center:
-
-```bash
-zippergen run examples/command_center.py:command_center \
-  --llm openai:gpt-4o \
-  --services live \
-  --store ~/.zippergen/runs/command-center.sqlite \
-  --timeout 0
-```
-
-For local models, add an idle timeout so the model can be released while the workflow keeps running:
-
-```bash
-zippergen run examples/command_center.py:command_center \
-  --llm ollama:qwen2.5:7b \
-  --services live \
-  --llm-idle-timeout 300 \
-  --store ~/.zippergen/runs/command-center.sqlite \
-  --timeout 0
-```
-
-The call-intake deployment example watches certified email senders, extracts
-calls for projects/positions/grants into a CSV table, sends JSON replies, and
-accepts corrected replies. Automatic sending is capped at 10 emails per hour:
-
-```bash
-export ZIPPERGEN_CALL_INTAKE_SEND_MODE=send
-export ZIPPERGEN_CALL_INTAKE_MAX_EMAILS_PER_HOUR=10
-export ZIPPERGEN_CALL_INTAKE_POLL_SECONDS=60
-
-zippergen run examples/call_intake.py:call_intake \
-  --llm openai:gpt-4o \
-  --services live \
-  --store ~/.zippergen/runs/call-intake.sqlite \
-  --timeout 0
-```
 
 ## Formal foundation
 

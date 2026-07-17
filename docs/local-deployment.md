@@ -5,19 +5,20 @@ local machine for a long time.
 
 The recommended deployment shape is:
 
-1. One workflow process runs with `zippergen run`.
-2. The workflow uses one persistent SQLite file as its store.
-3. Human approvals are completed through SQLite-backed adapters, such as the
+1. `zippergen deploy` creates a named, self-contained workflow deployment.
+2. Normal settings are persisted in its profile and secrets in a private file.
+3. The workflow uses one persistent SQLite file as its store.
+4. Human approvals are completed through SQLite-backed adapters, such as the
    CLI or Telegram.
-4. The operating system keeps the workflow and notifier processes alive.
-5. You inspect the system with `zippergen status`, `zippergen tasks`, and
+5. launchd on macOS or systemd on Linux keeps the workflow alive.
+6. You inspect the system with `zippergen status`, `zippergen logs`, and
    `zippergen trace`.
 
 ZipperChat can still be useful for visualization, but browser approval is
 legacy. For deployed systems, SQLite is the source of truth.
 
-`zippergen serve` is also legacy. It is a low-level per-role command. Prefer
-`zippergen run`, which starts all lifelines locally against one SQLite store.
+`zippergen run` is useful for experiments. `zippergen serve` is a legacy,
+low-level per-role command; neither is the normal long-running deployment path.
 
 ## The Big Idea
 
@@ -59,21 +60,27 @@ the short value.
 
 ## The Commands You Will Use
 
-Run a workflow:
+Create and start a deployment:
 
 ```bash
-uv run zippergen run <module-or-path>:<workflow> \
-  --store <sqlite-store> \
-  --llm <llm-spec> \
-  --timeout 0
+uv run zippergen validate <module-or-path>:<workflow>
+uv run zippergen show <module-or-path>:<workflow> --communications
+uv run zippergen deploy <module-or-path>:<workflow>
 ```
 
-Inspect a workflow:
+The guided command collects declared settings, captures secrets without placing
+them in the profile, installs declared packages into a managed environment,
+runs one-time setup, checks readiness, and starts the platform user service.
+
+Operate it by name:
 
 ```bash
-uv run zippergen status --store <sqlite-store>
-uv run zippergen tasks --store <sqlite-store>
-uv run zippergen trace --store <sqlite-store> --tail 50
+uv run zippergen status <name>
+uv run zippergen logs <name> --follow
+uv run zippergen doctor <name>
+uv run zippergen restart <name>
+uv run zippergen configure <name> --restart
+uv run zippergen deploy <name>       # snapshot and redeploy updated source
 ```
 
 Approve a human task from the CLI:
@@ -91,7 +98,9 @@ Run Telegram approvals:
 uv run zippergen notify telegram --store <sqlite-store> --watch
 ```
 
-`--timeout 0` means no deadline. Use it for workflows that should keep running.
+The remaining manual sections explain the underlying pieces and are useful for
+debugging or workflows without a deployment declaration. They are not the
+recommended first-run procedure.
 
 ## Important Terms
 
@@ -403,6 +412,31 @@ positions, fellowships, and similar opportunities. It only sends certified
 senders to the LLM. Accepted messages are classified, converted to JSON, written
 to a CSV table, and answered automatically by email with the extracted JSON.
 
+The recommended setup is now one guided command:
+
+```bash
+uv run zippergen deploy examples/call_intake.py:call_intake
+```
+
+The workflow declaration tells ZipperGen to collect the LLM key, certified
+senders, intake address, Gmail query, table destination, safe reply mode, OAuth
+credential path, and polling/rate limits. ZipperGen then creates the managed
+environment, installs the Google clients, performs missing Gmail and Sheets
+OAuth setup, runs readiness checks, and starts launchd or systemd. The `export`
+commands below are not needed for this guided path.
+
+Operate it by name:
+
+```bash
+uv run zippergen status call-intake
+uv run zippergen logs call-intake --follow
+uv run zippergen restart call-intake
+uv run zippergen configure call-intake --restart
+```
+
+The remainder of this part documents the equivalent manual configuration for
+troubleshooting and older deployments.
+
 Automatic sending has a built-in safeguard: the send effect will not send more
 than 10 emails per hour. If the limit is reached, the workflow waits outside the
 SQLite transaction until another send slot is available. Before creating a draft
@@ -596,6 +630,10 @@ cat "$ZIPPERGEN_CALL_TABLE"
 
 ## Part 5: Run Under macOS `launchd`
 
+`zippergen deploy` and `zippergen start` now generate, install, and load the
+launchd agent automatically. The manual template procedure below is retained
+for troubleshooting custom installations.
+
 Only do this after the manual deployment works.
 
 Templates live here:
@@ -683,6 +721,10 @@ launchctl bootout "gui/$(id -u)" \
 ```
 
 ## Part 6: Run Under Linux `systemd --user`
+
+`zippergen deploy` and `zippergen start` now generate, install, and control the
+systemd user unit automatically. The manual template procedure below is
+retained for troubleshooting custom installations.
 
 Only do this after the manual deployment works.
 
