@@ -9,6 +9,8 @@ Turn workflow intent into reviewable Python protocol code. Keep the global
 workflow as the source of truth, make participant boundaries explicit, and use
 ZipperGen's semantic tools to verify every generated or modified workflow.
 
+Invoke this repository skill explicitly as `$zippergen-workflows` when useful.
+
 Read [references/dsl-and-cli.md](references/dsl-and-cli.md) before authoring or
 editing a workflow. Also inspect the repository's current `README.md`, nearby
 workflow modules, and tests when available; prefer the installed version's API

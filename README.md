@@ -263,8 +263,9 @@ This keeps generated workflows as ordinary reviewable code instead of hiding
 them behind a separate visual builder or opaque generation service.
 
 This repository includes a reusable coding-assistant skill at
-`skills/zippergen-workflows/`. Repository-aware assistants are directed to it
-by `AGENTS.md`. Give the assistant one or several prompts such as:
+`.agents/skills/zippergen-workflows/`. Codex discovers it automatically, and
+`AGENTS.md` directs repository-aware assistants to it. Give the assistant one
+or several prompts such as:
 
 > Create a workflow that watches a support inbox. A triage agent classifies each
 > request, billing and technical specialists work independently when both are
@@ -283,6 +284,11 @@ edits the Python module and tests; runs `validate`; renders the requested global
 and local code views; and verifies refinements against a pre-edit semantic
 snapshot. Deployment is still a separate explicit action, so generating code
 does not silently start services or perform live effects.
+
+For a complete beginner-oriented walkthrough—from installation and a mock
+workflow through prompt-driven refinement, semantic diff, durable approval,
+guided deployment, and supervised operation—see
+[`docs/workflow-development-deployment-guide.tex`](docs/workflow-development-deployment-guide.tex).
 
 ## Local Deployment
 

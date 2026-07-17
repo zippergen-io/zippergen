@@ -1,0 +1,1161 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage{amssymb}
+\usepackage[margin=24mm]{geometry}
+\usepackage{xcolor}
+\usepackage{microtype}
+\usepackage{enumitem}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{longtable}
+\usepackage{listings}
+\usepackage{fancyhdr}
+\usepackage{hyperref}
+
+\definecolor{ZipperInk}{HTML}{17212B}
+\definecolor{ZipperBlue}{HTML}{176B87}
+\definecolor{ZipperLight}{HTML}{EEF6F8}
+\definecolor{CodeBackground}{HTML}{F5F7F8}
+\definecolor{CodeComment}{HTML}{58715D}
+\definecolor{CodeKeyword}{HTML}{7A3E9D}
+\definecolor{WarningBackground}{HTML}{FFF6DF}
+\definecolor{WarningBorder}{HTML}{B7791F}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=ZipperBlue,
+  urlcolor=ZipperBlue,
+  citecolor=ZipperBlue,
+  pdftitle={ZipperGen Workflow Development and Deployment},
+  pdfauthor={The ZipperGen Authors}
+}
+
+\pagestyle{fancy}
+\fancyhf{}
+\lhead{ZipperGen development and deployment}
+\rhead{Beginner's end-to-end guide}
+\cfoot{\thepage}
+\setlength{\headheight}{14pt}
+
+\setlist[itemize]{topsep=4pt,itemsep=2pt}
+\setlist[enumerate]{topsep=4pt,itemsep=3pt}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{6pt}
+
+\lstset{
+  basicstyle=\ttfamily\small,
+  backgroundcolor=\color{CodeBackground},
+  frame=single,
+  rulecolor=\color{black!18},
+  breaklines=true,
+  breakatwhitespace=false,
+  columns=fullflexible,
+  keepspaces=true,
+  showstringspaces=false,
+  upquote=true,
+  keywordstyle=\color{CodeKeyword}\bfseries,
+  commentstyle=\color{CodeComment},
+  stringstyle=\color{ZipperBlue},
+  numbers=left,
+  numberstyle=\tiny\color{black!45},
+  numbersep=8pt,
+  xleftmargin=2em,
+  framexleftmargin=1.5em
+}
+
+\lstdefinestyle{shell}{
+  language=bash,
+  numbers=none
+}
+
+\lstdefinestyle{python}{
+  language=Python
+}
+
+\newcommand{\menu}[1]{\textbf{#1}}
+\newcommand{\placeholder}[1]{\textit{$\langle$#1$\rangle$}}
+
+\newenvironment{notebox}[1]
+{\begin{center}\begin{minipage}{0.94\linewidth}
+ \color{ZipperInk}\hrule\vspace{5pt}\textbf{#1}\par\smallskip}
+{\vspace{5pt}\hrule\end{minipage}\end{center}}
+
+\newenvironment{warningbox}[1]
+{\begin{center}\begin{minipage}{0.94\linewidth}
+ \color{WarningBorder}\hrule\vspace{5pt}
+ \color{ZipperInk}\textbf{#1}\par\smallskip}
+{\vspace{5pt}\color{WarningBorder}\hrule\end{minipage}\end{center}}
+
+\title{\color{ZipperInk}\Huge\textbf{ZipperGen Workflow Development and Deployment}\\[5pt]
+\Large A complete prompt-to-production guide for beginning users}
+\author{The ZipperGen Authors}
+\date{Guide edition: 17 July 2026}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+This guide walks through one complete ZipperGen development cycle: install the
+tools, understand a small workflow, run it without an API key, inspect its
+global and local programs as code, complete a durable human approval, modify it
+with a coding assistant, verify the semantic change, create a named deployment,
+and operate that deployment with status, doctor, logs, restart, and stop
+commands. It is written for readers who can use a terminal and editor but do
+not need to be experienced Python or operations engineers.
+\end{abstract}
+
+\begin{notebox}{The main promise}
+The workflow is always ordinary Python code. A coding assistant may create or
+change that code from prompts, but ZipperGen performs the deterministic work:
+loading it, validating every projection, showing what each participant does,
+comparing semantics, storing durable execution state, and managing deployment.
+\end{notebox}
+
+\tableofcontents
+\newpage
+
+\section{What you will do}
+
+By the end of this guide you will have performed all of the following:
+
+\begin{enumerate}
+  \item Installed an isolated Python environment for ZipperGen.
+  \item Run a three-participant workflow with the built-in mock LLM.
+  \item Read the global protocol, communication-only view, selected-agent view,
+        and exact single-agent projections in the terminal.
+  \item Run the workflow durably through SQLite and approve a human task from a
+        second terminal.
+  \item Ask a coding assistant to refine a copy of the workflow.
+  \item Compare the old and new meanings with a semantic snapshot and diff.
+  \item Create a named deployment with a source bundle and managed Python
+        environment.
+  \item Run that deployment in the foreground, then optionally as a supervised
+        macOS or Linux user service.
+  \item Diagnose, inspect, restart, reconfigure, redeploy, and stop it.
+\end{enumerate}
+
+The first pass uses the mock LLM and writes only below a separate tutorial
+directory. No API key and no external service account are required.
+
+\section{Conventions and safety}
+
+\subsection{How to read commands}
+
+All shell commands appear in boxes such as this:
+
+\begin{lstlisting}[style=shell]
+uv run zippergen --help
+\end{lstlisting}
+
+Do not type a leading dollar sign if another document uses one to represent the
+shell prompt. Run commands one at a time and read their output before moving on.
+Unless a section says otherwise, run commands from the root of the ZipperGen
+repository---the directory containing \path{pyproject.toml} and \path{README.md}.
+
+Text such as \placeholder{TASK-ID} is a placeholder. Replace the complete
+placeholder, including angle brackets, with the value printed on your machine.
+
+\subsection{Two terminal windows}
+
+Human approval examples use two terminals:
+
+\begin{itemize}
+  \item \textbf{Terminal A} runs a workflow and waits.
+  \item \textbf{Terminal B} checks status and approves or rejects the task.
+\end{itemize}
+
+Both terminals must be in the repository root. Both must set the same
+\path{ZIPPERGEN_HOME} value when the guide asks for it.
+
+\subsection{An isolated tutorial home}
+
+Normal deployments live under \path{$HOME/.zippergen}. This guide uses a
+different location, leaving existing deployments untouched:
+
+\begin{lstlisting}[style=shell]
+export ZIPPERGEN_HOME="$HOME/.zippergen-tutorial"
+\end{lstlisting}
+
+Run that export again in every new terminal used during the tutorial. Do not
+change it to \path{$HOME}, \path{/}, or another broad directory.
+
+\begin{warningbox}{Start with the mock backend}
+Do not configure a paid model or live external service until the complete mock
+cycle works. The mock backend returns recognizable placeholders such as
+\texttt{[draft\_reply:draft]}; this is expected and proves the coordination path
+without network calls or charges.
+\end{warningbox}
+
+\section{The mental model}
+
+\subsection{A workflow is a global protocol}
+
+Most agent frameworks distribute control logic among agents. ZipperGen instead
+starts with one global protocol: who owns a value, who sends it, who receives
+it, who performs an action, and who owns each decision. From that global code,
+ZipperGen projects an exact local program for every participant.
+
+\begin{center}
+\fbox{\begin{minipage}{0.88\linewidth}\centering
+Natural-language intent $\rightarrow$ Python global workflow
+$\rightarrow$ validation and projection
+$\rightarrow$ durable execution
+$\rightarrow$ supervised deployment
+\end{minipage}}
+\end{center}
+
+For a well-formed protocol, every projected send has a corresponding receive.
+The code therefore serves simultaneously as executable behavior, design
+documentation, and an audit surface.
+
+\subsection{Important words}
+
+\begin{longtable}{p{0.20\linewidth}p{0.73\linewidth}}
+\toprule
+\textbf{Term} & \textbf{Meaning} \\
+\midrule
+\endhead
+Lifeline & One sequential participant or responsibility boundary. It may
+represent an agent, a person, a mailbox, or an external-system role. \\
+Message & An explicit transfer of one or more values from one lifeline to
+another, written with \texttt{Sender(value) >> Receiver(value)}. \\
+Action & Work performed locally at one lifeline: deterministic computation,
+LLM work, an external effect, human input, or runtime planning. \\
+Owned decision & An \texttt{if} or \texttt{while} guard followed by
+\texttt{@ Lifeline}. That lifeline must know the guard value and owns the
+choice. \\
+Projection & The local program generated for one lifeline from the global
+protocol. \\
+Workflow spec & A CLI reference such as
+\path{examples/tutorial_review.py:tutorial_review}: file path, colon, workflow
+object name. \\
+Store & A SQLite file holding messages, actions, traces, human tasks, and
+workflow results. It enables durable resume and replay. \\
+Deployment profile & Persistent non-secret settings for a named deployment. \\
+Bundle & A timestamped copy of the workflow and its declared support files.
+Deployments run from this snapshot, not from a file that may change halfway
+through execution. \\
+Managed environment & A deployment-specific Python virtual environment with
+ZipperGen and declared packages installed. \\
+Service manager & macOS \texttt{launchd} or Linux user \texttt{systemd}, used
+to start, restart, and supervise a deployment. \\
+\bottomrule
+\end{longtable}
+
+\subsection{Action kinds}
+
+\begin{tabularx}{\linewidth}{p{0.14\linewidth}X X}
+\toprule
+\textbf{Decorator} & \textbf{Use it for} & \textbf{Important property} \\
+\midrule
+\texttt{@pure} & Deterministic local computation & No external I/O or durable
+side effect. \\
+\texttt{@effect} & Email, files, APIs, databases, or other external mutation &
+Make it retry-safe or idempotent. \\
+\texttt{@llm} & Model generation or judgment & Declare prompts, parse format,
+and typed outputs. \\
+\texttt{@human} & Confirmation, edit, selection, acknowledgement, or input &
+Creates a durable task in SQLite execution. \\
+\texttt{@planner} & A model-generated allowed sub-workflow at runtime & Not the
+normal mechanism for coding-assistant source generation. \\
+\bottomrule
+\end{tabularx}
+
+\section{Install the prerequisites}
+
+This guide targets macOS and Linux. ZipperGen requires Python 3.11 or later.
+The commands use \texttt{uv} to manage Python and the local environment.
+
+\subsection{Check what is already installed}
+
+\begin{lstlisting}[style=shell]
+git --version
+curl --version
+python3 --version
+uv --version
+\end{lstlisting}
+
+If \texttt{git} is missing, install the standard Git package for your operating
+system. If \texttt{uv} is missing, use the official macOS/Linux installer:
+
+\begin{lstlisting}[style=shell]
+curl -LsSf https://astral.sh/uv/install.sh | sh
+\end{lstlisting}
+
+The installer may ask you to restart the terminal so its binary is on
+\path{PATH}. The current official alternatives, including Homebrew and
+\texttt{pipx}, are documented at
+\url{https://docs.astral.sh/uv/getting-started/installation/}.
+
+\subsection{Clone and install ZipperGen}
+
+For a new checkout:
+
+\begin{lstlisting}[style=shell]
+cd "$HOME"
+git clone https://github.com/zippergen-io/zippergen.git
+cd zippergen
+uv python install 3.12
+uv venv --python 3.12
+uv pip install -e .
+uv run zippergen --help
+\end{lstlisting}
+
+The editable install means changes in the checkout are immediately visible to
+the local CLI. If you already have the repository, enter it instead:
+
+\begin{lstlisting}[style=shell]
+cd /path/to/your/zippergen
+git status --short
+git pull --ff-only
+uv pip install -e .
+uv run zippergen --help
+\end{lstlisting}
+
+Do not run \texttt{git pull} while you have changes you do not understand.
+First inspect \texttt{git status --short}; commit, stash, or ask for help when
+needed.
+
+\subsection{Optional: start Codex in the repository}
+
+You may use another repository-aware coding assistant, but this checkout ships
+with a Codex skill at
+\path{.agents/skills/zippergen-workflows/SKILL.md}. Codex discovers repository
+skills in \path{.agents/skills}; \path{AGENTS.md} supplies durable repository
+guidance. The official Codex skill documentation is at
+\url{https://learn.chatgpt.com/docs/build-skills}.
+
+If the Codex CLI is not installed and Node.js/npm is available:
+
+\begin{lstlisting}[style=shell]
+npm install --global @openai/codex
+codex login
+\end{lstlisting}
+
+Complete the browser sign-in, then start Codex from the repository root:
+
+\begin{lstlisting}[style=shell]
+cd /path/to/your/zippergen
+codex
+\end{lstlisting}
+
+Inside Codex, \texttt{/skills} should list \texttt{zippergen-workflows}. You can
+invoke it explicitly by beginning a prompt with \texttt{Use
+\$zippergen-workflows}. The CLI and IDE extension are the recommended local
+repository surfaces; see \url{https://learn.chatgpt.com/docs/codex/cli}.
+
+Codex authentication and a workflow's LLM API key are separate matters. The
+mock tutorial needs no workflow API key.
+
+\section{The running example}
+
+The example is \path{examples/tutorial_review.py}. It has three lifelines:
+
+\begin{itemize}
+  \item \textbf{Requester} initially owns a request and receives the answer.
+  \item \textbf{Writer} drafts a reply and revises it after rejection.
+  \item \textbf{Reviewer} is a human authority who approves or rejects the
+        first draft.
+\end{itemize}
+
+The protocol is:
+
+\begin{enumerate}
+  \item Requester sends the request to Writer.
+  \item Writer uses an LLM action to create a draft.
+  \item Writer sends the draft to Reviewer.
+  \item Reviewer completes a human confirmation action.
+  \item If Reviewer approves, the draft goes to Requester.
+  \item Otherwise Reviewer returns the draft to Writer, Writer revises it, and
+        the revision goes to Requester.
+\end{enumerate}
+
+The complete, executable source is included in Appendix~\ref{app:source}.
+
+\subsection{Why the deployment declaration matters}
+
+The module also defines \texttt{zippergen\_deployment}. It tells the guided
+deployer to collect:
+
+\begin{itemize}
+  \item the LLM setting, defaulting to \texttt{mock};
+  \item the request text as a workflow input; and
+  \item an OpenAI API key only if the LLM setting starts with
+        \texttt{openai}.
+\end{itemize}
+
+The declaration is data-only. A coding assistant can generate it, and
+\texttt{show --detail full}, \texttt{validate}, \texttt{doctor}, and
+\texttt{deploy} can inspect it without bespoke shell scripts.
+
+\section{First run: one terminal, no durable store}
+
+Run the example directly:
+
+\begin{lstlisting}[style=shell]
+uv run python examples/tutorial_review.py
+\end{lstlisting}
+
+Expected interaction:
+
+\begin{lstlisting}[style=shell]
+[draft_reply:draft]
+
+Approve this draft? [y/n]: y
+Result: [draft_reply:draft]
+\end{lstlisting}
+
+Run it again and enter \texttt{n}; the result should be
+\texttt{[revise\_reply:draft]}. This direct program uses in-memory execution and
+an in-terminal human backend. It is convenient for the first smoke test, but it
+does not demonstrate durable restart behavior.
+
+\section{Inspect the workflow entirely as code}
+
+Set the workflow spec once in your head:
+\path{examples/tutorial_review.py:tutorial_review}. The CLI currently expects
+the spec as a positional argument, so the following commands repeat it for
+clarity.
+
+\subsection{Validate before running or deploying}
+
+\begin{lstlisting}[style=shell]
+uv run zippergen validate examples/tutorial_review.py:tutorial_review
+\end{lstlisting}
+
+Successful validation reports three unique lifelines, successful projections
+for Requester, Writer, and Reviewer, a valid deployment declaration, and
+successful canonical rendering. Treat a validation failure as a blocker.
+
+For machine-readable output:
+
+\begin{lstlisting}[style=shell]
+uv run zippergen validate examples/tutorial_review.py:tutorial_review --json
+\end{lstlisting}
+
+\subsection{Global and communication-only views}
+
+\begin{lstlisting}[style=shell]
+uv run zippergen show examples/tutorial_review.py:tutorial_review
+uv run zippergen show examples/tutorial_review.py:tutorial_review --communications
+uv run zippergen show examples/tutorial_review.py:tutorial_review --detail actions
+uv run zippergen show examples/tutorial_review.py:tutorial_review --detail full
+\end{lstlisting}
+
+The communication-only view keeps messages, decisions, and the return value but
+omits local action bodies. The full view adds prompts, implementations, and the
+deployment contract.
+
+\subsection{One participant or a selected group}
+
+Exact single-agent projections:
+
+\begin{lstlisting}[style=shell]
+uv run zippergen show examples/tutorial_review.py:tutorial_review --agent Requester
+uv run zippergen show examples/tutorial_review.py:tutorial_review --agent Writer
+uv run zippergen show examples/tutorial_review.py:tutorial_review --agent Reviewer
+\end{lstlisting}
+
+A focused multi-agent view keeps hidden peers as explicit external boundaries:
+
+\begin{lstlisting}[style=shell]
+uv run zippergen show examples/tutorial_review.py:tutorial_review \
+  --agents Writer,Reviewer
+\end{lstlisting}
+
+Do not confuse these modes: \texttt{--agent Reviewer} is the exact formal local
+projection; \texttt{--agents Writer,Reviewer} is a global focus view.
+
+Structured output for tools and coding assistants is also available:
+
+\begin{lstlisting}[style=shell]
+uv run zippergen show examples/tutorial_review.py:tutorial_review --format json
+\end{lstlisting}
+
+\section{Durable run: two terminals and a human task}
+
+This pass uses SQLite. The process in Terminal A waits without losing its state;
+Terminal B finds and completes the human task.
+
+\subsection{Terminal A: start the workflow}
+
+From the repository root:
+
+\begin{lstlisting}[style=shell]
+export ZIPPERGEN_HOME="$HOME/.zippergen-tutorial"
+
+uv run zippergen run examples/tutorial_review.py:tutorial_review \
+  --llm mock \
+  --input 'request=Explain why the sky is blue in two sentences.' \
+  --store "$ZIPPERGEN_HOME/runs/manual-review.sqlite" \
+  --timeout 0
+\end{lstlisting}
+
+Terminal A prints the store path and then waits. Leave it running.
+\texttt{--timeout 0} means no execution deadline; use this only when waiting is
+intentional.
+
+\subsection{Terminal B: inspect status and tasks}
+
+Open a second terminal, enter the repository, and repeat the export:
+
+\begin{lstlisting}[style=shell]
+cd /path/to/your/zippergen
+export ZIPPERGEN_HOME="$HOME/.zippergen-tutorial"
+
+uv run zippergen status \
+  --store "$ZIPPERGEN_HOME/runs/manual-review.sqlite"
+
+uv run zippergen tasks \
+  --store "$ZIPPERGEN_HOME/runs/manual-review.sqlite" \
+  --tokens --channel tutorial
+\end{lstlisting}
+
+Status should say \texttt{waiting}. The tasks command prints a task identifier,
+the rendered draft, and a durable token. Copy the task identifier.
+
+Approve it:
+
+\begin{lstlisting}[style=shell]
+uv run zippergen approve \
+  --store "$ZIPPERGEN_HOME/runs/manual-review.sqlite" \
+  --task <TASK-ID> --yes
+\end{lstlisting}
+
+To exercise the rejection branch, use \texttt{--no} instead of
+\texttt{--yes}. A token may replace the task ID:
+
+\begin{lstlisting}[style=shell]
+uv run zippergen approve \
+  --store "$ZIPPERGEN_HOME/runs/manual-review.sqlite" \
+  --token <TOKEN> --yes
+\end{lstlisting}
+
+Terminal A should now print a JSON result and exit. Confirm completion and view
+the trace:
+
+\begin{lstlisting}[style=shell]
+uv run zippergen status \
+  --store "$ZIPPERGEN_HOME/runs/manual-review.sqlite"
+
+uv run zippergen trace \
+  --store "$ZIPPERGEN_HOME/runs/manual-review.sqlite" --tail 30
+
+uv run zippergen tasks \
+  --store "$ZIPPERGEN_HOME/runs/manual-review.sqlite" --all
+\end{lstlisting}
+
+\begin{notebox}{Why rerunning may finish immediately}
+The SQLite store records a completed result for this workflow. Running the same
+workflow against the same store replays committed work instead of repeating it.
+Use a new, explicitly named store for a genuinely new tutorial run, for example
+\path{$ZIPPERGEN_HOME/runs/manual-review-2.sqlite}. Never delete a production
+store merely to force a rerun.
+\end{notebox}
+
+\section{Develop and refine with a coding assistant}
+
+This section works on a copy so the canonical example remains available for
+comparison and deployment.
+
+\subsection{Create a branch and working copy}
+
+\begin{lstlisting}[style=shell]
+git switch -c tutorial/workflow-cycle
+mkdir -p workbench
+cp examples/tutorial_review.py workbench/tutorial_review.py
+git status --short
+\end{lstlisting}
+
+Save a semantic baseline before any edit:
+
+\begin{lstlisting}[style=shell]
+export ZIPPERGEN_HOME="$HOME/.zippergen-tutorial"
+mkdir -p "$ZIPPERGEN_HOME/snapshots"
+
+uv run zippergen snapshot \
+  workbench/tutorial_review.py:tutorial_review \
+  -o "$ZIPPERGEN_HOME/snapshots/tutorial-before.json"
+\end{lstlisting}
+
+\subsection{Use a precise refinement prompt}
+
+Start Codex from the repository root with \texttt{codex}, or open the same
+repository in the Codex app/IDE extension. Send this complete prompt:
+
+\begin{lstlisting}[numbers=none]
+Use $zippergen-workflows.
+
+Refine workbench/tutorial_review.py:tutorial_review. After the initial
+Reviewer rejects a draft, add a separate Compliance human lifeline that must
+approve the revised draft before it reaches Requester. Keep the original
+approved path unchanged. Update the deployment bundle file path to the
+workbench copy. Add focused tests, validate the workflow, show the
+communication-only view, show exact local projections for Reviewer and
+Compliance, and compare the result with
+$ZIPPERGEN_HOME/snapshots/tutorial-before.json. Do not deploy or start any
+service. Explain assumptions and the semantic changes.
+\end{lstlisting}
+
+This prompt states the target, requested change, behavior to preserve,
+verification, and an explicit no-deployment boundary. The assistant should
+read \path{AGENTS.md} and the repository skill, edit code and tests, and run the
+semantic gate.
+
+\subsection{Independently verify the assistant's work}
+
+Even if the assistant reports success, run these yourself:
+
+\begin{lstlisting}[style=shell]
+git diff -- workbench tests
+git status --short
+
+uv run zippergen validate workbench/tutorial_review.py:tutorial_review
+uv run zippergen show workbench/tutorial_review.py:tutorial_review \
+  --communications
+uv run zippergen show workbench/tutorial_review.py:tutorial_review \
+  --agent Reviewer
+uv run zippergen show workbench/tutorial_review.py:tutorial_review \
+  --agent Compliance
+
+uv run zippergen diff \
+  "$ZIPPERGEN_HOME/snapshots/tutorial-before.json" \
+  workbench/tutorial_review.py:tutorial_review
+\end{lstlisting}
+
+The diff should show a Compliance lifeline, a new human action, new messages and
+control structure on the rejection path, and the deployment file-path change.
+It should not show changes to the already-approved path. The semantic diff
+ignores comments and formatting but detects workflow renames, action
+implementation changes, participant ownership, message/control context,
+execution order, parallel structure, and deployment requirements.
+
+Run focused tests supplied by the assistant, then the full suite:
+
+\begin{lstlisting}[style=shell]
+uv run python -m pytest -q
+uvx pyright
+\end{lstlisting}
+
+Commit only after reviewing the change:
+
+\begin{lstlisting}[style=shell]
+git add workbench/tutorial_review.py
+git add tests/<ASSISTANT-CREATED-TEST-FILE>.py
+git diff --cached
+git commit -m "Add compliance review tutorial variant"
+\end{lstlisting}
+
+Pushing is optional and depends on whether the branch belongs on your remote:
+
+\begin{lstlisting}[style=shell]
+git push -u origin tutorial/workflow-cycle
+\end{lstlisting}
+
+\subsection{Prompt template for a workflow created from scratch}
+
+Use this structure for later workflows:
+
+\begin{lstlisting}[numbers=none]
+Use $zippergen-workflows.
+
+Create <path.py>:<workflow_name> from the following requirements:
+- Participants and responsibilities: ...
+- Inputs and initial owners: ...
+- Messages and data crossing boundaries: ...
+- LLM, deterministic, external-effect, and human actions: ...
+- Decision and loop owners: ...
+- Parallel work: ...
+- Final outputs and owners: ...
+- Deployment fields, secrets, packages, setup, and bundled files: ...
+- Safety/idempotency requirements: ...
+
+Add fake/mock tests. Run validate, the communication-only view, the full view,
+and exact projections for all participants. Do not deploy until I explicitly
+ask.
+\end{lstlisting}
+
+Several prompts may be supplied over time. Ask the assistant to summarize the
+combined requirements and call out contradictions before editing.
+
+\section{Create a guided named deployment}
+
+Return to the canonical example for a deterministic deployment exercise. Set
+the isolated home in the current terminal:
+
+\begin{lstlisting}[style=shell]
+export ZIPPERGEN_HOME="$HOME/.zippergen-tutorial"
+\end{lstlisting}
+
+Create the bundle, managed environment, profile, and service definitions, but
+do not start a background service yet:
+
+\begin{lstlisting}[style=shell]
+uv run zippergen deploy examples/tutorial_review.py:tutorial_review \
+  --name tutorial-review \
+  --llm mock \
+  --input 'request=Explain deployment in two simple sentences.' \
+  --yes \
+  --no-start
+\end{lstlisting}
+
+The default path performs these steps:
+
+\begin{enumerate}
+  \item load the source workflow and deployment declaration;
+  \item collect defaults and command-line overrides;
+  \item copy declared source files into a timestamped bundle;
+  \item create a deployment-specific Python environment;
+  \item install ZipperGen and declared packages;
+  \item write the profile, run script, launchd plist, and systemd unit template;
+  \item run doctor checks; and
+  \item stop before service startup because of \texttt{--no-start}.
+\end{enumerate}
+
+\texttt{--yes} accepts declared defaults non-interactively. Omit it to see the
+guided questions. It never means ``approve arbitrary live effects''; it only
+controls configuration prompting.
+
+\subsection{Inspect the generated artifacts}
+
+\begin{lstlisting}[style=shell]
+find "$ZIPPERGEN_HOME" -maxdepth 5 -type f -print | sort
+uv run zippergen doctor tutorial-review
+\end{lstlisting}
+
+Before the first run, doctor normally warns that the SQLite store and log do not
+exist and that the service is not installed. Those warnings are expected;
+failures are not.
+
+\begin{longtable}{p{0.38\linewidth}p{0.55\linewidth}}
+\toprule
+\textbf{Path below \texttt{ZIPPERGEN\_HOME}} & \textbf{Purpose} \\
+\midrule
+\endhead
+\path{deployments/tutorial-review.json} & Public deployment profile. \\
+\path{deployments/tutorial-review.secrets.json} & Mode-0600 environment
+secrets, created when required. It is empty for the mock tutorial. \\
+\path{deployments/tutorial-review.sh} & Stable launch script. \\
+\path{deployments/io.zippergen.tutorial-review.plist} & Generated macOS
+launchd definition. \\
+\path{deployments/zippergen-tutorial-review.service} & Generated Linux systemd
+user-unit template. \\
+\path{environments/tutorial-review/} & Managed Python environment. \\
+\path{apps/tutorial-review/<timestamp>/} & Timestamped source bundle for this
+deployment revision. \\
+\path{runs/tutorial-review.sqlite} & Durable execution store. \\
+\path{logs/tutorial-review.log} & Supervised-service standard output/error. \\
+\bottomrule
+\end{longtable}
+
+\section{Run the named deployment in the foreground}
+
+Foreground execution is the easiest way to test the deployment profile and
+bundle before involving a service manager.
+
+\subsection{Terminal A}
+
+\begin{lstlisting}[style=shell]
+cd /path/to/your/zippergen
+export ZIPPERGEN_HOME="$HOME/.zippergen-tutorial"
+uv run zippergen run-deployment tutorial-review
+\end{lstlisting}
+
+\subsection{Terminal B}
+
+\begin{lstlisting}[style=shell]
+cd /path/to/your/zippergen
+export ZIPPERGEN_HOME="$HOME/.zippergen-tutorial"
+
+uv run zippergen status tutorial-review
+uv run zippergen tasks \
+  --store "$ZIPPERGEN_HOME/runs/tutorial-review.sqlite"
+
+uv run zippergen approve \
+  --store "$ZIPPERGEN_HOME/runs/tutorial-review.sqlite" \
+  --task <TASK-ID> --yes
+\end{lstlisting}
+
+Terminal A prints the result and exits. Then run:
+
+\begin{lstlisting}[style=shell]
+uv run zippergen status tutorial-review
+uv run zippergen trace tutorial-review --tail 30
+uv run zippergen doctor tutorial-review
+\end{lstlisting}
+
+This proves that the bundled code, managed Python, persisted inputs, mock LLM,
+SQLite store, and approval backend work together.
+
+\section{Optional: run as a supervised user service}
+
+The example is finite, while supervised deployments are primarily intended for
+long-running watchers and servers. To test supervision safely, use a second
+deployment name and stop it immediately after completion.
+
+\subsection{Prepare a fresh service deployment}
+
+\begin{lstlisting}[style=shell]
+export ZIPPERGEN_HOME="$HOME/.zippergen-tutorial"
+
+uv run zippergen deploy examples/tutorial_review.py:tutorial_review \
+  --name tutorial-review-service \
+  --llm mock \
+  --input 'request=Demonstrate durable restart in two sentences.' \
+  --yes --no-start
+
+uv run zippergen start tutorial-review-service --dry-run
+\end{lstlisting}
+
+Read the dry-run commands. On macOS they use \texttt{launchctl}; on Linux they
+use \texttt{systemctl --user}. If they look appropriate, start and enable the
+service:
+
+\begin{lstlisting}[style=shell]
+uv run zippergen start tutorial-review-service --enable
+uv run zippergen doctor tutorial-review-service
+uv run zippergen status tutorial-review-service
+\end{lstlisting}
+
+The status should become \texttt{waiting}. Test durability by restarting while
+the human task is still pending:
+
+\begin{lstlisting}[style=shell]
+uv run zippergen restart tutorial-review-service
+uv run zippergen status tutorial-review-service
+\end{lstlisting}
+
+The same task remains pending because it lives in SQLite, not only in process
+memory.
+
+\subsection{Watch logs and approve}
+
+In another terminal you may follow the log:
+
+\begin{lstlisting}[style=shell]
+export ZIPPERGEN_HOME="$HOME/.zippergen-tutorial"
+uv run zippergen logs tutorial-review-service --follow
+\end{lstlisting}
+
+Press Control-C to stop following the log; that does not stop the service.
+List and approve the task:
+
+\begin{lstlisting}[style=shell]
+uv run zippergen tasks \
+  --store "$ZIPPERGEN_HOME/runs/tutorial-review-service.sqlite"
+
+uv run zippergen approve \
+  --store "$ZIPPERGEN_HOME/runs/tutorial-review-service.sqlite" \
+  --task <TASK-ID> --yes
+
+uv run zippergen status tutorial-review-service
+uv run zippergen stop tutorial-review-service
+\end{lstlisting}
+
+Stop promptly after the finite workflow completes. The generated supervisor is
+configured to keep a deployment alive, which is correct for polling workflows
+such as call intake but unnecessary for this finite tutorial.
+
+If the machine does not support launchd or systemd user services, keep using:
+
+\begin{lstlisting}[style=shell]
+uv run zippergen run-deployment tutorial-review-service
+\end{lstlisting}
+
+under your preferred terminal multiplexer or process supervisor.
+
+\section{Update, reconfigure, and redeploy}
+
+\subsection{Change persistent configuration}
+
+For a long-running deployment, update declared fields and restart in one step:
+
+\begin{lstlisting}[style=shell]
+uv run zippergen configure tutorial-review-service \
+  --input 'request=A new configured request.' \
+  --yes --restart
+\end{lstlisting}
+
+For this finite example, the existing store already contains a completed
+result. Changing its input does not erase durable history or create a new job.
+Use a new deployment name/store for a new finite execution. For a real watcher,
+\texttt{configure --restart} is the normal pattern.
+
+\subsection{Redeploy changed source}
+
+After editing and validating the source, redeploy an existing named deployment:
+
+\begin{lstlisting}[style=shell]
+uv run zippergen validate examples/tutorial_review.py:tutorial_review
+uv run zippergen deploy tutorial-review-service --yes
+\end{lstlisting}
+
+This creates a new timestamped source bundle and starts the named deployment.
+The stable SQLite store is retained, so already committed durable work is not
+repeated.
+
+To deploy the assistant-modified workbench version as a separate test:
+
+\begin{lstlisting}[style=shell]
+uv run zippergen deploy workbench/tutorial_review.py:tutorial_review \
+  --name tutorial-review-v2 \
+  --llm mock \
+  --input 'request=Test the compliance version.' \
+  --yes --no-start
+\end{lstlisting}
+
+\subsection{Switch to a real model only after mock success}
+
+Replace \placeholder{MODEL} with an OpenAI model identifier available to your
+account. Omit \texttt{--yes} so the guided command asks for the secret without
+putting it in shell history:
+
+\begin{lstlisting}[style=shell]
+uv run zippergen configure tutorial-review-service \
+  --llm 'openai:<MODEL>' \
+  --restart
+\end{lstlisting}
+
+The conditional \texttt{openai\_api\_key} field now becomes active. ZipperGen
+stores the value in the deployment's private mode-0600 secrets file, loads it
+before importing the bundled workflow, and does not copy it into the public
+profile or service definition.
+
+\begin{warningbox}{Never paste secrets into source or prompts}
+Do not commit API keys, include them in a coding-assistant prompt, pass them via
+\texttt{--set} on a shared shell history, or add them to a normal deployment
+profile. Use the guided secret prompt or a securely managed environment.
+\end{warningbox}
+
+\section{Troubleshooting}
+
+\subsection*{\texttt{uv: command not found}}
+
+Restart the terminal after installing uv, then run \texttt{uv --version}. If it
+still fails, follow the PATH instructions printed by the official installer.
+
+\subsection*{The workflow file cannot be found}
+
+Check the current directory and spec:
+
+\begin{lstlisting}[style=shell]
+pwd
+ls examples/tutorial_review.py
+uv run zippergen validate examples/tutorial_review.py:tutorial_review
+\end{lstlisting}
+
+The text after the colon is the Python workflow object name, not the deployment
+name.
+
+\subsection*{Validation or projection fails}
+
+Do not deploy. Read the first failing check, inspect the global view and the
+affected local projection, then ask the coding assistant to diagnose the error.
+Common causes are missing messages, a decision owner that does not possess the
+guard value, an output that is not present at the declared lifeline, or a
+parallel data dependency.
+
+\subsection*{No human task appears}
+
+Confirm that Terminal A is still running and both commands use the same store:
+
+\begin{lstlisting}[style=shell]
+uv run zippergen status --store /exact/path/to/store.sqlite
+uv run zippergen tasks --store /exact/path/to/store.sqlite --all
+\end{lstlisting}
+
+If status is \texttt{done}, that store already contains a result. Use a new
+store path for a new finite run.
+
+\subsection*{The service will not start}
+
+\begin{lstlisting}[style=shell]
+uv run zippergen doctor tutorial-review-service
+uv run zippergen start tutorial-review-service --dry-run
+uv run zippergen logs tutorial-review-service --tail 100
+\end{lstlisting}
+
+On Linux, user systemd must be available. On macOS, \texttt{launchctl} must be
+available in the logged-in graphical user session. Use
+\texttt{run-deployment} as the foreground fallback.
+
+\subsection*{Doctor shows warnings}
+
+Warnings about a missing store/log before first execution or an uninstalled
+service before \texttt{start} are expected. A \texttt{FAIL} result blocks safe
+startup and should be corrected.
+
+\subsection*{A changed input does not create a new finite run}
+
+Durable stores intentionally replay prior committed work. Use a new deployment
+name or explicit new \texttt{--store} for a distinct finite job. Long-running
+workflows normally retain their store across restarts and redeployments.
+
+\subsection*{The semantic diff shows an unexpected change}
+
+Use the full and local views to locate it. Do not dismiss unexpected lifeline,
+ownership, message, action-kind, control, protocol-order, or deployment changes
+as formatting. The semantic diff already ignores ordinary action formatting
+and comments.
+
+\section{Safe stopping, preservation, and cleanup}
+
+If you started the supervised tutorial deployment, stop it before archiving its
+data:
+
+\begin{lstlisting}[style=shell]
+export ZIPPERGEN_HOME="$HOME/.zippergen-tutorial"
+uv run zippergen stop tutorial-review-service
+\end{lstlisting}
+
+The foreground deployment needs no stop command after it exits. To preserve all
+tutorial profiles, stores, logs, environments, and bundles while resetting the
+default path, move the exact tutorial directory:
+
+\begin{lstlisting}[style=shell]
+mv "$HOME/.zippergen-tutorial" "$HOME/.zippergen-tutorial.saved"
+\end{lstlisting}
+
+If the destination already exists, choose a different explicit name. Moving is
+safer than recursive deletion and keeps the audit trail recoverable.
+
+To abandon the workbench branch only after committing or otherwise preserving
+anything important, switch back normally:
+
+\begin{lstlisting}[style=shell]
+git status --short
+git switch main
+\end{lstlisting}
+
+Do not use destructive Git reset commands merely to clean up a tutorial.
+
+\section{End-to-end acceptance checklist}
+
+Record the observed result next to every item:
+
+\begin{longtable}{p{0.05\linewidth}p{0.70\linewidth}p{0.16\linewidth}}
+\toprule
+ & \textbf{Check} & \textbf{Result/date} \\
+\midrule
+\endhead
+$\square$ & \texttt{uv run zippergen --help} works from the repository root. & \\
+$\square$ & Direct mock run returns an approved and a rejected result. & \\
+$\square$ & \texttt{validate} succeeds for all three projections. & \\
+$\square$ & Global, communications, selected-agent, and local views are clear. & \\
+$\square$ & SQLite run reaches \texttt{waiting}; CLI approval reaches
+\texttt{done}. & \\
+$\square$ & A pre-edit semantic snapshot is created outside the source tree. & \\
+$\square$ & The assistant changes only the requested protocol behavior. & \\
+$\square$ & Semantic diff matches the intended change; tests and type checks pass. & \\
+$\square$ & Guided deploy creates a bundle, environment, profile, and doctor report. & \\
+$\square$ & Named foreground deployment reaches a durable task and result. & \\
+$\square$ & Optional supervised restart preserves the pending task. & \\
+$\square$ & Logs, status, trace, doctor, restart, and stop commands are understood. & \\
+$\square$ & No secret appears in source, Git diff, public profile, or service file. & \\
+\bottomrule
+\end{longtable}
+
+If a step is difficult or surprising, that is product feedback. Save the exact
+command, output, operating system, and what you expected. The purpose of this
+exercise is not only to test your understanding; it is to test whether the
+development and deployment experience is genuinely self-explanatory.
+
+\appendix
+
+\section{Compact command sheet}
+\label{app:commands}
+
+\subsection*{Setup}
+
+\begin{lstlisting}[style=shell]
+cd /path/to/your/zippergen
+uv python install 3.12
+uv venv --python 3.12
+uv pip install -e .
+export ZIPPERGEN_HOME="$HOME/.zippergen-tutorial"
+\end{lstlisting}
+
+\subsection*{Inspect and validate}
+
+\begin{lstlisting}[style=shell]
+uv run zippergen validate examples/tutorial_review.py:tutorial_review
+uv run zippergen show examples/tutorial_review.py:tutorial_review
+uv run zippergen show examples/tutorial_review.py:tutorial_review --communications
+uv run zippergen show examples/tutorial_review.py:tutorial_review --detail full
+uv run zippergen show examples/tutorial_review.py:tutorial_review --agent Reviewer
+uv run zippergen show examples/tutorial_review.py:tutorial_review \
+  --agents Writer,Reviewer
+\end{lstlisting}
+
+\subsection*{Durable local execution}
+
+\begin{lstlisting}[style=shell]
+uv run zippergen run examples/tutorial_review.py:tutorial_review \
+  --llm mock --input 'request=Explain the sky.' \
+  --store "$ZIPPERGEN_HOME/runs/manual-review.sqlite" --timeout 0
+
+uv run zippergen status --store "$ZIPPERGEN_HOME/runs/manual-review.sqlite"
+uv run zippergen tasks --store "$ZIPPERGEN_HOME/runs/manual-review.sqlite"
+uv run zippergen approve --store "$ZIPPERGEN_HOME/runs/manual-review.sqlite" \
+  --task <TASK-ID> --yes
+uv run zippergen trace --store "$ZIPPERGEN_HOME/runs/manual-review.sqlite"
+\end{lstlisting}
+
+\subsection*{Refinement safety gate}
+
+\begin{lstlisting}[style=shell]
+uv run zippergen snapshot path/to/workflow.py:workflow \
+  -o "$ZIPPERGEN_HOME/snapshots/workflow-before.json"
+# edit and test the workflow
+uv run zippergen validate path/to/workflow.py:workflow
+uv run zippergen diff "$ZIPPERGEN_HOME/snapshots/workflow-before.json" \
+  path/to/workflow.py:workflow
+\end{lstlisting}
+
+\subsection*{Deployment and operation}
+
+\begin{lstlisting}[style=shell]
+uv run zippergen deploy examples/tutorial_review.py:tutorial_review \
+  --name tutorial-review --llm mock \
+  --input 'request=Explain deployment.' --yes --no-start
+uv run zippergen doctor tutorial-review
+uv run zippergen run-deployment tutorial-review
+uv run zippergen start tutorial-review --dry-run
+uv run zippergen start tutorial-review --enable
+uv run zippergen status tutorial-review
+uv run zippergen logs tutorial-review --follow
+uv run zippergen restart tutorial-review
+uv run zippergen configure tutorial-review --yes --restart
+uv run zippergen deploy tutorial-review --yes
+uv run zippergen stop tutorial-review
+\end{lstlisting}
+
+\section{Complete tutorial source}
+\label{app:source}
+
+The listing below is imported from the executable file at document build time.
+Compile this document from the repository root so the relative path resolves.
+
+\lstinputlisting[style=python,caption={examples/tutorial\_review.py}]{examples/tutorial_review.py}
+
+\section{Build this document}
+
+From the repository root, with a TeX distribution installed:
+
+\begin{lstlisting}[style=shell]
+mkdir -p docs/_build
+latexmk -pdf -interaction=nonstopmode -halt-on-error \
+  -outdir=docs/_build \
+  docs/workflow-development-deployment-guide.tex
+\end{lstlisting}
+
+The PDF is then:
+\path{docs/_build/workflow-development-deployment-guide.pdf}. TeX auxiliary
+files and the generated PDF live under the ignored \path{docs/_build}
+directory; the maintained source is the \texttt{.tex} file.
+
+\end{document}
