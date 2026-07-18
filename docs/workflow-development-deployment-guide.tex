@@ -138,20 +138,22 @@
 \title{\color{ZipperInk}\Huge\textbf{ZipperGen Workflow Development and Deployment}\\[5pt]
 \Large A complete prompt-to-production guide for beginning users}
 \author{The ZipperGen Authors}
-\date{Guide edition: 17 July 2026}
+\date{Guide edition: 18 July 2026}
 
 \begin{document}
 
 \maketitle
 
 \begin{abstract}
-This guide walks through one complete ZipperGen development cycle: install the
-tools, understand a small workflow, run it without an API key, inspect its
-global and local programs as code, complete a durable human approval, modify it
-with a coding assistant, verify the semantic change, create a named deployment,
-and operate that deployment with status, doctor, logs, restart, and stop
-commands. It is written for readers who can use a terminal and editor but do
-not need to be experienced Python or operations engineers.
+This guide walks through one complete ZipperGen development cycle. It begins
+with ZipperGen Studio, the recommended one-terminal path for selecting,
+inspecting, running, resuming, refining, and deploying a workflow without
+managing environment exports, SQLite filenames, or human-task identifiers.
+The remainder then explains every underlying command and artifact in detail:
+installation, code views, durable approval, coding-assistant refinement,
+semantic comparison, named deployment, logs, diagnosis, restart, and stop. It
+is written for readers who can use a terminal and editor but do not need to be
+experienced Python or operations engineers.
 \end{abstract}
 
 \begin{notebox}{The main promise}
@@ -164,12 +166,399 @@ comparing semantics, storing durable execution state, and managing deployment.
 \tableofcontents
 \newpage
 
+\section{Start here: the ZipperGen Studio path}
+\label{sec:studio}
+
+ZipperGen Studio is the recommended way to experience the development cycle.
+It is a lightweight, project-aware command environment inside the ordinary
+terminal. It does not replace the operating-system shell, Git, the editor, or
+the visible Python workflow. Instead, it remembers the project context and
+turns the most common operations into short, discoverable commands.
+
+This opening section is self-contained: it starts with creating a visible
+projects directory, cloning ZipperGen, installing its local Python environment,
+and entering the Git root. Readers who already have a checkout may skip only
+that first subsection and start in the directory containing
+\path{pyproject.toml} and \path{README.md}. Section~\ref{sec:install} later
+explains prerequisites and alternatives in more detail.
+
+\begin{notebox}{What Studio removes from the normal development path}
+For the guided local cycle, you do not need to export \texttt{ZIPPERGEN\_HOME},
+invent a SQLite filename, copy a task ID, keep two terminals synchronized, or
+remember the inspection flags. Studio creates unique durable stores, presents
+human tasks inline, and remembers the current workflow, run, view, and named
+deployment for this project.
+\end{notebox}
+
+\subsection{Create the tutorial checkout and local environment}
+
+Open an ordinary terminal. Create a conventional projects directory, enter it,
+clone ZipperGen into a clearly named tutorial checkout, and enter the checkout:
+
+\begin{lstlisting}[style=shell]
+mkdir -p "$HOME/Projects"
+cd "$HOME/Projects"
+git clone https://github.com/zippergen-io/zippergen.git zippergen-tutorial
+cd "$HOME/Projects/zippergen-tutorial"
+\end{lstlisting}
+
+The final directory is both the tutorial root and the Git root. Starting Codex,
+another coding assistant, or an editor there gives it access to the source,
+\path{AGENTS.md}, and the repository's workflow skill. Do not create another
+\path{zippergen} directory inside it.
+
+Install Python 3.12 through \texttt{uv}, create/synchronize the checkout's
+local \path{.venv}, and verify the CLI:
+
+\begin{lstlisting}[style=shell]
+uv python install 3.12
+uv sync --python 3.12
+uv run zippergen --help
+\end{lstlisting}
+
+\texttt{uv sync} installs this checkout into its own local environment. The
+checkout, downloaded Python, and \path{.venv} remain on disk after closing the
+terminal or rebooting. They are not recreated for every Studio session.
+
+If \texttt{git} is not found, install the standard Git package for your
+operating system and repeat the first listing. If \texttt{uv} is not found but
+\texttt{curl} is available, install it with:
+
+\begin{lstlisting}[style=shell]
+curl -LsSf https://astral.sh/uv/install.sh | sh
+\end{lstlisting}
+
+Restart the terminal if the installer requests it, then continue from:
+
+\begin{lstlisting}[style=shell]
+cd "$HOME/Projects/zippergen-tutorial"
+uv python install 3.12
+uv sync --python 3.12
+uv run zippergen --help
+\end{lstlisting}
+
+If \path{$HOME/Projects/zippergen-tutorial} already contains this checkout, do
+not clone over it. Simply enter it and inspect its state:
+
+\begin{lstlisting}[style=shell]
+cd "$HOME/Projects/zippergen-tutorial"
+git status --short
+\end{lstlisting}
+
+An empty result means the checkout has no uncommitted changes. Do not run
+\texttt{git pull}, delete files, or reset changes you do not understand merely
+to begin the tutorial.
+
+\subsection{The short path and the transparent path}
+
+Studio and the detailed CLI operate on the same Python workflows, semantic
+views, SQLite runtime, and guided deployer. Studio is therefore not a second
+execution model or a visual builder. The later chapters remain important when
+you want automation, CI, an explicit store, an external approval adapter, or a
+precise understanding of every generated artifact.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=5.5mm]
+  \node[zgstage, text width=23mm] (intent) {Natural-language\\intent};
+  \node[zgstage, text width=24mm, right=of intent] (brief) {Studio create or\\refine brief};
+  \node[zgstage, text width=23mm, right=of brief] (assistant) {Repository-aware\\coding assistant};
+  \node[zgstage, text width=23mm, right=of assistant] (source) {Visible Python\\workflow};
+  \node[zgstage, text width=24mm, right=of source] (studio) {Show, validate,\\run, deploy};
+  \node[zgstore, text width=31mm, below=10mm of studio] (state)
+    {Managed project state\\\texttt{\$HOME/.zippergen}};
+  \draw[zgflow] (intent) -- (brief);
+  \draw[zgflow] (brief) -- (assistant);
+  \draw[zgflow] (assistant) -- (source);
+  \draw[zgflow] (source) -- (studio);
+  \draw[zgdashed] (studio) -- (state);
+\end{tikzpicture}
+\caption{Studio is a control surface around visible Python source and the
+existing deterministic ZipperGen operations. Managed state stays outside the
+Git checkout by default.}
+\label{fig:studio-path}
+\end{figure}
+
+\subsection{Open the running example}
+
+From the repository root, open Studio with the tutorial workflow already
+selected:
+
+\begin{lstlisting}[style=shell]
+uv run zippergen studio examples/tutorial_review.py:tutorial_review
+\end{lstlisting}
+
+The beginning of the session looks like this; the absolute project path will
+of course be different on your machine:
+
+\begin{lstlisting}[style=shell]
+ZipperGen Studio
+Project: /path/to/zippergen-tutorial
+Workflow: examples/tutorial_review.py:tutorial_review
+Type 'help' for commands; 'show' opens the inspection menu.
+zippergen [tutorial_review]>
+\end{lstlisting}
+
+The text in square brackets is the current workflow object name, not a
+deployment name. Enter \texttt{help} at any time. The important first commands
+are:
+
+\begin{lstlisting}[style=shell]
+current        # project, workspace, workflow, run, and deployment
+use            # discover workflows and select one from a numbered list
+show           # choose a semantic code view from a numbered list
+validate       # validate the selected workflow and every projection
+run            # fresh guided, durable development run
+resume         # continue the current incomplete managed run
+runs           # list this project's managed development runs
+create         # prepare a new-workflow coding-assistant brief
+refine         # prepare a change brief plus semantic baseline
+deploy         # explicitly enter guided named deployment
+exit           # leave Studio
+\end{lstlisting}
+
+These are Studio commands entered after the
+\texttt{zippergen [tutorial\_review]>} prompt. Do not prefix each one with
+\texttt{uv run zippergen} while already inside Studio.
+
+\subsection{Inspect the workflow as code}
+
+Enter \texttt{show}. Studio displays:
+
+\begin{lstlisting}[style=shell]
+1. Overview
+2. Protocol
+3. Communications only
+4. Actions and prompts
+5. Complete workflow
+6. One participant
+7. Selected participants
+\end{lstlisting}
+
+Choose a number. Every result is code derived from the semantic workflow; the
+menu is only a convenient selector. It does not introduce a separate diagram
+format. You can also name a view directly:
+
+\begin{lstlisting}[style=shell]
+show overview
+show protocol
+show communications
+show actions
+show full
+show agent Reviewer
+show agents Writer Reviewer
+\end{lstlisting}
+
+\texttt{show agent Reviewer} is the exact program produced by formal
+projection for Reviewer. \texttt{show agents Writer Reviewer} is instead a
+focused global view that retains those participants and marks hidden peers as
+explicit boundaries. The distinction is explained fully later in the manual.
+
+\subsection{Run durably in the same terminal}
+
+Enter \texttt{run}. Studio validates first and asks for each declared workflow
+input, including its type and default:
+
+\begin{lstlisting}[style=shell]
+zippergen [tutorial_review]> run
+Workflow tutorial_review: valid
+Request to answer (str) ["Explain why the sky is blue in two sentences."]:
+Maximum revisions after the initial draft is rejected (int) [2]: 3
+Run tutorial_review-<timestamp>
+
+[draft_reply:draft]
+
+Approve this draft? [y/n]: n
+
+[revise_reply:draft]
+
+Approve this draft? [y/n]: y
+Result: [revise_reply:draft]
+Next: show another view, start a new run, or prepare deployment.
+\end{lstlisting}
+
+Press Enter at the first input prompt to accept its displayed default. The mock
+LLM deliberately returns recognizable placeholders. Rejecting the first draft
+creates and presents the next durable human task in the same terminal; no
+second terminal and no \texttt{tasks} or \texttt{approve} command is required.
+
+The run still uses SQLite. Studio creates a new, unique store and a small JSON
+run record below this project's managed workspace. Enter \texttt{current} to
+see the exact managed path, or \texttt{runs} to see earlier runs. Starting a
+new \texttt{run} never silently reuses an old result.
+
+\subsection{Return after a closed terminal or computer crash}
+
+The current workflow and run are remembered outside the Git checkout. Return
+to the same project root and reopen Studio:
+
+\begin{lstlisting}[style=shell]
+cd "$HOME/Projects/zippergen-tutorial"
+uv run zippergen
+\end{lstlisting}
+
+Then inspect and continue:
+
+\begin{lstlisting}[style=shell]
+current
+resume
+\end{lstlisting}
+
+\texttt{resume} reuses the recorded inputs and SQLite store. If a human task
+was pending, it is presented again in the terminal. Studio also compares the
+current workflow's semantic fingerprint with the one recorded when the run
+started. If the workflow meaning changed meanwhile, it preserves the old
+store and asks you either to restore matching source or start a new run.
+
+No export needs to be repeated after the crash. By default, Studio uses
+\path{$HOME/.zippergen/workspaces}. The later reference exercise deliberately
+overrides \texttt{ZIPPERGEN\_HOME} so that every low-level artifact is visible
+in one tutorial directory; that override is educational and optional, not a
+normal Studio prerequisite.
+
+\subsection{Start from a prompt, or refine an existing workflow}
+
+To begin from natural language, enter \texttt{create} and then describe the
+coordination in ordinary language:
+
+\begin{lstlisting}[style=shell]
+zippergen [tutorial_review]> create
+Describe the workflow: Draft an answer; allow three revisions; require human approval.
+\end{lstlisting}
+
+Studio saves and prints a structured coding-assistant brief. The brief asks for
+visible Python source, focused mock/fake tests, validation, communication and
+full views, exact participant projections, and no deployment. It is stored
+outside the Git checkout, so it cannot be committed accidentally.
+
+\begin{notebox}{Current assistant boundary}
+The first Studio version prepares the complete brief but does not itself invoke
+Codex or another provider. Pass the printed brief to a repository-aware coding
+assistant. The assistant edits ordinary files in the checkout; ZipperGen then
+loads, validates, projects, renders, and runs the result. After source creation,
+enter \texttt{use} to discover and select the new workflow.
+\end{notebox}
+
+For an existing selected workflow, describe only the intended change:
+
+\begin{lstlisting}[style=shell]
+refine "When the retry budget is exhausted, ask Compliance for a final review."
+\end{lstlisting}
+
+Studio saves a semantic pre-edit baseline and includes its unique path in the
+assistant brief. The assistant is required to preserve behavior not mentioned
+in the request, validate the result, inspect changed projections, and run
+\texttt{zippergen diff} against that baseline. This is more meaningful than
+using a source-line diff alone.
+
+\subsection{Use a real LLM without repeating an API-key export}
+
+Remain on the mock backend until the complete local path works. When ready,
+pass one supported LLM specification to \texttt{run}:
+
+\begin{lstlisting}[style=shell]
+run openai:gpt-4o-mini
+\end{lstlisting}
+
+If the selected workflow declares an enabled, required environment secret,
+Studio asks for it without echoing the value. For the tutorial declaration:
+
+\begin{lstlisting}[style=shell]
+OpenAI API key:
+Saved OPENAI_API_KEY in private development secret storage.
+\end{lstlisting}
+
+The secret is stored once in
+\path{$HOME/.zippergen/workspaces/<project>/development.secrets.json} with
+owner-only mode-0600 permissions. Later runs and post-crash resumes reuse it.
+The value is not copied into \path{workspace.json}, a run record, an assistant
+brief, source code, or Git. Values already supplied by the process environment
+are used temporarily but are not copied into the private file.
+
+This is lightweight local secret storage, not an operating-system keychain or
+enterprise secret manager. Deployment secrets are scoped separately and are
+not silently copied from development. If a real deployment needs the key, the
+guided deployer requests it once and writes it to that deployment's own private
+mode-0600 secrets file.
+
+\subsection{Move explicitly from development to deployment}
+
+Deployment may install packages, run declared setup such as OAuth, create a
+source bundle and managed environment, and start a macOS or Linux user service.
+It is therefore always a separate, explicit command. With the tutorial still
+selected, the following chooses a separate name:
+
+\begin{lstlisting}[style=shell]
+deploy tutorial-review-studio
+\end{lstlisting}
+
+The same guided deployer described later collects declared settings and
+secrets, validates readiness, and prints the resulting deployment name. After
+a successful deployment, Studio remembers that name. These commands therefore
+need no repeated argument:
+
+\begin{lstlisting}[style=shell]
+status
+doctor
+logs
+restart
+stop
+\end{lstlisting}
+
+You may also provide a deployment name explicitly:
+
+\begin{lstlisting}[style=shell]
+status tutorial-review-studio
+\end{lstlisting}
+
+The scriptable equivalents outside Studio remain
+\texttt{zippergen status tutorial-review-studio} and so on.
+
+\begin{warningbox}{Deployment is a real operational action}
+Do not enter \texttt{deploy}, \texttt{start}, or \texttt{restart} merely to
+explore the menu. Read the deployment chapters first, remain on mock/fake
+services, and understand the declared setup and effects. The \texttt{show full}
+view exposes prompts and deployment requirements before this transition.
+\end{warningbox}
+
+\subsection{Studio and detailed CLI equivalents}
+
+The rest of this manual intentionally exposes the lower-level operations. Use
+this table to understand why those sections contain more commands.
+
+\begin{tabularx}{\linewidth}{p{0.19\linewidth}X X}
+\toprule
+\textbf{Need} & \textbf{Recommended Studio path} &
+\textbf{Detailed/scriptable path} \\
+\midrule
+Select workflow & \texttt{use} selector; remembered per project & Supply
+\path{path.py:workflow} to each command. \\
+Inspect & \texttt{show} selector & \texttt{zippergen show} with
+\texttt{--detail}, \texttt{--communications}, or participant flags. \\
+Develop & \texttt{run}; guided inputs and unique managed store &
+\texttt{zippergen run} with explicit inputs, timeout, and optionally store. \\
+Human decision & Inline in the same terminal & \texttt{tasks} and
+\texttt{approve} from another terminal or notification adapter. \\
+Continue & \texttt{resume} & Re-run against the same explicit SQLite store. \\
+Prompt change & \texttt{create} or \texttt{refine} brief & Manually request a
+snapshot, assistant edit, validation, views, projections, and semantic diff. \\
+Deploy/operate & \texttt{deploy}, then remembered \texttt{status},
+\texttt{logs}, \texttt{restart}, \texttt{stop} & Named deployment commands,
+explicit options, profiles, and service-manager operations. \\
+\bottomrule
+\end{tabularx}
+
+The short path should be enough to make the workflow compelling. The detailed
+path that follows makes it auditable and automatable.
+
 \section{What you will do}
 
 By the end of this guide you will have performed all of the following:
 
 \begin{enumerate}
   \item Installed an isolated Python environment for ZipperGen.
+  \item Opened the running example in Studio and discovered the available
+        operations without memorizing flags.
   \item Run a three-participant workflow with the built-in mock LLM.
   \item Read the global protocol, communication-only view, selected-agent view,
         and exact single-agent projections in the terminal.
@@ -184,8 +573,11 @@ By the end of this guide you will have performed all of the following:
   \item Diagnose, inspect, restart, reconfigure, redeploy, and stop it.
 \end{enumerate}
 
-The first pass uses the mock LLM and writes only below a separate tutorial
-directory. No API key and no external service account are required.
+The first pass uses the mock LLM. Studio writes managed development state below
+\path{$HOME/.zippergen/workspaces} by default. The later transparent/reference
+exercise chooses a separate \path{tutorial-runtime} directory so its profiles,
+stores, logs, and bundles are especially easy to inspect. No API key and no
+external service account are required for either mock path.
 
 \section{Conventions and safety}
 
@@ -205,17 +597,19 @@ repository---the directory containing \path{pyproject.toml} and \path{README.md}
 Text such as \placeholder{TASK-ID} is a placeholder. Replace the complete
 placeholder, including angle brackets, with the value printed on your machine.
 
-\subsection{Two terminal windows}
+\subsection{When two terminal windows are used}
 
-Human approval examples use two terminals:
+Studio presents development approvals in one terminal. The later low-level and
+external-adapter examples deliberately use two terminals:
 
 \begin{itemize}
   \item \textbf{Terminal A} runs a workflow and waits.
   \item \textbf{Terminal B} checks status and approves or rejects the task.
 \end{itemize}
 
-Both terminals must be in the repository root. Both must set the same
-\path{ZIPPERGEN_HOME} value when the guide asks for it.
+For those later examples, both terminals must be in the repository root and
+must set the same \path{ZIPPERGEN_HOME} value when the guide asks for it. This
+does not apply to the opening Studio path.
 
 \subsection{One visible tutorial workspace}
 
@@ -236,14 +630,16 @@ requirement. This layout avoids putting a Git checkout directly in
 hyphenated directory name also avoids the extra quoting and escaping that
 spaces require in shell commands. The repository's \path{.gitignore} excludes
 \path{tutorial-runtime}, so generated files cannot be committed accidentally.
-Normal deployments use \path{$HOME/.zippergen}; this guide instead sets:
+Normal Studio use and deployments use \path{$HOME/.zippergen}. The detailed
+reference exercise instead sets an explicit, visible tutorial location:
 
 \begin{lstlisting}[style=shell]
 export ZIPPERGEN_HOME="$HOME/Projects/zippergen-tutorial/tutorial-runtime"
 \end{lstlisting}
 
-Run that export again in every new terminal used during the tutorial. Do not
-change it to \path{$HOME}, \path{/}, or another broad directory.
+Run that export again in every new terminal used for the later reference
+exercise. Studio does not require it. Do not change it to \path{$HOME},
+\path{/}, or another broad directory.
 
 \begin{warningbox}{Start with the mock backend}
 Do not configure a paid model or live external service until the complete mock
@@ -350,6 +746,7 @@ normal mechanism for coding-assistant source generation. \\
 \end{tabularx}
 
 \section{Install the prerequisites}
+\label{sec:install}
 
 This guide targets macOS and Linux. ZipperGen requires Python 3.11 or later.
 The commands use \texttt{uv} to manage Python and the local environment.
@@ -423,6 +820,7 @@ needed. Repeat \texttt{uv pip install -e .} only if the virtual environment was
 removed or project dependencies changed.
 
 \subsection{Optional: start Codex in the repository}
+\label{sec:codex}
 
 You may use another repository-aware coding assistant, but this checkout ships
 with a Codex skill at
@@ -923,7 +1321,7 @@ uv run zippergen snapshot \
 
 \subsection{Use a precise refinement prompt}
 
-Start Codex with the tutorial-root command from Section~4.3, or open the same
+Start Codex with the tutorial-root command from Section~\ref{sec:codex}, or open the same
 repository in the Codex app/IDE extension. Send this complete prompt:
 
 \begin{lstlisting}[numbers=none]
@@ -1395,6 +1793,16 @@ Record the observed result next to every item:
  & \textbf{Check} & \textbf{Result/date} \\
 \midrule
 \endhead
+$\square$ & Studio opens the tutorial workflow without a
+\texttt{ZIPPERGEN\_HOME} export or explicit store path. & \\
+$\square$ & \texttt{current}, \texttt{use}, and the selectable \texttt{show}
+views make project and workflow context clear. & \\
+$\square$ & Studio \texttt{run} collects both inputs and presents rejection and
+approval in the same terminal. & \\
+$\square$ & Studio \texttt{resume} continues the same managed run after an
+interruption. & \\
+$\square$ & A declared development API key is absent from source, request, and
+run JSON, and its private file has owner-only permissions. & \\
 $\square$ & \texttt{uv run zippergen --help} works from the repository root. & \\
 $\square$ & Direct mock run returns an approved and a rejected result. & \\
 $\square$ & \texttt{validate} succeeds for all three projections. & \\
@@ -1421,6 +1829,35 @@ development and deployment experience is genuinely self-explanatory.
 
 \section{Compact command sheet}
 \label{app:commands}
+
+\subsection*{Recommended Studio path}
+
+\begin{lstlisting}[style=shell]
+cd "$HOME/Projects/zippergen-tutorial"
+uv run zippergen studio examples/tutorial_review.py:tutorial_review
+
+# Enter these at the Studio prompt, without `uv run zippergen`:
+current
+show
+run
+resume
+runs
+refine "Describe one intended semantic change"
+
+# Only after reading the deployment chapters and choosing mock/fake services:
+deploy tutorial-review-studio
+status
+doctor
+logs
+restart
+stop
+exit
+\end{lstlisting}
+
+No \texttt{ZIPPERGEN\_HOME} export or \texttt{STORE} variable is required for
+this path. Enter \texttt{create} instead of selecting the tutorial workflow to
+prepare a structured new-workflow brief for a repository-aware coding
+assistant.
 
 \subsection*{Setup: new checkout}
 

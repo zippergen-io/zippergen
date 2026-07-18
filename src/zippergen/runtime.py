@@ -1339,6 +1339,7 @@ def _workflow_configure(
     show_decisions: bool = False,
     execution: str | None = None,
     store_path: str | None = None,
+    human_backend: object | None = None,
 ) -> Workflow:
     lifelines = _ordered_workflow_lifelines(wf)
 
@@ -1392,8 +1393,11 @@ def _workflow_configure(
     elif trace is not None:
         wf._rt._trace = trace
 
-    # Human backend: web if UI is enabled, CLI otherwise.
-    if (
+    # An explicit backend is used by project-aware development surfaces that
+    # keep SQLite durability while presenting human tasks in the terminal.
+    if human_backend is not None:
+        wf._rt._human_backend = human_backend
+    elif (
         wf._rt._ui_enabled
         and wf._rt._webtrace is not None
         and not wf._rt._webtrace.is_dashboard

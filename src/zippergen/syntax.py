@@ -781,7 +781,8 @@ class Workflow:
                   llm_idle_timeout: float | None = None,
                   show_decisions: bool = False,
                   execution: str | None = None,
-                  store_path: str | None = None) -> "Workflow":
+                  store_path: str | None = None,
+                  human_backend: object | None = None) -> "Workflow":
         """Configure runtime parameters and return self for chaining.
 
         Parameters
@@ -803,13 +804,17 @@ class Workflow:
         execution : ``"sqlite"`` (default) or ``"memory"`` for the legacy
                     in-process runner.
         store_path : optional SQLite store path used when ``execution="sqlite"``.
+        human_backend : optional human-action callable. Development tools may
+                  use the terminal backend with SQLite while deployed runs use
+                  durable out-of-band tasks.
         """
         from zippergen.runtime import _workflow_configure
         return _workflow_configure(self, llm=llm, backend=backend, trace=trace, timeout=timeout,
                                    llms=llms, ui=ui, mock_delay=mock_delay,
                                    llm_idle_timeout=llm_idle_timeout,
                                    show_decisions=show_decisions,
-                                   execution=execution, store_path=store_path)
+                                   execution=execution, store_path=store_path,
+                                   human_backend=human_backend)
 
     def _run_once(self, kwargs: dict[str, object]) -> object:
         from zippergen.runtime import _workflow_run_once

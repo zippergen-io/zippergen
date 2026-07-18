@@ -1360,6 +1360,50 @@ def _run_workflow_command(args) -> int:
     return 0
 
 
+def _dev_command(args) -> int:
+    from zippergen.dev import run_dev
+    from zippergen.workspace import Workspace
+
+    inputs = _parse_input_json(args.input_json)
+    inputs.update(_parse_inputs(args.input))
+    options = _parse_options(args.option, services=args.services)
+    workspace = Workspace(args.project)
+    run_dev(
+        workspace,
+        workflow_spec=args.workflow,
+        resume=args.resume,
+        run_id=args.run_id,
+        provided_inputs=inputs,
+        llm=args.llm,
+        options=options,
+        services=args.services,
+        timeout=args.timeout,
+        interactive=not args.yes and sys.stdin.isatty(),
+        input_func=input,
+        output_func=print,
+    )
+    return 0
+
+
+def _studio_command(args) -> int:
+    from zippergen.studio import Studio
+    from zippergen.workspace import Workspace
+
+    workspace = Workspace(args.project)
+    if args.workflow:
+        canonical = workspace.canonical_spec(args.workflow)
+        load_workflow_spec(workspace.absolute_spec(canonical))
+        workspace.select_workflow(canonical, cwd=workspace.root)
+    studio = Studio(workspace, input_func=input, output_func=print)
+    if args.command:
+        studio.welcome()
+        for command in args.command:
+            if not studio.execute(command):
+                break
+        return 0
+    return studio.run()
+
+
 def _view_options_from_args(args) -> ViewOptions:
     agents = tuple(
         name.strip()
@@ -2316,7 +2360,30 @@ def _add_guided_deployment_arguments(
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="zippergen")
-    sub = ap.add_subparsers(dest="cmd", required=True)
+    sub = ap.add_subparsers(dest="cmd")
+    studio = sub.add_parser("studio", help="open the project-aware interactive development workspace")
+    studio.add_argument("workflow", nargs="?", help="Initial workflow spec: module:workflow or path.py:workflow")
+    studio.add_argument("--project", help="Project root; defaults to discovery from the current directory.")
+    studio.add_argument(
+        "--command",
+        action="append",
+        default=[],
+        help="Execute one Studio command and exit; repeat for several commands.",
+    )
+
+    dev = sub.add_parser("dev", help="run a workflow durably with guided inputs and inline human tasks")
+    dev.add_argument("workflow", nargs="?", help="Workflow spec; defaults to the current Studio workflow.")
+    dev.add_argument("--resume", action="store_true", help="Resume the current incomplete managed run.")
+    dev.add_argument("--run-id", help="Managed run id to resume; requires --resume.")
+    dev.add_argument("--project", help="Project root; defaults to discovery from the current directory.")
+    dev.add_argument("--llm", metavar="SPEC", help="LLM spec; defaults to the workflow declaration or mock.")
+    dev.add_argument("--input", action="append", default=[], metavar="name=value", help="Workflow input value.")
+    dev.add_argument("--input-json", help="Workflow inputs as a JSON object.")
+    dev.add_argument("--option", action="append", default=[], metavar="name=value", help="Workflow setup option.")
+    dev.add_argument("--services", choices=("fake", "live"), help="Workflow service mode.")
+    dev.add_argument("--timeout", type=float, default=0.0, help="Execution deadline; default 0 means no deadline.")
+    dev.add_argument("--yes", action="store_true", help="Use declared input defaults without guided questions.")
+
     rn = sub.add_parser("run", help="run a workflow locally through SQLite")
     rn.add_argument("workflow", help="Workflow spec: module:workflow or path.py:workflow")
     rn.add_argument("--llm", metavar="SPEC", help="LLM spec: mock, openai:gpt-4o, ollama:qwen2.5:7b, ...")
@@ -2480,6 +2547,14 @@ def main(argv=None) -> int:
     sv.add_argument("--input", action="append", default=[], metavar="k=v")
     args = ap.parse_args(argv)
 
+    if args.cmd is None:
+        return _studio_command(argparse.Namespace(project=None, workflow=None, command=[]))
+    if args.cmd == "studio":
+        return _studio_command(args)
+    if args.cmd == "dev":
+        if args.run_id and not args.resume:
+            raise SystemExit("--run-id requires --resume.")
+        return _dev_command(args)
     if args.cmd == "run":
         return _run_workflow_command(args)
     if args.cmd == "show":

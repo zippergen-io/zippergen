@@ -19,6 +19,14 @@ def test_human_action_fields():
     assert action.context is None
     assert action.prefill is None
 
+
+def test_cli_human_backend_claims_resumed_pending_tasks():
+    from zippergen.human_backends import make_cli_human_backend
+
+    backend = make_cli_human_backend()
+
+    assert getattr(backend, "claims_pending_human_tasks", False) is True
+
 def test_human_action_select():
     action = HumanAction(
         name="choose",

@@ -246,7 +246,13 @@ class RoleRunner:
             raise
 
         sqlite_owned = getattr(self.human_backend, "uses_sqlite_human_tasks", False)
-        if created and task["status"] == "pending" and not sqlite_owned:
+        claims_pending = getattr(
+            self.human_backend,
+            "claims_pending_human_tasks",
+            False,
+        )
+        should_prompt = created or claims_pending
+        if should_prompt and task["status"] == "pending" and not sqlite_owned:
             named_outputs = self.human_backend(action, pending.inputs)
             result = {action.output: named_outputs[action.output]}
             _begin_immediate(self.conn, self.stop)

@@ -36,11 +36,86 @@ Clicking a human action opens a detail view with the full context and a form to 
 ```bash
 git clone https://github.com/zippergen-io/zippergen.git
 cd zippergen
-pip install -e .
-python examples/hello.py
+uv sync
+uv run zippergen
 ```
 
-Python 3.11 or later. No external dependencies: stdlib only (LLM backends optional).
+Python 3.11 or later. No external dependencies: stdlib only (LLM backends
+optional). `pip install -e .` remains an alternative to `uv sync`.
+
+## ZipperGen Studio
+
+Running `zippergen` with no subcommand opens the project-aware development
+workspace. It discovers the Git/project root, remembers the current workflow,
+and makes the main path visible through `help` and numbered selectors.
+
+```text
+$ uv run zippergen
+ZipperGen Studio
+Project: /path/to/zippergen
+No workflow selected.
+
+zippergen [no workflow]> use
+Workflows
+  1. examples/tutorial_review.py:tutorial_review
+  ...
+
+zippergen [tutorial_review]> show
+  1. Overview
+  2. Protocol
+  3. Communications only
+  4. Actions and prompts
+  5. Complete workflow
+  6. One participant
+  7. Selected participants
+
+zippergen [tutorial_review]> run
+```
+
+`run` validates first, guides you through every workflow input, creates a
+unique durable SQLite run automatically, and presents human decisions in the
+same terminal. There are no store paths, task IDs, or environment exports to
+manage. If the terminal closes during an incomplete run, return to the project
+and enter `resume`. Use `current` to see the remembered workflow, run, and
+deployment context.
+
+Use `run openai:gpt-4o-mini` (or another supported LLM spec) to override the
+declared/default model. If the workflow declares a required API-key field,
+Studio asks for it without echo and saves it once in an owner-only development
+secret file. Later runs and post-crash resumes reuse it; the value is never
+copied into workspace, run, or request JSON.
+
+To begin from natural language, enter `create` and describe the workflow. The
+first Studio integration writes and prints a structured brief for a
+repository-aware coding assistant, including the required source, tests,
+validation, semantic views, and no-deployment boundary. After the assistant
+creates the visible Python source, `use` selects it. For an existing workflow,
+`refine "describe the change"` also saves a semantic baseline for a meaningful
+before/after diff.
+
+When the mock/fake development run is satisfactory, `deploy` enters the
+existing guided, secret-aware deployment path explicitly. Studio remembers the
+deployment name, so normal operation is short:
+
+```text
+zippergen [tutorial_review]> deploy
+zippergen [tutorial_review]> status
+zippergen [tutorial_review]> doctor
+zippergen [tutorial_review]> logs
+zippergen [tutorial_review]> restart
+zippergen [tutorial_review]> stop
+```
+
+The same durable development flow is scriptable outside Studio:
+
+```bash
+uv run zippergen dev examples/tutorial_review.py:tutorial_review
+uv run zippergen dev --resume
+```
+
+Workspace state and managed development stores live below
+`~/.zippergen/workspaces/` by default. `ZIPPERGEN_HOME` is an optional advanced
+override, not a required setup step.
 
 ## Hello, ZipperGen
 
@@ -203,6 +278,9 @@ ZipperGen can render semantic views directly in the terminal. These views are
 generated from the workflow IR, so they do not require a diagramming tool and
 are suitable for both human review and coding assistants.
 
+In Studio, enter `show` for the selectable views below, or `show agent` for a
+participant selector. The scriptable equivalents are:
+
 ```bash
 # Complete global protocol
 zippergen show examples/call_intake.py:call_intake
@@ -262,6 +340,10 @@ provides the deterministic protocol validation, projections, views, and diffs.
 This keeps generated workflows as ordinary reviewable code instead of hiding
 them behind a separate visual builder or opaque generation service.
 
+Studio exposes this handoff as `create` and `refine`. It stores requests and
+semantic baselines outside the Git checkout under the project workspace, so
+they do not pollute commits or contain deployment secrets.
+
 This repository includes a reusable coding-assistant skill at
 `.agents/skills/zippergen-workflows/`. Codex discovers it automatically, and
 `AGENTS.md` directs repository-aware assistants to it. Give the assistant one
@@ -297,6 +379,10 @@ The guided path configures, validates, and starts a workflow in one command:
 ```bash
 zippergen deploy examples/call_intake.py:call_intake
 ```
+
+Inside Studio, select the workflow once and enter `deploy`; subsequent
+`status`, `logs`, `doctor`, `restart`, and `stop` commands use the remembered
+deployment name.
 
 When a workflow declares deployment requirements, ZipperGen asks for its
 settings and secrets, creates a managed Python environment, installs declared

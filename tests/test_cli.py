@@ -299,6 +299,85 @@ def test_snapshot_then_diff_supports_assistant_refinement_loop(tmp_path, capsys)
     assert payload["changes"]["action_definitions"]["changed"][0]["name"] == "add_suffix"
 
 
+def test_studio_commands_remember_workflow_and_render_code(
+    tmp_path, monkeypatch, capsys
+):
+    workflow_path = tmp_path / "studio_workflow.py"
+    workflow_path.write_text(WORKFLOW_SOURCE)
+    zippergen_home = tmp_path / "zg-home"
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(zippergen_home))
+
+    rc = main([
+        "studio",
+        f"{workflow_path}:hello",
+        "--project",
+        str(tmp_path),
+        "--command",
+        "current",
+        "--command",
+        "show communications",
+    ])
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "ZipperGen Studio" in captured.out
+    assert f"Workflow: {workflow_path.name}:hello" in captured.out
+    assert "def hello(topic: str @ User)" in captured.out
+    assert "return reply @ User" in captured.out
+    assert "add_suffix(topic)" not in captured.out
+    workspace_states = list((zippergen_home / "workspaces").glob("*/workspace.json"))
+    assert len(workspace_states) == 1
+
+
+def test_dev_command_creates_a_managed_durable_run(tmp_path, monkeypatch, capsys):
+    workflow_path = tmp_path / "dev_workflow.py"
+    workflow_path.write_text(WORKFLOW_SOURCE)
+    zippergen_home = tmp_path / "zg-home"
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(zippergen_home))
+
+    rc = main([
+        "dev",
+        f"{workflow_path}:hello",
+        "--project",
+        str(tmp_path),
+        "--input",
+        "topic=durable",
+    ])
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "Workflow hello: valid" in captured.out
+    assert "Result: durable!" in captured.out
+    run_records = list((zippergen_home / "workspaces").glob("*/runs/*.json"))
+    assert len(run_records) == 1
+    record = json.loads(run_records[0].read_text())
+    assert record["status"] == "done"
+    assert Path(record["store"]).exists()
+
+
+def test_no_command_opens_studio(tmp_path, monkeypatch, capsys):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(tmp_path / "zg-home"))
+    responses = iter(["exit"])
+    monkeypatch.setattr("builtins.input", lambda _prompt: next(responses))
+
+    rc = main([])
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert "ZipperGen Studio" in captured.out
+    assert "No workflow selected." in captured.out
+
+
+def test_dev_run_id_requires_resume():
+    try:
+        main(["dev", "--run-id", "old-run"])
+    except SystemExit as exc:
+        assert str(exc) == "--run-id requires --resume."
+    else:
+        raise AssertionError("--run-id without --resume should fail")
+
+
 def test_deploy_local_creates_profile_and_runs_by_name(tmp_path, monkeypatch, capsys):
     workflow_path = tmp_path / "deploy_workflow.py"
     workflow_path.write_text(WORKFLOW_SOURCE)

@@ -10,7 +10,7 @@ from __future__ import annotations
 __all__ = ["make_cli_human_backend", "make_sqlite_human_backend"]
 
 
-def make_cli_human_backend():
+def make_cli_human_backend(*, input_func=None, output_func=None):
     """
     Return a human backend that blocks on stdin.
 
@@ -20,6 +20,12 @@ def make_cli_human_backend():
     - select: prints numbered list, loops until valid selection.
     - input: free-form text input.
     """
+    def prompt(text: str) -> str:
+        return input_func(text) if input_func is not None else input(text)
+
+    def emit(text: str) -> object:
+        return output_func(text) if output_func is not None else print(text)
+
     def backend(action, inputs: dict) -> dict:
         from zippergen.syntax import HumanAction
         assert isinstance(action, HumanAction)
@@ -37,49 +43,53 @@ def make_cli_human_backend():
 
         if action.kind == "confirm":
             while True:
-                raw = input(f"{display} [y/n]: ").strip().lower()
+                raw = prompt(f"{display} [y/n]: ").strip().lower()
                 if raw in ("y", "yes"):
                     value: object = True
                     break
                 if raw in ("n", "no"):
                     value = False
                     break
-                print("Please enter 'y' or 'n'.")
+                emit("Please enter 'y' or 'n'.")
 
         elif action.kind == "ack":
-            input(f"{display} [press Enter to acknowledge]")
+            prompt(f"{display} [press Enter to acknowledge]")
             value = True
 
         elif action.kind == "select":
             options = [o.strip() for o in (prefill_text or "").split("\n") if o.strip()]
             if options:
-                print(display)
+                emit(display)
                 for i, opt in enumerate(options, 1):
-                    print(f"  {i}. {opt}")
+                    emit(f"  {i}. {opt}")
                 while True:
-                    raw = input("Enter number: ").strip()
+                    raw = prompt("Enter number: ").strip()
                     if raw.isdigit():
                         idx = int(raw) - 1
                         if 0 <= idx < len(options):
                             value = options[idx]
                             break
-                    print(f"Please enter a number between 1 and {len(options)}.")
+                    emit(f"Please enter a number between 1 and {len(options)}.")
             else:
-                value = input(f"{display}: ").strip()
+                value = prompt(f"{display}: ").strip()
 
         elif action.kind == "edit":
             if prefill_text:
-                print(f"{display}\n[Current: {prefill_text!r}]")
-                raw = input("Edit (empty to keep): ").strip()
+                emit(f"{display}\n[Current: {prefill_text!r}]")
+                raw = prompt("Edit (empty to keep): ").strip()
                 value = raw if raw else prefill_text
             else:
-                value = input(f"{display}: ").strip()
+                value = prompt(f"{display}: ").strip()
 
         else:  # input
-            value = input(f"{display}: ").strip()
+            value = prompt(f"{display}: ").strip()
 
         return {action.output: value}
 
+    # A terminal session is the human-task owner. If a durable run resumes with
+    # an existing pending task, prompt for that same task again instead of
+    # waiting for a separate adapter that will never arrive.
+    setattr(backend, "claims_pending_human_tasks", True)
     return backend
 
 

@@ -20,6 +20,7 @@ from zippergen.syntax import ReceiveAnyStmt, VarExpr
 from zipperchat import WebTrace
 from tests.loop_fixture import counter_loop, A as LoopA, B as LoopB
 from tests.test_examples_regression import _two_role_branch_workflow, A, B
+import json
 import pytest
 import sqlite3
 import threading
@@ -646,6 +647,53 @@ def test_role_runner_waits_for_existing_pending_human_task(tmp_path):
     assert calls["n"] == 0
     assert result_box["env"]["p_approved"] is True
     assert conn.execute("SELECT COUNT(*) FROM events WHERE kind='act'").fetchone()[0] == 1
+
+
+def test_role_runner_terminal_backend_claims_existing_pending_human_task(tmp_path):
+    path = str(tmp_path / "inline-resumed-human.sqlite")
+    local = project(sqlite_human_round, PHuman)
+    locator = next(iter(action_node_paths(local).values()))
+    input_hash = _input_hash({"prompt": "plan"})
+    task_id = human_task_id("PHuman", locator, input_hash, 0)
+
+    conn = open_store(path)
+    conn.execute("BEGIN")
+    ensure_human_task(
+        conn,
+        task_id=task_id,
+        role="PHuman",
+        locator=locator,
+        action="p_review",
+        input_hash=input_hash,
+        inputs={"prompt": "plan"},
+        spec={"kind": "confirm", "output": "p_approved"},
+    )
+    conn.execute("COMMIT")
+
+    calls = {"n": 0}
+
+    def backend(action, inputs):
+        calls["n"] += 1
+        return {action.output: True}
+
+    setattr(backend, "claims_pending_human_tasks", True)
+    result = RoleRunner(
+        open_store(path),
+        "PHuman",
+        local,
+        {"prompt": "plan"},
+        sqlite_human_round.ns,
+        human_backend=backend,
+    ).run()
+
+    assert calls["n"] == 1
+    assert result["p_approved"] is True
+    task = conn.execute(
+        "SELECT status, result FROM human_tasks WHERE task_id=?",
+        (task_id,),
+    ).fetchone()
+    assert task[0] == "done"
+    assert json.loads(task[1]) == {"p_approved": True}
 
 
 def test_workflow_call_sqlite_ui_completes_human_task_through_store(tmp_path):
