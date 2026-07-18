@@ -41,6 +41,10 @@ Thumbs.db
 # Docs build
 docs/_build/
 texput.log
+
+# Local state created while following the development/deployment tutorial
+/tutorial-runtime/
+
 CLAUDE.md
 
 # Work in progress examples

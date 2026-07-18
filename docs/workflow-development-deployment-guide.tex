@@ -7,11 +7,14 @@
 \usepackage[margin=24mm]{geometry}
 \usepackage{xcolor}
 \usepackage{microtype}
+\DisableLigatures{encoding=T1,family=tt*}
 \usepackage{enumitem}
 \usepackage{booktabs}
 \usepackage{tabularx}
 \usepackage{longtable}
 \usepackage{listings}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning,shapes.geometric}
 \usepackage{fancyhdr}
 \usepackage{hyperref}
 
@@ -23,6 +26,9 @@
 \definecolor{CodeKeyword}{HTML}{7A3E9D}
 \definecolor{WarningBackground}{HTML}{FFF6DF}
 \definecolor{WarningBorder}{HTML}{B7791F}
+\definecolor{ZipperGreen}{HTML}{2F855A}
+\definecolor{ZipperGold}{HTML}{D69E2E}
+\definecolor{ZipperRed}{HTML}{C05640}
 
 \hypersetup{
   colorlinks=true,
@@ -77,6 +83,46 @@
 
 \newcommand{\menu}[1]{\textbf{#1}}
 \newcommand{\placeholder}[1]{\textit{$\langle$#1$\rangle$}}
+
+\tikzset{
+  zgstage/.style={
+    draw=ZipperBlue,
+    fill=ZipperLight,
+    very thick,
+    rounded corners=2.5pt,
+    align=center,
+    minimum height=12mm,
+    inner sep=4pt,
+    font=\small
+  },
+  zgplain/.style={
+    draw=ZipperInk!55,
+    fill=white,
+    thick,
+    rounded corners=2.5pt,
+    align=center,
+    minimum height=11mm,
+    inner sep=4pt,
+    font=\small
+  },
+  zgstore/.style={
+    cylinder,
+    shape border rotate=90,
+    aspect=0.22,
+    draw=ZipperGreen,
+    fill=ZipperGreen!10,
+    very thick,
+    align=center,
+    minimum height=16mm,
+    minimum width=30mm,
+    inner sep=4pt,
+    font=\small
+  },
+  zgflow/.style={-{Latex[length=2.2mm,width=1.5mm]}, thick, draw=ZipperBlue},
+  zgdashed/.style={-{Latex[length=2.2mm,width=1.5mm]}, thick, dashed,
+    draw=ZipperRed},
+  zglabel/.style={font=\scriptsize, align=center, fill=white, inner sep=1.5pt}
+}
 
 \newenvironment{notebox}[1]
 {\begin{center}\begin{minipage}{0.94\linewidth}
@@ -171,13 +217,29 @@ Human approval examples use two terminals:
 Both terminals must be in the repository root. Both must set the same
 \path{ZIPPERGEN_HOME} value when the guide asks for it.
 
-\subsection{An isolated tutorial home}
+\subsection{One visible tutorial workspace}
 
-Normal deployments live under \path{$HOME/.zippergen}. This guide uses a
-different location, leaving existing deployments untouched:
+Use one visible directory as both the tutorial root and the Git repository.
+Generated runtime data stays in an ignored subdirectory:
 
 \begin{lstlisting}[style=shell]
-export ZIPPERGEN_HOME="$HOME/.zippergen-tutorial"
+$HOME/Projects/zippergen-tutorial/  # Git checkout and Codex workspace
+|-- .git/
+|-- examples/
+|-- docs/
+`-- tutorial-runtime/  # ignored profiles, stores, logs, and bundles
+\end{lstlisting}
+
+The \path{Projects} directory is a convenient convention, not a ZipperGen
+requirement. This layout avoids putting a Git checkout directly in
+\path{$HOME} and makes the entire tutorial easy to find. The lowercase,
+hyphenated directory name also avoids the extra quoting and escaping that
+spaces require in shell commands. The repository's \path{.gitignore} excludes
+\path{tutorial-runtime}, so generated files cannot be committed accidentally.
+Normal deployments use \path{$HOME/.zippergen}; this guide instead sets:
+
+\begin{lstlisting}[style=shell]
+export ZIPPERGEN_HOME="$HOME/Projects/zippergen-tutorial/tutorial-runtime"
 \end{lstlisting}
 
 Run that export again in every new terminal used during the tutorial. Do not
@@ -199,14 +261,23 @@ starts with one global protocol: who owns a value, who sends it, who receives
 it, who performs an action, and who owns each decision. From that global code,
 ZipperGen projects an exact local program for every participant.
 
-\begin{center}
-\fbox{\begin{minipage}{0.88\linewidth}\centering
-Natural-language intent $\rightarrow$ Python global workflow
-$\rightarrow$ validation and projection
-$\rightarrow$ durable execution
-$\rightarrow$ supervised deployment
-\end{minipage}}
-\end{center}
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=6.5mm]
+  \node[zgstage, text width=22mm] (intent) {Prompt or\\human intent};
+  \node[zgstage, text width=22mm, right=of intent] (source) {Python global\\workflow};
+  \node[zgstage, text width=22mm, right=of source] (verify) {Validate, show,\\and diff};
+  \node[zgstage, text width=22mm, right=of verify] (execute) {Durable\\execution};
+  \node[zgstage, text width=22mm, right=of execute] (deploy) {Named, supervised\\deployment};
+  \draw[zgflow] (intent) -- (source);
+  \draw[zgflow] (source) -- (verify);
+  \draw[zgflow] (verify) -- (execute);
+  \draw[zgflow] (execute) -- (deploy);
+\end{tikzpicture}
+\caption{The prompt-to-production path. The Python workflow remains the
+reviewable source of truth in the middle of the cycle.}
+\label{fig:lifecycle}
+\end{figure}
 
 For a well-formed protocol, every projected send has a corresponding receive.
 The code therefore serves simultaneously as executable behavior, design
@@ -232,9 +303,22 @@ Projection & The local program generated for one lifeline from the global
 protocol. \\
 Workflow spec & A CLI reference such as
 \path{examples/tutorial_review.py:tutorial_review}: file path, colon, workflow
-object name. \\
+object name. It selects an existing workflow object; it does not name a
+deployment. \\
 Store & A SQLite file holding messages, actions, traces, human tasks, and
 workflow results. It enables durable resume and replay. \\
+Human task & A durable pending request created by a \texttt{@human} action. It
+contains the question or rendered content, its pending/completed state, and the
+eventual human decision. \\
+Task ID & The stable internal identifier of a human task. A trusted local
+operator may use it with \texttt{approve --task}. It identifies the task but is
+not intended to be an approval credential in an untrusted external link. \\
+Task token & A durable random bearer value that maps back to one human task.
+External adapters can use it with \texttt{approve --token}; treat it like a
+secret approval link. A token does not create another task. \\
+Token channel & An arbitrary label such as \texttt{email}, \texttt{telegram},
+or \texttt{cli}. It allows the same task to have a separate token for each
+adapter; it is not a workflow message channel. \\
 Deployment profile & Persistent non-secret settings for a named deployment. \\
 Bundle & A timestamped copy of the workflow and its declared support files.
 Deployments run from this snapshot, not from a file that may change halfway
@@ -296,9 +380,11 @@ The installer may ask you to restart the terminal so its binary is on
 For a new checkout:
 
 \begin{lstlisting}[style=shell]
-cd "$HOME"
-git clone https://github.com/zippergen-io/zippergen.git
-cd zippergen
+mkdir -p "$HOME/Projects"
+cd "$HOME/Projects"
+git clone https://github.com/zippergen-io/zippergen.git zippergen-tutorial
+cd zippergen-tutorial
+export ZIPPERGEN_HOME="$HOME/Projects/zippergen-tutorial/tutorial-runtime"
 uv python install 3.12
 uv venv --python 3.12
 uv pip install -e .
@@ -306,19 +392,35 @@ uv run zippergen --help
 \end{lstlisting}
 
 The editable install means changes in the checkout are immediately visible to
-the local CLI. If you already have the repository, enter it instead:
+the local CLI. The clone, downloaded Python, virtual environment, editable
+installation, and files remain on disk after closing a terminal or rebooting.
+Normally, returning to the tutorial requires only:
 
 \begin{lstlisting}[style=shell]
-cd /path/to/your/zippergen
+cd "$HOME/Projects/zippergen-tutorial"
+export ZIPPERGEN_HOME="$HOME/Projects/zippergen-tutorial/tutorial-runtime"
+\end{lstlisting}
+
+The current directory and exported variables belong to a shell session, so
+repeat those two commands in each new terminal. You do \emph{not} normally
+repeat \texttt{git clone}, \texttt{uv python install}, \texttt{uv venv},
+\texttt{uv pip install -e .}, or \texttt{codex login} after a crash or reboot.
+
+Updating the checkout is a separate, occasional operation:
+
+\begin{lstlisting}[style=shell]
 git status --short
 git pull --ff-only
-uv pip install -e .
-uv run zippergen --help
 \end{lstlisting}
+
+If you deliberately use an existing checkout elsewhere, replace both paths
+with suitable locations in that checkout, or choose another isolated runtime
+directory and ensure Git ignores it.
 
 Do not run \texttt{git pull} while you have changes you do not understand.
 First inspect \texttt{git status --short}; commit, stash, or ask for help when
-needed.
+needed. Repeat \texttt{uv pip install -e .} only if the virtual environment was
+removed or project dependencies changed.
 
 \subsection{Optional: start Codex in the repository}
 
@@ -336,12 +438,20 @@ npm install --global @openai/codex
 codex login
 \end{lstlisting}
 
-Complete the browser sign-in, then start Codex from the repository root:
+Complete the browser sign-in, then start Codex in the tutorial root, which is
+also the repository root:
 
 \begin{lstlisting}[style=shell]
-cd /path/to/your/zippergen
+cd "$HOME/Projects/zippergen-tutorial"
+export ZIPPERGEN_HOME="$HOME/Projects/zippergen-tutorial/tutorial-runtime"
+mkdir -p "$ZIPPERGEN_HOME"
 codex
 \end{lstlisting}
+
+There is now no distinction between ``tutorial root'' and ``Git root.'' Codex
+starts in the one directory that contains the source, \path{AGENTS.md}, and
+\path{.agents/skills}; the ignored \path{tutorial-runtime} directory is already
+inside its workspace, so no additional writable-directory option is needed.
 
 Inside Codex, \texttt{/skills} should list \texttt{zippergen-workflows}. You can
 invoke it explicitly by beginning a prompt with \texttt{Use
@@ -356,23 +466,59 @@ mock tutorial needs no workflow API key.
 The example is \path{examples/tutorial_review.py}. It has three lifelines:
 
 \begin{itemize}
-  \item \textbf{Requester} initially owns a request and receives the answer.
+  \item \textbf{Requester} initially owns a request and the maximum number of
+        revision attempts, and receives the answer.
   \item \textbf{Writer} drafts a reply and revises it after rejection.
-  \item \textbf{Reviewer} is a human authority who approves or rejects the
-        first draft.
+  \item \textbf{Reviewer} is a human authority who approves or rejects every
+        presented draft and owns the bounded retry loop.
 \end{itemize}
 
 The protocol is:
 
 \begin{enumerate}
-  \item Requester sends the request to Writer.
+  \item Requester validates \texttt{max\_retries}, sends the request to Writer,
+        and sends the retry budget to Reviewer.
   \item Writer uses an LLM action to create a draft.
   \item Writer sends the draft to Reviewer.
   \item Reviewer completes a human confirmation action.
   \item If Reviewer approves, the draft goes to Requester.
-  \item Otherwise Reviewer returns the draft to Writer, Writer revises it, and
-        the revision goes to Requester.
+  \item If Reviewer rejects while revision attempts remain, Reviewer returns
+        the draft to Writer; Writer revises it and presents the new draft to
+        Reviewer again.
+  \item If the retry budget is exhausted without approval, Requester receives
+        an explicit failure notice instead of an unapproved draft.
 \end{enumerate}
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=17mm and 23mm]
+  \node[zgstage, text width=25mm] (draft) {Writer creates\\initial draft};
+  \node[zgplain, diamond, aspect=2.0, text width=20mm, right=of draft]
+    (review) {Reviewer\\approves?};
+  \node[zgstage, text width=25mm, right=of review] (deliver) {Deliver approved\\draft};
+  \node[zgplain, diamond, aspect=2.0, text width=20mm, below=of review]
+    (budget) {Retries\\remain?};
+  \node[zgstage, text width=24mm, left=of budget] (revise) {Writer revises\\draft};
+  \node[zgplain, text width=27mm, draw=ZipperRed, fill=ZipperRed!8,
+    right=of budget] (failure) {Return explicit\\failure notice};
+  \draw[zgflow] (draft) -- (review);
+  \draw[zgflow] (review) -- node[zglabel, above]{yes} (deliver);
+  \draw[zgflow] (review) -- node[zglabel, right]{no} (budget);
+  \draw[zgflow] (budget) -- node[zglabel, above]{yes} (revise);
+  \draw[zgflow] (revise) to[bend left=28]
+    node[zglabel, left]{present again} (review);
+  \draw[zgdashed] (budget) -- node[zglabel, above]{no} (failure);
+\end{tikzpicture}
+\caption{A rejection produces another reviewed draft only while the bounded
+retry budget remains. No unapproved draft is silently released.}
+\label{fig:review-loop}
+\end{figure}
+
+\begin{notebox}{What \texttt{max\_retries} counts}
+The initial draft is not a retry. With \texttt{max\_retries=2}, Writer may make
+at most two revisions after rejection, so Reviewer sees at most three human
+tasks: the initial draft and two revised drafts.
+\end{notebox}
 
 The complete, executable source is included in Appendix~\ref{app:source}.
 
@@ -383,7 +529,9 @@ deployer to collect:
 
 \begin{itemize}
   \item the LLM setting, defaulting to \texttt{mock};
-  \item the request text as a workflow input; and
+  \item the request text as a workflow input;
+  \item the maximum number of revisions as a second workflow input, defaulting
+        to \texttt{2}; and
   \item an OpenAI API key only if the LLM setting starts with
         \texttt{openai}.
 \end{itemize}
@@ -409,17 +557,47 @@ Approve this draft? [y/n]: y
 Result: [draft_reply:draft]
 \end{lstlisting}
 
-Run it again and enter \texttt{n}; the result should be
-\texttt{[revise\_reply:draft]}. This direct program uses in-memory execution and
-an in-terminal human backend. It is convenient for the first smoke test, but it
-does not demonstrate durable restart behavior.
+Run it again and enter \texttt{n}. Writer produces
+\texttt{[revise\_reply:draft]} and Reviewer is asked again; enter \texttt{y} to
+accept that revision. If you keep entering \texttt{n}, the program stops after
+two revision attempts and returns an explicit failure notice. This direct
+program uses in-memory execution and an in-terminal human backend. It is
+convenient for the first smoke test, but it does not demonstrate durable
+restart behavior.
+
+Internally, this memory backend runs entirely inside the one Python process
+started by \texttt{uv run python}. It creates one Python thread for each
+lifeline---Requester, Writer, and Reviewer in this example---and uses
+thread-safe FIFO queues, keyed by sender, receiver, and channel, for their
+messages. It does not create a separate operating-system process for each
+lifeline. When the program exits or crashes, the threads, queues, messages, and
+progress disappear together. The later SQLite backend still runs local
+lifelines in threads, but records communication and execution progress in the
+database so it can recover them after a restart.
 
 \section{Inspect the workflow entirely as code}
 
 Set the workflow spec once in your head:
-\path{examples/tutorial_review.py:tutorial_review}. The CLI currently expects
-the spec as a positional argument, so the following commands repeat it for
-clarity.
+\path{examples/tutorial_review.py:tutorial_review}. Read it as follows:
+
+\begin{itemize}
+  \item Before the colon, \path{examples/tutorial_review.py} is the Python file
+  to load.
+  \item After the colon, \texttt{tutorial\_review} is the existing Python
+  object to select. It comes from
+  \texttt{@workflow def tutorial\_review(...)} inside that file.
+\end{itemize}
+
+The suffix does not assign a new name; it locates the workflow object. The
+deployment name is separate: this example declares \texttt{tutorial-review}
+in \texttt{zippergen\_deployment}, and deployment commands may supply it with
+\texttt{--name tutorial-review}. The underscore in the Python object name and
+the hyphen in the deployment name are intentional. The validation JSON makes
+the distinction visible as \texttt{"workflow": "tutorial\_review"} versus
+\texttt{"deployment": \{"name": "tutorial-review", ...\}}.
+
+The CLI currently expects the workflow spec as a positional argument, so the
+following commands repeat it for clarity.
 
 \subsection{Validate before running or deploying}
 
@@ -429,7 +607,11 @@ uv run zippergen validate examples/tutorial_review.py:tutorial_review
 
 Successful validation reports three unique lifelines, successful projections
 for Requester, Writer, and Reviewer, a valid deployment declaration, and
-successful canonical rendering. Treat a validation failure as a blocker.
+a successful \emph{canonical rendering} check. Here, canonical rendering means
+that ZipperGen can turn the loaded workflow into its standard, normalized code
+views: the global protocol and the generated local view for each participant.
+It does not execute or deploy the workflow. Treat a validation failure as a
+blocker.
 
 For machine-readable output:
 
@@ -437,18 +619,42 @@ For machine-readable output:
 uv run zippergen validate examples/tutorial_review.py:tutorial_review --json
 \end{lstlisting}
 
-\subsection{Global and communication-only views}
+\subsection{Global detail levels and the communication-only view}
+
+The plain \texttt{show} command uses \texttt{--detail protocol} by default, so
+the first two protocol commands below are equivalent:
 
 \begin{lstlisting}[style=shell]
 uv run zippergen show examples/tutorial_review.py:tutorial_review
-uv run zippergen show examples/tutorial_review.py:tutorial_review --communications
+uv run zippergen show examples/tutorial_review.py:tutorial_review --detail protocol
+uv run zippergen show examples/tutorial_review.py:tutorial_review --detail overview
+uv run zippergen show examples/tutorial_review.py:tutorial_review \
+  --detail protocol --communications
 uv run zippergen show examples/tutorial_review.py:tutorial_review --detail actions
 uv run zippergen show examples/tutorial_review.py:tutorial_review --detail full
 \end{lstlisting}
 
-The communication-only view keeps messages, decisions, and the return value but
-omits local action bodies. The full view adds prompts, implementations, and the
-deployment contract.
+The four detail levels are:
+
+\begin{itemize}
+  \item \texttt{overview}: names the workflow, lifelines, inputs, outputs,
+  actions, and deployment counts, but replaces the workflow body with an
+  ellipsis.
+  \item \texttt{protocol}: shows the complete global workflow body, including
+  communications, decisions, loops, parallel regions, and action calls. This
+  is the default.
+  \item \texttt{actions}: adds the action declarations and signatures; detailed
+  LLM and planner prompt bodies remain hidden.
+  \item \texttt{full}: adds prompts, available implementations, and the
+  normalized deployment declaration.
+\end{itemize}
+
+The separate \texttt{--communications} filter keeps messages, decisions, and
+the return value but omits local action calls. It can be combined with a detail
+level when useful. Because \texttt{protocol} is the default,
+\texttt{--communications} alone is shorthand for
+\texttt{--detail protocol --communications}; this guide spells out the full
+form where the view is introduced.
 
 \subsection{One participant or a selected group}
 
@@ -481,81 +687,214 @@ uv run zippergen show examples/tutorial_review.py:tutorial_review --format json
 This pass uses SQLite. The process in Terminal A waits without losing its state;
 Terminal B finds and completes the human task.
 
+\subsection{Task, task ID, and token}
+
+The \emph{task} is the pending work itself: in this example, the rendered draft
+and the request for a human decision. The \emph{task ID} is its stable internal
+name. A trusted operator working locally can use that ID to select the task. A
+\emph{token} is a separate, random bearer credential that an external adapter
+can use instead of trusting a raw task ID. Protect a token like an approval
+link. Both point to the same task; neither is the approval or rejection
+decision.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=18mm and 20mm]
+  \node[zgplain, text width=23mm] (cli) {Trusted local\\CLI operator};
+  \node[zgstore, text width=31mm, right=of cli] (task) {One human task\\rendered draft\\state: pending};
+  \node[zgplain, text width=25mm, right=of task] (decision) {Decision\\\texttt{--yes} or\\\texttt{--no}};
+  \node[zgplain, text width=23mm, below=of cli] (adapter) {External adapter\\email, Telegram,\\or Slack};
+  \node[zgplain, text width=31mm, draw=ZipperGold,
+    fill=ZipperGold!10, below=of task] (token) {Token record\\task + channel\\+ random token};
+  \draw[zgflow] (cli) -- node[zglabel, above]{\texttt{--task TASK-ID}} (task);
+  \draw[zgflow] (adapter) -- node[zglabel, above]{presents \texttt{TOKEN}} (token);
+  \draw[zgflow] (token) -- node[zglabel, right]{maps to} (task);
+  \draw[zgflow] (task) -- node[zglabel, above]{resolves} (decision);
+\end{tikzpicture}
+\caption{The human task is the pending work. A task ID is a local locator; a
+token is an adapter-facing credential that resolves to that same task. The
+separate \texttt{--yes}/\texttt{--no} flag supplies the decision.}
+\label{fig:task-token}
+\end{figure}
+
 \subsection{Terminal A: start the workflow}
 
 From the repository root:
 
 \begin{lstlisting}[style=shell]
-export ZIPPERGEN_HOME="$HOME/.zippergen-tutorial"
+export ZIPPERGEN_HOME="$HOME/Projects/zippergen-tutorial/tutorial-runtime"
+STORE="$ZIPPERGEN_HOME/runs/manual-review.sqlite"
 
 uv run zippergen run examples/tutorial_review.py:tutorial_review \
   --llm mock \
   --input 'request=Explain why the sky is blue in two sentences.' \
-  --store "$ZIPPERGEN_HOME/runs/manual-review.sqlite" \
+  --input 'max_retries=2' \
+  --store "$STORE" \
   --timeout 0
 \end{lstlisting}
 
-Terminal A prints the store path and then waits. Leave it running.
+Each \texttt{--input} occurrence supplies one \texttt{name=value} pair. The
+names match the parameters in
+\texttt{tutorial\_review(request, max\_retries)}. ZipperGen parses
+\texttt{max\_retries=2} as an integer. For many inputs, the two flags may be
+replaced by one JSON object:
+
+\begin{lstlisting}[style=shell]
+--input-json '{"request":"Explain why the sky is blue.","max_retries":2}'
+\end{lstlisting}
+
+\texttt{STORE} is merely a short shell variable chosen by this tutorial, not a
+special ZipperGen setting. The shell replaces \texttt{\$STORE} with the full
+SQLite path before running each command. Terminal A prints that path and then
+waits. Leave it running.
 \texttt{--timeout 0} means no execution deadline; use this only when waiting is
 intentional.
 
 \subsection{Terminal B: inspect status and tasks}
 
-Open a second terminal, enter the repository, and repeat the export:
+Open a second terminal, enter the repository, and repeat both variable
+assignments because a new terminal does not inherit them:
 
 \begin{lstlisting}[style=shell]
-cd /path/to/your/zippergen
-export ZIPPERGEN_HOME="$HOME/.zippergen-tutorial"
+cd "$HOME/Projects/zippergen-tutorial"
+export ZIPPERGEN_HOME="$HOME/Projects/zippergen-tutorial/tutorial-runtime"
+STORE="$ZIPPERGEN_HOME/runs/manual-review.sqlite"
 
 uv run zippergen status \
-  --store "$ZIPPERGEN_HOME/runs/manual-review.sqlite"
+  --store "$STORE"
 
 uv run zippergen tasks \
-  --store "$ZIPPERGEN_HOME/runs/manual-review.sqlite" \
-  --tokens --channel tutorial
+  --store "$STORE"
 \end{lstlisting}
 
-Status should say \texttt{waiting}. The tasks command prints a task identifier,
-the rendered draft, and a durable token. Copy the task identifier.
+Status should say \texttt{waiting}. The tasks command prints the rendered draft
+and a task identifier. Copy the task identifier. Choose exactly one of the
+following decisions; once the task is decided, do not run the other command for
+the same task.
 
 Approve it:
 
 \begin{lstlisting}[style=shell]
 uv run zippergen approve \
-  --store "$ZIPPERGEN_HOME/runs/manual-review.sqlite" \
+  --store "$STORE" \
   --task <TASK-ID> --yes
 \end{lstlisting}
 
-To exercise the rejection branch, use \texttt{--no} instead of
-\texttt{--yes}. A token may replace the task ID:
+Or, to exercise the rejection branch instead, reject it explicitly:
 
 \begin{lstlisting}[style=shell]
 uv run zippergen approve \
-  --store "$ZIPPERGEN_HOME/runs/manual-review.sqlite" \
-  --token <TOKEN> --yes
+  --store "$STORE" \
+  --task <TASK-ID> --no
 \end{lstlisting}
 
-Terminal A should now print a JSON result and exit. Confirm completion and view
-the trace:
+After rejection, Terminal A asks Writer for a revision and then waits on a
+\emph{new} human task for the revised draft. List the pending tasks again, copy
+the new task ID, and make the next decision:
+
+\begin{lstlisting}[style=shell]
+uv run zippergen tasks --store "$STORE"
+
+uv run zippergen approve \
+  --store "$STORE" \
+  --task <NEW-TASK-ID> --yes
+\end{lstlisting}
+
+Every presented draft is a distinct task with its own task ID. Approving any
+draft finishes successfully. Rejecting the initial draft and both permitted
+revisions exhausts \texttt{max\_retries=2}; Terminal A then returns the explicit
+failure notice and exits. Do not reuse an already-completed task ID.
+
+The task ID is sufficient for this trusted local CLI exercise. External
+adapters such as email, Telegram, or Slack can instead use durable tokens. To
+display one, rerun the task listing as follows:
+
+\begin{lstlisting}[style=shell]
+uv run zippergen tasks \
+  --store "$STORE" \
+  --tokens --channel cli
+\end{lstlisting}
+
+Here \texttt{cli} is only a descriptive token-namespace label; it is not a
+workflow communication channel. Different adapter labels may have different
+tokens for the same task. A token replaces the task ID, while \texttt{--yes} or
+\texttt{--no} still determines the decision. For example, token-based rejection
+is:
+
+\begin{lstlisting}[style=shell]
+uv run zippergen approve \
+  --store "$STORE" \
+  --token <TOKEN> --no
+\end{lstlisting}
+
+After a draft is approved or the retry budget is exhausted, Terminal A prints
+a JSON result and exits. Confirm completion and view the trace:
 
 \begin{lstlisting}[style=shell]
 uv run zippergen status \
-  --store "$ZIPPERGEN_HOME/runs/manual-review.sqlite"
+  --store "$STORE"
 
 uv run zippergen trace \
-  --store "$ZIPPERGEN_HOME/runs/manual-review.sqlite" --tail 30
+  --store "$STORE" --tail 30
 
 uv run zippergen tasks \
-  --store "$ZIPPERGEN_HOME/runs/manual-review.sqlite" --all
+  --store "$STORE" --all
 \end{lstlisting}
 
 \begin{notebox}{Why rerunning may finish immediately}
 The SQLite store records a completed result for this workflow. Running the same
 workflow against the same store replays committed work instead of repeating it.
-Use a new, explicitly named store for a genuinely new tutorial run, for example
-\path{$ZIPPERGEN_HOME/runs/manual-review-2.sqlite}. Never delete a production
-store merely to force a rerun.
+Point \texttt{STORE} at a new, explicitly named file for a genuinely new
+tutorial run, for example
+\texttt{STORE="\$ZIPPERGEN\_HOME/runs/manual-review-2.sqlite"}. Never delete a
+production store merely to force a rerun.
 \end{notebox}
+
+\subsection{Recover after a terminal or computer crash}
+
+The foreground process stops, but the SQLite file remains. Open a new terminal,
+restore the working directory and tutorial variables, inspect the store, and
+rerun the same command with the same \texttt{STORE} value:
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=19mm]
+  \node[zgstage, text width=27mm] (first) {First workflow\\process};
+  \node[zgstore, text width=31mm, right=of first] (store) {SQLite store\\committed events\\and pending task};
+  \node[zgstage, text width=29mm, right=of store] (second) {New workflow\\process};
+  \node[zgplain, text width=27mm, draw=ZipperRed,
+    fill=ZipperRed!8, below=13mm of first] (crash) {Terminal closes\\or computer crashes};
+  \draw[zgflow] (first) -- node[zglabel, above]{writes} (store);
+  \draw[zgdashed] (first) -- node[zglabel, right]{process stops} (crash);
+  \draw[zgflow] (store) -- node[zglabel, above]{same \texttt{--store}} (second);
+  \node[font=\scriptsize, text=ZipperGreen, align=center, below=7mm of second]
+    {replay committed work\\then resume};
+\end{tikzpicture}
+\caption{A crash removes the process, not the durable history. Starting a new
+process with the same SQLite store replays committed work and resumes.}
+\label{fig:durable-resume}
+\end{figure}
+
+\begin{lstlisting}[style=shell]
+cd "$HOME/Projects/zippergen-tutorial"
+export ZIPPERGEN_HOME="$HOME/Projects/zippergen-tutorial/tutorial-runtime"
+STORE="$ZIPPERGEN_HOME/runs/manual-review.sqlite"
+
+uv run zippergen status \
+  --store "$STORE"
+
+uv run zippergen run examples/tutorial_review.py:tutorial_review \
+  --llm mock \
+  --input 'request=Explain why the sky is blue in two sentences.' \
+  --input 'max_retries=2' \
+  --store "$STORE" \
+  --timeout 0
+\end{lstlisting}
+
+The runner replays committed events and continues from the durable state. You
+do not recreate the checkout or virtual environment, reinstall packages, or
+activate the virtual environment: \texttt{uv run} selects it automatically. An
+in-memory run cannot be recovered this way because it has no SQLite record.
 
 \section{Develop and refine with a coding assistant}
 
@@ -574,7 +913,7 @@ git status --short
 Save a semantic baseline before any edit:
 
 \begin{lstlisting}[style=shell]
-export ZIPPERGEN_HOME="$HOME/.zippergen-tutorial"
+export ZIPPERGEN_HOME="$HOME/Projects/zippergen-tutorial/tutorial-runtime"
 mkdir -p "$ZIPPERGEN_HOME/snapshots"
 
 uv run zippergen snapshot \
@@ -584,19 +923,20 @@ uv run zippergen snapshot \
 
 \subsection{Use a precise refinement prompt}
 
-Start Codex from the repository root with \texttt{codex}, or open the same
+Start Codex with the tutorial-root command from Section~4.3, or open the same
 repository in the Codex app/IDE extension. Send this complete prompt:
 
 \begin{lstlisting}[numbers=none]
 Use $zippergen-workflows.
 
-Refine workbench/tutorial_review.py:tutorial_review. After the initial
-Reviewer rejects a draft, add a separate Compliance human lifeline that must
-approve the revised draft before it reaches Requester. Keep the original
-approved path unchanged. Update the deployment bundle file path to the
-workbench copy. Add focused tests, validate the workflow, show the
-communication-only view, show exact local projections for Reviewer and
-Compliance, and compare the result with
+Refine workbench/tutorial_review.py:tutorial_review. If Reviewer exhausts the
+max_retries budget without approving a draft, add a separate Compliance human
+lifeline that reviews the last draft. If Compliance approves, release that
+draft to Requester; otherwise send the existing explicit failure notice. Keep
+all Reviewer-approved paths and the retry bound unchanged. Update the
+deployment bundle file path to the workbench copy. Add focused tests, validate
+the workflow, show the communication-only view, show exact local projections
+for Reviewer and Compliance, and compare the result with
 $ZIPPERGEN_HOME/snapshots/tutorial-before.json. Do not deploy or start any
 service. Explain assumptions and the semantic changes.
 \end{lstlisting}
@@ -616,7 +956,7 @@ git status --short
 
 uv run zippergen validate workbench/tutorial_review.py:tutorial_review
 uv run zippergen show workbench/tutorial_review.py:tutorial_review \
-  --communications
+  --detail protocol --communications
 uv run zippergen show workbench/tutorial_review.py:tutorial_review \
   --agent Reviewer
 uv run zippergen show workbench/tutorial_review.py:tutorial_review \
@@ -628,11 +968,12 @@ uv run zippergen diff \
 \end{lstlisting}
 
 The diff should show a Compliance lifeline, a new human action, new messages and
-control structure on the rejection path, and the deployment file-path change.
-It should not show changes to the already-approved path. The semantic diff
-ignores comments and formatting but detects workflow renames, action
-implementation changes, participant ownership, message/control context,
-execution order, parallel structure, and deployment requirements.
+control structure on the retry-exhaustion path, and the deployment file-path
+change. It should not show changes to Reviewer-approved paths or to the retry
+bound. The semantic diff ignores comments and formatting but detects workflow
+renames, action implementation changes, participant ownership,
+message/control context, execution order, parallel structure, and deployment
+requirements.
 
 Run focused tests supplied by the assistant, then the full suite:
 
@@ -685,10 +1026,10 @@ combined requirements and call out contradictions before editing.
 \section{Create a guided named deployment}
 
 Return to the canonical example for a deterministic deployment exercise. Set
-the isolated home in the current terminal:
+the tutorial runtime directory in the current terminal:
 
 \begin{lstlisting}[style=shell]
-export ZIPPERGEN_HOME="$HOME/.zippergen-tutorial"
+export ZIPPERGEN_HOME="$HOME/Projects/zippergen-tutorial/tutorial-runtime"
 \end{lstlisting}
 
 Create the bundle, managed environment, profile, and service definitions, but
@@ -699,6 +1040,7 @@ uv run zippergen deploy examples/tutorial_review.py:tutorial_review \
   --name tutorial-review \
   --llm mock \
   --input 'request=Explain deployment in two simple sentences.' \
+  --input 'max_retries=2' \
   --yes \
   --no-start
 \end{lstlisting}
@@ -760,16 +1102,16 @@ bundle before involving a service manager.
 \subsection{Terminal A}
 
 \begin{lstlisting}[style=shell]
-cd /path/to/your/zippergen
-export ZIPPERGEN_HOME="$HOME/.zippergen-tutorial"
+cd "$HOME/Projects/zippergen-tutorial"
+export ZIPPERGEN_HOME="$HOME/Projects/zippergen-tutorial/tutorial-runtime"
 uv run zippergen run-deployment tutorial-review
 \end{lstlisting}
 
 \subsection{Terminal B}
 
 \begin{lstlisting}[style=shell]
-cd /path/to/your/zippergen
-export ZIPPERGEN_HOME="$HOME/.zippergen-tutorial"
+cd "$HOME/Projects/zippergen-tutorial"
+export ZIPPERGEN_HOME="$HOME/Projects/zippergen-tutorial/tutorial-runtime"
 
 uv run zippergen status tutorial-review
 uv run zippergen tasks \
@@ -800,12 +1142,13 @@ deployment name and stop it immediately after completion.
 \subsection{Prepare a fresh service deployment}
 
 \begin{lstlisting}[style=shell]
-export ZIPPERGEN_HOME="$HOME/.zippergen-tutorial"
+export ZIPPERGEN_HOME="$HOME/Projects/zippergen-tutorial/tutorial-runtime"
 
 uv run zippergen deploy examples/tutorial_review.py:tutorial_review \
   --name tutorial-review-service \
   --llm mock \
   --input 'request=Demonstrate durable restart in two sentences.' \
+  --input 'max_retries=2' \
   --yes --no-start
 
 uv run zippergen start tutorial-review-service --dry-run
@@ -832,12 +1175,19 @@ uv run zippergen status tutorial-review-service
 The same task remains pending because it lives in SQLite, not only in process
 memory.
 
+Because this service was started with \texttt{--enable}, its generated launcher
+records \path{ZIPPERGEN_HOME}. After a full reboot, the user service manager
+normally starts it again when the user session starts: after graphical login on
+macOS, or when the user systemd manager starts on Linux. No interactive shell
+export is needed by the service itself. You still repeat the \texttt{cd} and
+\texttt{export} commands before using ZipperGen CLI commands in a new terminal.
+
 \subsection{Watch logs and approve}
 
 In another terminal you may follow the log:
 
 \begin{lstlisting}[style=shell]
-export ZIPPERGEN_HOME="$HOME/.zippergen-tutorial"
+export ZIPPERGEN_HOME="$HOME/Projects/zippergen-tutorial/tutorial-runtime"
 uv run zippergen logs tutorial-review-service --follow
 \end{lstlisting}
 
@@ -877,6 +1227,7 @@ For a long-running deployment, update declared fields and restart in one step:
 \begin{lstlisting}[style=shell]
 uv run zippergen configure tutorial-review-service \
   --input 'request=A new configured request.' \
+  --input 'max_retries=3' \
   --yes --restart
 \end{lstlisting}
 
@@ -905,6 +1256,7 @@ uv run zippergen deploy workbench/tutorial_review.py:tutorial_review \
   --name tutorial-review-v2 \
   --llm mock \
   --input 'request=Test the compliance version.' \
+  --input 'max_retries=2' \
   --yes --no-start
 \end{lstlisting}
 
@@ -1008,16 +1360,17 @@ If you started the supervised tutorial deployment, stop it before archiving its
 data:
 
 \begin{lstlisting}[style=shell]
-export ZIPPERGEN_HOME="$HOME/.zippergen-tutorial"
+export ZIPPERGEN_HOME="$HOME/Projects/zippergen-tutorial/tutorial-runtime"
 uv run zippergen stop tutorial-review-service
 \end{lstlisting}
 
 The foreground deployment needs no stop command after it exits. To preserve all
-tutorial profiles, stores, logs, environments, and bundles while resetting the
-default path, move the exact tutorial directory:
+tutorial profiles, stores, logs, environments, and bundles while keeping the
+Git checkout in place, move the exact runtime directory:
 
 \begin{lstlisting}[style=shell]
-mv "$HOME/.zippergen-tutorial" "$HOME/.zippergen-tutorial.saved"
+mv "$HOME/Projects/zippergen-tutorial/tutorial-runtime" \
+  "$HOME/Projects/zippergen-tutorial-runtime.saved"
 \end{lstlisting}
 
 If the destination already exists, choose a different explicit name. Moving is
@@ -1069,22 +1422,28 @@ development and deployment experience is genuinely self-explanatory.
 \section{Compact command sheet}
 \label{app:commands}
 
-\subsection*{Setup}
+\subsection*{Setup: new checkout}
 
 \begin{lstlisting}[style=shell]
-cd /path/to/your/zippergen
+mkdir -p "$HOME/Projects"
+cd "$HOME/Projects"
+git clone https://github.com/zippergen-io/zippergen.git zippergen-tutorial
+cd zippergen-tutorial
+export ZIPPERGEN_HOME="$HOME/Projects/zippergen-tutorial/tutorial-runtime"
 uv python install 3.12
 uv venv --python 3.12
 uv pip install -e .
-export ZIPPERGEN_HOME="$HOME/.zippergen-tutorial"
 \end{lstlisting}
 
 \subsection*{Inspect and validate}
 
 \begin{lstlisting}[style=shell]
 uv run zippergen validate examples/tutorial_review.py:tutorial_review
-uv run zippergen show examples/tutorial_review.py:tutorial_review
-uv run zippergen show examples/tutorial_review.py:tutorial_review --communications
+uv run zippergen show examples/tutorial_review.py:tutorial_review --detail overview
+uv run zippergen show examples/tutorial_review.py:tutorial_review --detail protocol
+uv run zippergen show examples/tutorial_review.py:tutorial_review \
+  --detail protocol --communications
+uv run zippergen show examples/tutorial_review.py:tutorial_review --detail actions
 uv run zippergen show examples/tutorial_review.py:tutorial_review --detail full
 uv run zippergen show examples/tutorial_review.py:tutorial_review --agent Reviewer
 uv run zippergen show examples/tutorial_review.py:tutorial_review \
@@ -1094,15 +1453,18 @@ uv run zippergen show examples/tutorial_review.py:tutorial_review \
 \subsection*{Durable local execution}
 
 \begin{lstlisting}[style=shell]
-uv run zippergen run examples/tutorial_review.py:tutorial_review \
-  --llm mock --input 'request=Explain the sky.' \
-  --store "$ZIPPERGEN_HOME/runs/manual-review.sqlite" --timeout 0
+STORE="$ZIPPERGEN_HOME/runs/manual-review.sqlite"
 
-uv run zippergen status --store "$ZIPPERGEN_HOME/runs/manual-review.sqlite"
-uv run zippergen tasks --store "$ZIPPERGEN_HOME/runs/manual-review.sqlite"
-uv run zippergen approve --store "$ZIPPERGEN_HOME/runs/manual-review.sqlite" \
+uv run zippergen run examples/tutorial_review.py:tutorial_review \
+  --llm mock \
+  --input 'request=Explain the sky.' --input 'max_retries=2' \
+  --store "$STORE" --timeout 0
+
+uv run zippergen status --store "$STORE"
+uv run zippergen tasks --store "$STORE"
+uv run zippergen approve --store "$STORE" \
   --task <TASK-ID> --yes
-uv run zippergen trace --store "$ZIPPERGEN_HOME/runs/manual-review.sqlite"
+uv run zippergen trace --store "$STORE"
 \end{lstlisting}
 
 \subsection*{Refinement safety gate}
@@ -1121,7 +1483,8 @@ uv run zippergen diff "$ZIPPERGEN_HOME/snapshots/workflow-before.json" \
 \begin{lstlisting}[style=shell]
 uv run zippergen deploy examples/tutorial_review.py:tutorial_review \
   --name tutorial-review --llm mock \
-  --input 'request=Explain deployment.' --yes --no-start
+  --input 'request=Explain deployment.' --input 'max_retries=2' \
+  --yes --no-start
 uv run zippergen doctor tutorial-review
 uv run zippergen run-deployment tutorial-review
 uv run zippergen start tutorial-review --dry-run
