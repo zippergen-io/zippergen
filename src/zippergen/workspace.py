@@ -187,6 +187,7 @@ class Workspace:
             "current_run": None,
             "last_deployment": None,
             "last_view": "protocol",
+            "model_profiles": {},
             "updated_at": _timestamp(),
         }
 
@@ -203,6 +204,9 @@ class Workspace:
             raise WorkspaceError(
                 f"Workspace {self.state_path} belongs to another project root."
             )
+        # This field was added additively so existing workspaces keep working
+        # without a schema migration.
+        state.setdefault("model_profiles", {})
         return state
 
     def update(self, **changes: object) -> dict[str, Any]:
@@ -261,6 +265,61 @@ class Workspace:
         self.update(current_workflow=canonical)
         return canonical
 
+    def model_profile(
+        self,
+        workflow_spec: str | None = None,
+        *,
+        default: str = "mock",
+    ) -> dict[str, Any]:
+        """Return the persistent model profile for one workflow."""
+
+        selected = workflow_spec or self.current_workflow
+        if not selected:
+            raise WorkspaceError("No workflow is selected.")
+        canonical = self.canonical_spec(selected, cwd=self.root)
+        raw_profiles = self.load().get("model_profiles") or {}
+        if not isinstance(raw_profiles, dict):
+            raise WorkspaceError("Workspace model_profiles must be an object.")
+        raw_profile = raw_profiles.get(canonical) or {}
+        if not isinstance(raw_profile, dict):
+            raise WorkspaceError(f"Model profile for {canonical} must be an object.")
+        raw_lifelines = raw_profile.get("lifelines") or {}
+        if not isinstance(raw_lifelines, dict):
+            raise WorkspaceError(
+                f"Model lifeline overrides for {canonical} must be an object."
+            )
+        return {
+            "default": str(raw_profile.get("default") or default),
+            "lifelines": {
+                str(name): str(spec) for name, spec in raw_lifelines.items()
+            },
+        }
+
+    def save_model_profile(
+        self,
+        workflow_spec: str,
+        *,
+        default: str,
+        lifelines: dict[str, str],
+    ) -> dict[str, Any]:
+        """Persist a non-secret default model and explicit lifeline overrides."""
+
+        canonical = self.canonical_spec(workflow_spec, cwd=self.root)
+        state = self.load()
+        raw_profiles = state.get("model_profiles") or {}
+        if not isinstance(raw_profiles, dict):
+            raise WorkspaceError("Workspace model_profiles must be an object.")
+        profiles = dict(raw_profiles)
+        profile = {
+            "default": str(default),
+            "lifelines": {
+                str(name): str(spec) for name, spec in sorted(lifelines.items())
+            },
+        }
+        profiles[canonical] = profile
+        self.update(model_profiles=profiles)
+        return profile
+
     def discover_workflows(self) -> list[str]:
         return discover_workflow_specs(self.root)
 
@@ -272,6 +331,7 @@ class Workspace:
         fingerprint: str,
         inputs: dict[str, object],
         llm: str,
+        llms: dict[str, str] | None = None,
         options: dict[str, object] | None = None,
         services: str | None = None,
     ) -> dict[str, Any]:
@@ -296,6 +356,7 @@ class Workspace:
             "store": str(store),
             "inputs": dict(inputs),
             "llm": llm,
+            "llms": dict(llms or {}),
             "options": dict(options or {}),
             "services": services,
             "status": "created",

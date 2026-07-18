@@ -58,6 +58,7 @@ import subprocess
 import sys
 import time
 import venv
+from collections.abc import Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -68,6 +69,11 @@ from zippergen.deployment import (
     DeploymentSetup,
     DeploymentSpec,
     deployment_spec_from_module,
+)
+from zippergen.models import (
+    effective_llm_routes,
+    normalize_llm_overrides,
+    selected_llm_specs,
 )
 from zippergen.view import DETAILS, ViewOptions, render_workflow, workflow_view_data
 from zippergen.semantic import (
@@ -98,6 +104,7 @@ class RunConfig:
     workflow: Workflow
     module: ModuleType
     llm: str | None
+    llms: dict[str, str]
     llm_idle_timeout: float | None
     store_path: str | None
     inputs: dict[str, object]
@@ -433,7 +440,7 @@ def _deployment_name_from_workflow(workflow_spec: str, wf: Workflow) -> str:
     return _slug(f"{stem}-{wf.name}")
 
 
-def _jsonable_kv_pairs(values: dict[str, object]) -> list[str]:
+def _jsonable_kv_pairs(values: Mapping[str, object]) -> list[str]:
     return [f"{key}={json.dumps(value, default=str)}" for key, value in sorted(values.items())]
 
 
@@ -443,6 +450,7 @@ def _run_args_from_deployment(profile: dict[str, object]):
     return argparse.Namespace(
         workflow=str(profile["workflow"]),
         llm=profile.get("llm") or None,
+        llm_for=_jsonable_kv_pairs(normalize_llm_overrides(profile.get("llms"))),
         llm_idle_timeout=profile.get("llm_idle_timeout"),
         store=str(profile["store"]),
         input=[],
@@ -913,6 +921,13 @@ def _doctor_checks(name: str, *, include_systemd: bool = True) -> list[dict[str,
         field.name: _profile_field_value(profile, field, environment)
         for field in deployment_spec.fields
     }
+    declared_values["__llm_specs__"] = selected_llm_specs(
+        profile.get("llm"),
+        profile.get("llms"),
+    )
+    declared_values["__llm_field_names__"] = tuple(
+        field.name for field in deployment_spec.fields if field.target == "llm"
+    )
     for field in deployment_spec.fields:
         if (
             field.secret
@@ -1316,6 +1331,7 @@ def _run_workflow_command(args) -> int:
     inputs = _parse_input_json(args.input_json)
     inputs.update(_parse_inputs(args.input))
     options = _parse_options(args.option, services=args.services)
+    llms = normalize_llm_overrides(_parse_inputs(args.llm_for))
 
     store_path = args.store
     if args.execution == "sqlite":
@@ -1329,6 +1345,7 @@ def _run_workflow_command(args) -> int:
         workflow=wf,
         module=module,
         llm=args.llm,
+        llms=llms,
         llm_idle_timeout=args.llm_idle_timeout,
         store_path=store_path,
         inputs=inputs,
@@ -1348,7 +1365,12 @@ def _run_workflow_command(args) -> int:
         "store_path": store_path,
         "show_decisions": args.show_decisions,
     }
-    if args.llm:
+    if llms:
+        wf.configure(
+            effective_llm_routes(wf, args.llm or "mock", llms),
+            **configure_kwargs,
+        )
+    elif args.llm:
         wf.configure(args.llm, **configure_kwargs)
     else:
         wf.configure(**configure_kwargs)
@@ -1375,6 +1397,7 @@ def _dev_command(args) -> int:
         run_id=args.run_id,
         provided_inputs=inputs,
         llm=args.llm,
+        llms=normalize_llm_overrides(_parse_inputs(args.llm_for)),
         options=options,
         services=args.services,
         timeout=args.timeout,
@@ -1586,12 +1609,25 @@ def _diff_command(args) -> int:
 def _field_enabled(field: DeploymentField, values: dict[str, object]) -> bool:
     if not field.when:
         return True
-    current = values.get(field.when)
+    candidates = [values.get(field.when)]
+    llm_field_names = values.get("__llm_field_names__")
+    if (
+        field.when == "llm"
+        or (
+            isinstance(llm_field_names, (list, tuple, set))
+            and field.when in llm_field_names
+        )
+    ):
+        configured = values.get("__llm_specs__")
+        if isinstance(configured, (list, tuple, set)):
+            candidates.extend(configured)
     if not field.when_values:
-        return bool(current)
-    text = str(current)
+        return any(bool(current) for current in candidates)
     return any(
-        text.startswith(expected[:-1]) if expected.endswith("*") else text == expected
+        str(current).startswith(expected[:-1])
+        if expected.endswith("*")
+        else str(current) == expected
+        for current in candidates
         for expected in field.when_values
     )
 
@@ -1675,6 +1711,21 @@ def _collect_deployment_fields(
         if field.name in overrides:
             current = overrides[field.name]
         values[field.name] = current
+    global_llm = next(
+        (
+            values.get(field.name)
+            for field in spec.fields
+            if field.target == "llm"
+        ),
+        profile.get("llm"),
+    )
+    values["__llm_specs__"] = selected_llm_specs(
+        global_llm,
+        profile.get("llms"),
+    )
+    values["__llm_field_names__"] = tuple(
+        field.name for field in spec.fields if field.target == "llm"
+    )
 
     for field in spec.fields:
         if not _field_enabled(field, values):
@@ -1922,9 +1973,20 @@ def _apply_deploy_arguments(
     profile: dict[str, object],
     args,
     spec: DeploymentSpec,
+    workflow: Workflow,
 ) -> tuple[dict[str, object], dict[str, str]]:
     if args.llm is not None:
         profile["llm"] = args.llm
+    llms = normalize_llm_overrides(profile.get("llms"))
+    for lifeline, model in normalize_llm_overrides(
+        _parse_inputs(args.llm_for)
+    ).items():
+        if model.lower() in {"inherit", "default"}:
+            llms.pop(lifeline, None)
+        else:
+            llms[lifeline] = model
+    effective_llm_routes(workflow, str(profile.get("llm") or "mock"), llms)
+    profile["llms"] = llms
     if args.llm_idle_timeout is not None:
         profile["llm_idle_timeout"] = args.llm_idle_timeout
     if args.services is not None:
@@ -2038,6 +2100,7 @@ def _deploy_command(args) -> int:
                 "store": _default_deployment_store_path(name),
                 "log": _default_deployment_log_path(name),
                 "llm": None,
+                "llms": {},
                 "llm_idle_timeout": None,
                 "services": None,
                 "options": {},
@@ -2055,13 +2118,13 @@ def _deploy_command(args) -> int:
     if not args.yes and sys.stdin.isatty() and spec.description:
         print(spec.description)
         print()
-    values, secrets = _apply_deploy_arguments(profile, args, spec)
+    values, secrets = _apply_deploy_arguments(profile, args, spec, workflow)
     return _finalize_guided_deployment(profile, spec, values, secrets, args)
 
 
 def _configure_deployment_command(args) -> int:
     profile, _workflow, _module, spec = _deployment_context(args.name)
-    values, secrets = _apply_deploy_arguments(profile, args, spec)
+    values, secrets = _apply_deploy_arguments(profile, args, spec, _workflow)
     rc = _finalize_guided_deployment(profile, spec, values, secrets, args)
     if rc == 0 and args.restart and args.no_start:
         lifecycle_args = argparse.Namespace(name=args.name, enable=False, dry_run=False)
@@ -2079,6 +2142,8 @@ def _deploy_local_command(args) -> int:
     inputs = _parse_input_json(args.input_json)
     inputs.update(_parse_inputs(args.input))
     options = _parse_options(args.option)
+    llms = normalize_llm_overrides(_parse_inputs(args.llm_for))
+    effective_llm_routes(wf, args.llm or "mock", llms)
     store_path = _ensure_store_parent(args.store or _default_deployment_store_path(name))
     log_path = str(Path(args.log or _default_deployment_log_path(name)).expanduser())
     Path(log_path).parent.mkdir(parents=True, exist_ok=True)
@@ -2090,6 +2155,7 @@ def _deploy_local_command(args) -> int:
         "store": store_path,
         "log": log_path,
         "llm": args.llm,
+        "llms": llms,
         "llm_idle_timeout": args.llm_idle_timeout,
         "services": args.services,
         "options": options,
@@ -2337,6 +2403,16 @@ def _add_guided_deployment_arguments(
     configure: bool = False,
 ) -> None:
     parser.add_argument("--llm", metavar="SPEC", help="LLM spec stored in the deployment profile.")
+    parser.add_argument(
+        "--llm-for",
+        action="append",
+        default=[],
+        metavar="LIFELINE=SPEC",
+        help=(
+            "Override the LLM for one lifeline; repeat as needed. Use "
+            "LIFELINE=inherit to remove an existing override."
+        ),
+    )
     parser.add_argument("--llm-idle-timeout", type=float, help="Release a managed local LLM after this idle time.")
     parser.add_argument("--store", help="SQLite store path.")
     parser.add_argument("--log", help="Deployment log path.")
@@ -2377,6 +2453,13 @@ def main(argv=None) -> int:
     dev.add_argument("--run-id", help="Managed run id to resume; requires --resume.")
     dev.add_argument("--project", help="Project root; defaults to discovery from the current directory.")
     dev.add_argument("--llm", metavar="SPEC", help="LLM spec; defaults to the workflow declaration or mock.")
+    dev.add_argument(
+        "--llm-for",
+        action="append",
+        default=[],
+        metavar="LIFELINE=SPEC",
+        help="Override the LLM for one lifeline; repeat as needed.",
+    )
     dev.add_argument("--input", action="append", default=[], metavar="name=value", help="Workflow input value.")
     dev.add_argument("--input-json", help="Workflow inputs as a JSON object.")
     dev.add_argument("--option", action="append", default=[], metavar="name=value", help="Workflow setup option.")
@@ -2387,6 +2470,13 @@ def main(argv=None) -> int:
     rn = sub.add_parser("run", help="run a workflow locally through SQLite")
     rn.add_argument("workflow", help="Workflow spec: module:workflow or path.py:workflow")
     rn.add_argument("--llm", metavar="SPEC", help="LLM spec: mock, openai:gpt-4o, ollama:qwen2.5:7b, ...")
+    rn.add_argument(
+        "--llm-for",
+        action="append",
+        default=[],
+        metavar="LIFELINE=SPEC",
+        help="Override the LLM for one lifeline; repeat as needed.",
+    )
     rn.add_argument("--llm-idle-timeout", type=float, help="Release a managed local LLM after this many idle seconds.")
     rn.add_argument("--store", help="SQLite store path. Defaults to ~/.zippergen/runs/<workflow>.sqlite")
     rn.add_argument("--input", action="append", default=[], metavar="name=value", help="Workflow input value.")
@@ -2437,6 +2527,13 @@ def main(argv=None) -> int:
     dl.add_argument("workflow", help="Workflow spec: module:workflow or path.py:workflow")
     dl.add_argument("--name", help="Deployment name. Defaults to a slug derived from the workflow.")
     dl.add_argument("--llm", metavar="SPEC", help="LLM spec stored in the deployment profile.")
+    dl.add_argument(
+        "--llm-for",
+        action="append",
+        default=[],
+        metavar="LIFELINE=SPEC",
+        help="Override the LLM for one lifeline; repeat as needed.",
+    )
     dl.add_argument("--llm-idle-timeout", type=float, help="Release a managed local LLM after this many idle seconds.")
     dl.add_argument("--store", help="SQLite store path. Defaults to $ZIPPERGEN_HOME/runs/<name>.sqlite")
     dl.add_argument("--log", help="Log path. Defaults to $ZIPPERGEN_HOME/logs/<name>.log")

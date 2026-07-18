@@ -79,11 +79,22 @@ manage. If the terminal closes during an incomplete run, return to the project
 and enter `resume`. Use `current` to see the remembered workflow, run, and
 deployment context.
 
-Use `run openai:gpt-4o-mini` (or another supported LLM spec) to override the
-declared/default model. If the workflow declares a required API-key field,
-Studio asks for it without echo and saves it once in an owner-only development
-secret file. Later runs and post-crash resumes reuse it; the value is never
-copied into workspace, run, or request JSON.
+Use `models` to choose an inherited default and optional models for individual
+LLM-active lifelines. The profile is remembered with the workflow and carried
+into both development runs and guided deployment:
+
+```text
+zippergen [tutorial_review]> models default mock
+zippergen [tutorial_review]> models set Writer openai:gpt-4o-mini
+zippergen [tutorial_review]> models set Reviewer claude:claude-sonnet-4-6
+zippergen [tutorial_review]> models show
+```
+
+`run openai:gpt-4o-mini` remains a one-run override of the default; explicit
+lifeline overrides remain in effect. If any selected provider needs a declared
+API key, Studio asks for it without echo and saves it once in an owner-only
+development secret file. Later runs and post-crash resumes reuse it; the value
+is never copied into workspace, run, or request JSON.
 
 To begin from natural language, enter `create` and describe the workflow. The
 first Studio integration writes and prints a structured brief for a
@@ -94,13 +105,16 @@ creates the visible Python source, `use` selects it. For an existing workflow,
 before/after diff.
 
 When the mock/fake development run is satisfactory, `deploy` enters the
-existing guided, secret-aware deployment path explicitly. Studio remembers the
-deployment name, so normal operation is short:
+existing guided, secret-aware deployment path explicitly. Use `--no-start` for
+a reviewable prepare-first transition; Studio remembers the deployment name,
+so normal operation stays short:
 
 ```text
-zippergen [tutorial_review]> deploy
-zippergen [tutorial_review]> status
+zippergen [tutorial_review]> deploy tutorial-review --no-start
 zippergen [tutorial_review]> doctor
+zippergen [tutorial_review]> status
+zippergen [tutorial_review]> start
+zippergen [tutorial_review]> status
 zippergen [tutorial_review]> logs
 zippergen [tutorial_review]> restart
 zippergen [tutorial_review]> stop
@@ -110,6 +124,10 @@ The same durable development flow is scriptable outside Studio:
 
 ```bash
 uv run zippergen dev examples/tutorial_review.py:tutorial_review
+uv run zippergen dev examples/tutorial_review.py:tutorial_review \
+  --llm mock \
+  --llm-for Writer=openai:gpt-4o-mini \
+  --llm-for Reviewer=claude:claude-sonnet-4-6
 uv run zippergen dev --resume
 ```
 
@@ -380,9 +398,10 @@ The guided path configures, validates, and starts a workflow in one command:
 zippergen deploy examples/call_intake.py:call_intake
 ```
 
-Inside Studio, select the workflow once and enter `deploy`; subsequent
-`status`, `logs`, `doctor`, `restart`, and `stop` commands use the remembered
-deployment name.
+Inside Studio, select the workflow once and enter `deploy NAME --no-start` to
+prepare it without starting a service. Inspect it with `doctor`, then use
+`start` when authorized. Subsequent `status`, `logs`, `doctor`, `restart`, and
+`stop` commands use the remembered deployment name.
 
 When a workflow declares deployment requirements, ZipperGen asks for its
 settings and secrets, creates a managed Python environment, installs declared

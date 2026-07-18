@@ -69,3 +69,32 @@ def test_field_default_can_reference_an_earlier_field():
     )
 
     assert values["query"] == "to:calls@example.com"
+
+
+def test_conditional_secret_is_enabled_by_a_per_lifeline_model():
+    spec = DeploymentSpec(fields=(
+        DeploymentField("llm", "Default LLM", target="llm", default="mock"),
+        DeploymentField(
+            "openai_api_key",
+            "OpenAI API key",
+            target="env",
+            env="OPENAI_API_KEY",
+            secret=True,
+            required=True,
+            when="llm",
+            when_values=("openai*",),
+        ),
+    ))
+
+    values, secrets = _collect_deployment_fields(
+        spec,
+        {
+            "llm": "mock",
+            "llms": {"Writer": "openai:gpt-4o-mini"},
+        },
+        overrides={"openai_api_key": "deployment-secret"},
+        interactive=False,
+    )
+
+    assert values["openai_api_key"] == "deployment-secret"
+    assert secrets == {"OPENAI_API_KEY": "deployment-secret"}

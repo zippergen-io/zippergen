@@ -5,14 +5,18 @@ from zippergen.workspace import Workspace
 
 
 WORKFLOW_SOURCE = """
-from zippergen import Lifeline, pure, workflow
+from zippergen import Lifeline, llm, workflow
 
 User = Lifeline("User")
 Writer = Lifeline("Writer")
 
-@pure
-def echo(value: str) -> str:
-    return value
+@llm(
+    system="Echo the value.",
+    user="{value}",
+    parse="text",
+    outputs=(("result", str),),
+)
+def echo(value: str) -> None: ...
 
 @workflow
 def sample(value: str @ User) -> str:
@@ -130,9 +134,33 @@ def test_studio_deploys_current_workflow_and_remembers_name(tmp_path, monkeypatc
         str(workspace.root / "workflow.py") + ":sample",
         "--name",
         "sample-test",
+        "--llm",
+        "mock",
     ]]
     assert workspace.load()["last_deployment"] == "sample-test"
     assert output[-1] == "Guided deployment: sample-test"
+
+
+def test_studio_can_prepare_deployment_without_starting_it(tmp_path, monkeypatch):
+    studio, workspace, _output = _studio(tmp_path)
+    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        "zippergen.serve.main",
+        lambda arguments: calls.append(arguments) or 0,
+    )
+
+    studio.deploy_workflow(["sample-test", "--no-start"])
+
+    assert calls[0] == [
+        "deploy",
+        str(workspace.root / "workflow.py") + ":sample",
+        "--name",
+        "sample-test",
+        "--no-start",
+        "--llm",
+        "mock",
+    ]
 
 
 def test_studio_operates_remembered_deployment(tmp_path, monkeypatch):
@@ -160,3 +188,84 @@ def test_studio_run_accepts_an_llm_override(tmp_path, monkeypatch):
     studio.execute("run openai:gpt-4o-mini")
 
     assert calls[0]["llm"] == "openai:gpt-4o-mini"
+
+
+def test_studio_models_configures_and_displays_llm_active_lifelines(tmp_path):
+    studio, workspace, output = _studio(
+        tmp_path,
+        responses=["2", "openai:gpt-4o-mini"],
+    )
+    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+
+    studio.execute("models")
+
+    assert workspace.model_profile("workflow.py:sample") == {
+        "default": "mock",
+        "lifelines": {"Writer": "openai:gpt-4o-mini"},
+    }
+    assert any("Writer (echo)" in line for line in output)
+    assert output[-1] == (
+        "  Writer: openai:gpt-4o-mini (override; actions: echo)"
+    )
+
+
+def test_studio_model_profile_is_used_for_run_and_deploy(tmp_path, monkeypatch):
+    studio, workspace, _output = _studio(tmp_path)
+    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    workspace.save_model_profile(
+        "workflow.py:sample",
+        default="mock",
+        lifelines={"Writer": "claude:claude-sonnet-4-6"},
+    )
+    run_calls = []
+    cli_calls: list[list[str]] = []
+    monkeypatch.setattr(
+        "zippergen.studio.run_dev",
+        lambda workspace, **kwargs: run_calls.append(kwargs),
+    )
+    monkeypatch.setattr(
+        "zippergen.serve.main",
+        lambda arguments: cli_calls.append(arguments) or 0,
+    )
+
+    studio.execute("run")
+    studio.deploy_workflow(["sample-routed"])
+
+    assert run_calls[0]["llm"] == "mock"
+    assert run_calls[0]["llms"] == {
+        "Writer": "claude:claude-sonnet-4-6"
+    }
+    assert cli_calls[0][-4:] == [
+        "--llm",
+        "mock",
+        "--llm-for",
+        "Writer=claude:claude-sonnet-4-6",
+    ]
+
+
+def test_studio_models_rejects_lifelines_without_llm_actions(tmp_path):
+    studio, workspace, _output = _studio(tmp_path)
+    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+
+    try:
+        studio.execute("models set User openai:gpt-4o-mini")
+    except SystemExit as exc:
+        assert "has no LLM actions" in str(exc)
+    else:
+        raise AssertionError("a non-LLM lifeline should not accept a model override")
+
+
+def test_studio_reports_command_interruption_without_a_traceback(
+    tmp_path, monkeypatch
+):
+    studio, workspace, output = _studio(tmp_path, responses=["run", "exit"])
+    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    monkeypatch.setattr(
+        "zippergen.studio.run_dev",
+        lambda workspace, **kwargs: (_ for _ in ()).throw(KeyboardInterrupt()),
+    )
+
+    assert studio.run() == 0
+
+    assert any("Command interrupted" in line for line in output)
+    assert any("use 'resume'" in line for line in output)

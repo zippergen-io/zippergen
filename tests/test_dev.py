@@ -45,6 +45,56 @@ def secret_demo(value: str @ User) -> str:
 """
 
 
+ROUTED_WORKFLOW_SOURCE = """
+from zippergen import DeploymentField, DeploymentSpec, Lifeline, llm, workflow
+
+User = Lifeline("User")
+Writer = Lifeline("Writer")
+Reviewer = Lifeline("Reviewer")
+
+zippergen_deployment = DeploymentSpec(
+    fields=(
+        DeploymentField("llm", "Default LLM", target="llm", default="mock"),
+        DeploymentField(
+            "openai_api_key",
+            "OpenAI API key",
+            target="env",
+            env="OPENAI_API_KEY",
+            secret=True,
+            required=True,
+            when="llm",
+            when_values=("openai*",),
+        ),
+        DeploymentField(
+            "anthropic_api_key",
+            "Anthropic API key",
+            target="env",
+            env="ANTHROPIC_API_KEY",
+            secret=True,
+            required=True,
+            when="llm",
+            when_values=("claude*", "anthropic*"),
+        ),
+    ),
+)
+
+@llm(system="Draft.", user="{value}", parse="text", outputs=(("draft", str),))
+def draft(value: str) -> None: ...
+
+@llm(system="Review.", user="{draft}", parse="text", outputs=(("review", str),))
+def review(draft: str) -> None: ...
+
+@workflow
+def routed(value: str @ User) -> str:
+    User(value) >> Writer(value)
+    Writer: draft_value = draft(value)
+    Writer(draft_value) >> Reviewer(draft_value)
+    Reviewer: result = review(draft_value)
+    Reviewer(result) >> User(result)
+    return result @ User
+"""
+
+
 def _repository_root() -> Path:
     return Path(__file__).resolve().parents[1]
 
@@ -188,3 +238,53 @@ def test_dev_collects_and_reuses_private_declared_secret(
     )
 
     assert second["result"] == "second:True"
+
+
+def test_dev_routes_models_per_lifeline_and_collects_each_provider_secret(
+    tmp_path, monkeypatch
+):
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "routed_workflow.py").write_text(ROUTED_WORKFLOW_SOURCE)
+    workspace = Workspace(root, home=tmp_path / "home")
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+    def fake_backend_from_spec(spec, **_kwargs):
+        def backend(action, _inputs):
+            name = action.outputs[0][0]
+            return {name: f"{spec}:{action.name}"}
+
+        return backend, spec
+
+    monkeypatch.setattr(
+        "zippergen.backends.backend_from_spec",
+        fake_backend_from_spec,
+    )
+    secrets = iter(["openai-secret", "anthropic-secret"])
+
+    record = run_dev(
+        workspace,
+        workflow_spec="routed_workflow.py:routed",
+        provided_inputs={"value": "hello"},
+        llm="mock",
+        llms={
+            "Writer": "openai:gpt-4o-mini",
+            "Reviewer": "claude:claude-sonnet-4-6",
+        },
+        secret_input_func=lambda _prompt: next(secrets),
+        output_func=lambda _line: None,
+    )
+
+    assert record["result"] == "claude:claude-sonnet-4-6:review"
+    assert record["llms"] == {
+        "Writer": "openai:gpt-4o-mini",
+        "Reviewer": "claude:claude-sonnet-4-6",
+    }
+    assert workspace.load_secrets() == {
+        "OPENAI_API_KEY": "openai-secret",
+        "ANTHROPIC_API_KEY": "anthropic-secret",
+    }
+    record_text = workspace.run_path(record["run_id"]).read_text()
+    assert "openai-secret" not in record_text
+    assert "anthropic-secret" not in record_text

@@ -391,6 +391,8 @@ def test_deploy_local_creates_profile_and_runs_by_name(tmp_path, monkeypatch, ca
         "hello-prod",
         "--llm",
         "mock",
+        "--llm-for",
+        "User=mock",
         "--input",
         "topic=deploy",
         "--timeout",
@@ -409,6 +411,7 @@ def test_deploy_local_creates_profile_and_runs_by_name(tmp_path, monkeypatch, ca
     assert profile["workflow"] == f"{workflow_path}:hello"
     assert profile["store"] == str(store_path)
     assert profile["llm"] == "mock"
+    assert profile["llms"] == {"User": "mock"}
     assert profile["inputs"] == {"topic": "deploy"}
     assert script_path.exists()
     assert f"ZIPPERGEN_HOME={zippergen_home}" in script_path.read_text()

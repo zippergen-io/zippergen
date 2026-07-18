@@ -1,5 +1,5 @@
 # pyright: reportInvalidTypeForm=false, reportGeneralTypeIssues=false, reportOperatorIssue=false, reportCallIssue=false, reportAttributeAccessIssue=false, reportUnusedExpression=false, reportUnboundVariable=false, reportUndefinedVariable=false, reportReturnType=false
-"""Beginner tutorial: draft a reply and ask a human to approve it.
+"""Beginner tutorial: draft, assess, and ask a human to approve a reply.
 
 Start with the built-in mock LLM and an in-terminal approval:
 
@@ -41,15 +41,27 @@ Reviewer = Lifeline("Reviewer")
 def draft_reply(request: str) -> None: ...
 
 
+@llm(
+    system=(
+        "Act as a careful reviewer. Identify factual, clarity, or safety "
+        "concerns in the proposed reply. Be concise."
+    ),
+    user="Draft to assess: {draft}",
+    parse="text",
+    outputs=(("concerns", str),),
+)
+def assess_draft(draft: str) -> None: ...
+
+
 @human(
     kind="confirm",
-    context="{draft}",
+    context="Draft:\n{draft}\n\nAutomated reviewer notes:\n{concerns}",
     instruction="Approve this draft?",
     outputs=["approved: bool"],
     submit_label="Approve",
     cancel_label="Revise",
 )
-def approve_reply(draft: str) -> None: ...
+def approve_reply(draft: str, concerns: str) -> None: ...
 
 
 @llm(
@@ -99,15 +111,18 @@ def tutorial_review(
     Writer: draft = draft_reply(request)
     Writer(draft) >> Reviewer(draft)
     with Reviewer:
+        concerns = assess_draft(draft)
         retries = begin_retries()
-        approved = approve_reply(draft)
+        approved = approve_reply(draft, concerns)
 
     while (not approved and retries < max_retries) @ Reviewer:
         Reviewer: retries = increment_retries(retries)
         Reviewer(draft) >> Writer(draft)
         Writer: draft = revise_reply(request, draft)
         Writer(draft) >> Reviewer(draft)
-        Reviewer: approved = approve_reply(draft)
+        with Reviewer:
+            concerns = assess_draft(draft)
+            approved = approve_reply(draft, concerns)
 
     if approved @ Reviewer:
         Reviewer(draft) >> Requester(draft)
@@ -157,6 +172,16 @@ zippergen_deployment = DeploymentSpec(
             required=True,
             when="llm",
             when_values=("openai*",),
+        ),
+        DeploymentField(
+            "anthropic_api_key",
+            "Anthropic API key",
+            target="env",
+            env="ANTHROPIC_API_KEY",
+            secret=True,
+            required=True,
+            when="llm",
+            when_values=("anthropic*", "claude*"),
         ),
     ),
     files=("examples/tutorial_review.py",),

@@ -9,8 +9,9 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-from zippergen.dev import run_dev
-from zippergen.semantic import semantic_snapshot
+from zippergen.dev import default_llm_spec, run_dev
+from zippergen.models import normalize_llm_overrides
+from zippergen.semantic import semantic_snapshot, workflow_semantics
 from zippergen.view import ViewOptions, workflow_view_data
 from zippergen.workspace import Workspace, WorkspaceError
 
@@ -28,11 +29,16 @@ _HELP = """Commands:
   show agent [NAME]              exact local projection (selector if omitted)
   show agents [NAME ...]         selected-participant focus view
   validate                       validate the current workflow
-  run [LLM]                      collect inputs and start a fresh durable run
+  models                         configure default/per-lifeline LLMs interactively
+  models show                    show the current workflow's model routing
+  models default SPEC            set the inherited default LLM
+  models set LIFELINE SPEC       override one LLM-active lifeline
+  models reset LIFELINE|all      restore inheritance or reset the whole profile
+  run [LLM]                      start a run; optional LLM overrides its default once
   resume                         resume the current incomplete run
   runs                           list managed development runs
   refine [PROMPT]                save a semantic refinement handoff
-  deploy [NAME]                  guided deployment of the current workflow
+  deploy [NAME] [--no-start]     configure deployment; optionally defer startup
   status|doctor|logs [NAME]      inspect the remembered named deployment
   start|restart|stop [NAME]      operate the remembered named deployment
   help | ?                       show this help
@@ -81,6 +87,11 @@ class Studio:
             try:
                 if not self.execute(line):
                     return 0
+            except KeyboardInterrupt:
+                self._emit(
+                    "\nCommand interrupted. Use 'current' to inspect context; "
+                    "use 'resume' for an incomplete managed run."
+                )
             except (SystemExit, WorkspaceError, ValueError) as exc:
                 self._emit(f"Error: {exc}")
 
@@ -106,12 +117,21 @@ class Studio:
             self.show_workflow(args)
         elif command == "validate":
             self.validate()
+        elif command == "models":
+            self.configure_models(args)
         elif command == "run":
             if len(args) > 1:
                 raise SystemExit("Use run or run LLM_SPEC.")
+            profile = self._run_model_profile()
+            default_model = profile.get("default")
             run_dev(
                 self.workspace,
-                llm=args[0] if args else None,
+                llm=(
+                    args[0]
+                    if args
+                    else str(default_model) if default_model else None
+                ),
+                llms=normalize_llm_overrides(profile.get("lifelines")),
                 interactive=True,
                 input_func=self.input,
                 output_func=self.output,
@@ -161,6 +181,15 @@ class Studio:
             self._emit(f"Run: {run['run_id']} ({run['status']})")
             self._emit(f"Store: managed at {run['store']}")
         self._emit(f"Deployment: {state.get('last_deployment') or 'none'}")
+        if state.get("current_workflow"):
+            profile = self._run_model_profile()
+            self._emit(f"Default LLM: {profile['default']}")
+            overrides = profile.get("lifelines") or {}
+            if isinstance(overrides, dict) and overrides:
+                rendered = ", ".join(
+                    f"{name}={spec}" for name, spec in sorted(overrides.items())
+                )
+                self._emit(f"LLM overrides: {rendered}")
 
     def _select(self, heading: str, choices: list[str], *, allow_many: bool = False):
         if not choices:
@@ -275,6 +304,134 @@ class Studio:
                 f"{str(check['status']).upper():4} {check['name']}: {check['detail']}"
             )
 
+    def _llm_action_lifelines(self, workflow, module) -> dict[str, list[str]]:
+        model = workflow_semantics(workflow, module)
+        actions: dict[str, list[str]] = {}
+        sites = model.get("action_sites") or []
+        if isinstance(sites, list):
+            for site in sites:
+                if not isinstance(site, dict) or site.get("kind") != "llm":
+                    continue
+                name = str(site.get("lifeline"))
+                action = str(site.get("action"))
+                actions.setdefault(name, [])
+                if action not in actions[name]:
+                    actions[name].append(action)
+        ordered = self._agent_names(workflow)
+        return {name: actions[name] for name in ordered if name in actions}
+
+    def _run_model_profile(self) -> dict[str, object]:
+        current = self.workspace.current_workflow
+        if not current:
+            return {"default": None, "lifelines": {}}
+        _current, _workflow, module = self._current_context()
+        return self.workspace.model_profile(
+            current,
+            default=default_llm_spec(module),
+        )
+
+    def _emit_models(
+        self,
+        *,
+        workflow,
+        module,
+        profile: dict[str, object],
+    ) -> None:
+        active = self._llm_action_lifelines(workflow, module)
+        default = str(profile["default"])
+        overrides = profile.get("lifelines") or {}
+        assert isinstance(overrides, dict)
+        self._emit(f"Models for {workflow.name}")
+        self._emit(f"  Default: {default}")
+        if not active:
+            self._emit("  No LLM actions are present in this workflow.")
+            return
+        for lifeline, actions in active.items():
+            explicit = overrides.get(lifeline)
+            effective = str(explicit or default)
+            source = "override" if explicit else "inherits default"
+            self._emit(
+                f"  {lifeline}: {effective} ({source}; actions: "
+                + ", ".join(actions)
+                + ")"
+            )
+
+    def configure_models(self, args: list[str]) -> None:
+        current, workflow, module = self._current_context()
+        profile = self.workspace.model_profile(
+            current,
+            default=default_llm_spec(module),
+        )
+        default = str(profile["default"])
+        overrides = dict(profile.get("lifelines") or {})
+        active = self._llm_action_lifelines(workflow, module)
+
+        if not args or args == ["show"]:
+            if not args:
+                choices = ["Default for all unassigned lifelines"] + [
+                    f"{name} ({', '.join(actions)})"
+                    for name, actions in active.items()
+                ]
+                selected = str(self._select("Configure models", choices))
+                if selected == choices[0]:
+                    entered = self.input(f"Default model [{default}]: ").strip()
+                    if entered:
+                        default = entered
+                else:
+                    index = choices.index(selected) - 1
+                    lifeline = list(active)[index]
+                    effective = overrides.get(lifeline, default)
+                    entered = self.input(
+                        f"Model for {lifeline} [{effective}] "
+                        "(type 'inherit' to use the default): "
+                    ).strip()
+                    if entered.lower() in {"inherit", "default"}:
+                        overrides.pop(lifeline, None)
+                    elif entered:
+                        overrides[lifeline] = entered
+                profile = self.workspace.save_model_profile(
+                    current,
+                    default=default,
+                    lifelines=overrides,
+                )
+            self._emit_models(
+                workflow=workflow,
+                module=module,
+                profile=profile,
+            )
+            return
+
+        action = args[0].lower()
+        if action == "default" and len(args) == 2:
+            default = args[1]
+        elif action == "set" and len(args) == 3:
+            lifeline, spec = args[1:]
+            if lifeline not in active:
+                available = ", ".join(active) or "none"
+                raise SystemExit(
+                    f"{lifeline!r} has no LLM actions. LLM-active lifelines: "
+                    f"{available}."
+                )
+            overrides[lifeline] = spec
+        elif action == "reset" and len(args) == 2:
+            if args[1].lower() == "all":
+                default = default_llm_spec(module)
+                overrides = {}
+            else:
+                overrides.pop(args[1], None)
+        else:
+            raise SystemExit(
+                "Use models, models show, models default SPEC, models set "
+                "LIFELINE SPEC, or models reset LIFELINE|all."
+            )
+
+        saved = self.workspace.save_model_profile(
+            current,
+            default=default,
+            lifelines=overrides,
+        )
+        self._emit_models(workflow=workflow, module=module, profile=saved)
+
     def show_runs(self) -> None:
         runs = self.workspace.list_runs()
         if not runs:
@@ -302,20 +459,43 @@ class Studio:
         from zippergen.deployment import deployment_spec_from_module
         from zippergen.serve import _deployment_name_from_workflow, _slug
 
-        if len(args) > 1:
-            raise SystemExit("Use deploy or deploy NAME.")
+        no_start = False
+        names: list[str] = []
+        for argument in args:
+            if argument == "--no-start":
+                no_start = True
+            elif argument.startswith("--"):
+                raise SystemExit(
+                    "Use deploy [NAME] [--no-start]; unknown option "
+                    f"{argument!r}."
+                )
+            else:
+                names.append(argument)
+        if len(names) > 1:
+            raise SystemExit("Use deploy [NAME] [--no-start].")
         current, workflow, module = self._current_context()
         target = self.workspace.absolute_spec(current)
         spec = deployment_spec_from_module(module)
         name = _slug(
-            args[0]
-            if args
+            names[0]
+            if names
             else spec.name or _deployment_name_from_workflow(target, workflow)
         )
         self._emit(f"Guided deployment: {name}")
         arguments = ["deploy", target]
-        if args:
+        if names:
             arguments.extend(["--name", name])
+        if no_start:
+            arguments.append("--no-start")
+        profile = self.workspace.model_profile(
+            current,
+            default=default_llm_spec(module),
+        )
+        arguments.extend(["--llm", str(profile["default"])])
+        overrides = profile.get("lifelines") or {}
+        if isinstance(overrides, dict):
+            for lifeline, model in sorted(overrides.items()):
+                arguments.extend(["--llm-for", f"{lifeline}={model}"])
         rc = self._run_project_cli(arguments)
         if rc != 0:
             raise SystemExit(f"Deployment {name} did not complete successfully.")

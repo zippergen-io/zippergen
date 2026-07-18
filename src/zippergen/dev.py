@@ -12,6 +12,11 @@ from typing import Any
 
 from zippergen.deployment import DeploymentField, deployment_spec_from_module
 from zippergen.human_backends import make_cli_human_backend
+from zippergen.models import (
+    effective_llm_routes,
+    normalize_llm_overrides,
+    selected_llm_specs,
+)
 from zippergen.semantic import semantic_snapshot
 from zippergen.syntax import Workflow
 from zippergen.workspace import Workspace, WorkspaceError
@@ -52,12 +57,25 @@ def default_llm_spec(module: ModuleType) -> str:
 def _field_enabled(field: DeploymentField, values: dict[str, object]) -> bool:
     if not field.when:
         return True
-    current = values.get(field.when)
+    candidates = [values.get(field.when)]
+    llm_field_names = values.get("__llm_field_names__")
+    if (
+        field.when == "llm"
+        or (
+            isinstance(llm_field_names, (list, tuple, set))
+            and field.when in llm_field_names
+        )
+    ):
+        configured = values.get("__llm_specs__")
+        if isinstance(configured, (list, tuple, set)):
+            candidates.extend(configured)
     if not field.when_values:
-        return bool(current)
-    text = str(current)
+        return any(bool(current) for current in candidates)
     return any(
-        text.startswith(expected[:-1]) if expected.endswith("*") else text == expected
+        str(current).startswith(expected[:-1])
+        if expected.endswith("*")
+        else str(current) == expected
+        for current in candidates
         for expected in field.when_values
     )
 
@@ -67,6 +85,7 @@ def collect_development_environment(
     workspace: Workspace,
     *,
     llm: str,
+    llms: dict[str, str] | None,
     inputs: dict[str, object],
     options: dict[str, object],
     services: str | None,
@@ -95,6 +114,10 @@ def collect_development_environment(
                 or saved_secrets.get(field.target_name)
                 or field.default
             )
+    values["__llm_field_names__"] = tuple(
+        field.name for field in spec.fields if field.target == "llm"
+    )
+    values["__llm_specs__"] = selected_llm_specs(llm, llms)
 
     environment: dict[str, str] = {}
     secrets_changed = False
@@ -270,6 +293,7 @@ def _run_setup_hook(
     workflow: Workflow,
     module: ModuleType,
     llm: str,
+    llms: dict[str, str],
     store_path: str,
     inputs: dict[str, object],
     options: dict[str, object],
@@ -288,6 +312,7 @@ def _run_setup_hook(
             workflow=workflow,
             module=module,
             llm=llm,
+            llms=llms,
             llm_idle_timeout=None,
             store_path=store_path,
             inputs=inputs,
@@ -308,6 +333,7 @@ def run_dev(
     run_id: str | None = None,
     provided_inputs: dict[str, object] | None = None,
     llm: str | None = None,
+    llms: dict[str, str] | None = None,
     options: dict[str, object] | None = None,
     services: str | None = None,
     timeout: float = 0.0,
@@ -320,7 +346,13 @@ def run_dev(
 
     if resume and workflow_spec is not None:
         raise SystemExit("Do not pass a workflow when using --resume.")
-    if resume and (provided_inputs or llm is not None or options or services is not None):
+    if resume and (
+        provided_inputs
+        or llm is not None
+        or llms
+        or options
+        or services is not None
+    ):
         raise SystemExit(
             "A resumed run uses its recorded workflow inputs and configuration."
         )
@@ -349,6 +381,7 @@ def run_dev(
             )
         inputs = dict(record.get("inputs") or {})
         selected_llm = str(record.get("llm") or "mock")
+        selected_llms = normalize_llm_overrides(record.get("llms"))
         run_options = dict(record.get("options") or {})
         run_services = record.get("services")
         output_func(f"Resuming run {selected_run_id}")
@@ -369,6 +402,8 @@ def run_dev(
             input_func=input_func,
         )
         selected_llm = llm or default_llm_spec(module)
+        selected_llms = normalize_llm_overrides(llms)
+        effective_llm_routes(workflow, selected_llm, selected_llms)
         run_options = dict(options or {})
         run_services = services
         record = workspace.new_run(
@@ -377,6 +412,7 @@ def run_dev(
             fingerprint=semantic_fingerprint(workflow, module),
             inputs=inputs,
             llm=selected_llm,
+            llms=selected_llms,
             options=run_options,
             services=run_services,
         )
@@ -387,6 +423,7 @@ def run_dev(
         module,
         workspace,
         llm=selected_llm,
+        llms=selected_llms,
         inputs=inputs,
         options=run_options,
         services=str(run_services) if run_services is not None else None,
@@ -424,14 +461,22 @@ def run_dev(
                 workflow=workflow,
                 module=module,
                 llm=selected_llm,
+                llms=selected_llms,
                 store_path=store_path,
                 inputs=inputs,
                 options=run_options,
                 services=str(run_services) if run_services is not None else None,
                 timeout=timeout,
             )
+            llm_config: str | dict[str, str] = selected_llm
+            if selected_llms:
+                llm_config = effective_llm_routes(
+                    workflow,
+                    selected_llm,
+                    selected_llms,
+                )
             workflow.configure(
-                selected_llm,
+                llm_config,
                 execution="sqlite",
                 store_path=store_path,
                 timeout=timeout,

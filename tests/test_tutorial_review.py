@@ -66,6 +66,8 @@ def test_tutorial_review_has_inspectable_deployment_contract():
     assert model["lifelines"] == ["Requester", "Writer", "Reviewer"]
     assert {control["owner"] for control in model["controls"]} == {"Reviewer"}
     assert model["action_definitions"]["approve_reply"]["kind"] == "human"
+    assert model["action_definitions"]["assess_draft"]["kind"] == "llm"
     assert model["deployment"]["name"] == "tutorial-review"
     assert model["deployment"]["fields"]["max_retries"]["default"] == 2
     assert model["deployment"]["fields"]["openai_api_key"]["secret"] is True
+    assert model["deployment"]["fields"]["anthropic_api_key"]["secret"] is True

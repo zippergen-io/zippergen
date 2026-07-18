@@ -111,3 +111,28 @@ def test_workspace_updates_run_and_saves_assistant_request(tmp_path):
         (workspace.requests_directory / f"{request['request_id']}.json").read_text()
     )
     assert metadata["prompt"] == "Create a review workflow"
+
+
+def test_workspace_keeps_model_profiles_per_workflow(tmp_path):
+    root = tmp_path / "project"
+    root.mkdir()
+    workspace = Workspace(root, home=tmp_path / "state")
+
+    saved = workspace.save_model_profile(
+        "review.py:review",
+        default="mock",
+        lifelines={"Writer": "openai:gpt-4o-mini"},
+    )
+
+    assert saved == {
+        "default": "mock",
+        "lifelines": {"Writer": "openai:gpt-4o-mini"},
+    }
+    assert workspace.model_profile("review.py:review") == saved
+    assert workspace.model_profile(
+        "summary.py:summary",
+        default="claude:claude-sonnet-4-6",
+    ) == {
+        "default": "claude:claude-sonnet-4-6",
+        "lifelines": {},
+    }
