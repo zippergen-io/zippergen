@@ -1,4 +1,5 @@
 import json
+from io import StringIO
 from pathlib import Path
 
 from zippergen.studio import Studio
@@ -53,7 +54,7 @@ def test_studio_use_discovers_workflow_without_importing_for_selection(tmp_path)
     assert workspace.current_workflow == "workflow.py:sample"
     assert output[0] == "Workflows"
     assert "workflow.py:sample" in output[1]
-    assert output[-1].startswith("Current workflow: workflow.py:sample")
+    assert output[-1].startswith("✓ Current workflow: workflow.py:sample")
 
 
 def test_studio_show_menu_renders_communication_code(tmp_path):
@@ -90,8 +91,8 @@ def test_studio_create_saves_code_first_assistant_handoff(tmp_path):
     assert "Use $zippergen-workflows." in content
     assert "visible Python source" in content
     assert "Do not deploy" in content
-    assert output[0].startswith("Registered project prompt P001:")
-    assert output[1].startswith("Creation brief:")
+    assert output[0].startswith("✓ Registered project prompt P001:")
+    assert output[1].startswith("✓ Creation brief:")
 
 
 def test_studio_create_reads_multiline_prompt_from_project_file(tmp_path):
@@ -113,9 +114,9 @@ def test_studio_create_reads_multiline_prompt_from_project_file(tmp_path):
         "Create a reviewed answer workflow.\n\n"
         "Never return an unapproved draft."
     )
-    assert output[0] == "Prompt file: prompts/reviewed answer.md"
-    assert output[1].startswith("Registered project prompt P001:")
-    assert output[2].startswith("Creation brief:")
+    assert output[0] == "✓ Loaded prompt file: prompts/reviewed answer.md"
+    assert output[1].startswith("✓ Registered project prompt P001:")
+    assert output[2].startswith("✓ Creation brief:")
 
 
 def test_studio_refine_saves_semantic_baseline_and_handoff(tmp_path):
@@ -132,8 +133,8 @@ def test_studio_refine_saves_semantic_baseline_and_handoff(tmp_path):
     assert str(baselines[0]) in content
     assert "Preserve all behavior not explicitly changed" in content
     assert "zippergen diff" in content
-    assert output[0].startswith("Registered project prompt P001:")
-    assert output[1].startswith("Refinement brief:")
+    assert output[0].startswith("✓ Registered project prompt P001:")
+    assert output[1].startswith("✓ Refinement brief:")
 
 
 def test_studio_refine_reads_prompt_from_absolute_file(tmp_path):
@@ -151,9 +152,9 @@ def test_studio_refine_reads_prompt_from_absolute_file(tmp_path):
     assert len(briefs) == 1
     content = briefs[0].read_text()
     assert "Add human review.\nPreserve the existing model call." in content
-    assert output[0] == f"Prompt file: {prompt_file}"
-    assert output[1].startswith("Registered project prompt P001:")
-    assert output[2].startswith("Refinement brief:")
+    assert output[0] == f"✓ Loaded prompt file: {prompt_file}"
+    assert output[1].startswith("✓ Registered project prompt P001:")
+    assert output[2].startswith("✓ Refinement brief:")
 
 
 def test_studio_prompt_file_errors_are_actionable(tmp_path):
@@ -188,8 +189,68 @@ def test_studio_commands_are_discoverable(tmp_path):
     assert "refine --file PATH" in output[-1]
     assert "providers set local [URL]" in output[-1]
     assert studio.execute("not-a-command") is True
-    assert output[-1].startswith("Unknown command")
+    assert output[-1].startswith("✗ Unknown command")
     assert studio.execute("exit") is False
+
+
+def test_studio_status_marks_use_color_only_when_enabled(tmp_path):
+    root = tmp_path / "project"
+    root.mkdir()
+    workspace = Workspace(root, home=tmp_path / "home")
+    output: list[str] = []
+    studio = Studio(workspace, output_func=output.append, color=True)
+
+    studio.execute("project init Tutorial")
+    studio.execute("not-a-command")
+
+    assert output[0].startswith(
+        "\033[32m✓\033[0m Project manifest created:"
+    )
+    assert output[-1].startswith(
+        "\033[31m✗\033[0m Unknown command:"
+    )
+
+
+def test_studio_automatic_color_respects_no_color(tmp_path, monkeypatch):
+    class InteractiveOutput(StringIO):
+        def isatty(self):
+            return True
+
+    root = tmp_path / "project"
+    root.mkdir()
+    workspace = Workspace(root, home=tmp_path / "home")
+    monkeypatch.setattr("sys.stdout", InteractiveOutput())
+    monkeypatch.delenv("NO_COLOR", raising=False)
+    monkeypatch.delenv("TERM", raising=False)
+
+    assert Studio(workspace).color is True
+
+    monkeypatch.setenv("NO_COLOR", "")
+    assert Studio(workspace).color is False
+
+
+def test_studio_validation_marks_successful_checks(tmp_path):
+    studio, workspace, output = _studio(tmp_path)
+    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+
+    studio.validate()
+
+    assert output[0] == "✓ Workflow sample: valid"
+    assert all(line.startswith("  ✓ ") for line in output[1:])
+
+
+def test_studio_interactive_errors_have_a_failure_mark(tmp_path):
+    studio, _workspace, output = _studio(
+        tmp_path,
+        responses=["validate", "exit"],
+    )
+
+    assert studio.run() == 0
+
+    assert any(
+        line.startswith("✗ No workflow selected.")
+        for line in output
+    )
 
 
 def test_studio_project_and_prompt_commands_manage_visible_design_context(tmp_path):
@@ -255,11 +316,11 @@ def test_studio_current_is_a_complete_project_dashboard(tmp_path):
 
     assert "Project: project" in output
     assert "Prompts: 1 active, 0 archived (1 total)" in output
-    assert "Workflow: workflow.py:sample" in output
+    assert "✓ Workflow: workflow.py:sample" in output
     assert "Workflow name: sample" in output
     assert "Participants (2): User, Writer" in output
     assert "Connector bindings: none" in output
-    assert "Validation: valid" in output
+    assert "✓ Validation: valid" in output
     assert "LLM assignments:" in output
     assert any("Writer: mock" in line for line in output)
     assert "Providers: mock (ready; built in)" in output
@@ -272,11 +333,11 @@ def test_studio_current_is_explicit_before_a_workflow_exists(tmp_path):
 
     studio.show_current()
 
-    assert "Workflow: none" in output
+    assert "⚠ Workflow: none" in output
     assert "Workflow name: none" in output
     assert "Participants (0): none" in output
     assert "Connector bindings: none" in output
-    assert "Validation: not available" in output
+    assert "⚠ Validation: not available" in output
     assert "LLM assignments: none" in output
     assert "Providers: none" in output
 
@@ -328,7 +389,7 @@ def test_studio_deploys_current_workflow_and_remembers_name(tmp_path, monkeypatc
         "mock",
     ]]
     assert workspace.load()["last_deployment"] == "sample-test"
-    assert output[-1] == "Guided deployment: sample-test"
+    assert output[-1] == "✓ Deployment completed: sample-test"
 
 
 def test_studio_can_prepare_deployment_without_starting_it(tmp_path, monkeypatch):
@@ -397,7 +458,7 @@ def test_studio_models_configures_and_displays_llm_active_lifelines(tmp_path):
     assert (
         "  Writer: openai:gpt-4o-mini (override; actions: echo)"
     ) in output
-    assert output[-1].startswith("  Provider openai: not configured")
+    assert output[-1].startswith("  ⚠ Provider openai: not configured")
 
 
 def test_studio_model_profile_is_used_for_run_and_deploy(tmp_path, monkeypatch):

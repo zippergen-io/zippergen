@@ -5,9 +5,11 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import sys
 import time
 from collections.abc import Callable
 from pathlib import Path
+from typing import Literal
 
 from zippergen.dev import default_llm_spec, run_dev
 from zippergen.models import normalize_llm_overrides
@@ -19,6 +21,7 @@ from zippergen.workspace import Workspace, WorkspaceError
 InputFunc = Callable[[str], str]
 OutputFunc = Callable[[str], object]
 SecretInputFunc = Callable[[str], str]
+StatusKind = Literal["success", "warning", "error", "info"]
 
 
 _PROVIDER_ALIASES = {
@@ -31,6 +34,18 @@ _PROVIDER_SECRETS = {
     "mistral": "MISTRAL_API_KEY",
 }
 _SUPPORTED_PROVIDERS = ("mock", "local", "openai", "anthropic", "mistral")
+_STATUS_MARKS = {
+    "success": "✓",
+    "warning": "⚠",
+    "error": "✗",
+    "info": "•",
+}
+_STATUS_COLORS = {
+    "success": "32",
+    "warning": "33",
+    "error": "31",
+    "info": "36",
+}
 
 
 def _canonical_provider(value: str) -> str:
@@ -103,10 +118,19 @@ class Studio:
         input_func: InputFunc = input,
         output_func: OutputFunc = print,
         secret_input_func: SecretInputFunc | None = None,
+        color: bool | None = None,
     ) -> None:
         self.workspace = workspace
         self.input = input_func
         self.output = output_func
+        self.color = (
+            output_func is print
+            and bool(getattr(sys.stdout, "isatty", lambda: False)())
+            and "NO_COLOR" not in os.environ
+            and os.environ.get("TERM") != "dumb"
+            if color is None
+            else color
+        )
         if secret_input_func is None:
             import getpass
 
@@ -115,6 +139,26 @@ class Studio:
 
     def _emit(self, value: object = "") -> None:
         self.output(str(value))
+
+    def _status(self, kind: StatusKind, message: str, *, indent: int = 0) -> None:
+        """Emit one consistent, terminal-safe human status line."""
+
+        mark = _STATUS_MARKS[kind]
+        if self.color:
+            mark = f"\033[{_STATUS_COLORS[kind]}m{mark}\033[0m"
+        self._emit(f"{' ' * indent}{mark} {message}")
+
+    def _success(self, message: str, *, indent: int = 0) -> None:
+        self._status("success", message, indent=indent)
+
+    def _warning(self, message: str, *, indent: int = 0) -> None:
+        self._status("warning", message, indent=indent)
+
+    def _error(self, message: str, *, indent: int = 0) -> None:
+        self._status("error", message, indent=indent)
+
+    def _info(self, message: str, *, indent: int = 0) -> None:
+        self._status("info", message, indent=indent)
 
     def _prompt(self) -> str:
         current = self.workspace.current_workflow
@@ -137,24 +181,24 @@ class Studio:
                 self._emit()
                 return 0
             except KeyboardInterrupt:
-                self._emit("\nUse 'exit' to leave Studio.")
+                self._warning("Use 'exit' to leave Studio.")
                 continue
             try:
                 if not self.execute(line):
                     return 0
             except KeyboardInterrupt:
-                self._emit(
-                    "\nCommand interrupted. Use 'current' to inspect context; "
+                self._warning(
+                    "Command interrupted. Use 'current' to inspect context; "
                     "use 'resume' for an incomplete managed run."
                 )
             except (SystemExit, WorkspaceError, ValueError) as exc:
-                self._emit(f"Error: {exc}")
+                self._error(str(exc))
 
     def execute(self, line: str) -> bool:
         try:
             parts = shlex.split(line)
         except ValueError as exc:
-            self._emit(f"Could not parse command: {exc}")
+            self._error(f"Could not parse command: {exc}")
             return True
         if not parts:
             return True
@@ -220,7 +264,7 @@ class Studio:
         elif command in {"status", "doctor", "logs", "start", "restart", "stop"}:
             self.deployment_action(command, args)
         else:
-            self._emit(
+            self._error(
                 f"Unknown command: {command}. Type 'help' for available commands."
             )
         return True
@@ -266,7 +310,7 @@ class Studio:
                 displayed = prompt_file.relative_to(self.workspace.root)
             except ValueError:
                 displayed = prompt_file
-            self._emit(f"Prompt file: {displayed}")
+            self._success(f"Loaded prompt file: {displayed}")
             return prompt, prompt_file
         if "--file" in args:
             raise SystemExit(f"Use {command} --file PATH.")
@@ -302,7 +346,9 @@ class Studio:
             name=args[1] if len(args) == 2 else None
         )
         result = "already exists" if existed else "created"
-        self._emit(f"Project manifest {result}: {self.workspace.manifest_path}")
+        self._success(
+            f"Project manifest {result}: {self.workspace.manifest_path}"
+        )
         self._emit(f"Project: {manifest['name']}")
         self._emit(f"Prompt ledger: {self.workspace.prompt_index_path}")
 
@@ -359,7 +405,7 @@ class Studio:
                 workflow_spec=self.workspace.current_workflow,
             )
             status = "Registered" if record["created"] else "Already registered"
-            self._emit(
+            self._success(
                 f"{status}: {record['id']} [{record['kind']}] {record['file']}"
             )
             return
@@ -367,7 +413,7 @@ class Studio:
             active = action == "enable"
             record = self.workspace.set_prompt_active(rest[0], active=active)
             verb = "Enabled" if active else "Archived"
-            self._emit(f"{verb}: {record['id']} — {record['title']}")
+            self._success(f"{verb}: {record['id']} — {record['title']}")
             return
         if action == "move" and len(rest) == 3:
             self.workspace.move_prompt(
@@ -375,7 +421,9 @@ class Studio:
                 relation=rest[1].lower(),
                 other_id=rest[2],
             )
-            self._emit(f"Moved {rest[0].upper()} {rest[1]} {rest[2].upper()}.")
+            self._success(
+                f"Moved {rest[0].upper()} {rest[1]} {rest[2].upper()}."
+            )
             self._emit_prompt_list()
             return
         if action == "replace" and len(rest) >= 1:
@@ -392,7 +440,7 @@ class Studio:
                 content=prompt,
                 source_path=source,
             )
-            self._emit(
+            self._success(
                 f"Replaced {rest[0].upper()} with {record['id']}: "
                 f"{record['file']}"
             )
@@ -412,15 +460,22 @@ class Studio:
         active_prompts = sum(bool(record["active"]) for record in records)
         self._emit(f"Project: {manifest['name']}")
         self._emit(f"Root: {self.workspace.root}")
-        self._emit(
+        manifest_message = (
             f"Manifest: {self.workspace.manifest_path} "
             f"({'present' if manifest['exists'] else 'not created'})"
         )
+        if manifest["exists"]:
+            self._success(manifest_message)
+        else:
+            self._warning(manifest_message)
         self._emit(
             f"Prompts: {active_prompts} active, "
             f"{len(records) - active_prompts} archived ({len(records)} total)"
         )
-        self._emit(f"Workflow: {state.get('current_workflow') or 'none'}")
+        if state.get("current_workflow"):
+            self._success(f"Workflow: {state['current_workflow']}")
+        else:
+            self._warning("Workflow: none")
         if state.get("current_workflow"):
             _current, workflow, module = self._current_context()
             model = workflow_semantics(workflow, module)
@@ -459,9 +514,10 @@ class Studio:
             )
             self._emit("Connector bindings: none")
             validation = _validate_workflow(workflow, module)
-            self._emit(
-                f"Validation: {'valid' if validation['valid'] else 'invalid'}"
-            )
+            if validation["valid"]:
+                self._success("Validation: valid")
+            else:
+                self._error("Validation: invalid")
             profile = self.workspace.model_profile(
                 str(state["current_workflow"]),
                 default=default_llm_spec(module),
@@ -499,7 +555,7 @@ class Studio:
             self._emit("Human actions (0): none")
             self._emit("External effects (0): none")
             self._emit("Connector bindings: none")
-            self._emit("Validation: not available")
+            self._warning("Validation: not available")
             self._emit("Default LLM: none")
             self._emit("LLM assignments: none")
             self._emit("Providers: none")
@@ -551,7 +607,7 @@ class Studio:
         canonical = self.workspace.canonical_spec(selected)
         workflow, _module = load_workflow_spec(self.workspace.absolute_spec(canonical))
         self.workspace.select_workflow(canonical, cwd=self.workspace.root)
-        self._emit(f"Current workflow: {canonical} ({workflow.name})")
+        self._success(f"Current workflow: {canonical} ({workflow.name})")
 
     def _agent_names(self, workflow) -> list[str]:
         from zippergen.serve import _workflow_lifelines
@@ -618,10 +674,18 @@ class Studio:
         _current, workflow, module = self._current_context()
         result = _validate_workflow(workflow, module)
         verdict = "valid" if result["valid"] else "invalid"
-        self._emit(f"Workflow {workflow.name}: {verdict}")
+        summary = self._success if result["valid"] else self._error
+        summary(f"Workflow {workflow.name}: {verdict}")
         for check in result["checks"]:  # type: ignore[index]
-            self._emit(
-                f"{str(check['status']).upper():4} {check['name']}: {check['detail']}"
+            status = str(check["status"]).lower()
+            emit = {
+                "ok": self._success,
+                "warn": self._warning,
+                "fail": self._error,
+            }.get(status, self._info)
+            emit(
+                f"{check['name']}: {check['detail']}",
+                indent=2,
             )
 
     def _llm_action_lifelines(self, workflow, module) -> dict[str, list[str]]:
@@ -677,7 +741,8 @@ class Studio:
             )
         selected = {default} | {str(value) for value in overrides.values()}
         for provider in sorted({_canonical_provider(spec) for spec in selected}):
-            self._emit(f"  Provider {provider}: {self._provider_status(provider)}")
+            kind, status = self._provider_readiness(provider)
+            self._status(kind, f"Provider {provider}: {status}", indent=2)
 
     def configure_models(self, args: list[str]) -> None:
         current, workflow, module = self._current_context()
@@ -753,32 +818,37 @@ class Studio:
             default=default,
             lifelines=overrides,
         )
+        self._success(f"Saved model routing for {workflow.name}.")
         self._emit_models(workflow=workflow, module=module, profile=saved)
 
-    def _provider_status(self, provider: str) -> str:
+    def _provider_readiness(self, provider: str) -> tuple[StatusKind, str]:
         canonical = _canonical_provider(provider)
         if canonical == "mock":
-            return "ready; built in"
+            return "success", "ready; built in"
         profiles = self.workspace.provider_profiles()
         if canonical == "local":
             base_url = profiles.get("local", {}).get(
                 "base_url",
                 os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434/v1"),
             )
-            return f"endpoint {base_url}; availability unchecked"
+            return "warning", f"endpoint {base_url}; availability unchecked"
         secret_name = _PROVIDER_SECRETS.get(canonical)
         if secret_name is None:
-            return "unsupported"
+            return "error", "unsupported"
         if os.environ.get(secret_name):
-            return f"ready; {secret_name} is in the environment"
+            return "success", f"ready; {secret_name} is in the environment"
         if self.workspace.load_secrets().get(secret_name):
-            return f"ready; {secret_name} is in private Studio storage"
-        return f"not configured; use 'providers set {canonical}'"
+            return "success", f"ready; {secret_name} is in private Studio storage"
+        return "warning", f"not configured; use 'providers set {canonical}'"
+
+    def _provider_status(self, provider: str) -> str:
+        return self._provider_readiness(provider)[1]
 
     def _emit_providers(self) -> None:
         self._emit("Model providers")
         for provider in _SUPPORTED_PROVIDERS:
-            self._emit(f"  {provider}: {self._provider_status(provider)}")
+            kind, status = self._provider_readiness(provider)
+            self._status(kind, f"{provider}: {status}", indent=2)
         self._emit("API-key values are never displayed or written to the project.")
 
     def configure_providers(self, args: list[str]) -> None:
@@ -797,7 +867,7 @@ class Studio:
             if provider == "mock":
                 if len(rest) != 1:
                     raise SystemExit("The built-in mock provider takes no settings.")
-                self._emit("mock is built in and already ready.")
+                self._success("mock is built in and already ready.")
                 return
             if provider == "local":
                 if len(rest) > 2:
@@ -821,7 +891,7 @@ class Studio:
                     "local",
                     {"kind": "local", "base_url": base_url},
                 )
-                self._emit(f"Configured local provider endpoint: {base_url}")
+                self._success(f"Configured local provider endpoint: {base_url}")
                 return
             if len(rest) != 1:
                 raise SystemExit(f"Use providers set {provider}.")
@@ -829,7 +899,7 @@ class Studio:
             secrets = self.workspace.load_secrets()
             from_environment = bool(os.environ.get(secret_name))
             if from_environment:
-                self._emit(
+                self._success(
                     f"Using {secret_name} from the current environment; "
                     "its value was not copied."
                 )
@@ -846,7 +916,9 @@ class Studio:
                 provider,
                 {"kind": "api", "key_env": secret_name},
             )
-            self._emit(f"Configured {provider}: {self._provider_status(provider)}")
+            self._success(
+                f"Configured {provider}: {self._provider_status(provider)}"
+            )
             return
         if action == "reset" and len(rest) == 1:
             provider = _canonical_provider(rest[0])
@@ -861,7 +933,7 @@ class Studio:
                 if secret_name in secrets:
                     secrets.pop(secret_name)
                     self.workspace.save_secrets(secrets)
-            self._emit(f"Reset provider configuration: {provider}")
+            self._success(f"Reset provider configuration: {provider}")
             return
         raise SystemExit(
             "Use providers, providers set openai|anthropic|mistral, "
@@ -936,6 +1008,8 @@ class Studio:
         if rc != 0:
             raise SystemExit(f"Deployment {name} did not complete successfully.")
         self.workspace.update(last_deployment=name)
+        outcome = "prepared" if no_start else "completed"
+        self._success(f"Deployment {outcome}: {name}")
 
     def deployment_action(self, action: str, args: list[str]) -> None:
         if len(args) > 1:
@@ -950,6 +1024,7 @@ class Studio:
         if rc != 0:
             raise SystemExit(f"{action} failed for deployment {name}.")
         self.workspace.update(last_deployment=str(name))
+        self._success(f"Deployment {action} completed: {name}")
 
     def _assistant_skill_instructions(self) -> str:
         manifest = self.workspace.project_manifest()
@@ -980,7 +1055,7 @@ class Studio:
             source_path=source_path,
         )
         action = "Registered" if design_prompt["created"] else "Using"
-        self._emit(
+        self._success(
             f"{action} project prompt {design_prompt['id']}: "
             f"{design_prompt['file']}"
         )
@@ -1018,7 +1093,7 @@ verification results.
             prompt_id=str(design_prompt["id"]),
             active_prompt_ids=active_prompt_ids,
         )
-        self._emit(f"Creation brief: {record['content_file']}")
+        self._success(f"Creation brief: {record['content_file']}")
         self._emit("Pass this brief to a repository-aware coding assistant:")
         self._emit(content.rstrip())
 
@@ -1048,7 +1123,7 @@ verification results.
             workflow_spec=current,
         )
         action = "Registered" if design_prompt["created"] else "Using"
-        self._emit(
+        self._success(
             f"{action} project prompt {design_prompt['id']}: "
             f"{design_prompt['file']}"
         )
@@ -1085,6 +1160,6 @@ and verification results.
             active_prompt_ids=active_prompt_ids,
             baseline_file=baseline,
         )
-        self._emit(f"Refinement brief: {record['content_file']}")
+        self._success(f"Refinement brief: {record['content_file']}")
         self._emit("Pass this brief to a repository-aware coding assistant:")
         self._emit(content.rstrip())

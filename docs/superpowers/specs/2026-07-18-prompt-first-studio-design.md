@@ -29,13 +29,13 @@ Describe the workflow:
 # Multiline requirements use a project-relative UTF-8 file instead:
 zippergen [no workflow]> create --file prompts/review-reply.md
 
-Registered project prompt P001: prompts/review-reply.md
-Creation brief: ~/.zippergen/workspaces/.../requests/...-create.md
+✓ Registered project prompt P001: prompts/review-reply.md
+✓ Creation brief: ~/.zippergen/workspaces/.../requests/...-create.md
 Pass this brief to a repository-aware coding assistant.
 
 # After the assistant creates and verifies the visible Python source:
 zippergen [no workflow]> use workflows/review_reply.py:review_reply
-Current workflow: workflows/review_reply.py:review_reply
+✓ Current workflow: workflows/review_reply.py:review_reply
 
 zippergen [review_reply]> show
   1. Overview
@@ -67,6 +67,21 @@ zippergen [review_reply]> status
 The first implementation saves a structured assistant handoff instead of
 invoking a provider. Native assistant adapters are a later vertical slice, but
 the prompt and generated source contract must be stable from the beginning.
+
+## Outcome feedback
+
+All Studio commands use one semantic status renderer:
+
+- green `✓` for a completed operation, a valid workflow, or a ready provider;
+- yellow `⚠` for incomplete optional setup or a condition requiring attention;
+- red `✗` for an actual command, validation, provider, run, or deployment
+  failure;
+- neutral `•` for noteworthy information without a success verdict.
+
+Meaning never depends on color alone. ANSI color is automatic only when Studio
+is writing to an interactive terminal, is suppressed when `NO_COLOR` is set,
+and is absent from redirected output. Scriptable JSON output is unchanged.
+Optional providers that are not selected are warnings, not failures.
 
 ## Non-negotiable boundaries
 

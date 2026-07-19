@@ -349,6 +349,16 @@ assistant briefs, semantic baselines, and secrets remain in private Studio
 state outside the project. Repeating \texttt{project init} is safe; it reports
 the existing manifest instead of overwriting it.
 
+\begin{notebox}{How Studio reports outcomes}
+A green \(\checkmark\) means an operation or check succeeded. A yellow
+warning sign means setup is incomplete or needs attention, but is not
+necessarily broken. A red \(\times\) means an operation or validation check
+failed. The symbol always carries the meaning, so the output remains clear
+without color. Studio adds color only in an interactive terminal; redirected
+output and sessions with \texttt{NO\_COLOR} remain color-free. Optional
+providers that you are not using are warnings rather than failures.
+\end{notebox}
+
 \subsubsection*{Step 2: load a multiline prompt from a file}
 
 Long requirements do not belong in a single-line terminal question. This
@@ -474,8 +484,10 @@ validate
 The suffix after the colon names the Python workflow object. It does not name
 a deployment. \texttt{current} should show the selected workflow, no run, no
 deployment, and default LLM \texttt{mock}. Every validation check should begin
-with \texttt{OK}. If the path is wrong, inspect \texttt{git status --short} and
-enter plain \texttt{use} for the numbered workflow selector.
+with a green check mark. A red cross identifies the failed check and is
+followed by its explanation. If the path is wrong, inspect
+\texttt{git status --short} and enter plain \texttt{use} for the numbered
+workflow selector.
 
 \subsubsection*{Step 5: inspect increasing degrees of detail}
 
@@ -671,7 +683,8 @@ ANTHROPIC_API_KEY:
 Configured anthropic: ready; ANTHROPIC_API_KEY is in private Studio storage
 \end{lstlisting}
 
-Paste each key only at the hidden
+The configured line begins with a green check mark; unconfigured optional
+providers begin with a yellow warning sign. Paste each key only at the hidden
 Studio prompt---never into source, a shell command, an assistant prompt, or a
 Git-tracked \path{.env}. Development secrets are mode-0600 and absent from
 workspace, run, and request JSON. Existing environment values are used but not

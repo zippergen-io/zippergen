@@ -101,6 +101,13 @@ zippergen [tutorial_review]> show
 zippergen [tutorial_review]> run
 ```
 
+Studio gives every outcome the same compact visual language: green `✓` means
+an operation or check succeeded, yellow `⚠` means attention or incomplete
+optional setup, and red `✗` means the command or check failed. The symbols
+remain in plain output, while ANSI color is enabled only on an interactive
+terminal. Redirected output, `NO_COLOR`, and the scriptable CLI's JSON modes
+remain color-free.
+
 `current` is the concise project dashboard: project and manifest, active and
 archived prompt counts, workflow name, participants, human actions, external
 effects, validation state, effective per-lifeline model assignments, provider
