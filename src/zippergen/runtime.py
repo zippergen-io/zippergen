@@ -1222,6 +1222,12 @@ def run(
         trace = console_trace
 
     stop = threading.Event()
+    human_dispatcher = None
+    if getattr(human_backend, "requires_main_thread", False):
+        from zippergen.human_backends import _MainThreadHumanDispatcher
+
+        human_dispatcher = _MainThreadHumanDispatcher(human_backend, stop)
+        human_backend = human_dispatcher.worker_backend
 
     names = [l.name for l in lifelines]
     channels = InProcessChannel()
@@ -1256,7 +1262,41 @@ def run(
     for t in threads:
         t.start()
 
-    if timeout <= 0:
+    if human_dispatcher is not None:
+        deadline = None if timeout <= 0 else time.monotonic() + timeout
+        try:
+            while any(t.is_alive() for t in threads):
+                if stop.is_set():
+                    break
+                wait = 0.05
+                if deadline is not None:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        stop.set()
+                        human_dispatcher.cancel_pending()
+                        for t in threads:
+                            t.join(timeout=1.0)
+                        alive = next((t for t in threads if t.is_alive()), None)
+                        if alive is not None:
+                            raise TimeoutError(
+                                f"Lifeline '{alive.name}' did not finish within "
+                                f"{timeout}s"
+                            )
+                        raise TimeoutError(
+                            f"Workflow did not finish within {timeout}s"
+                        )
+                    wait = min(wait, remaining)
+                human_dispatcher.service_next(timeout=wait)
+        except BaseException:
+            stop.set()
+            human_dispatcher.cancel_pending()
+            for t in threads:
+                t.join(timeout=1.0)
+            raise
+        for t in threads:
+            if t.is_alive():
+                t.join(timeout=1.0)
+    elif timeout <= 0:
         try:
             while any(t.is_alive() for t in threads):
                 if stop.is_set():

@@ -7,7 +7,98 @@ llm_backend: (action: HumanAction, inputs: dict) -> dict.
 
 from __future__ import annotations
 
+import queue
+import threading
+from dataclasses import dataclass, field
+
 __all__ = ["make_cli_human_backend", "make_sqlite_human_backend"]
+
+
+@dataclass
+class _HumanRequest:
+    action: object
+    inputs: dict
+    done: threading.Event = field(default_factory=threading.Event)
+    result: dict | None = None
+    error: BaseException | None = None
+
+
+class _MainThreadHumanDispatcher:
+    """Move a blocking terminal backend from role threads to the main thread."""
+
+    def __init__(self, backend, stop: threading.Event) -> None:
+        self.backend = backend
+        self.stop = stop
+        self.requests: queue.Queue[_HumanRequest] = queue.Queue()
+        self._active: _HumanRequest | None = None
+        self._lock = threading.Lock()
+
+        def worker_backend(action, inputs: dict) -> dict:
+            return self._submit(action, inputs)
+
+        if getattr(backend, "claims_pending_human_tasks", False):
+            setattr(worker_backend, "claims_pending_human_tasks", True)
+        self.worker_backend = worker_backend
+
+    def _submit(self, action, inputs: dict) -> dict:
+        if self.stop.is_set():
+            raise RuntimeError("Workflow cancelled")
+        request = _HumanRequest(action=action, inputs=dict(inputs))
+        self.requests.put(request)
+        while not request.done.wait(0.05):
+            if self.stop.is_set():
+                raise RuntimeError("Workflow cancelled")
+        if request.error is not None:
+            raise request.error
+        assert request.result is not None
+        return request.result
+
+    def service_next(self, timeout: float = 0.05) -> bool:
+        """Run at most one queued terminal request on the calling thread."""
+
+        try:
+            request = self.requests.get(timeout=max(0.0, timeout))
+        except queue.Empty:
+            return False
+        if request.done.is_set():
+            return True
+        with self._lock:
+            self._active = request
+        try:
+            request.result = self.backend(request.action, request.inputs)
+        except BaseException as exc:
+            request.error = (
+                exc
+                if isinstance(exc, Exception)
+                else RuntimeError("Terminal human input was interrupted")
+            )
+            request.done.set()
+            raise
+        else:
+            request.done.set()
+        finally:
+            with self._lock:
+                if self._active is request:
+                    self._active = None
+        return True
+
+    def cancel_pending(self) -> None:
+        """Release role threads without completing their durable human tasks."""
+
+        error = RuntimeError("Workflow cancelled")
+        with self._lock:
+            active = self._active
+        if active is not None and not active.done.is_set():
+            active.error = error
+            active.done.set()
+        while True:
+            try:
+                request = self.requests.get_nowait()
+            except queue.Empty:
+                break
+            if not request.done.is_set():
+                request.error = error
+                request.done.set()
 
 
 def make_cli_human_backend(*, input_func=None, output_func=None):
@@ -90,6 +181,9 @@ def make_cli_human_backend(*, input_func=None, output_func=None):
     # an existing pending task, prompt for that same task again instead of
     # waiting for a separate adapter that will never arrive.
     setattr(backend, "claims_pending_human_tasks", True)
+    # Workflow roles run concurrently, but only the supervisor's main thread
+    # may read the shared terminal. This marker activates its request bridge.
+    setattr(backend, "requires_main_thread", True)
     return backend
 
 

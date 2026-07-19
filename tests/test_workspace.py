@@ -255,6 +255,30 @@ def test_workspace_registers_existing_project_prompt_idempotently(tmp_path):
     assert workspace.prompt("P001")["active"] is True
 
 
+def test_workspace_updates_prompt_content_without_changing_identity(tmp_path):
+    root = tmp_path / "project"
+    root.mkdir()
+    workspace = Workspace(root, home=tmp_path / "state")
+    original = workspace.add_prompt(
+        kind="initial",
+        content="# Original title\n\nOriginal requirement.",
+    )
+
+    updated = workspace.update_prompt_content(
+        "P001",
+        content="# Clearer title\n\nCorrected wording.",
+    )
+
+    assert updated["id"] == original["id"]
+    assert updated["kind"] == original["kind"]
+    assert updated["file"] == original["file"]
+    assert updated["title"] == "Clearer title"
+    assert workspace.prompt("P001")["content"] == (
+        "# Clearer title\n\nCorrected wording."
+    )
+    assert len(workspace.list_prompts()) == 1
+
+
 def test_workspace_provider_configuration_keeps_secrets_private(tmp_path):
     root = tmp_path / "project"
     root.mkdir()

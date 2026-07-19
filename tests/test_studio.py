@@ -4,7 +4,7 @@ from io import StringIO
 from pathlib import Path
 
 from zippergen.studio import Studio
-from zippergen.workspace import Workspace
+from zippergen.workspace import Workspace, WorkspaceError
 
 
 WORKFLOW_SOURCE = """
@@ -89,7 +89,7 @@ def test_studio_create_saves_code_first_assistant_handoff(tmp_path):
     records = list(workspace.requests_directory.glob("*-create.json"))
     assert len(records) == 1
     content = Path(records[0].with_suffix(".md")).read_text()
-    assert "Use $zippergen-workflows." in content
+    assert "Use $zippergen-workflows" in content
     assert "visible Python source" in content
     assert "Do not deploy" in content
     assert content == workspace.current_task_path.read_text()
@@ -221,6 +221,37 @@ def test_studio_assistant_launches_codex_in_project_on_the_stable_task(
     assert output[-1].startswith("✓ Codex session ended")
 
 
+def test_studio_assistant_can_launch_claude_code_on_the_same_task(
+    tmp_path, monkeypatch
+):
+    studio, workspace, output = _studio(tmp_path)
+    studio.create_request("Create a review workflow.")
+    output.clear()
+    calls: list[tuple[list[str], Path, bool]] = []
+
+    def find_assistant(name: str):
+        assert name == "claude"
+        return "/bin/claude"
+
+    monkeypatch.setattr("zippergen.studio.shutil.which", find_assistant)
+
+    def fake_run(arguments, *, cwd, check):
+        calls.append((arguments, cwd, check))
+        return subprocess.CompletedProcess(arguments, 0)
+
+    monkeypatch.setattr("zippergen.studio.subprocess.run", fake_run)
+
+    studio.execute("assistant claude")
+
+    assert calls[0][0][0] == "/bin/claude"
+    assert len(calls[0][0]) == 2
+    assert ".zippergen/current-task.md" in calls[0][0][1]
+    assert calls[0][1] == workspace.root
+    assert calls[0][2] is False
+    assert any("Tool" in line and "Claude Code" in line for line in output)
+    assert output[-1].startswith("✓ Claude Code session ended")
+
+
 def test_studio_assistant_reports_missing_codex_without_losing_task(
     tmp_path, monkeypatch
 ):
@@ -236,6 +267,396 @@ def test_studio_assistant_reports_missing_codex_without_losing_task(
     else:
         raise AssertionError("assistant should fail when Codex is not installed")
     assert workspace.current_task_path.exists()
+
+
+def test_studio_assistant_reports_missing_claude_and_rejects_unknown_tools(
+    tmp_path, monkeypatch
+):
+    studio, workspace, _output = _studio(tmp_path)
+    studio.create_request("Create a review workflow.")
+    monkeypatch.setattr("zippergen.studio.shutil.which", lambda name: None)
+
+    try:
+        studio.execute("assistant claude")
+    except SystemExit as exc:
+        assert "Claude Code was not found" in str(exc)
+        assert "first-run authentication" in str(exc)
+    else:
+        raise AssertionError("assistant claude should require Claude Code")
+
+    try:
+        studio.execute("assistant unknown")
+    except SystemExit as exc:
+        assert "assistant codex" in str(exc)
+        assert "assistant claude" in str(exc)
+    else:
+        raise AssertionError("unknown assistants should be rejected")
+    assert workspace.current_task_path.exists()
+
+
+def test_studio_remembers_shows_and_resets_editor_preference(
+    tmp_path, monkeypatch
+):
+    studio, workspace, output = _studio(tmp_path)
+    monkeypatch.setattr(
+        "zippergen.studio.shutil.which",
+        lambda name: f"/usr/bin/{name}" if name == "micro" else None,
+    )
+
+    studio.execute("editor set micro")
+
+    assert workspace.load()["editor_command"] == ["micro"]
+    assert output[-1] == "✓ Editor preference: micro"
+
+    output.clear()
+    studio.execute("editor show")
+
+    assert output[0] == "Editor"
+    assert any("Preference" in line and "micro" in line for line in output)
+    assert any("Effective" in line and "/usr/bin/micro" in line for line in output)
+    assert any("Source" in line and "project preference" in line for line in output)
+
+    studio.execute("editor reset")
+
+    assert workspace.load()["editor_command"] is None
+    assert output[-1] == "✓ Editor preference reset to automatic discovery."
+
+
+def test_studio_edits_selected_workflow_with_preference_or_one_off_override(
+    tmp_path, monkeypatch
+):
+    studio, workspace, output = _studio(tmp_path)
+    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    workspace.update(editor_command=["nano"])
+    calls: list[tuple[list[str], Path, bool]] = []
+
+    def find_editor(name: str):
+        return {"nano": "/usr/bin/nano", "micro": "/opt/bin/micro"}.get(name)
+
+    def fake_run(arguments, *, cwd, check):
+        calls.append((arguments, cwd, check))
+        return subprocess.CompletedProcess(arguments, 0)
+
+    monkeypatch.setattr("zippergen.studio.shutil.which", find_editor)
+    monkeypatch.setattr("zippergen.studio.subprocess.run", fake_run)
+
+    studio.execute("edit workflow")
+    studio.execute("edit workflow --editor micro")
+
+    assert calls == [
+        (["/usr/bin/nano", str(workspace.root / "workflow.py")], workspace.root, False),
+        (["/opt/bin/micro", str(workspace.root / "workflow.py")], workspace.root, False),
+    ]
+    assert any("project preference" in line for line in output)
+    assert any("one-off" in line for line in output)
+    assert output[-1] == "Next: validate · show · run"
+
+
+def test_studio_create_can_write_prompt_in_editor_and_prepare_task(
+    tmp_path, monkeypatch
+):
+    studio, workspace, output = _studio(tmp_path)
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        "zippergen.studio.shutil.which",
+        lambda name: "/usr/bin/micro" if name == "micro" else None,
+    )
+
+    def fake_run(arguments, *, cwd, check):
+        calls.append(arguments)
+        Path(arguments[-1]).write_text(
+            "Create a reviewed answer workflow.\n"
+            "Never return an unapproved draft.\n",
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(arguments, 0)
+
+    monkeypatch.setattr("zippergen.studio.subprocess.run", fake_run)
+
+    studio.execute("create --edit prompts/reviewed_answer.md --editor micro")
+
+    assert calls == [[
+        "/usr/bin/micro",
+        str(workspace.root / "prompts" / "reviewed_answer.md"),
+    ]]
+    assert workspace.prompt("P001")["content"] == (
+        "Create a reviewed answer workflow.\n"
+        "Never return an unapproved draft."
+    )
+    assert workspace.current_task_path.exists()
+    assert any("Editor closed" in line for line in output)
+    assert any("P001 registered" in line for line in output)
+
+
+def test_studio_path_free_create_derives_canonical_prompt_name(
+    tmp_path, monkeypatch
+):
+    studio, workspace, _output = _studio(tmp_path)
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        "zippergen.studio.shutil.which",
+        lambda name: "/usr/bin/micro" if name == "micro" else None,
+    )
+
+    def fake_run(arguments, *, cwd, check):
+        calls.append(arguments)
+        Path(arguments[-1]).write_text(
+            "# Reviewed answer policy\n\n"
+            "Never return an unapproved draft.\n",
+            encoding="utf-8",
+        )
+        return subprocess.CompletedProcess(arguments, 0)
+
+    monkeypatch.setattr("zippergen.studio.subprocess.run", fake_run)
+
+    studio.execute("create --edit --editor micro")
+
+    record = workspace.prompt("P001")
+    assert record["kind"] == "initial"
+    assert record["title"] == "Reviewed answer policy"
+    assert record["file"] == "prompts/001-reviewed-answer-policy.md"
+    assert ".zippergen/prompt-drafts" in calls[0][-1]
+    assert list((workspace.root / ".zippergen" / "prompt-drafts").iterdir()) == []
+
+
+def test_studio_refine_can_compose_change_in_editor(tmp_path, monkeypatch):
+    studio, workspace, _output = _studio(tmp_path)
+    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    monkeypatch.setattr(
+        "zippergen.studio.shutil.which",
+        lambda name: "/usr/bin/micro" if name == "micro" else None,
+    )
+
+    def fake_run(arguments, *, cwd, check):
+        Path(arguments[-1]).write_text(
+            "Add human approval before returning the result.\n"
+        )
+        return subprocess.CompletedProcess(arguments, 0)
+
+    monkeypatch.setattr("zippergen.studio.subprocess.run", fake_run)
+
+    studio.execute("refine --edit --editor micro")
+
+    request = workspace.current_request()
+    assert request is not None
+    assert request["kind"] == "refine"
+    assert request["prompt_id"] == "P001"
+    assert workspace.prompt("P001")["file"] == (
+        "prompts/001-add-human-approval-before-returning-the-result.md"
+    )
+    assert list(workspace.requests_directory.glob("*-semantic-before.json"))
+    assert list((workspace.root / ".zippergen" / "prompt-drafts").iterdir()) == []
+
+
+def test_studio_prompt_replacement_can_be_composed_in_editor(
+    tmp_path, monkeypatch
+):
+    studio, workspace, _output = _studio(tmp_path)
+    studio.execute("prompts add Keep retries bounded")
+    monkeypatch.setattr(
+        "zippergen.studio.shutil.which",
+        lambda name: "/usr/bin/micro" if name == "micro" else None,
+    )
+
+    def fake_run(arguments, *, cwd, check):
+        Path(arguments[-1]).write_text("Use exactly three retries.\n")
+        return subprocess.CompletedProcess(arguments, 0)
+
+    monkeypatch.setattr("zippergen.studio.subprocess.run", fake_run)
+
+    studio.execute(
+        "prompts replace P001 --edit prompts/retry_replacement.md "
+        "--editor micro"
+    )
+
+    records = workspace.list_prompts()
+    assert records[0]["active"] is False
+    assert records[1]["replaces"] == "P001"
+    assert records[1]["content"] == "Use exactly three retries."
+    assert records[1]["file"] == "prompts/retry_replacement.md"
+
+
+def test_studio_path_free_prompt_replacement_derives_name_and_preserves_history(
+    tmp_path, monkeypatch
+):
+    studio, workspace, _output = _studio(tmp_path)
+    studio.execute("prompts add Keep retries bounded")
+    monkeypatch.setattr(
+        "zippergen.studio.shutil.which",
+        lambda name: "/usr/bin/micro" if name == "micro" else None,
+    )
+
+    def fake_run(arguments, *, cwd, check):
+        draft = Path(arguments[-1])
+        assert draft.read_text() == "Keep retries bounded\n"
+        draft.write_text(
+            "# Retry exactly three times\n\nThen return an explicit failure.\n"
+        )
+        return subprocess.CompletedProcess(arguments, 0)
+
+    monkeypatch.setattr("zippergen.studio.subprocess.run", fake_run)
+
+    studio.execute("prompts replace P001 --edit --editor micro")
+
+    records = workspace.list_prompts()
+    assert records[0]["active"] is False
+    assert records[1]["id"] == "P002"
+    assert records[1]["kind"] == "initial"
+    assert records[1]["replaces"] == "P001"
+    assert records[1]["file"] == "prompts/002-retry-exactly-three-times.md"
+    assert list((workspace.root / ".zippergen" / "prompt-drafts").iterdir()) == []
+
+
+def test_studio_edits_prompt_by_id_without_changing_identity(tmp_path, monkeypatch):
+    studio, workspace, output = _studio(tmp_path)
+    studio.execute("prompts add # Original title\nOriginal requirement")
+    original = workspace.prompt("P001")
+    monkeypatch.setattr(
+        "zippergen.studio.shutil.which",
+        lambda name: "/usr/bin/micro" if name == "micro" else None,
+    )
+
+    def fake_run(arguments, *, cwd, check):
+        draft = Path(arguments[-1])
+        assert ".zippergen/prompt-drafts" in str(draft)
+        assert "Original requirement" in draft.read_text()
+        draft.write_text("# Clearer title\n\nCorrected wording.\n")
+        return subprocess.CompletedProcess(arguments, 0)
+
+    monkeypatch.setattr("zippergen.studio.subprocess.run", fake_run)
+    output.clear()
+
+    studio.execute("prompts edit P001 --editor micro")
+
+    records = workspace.list_prompts()
+    assert len(records) == 1
+    assert records[0]["id"] == "P001"
+    assert records[0]["kind"] == "initial"
+    assert records[0]["file"] == original["file"]
+    assert records[0]["title"] == "Clearer title"
+    assert records[0]["content"] == "# Clearer title\n\nCorrected wording."
+    assert "Prompt updated" in output
+    assert list((workspace.root / ".zippergen" / "prompt-drafts").iterdir()) == []
+
+
+def test_studio_invalid_prompt_edit_leaves_registered_content_untouched(
+    tmp_path, monkeypatch
+):
+    studio, workspace, _output = _studio(tmp_path)
+    studio.execute("prompts add Original requirement")
+    monkeypatch.setattr(
+        "zippergen.studio.shutil.which",
+        lambda name: "/usr/bin/micro" if name == "micro" else None,
+    )
+
+    def fake_run(arguments, *, cwd, check):
+        Path(arguments[-1]).write_text("")
+        return subprocess.CompletedProcess(arguments, 0)
+
+    monkeypatch.setattr("zippergen.studio.subprocess.run", fake_run)
+
+    try:
+        studio.execute("prompts edit P001 --editor micro")
+    except SystemExit as exc:
+        assert "Prompt file is empty" in str(exc)
+    else:
+        raise AssertionError("an empty edit should be rejected")
+
+    assert workspace.prompt("P001")["content"] == "Original requirement"
+    assert len(list((workspace.root / ".zippergen" / "prompt-drafts").iterdir())) == 1
+
+
+def test_studio_failed_registration_preserves_path_free_draft(
+    tmp_path, monkeypatch
+):
+    studio, workspace, _output = _studio(tmp_path)
+    monkeypatch.setattr(
+        "zippergen.studio.shutil.which",
+        lambda name: "/usr/bin/micro" if name == "micro" else None,
+    )
+
+    def fake_run(arguments, *, cwd, check):
+        Path(arguments[-1]).write_text("# Important draft\n\nDo not lose this.\n")
+        return subprocess.CompletedProcess(arguments, 0)
+
+    def fail_registration(**kwargs):
+        raise WorkspaceError("simulated ledger failure")
+
+    monkeypatch.setattr("zippergen.studio.subprocess.run", fake_run)
+    monkeypatch.setattr(workspace, "add_prompt", fail_registration)
+
+    try:
+        studio.execute("create --edit --editor micro")
+    except WorkspaceError as exc:
+        assert "simulated ledger failure" in str(exc)
+    else:
+        raise AssertionError("registration should fail")
+
+    drafts = list((workspace.root / ".zippergen" / "prompt-drafts").iterdir())
+    assert len(drafts) == 1
+    assert "Do not lose this" in drafts[0].read_text()
+
+
+def test_studio_editor_errors_are_safe_and_actionable(tmp_path, monkeypatch):
+    studio, workspace, _output = _studio(tmp_path)
+    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    monkeypatch.setattr("zippergen.studio.shutil.which", lambda name: None)
+
+    for command, expected in (
+        ("editor set missing", "Editor executable was not found: missing"),
+        (
+            "create --edit ../outside.md --editor missing",
+            "Prompt must be inside the project root",
+        ),
+        ("edit workflow --editor missing", "Editor executable was not found: missing"),
+    ):
+        try:
+            studio.execute(command)
+        except SystemExit as exc:
+            assert expected in str(exc)
+        else:
+            raise AssertionError(f"{command!r} should fail")
+    assert not (workspace.root.parent / "outside.md").exists()
+
+
+def test_studio_does_not_register_prompt_after_failed_editor(
+    tmp_path, monkeypatch
+):
+    studio, workspace, _output = _studio(tmp_path)
+    monkeypatch.setattr(
+        "zippergen.studio.shutil.which",
+        lambda name: "/usr/bin/micro" if name == "micro" else None,
+    )
+
+    def fake_run(arguments, *, cwd, check):
+        return subprocess.CompletedProcess(arguments, 3)
+
+    monkeypatch.setattr("zippergen.studio.subprocess.run", fake_run)
+
+    try:
+        studio.execute("create --edit prompts/new.md --editor micro")
+    except SystemExit as exc:
+        assert "Editor exited with status 3" in str(exc)
+    else:
+        raise AssertionError("failed editor should stop creation")
+
+    assert workspace.list_prompts() == []
+    assert workspace.current_request() is None
+
+
+def test_studio_refuses_to_edit_managed_prompt_index(tmp_path, monkeypatch):
+    studio, _workspace, _output = _studio(tmp_path)
+    monkeypatch.setattr(
+        "zippergen.studio.shutil.which",
+        lambda name: "/usr/bin/micro" if name == "micro" else None,
+    )
+
+    try:
+        studio.execute("create --edit prompts/index.toml --editor micro")
+    except SystemExit as exc:
+        assert "reserved for the managed ledger" in str(exc)
+    else:
+        raise AssertionError("managed prompt index should not be edited as a prompt")
 
 
 def test_studio_prompt_file_errors_are_actionable(tmp_path):
@@ -268,8 +689,14 @@ def test_studio_commands_are_discoverable(tmp_path):
     assert "prompts move ID before|after ID" in output[-1]
     assert "task show|path|history" in output[-1]
     assert "assistant" in output[-1]
+    assert "editor [show|set CMD|reset]" in output[-1]
+    assert "edit [workflow|file PATH]" in output[-1]
     assert "create --file PATH" in output[-1]
+    assert "create --edit [PATH]" in output[-1]
     assert "refine --file PATH" in output[-1]
+    assert "refine --edit [PATH]" in output[-1]
+    assert "prompts edit ID" in output[-1]
+    assert "prompts archive|restore ID" in output[-1]
     assert "providers set local [URL]" in output[-1]
     assert studio.execute("not-a-command") is True
     assert output[-1].startswith("✗ Unknown command")
@@ -356,6 +783,44 @@ def test_studio_project_and_prompt_commands_manage_visible_design_context(tmp_pa
     assert "First requirement" not in output[-1]
 
 
+def test_studio_prompt_table_inspection_path_archive_and_restore(tmp_path):
+    studio, workspace, output = _studio(tmp_path)
+    studio.execute("prompts add Foundation: keep source visible")
+    studio.execute("prompts add Add bounded retries")
+
+    records = workspace.list_prompts()
+    assert [record["kind"] for record in records] == ["initial", "refinement"]
+
+    output.clear()
+    studio.execute("prompts")
+    assert output[0] == "Prompt summary"
+    assert "Prompt ledger" in output
+    assert any(
+        "ID" in line and "Kind" in line and "Status" in line and "Title" in line
+        for line in output
+    )
+    assert any("P001" in line and "initial" in line for line in output)
+    assert any("P002" in line and "refinement" in line for line in output)
+
+    output.clear()
+    studio.execute("prompts inspect P002")
+    assert output[0] == "Prompt P002"
+    assert "Requirement" in output
+    assert any("Position" in line and "2" in line for line in output)
+
+    output.clear()
+    studio.execute("prompts path P002")
+    assert output == [str(workspace.root / str(records[1]["file"]))]
+
+    studio.execute("prompts archive P002")
+    assert workspace.prompt("P002")["active"] is False
+    assert "Add bounded retries" not in workspace.prompt_context()
+
+    studio.execute("prompts restore P002")
+    assert workspace.prompt("P002")["active"] is True
+    assert "Add bounded retries" in workspace.prompt_context()
+
+
 def test_studio_replacement_preserves_prompt_history(tmp_path):
     studio, workspace, output = _studio(tmp_path)
 
@@ -404,6 +869,7 @@ def test_studio_current_is_a_complete_project_dashboard(tmp_path):
     assert "Runtime" in output
     assert any("Name" in line and "project" in line for line in output)
     assert any("Prompts" in line and "1 active" in line for line in output)
+    assert any("Editor" in line and "automatic" in line for line in output)
     assert any("Selected" in line and "workflow.py:sample" in line for line in output)
     assert any("Name" in line and "sample" in line for line in output)
     assert any("Participants" in line and "User, Writer" in line for line in output)

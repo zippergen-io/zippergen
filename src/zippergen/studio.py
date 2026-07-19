@@ -10,6 +10,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
@@ -24,6 +25,13 @@ InputFunc = Callable[[str], str]
 OutputFunc = Callable[[str], object]
 SecretInputFunc = Callable[[str], str]
 StatusKind = Literal["success", "warning", "error", "info"]
+
+
+@dataclass(frozen=True)
+class _PromptInput:
+    content: str
+    source_path: Path | None = None
+    draft_path: Path | None = None
 
 
 _PROVIDER_ALIASES = {
@@ -74,17 +82,26 @@ _HELP = """Commands:
   project show                   show visible project configuration
   create [PROMPT]                prepare a new-workflow coding-assistant brief
   create --file PATH             read a multiline workflow prompt from a file
+  create --edit [PATH]           compose a prompt, then prepare the task
   task                            show the current coding-assistant task
   task show|path|history          inspect the stable task or private history
-  assistant                      open Codex on the current task in this project
+  assistant [codex|claude]       open a coding assistant on the current task
+  editor [show|set CMD|reset]     inspect or remember the terminal editor
+  edit [workflow|file PATH]       edit with the remembered/default editor
+  edit ... --editor CMD           choose an editor for this invocation only
   prompts                        list the ordered project prompt ledger
   prompts add [PROMPT]           add design intent without preparing a handoff
   prompts add --file PATH        import/register a UTF-8 prompt file
-  prompts show ID                show one prompt verbatim
+  prompts add --edit [PATH]      compose and register project design intent
+  prompts show|inspect ID        show one prompt and its metadata verbatim
+  prompts path ID                print the prompt's absolute file path
+  prompts edit ID                edit one prompt without changing its stable ID
   prompts context                show all active prompts in precedence order
-  prompts enable|disable ID      include/exclude a prompt from future handoffs
-  prompts remove ID              archive a prompt (an alias for disable)
+  prompts archive|restore ID     exclude/include a prompt in future handoffs
+  prompts remove|disable ID      aliases for archive; enable aliases restore
   prompts replace ID [PROMPT]    supersede a prompt while preserving its history
+  prompts replace ID --edit [PATH]
+                                 compose and register a replacement prompt
   prompts move ID before|after ID
   use [PATH.py:WORKFLOW]         select a workflow; no argument opens a selector
   current                        show the complete project/workflow dashboard
@@ -107,6 +124,7 @@ _HELP = """Commands:
   runs                           list managed development runs
   refine [PROMPT]                prepare a semantic refinement handoff
   refine --file PATH             read a multiline refinement prompt from a file
+  refine --edit [PATH]           compose a refinement, then prepare the task
   deploy [NAME] [--no-start]     configure deployment; optionally defer startup
   status|doctor|logs [NAME]      inspect the remembered named deployment
   start|restart|stop [NAME]      operate the remembered named deployment
@@ -242,6 +260,10 @@ class Studio:
             self.manage_task(args)
         elif command == "assistant":
             self.run_assistant(args)
+        elif command == "editor":
+            self.configure_editor(args)
+        elif command == "edit":
+            self.edit_file(args)
         elif command in {"current", "workflow"}:
             self.show_current()
         elif command == "use":
@@ -284,11 +306,23 @@ class Studio:
         elif command == "runs":
             self.show_runs()
         elif command == "create":
-            prompt, source = self._request_prompt(args, command="create")
-            self.create_request(prompt, source_path=source)
+            prompt_input = self._request_prompt(args, command="create")
+            self.create_request(
+                prompt_input.content,
+                source_path=prompt_input.source_path,
+            )
+            self._finish_prompt_input(prompt_input)
         elif command == "refine":
-            prompt, source = self._request_prompt(args, command="refine")
-            self.refine_request(prompt, source_path=source)
+            if self.workspace.current_workflow is None:
+                raise SystemExit(
+                    "No workflow selected. Use 'use' before preparing a refinement."
+                )
+            prompt_input = self._request_prompt(args, command="refine")
+            self.refine_request(
+                prompt_input.content,
+                source_path=prompt_input.source_path,
+            )
+            self._finish_prompt_input(prompt_input)
         elif command == "deploy":
             self.deploy_workflow(args)
         elif command in {"status", "doctor", "logs", "start", "restart", "stop"}:
@@ -304,9 +338,10 @@ class Studio:
         args: list[str],
         *,
         command: str,
-    ) -> tuple[str, Path | None]:
+        draft_content: str | None = None,
+    ) -> _PromptInput:
         if not args:
-            return "", None
+            return _PromptInput("")
         if args[0] == "--file":
             if len(args) != 2:
                 raise SystemExit(f"Use {command} --file PATH.")
@@ -316,30 +351,279 @@ class Studio:
                 if entered.is_absolute()
                 else self.workspace.root / entered
             ).resolve()
+            return _PromptInput(
+                self._read_prompt_file(prompt_file),
+                source_path=prompt_file,
+            )
+        if args[0] == "--edit":
+            edit_args = args[1:]
+            editor_override = None
+            if "--editor" in edit_args:
+                index = edit_args.index("--editor")
+                if index != len(edit_args) - 2:
+                    raise SystemExit(
+                        f"Use {command} --edit [PATH] [--editor COMMAND]."
+                    )
+                editor_override = edit_args[-1]
+                edit_args = edit_args[:index]
+            if len(edit_args) > 1:
+                raise SystemExit(
+                    f"Use {command} --edit [PATH] [--editor COMMAND]."
+                )
+            self.workspace.initialize_project()
+            if edit_args:
+                prompt_file = self._project_path(edit_args[0], label="Prompt")
+                draft_path = None
+            else:
+                prompt_file = self._new_prompt_draft(
+                    command,
+                    content=draft_content,
+                )
+                draft_path = prompt_file
+            if prompt_file == self.workspace.prompt_index_path.resolve():
+                raise SystemExit(
+                    f"Prompt path is reserved for the managed ledger: "
+                    f"{prompt_file}"
+                )
+            prompt_file.parent.mkdir(parents=True, exist_ok=True)
+            self._launch_editor(prompt_file, override=editor_override)
+            return _PromptInput(
+                self._read_prompt_file(prompt_file),
+                source_path=prompt_file,
+                draft_path=draft_path,
+            )
+        if "--file" in args or "--edit" in args:
+            raise SystemExit(
+                f"Use {command} --file PATH or {command} --edit [PATH]."
+            )
+        return _PromptInput(" ".join(args).strip())
+
+    def _new_prompt_draft(
+        self,
+        purpose: str,
+        *,
+        content: str | None = None,
+    ) -> Path:
+        draft_directory = self.workspace.root / ".zippergen" / "prompt-drafts"
+        draft_directory.mkdir(parents=True, exist_ok=True)
+        label = "".join(
+            character.lower() if character.isalnum() else "-"
+            for character in purpose
+        ).strip("-")
+        while "--" in label:
+            label = label.replace("--", "-")
+        label = label or "prompt"
+        identifier = (
+            f"{time.strftime('%Y%m%d-%H%M%S')}-"
+            f"{time.time_ns() % 1_000_000_000:09d}"
+        )
+        draft = draft_directory / f"{identifier}-{label}.md"
+        if content is None:
+            draft.touch(exist_ok=False)
+        else:
+            draft.write_text(content.rstrip() + "\n", encoding="utf-8")
+        return draft
+
+    def _finish_prompt_input(self, prompt_input: _PromptInput) -> None:
+        draft = prompt_input.draft_path
+        if draft is None:
+            return
+        try:
+            draft.unlink()
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            self._warning(
+                f"Registered prompt, but could not remove draft {draft}: {exc}"
+            )
+
+    def _read_prompt_file(self, prompt_file: Path) -> str:
+        try:
+            prompt = prompt_file.read_text(encoding="utf-8").strip()
+        except FileNotFoundError:
+            raise SystemExit(
+                f"Prompt file does not exist: {prompt_file}"
+            ) from None
+        except IsADirectoryError:
+            raise SystemExit(
+                f"Prompt path is a directory: {prompt_file}"
+            ) from None
+        except UnicodeDecodeError:
+            raise SystemExit(
+                f"Prompt file must contain UTF-8 text: {prompt_file}"
+            ) from None
+        except OSError as exc:
+            raise SystemExit(
+                f"Could not read prompt file {prompt_file}: {exc}"
+            ) from exc
+        if not prompt:
+            raise SystemExit(f"Prompt file is empty: {prompt_file}")
+        return prompt
+
+    def _project_path(self, value: str | Path, *, label: str = "File") -> Path:
+        entered = Path(value).expanduser()
+        path = (
+            entered if entered.is_absolute() else self.workspace.root / entered
+        ).resolve()
+        if not path.is_relative_to(self.workspace.root):
+            raise SystemExit(
+                f"{label} must be inside the project root: {self.workspace.root}"
+            )
+        if path.is_dir():
+            raise SystemExit(f"{label} path is a directory: {path}")
+        return path
+
+    def _parse_editor_command(self, value: object) -> list[str]:
+        if isinstance(value, list):
+            command = [str(part) for part in value if str(part)]
+        else:
             try:
-                prompt = prompt_file.read_text(encoding="utf-8").strip()
-            except FileNotFoundError:
+                command = shlex.split(str(value))
+            except ValueError as exc:
+                raise SystemExit(f"Could not parse editor command: {exc}") from exc
+        if not command:
+            raise SystemExit("Editor command must not be empty.")
+        return command
+
+    def _effective_editor(
+        self,
+        override: str | None = None,
+    ) -> tuple[list[str], str]:
+        if override is not None:
+            candidates = [(self._parse_editor_command(override), "one-off")]
+        else:
+            configured = self.workspace.load().get("editor_command")
+            if configured:
+                candidates = [
+                    (self._parse_editor_command(configured), "project preference")
+                ]
+            else:
+                candidates = []
+                for variable in ("VISUAL", "EDITOR"):
+                    value = os.environ.get(variable)
+                    if value:
+                        candidates.append(
+                            (self._parse_editor_command(value), f"${variable}")
+                        )
+                candidates.extend(
+                    ([name], "automatic")
+                    for name in ("micro", "nano", "vim", "vi")
+                )
+        for command, source in candidates:
+            executable = shutil.which(command[0])
+            if executable is not None:
+                return [executable, *command[1:]], source
+            if source in {"one-off", "project preference"}:
                 raise SystemExit(
-                    f"Prompt file does not exist: {prompt_file}"
-                ) from None
-            except IsADirectoryError:
+                    f"Editor executable was not found: {command[0]}. "
+                    "Use 'editor set COMMAND' or 'editor reset'."
+                )
+        raise SystemExit(
+            "No terminal editor was found. Install micro/nano/vim, set $VISUAL "
+            "or $EDITOR, or use 'editor set COMMAND'."
+        )
+
+    def configure_editor(self, args: list[str]) -> None:
+        if not args or args == ["show"]:
+            command, source = self._effective_editor()
+            preference = self.workspace.load().get("editor_command")
+            self._emit_table(
+                "Editor",
+                [
+                    (
+                        "Preference",
+                        shlex.join(self._parse_editor_command(preference))
+                        if preference
+                        else "automatic",
+                        None,
+                    ),
+                    ("Effective", shlex.join(command), "success"),
+                    ("Source", source, None),
+                ],
+            )
+            return
+        action, *rest = args
+        if action == "set" and rest:
+            command = self._parse_editor_command(rest)
+            executable = shutil.which(command[0])
+            if executable is None:
+                raise SystemExit(f"Editor executable was not found: {command[0]}.")
+            self.workspace.update(editor_command=command)
+            self._success(f"Editor preference: {shlex.join(command)}")
+            return
+        if action == "reset" and not rest:
+            self.workspace.update(editor_command=None)
+            self._success("Editor preference reset to automatic discovery.")
+            return
+        raise SystemExit("Use editor, editor show, editor set COMMAND, or editor reset.")
+
+    def _launch_editor(
+        self,
+        target: Path,
+        *,
+        override: str | None = None,
+    ) -> None:
+        command, source = self._effective_editor(override)
+        try:
+            displayed = target.relative_to(self.workspace.root)
+        except ValueError:
+            displayed = target
+        self._emit_table(
+            "Editor",
+            [
+                ("Command", shlex.join(command), None),
+                ("Source", source, None),
+                ("File", displayed, None),
+            ],
+        )
+        try:
+            completed = subprocess.run(
+                [*command, str(target)],
+                cwd=self.workspace.root,
+                check=False,
+            )
+        except OSError as exc:
+            raise SystemExit(f"Could not start editor: {exc}") from exc
+        if completed.returncode != 0:
+            raise SystemExit(
+                f"Editor exited with status {completed.returncode}: {displayed}"
+            )
+        self._success(f"Editor closed: {displayed}")
+
+    def edit_file(self, args: list[str]) -> None:
+        editor_override = None
+        if "--editor" in args:
+            index = args.index("--editor")
+            if index != len(args) - 2:
                 raise SystemExit(
-                    f"Prompt path is a directory: {prompt_file}"
-                ) from None
-            except UnicodeDecodeError:
+                    "Use edit [workflow|file PATH] [--editor COMMAND]."
+                )
+            editor_override = args[-1]
+            args = args[:index]
+        if not args or args == ["workflow"]:
+            current = self.workspace.current_workflow
+            if current is None:
+                raise SystemExit("No workflow selected. Use 'use' first.")
+            module_ref = self.workspace.absolute_spec(current).partition(":")[0]
+            target = Path(module_ref)
+            if target.suffix != ".py" or not target.is_file():
                 raise SystemExit(
-                    f"Prompt file must contain UTF-8 text: {prompt_file}"
-                ) from None
-            except OSError as exc:
-                raise SystemExit(
-                    f"Could not read prompt file {prompt_file}: {exc}"
-                ) from exc
-            if not prompt:
-                raise SystemExit(f"Prompt file is empty: {prompt_file}")
-            return prompt, prompt_file
-        if "--file" in args:
-            raise SystemExit(f"Use {command} --file PATH.")
-        return " ".join(args).strip(), None
+                    f"The selected workflow is not backed by a Python file: {current}"
+                )
+            target = self._project_path(target, label="Workflow")
+            next_steps = "validate · show · run"
+        elif len(args) == 2 and args[0] == "file":
+            target = self._project_path(args[1])
+            next_steps = "inspect the change or use create/refine --file"
+        elif len(args) == 1:
+            target = self._project_path(args[0])
+            next_steps = "inspect the change or use create/refine --file"
+        else:
+            raise SystemExit(
+                "Use edit, edit workflow, or edit file PATH [--editor COMMAND]."
+            )
+        self._launch_editor(target, override=editor_override)
+        self._emit(f"Next: {next_steps}")
 
     def _current_context(self):
         from zippergen.serve import load_workflow_spec
@@ -380,22 +664,41 @@ class Studio:
     def _emit_prompt_list(self) -> None:
         records = self.workspace.list_prompts()
         if not records:
-            self._emit(
-                "No project prompts. Use 'create', 'refine', or 'prompts add'."
+            self._emit_table(
+                "Prompts",
+                [("Status", "none; use create, refine, or prompts add", "warning")],
             )
             return
         active = sum(bool(record["active"]) for record in records)
-        self._emit(
-            f"Prompts: {active} active, {len(records) - active} archived "
-            f"({len(records)} total)"
+        self._emit_table(
+            "Prompt summary",
+            [
+                ("Active", active, "success"),
+                ("Archived", len(records) - active, None),
+                ("Total", len(records), None),
+                ("Precedence", "later rows override only explicit conflicts", None),
+            ],
         )
-        for record in records:
+        self._emit("Prompt ledger")
+        self._emit("─" * len("Prompt ledger"))
+        self._emit(
+            f"  {'#':>2}  {'ID':<5}  {'Kind':<10}  {'Status':<10}  "
+            f"{'Title':<48}  File"
+        )
+        for position, record in enumerate(records, start=1):
             status = "active" if record["active"] else "archived"
-            self._emit(
-                f"  {record['id']}  {str(record['kind']):10}  "
-                f"{status:8}  {record['title']}"
+            mark = self._status_mark(
+                "success" if record["active"] else "warning"
             )
-            self._emit(f"        {record['file']}")
+            title = str(record["title"])
+            if len(title) > 48:
+                title = title[:47] + "…"
+            self._emit(
+                f"  {position:>2}  {str(record['id']):<5}  "
+                f"{str(record['kind']):<10}  {mark} {status:<8}  "
+                f"{title:<48}  {record['file']}"
+            )
+        self._emit()
 
     def manage_prompts(self, args: list[str]) -> None:
         if not args or args == ["list"]:
@@ -403,41 +706,108 @@ class Studio:
             return
         action, *rest = args
         action = action.lower()
-        if action == "show" and len(rest) == 1:
+        if action in {"show", "inspect"} and len(rest) == 1:
             record = self.workspace.prompt(rest[0])
-            self._emit(
-                f"{record['id']} [{record['kind']}; "
-                f"{'active' if record['active'] else 'archived'}] "
-                f"{record['title']}"
+            position = next(
+                index
+                for index, candidate in enumerate(
+                    self.workspace.list_prompts(),
+                    start=1,
+                )
+                if candidate["id"] == record["id"]
             )
-            self._emit(f"Source: {record['file']}")
+            self._emit_table(
+                f"Prompt {record['id']}",
+                [
+                    ("Position", position, None),
+                    ("Kind", record["kind"], None),
+                    (
+                        "Status",
+                        "active" if record["active"] else "archived",
+                        "success" if record["active"] else "warning",
+                    ),
+                    ("Title", record["title"], None),
+                    ("File", record["file"], None),
+                    ("Replaces", record.get("replaces") or "none", None),
+                ],
+            )
+            self._emit("Requirement")
+            self._emit("─" * len("Requirement"))
             self._emit(str(record["content"]))
+            self._emit()
+            return
+        if action == "path" and len(rest) == 1:
+            record = self.workspace.prompt(rest[0])
+            self._emit(self.workspace.root / str(record["file"]))
             return
         if action == "context" and not rest:
             self._emit(self.workspace.prompt_context())
             return
         if action == "add":
-            prompt, source = self._request_prompt(rest, command="prompts add")
+            prompt_input = self._request_prompt(rest, command="prompts add")
+            prompt = prompt_input.content
             if not prompt:
                 prompt = self.input("Describe the requirement: ").strip()
             if not prompt:
                 raise SystemExit("The prompt must not be empty.")
-            kind = "refinement" if self.workspace.current_workflow else "initial"
+            kind = "refinement"
+            if (
+                not self.workspace.list_prompts()
+                and self.workspace.current_workflow is None
+            ):
+                kind = "initial"
             record = self.workspace.add_prompt(
                 kind=kind,
                 content=prompt,
-                source_path=source,
+                source_path=prompt_input.source_path,
                 workflow_spec=self.workspace.current_workflow,
             )
+            self._finish_prompt_input(prompt_input)
             status = "Registered" if record["created"] else "Already registered"
             self._success(
                 f"{status}: {record['id']} [{record['kind']}] {record['file']}"
             )
             return
-        if action in {"enable", "disable", "remove"} and len(rest) == 1:
-            active = action == "enable"
+        if action == "edit" and len(rest) in {1, 3}:
+            if len(rest) == 3 and rest[1] == "--editor":
+                editor_override = rest[2]
+            elif len(rest) == 1:
+                editor_override = None
+            else:
+                raise SystemExit("Use prompts edit ID [--editor COMMAND].")
+            original = self.workspace.prompt(rest[0])
+            draft = self._new_prompt_draft(
+                f"edit-{original['id']}",
+                content=str(original["content"]),
+            )
+            self._launch_editor(draft, override=editor_override)
+            content = self._read_prompt_file(draft)
+            record = self.workspace.update_prompt_content(
+                str(original["id"]),
+                content=content,
+            )
+            self._finish_prompt_input(_PromptInput(content, draft_path=draft))
+            self._emit_table(
+                "Prompt updated",
+                [
+                    ("ID", record["id"], "success"),
+                    ("Kind", record["kind"], None),
+                    ("Title", record["title"], None),
+                    ("File", record["file"], None),
+                    ("Next", f"prompts show {record['id']}", None),
+                ],
+            )
+            return
+        if action in {
+            "enable",
+            "restore",
+            "disable",
+            "remove",
+            "archive",
+        } and len(rest) == 1:
+            active = action in {"enable", "restore"}
             record = self.workspace.set_prompt_active(rest[0], active=active)
-            verb = "Enabled" if active else "Archived"
+            verb = "Restored" if active else "Archived"
             self._success(f"{verb}: {record['id']} — {record['title']}")
             return
         if action == "move" and len(rest) == 3:
@@ -452,10 +822,13 @@ class Studio:
             self._emit_prompt_list()
             return
         if action == "replace" and len(rest) >= 1:
-            prompt, source = self._request_prompt(
+            original = self.workspace.prompt(rest[0])
+            prompt_input = self._request_prompt(
                 rest[1:],
                 command=f"prompts replace {rest[0]}",
+                draft_content=str(original["content"]),
             )
+            prompt = prompt_input.content
             if not prompt:
                 prompt = self.input("Describe the replacement requirement: ").strip()
             if not prompt:
@@ -463,17 +836,20 @@ class Studio:
             record = self.workspace.replace_prompt(
                 rest[0],
                 content=prompt,
-                source_path=source,
+                source_path=prompt_input.source_path,
             )
+            self._finish_prompt_input(prompt_input)
             self._success(
                 f"Replaced {rest[0].upper()} with {record['id']}: "
                 f"{record['file']}"
             )
             return
         raise SystemExit(
-            "Use prompts, prompts add [--file PATH|PROMPT], prompts show ID, "
-            "prompts context, prompts enable|disable|remove ID, prompts replace "
-            "ID [--file PATH|PROMPT], or prompts move ID before|after ID."
+            "Use prompts; prompts show|inspect|path|edit ID; prompts add "
+            "[--file PATH|--edit [PATH]|PROMPT]; prompts context; prompts "
+            "archive|restore ID; prompts replace ID "
+            "[--file PATH|--edit [PATH]|PROMPT]; or prompts move ID "
+            "before|after ID."
         )
 
     def manage_task(self, args: list[str]) -> None:
@@ -531,22 +907,32 @@ class Studio:
                 ("Prompt", record.get("prompt_id") or "—", None),
                 ("Workflow", record.get("workflow_spec") or "new workflow", None),
                 ("File", ".zippergen/current-task.md", None),
-                ("Next", "assistant", None),
+                ("Next", "assistant codex · assistant claude", None),
             ],
         )
 
     def run_assistant(self, args: list[str]) -> None:
-        if args:
-            raise SystemExit("Studio 'assistant' takes no arguments.")
+        if len(args) > 1 or (
+            args and args[0].lower() not in {"codex", "claude"}
+        ):
+            raise SystemExit("Use assistant, assistant codex, or assistant claude.")
+        assistant = args[0].lower() if args else "codex"
         record = self.workspace.current_request()
         if record is None:
             raise SystemExit(
                 "No current task. Use create or refine before starting the assistant."
             )
-        codex = shutil.which("codex")
-        if codex is None:
+        tool = "Claude Code" if assistant == "claude" else "Codex CLI"
+        executable = shutil.which(assistant)
+        if executable is None:
+            if assistant == "claude":
+                setup = (
+                    "Install Claude Code and complete its first-run authentication"
+                )
+            else:
+                setup = "Install Codex CLI and run 'codex login'"
             raise SystemExit(
-                "Codex CLI was not found. Install it and run 'codex login' once; "
+                f"{tool} was not found. {setup} once; "
                 "the current task remains available at "
                 f"{self.workspace.current_task_path}."
             )
@@ -556,10 +942,18 @@ class Studio:
         self._emit_table(
             "Assistant",
             [
-                ("Tool", "Codex CLI", None),
+                (
+                    "Tool",
+                    tool,
+                    None,
+                ),
                 ("Task", relative_task, "success"),
                 ("Project", self.workspace.root, None),
-                ("MCP", "not required; Codex keeps its own configured tools", None),
+                (
+                    "MCP",
+                    "not required; the assistant keeps its own configured tools",
+                    None,
+                ),
             ],
         )
         instruction = (
@@ -567,22 +961,34 @@ class Studio:
             "keep all generated code visible, run the requested verification, and "
             "do not deploy."
         )
+        if assistant == "codex":
+            command = [
+                executable,
+                "--cd",
+                str(self.workspace.root),
+                instruction,
+            ]
+        else:
+            command = [executable, instruction]
         try:
             completed = subprocess.run(
-                [codex, "--cd", str(self.workspace.root), instruction],
+                command,
                 cwd=self.workspace.root,
                 check=False,
             )
         except OSError as exc:
-            raise SystemExit(f"Could not start Codex CLI: {exc}") from exc
+            raise SystemExit(
+                f"Could not start {tool}: {exc}"
+            ) from exc
         if completed.returncode != 0:
             raise SystemExit(
-                f"Codex exited with status {completed.returncode}; the task remains "
-                f"at {self.workspace.current_task_path}."
+                f"{assistant.capitalize()} exited with status "
+                f"{completed.returncode}; the task remains at "
+                f"{self.workspace.current_task_path}."
             )
         self._success(
-            "Codex session ended. Inspect the generated files, then use current, "
-            "validate, and show."
+            f"{'Claude Code' if assistant == 'claude' else 'Codex'} session ended. "
+            "Inspect the generated files, then use current, validate, and show."
         )
 
     def show_current(self) -> None:
@@ -626,6 +1032,17 @@ class Studio:
                         else "none; use create or refine"
                     ),
                     "success" if request else "warning",
+                ),
+                (
+                    "Editor",
+                    (
+                        shlex.join(
+                            self._parse_editor_command(state["editor_command"])
+                        )
+                        if state.get("editor_command")
+                        else "automatic; use editor show or editor set COMMAND"
+                    ),
+                    None,
                 ),
             ],
         )
@@ -1227,7 +1644,12 @@ class Studio:
         manifest = self.workspace.project_manifest()
         framework = manifest.get("framework_directory")
         if not framework:
-            return "Use $zippergen-workflows."
+            return (
+                "Use $zippergen-workflows if it is available. Otherwise, if "
+                "present, read and follow AGENTS.md and "
+                ".agents/skills/zippergen-workflows/SKILL.md completely before "
+                "editing workflow code."
+            )
         base = Path(str(framework)).as_posix().rstrip("/")
         return (
             "Use $zippergen-workflows if it is available. Otherwise read and "
@@ -1308,7 +1730,7 @@ verification results.
                     "success",
                 ),
                 ("Task", ".zippergen/current-task.md", "success"),
-                ("Next", "assistant", None),
+                ("Next", "assistant codex · assistant claude", None),
                 ("Inspect", "task · task show · task history", None),
             ],
         )
@@ -1396,7 +1818,7 @@ and verification results.
                 ("Workflow", current, None),
                 ("Baseline", baseline, "success"),
                 ("Task", ".zippergen/current-task.md", "success"),
-                ("Next", "assistant", None),
+                ("Next", "assistant codex · assistant claude", None),
                 ("Inspect", "task · task show · task history", None),
             ],
         )

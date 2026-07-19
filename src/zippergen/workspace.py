@@ -609,6 +609,25 @@ class Workspace:
         self._write_prompt_index(records)
         return records[index]
 
+    def update_prompt_content(
+        self,
+        prompt_id: str,
+        *,
+        content: str,
+    ) -> dict[str, object]:
+        """Update one prompt in place while preserving its stable identity."""
+
+        prompt = content.strip()
+        if not prompt:
+            raise WorkspaceError("Prompt content must not be empty.")
+        records = self.list_prompts()
+        index, _record = self._resolve_prompt(prompt_id)
+        target = self._prompt_file(records[index]["ledger_file"])
+        _atomic_write_text(target, prompt.rstrip() + "\n")
+        records[index]["content"] = prompt
+        records[index]["title"] = _prompt_title(prompt)
+        return records[index]
+
     def move_prompt(
         self,
         prompt_id: str,
@@ -644,6 +663,14 @@ class Workspace:
     ) -> dict[str, object]:
         records = self.list_prompts()
         old_index, old = self._resolve_prompt(prompt_id)
+        reuse_project_file = True
+        if source_path is not None:
+            source = Path(source_path).expanduser().resolve()
+            if source.is_relative_to(self.prompts_directory):
+                relative = source.relative_to(self.prompts_directory).as_posix()
+                reuse_project_file = all(
+                    record["ledger_file"] != relative for record in records
+                )
         replacement = self.add_prompt(
             kind=str(old["kind"]),
             content=content,
@@ -652,7 +679,7 @@ class Workspace:
                 str(old["workflow_spec"]) if old.get("workflow_spec") else None
             ),
             replaces=str(old["id"]),
-            reuse_project_file=False,
+            reuse_project_file=reuse_project_file,
         )
         records = self.list_prompts()
         replacement_index = next(
@@ -707,6 +734,7 @@ class Workspace:
             "last_deployment": None,
             "last_view": "protocol",
             "current_request": None,
+            "editor_command": None,
             "model_profiles": {},
             "providers": {},
             "updated_at": _timestamp(),
@@ -728,6 +756,7 @@ class Workspace:
         # This field was added additively so existing workspaces keep working
         # without a schema migration.
         state.setdefault("current_request", None)
+        state.setdefault("editor_command", None)
         state.setdefault("model_profiles", {})
         state.setdefault("providers", {})
         return state

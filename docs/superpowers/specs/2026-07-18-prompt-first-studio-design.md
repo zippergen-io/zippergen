@@ -33,10 +33,10 @@ Creation
 ────────
   Prompt   ✓ P001 registered — prompts/review-reply.md
   Task     ✓ .zippergen/current-task.md
-  Next       assistant
+  Next       assistant codex / assistant claude
   Inspect    task · task show · task history
 
-zippergen [no workflow]> assistant
+zippergen [no workflow]> assistant codex
 
 # After the assistant creates and verifies the visible Python source:
 zippergen [no workflow]> use workflows/review_reply.py:review_reply
@@ -69,12 +69,12 @@ Deployment: review-reply
 zippergen [review_reply]> status
 ```
 
-Studio saves a structured assistant handoff and can open the local Codex CLI on
-it. This is a thin, interactive launcher rather than a ZipperGen model provider:
-Codex retains its own authentication, model settings, approvals, tools, and
-optional MCP configuration. The task and generated source contract remain
-usable by other repository-aware assistants through `task show` and `task
-path`.
+Studio saves a structured assistant handoff and can open either the local Codex
+CLI or Claude Code on it. These are thin, interactive launchers rather than
+ZipperGen model providers. Each tool retains its own authentication, model
+settings, approvals, tools, and optional MCP configuration. The task and
+generated source contract remain usable by other repository-aware assistants
+through `task show` and `task path`.
 
 ## Outcome feedback
 
@@ -161,7 +161,8 @@ The non-secret context is:
 - current run ID;
 - current coding-assistant request ID;
 - last named deployment; and
-- last selected semantic view.
+- last selected semantic view; and
+- optional terminal-editor command preference.
 
 The visible `zippergen.toml` contains the project name, prompt directory, and
 optional framework-checkout directory. It contains no current run, secret, or
@@ -290,20 +291,28 @@ or mutates the old run to force progress.
 ```text
 create [PROMPT]
 create --file PATH
+create --edit [PATH] [--editor COMMAND]
 refine "Add a compliance review after retry exhaustion"
 refine --file PATH
+refine --edit [PATH] [--editor COMMAND]
 task
 task show
 task path
 task history
-assistant
+assistant [codex|claude]
+editor [show|set COMMAND|reset]
+edit [workflow|file PATH] [--editor COMMAND]
 prompts
 prompts add [PROMPT]
 prompts add --file PATH
-prompts show ID
+prompts add --edit [PATH] [--editor COMMAND]
+prompts show|inspect ID
+prompts path ID
+prompts edit ID [--editor COMMAND]
 prompts context
+prompts archive|restore ID
 prompts enable|disable|remove ID
-prompts replace ID [PROMPT|--file PATH]
+prompts replace ID [PROMPT|--file PATH|--edit [PATH] [--editor COMMAND]]
 prompts move ID before|after ID
 ```
 
@@ -319,11 +328,35 @@ mirrored atomically at the fixed, ignored `.zippergen/current-task.md` path.
 
 `task` summarizes the current handoff. `task show` prints it verbatim, `task
 path` prints only its stable absolute path, and `task history` lists the private
-immutable archive. `assistant` launches the local Codex CLI with the project as
-its working directory and the current task as its instruction. It requires a
-Codex installation and one-time Codex authentication, but no ZipperGen provider
-or MCP setup. Codex may still use tools or MCP servers from its own independent
-configuration.
+immutable archive. `assistant codex` (also plain `assistant`) launches the local
+Codex CLI; `assistant claude` launches Claude Code. Both use the project as the
+working directory and the current task as the initial instruction. The chosen
+tool requires its own one-time installation and authentication, but no
+ZipperGen provider or MCP setup. It may still use tools or MCP servers from its
+own independent configuration.
+
+`editor set COMMAND` remembers a machine-specific preference in the private
+project workspace. `editor reset` restores discovery through `$VISUAL`,
+`$EDITOR`, then `micro`, `nano`, `vim`, and `vi`. Every edit command accepts a
+one-off `--editor COMMAND` override without changing the preference. Studio
+launches the parsed executable directly in the project root without a shell,
+model call, or MCP dependency. The path for `create/refine/prompts ... --edit`
+is optional. Without one, Studio opens a private project-local draft, derives a
+title from the first heading or nonempty line, assigns the stable ID, and
+creates `prompts/NNN-title-slug.md`. It removes the draft only after successful
+registration; failures leave the user's text recoverable. `edit file` only
+changes a file; `edit workflow` targets the selected file-backed Python
+workflow and suggests validation afterward.
+
+`prompts` is a columnar ledger view with position, stable ID, provenance kind,
+active/archive status, title, and file. `inspect`, `path`, `edit`, `archive`,
+`restore`, `replace`, and `move` all target the ID. Direct edit uses a validated
+staging copy and preserves the ID; replacement creates a new ID, archives the
+old entry, and records provenance. A path-free replacement draft is prefilled
+with the old text. Archive is the routine deletion semantics; it removes an
+entry from active assistant context without destroying history.
+`initial` and `refinement` remain useful provenance labels, while both kinds
+share the same lifecycle and explicit ordered-precedence rules.
 
 ### Model and provider configuration
 
@@ -345,6 +378,12 @@ are entered without echo and stored only in the owner-readable development
 secret file; a local provider stores only its non-secret endpoint. Development
 runs temporarily inject the selected configured providers and restore the
 process environment afterward.
+
+A routing-only model change uses `models default` or `models set` and requires
+no source edit or coding assistant. A model change that belongs in versioned
+intent, workflow/deployment declarations, action prompts, or tests uses the
+normal source-change loop: `refine`, optionally inspect `task`, launch either
+assistant, then `current`, `validate`, semantic views, and a fresh `run`.
 
 ### Future connector and human-channel bindings
 
@@ -378,8 +417,9 @@ The assistant handoff contains:
 
 Studio archives the handoff under `requests/`, mirrors it at the fixed project
 task path, and prints a concise result table instead of flooding the terminal
-with the full content. The Codex launcher consumes the same task and reports
-its exit status. The adapter boundary is not entangled with workflow execution.
+with the full content. The selected Codex or Claude Code launcher consumes the
+same task and reports its exit status. The adapter boundary is not entangled
+with workflow execution.
 
 ### Guided deployment and operation
 
@@ -410,6 +450,12 @@ On resume, the terminal backend may claim an existing pending task and prompt
 again. Notification-oriented backends do not claim tasks this way; they keep
 waiting for the external adapter. This distinction is an explicit backend
 capability, not a check for a particular function name.
+
+Role runners never read the shared terminal directly. A terminal backend marks
+itself as requiring the main thread; the local supervisor bridges the worker's
+request to that thread and returns its answer. Interrupting the prompt leaves
+the SQLite task pending, releases the requesting role, stops the other roles,
+and returns control to Studio only after no worker can consume stdin.
 
 ## Implementation structure
 

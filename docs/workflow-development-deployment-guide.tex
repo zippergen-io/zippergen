@@ -382,14 +382,63 @@ output and sessions with \texttt{NO\_COLOR} remain color-free. Optional
 providers that you are not using are warnings rather than failures.
 \end{notebox}
 
+\subsubsection*{Step 1b: choose a terminal editor once}
+
+Studio can open prompt and workflow files without making you leave its command
+loop. First ask which editor it would use automatically:
+
+\begin{lstlisting}[style=shell]
+editor show
+\end{lstlisting}
+
+The output separates the remembered preference, effective executable, and its
+source. With no preference, Studio checks the ordinary \texttt{\$VISUAL} and
+\texttt{\$EDITOR} settings, then looks for \texttt{micro}, \texttt{nano},
+\texttt{vim}, and \texttt{vi}, in that order. If \texttt{micro} is installed
+and you prefer it, remember that choice for this project:
+
+\begin{lstlisting}[style=shell]
+editor set micro
+editor show
+\end{lstlisting}
+
+Use \texttt{editor set nano} instead if that is the installed editor you want.
+The choice is machine-specific Studio state, not a line in the workflow or a
+file committed to Git. It survives leaving Studio, reopening the terminal, and
+a computer crash. Enter \texttt{editor reset} to return to automatic discovery.
+
+An editor briefly takes over the same terminal. Save the file and exit the
+editor to return to the unchanged Studio session. Studio executes the editor
+program directly; it does not invoke an LLM, shell script, workflow provider,
+or MCP server. A one-time choice can be supplied without changing the saved
+preference:
+
+\begin{lstlisting}[style=shell]
+edit workflow --editor nano
+create --edit --editor micro
+\end{lstlisting}
+
+For an editor that needs arguments, quote the whole one-time command, for
+example \texttt{--editor "code --wait"}. Studio accepts edited files only
+inside the project root, and it does not continue when the editor reports
+failure. These checks keep ``edit this file'' scoped to the current project.
+
 \subsubsection*{Step 2: load a multiline prompt from a file}
 
 Long requirements do not belong in a single-line terminal question. This
 project therefore keeps the complete, readable tutorial prompt at
 \path{prompts/reviewed_answer.md}. The setup copied it from the framework's
 template; a flat checkout already had it at this location. It is not empty.
-Open it in an editor if you want to read or change its headings and bullet
-points. Its complete initial content is reproduced here so the tutorial does
+Open it from Studio if you want to read or change its headings and bullet
+points, then save and exit the editor:
+
+\begin{lstlisting}[style=shell]
+edit file prompts/reviewed_answer.md
+\end{lstlisting}
+
+This edits only the file; the following \texttt{create --file} command
+registers it and prepares the assistant task. Its complete initial content is
+reproduced here so the tutorial does
 not hide the input that drives generation:
 
 \begin{lstlisting}
@@ -435,7 +484,7 @@ It prints a compact table rather than repeating the long prompt:
 Creation
   Prompt   [success] P001 registered - prompts/reviewed_answer.md
   Task     [success] .zippergen/current-task.md
-  Next               assistant
+  Next               assistant codex / assistant claude
   Inspect            task / task show / task history
 \end{lstlisting}
 
@@ -454,18 +503,91 @@ and all exact local projections. No workflow file has been created yet;
 assistant on it.
 
 For your own workflow, create any UTF-8 text or Markdown file in an editor and
-enter \texttt{create --file PATH}. Quote a path containing spaces. Absolute
+enter \texttt{create --file PATH}. More conveniently, combine those two steps:
+
+\begin{lstlisting}[style=shell]
+create --edit
+\end{lstlisting}
+
+No filename is required. Studio creates a private, ignored draft, opens it
+using Step~1b's editor choice, and prepares the task after a successful editor
+exit. It derives the display title from the first Markdown heading or nonempty
+line, assigns the next stable ID, and creates a conventional project file such
+as \path{prompts/003-change-writer-model.md}. The private draft is removed only
+after registration succeeds. If registration fails, Studio leaves the draft
+and prints its path rather than losing what you wrote.
+
+An empty file is rejected, so saving a real requirement is the point at which
+creation continues. An explicit name remains optional:
+
+\begin{lstlisting}[style=shell]
+create --edit prompts/my_workflow.md
+\end{lstlisting}
+
+Studio creates the parent directory when needed. Quote a path containing
+spaces. With \texttt{--file}, absolute
 paths and paths beginning with \texttt{\string~} are accepted too. Never put an
 API key or other secret in a prompt file. Plain \texttt{create} remains
 available for a genuinely short, one-line description.
 
-Enter \texttt{prompts} to list the ordered ledger with each file's first
-heading; enter \texttt{prompts show P001} for the exact text or
-\texttt{prompts context} for the complete active design context. Studio also
-supports \texttt{prompts enable}, \texttt{disable}, \texttt{remove},
-\texttt{replace}, and \texttt{move}. ``Remove'' archives an entry instead of
-destroying its history. Initial and refinement prompts share this one
-mechanism; their kind is retained only as useful provenance.
+Enter \texttt{prompts} to see a table containing each entry's position, stable
+ID, kind, status, title, and file. Every operation targets the stable ID, so no
+filename has to be remembered:
+
+\begin{lstlisting}[style=shell]
+prompts inspect P001
+prompts path P001
+prompts edit P001
+prompts archive P001
+prompts restore P001
+prompts move P003 before P002
+prompts context
+\end{lstlisting}
+
+The list itself has clear column boundaries; a two-prompt project resembles:
+
+\begin{lstlisting}[style=shell]
+Prompt summary
+  Active      [success] 2
+  Archived              0
+  Total                 2
+
+Prompt ledger
+   #  ID     Kind        Status      Title             File
+   1  P001   initial     [active]    Reviewed answers  prompts/001-reviewed-answers.md
+   2  P002   refinement  [active]    Add retry limit   prompts/002-add-retry-limit.md
+\end{lstlisting}
+
+\texttt{inspect} (or \texttt{show}) prints metadata and the exact text;
+\texttt{path} prints the absolute source path for integrations. A direct
+\texttt{edit} keeps the same ID and file, which is appropriate for correcting
+wording without changing the requirement's intended meaning. It edits a staged
+copy and replaces the registered content only after the result is valid
+nonempty UTF-8. An interrupted or invalid edit therefore cannot corrupt the
+ledger entry.
+
+\texttt{archive} excludes an entry from future assistant context without
+destroying its history; \texttt{restore} includes it again. The older
+\texttt{disable}, \texttt{remove}, and \texttt{enable} spellings remain
+aliases. \texttt{move} changes the table order and therefore precedence.
+The original design is labelled \texttt{initial}; later additions are labelled
+\texttt{refinement}. These labels preserve provenance, but both kinds use the
+same inspection, editing, archiving, replacement, and ordering mechanisms.
+
+Do not silently rewrite an already registered requirement when its meaning
+changes. Preserve its history and compose a replacement in the configured
+editor instead:
+
+\begin{lstlisting}[style=shell]
+prompts replace P001 --edit
+\end{lstlisting}
+
+The editor starts with \texttt{P001}'s current text. Studio automatically names
+the new file, archives \texttt{P001}, assigns the replacement a new ID, and
+records the replacement relationship. An explicit path remains optional. For
+a new requirement that does not supersede an old one,
+\texttt{prompts add --edit} adds and names it without creating an assistant
+task; \texttt{refine --edit} both registers it and prepares the change task.
 
 The task itself has similarly discoverable commands. Enter \texttt{task} for
 a summary, \texttt{task show} for its complete text, \texttt{task path} when an
@@ -479,19 +601,23 @@ Python file is inspected and versioned. ZipperGen never treats opaque model
 output as an automatically deployed workflow.
 \end{notebox}
 
-\subsubsection*{Step 3: ask Codex to execute the task}
+\subsubsection*{Step 3: choose an assistant and execute the task}
 
 At the same Studio prompt, enter:
 
 \begin{lstlisting}[style=shell]
-assistant
+assistant codex
+# Or, when Claude Code is installed:
+assistant claude
 \end{lstlisting}
 
-Studio opens the local Codex CLI interactively in the project root and tells it
-to read \path{.zippergen/current-task.md}. There is no task path to copy and no
-second prompt to compose. Codex can inspect and edit the application project,
-ask for its normal approvals, run checks, and report the result. When its
-session ends, the same ZipperGen Studio session continues.
+Choose one of the two commands; do not run both for the same task. Plain
+\texttt{assistant} remains an alias for \texttt{assistant codex}. Studio opens
+the selected local coding assistant interactively in the project root and tells
+it to read \path{.zippergen/current-task.md}. There is no task path to copy and
+no second prompt to compose. The assistant can inspect and edit the application
+project, ask for its normal approvals, run checks, and report the result. When
+its session ends, the same ZipperGen Studio session continues.
 
 If Studio says that \texttt{codex} is missing, the prepared task remains safe.
 Open a second operating-system terminal. If npm is already installed, install
@@ -504,21 +630,23 @@ cd "$HOME/Projects/zippergen-tutorial"
 codex
 \end{lstlisting}
 
-Then return to Studio and enter \texttt{assistant} again. Section~\ref{sec:codex}
-explains this setup and the no-Codex fallback in more detail. The task points
+Then return to Studio and enter \texttt{assistant codex} again.
+Section~\ref{sec:codex} explains setup for both supported assistants and the
+no-assistant fallback in more detail. The task points
 the assistant to
 \path{zippergen/AGENTS.md} and the nested framework's workflow skill when the
 skill is not installed at the parent project root. The long original workflow
 prompt remains in its project file rather than being pasted into the terminal.
 
 \begin{notebox}{What \texttt{assistant} is---and is not}
-\texttt{assistant} is a small launcher for the locally installed Codex CLI. It
-does not send the task through ZipperGen's Writer or Reviewer model providers,
-and it does not need a ZipperGen API key. Codex uses its own one-time login,
-model settings, approval policy, and tools. MCP is not required. If Codex has
-MCP servers configured independently, they remain available to Codex, but
-Studio neither creates nor manages them. Another repository-aware assistant
-can instead read the output of \texttt{task show} or \texttt{task path}.
+\texttt{assistant codex} and \texttt{assistant claude} are small launchers for
+the locally installed Codex CLI and Claude Code respectively. They do not send
+the task through ZipperGen's Writer or Reviewer model providers and need no
+ZipperGen API key. Each tool uses its own authentication, model settings,
+approval policy, and tools. MCP is not required. Independently configured MCP
+servers remain available to the chosen assistant, but Studio neither creates
+nor manages them. Another repository-aware assistant can instead read
+\texttt{task show} or \texttt{task path}.
 \end{notebox}
 
 Wait for the assistant to report generated source, focused tests, validation,
@@ -652,8 +780,20 @@ store and never silently reuses an old result.
 
 Start another run and press Control-C at the human prompt. Studio records the
 managed run as interrupted and prints a recovery hint instead of a traceback.
-You may enter \texttt{current} and \texttt{resume} immediately. To test a full
-terminal or computer restart, leave Studio, reopen a terminal later, and enter:
+The expected transition is:
+
+\begin{lstlisting}[style=shell]
+Approve this draft for the requester? [y/n]: ^C
+Command interrupted. Use 'current' to inspect context; use 'resume' for an incomplete managed run.
+zippergen [reviewed_answer]>
+\end{lstlisting}
+
+Only Studio's main thread reads the terminal. After the warning, no abandoned
+workflow thread should consume a Studio command or print another approval
+prompt. You may enter \texttt{current} and \texttt{resume} immediately;
+\texttt{current} reports the run as interrupted, and \texttt{resume} presents
+the same still-pending approval once. To test a full terminal or computer
+restart, leave Studio, reopen a terminal later, and enter:
 
 \begin{lstlisting}[style=shell]
 cd "$HOME/Projects/zippergen-tutorial"
@@ -772,6 +912,23 @@ zippergen dev workflows/reviewed_answer.py:reviewed_answer \
   --llm-for Reviewer=claude:claude-sonnet-4-6
 \end{lstlisting}
 
+\begin{notebox}{Two different meanings of ``change the model''}
+For a routing-only change, use \texttt{models default SPEC} or
+\texttt{models set LIFELINE SPEC}. Studio remembers that choice for runs and
+deployment; source code does not change, so no refinement or coding assistant
+is needed. If the model choice must become versioned design intent, change
+declared workflow/deployment defaults, or accompany prompt, action, or test
+changes, record it as a refinement and run an assistant. For example:
+
+\begin{lstlisting}[style=shell]
+refine Use openai:gpt-4o-mini for Writer and preserve all protocol behavior.
+assistant claude
+\end{lstlisting}
+
+The second form adds an ordered prompt entry and asks the assistant to update
+and verify visible project files. It is intentionally heavier than routing.
+\end{notebox}
+
 \subsubsection*{Step 10: refine from another prompt}
 
 If Step~9 used paid models, return to deterministic mock execution before
@@ -788,6 +945,19 @@ project also contains the copied refinement prompt as readable input. Enter:
 refine --file prompts/reviewed_answer_refinement.md
 \end{lstlisting}
 
+That file is supplied by the tutorial. When the next change exists only in
+your head, compose and register it in one operation instead:
+
+\begin{lstlisting}[style=shell]
+refine --edit
+\end{lstlisting}
+
+Studio derives the title and filename from what you write. Supply a path only
+when you care about a particular filename, for example
+\texttt{refine --edit prompts/next\_change.md}. Both forms produce the same
+kind of ordered refinement and assistant task. Use one of them for a particular
+change, not both.
+
 This step is useful because creation and later modification must follow the
 same safe cycle; it is not required merely to deploy the initially generated
 workflow. Studio registers the file as \texttt{P002}, saves a semantic pre-edit
@@ -801,6 +971,25 @@ validation, changed projections, and \texttt{zippergen diff} against the
 baseline. Afterward repeat \texttt{validate}, the communication and action
 views, both changed projections, and a fresh \texttt{run}. Never resume an old
 incomplete run after changing workflow meaning.
+
+This is the complete repeatable change loop; use it for every later behavioral
+or source-level modification:
+
+\begin{lstlisting}[style=shell]
+refine --file prompts/next_change.md
+task                 # optional: inspect the generated handoff
+assistant codex      # or: assistant claude
+current
+validate
+show communications
+show agent Writer    # choose every participant changed by the refinement
+run
+\end{lstlisting}
+
+The refinement must come before the assistant call. Each \texttt{refine}
+replaces the generated \texttt{current-task.md} with a new task containing the
+full active prompt ledger, the immediate change, the selected workflow, and
+the pre-change semantic baseline.
 
 \subsubsection*{Step 11: perform the pre-deployment review}
 
@@ -943,6 +1132,8 @@ are:
 \begin{lstlisting}[style=shell]
 project show   # visible project manifest and prompt directory
 current        # prompts, workflow, participants, models, run, deployment
+editor show    # effective terminal editor and preference source
+editor set micro # remember an installed editor for this project
 prompts        # ordered active/archived design requirements
 prompts context # exact active context sent in coding-assistant briefs
 use            # discover workflows and select one from a numbered list
@@ -954,7 +1145,15 @@ run            # fresh guided, durable development run
 resume         # continue the current incomplete managed run
 runs           # list this project's managed development runs
 create --file PATH  # prepare a brief from a multiline prompt file
+create --edit   # compose, automatically name, and prepare a brief
 refine --file PATH  # prepare a change brief plus semantic baseline
+refine --edit   # compose and automatically name a change
+prompts         # table: order, ID, kind, status, title, file
+prompts inspect P002 # metadata and exact requirement
+prompts edit P002    # correct text while retaining its stable ID
+prompts archive P002 # exclude safely; use restore to include it
+prompts move P003 before P002 # change explicit precedence
+assistant codex # execute the current task; assistant claude is also supported
 deploy         # explicitly enter guided named deployment
 exit           # leave Studio
 \end{lstlisting}
@@ -1089,12 +1288,13 @@ is \path{.zippergen/current-task.md}, which is ignored by Git; timestamped
 archives remain outside the checkout.
 
 \begin{notebox}{Current assistant boundary}
-Studio's \texttt{assistant} command launches the local Codex CLI on the current
-task. It is not a ZipperGen model provider and does not automate deployment.
-Codex edits ordinary files in the checkout; ZipperGen then loads, validates,
-projects, renders, and runs the result. Other coding assistants can read the
-same task through \texttt{task show} or \texttt{task path}. After source
-creation, enter \texttt{use} to discover and select the new workflow.
+Studio's \texttt{assistant codex} and \texttt{assistant claude} commands launch
+the selected local coding tool on the current task. Neither is a ZipperGen
+workflow model provider, and neither automates deployment. The assistant edits
+ordinary files in the checkout; ZipperGen then loads, validates, projects,
+renders, and runs the result. Other coding assistants can read the same task
+through \texttt{task show} or \texttt{task path}. After source creation, enter
+\texttt{use} to discover and select the new workflow.
 \end{notebox}
 
 For an existing selected workflow, use the same file form for a substantial
@@ -1553,16 +1753,19 @@ First inspect \texttt{git -C zippergen status --short}; commit, stash, or ask
 for help when needed. Repeat \texttt{uv sync --project zippergen} after pulling
 dependency changes or if the local framework environment was removed.
 
-\subsection{Install Codex for Studio's assistant command}
+\subsection{Install Codex or Claude Code for Studio}
 \label{sec:codex}
 
-You may use another repository-aware coding assistant. The nested framework
-checkout ships the workflow skill at
-\path{zippergen/.agents/skills/zippergen-workflows/SKILL.md};
-\path{zippergen/AGENTS.md} supplies its repository guidance. Studio records the
-nested checkout in \path{zippergen.toml} and places these exact paths in every
-assistant brief. The official Codex skill documentation is at
-\url{https://learn.chatgpt.com/docs/build-skills}.
+The nested framework checkout ships the workflow skill below, while
+\path{zippergen/AGENTS.md} supplies its repository guidance:
+
+\begin{lstlisting}[numbers=none]
+zippergen/.agents/skills/zippergen-workflows/SKILL.md
+\end{lstlisting}
+
+Studio records the nested checkout in \path{zippergen.toml} and places these
+exact paths in every assistant task. See the official
+\href{https://learn.chatgpt.com/docs/build-skills}{Codex skill documentation}.
 
 If the Codex CLI is not installed and Node.js/npm is available:
 
@@ -1586,14 +1789,29 @@ the generated brief explicitly instructs Codex to read and follow it. The CLI
 and IDE extension are recommended local repository surfaces; see
 \url{https://learn.chatgpt.com/docs/codex/cli}.
 
-Normally, however, stay in Studio and enter \texttt{assistant}. Studio supplies
-the project directory and \path{.zippergen/current-task.md} instruction for
-you. It does not require MCP. Any MCP server already configured in Codex is an
-optional Codex tool and is not configured or required by ZipperGen.
+Claude Code is an equal alternative. If it is not installed and Node.js/npm is
+available, install it and start it once to complete Anthropic's authentication:
 
-Codex authentication and a workflow's LLM API key are separate matters. The
-mock tutorial needs no workflow API key, and ZipperGen's provider configuration
-does not configure Codex.
+\begin{lstlisting}[style=shell]
+npm install --global @anthropic-ai/claude-code
+cd "$HOME/Projects/zippergen-tutorial"
+claude
+\end{lstlisting}
+
+See Anthropic's
+\href{https://docs.anthropic.com/en/docs/claude-code/getting-started}{Claude Code setup guide}
+and
+\href{https://docs.anthropic.com/en/docs/claude-code/cli-usage}{CLI reference}.
+
+Normally, stay in Studio and enter \texttt{assistant codex} or
+\texttt{assistant claude}. Studio supplies the project directory and
+\path{.zippergen/current-task.md} instruction. Neither path requires MCP. Any
+MCP server already configured in the chosen tool remains optional and is not
+configured or required by ZipperGen.
+
+Coding-assistant authentication and a workflow's LLM API key are separate
+matters. The mock tutorial needs no workflow API key, and ZipperGen's provider
+configuration configures neither Codex nor Claude Code.
 
 \section{The running example}
 
@@ -2683,6 +2901,9 @@ visible, versionable, and contain no private runtime state. & \\
 $\square$ & \texttt{current}, \texttt{use}, and the selectable \texttt{show}
 views make prompt counts, workflow name, participants, validation, model
 routes, provider readiness, and runtime context clear. & \\
+$\square$ & \texttt{editor set micro} remembers the installed project editor;
+\texttt{editor show}, \texttt{edit file}, and a one-off
+\texttt{--editor nano} behave as documented without MCP setup. & \\
 $\square$ & \texttt{create --file
 prompts/reviewed\_answer.md} registers the multiline prompt as
 \texttt{P001}, creates \path{.zippergen/current-task.md}, and prints a concise
@@ -2690,9 +2911,12 @@ result table; \texttt{task show} exposes the complete task. & \\
 $\square$ & \texttt{assistant} launches Codex in the project root without a
 copied path or MCP setup; the assistant creates visible source plus a focused
 test at the requested paths. & \\
-$\square$ & \texttt{prompts}, \texttt{show}, \texttt{context},
-\texttt{disable}, \texttt{replace}, and \texttt{move} expose one uniform,
-ordered and history-preserving prompt lifecycle. & \\
+$\square$ & Path-free \texttt{refine --edit} derives a readable title and
+canonical numbered filename without asking the user to name the draft. & \\
+$\square$ & \texttt{prompts}, \texttt{inspect}, \texttt{path}, \texttt{edit},
+\texttt{archive}, \texttt{restore}, \texttt{replace}, and \texttt{move}
+target stable IDs and expose one uniform, ordered, history-preserving prompt
+lifecycle. & \\
 $\square$ & \texttt{models show} lists only LLM-active lifelines, and default
 plus per-lifeline routes survive reopening Studio. & \\
 $\square$ & Studio \texttt{run} collects both inputs and presents rejection and
@@ -2742,12 +2966,18 @@ appears; do not prefix them with \texttt{zippergen}:
 \begin{lstlisting}[style=shell]
 project show
 current
+editor show
+editor set micro      # use nano if micro is not installed
 create --file prompts/reviewed_answer.md
+# Or compose a new prompt directly:
+# create --edit
 task
 task show
-assistant
+assistant codex      # or: assistant claude
 prompts
 prompts show P001
+prompts edit P001
+prompts archive P001  # prompts restore P001 reverses this
 prompts context
 # After the coding assistant creates source:
 use workflows/reviewed_answer.py:reviewed_answer
@@ -2759,7 +2989,9 @@ run
 resume
 runs
 refine --file prompts/reviewed_answer_refinement.md
-assistant
+# Or compose a new refinement directly:
+# refine --edit
+assistant codex      # or: assistant claude
 \end{lstlisting}
 
 The listing above stays on the free mock backend. Only after following Optional

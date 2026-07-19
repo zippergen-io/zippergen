@@ -129,6 +129,13 @@ class LocalSupervisor:
         monitors, formula_conditions = _build_formula_monitors(self.wf, self.lifelines)
         result_boxes: dict[str, object] = {}
         threads: list[threading.Thread] = []
+        human_backend = self.human_backend
+        human_dispatcher = None
+        if getattr(human_backend, "requires_main_thread", False):
+            from zippergen.human_backends import _MainThreadHumanDispatcher
+
+            human_dispatcher = _MainThreadHumanDispatcher(human_backend, self.stop)
+            human_backend = human_dispatcher.worker_backend
 
         def make_target(lifeline: Lifeline, seed_env: dict):
             local_stmt = project(self.wf, lifeline)
@@ -143,7 +150,7 @@ class LocalSupervisor:
                         dict(seed_env),
                         self.wf.ns,
                         llm_backend=self.llm_backend,
-                        human_backend=self.human_backend,
+                        human_backend=human_backend,
                         trace=self.trace,
                         monitor=monitors.get(lifeline.name),
                         formula_conditions=formula_conditions,
@@ -167,7 +174,43 @@ class LocalSupervisor:
             threads.append(t)
             t.start()
 
-        if self.timeout <= 0:
+        if human_dispatcher is not None:
+            deadline = (
+                None if self.timeout <= 0 else time.monotonic() + self.timeout
+            )
+            try:
+                while any(t.is_alive() for t in threads):
+                    if self.stop.is_set():
+                        break
+                    wait = 0.05
+                    if deadline is not None:
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            self.stop.set()
+                            human_dispatcher.cancel_pending()
+                            for t in threads:
+                                t.join(timeout=1.0)
+                            alive = next((t for t in threads if t.is_alive()), None)
+                            if alive is not None:
+                                raise TimeoutError(
+                                    f"Lifeline '{alive.name}' did not finish within "
+                                    f"{self.timeout}s"
+                                )
+                            raise TimeoutError(
+                                f"Workflow did not finish within {self.timeout}s"
+                            )
+                        wait = min(wait, remaining)
+                    human_dispatcher.service_next(timeout=wait)
+            except BaseException:
+                self.stop.set()
+                human_dispatcher.cancel_pending()
+                for t in threads:
+                    t.join(timeout=1.0)
+                raise
+            for t in threads:
+                if t.is_alive():
+                    t.join(timeout=1.0)
+        elif self.timeout <= 0:
             try:
                 while any(t.is_alive() for t in threads):
                     if self.stop.is_set():

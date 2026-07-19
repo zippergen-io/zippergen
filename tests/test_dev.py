@@ -1,4 +1,5 @@
 import os
+import threading
 from pathlib import Path
 
 import pytest
@@ -167,6 +168,53 @@ def test_dev_resume_claims_the_existing_pending_terminal_task(tmp_path):
     assert resumed["run_id"] == interrupted["run_id"]
     assert resumed["status"] == "done"
     assert resumed["result"] == "[draft_reply:draft]"
+    assert conn.execute(
+        "SELECT COUNT(*) FROM human_tasks WHERE status='done'"
+    ).fetchone()[0] == 1
+
+
+def test_dev_ctrl_c_keeps_terminal_input_on_main_thread_and_resumes(tmp_path):
+    workspace = Workspace(_repository_root(), home=tmp_path / "home")
+    input_threads = []
+
+    def interrupt_review(prompt: str) -> str:
+        input_threads.append(threading.current_thread())
+        raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        run_dev(
+            workspace,
+            workflow_spec=TUTORIAL_SPEC,
+            provided_inputs={"request": "Interrupt me", "max_retries": 1},
+            input_func=interrupt_review,
+            output_func=lambda line: None,
+        )
+
+    interrupted = workspace.current_run()
+    assert interrupted is not None
+    assert interrupted["status"] == "interrupted"
+    assert input_threads == [threading.main_thread()]
+    assert not any(
+        thread.is_alive()
+        and thread.name in {"Requester", "Writer", "Reviewer"}
+        for thread in threading.enumerate()
+    )
+    conn = open_store(interrupted["store"])
+    assert conn.execute(
+        "SELECT COUNT(*) FROM human_tasks WHERE status='pending'"
+    ).fetchone()[0] == 1
+
+    resumed = run_dev(
+        workspace,
+        resume=True,
+        input_func=lambda prompt: input_threads.append(threading.current_thread())
+        or "y",
+        output_func=lambda line: None,
+    )
+
+    assert resumed["run_id"] == interrupted["run_id"]
+    assert resumed["status"] == "done"
+    assert input_threads == [threading.main_thread(), threading.main_thread()]
     assert conn.execute(
         "SELECT COUNT(*) FROM human_tasks WHERE status='done'"
     ).fetchone()[0] == 1

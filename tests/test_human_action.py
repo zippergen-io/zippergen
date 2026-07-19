@@ -26,6 +26,7 @@ def test_cli_human_backend_claims_resumed_pending_tasks():
     backend = make_cli_human_backend()
 
     assert getattr(backend, "claims_pending_human_tasks", False) is True
+    assert getattr(backend, "requires_main_thread", False) is True
 
 def test_human_action_select():
     action = HumanAction(
@@ -321,6 +322,27 @@ def test_runtime_human_action_reject():
         human_backend=mock_human_backend,
     )
     assert result is False
+
+
+def test_runtime_cli_human_input_runs_only_on_main_thread():
+    import threading
+
+    input_threads = []
+    backend = make_cli_human_backend(
+        input_func=lambda prompt: input_threads.append(threading.current_thread())
+        or "y",
+        output_func=lambda line: None,
+    )
+
+    result = run(
+        approval_flow,
+        [_Planner, _Human],
+        {"Planner": {"n": 42}},
+        human_backend=backend,
+    )
+
+    assert result is True
+    assert input_threads == [threading.main_thread()]
 
 
 def test_runtime_human_trace_kind():

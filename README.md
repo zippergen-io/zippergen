@@ -125,7 +125,10 @@ unique durable SQLite run automatically, and presents human decisions in the
 same terminal. There are no store paths, task IDs, or environment exports to
 manage. If the terminal closes during an incomplete run, return to the project
 and enter `resume`. Use `current` to see the remembered workflow, run, and
-deployment context.
+deployment context. Terminal human actions are always presented by the
+supervisor's main thread, so `Ctrl-C` leaves the durable task pending, stops the
+role threads before Studio accepts another command, and allows an immediate
+`resume` without competing readers on stdin.
 
 Use `models` to choose an inherited default and optional models for individual
 LLM-active lifelines. The profile is remembered with the workflow and carried
@@ -157,7 +160,26 @@ development secret file. Later runs and post-crash resumes reuse it; the value
 is never copied into workspace, run, or request JSON.
 
 To begin from natural language, keep substantial requirements in a readable
-UTF-8 file and give Studio its path. This repository ships an example:
+UTF-8 file. Studio can open the file in a terminal editor, then consume it as
+soon as the editor closes. Choose a project-specific preference once:
+
+```text
+zippergen [no workflow]> editor set micro
+zippergen [no workflow]> editor show
+zippergen [no workflow]> create --edit
+```
+
+The remembered preference survives Studio restarts and computer crashes. A
+one-off choice does not change it: use `--editor nano` on the `create --edit`
+command, or enter `edit workflow --editor micro`. Without a preference,
+Studio tries `$VISUAL`, `$EDITOR`, then `micro`, `nano`, `vim`, and `vi`.
+`editor reset` restores that automatic discovery. Studio runs the editor
+directly in the existing terminal; this uses neither an LLM nor MCP. Commands
+with arguments must be quoted for one-off use, for example
+`--editor "code --wait"`.
+
+This repository also ships a complete example prompt, so the tutorial can
+load it without changing it first:
 
 ```text
 zippergen [no workflow]> create --file prompts/reviewed_answer.md
@@ -165,26 +187,57 @@ Creation
 ────────
   Prompt   ✓ P001 registered — prompts/reviewed_answer.md
   Task     ✓ .zippergen/current-task.md
-  Next       assistant
+  Next       assistant codex · assistant claude
   Inspect    task · task show · task history
 
-zippergen [no workflow]> assistant
+zippergen [no workflow]> assistant codex
 ```
 
 Relative paths are resolved from the project root; quoted paths, absolute
 paths, and `~` are supported. Studio registers a file already under the
 project's `prompts/` directory, or imports an external file there. Inline
 `create` and `refine` descriptions are also saved as numbered Markdown files.
-Plain `create` still asks for a short one-line description.
+Plain `create` still asks for a short one-line description. `--edit` differs
+from `--file`: it creates or opens a project-local file first, waits for a
+successful editor exit, and rejects an empty file before preparing the task.
+No filename is required. Studio stages the editor draft privately, derives its
+title from the first Markdown heading or nonempty line, assigns the next stable
+ID, and registers a conventional file such as
+`prompts/003-change-writer-model.md`. Supplying an explicit path remains
+available when its name matters.
 
-Every entry receives a stable ID such as `P001`. `prompts` lists the ordered
-ledger with its first heading, while `prompts show`, `prompts context`,
-`prompts enable`, `prompts disable`, `prompts replace`, and `prompts move`
-provide one uniform lifecycle. Removal archives an entry instead of destroying
-history. The generated coding-assistant handoff contains every active prompt
-in order and states the precedence rule: later prompts override earlier ones
-only where they explicitly conflict; all unaffected earlier requirements
-remain in force.
+Every entry receives a stable ID such as `P001`. `prompts` renders a table with
+position, ID, kind, status, title, and file. The ID-centered operations are:
+
+```text
+prompts inspect P002
+prompts path P002
+prompts edit P002
+prompts archive P002
+prompts restore P002
+prompts move P003 before P002
+```
+
+They need no filename. Archiving removes an entry from future assistant context
+while preserving history; restoring reverses that choice. Moving changes
+explicit precedence. The older enable/disable/remove spellings remain aliases.
+
+The original design is labelled `initial`; later additions are labelled
+`refinement`. This is provenance, not a separate subsystem: both kinds use the
+same IDs, table, editing, archiving, replacement, and ordering commands. The
+generated coding-assistant handoff contains every active prompt in table order.
+Later prompts override earlier ones only where they explicitly conflict; all
+unaffected earlier requirements remain in force.
+
+For a new refinement that has not yet been written, simply enter
+`refine --edit`; naming is automatic. `prompts edit P002` corrects the
+registered text while retaining `P002`. For a substantive semantic change,
+`prompts replace P002 --edit` creates a new ID and archives `P002`, making the
+history explicit; its editor starts with P002's current text.
+All three accept an optional path and one-off `--editor` choice. The command
+`edit file PATH` merely edits a file; it does not register design intent or
+prepare an assistant task. `edit workflow` opens the selected workflow source,
+after which `validate`, `show`, and `run` are the expected checks.
 
 The handoff also includes required source, tests, validation, semantic views,
 and the no-deployment boundary. Studio writes the complete current handoff to
@@ -194,18 +247,44 @@ prints it, `task path` gives its absolute path for integrations, and `task
 history` lists the private archive. A later `create` or `refine` deliberately
 replaces the current task; the prompt ledger remains the durable design record.
 
-`assistant` opens the locally installed Codex CLI interactively in the project
-root and asks it to execute that fixed task. It does not call an LLM through a
-ZipperGen provider and needs no ZipperGen API-key or MCP configuration. Install
-Codex and run [`codex login`](https://learn.chatgpt.com/docs/developer-commands?surface=cli#cli-codex-login)
-once; Codex then uses its own authentication, model settings, approvals, and
-any tools or MCP servers the user has independently configured. MCP is optional,
-not part of the ZipperGen handoff. Another repository-aware coding assistant
-can consume `task show` or the file path instead.
+`assistant codex` or plain `assistant` opens the locally installed Codex CLI;
+`assistant claude` opens Claude Code. Studio starts either tool interactively
+in the project root and asks it to execute the same fixed task. It does not call
+an assistant through a ZipperGen workflow provider and needs no ZipperGen API
+key or MCP configuration. Install and authenticate the chosen tool once:
+[`codex login`](https://learn.chatgpt.com/docs/developer-commands?surface=cli#cli-codex-login)
+for Codex, or follow Anthropic's
+[`claude` setup](https://docs.anthropic.com/en/docs/claude-code/getting-started).
+Each assistant retains its own model settings, approvals, and independently
+configured tools. MCP is optional, not part of the ZipperGen handoff. Another
+repository-aware coding assistant can consume `task show` or the file path.
 
 After the assistant creates visible Python source, `use` selects it. For an existing workflow,
 `refine --file prompts/reviewed_answer_refinement.md` additionally saves a
 semantic baseline for a meaningful before/after diff.
+
+Every later source/design change uses the same visible loop:
+
+```text
+zippergen [reviewed_answer]> refine --edit
+zippergen [reviewed_answer]> task       # optional summary
+zippergen [reviewed_answer]> assistant claude  # or: assistant codex
+zippergen [reviewed_answer]> current
+zippergen [reviewed_answer]> validate
+zippergen [reviewed_answer]> show communications
+zippergen [reviewed_answer]> run
+```
+
+A model change has two forms. Use `models set Writer SPEC` or `models default
+SPEC` when only the remembered run/deployment routing changes; no assistant is
+needed. Use `refine` followed by an assistant when the choice belongs in
+versioned design intent or requires source, action prompts, deployment
+metadata, or tests to change. For example:
+
+```text
+zippergen [reviewed_answer]> refine Use openai:gpt-4o-mini for Writer and preserve all protocol behavior.
+zippergen [reviewed_answer]> assistant claude
+```
 
 When the mock/fake development run is satisfactory, `deploy` enters the
 existing guided, secret-aware deployment path explicitly. Use `--no-start` for

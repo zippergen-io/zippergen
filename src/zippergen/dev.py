@@ -458,6 +458,7 @@ def run_dev(
             workspace.update_run(selected_run_id, status="running")
 
     setattr(managed_human_backend, "claims_pending_human_tasks", True)
+    setattr(managed_human_backend, "requires_main_thread", True)
 
     try:
         with _temporary_environment(environment):
