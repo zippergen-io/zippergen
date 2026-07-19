@@ -1,4 +1,5 @@
 import json
+import subprocess
 from io import StringIO
 from pathlib import Path
 
@@ -91,8 +92,12 @@ def test_studio_create_saves_code_first_assistant_handoff(tmp_path):
     assert "Use $zippergen-workflows." in content
     assert "visible Python source" in content
     assert "Do not deploy" in content
-    assert output[0].startswith("✓ Registered project prompt P001:")
-    assert output[1].startswith("✓ Creation brief:")
+    assert content == workspace.current_task_path.read_text()
+    assert output[0] == "Creation"
+    assert any("✓ P001 registered" in line for line in output)
+    assert any("✓ .zippergen/current-task.md" in line for line in output)
+    assert any("assistant" in line for line in output)
+    assert all("Pass this brief" not in line for line in output)
 
 
 def test_studio_create_reads_multiline_prompt_from_project_file(tmp_path):
@@ -114,9 +119,12 @@ def test_studio_create_reads_multiline_prompt_from_project_file(tmp_path):
         "Create a reviewed answer workflow.\n\n"
         "Never return an unapproved draft."
     )
-    assert output[0] == "✓ Loaded prompt file: prompts/reviewed answer.md"
-    assert output[1].startswith("✓ Registered project prompt P001:")
-    assert output[2].startswith("✓ Creation brief:")
+    assert output[0] == "Creation"
+    assert any(
+        "P001 registered — prompts/reviewed answer.md" in line
+        for line in output
+    )
+    assert all("Loaded prompt file" not in line for line in output)
 
 
 def test_studio_refine_saves_semantic_baseline_and_handoff(tmp_path):
@@ -133,8 +141,9 @@ def test_studio_refine_saves_semantic_baseline_and_handoff(tmp_path):
     assert str(baselines[0]) in content
     assert "Preserve all behavior not explicitly changed" in content
     assert "zippergen diff" in content
-    assert output[0].startswith("✓ Registered project prompt P001:")
-    assert output[1].startswith("✓ Refinement brief:")
+    assert output[0] == "Refinement"
+    assert any("✓ P001 registered" in line for line in output)
+    assert any("✓ .zippergen/current-task.md" in line for line in output)
 
 
 def test_studio_refine_reads_prompt_from_absolute_file(tmp_path):
@@ -152,9 +161,81 @@ def test_studio_refine_reads_prompt_from_absolute_file(tmp_path):
     assert len(briefs) == 1
     content = briefs[0].read_text()
     assert "Add human review.\nPreserve the existing model call." in content
-    assert output[0] == f"✓ Loaded prompt file: {prompt_file}"
-    assert output[1].startswith("✓ Registered project prompt P001:")
-    assert output[2].startswith("✓ Refinement brief:")
+    assert output[0] == "Refinement"
+    assert any("✓ P001 registered" in line for line in output)
+    assert all("Loaded prompt file" not in line for line in output)
+
+
+def test_studio_task_commands_expose_one_stable_task_and_private_history(tmp_path):
+    studio, workspace, output = _studio(tmp_path)
+    studio.create_request("Create a review workflow.")
+    output.clear()
+
+    studio.execute("task")
+    assert output[0] == "Current task"
+    assert any(".zippergen/current-task.md" in line for line in output)
+    assert any("assistant" in line for line in output)
+
+    output.clear()
+    studio.execute("task path")
+    assert output == [str(workspace.current_task_path)]
+
+    output.clear()
+    studio.execute("task show")
+    assert output == [workspace.current_task_path.read_text().rstrip()]
+
+    output.clear()
+    studio.execute("task history")
+    assert output[0] == "Task history"
+    assert any("create" in line and "P001" in line for line in output)
+
+
+def test_studio_assistant_launches_codex_in_project_on_the_stable_task(
+    tmp_path, monkeypatch
+):
+    studio, workspace, output = _studio(tmp_path)
+    studio.create_request("Create a review workflow.")
+    output.clear()
+    calls: list[tuple[list[str], Path, bool]] = []
+
+    monkeypatch.setattr("zippergen.studio.shutil.which", lambda name: "/bin/codex")
+
+    def fake_run(arguments, *, cwd, check):
+        calls.append((arguments, cwd, check))
+        return subprocess.CompletedProcess(arguments, 0)
+
+    monkeypatch.setattr("zippergen.studio.subprocess.run", fake_run)
+
+    studio.execute("assistant")
+
+    assert calls[0][0][0:3] == [
+        "/bin/codex",
+        "--cd",
+        str(workspace.root),
+    ]
+    assert ".zippergen/current-task.md" in calls[0][0][3]
+    assert calls[0][1] == workspace.root
+    assert calls[0][2] is False
+    assert output[0] == "Assistant"
+    assert any("MCP" in line and "not required" in line for line in output)
+    assert output[-1].startswith("✓ Codex session ended")
+
+
+def test_studio_assistant_reports_missing_codex_without_losing_task(
+    tmp_path, monkeypatch
+):
+    studio, workspace, _output = _studio(tmp_path)
+    studio.create_request("Create a review workflow.")
+    monkeypatch.setattr("zippergen.studio.shutil.which", lambda name: None)
+
+    try:
+        studio.execute("assistant")
+    except SystemExit as exc:
+        assert "Codex CLI was not found" in str(exc)
+        assert "codex login" in str(exc)
+    else:
+        raise AssertionError("assistant should fail when Codex is not installed")
+    assert workspace.current_task_path.exists()
 
 
 def test_studio_prompt_file_errors_are_actionable(tmp_path):
@@ -185,6 +266,8 @@ def test_studio_commands_are_discoverable(tmp_path):
     assert "show | inspect" in output[-1]
     assert "project init [NAME]" in output[-1]
     assert "prompts move ID before|after ID" in output[-1]
+    assert "task show|path|history" in output[-1]
+    assert "assistant" in output[-1]
     assert "create --file PATH" in output[-1]
     assert "refine --file PATH" in output[-1]
     assert "providers set local [URL]" in output[-1]
@@ -314,18 +397,22 @@ def test_studio_current_is_a_complete_project_dashboard(tmp_path):
 
     studio.show_current()
 
-    assert "Project: project" in output
-    assert "Prompts: 1 active, 0 archived (1 total)" in output
-    assert "✓ Workflow: workflow.py:sample" in output
-    assert "Workflow name: sample" in output
-    assert "Participants (2): User, Writer" in output
-    assert "Connector bindings: none" in output
-    assert "✓ Validation: valid" in output
-    assert "LLM assignments:" in output
-    assert any("Writer: mock" in line for line in output)
-    assert "Providers: mock (ready; built in)" in output
-    assert "Run: none" in output
-    assert "Deployment: none" in output
+    assert output[0] == "Current"
+    assert "Project" in output
+    assert "Workflow" in output
+    assert "Models" in output
+    assert "Runtime" in output
+    assert any("Name" in line and "project" in line for line in output)
+    assert any("Prompts" in line and "1 active" in line for line in output)
+    assert any("Selected" in line and "workflow.py:sample" in line for line in output)
+    assert any("Name" in line and "sample" in line for line in output)
+    assert any("Participants" in line and "User, Writer" in line for line in output)
+    assert any("Connectors" in line and "none" in line for line in output)
+    assert any("Validation" in line and "✓ valid" in line for line in output)
+    assert any("Writer" in line and "mock" in line for line in output)
+    assert any("Provider mock" in line and "ready; built in" in line for line in output)
+    assert any("Run" in line and "none" in line for line in output)
+    assert any("Deployment" in line and "none" in line for line in output)
 
 
 def test_studio_current_is_explicit_before_a_workflow_exists(tmp_path):
@@ -333,13 +420,13 @@ def test_studio_current_is_explicit_before_a_workflow_exists(tmp_path):
 
     studio.show_current()
 
-    assert "⚠ Workflow: none" in output
-    assert "Workflow name: none" in output
-    assert "Participants (0): none" in output
-    assert "Connector bindings: none" in output
-    assert "⚠ Validation: not available" in output
-    assert "LLM assignments: none" in output
-    assert "Providers: none" in output
+    assert output[0] == "Current"
+    assert any("Selected" in line and "⚠ none" in line for line in output)
+    assert any("Participants" in line and "0 — none" in line for line in output)
+    assert any("Connectors" in line and "none" in line for line in output)
+    assert any("Validation" in line and "⚠ not available" in line for line in output)
+    assert any("Assignments" in line and "none" in line for line in output)
+    assert any("Providers" in line and "none" in line for line in output)
 
 
 def test_studio_configures_api_and_local_providers_without_displaying_secrets(

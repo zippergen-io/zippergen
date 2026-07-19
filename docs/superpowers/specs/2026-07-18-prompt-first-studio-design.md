@@ -29,9 +29,14 @@ Describe the workflow:
 # Multiline requirements use a project-relative UTF-8 file instead:
 zippergen [no workflow]> create --file prompts/review-reply.md
 
-✓ Registered project prompt P001: prompts/review-reply.md
-✓ Creation brief: ~/.zippergen/workspaces/.../requests/...-create.md
-Pass this brief to a repository-aware coding assistant.
+Creation
+────────
+  Prompt   ✓ P001 registered — prompts/review-reply.md
+  Task     ✓ .zippergen/current-task.md
+  Next       assistant
+  Inspect    task · task show · task history
+
+zippergen [no workflow]> assistant
 
 # After the assistant creates and verifies the visible Python source:
 zippergen [no workflow]> use workflows/review_reply.py:review_reply
@@ -64,9 +69,12 @@ Deployment: review-reply
 zippergen [review_reply]> status
 ```
 
-The first implementation saves a structured assistant handoff instead of
-invoking a provider. Native assistant adapters are a later vertical slice, but
-the prompt and generated source contract must be stable from the beginning.
+Studio saves a structured assistant handoff and can open the local Codex CLI on
+it. This is a thin, interactive launcher rather than a ZipperGen model provider:
+Codex retains its own authentication, model settings, approvals, tools, and
+optional MCP configuration. The task and generated source contract remain
+usable by other repository-aware assistants through `task show` and `task
+path`.
 
 ## Outcome feedback
 
@@ -108,6 +116,7 @@ The visible project layer is deliberately separate from private runtime state:
 ```text
 zippergen-tutorial/
 |-- zippergen.toml
+|-- .zippergen/            # generated current task, ignored by Git
 |-- prompts/
 |   |-- index.toml
 |   `-- *.md
@@ -120,8 +129,8 @@ zippergen-tutorial/
 `zippergen/` checkout exists, the manifest records it as the framework
 directory, workflow discovery excludes it, and coding-assistant briefs point
 to its repository guidance and workflow skill. Project initialization also
-keeps the nested checkout and the optional transparent tutorial runtime out of
-the outer project's Git index.
+keeps the generated task, nested checkout, and optional transparent tutorial
+runtime out of the outer project's Git index.
 
 State lives outside the checkout by default:
 
@@ -130,6 +139,7 @@ $ZIPPERGEN_HOME/workspaces/<project-name>-<path-hash>/
 |-- workspace.json
 |-- development.secrets.json  # optional, mode 0600
 |-- requests/
+|   |-- <request-id>.json
 |   `-- <request-id>.md
 `-- runs/
     |-- <run-id>.json
@@ -149,6 +159,7 @@ The non-secret context is:
 - absolute project root;
 - current workflow spec;
 - current run ID;
+- current coding-assistant request ID;
 - last named deployment; and
 - last selected semantic view.
 
@@ -281,6 +292,11 @@ create [PROMPT]
 create --file PATH
 refine "Add a compliance review after retry exhaustion"
 refine --file PATH
+task
+task show
+task path
+task history
+assistant
 prompts
 prompts add [PROMPT]
 prompts add --file PATH
@@ -297,8 +313,17 @@ the discovered project root; absolute paths and `~` are accepted. A file under
 the canonical prompt directory is registered in place; an external file is
 imported. Inline requirements are written to numbered Markdown files. Prompt
 files and `index.toml` are ordinary reviewable project inputs and may be
-versioned, but must not contain secrets. The generated assistant handoff and
-semantic baseline remain outside the checkout.
+versioned, but must not contain secrets. Timestamped assistant handoffs and
+semantic baselines remain outside the checkout. The current handoff is also
+mirrored atomically at the fixed, ignored `.zippergen/current-task.md` path.
+
+`task` summarizes the current handoff. `task show` prints it verbatim, `task
+path` prints only its stable absolute path, and `task history` lists the private
+immutable archive. `assistant` launches the local Codex CLI with the project as
+its working directory and the current task as its instruction. It requires a
+Codex installation and one-time Codex authentication, but no ZipperGen provider
+or MCP setup. Codex may still use tools or MCP servers from its own independent
+configuration.
 
 ### Model and provider configuration
 
@@ -351,9 +376,10 @@ The assistant handoff contains:
 - for refinement, a unique semantic baseline and expected preserved behavior;
 - an explicit no-deployment boundary unless deployment was requested.
 
-The first slice writes this handoff to `requests/` and prints the exact content.
-An assistant adapter may later consume the same request and report generated
-files. The adapter boundary must not be entangled with workflow execution.
+Studio archives the handoff under `requests/`, mirrors it at the fixed project
+task path, and prints a concise result table instead of flooding the terminal
+with the full content. The Codex launcher consumes the same task and reports
+its exit status. The adapter boundary is not entangled with workflow execution.
 
 ### Guided deployment and operation
 

@@ -364,11 +364,13 @@ current
 \end{lstlisting}
 
 Studio creates \path{zippergen.toml}, \path{prompts/index.toml}, and safe Git
-ignores for the nested framework checkout and optional transparent runtime.
-The manifest and prompt ledger are project source and may be committed. Runs,
-assistant briefs, semantic baselines, and secrets remain in private Studio
-state outside the project. Repeating \texttt{project init} is safe; it reports
-the existing manifest instead of overwriting it.
+ignores for \path{.zippergen}, the nested framework checkout, and the optional
+transparent runtime. The manifest and prompt ledger are project source and may
+be committed. Timestamped tasks, semantic baselines, runs, and secrets remain
+in private Studio state outside the project. Studio mirrors only the current
+generated task at \path{.zippergen/current-task.md}; Git ignores that file.
+Repeating \texttt{project init} is safe; it reports the existing manifest
+instead of overwriting it.
 
 \begin{notebox}{How Studio reports outcomes}
 A green \(\checkmark\) means an operation or check succeeded. A yellow
@@ -426,28 +428,30 @@ create --file prompts/reviewed_answer.md
 
 The path is resolved relative to the project root, not the directory from
 which Studio happened to be launched. Studio reads the whole UTF-8 file,
-preserving paragraphs and lists, wraps it in repository-aware instructions,
-and prints lines similar to the following. Each line begins with Studio's
-green success check mark:
+preserving paragraphs and lists, and wraps it in repository-aware instructions.
+It prints a compact table rather than repeating the long prompt:
 
 \begin{lstlisting}[style=shell]
-Loaded prompt file: prompts/reviewed_answer.md
-Registered project prompt P001: prompts/reviewed_answer.md
-Creation brief: /Users/you/.zippergen/workspaces/.../requests/...-create.md
+Creation
+  Prompt   [success] P001 registered - prompts/reviewed_answer.md
+  Task     [success] .zippergen/current-task.md
+  Next               assistant
+  Inspect            task / task show / task history
 \end{lstlisting}
 
 The source is already inside the project's canonical prompt directory, so
 Studio registers that exact file in place and records stable ID \texttt{P001}
 in \path{prompts/index.toml}; it does not create a duplicate. A prompt loaded
 from outside \path{prompts} is instead imported into a numbered project file,
-and an inline description is saved that way as well. The generated assistant
-brief is a separate, non-secret file outside Git. It
-asks the assistant to identify participants, ownership, messages, action
+and an inline description is saved that way as well. The generated, non-secret
+current task is always \path{.zippergen/current-task.md}; Studio also keeps a
+timestamped private archive outside Git. The task asks the assistant to
+identify participants, ownership, messages, action
 kinds, decisions, loops, deployment needs, safety assumptions, and acceptance
 examples before editing. It also requires tests, validation, semantic views,
 and all exact local projections. No workflow file has been created yet;
-\texttt{create --file} prepares the handoff, and Step~3 asks the coding
-assistant to perform the source edit.
+\texttt{create --file} prepares the handoff, and Step~3 starts the coding
+assistant on it.
 
 For your own workflow, create any UTF-8 text or Markdown file in an editor and
 enter \texttt{create --file PATH}. Quote a path containing spaces. Absolute
@@ -463,6 +467,11 @@ supports \texttt{prompts enable}, \texttt{disable}, \texttt{remove},
 destroying its history. Initial and refinement prompts share this one
 mechanism; their kind is retained only as useful provenance.
 
+The task itself has similarly discoverable commands. Enter \texttt{task} for
+a summary, \texttt{task show} for its complete text, \texttt{task path} when an
+external integration needs the absolute path, or \texttt{task history} for the
+private timestamped archive. You do not copy or paste any task path into Codex.
+
 \begin{notebox}{Why Studio creates a brief instead of hidden code}
 Natural language is flexible; executable coordination must be precise. The
 brief supplies repository rules and acceptance checks. The resulting ordinary
@@ -470,18 +479,23 @@ Python file is inspected and versioned. ZipperGen never treats opaque model
 output as an automatically deployed workflow.
 \end{notebox}
 
-\subsubsection*{Step 3: ask Codex to execute the brief}
+\subsubsection*{Step 3: ask Codex to execute the task}
 
-Open a second terminal, enter the same Git root, and start Codex:
+At the same Studio prompt, enter:
 
 \begin{lstlisting}[style=shell]
-cd "$HOME/Projects/zippergen-tutorial"
-codex --version
-codex
+assistant
 \end{lstlisting}
 
-The version command is only a check. If \texttt{codex} is missing and npm is
-already installed, install and authenticate it once:
+Studio opens the local Codex CLI interactively in the project root and tells it
+to read \path{.zippergen/current-task.md}. There is no task path to copy and no
+second prompt to compose. Codex can inspect and edit the application project,
+ask for its normal approvals, run checks, and report the result. When its
+session ends, the same ZipperGen Studio session continues.
+
+If Studio says that \texttt{codex} is missing, the prepared task remains safe.
+Open a second operating-system terminal. If npm is already installed, install
+and authenticate Codex once:
 
 \begin{lstlisting}[style=shell]
 npm install --global @openai/codex
@@ -490,20 +504,22 @@ cd "$HOME/Projects/zippergen-tutorial"
 codex
 \end{lstlisting}
 
-Section~\ref{sec:codex} explains this setup and the no-Codex fallback in more
-detail. At the Codex prompt, replace \placeholder{CREATION-BRIEF-PATH} with the
-complete path printed by Studio and enter:
-
-\begin{lstlisting}[style=shell]
-Read and execute the creation brief at <CREATION-BRIEF-PATH>. Keep the requested file and workflow names. Do not deploy.
-\end{lstlisting}
-
-The brief points the assistant to
+Then return to Studio and enter \texttt{assistant} again. Section~\ref{sec:codex}
+explains this setup and the no-Codex fallback in more detail. The task points
+the assistant to
 \path{zippergen/AGENTS.md} and the nested framework's workflow skill when the
-skill is not installed at the parent project root. If the assistant cannot
-read the private brief path, the same generated text is printed by Studio and
-can be pasted as a fallback; the long original workflow prompt remains in its
-project file rather than being pasted into the terminal.
+skill is not installed at the parent project root. The long original workflow
+prompt remains in its project file rather than being pasted into the terminal.
+
+\begin{notebox}{What \texttt{assistant} is---and is not}
+\texttt{assistant} is a small launcher for the locally installed Codex CLI. It
+does not send the task through ZipperGen's Writer or Reviewer model providers,
+and it does not need a ZipperGen API key. Codex uses its own one-time login,
+model settings, approval policy, and tools. MCP is not required. If Codex has
+MCP servers configured independently, they remain available to Codex, but
+Studio neither creates nor manages them. Another repository-aware assistant
+can instead read the output of \texttt{task show} or \texttt{task path}.
+\end{notebox}
 
 Wait for the assistant to report generated source, focused tests, validation,
 communication-only and full views, and projections for Requester, Writer, and
@@ -778,8 +794,9 @@ workflow. Studio registers the file as \texttt{P002}, saves a semantic pre-edit
 baseline, and creates a refinement brief. That brief contains both active
 prompts in order, identifies \texttt{P002} as the immediate change, and says
 that a later prompt overrides an earlier one only where it explicitly changes
-or contradicts it. All unaffected earlier requirements remain in force. Pass
-the brief path to Codex as in Step~3. The brief also requires focused tests,
+or contradicts it. All unaffected earlier requirements remain in force. Enter
+\texttt{task} if you want to inspect the handoff summary, then enter
+\texttt{assistant} as in Step~3. The task also requires focused tests,
 validation, changed projections, and \texttt{zippergen diff} against the
 baseline. Afterward repeat \texttt{validate}, the communication and action
 views, both changed projections, and a fresh \texttt{run}. Never resume an old
@@ -1065,17 +1082,19 @@ create
 Describe the workflow: Draft an answer and require human approval.
 \end{lstlisting}
 
-Studio saves and prints a structured coding-assistant brief. The brief asks for
-visible Python source, focused mock/fake tests, validation, communication and
-full views, exact participant projections, and no deployment. It is stored
-outside the Git checkout, so it cannot be committed accidentally.
+Studio saves a structured coding-assistant task. It asks for visible Python
+source, focused mock/fake tests, validation, communication and full views,
+exact participant projections, and no deployment. The stable generated mirror
+is \path{.zippergen/current-task.md}, which is ignored by Git; timestamped
+archives remain outside the checkout.
 
 \begin{notebox}{Current assistant boundary}
-The first Studio version prepares the complete brief but does not itself invoke
-Codex or another provider. Pass the printed brief to a repository-aware coding
-assistant. The assistant edits ordinary files in the checkout; ZipperGen then
-loads, validates, projects, renders, and runs the result. After source creation,
-enter \texttt{use} to discover and select the new workflow.
+Studio's \texttt{assistant} command launches the local Codex CLI on the current
+task. It is not a ZipperGen model provider and does not automate deployment.
+Codex edits ordinary files in the checkout; ZipperGen then loads, validates,
+projects, renders, and runs the result. Other coding assistants can read the
+same task through \texttt{task show} or \texttt{task path}. After source
+creation, enter \texttt{use} to discover and select the new workflow.
 \end{notebox}
 
 For an existing selected workflow, use the same file form for a substantial
@@ -1280,8 +1299,8 @@ Operating-system shell & \texttt{\%}, \texttt{\$}, or a directory name &
 \texttt{cd}, \texttt{git}, \texttt{zippergen}, \texttt{codex} \\
 ZipperGen Studio & \texttt{zippergen [workflow]>} & \texttt{show},
 \texttt{models}, \texttt{run}, \texttt{deploy}, \texttt{status} \\
-Coding assistant & Codex conversation prompt & A short instruction to execute
-the Studio-generated brief; the brief locates the nested workflow skill \\
+Coding assistant & Codex conversation prompt & The Studio-generated task;
+\texttt{assistant} supplies it automatically \\
 \bottomrule
 \end{tabularx}
 
@@ -1534,7 +1553,7 @@ First inspect \texttt{git -C zippergen status --short}; commit, stash, or ask
 for help when needed. Repeat \texttt{uv sync --project zippergen} after pulling
 dependency changes or if the local framework environment was removed.
 
-\subsection{Optional: start Codex in the repository}
+\subsection{Install Codex for Studio's assistant command}
 \label{sec:codex}
 
 You may use another repository-aware coding assistant. The nested framework
@@ -1552,7 +1571,8 @@ npm install --global @openai/codex
 codex login
 \end{lstlisting}
 
-Complete the browser sign-in, then start Codex in the parent tutorial project:
+Complete the browser sign-in once. In ordinary manual use, Codex can be started
+in the parent tutorial project with:
 
 \begin{lstlisting}[style=shell]
 cd "$HOME/Projects/zippergen-tutorial"
@@ -1566,8 +1586,14 @@ the generated brief explicitly instructs Codex to read and follow it. The CLI
 and IDE extension are recommended local repository surfaces; see
 \url{https://learn.chatgpt.com/docs/codex/cli}.
 
+Normally, however, stay in Studio and enter \texttt{assistant}. Studio supplies
+the project directory and \path{.zippergen/current-task.md} instruction for
+you. It does not require MCP. Any MCP server already configured in Codex is an
+optional Codex tool and is not configured or required by ZipperGen.
+
 Codex authentication and a workflow's LLM API key are separate matters. The
-mock tutorial needs no workflow API key.
+mock tutorial needs no workflow API key, and ZipperGen's provider configuration
+does not configure Codex.
 
 \section{The running example}
 
@@ -2086,10 +2112,10 @@ refine --file prompts/compliance-review.md
 \end{lstlisting}
 
 The prompt ledger now preserves this change beside earlier intent, and the
-generated brief supplies the nested skill, complete active context, target,
-semantic baseline, verification, and explicit no-deployment boundary. Start
-Codex with the tutorial-root command from Section~\ref{sec:codex} and ask it to
-execute the exact brief path printed by Studio.
+generated task supplies the nested skill, complete active context, target,
+semantic baseline, verification, and explicit no-deployment boundary. Enter
+\texttt{assistant}; Studio starts Codex in the tutorial root with the fixed
+task automatically.
 
 \subsection{Independently verify the assistant's work}
 
@@ -2659,8 +2685,11 @@ views make prompt counts, workflow name, participants, validation, model
 routes, provider readiness, and runtime context clear. & \\
 $\square$ & \texttt{create --file
 prompts/reviewed\_answer.md} registers the multiline prompt as
-\texttt{P001} and produces a coding-assistant brief; the assistant creates
-visible source plus a focused test at the requested paths. & \\
+\texttt{P001}, creates \path{.zippergen/current-task.md}, and prints a concise
+result table; \texttt{task show} exposes the complete task. & \\
+$\square$ & \texttt{assistant} launches Codex in the project root without a
+copied path or MCP setup; the assistant creates visible source plus a focused
+test at the requested paths. & \\
 $\square$ & \texttt{prompts}, \texttt{show}, \texttt{context},
 \texttt{disable}, \texttt{replace}, and \texttt{move} expose one uniform,
 ordered and history-preserving prompt lifecycle. & \\
@@ -2714,6 +2743,9 @@ appears; do not prefix them with \texttt{zippergen}:
 project show
 current
 create --file prompts/reviewed_answer.md
+task
+task show
+assistant
 prompts
 prompts show P001
 prompts context
@@ -2727,6 +2759,7 @@ run
 resume
 runs
 refine --file prompts/reviewed_answer_refinement.md
+assistant
 \end{lstlisting}
 
 The listing above stays on the free mock backend. Only after following Optional

@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import os
 import shlex
+import shutil
+import subprocess
 import sys
 import time
 from collections.abc import Callable
@@ -72,6 +74,9 @@ _HELP = """Commands:
   project show                   show visible project configuration
   create [PROMPT]                prepare a new-workflow coding-assistant brief
   create --file PATH             read a multiline workflow prompt from a file
+  task                            show the current coding-assistant task
+  task show|path|history          inspect the stable task or private history
+  assistant                      open Codex on the current task in this project
   prompts                        list the ordered project prompt ledger
   prompts add [PROMPT]           add design intent without preparing a handoff
   prompts add --file PATH        import/register a UTF-8 prompt file
@@ -148,6 +153,27 @@ class Studio:
             mark = f"\033[{_STATUS_COLORS[kind]}m{mark}\033[0m"
         self._emit(f"{' ' * indent}{mark} {message}")
 
+    def _status_mark(self, kind: StatusKind) -> str:
+        mark = _STATUS_MARKS[kind]
+        if self.color:
+            return f"\033[{_STATUS_COLORS[kind]}m{mark}\033[0m"
+        return mark
+
+    def _emit_table(
+        self,
+        title: str,
+        rows: list[tuple[str, object, StatusKind | None]],
+    ) -> None:
+        """Render a compact, grouped key/value table with a clear boundary."""
+
+        self._emit(title)
+        self._emit("─" * len(title))
+        width = max((len(label) for label, _value, _kind in rows), default=0)
+        for label, value, kind in rows:
+            prefix = f"{self._status_mark(kind)} " if kind else ""
+            self._emit(f"  {label:<{width}}  {prefix}{value}")
+        self._emit()
+
     def _success(self, message: str, *, indent: int = 0) -> None:
         self._status("success", message, indent=indent)
 
@@ -212,6 +238,10 @@ class Studio:
             self.configure_project(args)
         elif command == "prompts":
             self.manage_prompts(args)
+        elif command == "task":
+            self.manage_task(args)
+        elif command == "assistant":
+            self.run_assistant(args)
         elif command in {"current", "workflow"}:
             self.show_current()
         elif command == "use":
@@ -306,11 +336,6 @@ class Studio:
                 ) from exc
             if not prompt:
                 raise SystemExit(f"Prompt file is empty: {prompt_file}")
-            try:
-                displayed = prompt_file.relative_to(self.workspace.root)
-            except ValueError:
-                displayed = prompt_file
-            self._success(f"Loaded prompt file: {displayed}")
             return prompt, prompt_file
         if "--file" in args:
             raise SystemExit(f"Use {command} --file PATH.")
@@ -451,6 +476,115 @@ class Studio:
             "ID [--file PATH|PROMPT], or prompts move ID before|after ID."
         )
 
+    def manage_task(self, args: list[str]) -> None:
+        if len(args) > 1 or (
+            args and args[0].lower() not in {"show", "path", "history"}
+        ):
+            raise SystemExit("Use task, task show, task path, or task history.")
+        action = args[0].lower() if args else "summary"
+        if action == "history":
+            records = self.workspace.list_requests()
+            if not records:
+                self._emit_table(
+                    "Task history",
+                    [("Status", "none; use create or refine", "warning")],
+                )
+                return
+            self._emit("Task history")
+            self._emit("────────────")
+            self._emit("  Request                  Kind        Prompt  Created")
+            for record in records:
+                self._emit(
+                    f"  {str(record['request_id']):24} "
+                    f"{str(record['kind']):11} "
+                    f"{str(record.get('prompt_id') or '—'):6}  "
+                    f"{record.get('created_at') or '—'}"
+                )
+            self._emit()
+            return
+
+        record = self.workspace.current_request()
+        if record is None:
+            if action in {"show", "path"}:
+                raise SystemExit(
+                    "No current task. Use create or refine to prepare one."
+                )
+            self._emit_table(
+                "Current task",
+                [("Status", "none; use create or refine", "warning")],
+            )
+            return
+        if action == "path":
+            self._emit(self.workspace.current_task_path)
+            return
+        if action == "show":
+            self._emit(
+                self.workspace.current_task_path.read_text(encoding="utf-8").rstrip()
+            )
+            return
+        self._emit_table(
+            "Current task",
+            [
+                ("Status", "ready", "success"),
+                ("Kind", record["kind"], None),
+                ("Request", record["request_id"], None),
+                ("Prompt", record.get("prompt_id") or "—", None),
+                ("Workflow", record.get("workflow_spec") or "new workflow", None),
+                ("File", ".zippergen/current-task.md", None),
+                ("Next", "assistant", None),
+            ],
+        )
+
+    def run_assistant(self, args: list[str]) -> None:
+        if args:
+            raise SystemExit("Studio 'assistant' takes no arguments.")
+        record = self.workspace.current_request()
+        if record is None:
+            raise SystemExit(
+                "No current task. Use create or refine before starting the assistant."
+            )
+        codex = shutil.which("codex")
+        if codex is None:
+            raise SystemExit(
+                "Codex CLI was not found. Install it and run 'codex login' once; "
+                "the current task remains available at "
+                f"{self.workspace.current_task_path}."
+            )
+        relative_task = self.workspace.current_task_path.relative_to(
+            self.workspace.root
+        ).as_posix()
+        self._emit_table(
+            "Assistant",
+            [
+                ("Tool", "Codex CLI", None),
+                ("Task", relative_task, "success"),
+                ("Project", self.workspace.root, None),
+                ("MCP", "not required; Codex keeps its own configured tools", None),
+            ],
+        )
+        instruction = (
+            f"Read and execute {relative_task}. Follow the repository instructions, "
+            "keep all generated code visible, run the requested verification, and "
+            "do not deploy."
+        )
+        try:
+            completed = subprocess.run(
+                [codex, "--cd", str(self.workspace.root), instruction],
+                cwd=self.workspace.root,
+                check=False,
+            )
+        except OSError as exc:
+            raise SystemExit(f"Could not start Codex CLI: {exc}") from exc
+        if completed.returncode != 0:
+            raise SystemExit(
+                f"Codex exited with status {completed.returncode}; the task remains "
+                f"at {self.workspace.current_task_path}."
+            )
+        self._success(
+            "Codex session ended. Inspect the generated files, then use current, "
+            "validate, and show."
+        )
+
     def show_current(self) -> None:
         from zippergen.serve import _validate_workflow
 
@@ -458,24 +592,43 @@ class Studio:
         manifest = self.workspace.project_manifest()
         records = self.workspace.list_prompts()
         active_prompts = sum(bool(record["active"]) for record in records)
-        self._emit(f"Project: {manifest['name']}")
-        self._emit(f"Root: {self.workspace.root}")
-        manifest_message = (
-            f"Manifest: {self.workspace.manifest_path} "
-            f"({'present' if manifest['exists'] else 'not created'})"
+        request = self.workspace.current_request()
+        self._emit("Current")
+        self._emit("═══════")
+        self._emit()
+        self._emit_table(
+            "Project",
+            [
+                ("Name", manifest["name"], None),
+                ("Root", self.workspace.root, None),
+                (
+                    "Manifest",
+                    (
+                        f"present — {self.workspace.manifest_path}"
+                        if manifest["exists"]
+                        else f"not created — {self.workspace.manifest_path}"
+                    ),
+                    "success" if manifest["exists"] else "warning",
+                ),
+                (
+                    "Prompts",
+                    f"{active_prompts} active · "
+                    f"{len(records) - active_prompts} archived · "
+                    f"{len(records)} total",
+                    None,
+                ),
+                (
+                    "Task",
+                    (
+                        f"{request['request_id']} ({request['kind']}) — "
+                        ".zippergen/current-task.md"
+                        if request
+                        else "none; use create or refine"
+                    ),
+                    "success" if request else "warning",
+                ),
+            ],
         )
-        if manifest["exists"]:
-            self._success(manifest_message)
-        else:
-            self._warning(manifest_message)
-        self._emit(
-            f"Prompts: {active_prompts} active, "
-            f"{len(records) - active_prompts} archived ({len(records)} total)"
-        )
-        if state.get("current_workflow"):
-            self._success(f"Workflow: {state['current_workflow']}")
-        else:
-            self._warning("Workflow: none")
         if state.get("current_workflow"):
             _current, workflow, module = self._current_context()
             model = workflow_semantics(workflow, module)
@@ -484,11 +637,6 @@ class Studio:
                 [str(name) for name in raw_lifelines]
                 if isinstance(raw_lifelines, list)
                 else []
-            )
-            self._emit(f"Workflow name: {workflow.name}")
-            self._emit(
-                f"Participants ({len(lifelines)}): "
-                + (", ".join(lifelines) if lifelines else "none")
             )
             raw_action_sites = model.get("action_sites")
             action_sites = (
@@ -504,20 +652,38 @@ class Studio:
                 for site in action_sites
                 if isinstance(site, dict) and site.get("kind") == "effect"
             ]
-            self._emit(
-                f"Human actions ({len(human_actions)}): "
-                + (", ".join(human_actions) if human_actions else "none")
-            )
-            self._emit(
-                f"External effects ({len(effect_actions)}): "
-                + (", ".join(effect_actions) if effect_actions else "none")
-            )
-            self._emit("Connector bindings: none")
             validation = _validate_workflow(workflow, module)
-            if validation["valid"]:
-                self._success("Validation: valid")
-            else:
-                self._error("Validation: invalid")
+            self._emit_table(
+                "Workflow",
+                [
+                    ("Selected", state["current_workflow"], "success"),
+                    ("Name", workflow.name, None),
+                    (
+                        "Participants",
+                        f"{len(lifelines)} — "
+                        + (", ".join(lifelines) if lifelines else "none"),
+                        None,
+                    ),
+                    (
+                        "Human actions",
+                        f"{len(human_actions)} — "
+                        + (", ".join(human_actions) if human_actions else "none"),
+                        None,
+                    ),
+                    (
+                        "Effects",
+                        f"{len(effect_actions)} — "
+                        + (", ".join(effect_actions) if effect_actions else "none"),
+                        None,
+                    ),
+                    ("Connectors", "none", None),
+                    (
+                        "Validation",
+                        "valid" if validation["valid"] else "invalid",
+                        "success" if validation["valid"] else "error",
+                    ),
+                ],
+            )
             profile = self.workspace.model_profile(
                 str(state["current_workflow"]),
                 default=default_llm_spec(module),
@@ -525,47 +691,78 @@ class Studio:
             active_models = self._llm_action_lifelines(workflow, module)
             overrides = profile.get("lifelines") or {}
             assert isinstance(overrides, dict)
-            self._emit(f"Default LLM: {profile['default']}")
+            model_rows: list[tuple[str, object, StatusKind | None]] = [
+                ("Default", profile["default"], None)
+            ]
             if active_models:
-                self._emit("LLM assignments:")
                 for lifeline, actions in active_models.items():
                     explicit = overrides.get(lifeline)
                     effective = str(explicit or profile["default"])
                     source = "override" if explicit else "default"
-                    self._emit(
-                        f"  {lifeline}: {effective} ({source}; "
-                        f"actions: {', '.join(actions)})"
+                    model_rows.append(
+                        (
+                            lifeline,
+                            f"{effective} ({source}; actions: {', '.join(actions)})",
+                            None,
+                        )
                     )
             else:
-                self._emit("LLM assignments: none")
+                model_rows.append(("Assignments", "none", None))
             selected_specs = {str(profile["default"])} | {
                 str(value) for value in overrides.values()
             }
             providers = sorted({_canonical_provider(spec) for spec in selected_specs})
-            self._emit(
-                "Providers: "
-                + ", ".join(
-                    f"{provider} ({self._provider_status(provider)})"
-                    for provider in providers
+            for provider in providers:
+                kind, provider_status = self._provider_readiness(provider)
+                model_rows.append(
+                    (f"Provider {provider}", provider_status, kind)
                 )
+            self._emit_table("Models", model_rows)
+        else:
+            self._emit_table(
+                "Workflow",
+                [
+                    ("Selected", "none", "warning"),
+                    ("Name", "—", None),
+                    ("Participants", "0 — none", None),
+                    ("Human actions", "0 — none", None),
+                    ("Effects", "0 — none", None),
+                    ("Connectors", "none", None),
+                    ("Validation", "not available", "warning"),
+                ],
             )
-        else:
-            self._emit("Workflow name: none")
-            self._emit("Participants (0): none")
-            self._emit("Human actions (0): none")
-            self._emit("External effects (0): none")
-            self._emit("Connector bindings: none")
-            self._warning("Validation: not available")
-            self._emit("Default LLM: none")
-            self._emit("LLM assignments: none")
-            self._emit("Providers: none")
+            self._emit_table(
+                "Models",
+                [
+                    ("Default", "—", None),
+                    ("Assignments", "none", None),
+                    ("Providers", "none", None),
+                ],
+            )
         run = self.workspace.current_run()
+        runtime_rows: list[tuple[str, object, StatusKind | None]] = []
         if run is None:
-            self._emit("Run: none")
+            runtime_rows.append(("Run", "none", None))
         else:
-            self._emit(f"Run: {run['run_id']} ({run['status']})")
-            self._emit(f"Store: managed at {run['store']}")
-        self._emit(f"Deployment: {state.get('last_deployment') or 'none'}")
+            run_status = str(run["status"])
+            if run_status == "done":
+                run_kind: StatusKind = "success"
+            elif run_status == "failed":
+                run_kind = "error"
+            elif run_status in {"waiting", "interrupted"}:
+                run_kind = "warning"
+            else:
+                run_kind = "info"
+            runtime_rows.extend(
+                [
+                    ("Run", f"{run['run_id']} ({run['status']})", run_kind),
+                    ("Store", run["store"], None),
+                ]
+            )
+        runtime_rows.append(
+            ("Deployment", state.get("last_deployment") or "none", None)
+        )
+        self._emit_table("Runtime", runtime_rows)
 
     def _select(self, heading: str, choices: list[str], *, allow_many: bool = False):
         if not choices:
@@ -1054,18 +1251,23 @@ class Studio:
             content=prompt,
             source_path=source_path,
         )
-        action = "Registered" if design_prompt["created"] else "Using"
-        self._success(
-            f"{action} project prompt {design_prompt['id']}: "
-            f"{design_prompt['file']}"
-        )
         context = self.workspace.prompt_context()
         active_prompt_ids = tuple(
             str(record["id"])
             for record in self.workspace.list_prompts()
             if record["active"]
         )
-        content = f"""{self._assistant_skill_instructions()}
+        content = f"""# Current ZipperGen task
+
+This generated task is the complete instruction for the coding assistant.
+Work in the project root {self.workspace.root}. Keep workflow source and tests
+visible in the repository. Do not deploy or start a service.
+
+## Repository guidance
+
+{self._assistant_skill_instructions()}
+
+## Task
 
 Create a new ZipperGen Python workflow in this project from the requirements
 below. Choose a clear module and workflow name under workflows/ unless the
@@ -1086,16 +1288,30 @@ full code views, and inspect every new participant's exact local projection.
 Do not deploy or start a service. Report generated files, assumptions, and
 verification results.
 """
-        record = self.workspace.save_request(
+        self.workspace.save_request(
             kind="create",
             prompt=prompt,
             content=content,
             prompt_id=str(design_prompt["id"]),
             active_prompt_ids=active_prompt_ids,
         )
-        self._success(f"Creation brief: {record['content_file']}")
-        self._emit("Pass this brief to a repository-aware coding assistant:")
-        self._emit(content.rstrip())
+        prompt_action = (
+            "registered" if design_prompt["created"] else "already active"
+        )
+        self._emit_table(
+            "Creation",
+            [
+                (
+                    "Prompt",
+                    f"{design_prompt['id']} {prompt_action} — "
+                    f"{design_prompt['file']}",
+                    "success",
+                ),
+                ("Task", ".zippergen/current-task.md", "success"),
+                ("Next", "assistant", None),
+                ("Inspect", "task · task show · task history", None),
+            ],
+        )
 
     def refine_request(
         self,
@@ -1122,18 +1338,23 @@ verification results.
             source_path=source_path,
             workflow_spec=current,
         )
-        action = "Registered" if design_prompt["created"] else "Using"
-        self._success(
-            f"{action} project prompt {design_prompt['id']}: "
-            f"{design_prompt['file']}"
-        )
         context = self.workspace.prompt_context()
         active_prompt_ids = tuple(
             str(record["id"])
             for record in self.workspace.list_prompts()
             if record["active"]
         )
-        content = f"""{self._assistant_skill_instructions()}
+        content = f"""# Current ZipperGen task
+
+This generated task is the complete instruction for the coding assistant.
+Work in the project root {self.workspace.root}. Keep workflow source and tests
+visible in the repository. Do not deploy or start a service.
+
+## Repository guidance
+
+{self._assistant_skill_instructions()}
+
+## Task
 
 Refine {current} using the active project prompt ledger below. Read it in
 order. Later prompts take precedence only where they explicitly change or
@@ -1151,7 +1372,7 @@ result with the baseline using `zippergen diff`. Do not deploy or start a
 service. Report assumptions, intended semantic changes, preserved behavior,
 and verification results.
 """
-        record = self.workspace.save_request(
+        self.workspace.save_request(
             kind="refine",
             prompt=prompt,
             content=content,
@@ -1160,6 +1381,22 @@ and verification results.
             active_prompt_ids=active_prompt_ids,
             baseline_file=baseline,
         )
-        self._success(f"Refinement brief: {record['content_file']}")
-        self._emit("Pass this brief to a repository-aware coding assistant:")
-        self._emit(content.rstrip())
+        prompt_action = (
+            "registered" if design_prompt["created"] else "already active"
+        )
+        self._emit_table(
+            "Refinement",
+            [
+                (
+                    "Prompt",
+                    f"{design_prompt['id']} {prompt_action} — "
+                    f"{design_prompt['file']}",
+                    "success",
+                ),
+                ("Workflow", current, None),
+                ("Baseline", baseline, "success"),
+                ("Task", ".zippergen/current-task.md", "success"),
+                ("Next", "assistant", None),
+                ("Inspect", "task · task show · task history", None),
+            ],
+        )

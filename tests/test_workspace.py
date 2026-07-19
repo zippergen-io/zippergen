@@ -121,10 +121,24 @@ def test_workspace_updates_run_and_saves_assistant_request(tmp_path):
     assert Path(request["content_file"]).read_text().startswith(
         "Use $zippergen-workflows."
     )
+    assert workspace.current_task_path == root / ".zippergen" / "current-task.md"
+    assert workspace.current_task_path.read_text() == Path(
+        request["content_file"]
+    ).read_text()
+    assert workspace.current_request()["request_id"] == request["request_id"]
+    assert workspace.list_requests()[0]["request_id"] == request["request_id"]
+    assert workspace.load()["current_request"] == request["request_id"]
     metadata = json.loads(
         (workspace.requests_directory / f"{request['request_id']}.json").read_text()
     )
     assert metadata["prompt"] == "Create a review workflow"
+    assert metadata["task_file"] == str(workspace.current_task_path)
+
+    workspace.current_task_path.write_text("stale task\n")
+    workspace.current_request()
+    assert workspace.current_task_path.read_text() == Path(
+        request["content_file"]
+    ).read_text()
 
 
 def test_workspace_keeps_model_profiles_per_workflow(tmp_path):
@@ -284,6 +298,7 @@ def test_project_init_recognizes_and_ignores_nested_framework_checkout(tmp_path)
 
     assert manifest["framework_directory"] == "zippergen"
     assert "/zippergen/" in (root / ".gitignore").read_text().splitlines()
+    assert "/.zippergen/" in (root / ".gitignore").read_text().splitlines()
     assert "/tutorial-runtime/" in (root / ".gitignore").read_text().splitlines()
     assert workspace.discover_workflows() == ["workflows/answer.py:answer"]
 

@@ -55,6 +55,7 @@ source:
 
 ```text
 zippergen-tutorial/          # project, Git root, and coding-assistant root
+├── .zippergen/              # generated current task; ignored by Git
 ├── zippergen.toml           # visible project contract
 ├── prompts/                 # ordered, versionable design intent
 ├── workflows/
@@ -160,6 +161,14 @@ UTF-8 file and give Studio its path. This repository ships an example:
 
 ```text
 zippergen [no workflow]> create --file prompts/reviewed_answer.md
+Creation
+────────
+  Prompt   ✓ P001 registered — prompts/reviewed_answer.md
+  Task     ✓ .zippergen/current-task.md
+  Next       assistant
+  Inspect    task · task show · task history
+
+zippergen [no workflow]> assistant
 ```
 
 Relative paths are resolved from the project root; quoted paths, absolute
@@ -178,8 +187,23 @@ only where they explicitly conflict; all unaffected earlier requirements
 remain in force.
 
 The handoff also includes required source, tests, validation, semantic views,
-and the no-deployment boundary. After the assistant creates visible Python
-source, `use` selects it. For an existing workflow,
+and the no-deployment boundary. Studio writes the complete current handoff to
+the fixed, generated `.zippergen/current-task.md` file and keeps timestamped
+private copies in the project workspace. `task` summarizes it, `task show`
+prints it, `task path` gives its absolute path for integrations, and `task
+history` lists the private archive. A later `create` or `refine` deliberately
+replaces the current task; the prompt ledger remains the durable design record.
+
+`assistant` opens the locally installed Codex CLI interactively in the project
+root and asks it to execute that fixed task. It does not call an LLM through a
+ZipperGen provider and needs no ZipperGen API-key or MCP configuration. Install
+Codex and run [`codex login`](https://learn.chatgpt.com/docs/developer-commands?surface=cli#cli-codex-login)
+once; Codex then uses its own authentication, model settings, approvals, and
+any tools or MCP servers the user has independently configured. MCP is optional,
+not part of the ZipperGen handoff. Another repository-aware coding assistant
+can consume `task show` or the file path instead.
+
+After the assistant creates visible Python source, `use` selects it. For an existing workflow,
 `refine --file prompts/reviewed_answer_refinement.md` additionally saves a
 semantic baseline for a meaningful before/after diff.
 
@@ -452,10 +476,11 @@ retained as provenance labels but use the same listing, ordering, activation,
 replacement, and context mechanism. The Python workflow remains executable
 truth; the prompt ledger is durable intent and history.
 
-Studio stores the generated assistant requests and semantic baselines outside
-the Git checkout under the project workspace, so those derived artifacts do
-not pollute commits or contain deployment secrets. Prompt files themselves are
-ordinary project inputs; never put API keys or other secrets in them.
+Studio stores timestamped assistant requests and semantic baselines outside
+the Git checkout under the project workspace. It mirrors only the current
+generated task at `.zippergen/current-task.md`, which `project init` adds to
+`.gitignore`. Prompt files themselves are ordinary project inputs; never put
+API keys or other secrets in prompts or generated tasks.
 
 This repository includes a reusable coding-assistant skill at
 `.agents/skills/zippergen-workflows/`. Codex discovers it automatically, and

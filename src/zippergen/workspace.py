@@ -30,6 +30,8 @@ PROJECT_SCHEMA_VERSION = 1
 PROMPT_LEDGER_SCHEMA_VERSION = 1
 PROJECT_MANIFEST_NAME = "zippergen.toml"
 PROMPT_INDEX_NAME = "index.toml"
+PROJECT_TASK_DIRECTORY = ".zippergen"
+CURRENT_TASK_NAME = "current-task.md"
 
 _IGNORED_DISCOVERY_PARTS = {
     ".git",
@@ -249,6 +251,12 @@ class Workspace:
         self.requests_directory = self.directory / "requests"
 
     @property
+    def current_task_path(self) -> Path:
+        """Return the stable, project-local coding-assistant handoff path."""
+
+        return self.root / PROJECT_TASK_DIRECTORY / CURRENT_TASK_NAME
+
+    @property
     def manifest_path(self) -> Path:
         return self.root / PROJECT_MANIFEST_NAME
 
@@ -360,7 +368,7 @@ class Workspace:
             existing = (
                 gitignore.read_text(encoding="utf-8") if gitignore.exists() else ""
             )
-            desired = ["/tutorial-runtime/"]
+            desired = [f"/{PROJECT_TASK_DIRECTORY}/", "/tutorial-runtime/"]
             if framework_directory:
                 desired.insert(0, f"/{framework_directory.rstrip('/')}/")
             current = {line.strip() for line in existing.splitlines()}
@@ -698,6 +706,7 @@ class Workspace:
             "current_run": None,
             "last_deployment": None,
             "last_view": "protocol",
+            "current_request": None,
             "model_profiles": {},
             "providers": {},
             "updated_at": _timestamp(),
@@ -718,6 +727,7 @@ class Workspace:
             )
         # This field was added additively so existing workspaces keep working
         # without a schema migration.
+        state.setdefault("current_request", None)
         state.setdefault("model_profiles", {})
         state.setdefault("providers", {})
         return state
@@ -1043,9 +1053,80 @@ class Workspace:
             "baseline_file": str(baseline_file) if baseline_file else None,
             "prompt": prompt,
             "content_file": str(self.requests_directory / f"{request_id}.md"),
+            "task_file": str(self.current_task_path),
             "created_at": _timestamp(),
         }
         self.requests_directory.mkdir(parents=True, exist_ok=True)
-        Path(record["content_file"]).write_text(content.rstrip() + "\n", encoding="utf-8")
+        task_content = content.rstrip() + "\n"
+        _atomic_write_text(Path(record["content_file"]), task_content)
         _atomic_write_json(self.requests_directory / f"{request_id}.json", record)
+        _atomic_write_text(self.current_task_path, task_content)
+        self.update(current_request=request_id)
         return record
+
+    def request_path(self, request_id: str) -> Path:
+        return self.requests_directory / f"{request_id}.json"
+
+    def load_request(self, request_id: str) -> dict[str, Any]:
+        record = _read_json(self.request_path(request_id))
+        if record.get("schema_version") != REQUEST_SCHEMA_VERSION:
+            raise WorkspaceError(
+                f"Unsupported assistant request schema in "
+                f"{self.request_path(request_id)}: "
+                f"{record.get('schema_version')!r}"
+            )
+        if Path(str(record.get("project_root"))).resolve() != self.root:
+            raise WorkspaceError(
+                f"Assistant request {request_id} belongs to another project root."
+            )
+        return record
+
+    def list_requests(self) -> list[dict[str, Any]]:
+        """Return archived coding-assistant requests, newest first."""
+
+        if not self.requests_directory.exists():
+            return []
+        records: list[dict[str, Any]] = []
+        for path in self.requests_directory.glob("*.json"):
+            try:
+                records.append(self.load_request(path.stem))
+            except WorkspaceError:
+                continue
+        return sorted(
+            records,
+            key=lambda record: (
+                str(record.get("created_at") or ""),
+                str(record.get("request_id") or ""),
+            ),
+            reverse=True,
+        )
+
+    def current_request(self) -> dict[str, Any] | None:
+        """Return the current handoff and restore its stable mirror if needed."""
+
+        request_id = self.load().get("current_request")
+        record: dict[str, Any] | None = None
+        if request_id:
+            try:
+                record = self.load_request(str(request_id))
+            except WorkspaceError:
+                record = None
+        if record is None:
+            requests = self.list_requests()
+            record = requests[0] if requests else None
+        if record is None:
+            return None
+        content_file = Path(str(record.get("content_file") or ""))
+        try:
+            content = content_file.read_text(encoding="utf-8")
+        except (FileNotFoundError, OSError, UnicodeDecodeError) as exc:
+            raise WorkspaceError(
+                f"Could not restore current task from {content_file}: {exc}"
+            ) from exc
+        if not self.current_task_path.exists() or (
+            self.current_task_path.read_text(encoding="utf-8") != content
+        ):
+            _atomic_write_text(self.current_task_path, content)
+        if request_id != record.get("request_id"):
+            self.update(current_request=str(record["request_id"]))
+        return {**record, "task_file": str(self.current_task_path)}
