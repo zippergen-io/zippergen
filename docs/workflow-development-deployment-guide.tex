@@ -218,6 +218,9 @@ mkdir zippergen-tutorial
 cd "$HOME/Projects/zippergen-tutorial"
 git init
 git clone https://github.com/zippergen-io/zippergen.git zippergen
+mkdir -p prompts
+cp zippergen/prompts/reviewed_answer.md prompts/reviewed_answer.md
+cp zippergen/prompts/reviewed_answer_refinement.md prompts/reviewed_answer_refinement.md
 uv python install 3.12
 uv sync --project zippergen --python 3.12
 uv tool install --force --editable ./zippergen
@@ -227,6 +230,10 @@ zippergen --help
 The parent is now the tutorial project and coding-assistant root. Its nested
 \path{zippergen} directory is a separate framework checkout containing
 \path{AGENTS.md}, the workflow skill, framework source, and shipped examples.
+The two \texttt{cp} commands copy the shipped prompt templates into the
+application project's own \path{prompts} directory. From this point onward,
+all Studio commands use the short project-relative \path{prompts/...} paths;
+they do not reach back into the framework checkout for project design input.
 \texttt{uv sync} creates the framework's local environment;
 \texttt{uv tool install --force --editable} makes the short \texttt{zippergen} command
 available while still using this editable checkout. The project, checkout,
@@ -234,6 +241,20 @@ downloaded Python, and environment survive closing the terminal or rebooting.
 The final help output should list \texttt{studio} among the available
 top-level commands. You do not run \texttt{models} here: \texttt{models} is a
 short command entered later inside Studio.
+
+\begin{notebox}{If your existing tutorial checkout is flat}
+An older version of this guide cloned ZipperGen directly into
+\path{zippergen-tutorial}. In that layout the project root itself contains
+\path{AGENTS.md}, \path{pyproject.toml}, \path{src}, and \path{prompts}, and
+there is no nested \path{zippergen} directory. Do not add a
+\texttt{zippergen/} prefix to prompt paths. The correct Studio command is
+still \texttt{create --file prompts/reviewed\_answer.md}. For that flat
+checkout, run these equivalent installation commands from its root:
+\begin{quote}
+\texttt{uv sync --python 3.12}\\
+\texttt{uv tool install --force --editable .}
+\end{quote}
+\end{notebox}
 
 If \texttt{git} is not found, install the standard Git package for your
 operating system and repeat the first listing. If \texttt{uv} is not found but
@@ -362,33 +383,65 @@ providers that you are not using are warnings rather than failures.
 \subsubsection*{Step 2: load a multiline prompt from a file}
 
 Long requirements do not belong in a single-line terminal question. This
-checkout therefore ships the complete, readable tutorial prompt at
-\path{zippergen/prompts/reviewed_answer.md}. Open that file in an editor if you want to
-read or change its headings and bullet points. It fixes the generated source,
-workflow, and test names so the remaining steps are reproducible.
+project therefore keeps the complete, readable tutorial prompt at
+\path{prompts/reviewed_answer.md}. The setup copied it from the framework's
+template; a flat checkout already had it at this location. It is not empty.
+Open it in an editor if you want to read or change its headings and bullet
+points. Its complete initial content is reproduced here so the tutorial does
+not hide the input that drives generation:
+
+\begin{lstlisting}
+# Reviewed-answer tutorial workflow
+
+Create `workflows/reviewed_answer.py` with a workflow named
+`reviewed_answer`.
+
+## Participants and behavior
+
+- Requester initially owns `request` and `max_retries`.
+- Writer uses an LLM to draft and revise an answer.
+- Reviewer uses a separate LLM to assess every draft.
+- After the automated assessment, a human approves or rejects the draft.
+- A rejection sends the draft back to Writer while retries remain.
+- Never return an unapproved draft. Return an explicit failure after retry
+  exhaustion.
+
+## Development and deployment requirements
+
+- Declare `mock` as the default model.
+- Declare `request` as a deployment input defaulting to
+  `Explain why the sky is blue in two sentences.`
+- Declare `max_retries` as an integer deployment input defaulting to `2`.
+- Add conditional OpenAI and Anthropic API-key fields.
+- Include the generated workflow file in the deployment bundle.
+- Add focused tests in `tests/test_reviewed_answer.py`.
+- Do not deploy or start a service.
+\end{lstlisting}
 
 At the Studio prompt, load the file:
 
 \begin{lstlisting}[style=shell]
-create --file zippergen/prompts/reviewed_answer.md
+create --file prompts/reviewed_answer.md
 \end{lstlisting}
 
 The path is resolved relative to the project root, not the directory from
 which Studio happened to be launched. Studio reads the whole UTF-8 file,
 preserving paragraphs and lists, wraps it in repository-aware instructions,
-and prints lines similar to:
+and prints lines similar to the following. Each line begins with Studio's
+green success check mark:
 
 \begin{lstlisting}[style=shell]
-Prompt file: zippergen/prompts/reviewed_answer.md
-Registered project prompt P001: prompts/001-reviewed-answer-tutorial-workflow.md
+Loaded prompt file: prompts/reviewed_answer.md
+Registered project prompt P001: prompts/reviewed_answer.md
 Creation brief: /Users/you/.zippergen/workspaces/.../requests/...-create.md
 \end{lstlisting}
 
-The shipped source is outside the project's canonical prompt directory, so
-Studio imports its exact content into a numbered, versionable project file and
-records stable ID \texttt{P001} in \path{prompts/index.toml}. Inline
-descriptions are saved in the same way. The generated assistant brief is a
-separate, non-secret file outside Git. It
+The source is already inside the project's canonical prompt directory, so
+Studio registers that exact file in place and records stable ID \texttt{P001}
+in \path{prompts/index.toml}; it does not create a duplicate. A prompt loaded
+from outside \path{prompts} is instead imported into a numbered project file,
+and an inline description is saved that way as well. The generated assistant
+brief is a separate, non-secret file outside Git. It
 asks the assistant to identify participants, ownership, messages, action
 kinds, decisions, loops, deployment needs, safety assumptions, and acceptance
 examples before editing. It also requires tests, validation, semantic views,
@@ -713,15 +766,15 @@ models reset all
 \end{lstlisting}
 
 This changes only routing; it does not delete saved development secrets. The
-checkout also ships the refinement prompt as readable project input. Enter:
+project also contains the copied refinement prompt as readable input. Enter:
 
 \begin{lstlisting}[style=shell]
-refine --file zippergen/prompts/reviewed_answer_refinement.md
+refine --file prompts/reviewed_answer_refinement.md
 \end{lstlisting}
 
 This step is useful because creation and later modification must follow the
 same safe cycle; it is not required merely to deploy the initially generated
-workflow. Studio imports the file as \texttt{P002}, saves a semantic pre-edit
+workflow. Studio registers the file as \texttt{P002}, saves a semantic pre-edit
 baseline, and creates a refinement brief. That brief contains both active
 prompts in order, identifies \texttt{P002} as the immediate change, and says
 that a later prompt overrides an earlier one only where it explicitly changes
@@ -1002,7 +1055,7 @@ For a multiline description, keep the prompt in an ordinary project file and
 give Studio its path. The shipped tutorial prompt is an example:
 
 \begin{lstlisting}[style=shell]
-create --file zippergen/prompts/reviewed_answer.md
+create --file prompts/reviewed_answer.md
 \end{lstlisting}
 
 For a short idea, plain \texttt{create} still asks one inline question:
@@ -1029,7 +1082,7 @@ For an existing selected workflow, use the same file form for a substantial
 change:
 
 \begin{lstlisting}[style=shell]
-refine --file zippergen/prompts/reviewed_answer_refinement.md
+refine --file prompts/reviewed_answer_refinement.md
 \end{lstlisting}
 
 Studio saves a semantic pre-edit baseline and includes its unique path in the
@@ -2444,11 +2497,11 @@ Confirm that the file exists there and is UTF-8 text:
 \begin{lstlisting}[style=shell]
 # Run these in the operating-system shell, not inside Studio:
 cd "$HOME/Projects/zippergen-tutorial"
-ls zippergen/prompts/reviewed_answer.md
+ls prompts/reviewed_answer.md
 \end{lstlisting}
 
 Then return to Studio and enter
-\texttt{create --file zippergen/prompts/reviewed\_answer.md}. If a path contains spaces,
+\texttt{create --file prompts/reviewed\_answer.md}. If a path contains spaces,
 quote the whole path. Studio reports the absolute path when a file is missing
 and explicitly distinguishes an empty file, a directory, and invalid UTF-8.
 
@@ -2605,7 +2658,7 @@ $\square$ & \texttt{current}, \texttt{use}, and the selectable \texttt{show}
 views make prompt counts, workflow name, participants, validation, model
 routes, provider readiness, and runtime context clear. & \\
 $\square$ & \texttt{create --file
-zippergen/prompts/reviewed\_answer.md} imports the multiline prompt as
+prompts/reviewed\_answer.md} registers the multiline prompt as
 \texttt{P001} and produces a coding-assistant brief; the assistant creates
 visible source plus a focused test at the requested paths. & \\
 $\square$ & \texttt{prompts}, \texttt{show}, \texttt{context},
@@ -2660,7 +2713,7 @@ appears; do not prefix them with \texttt{zippergen}:
 \begin{lstlisting}[style=shell]
 project show
 current
-create --file zippergen/prompts/reviewed_answer.md
+create --file prompts/reviewed_answer.md
 prompts
 prompts show P001
 prompts context
@@ -2673,7 +2726,7 @@ models show
 run
 resume
 runs
-refine --file zippergen/prompts/reviewed_answer_refinement.md
+refine --file prompts/reviewed_answer_refinement.md
 \end{lstlisting}
 
 The listing above stays on the free mock backend. Only after following Optional
