@@ -49,6 +49,35 @@ Running `zippergen` with no subcommand opens the project-aware development
 workspace. It discovers the Git/project root, remembers the current workflow,
 and makes the main path visible through `help` and numbered selectors.
 
+For workflow development, the application project may be separate from the
+framework checkout. This is especially useful while developing ZipperGen from
+source:
+
+```text
+zippergen-tutorial/          # project, Git root, and coding-assistant root
+├── zippergen.toml           # visible project contract
+├── prompts/                 # ordered, versionable design intent
+├── workflows/
+├── tests/
+└── zippergen/               # optional local framework checkout
+```
+
+Pass the parent with `zippergen studio --project PATH` for the first session.
+Inside Studio, `project init [NAME]` creates `zippergen.toml`, the prompt
+ledger, and safe Git ignores. A manifest takes precedence during later project
+discovery; an explicit `--project` path is always used exactly.
+
+When using a nested editable checkout, expose its CLI once and initialize the
+parent from the parent directory:
+
+```bash
+uv tool install --force --editable ./zippergen
+zippergen studio --project .
+```
+
+Then enter `project init NAME` inside Studio. Subsequent sessions need only the
+short `zippergen` command from the parent project root.
+
 ```text
 $ uv run zippergen
 ZipperGen Studio
@@ -72,6 +101,17 @@ zippergen [tutorial_review]> show
 zippergen [tutorial_review]> run
 ```
 
+`current` is the concise project dashboard: project and manifest, active and
+archived prompt counts, workflow name, participants, human actions, external
+effects, validation state, effective per-lifeline model assignments, provider
+readiness, connector bindings, run, and deployment. It remains useful before a
+workflow exists; unknown fields are shown as `none` rather than guessed.
+
+Connector bindings are intentionally reported but not configured in this
+slice. Future Gmail, Google Sheets, Telegram, email, and human-channel adapters
+will bind to declared lifeline capabilities without conflating the lifeline's
+authority with credentials or transport configuration.
+
 `run` validates first, guides you through every workflow input, creates a
 unique durable SQLite run automatically, and presents human decisions in the
 same terminal. There are no store paths, task IDs, or environment exports to
@@ -90,6 +130,18 @@ zippergen [tutorial_review]> models set Reviewer claude:claude-sonnet-4-6
 zippergen [tutorial_review]> models show
 ```
 
+Provider configuration is separate from model routing:
+
+```text
+zippergen [tutorial_review]> providers
+zippergen [tutorial_review]> providers set openai
+zippergen [tutorial_review]> providers set local http://127.0.0.1:11434/v1
+```
+
+API keys are entered without echo and remain in owner-only Studio secret
+storage. Local endpoint settings and non-secret routing are remembered, while
+`providers` displays readiness without ever displaying a key.
+
 `run openai:gpt-4o-mini` remains a one-run override of the default; explicit
 lifeline overrides remain in effect. If any selected provider needs a declared
 API key, Studio asks for it without echo and saves it once in an owner-only
@@ -104,13 +156,25 @@ zippergen [no workflow]> create --file prompts/reviewed_answer.md
 ```
 
 Relative paths are resolved from the project root; quoted paths, absolute
-paths, and `~` are supported. Plain `create` still asks for a short one-line
-description. The first Studio integration writes and prints a structured brief
-for a repository-aware coding assistant, including the required source, tests,
-validation, semantic views, and no-deployment boundary. After the assistant
-creates the visible Python source, `use` selects it. For an existing workflow,
-`refine --file prompts/reviewed_answer_refinement.md` also saves a semantic
-baseline for a meaningful before/after diff.
+paths, and `~` are supported. Studio registers a file already under the
+project's `prompts/` directory, or imports an external file there. Inline
+`create` and `refine` descriptions are also saved as numbered Markdown files.
+Plain `create` still asks for a short one-line description.
+
+Every entry receives a stable ID such as `P001`. `prompts` lists the ordered
+ledger with its first heading, while `prompts show`, `prompts context`,
+`prompts enable`, `prompts disable`, `prompts replace`, and `prompts move`
+provide one uniform lifecycle. Removal archives an entry instead of destroying
+history. The generated coding-assistant handoff contains every active prompt
+in order and states the precedence rule: later prompts override earlier ones
+only where they explicitly conflict; all unaffected earlier requirements
+remain in force.
+
+The handoff also includes required source, tests, validation, semantic views,
+and the no-deployment boundary. After the assistant creates visible Python
+source, `use` selects it. For an existing workflow,
+`refine --file prompts/reviewed_answer_refinement.md` additionally saves a
+semantic baseline for a meaningful before/after diff.
 
 When the mock/fake development run is satisfactory, `deploy` enters the
 existing guided, secret-aware deployment path explicitly. Use `--no-start` for
@@ -373,6 +437,13 @@ can remain in normal, versioned prompt files:
 zippergen [no workflow]> create --file prompts/reviewed_answer.md
 zippergen [reviewed_answer]> refine --file prompts/reviewed_answer_refinement.md
 ```
+
+These are not disposable chat messages. Studio records them in the project's
+ordered prompt ledger and gives the coding assistant the complete active
+design context alongside the current workflow. `initial` and `refinement` are
+retained as provenance labels but use the same listing, ordering, activation,
+replacement, and context mechanism. The Python workflow remains executable
+truth; the prompt ledger is durable intent and history.
 
 Studio stores the generated assistant requests and semantic baselines outside
 the Git checkout under the project workspace, so those derived artifacts do

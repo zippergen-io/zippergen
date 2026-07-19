@@ -432,6 +432,11 @@ def run_dev(
         secret_input_func=secret_input_func,
         output_func=output_func,
     )
+    provider_environment = workspace.development_provider_environment(
+        selected_llm_specs(selected_llm, selected_llms)
+    )
+    provider_environment.update(environment)
+    environment = provider_environment
 
     store_path = str(record["store"])
     workspace.update(

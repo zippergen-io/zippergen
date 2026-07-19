@@ -18,13 +18,56 @@ from zippergen.workspace import Workspace, WorkspaceError
 
 InputFunc = Callable[[str], str]
 OutputFunc = Callable[[str], object]
+SecretInputFunc = Callable[[str], str]
+
+
+_PROVIDER_ALIASES = {
+    "claude": "anthropic",
+    "ollama": "local",
+}
+_PROVIDER_SECRETS = {
+    "openai": "OPENAI_API_KEY",
+    "anthropic": "ANTHROPIC_API_KEY",
+    "mistral": "MISTRAL_API_KEY",
+}
+_SUPPORTED_PROVIDERS = ("mock", "local", "openai", "anthropic", "mistral")
+
+
+def _canonical_provider(value: str) -> str:
+    provider = value.partition(":")[0].strip().lower()
+    return _PROVIDER_ALIASES.get(provider, provider)
+
+
+def _validate_model_spec(value: str) -> str:
+    spec = value.strip()
+    provider, separator, model = spec.partition(":")
+    canonical = _canonical_provider(provider)
+    if not spec or canonical not in _SUPPORTED_PROVIDERS:
+        raise SystemExit(
+            "Model provider must be mock, local/ollama, openai, "
+            "anthropic/claude, or mistral."
+        )
+    if separator and not model.strip():
+        raise SystemExit(f"Model spec {value!r} is missing a model after ':'.")
+    return spec
 
 
 _HELP = """Commands:
+  project init [NAME]            create zippergen.toml and the prompt ledger
+  project show                   show visible project configuration
   create [PROMPT]                prepare a new-workflow coding-assistant brief
   create --file PATH             read a multiline workflow prompt from a file
+  prompts                        list the ordered project prompt ledger
+  prompts add [PROMPT]           add design intent without preparing a handoff
+  prompts add --file PATH        import/register a UTF-8 prompt file
+  prompts show ID                show one prompt verbatim
+  prompts context                show all active prompts in precedence order
+  prompts enable|disable ID      include/exclude a prompt from future handoffs
+  prompts remove ID              archive a prompt (an alias for disable)
+  prompts replace ID [PROMPT]    supersede a prompt while preserving its history
+  prompts move ID before|after ID
   use [PATH.py:WORKFLOW]         select a workflow; no argument opens a selector
-  current                        show project, workflow, and current run context
+  current                        show the complete project/workflow dashboard
   show | inspect                 choose a code-first semantic view
   show overview|protocol|communications|actions|full
   show agent [NAME]              exact local projection (selector if omitted)
@@ -35,6 +78,10 @@ _HELP = """Commands:
   models default SPEC            set the inherited default LLM
   models set LIFELINE SPEC       override one LLM-active lifeline
   models reset LIFELINE|all      restore inheritance or reset the whole profile
+  providers                      show model-provider readiness without secrets
+  providers set openai|anthropic|mistral
+  providers set local [URL]      configure a local OpenAI-compatible endpoint
+  providers reset NAME           remove a saved provider configuration
   run [LLM]                      start a run; optional LLM overrides its default once
   resume                         resume the current incomplete run
   runs                           list managed development runs
@@ -55,10 +102,16 @@ class Studio:
         *,
         input_func: InputFunc = input,
         output_func: OutputFunc = print,
+        secret_input_func: SecretInputFunc | None = None,
     ) -> None:
         self.workspace = workspace
         self.input = input_func
         self.output = output_func
+        if secret_input_func is None:
+            import getpass
+
+            secret_input_func = getpass.getpass
+        self.secret_input = secret_input_func
 
     def _emit(self, value: object = "") -> None:
         self.output(str(value))
@@ -111,6 +164,10 @@ class Studio:
             return False
         if command in {"help", "?"}:
             self._emit(_HELP.rstrip())
+        elif command == "project":
+            self.configure_project(args)
+        elif command == "prompts":
+            self.manage_prompts(args)
         elif command in {"current", "workflow"}:
             self.show_current()
         elif command == "use":
@@ -121,6 +178,8 @@ class Studio:
             self.validate()
         elif command == "models":
             self.configure_models(args)
+        elif command == "providers":
+            self.configure_providers(args)
         elif command == "run":
             if len(args) > 1:
                 raise SystemExit("Use run or run LLM_SPEC.")
@@ -151,9 +210,11 @@ class Studio:
         elif command == "runs":
             self.show_runs()
         elif command == "create":
-            self.create_request(self._request_prompt(args, command="create"))
+            prompt, source = self._request_prompt(args, command="create")
+            self.create_request(prompt, source_path=source)
         elif command == "refine":
-            self.refine_request(self._request_prompt(args, command="refine"))
+            prompt, source = self._request_prompt(args, command="refine")
+            self.refine_request(prompt, source_path=source)
         elif command == "deploy":
             self.deploy_workflow(args)
         elif command in {"status", "doctor", "logs", "start", "restart", "stop"}:
@@ -164,9 +225,14 @@ class Studio:
             )
         return True
 
-    def _request_prompt(self, args: list[str], *, command: str) -> str:
+    def _request_prompt(
+        self,
+        args: list[str],
+        *,
+        command: str,
+    ) -> tuple[str, Path | None]:
         if not args:
-            return ""
+            return "", None
         if args[0] == "--file":
             if len(args) != 2:
                 raise SystemExit(f"Use {command} --file PATH.")
@@ -201,10 +267,10 @@ class Studio:
             except ValueError:
                 displayed = prompt_file
             self._emit(f"Prompt file: {displayed}")
-            return prompt
+            return prompt, prompt_file
         if "--file" in args:
             raise SystemExit(f"Use {command} --file PATH.")
-        return " ".join(args).strip()
+        return " ".join(args).strip(), None
 
     def _current_context(self):
         from zippergen.serve import load_workflow_spec
@@ -215,11 +281,228 @@ class Studio:
         workflow, module = load_workflow_spec(self.workspace.absolute_spec(current))
         return current, workflow, module
 
+    def configure_project(self, args: list[str]) -> None:
+        if not args or args == ["show"]:
+            manifest = self.workspace.project_manifest()
+            self._emit(f"Project: {manifest['name']}")
+            self._emit(f"Root: {self.workspace.root}")
+            self._emit(
+                f"Manifest: {self.workspace.manifest_path} "
+                f"({'present' if manifest['exists'] else 'not created'})"
+            )
+            self._emit(f"Prompts: {self.workspace.prompts_directory}")
+            self._emit(
+                f"Framework checkout: {manifest.get('framework_directory') or 'none'}"
+            )
+            return
+        if args[0] != "init" or len(args) > 2:
+            raise SystemExit("Use project show or project init [NAME].")
+        existed = self.workspace.manifest_path.exists()
+        manifest = self.workspace.initialize_project(
+            name=args[1] if len(args) == 2 else None
+        )
+        result = "already exists" if existed else "created"
+        self._emit(f"Project manifest {result}: {self.workspace.manifest_path}")
+        self._emit(f"Project: {manifest['name']}")
+        self._emit(f"Prompt ledger: {self.workspace.prompt_index_path}")
+
+    def _emit_prompt_list(self) -> None:
+        records = self.workspace.list_prompts()
+        if not records:
+            self._emit(
+                "No project prompts. Use 'create', 'refine', or 'prompts add'."
+            )
+            return
+        active = sum(bool(record["active"]) for record in records)
+        self._emit(
+            f"Prompts: {active} active, {len(records) - active} archived "
+            f"({len(records)} total)"
+        )
+        for record in records:
+            status = "active" if record["active"] else "archived"
+            self._emit(
+                f"  {record['id']}  {str(record['kind']):10}  "
+                f"{status:8}  {record['title']}"
+            )
+            self._emit(f"        {record['file']}")
+
+    def manage_prompts(self, args: list[str]) -> None:
+        if not args or args == ["list"]:
+            self._emit_prompt_list()
+            return
+        action, *rest = args
+        action = action.lower()
+        if action == "show" and len(rest) == 1:
+            record = self.workspace.prompt(rest[0])
+            self._emit(
+                f"{record['id']} [{record['kind']}; "
+                f"{'active' if record['active'] else 'archived'}] "
+                f"{record['title']}"
+            )
+            self._emit(f"Source: {record['file']}")
+            self._emit(str(record["content"]))
+            return
+        if action == "context" and not rest:
+            self._emit(self.workspace.prompt_context())
+            return
+        if action == "add":
+            prompt, source = self._request_prompt(rest, command="prompts add")
+            if not prompt:
+                prompt = self.input("Describe the requirement: ").strip()
+            if not prompt:
+                raise SystemExit("The prompt must not be empty.")
+            kind = "refinement" if self.workspace.current_workflow else "initial"
+            record = self.workspace.add_prompt(
+                kind=kind,
+                content=prompt,
+                source_path=source,
+                workflow_spec=self.workspace.current_workflow,
+            )
+            status = "Registered" if record["created"] else "Already registered"
+            self._emit(
+                f"{status}: {record['id']} [{record['kind']}] {record['file']}"
+            )
+            return
+        if action in {"enable", "disable", "remove"} and len(rest) == 1:
+            active = action == "enable"
+            record = self.workspace.set_prompt_active(rest[0], active=active)
+            verb = "Enabled" if active else "Archived"
+            self._emit(f"{verb}: {record['id']} — {record['title']}")
+            return
+        if action == "move" and len(rest) == 3:
+            self.workspace.move_prompt(
+                rest[0],
+                relation=rest[1].lower(),
+                other_id=rest[2],
+            )
+            self._emit(f"Moved {rest[0].upper()} {rest[1]} {rest[2].upper()}.")
+            self._emit_prompt_list()
+            return
+        if action == "replace" and len(rest) >= 1:
+            prompt, source = self._request_prompt(
+                rest[1:],
+                command=f"prompts replace {rest[0]}",
+            )
+            if not prompt:
+                prompt = self.input("Describe the replacement requirement: ").strip()
+            if not prompt:
+                raise SystemExit("The replacement prompt must not be empty.")
+            record = self.workspace.replace_prompt(
+                rest[0],
+                content=prompt,
+                source_path=source,
+            )
+            self._emit(
+                f"Replaced {rest[0].upper()} with {record['id']}: "
+                f"{record['file']}"
+            )
+            return
+        raise SystemExit(
+            "Use prompts, prompts add [--file PATH|PROMPT], prompts show ID, "
+            "prompts context, prompts enable|disable|remove ID, prompts replace "
+            "ID [--file PATH|PROMPT], or prompts move ID before|after ID."
+        )
+
     def show_current(self) -> None:
+        from zippergen.serve import _validate_workflow
+
         state = self.workspace.load()
-        self._emit(f"Project: {self.workspace.root}")
-        self._emit(f"Workspace: {self.workspace.directory}")
+        manifest = self.workspace.project_manifest()
+        records = self.workspace.list_prompts()
+        active_prompts = sum(bool(record["active"]) for record in records)
+        self._emit(f"Project: {manifest['name']}")
+        self._emit(f"Root: {self.workspace.root}")
+        self._emit(
+            f"Manifest: {self.workspace.manifest_path} "
+            f"({'present' if manifest['exists'] else 'not created'})"
+        )
+        self._emit(
+            f"Prompts: {active_prompts} active, "
+            f"{len(records) - active_prompts} archived ({len(records)} total)"
+        )
         self._emit(f"Workflow: {state.get('current_workflow') or 'none'}")
+        if state.get("current_workflow"):
+            _current, workflow, module = self._current_context()
+            model = workflow_semantics(workflow, module)
+            raw_lifelines = model.get("lifelines")
+            lifelines = (
+                [str(name) for name in raw_lifelines]
+                if isinstance(raw_lifelines, list)
+                else []
+            )
+            self._emit(f"Workflow name: {workflow.name}")
+            self._emit(
+                f"Participants ({len(lifelines)}): "
+                + (", ".join(lifelines) if lifelines else "none")
+            )
+            raw_action_sites = model.get("action_sites")
+            action_sites = (
+                raw_action_sites if isinstance(raw_action_sites, list) else []
+            )
+            human_actions = [
+                str(site.get("action"))
+                for site in action_sites
+                if isinstance(site, dict) and site.get("kind") == "human"
+            ]
+            effect_actions = [
+                str(site.get("action"))
+                for site in action_sites
+                if isinstance(site, dict) and site.get("kind") == "effect"
+            ]
+            self._emit(
+                f"Human actions ({len(human_actions)}): "
+                + (", ".join(human_actions) if human_actions else "none")
+            )
+            self._emit(
+                f"External effects ({len(effect_actions)}): "
+                + (", ".join(effect_actions) if effect_actions else "none")
+            )
+            self._emit("Connector bindings: none")
+            validation = _validate_workflow(workflow, module)
+            self._emit(
+                f"Validation: {'valid' if validation['valid'] else 'invalid'}"
+            )
+            profile = self.workspace.model_profile(
+                str(state["current_workflow"]),
+                default=default_llm_spec(module),
+            )
+            active_models = self._llm_action_lifelines(workflow, module)
+            overrides = profile.get("lifelines") or {}
+            assert isinstance(overrides, dict)
+            self._emit(f"Default LLM: {profile['default']}")
+            if active_models:
+                self._emit("LLM assignments:")
+                for lifeline, actions in active_models.items():
+                    explicit = overrides.get(lifeline)
+                    effective = str(explicit or profile["default"])
+                    source = "override" if explicit else "default"
+                    self._emit(
+                        f"  {lifeline}: {effective} ({source}; "
+                        f"actions: {', '.join(actions)})"
+                    )
+            else:
+                self._emit("LLM assignments: none")
+            selected_specs = {str(profile["default"])} | {
+                str(value) for value in overrides.values()
+            }
+            providers = sorted({_canonical_provider(spec) for spec in selected_specs})
+            self._emit(
+                "Providers: "
+                + ", ".join(
+                    f"{provider} ({self._provider_status(provider)})"
+                    for provider in providers
+                )
+            )
+        else:
+            self._emit("Workflow name: none")
+            self._emit("Participants (0): none")
+            self._emit("Human actions (0): none")
+            self._emit("External effects (0): none")
+            self._emit("Connector bindings: none")
+            self._emit("Validation: not available")
+            self._emit("Default LLM: none")
+            self._emit("LLM assignments: none")
+            self._emit("Providers: none")
         run = self.workspace.current_run()
         if run is None:
             self._emit("Run: none")
@@ -227,15 +510,6 @@ class Studio:
             self._emit(f"Run: {run['run_id']} ({run['status']})")
             self._emit(f"Store: managed at {run['store']}")
         self._emit(f"Deployment: {state.get('last_deployment') or 'none'}")
-        if state.get("current_workflow"):
-            profile = self._run_model_profile()
-            self._emit(f"Default LLM: {profile['default']}")
-            overrides = profile.get("lifelines") or {}
-            if isinstance(overrides, dict) and overrides:
-                rendered = ", ".join(
-                    f"{name}={spec}" for name, spec in sorted(overrides.items())
-                )
-                self._emit(f"LLM overrides: {rendered}")
 
     def _select(self, heading: str, choices: list[str], *, allow_many: bool = False):
         if not choices:
@@ -401,6 +675,9 @@ class Studio:
                 + ", ".join(actions)
                 + ")"
             )
+        selected = {default} | {str(value) for value in overrides.values()}
+        for provider in sorted({_canonical_provider(spec) for spec in selected}):
+            self._emit(f"  Provider {provider}: {self._provider_status(provider)}")
 
     def configure_models(self, args: list[str]) -> None:
         current, workflow, module = self._current_context()
@@ -422,7 +699,7 @@ class Studio:
                 if selected == choices[0]:
                     entered = self.input(f"Default model [{default}]: ").strip()
                     if entered:
-                        default = entered
+                        default = _validate_model_spec(entered)
                 else:
                     index = choices.index(selected) - 1
                     lifeline = list(active)[index]
@@ -434,7 +711,7 @@ class Studio:
                     if entered.lower() in {"inherit", "default"}:
                         overrides.pop(lifeline, None)
                     elif entered:
-                        overrides[lifeline] = entered
+                        overrides[lifeline] = _validate_model_spec(entered)
                 profile = self.workspace.save_model_profile(
                     current,
                     default=default,
@@ -449,7 +726,7 @@ class Studio:
 
         action = args[0].lower()
         if action == "default" and len(args) == 2:
-            default = args[1]
+            default = _validate_model_spec(args[1])
         elif action == "set" and len(args) == 3:
             lifeline, spec = args[1:]
             if lifeline not in active:
@@ -458,7 +735,7 @@ class Studio:
                     f"{lifeline!r} has no LLM actions. LLM-active lifelines: "
                     f"{available}."
                 )
-            overrides[lifeline] = spec
+            overrides[lifeline] = _validate_model_spec(spec)
         elif action == "reset" and len(args) == 2:
             if args[1].lower() == "all":
                 default = default_llm_spec(module)
@@ -477,6 +754,119 @@ class Studio:
             lifelines=overrides,
         )
         self._emit_models(workflow=workflow, module=module, profile=saved)
+
+    def _provider_status(self, provider: str) -> str:
+        canonical = _canonical_provider(provider)
+        if canonical == "mock":
+            return "ready; built in"
+        profiles = self.workspace.provider_profiles()
+        if canonical == "local":
+            base_url = profiles.get("local", {}).get(
+                "base_url",
+                os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434/v1"),
+            )
+            return f"endpoint {base_url}; availability unchecked"
+        secret_name = _PROVIDER_SECRETS.get(canonical)
+        if secret_name is None:
+            return "unsupported"
+        if os.environ.get(secret_name):
+            return f"ready; {secret_name} is in the environment"
+        if self.workspace.load_secrets().get(secret_name):
+            return f"ready; {secret_name} is in private Studio storage"
+        return f"not configured; use 'providers set {canonical}'"
+
+    def _emit_providers(self) -> None:
+        self._emit("Model providers")
+        for provider in _SUPPORTED_PROVIDERS:
+            self._emit(f"  {provider}: {self._provider_status(provider)}")
+        self._emit("API-key values are never displayed or written to the project.")
+
+    def configure_providers(self, args: list[str]) -> None:
+        if not args or args == ["show"]:
+            self._emit_providers()
+            return
+        action, *rest = args
+        action = action.lower()
+        if action == "set" and rest:
+            provider = _canonical_provider(rest[0])
+            if provider not in _SUPPORTED_PROVIDERS:
+                raise SystemExit(
+                    "Provider must be mock, local/ollama, openai, "
+                    "anthropic/claude, or mistral."
+                )
+            if provider == "mock":
+                if len(rest) != 1:
+                    raise SystemExit("The built-in mock provider takes no settings.")
+                self._emit("mock is built in and already ready.")
+                return
+            if provider == "local":
+                if len(rest) > 2:
+                    raise SystemExit("Use providers set local [BASE_URL].")
+                existing = self.workspace.provider_profiles().get("local", {}).get(
+                    "base_url"
+                )
+                base_url = (
+                    rest[1]
+                    if len(rest) == 2
+                    else self.input(
+                        "Local OpenAI-compatible base URL "
+                        f"[{existing or 'http://127.0.0.1:11434/v1'}]: "
+                    ).strip()
+                    or existing
+                    or "http://127.0.0.1:11434/v1"
+                )
+                if not base_url.startswith(("http://", "https://")):
+                    raise SystemExit("A local provider URL must begin with http:// or https://.")
+                self.workspace.save_provider_profile(
+                    "local",
+                    {"kind": "local", "base_url": base_url},
+                )
+                self._emit(f"Configured local provider endpoint: {base_url}")
+                return
+            if len(rest) != 1:
+                raise SystemExit(f"Use providers set {provider}.")
+            secret_name = _PROVIDER_SECRETS[provider]
+            secrets = self.workspace.load_secrets()
+            from_environment = bool(os.environ.get(secret_name))
+            if from_environment:
+                self._emit(
+                    f"Using {secret_name} from the current environment; "
+                    "its value was not copied."
+                )
+            else:
+                existing = secrets.get(secret_name)
+                suffix = " (press Enter to keep the saved value)" if existing else ""
+                entered = self.secret_input(f"{secret_name}{suffix}: ").strip()
+                if entered:
+                    secrets[secret_name] = entered
+                    self.workspace.save_secrets(secrets)
+                elif not existing:
+                    raise SystemExit(f"{secret_name} must not be empty.")
+            self.workspace.save_provider_profile(
+                provider,
+                {"kind": "api", "key_env": secret_name},
+            )
+            self._emit(f"Configured {provider}: {self._provider_status(provider)}")
+            return
+        if action == "reset" and len(rest) == 1:
+            provider = _canonical_provider(rest[0])
+            if provider not in _SUPPORTED_PROVIDERS or provider == "mock":
+                raise SystemExit(
+                    "Reset provider must be local, openai, anthropic, or mistral."
+                )
+            self.workspace.remove_provider_profile(provider)
+            secret_name = _PROVIDER_SECRETS.get(provider)
+            if secret_name:
+                secrets = self.workspace.load_secrets()
+                if secret_name in secrets:
+                    secrets.pop(secret_name)
+                    self.workspace.save_secrets(secrets)
+            self._emit(f"Reset provider configuration: {provider}")
+            return
+        raise SystemExit(
+            "Use providers, providers set openai|anthropic|mistral, "
+            "providers set local [URL], or providers reset NAME."
+        )
 
     def show_runs(self) -> None:
         runs = self.workspace.list_runs()
@@ -561,19 +951,57 @@ class Studio:
             raise SystemExit(f"{action} failed for deployment {name}.")
         self.workspace.update(last_deployment=str(name))
 
-    def create_request(self, prompt: str) -> None:
+    def _assistant_skill_instructions(self) -> str:
+        manifest = self.workspace.project_manifest()
+        framework = manifest.get("framework_directory")
+        if not framework:
+            return "Use $zippergen-workflows."
+        base = Path(str(framework)).as_posix().rstrip("/")
+        return (
+            "Use $zippergen-workflows if it is available. Otherwise read and "
+            f"follow {base}/AGENTS.md, "
+            f"{base}/.agents/skills/zippergen-workflows/SKILL.md, and its linked "
+            "DSL/CLI reference completely before editing workflow code."
+        )
+
+    def create_request(
+        self,
+        prompt: str,
+        *,
+        source_path: str | Path | None = None,
+    ) -> None:
         if not prompt:
             prompt = self.input("Describe the workflow: ").strip()
         if not prompt:
             raise SystemExit("The workflow description must not be empty.")
-        content = f"""Use $zippergen-workflows.
+        design_prompt = self.workspace.add_prompt(
+            kind="initial",
+            content=prompt,
+            source_path=source_path,
+        )
+        action = "Registered" if design_prompt["created"] else "Using"
+        self._emit(
+            f"{action} project prompt {design_prompt['id']}: "
+            f"{design_prompt['file']}"
+        )
+        context = self.workspace.prompt_context()
+        active_prompt_ids = tuple(
+            str(record["id"])
+            for record in self.workspace.list_prompts()
+            if record["active"]
+        )
+        content = f"""{self._assistant_skill_instructions()}
 
 Create a new ZipperGen Python workflow in this project from the requirements
 below. Choose a clear module and workflow name under workflows/ unless the
 project has a more appropriate established location.
 
-Requirements:
-{prompt}
+The active project prompt ledger is the durable design context. Read it in
+order. Later prompts take precedence only where they explicitly change an
+earlier requirement; preserve every unaffected earlier requirement. The
+immediate request is {design_prompt['id']}.
+
+{context}
 
 Before editing, summarize participants, owned inputs and outputs, messages,
 action kinds, owned decisions and loops, deployment requirements, retry and
@@ -587,12 +1015,19 @@ verification results.
             kind="create",
             prompt=prompt,
             content=content,
+            prompt_id=str(design_prompt["id"]),
+            active_prompt_ids=active_prompt_ids,
         )
         self._emit(f"Creation brief: {record['content_file']}")
         self._emit("Pass this brief to a repository-aware coding assistant:")
         self._emit(content.rstrip())
 
-    def refine_request(self, prompt: str) -> None:
+    def refine_request(
+        self,
+        prompt: str,
+        *,
+        source_path: str | Path | None = None,
+    ) -> None:
         current, workflow, module = self._current_context()
         if not prompt:
             prompt = self.input("Describe the change: ").strip()
@@ -606,12 +1041,31 @@ verification results.
         baseline.write_text(
             json.dumps(semantic_snapshot(workflow, module), indent=2, default=str) + "\n"
         )
-        content = f"""Use $zippergen-workflows.
+        design_prompt = self.workspace.add_prompt(
+            kind="refinement",
+            content=prompt,
+            source_path=source_path,
+            workflow_spec=current,
+        )
+        action = "Registered" if design_prompt["created"] else "Using"
+        self._emit(
+            f"{action} project prompt {design_prompt['id']}: "
+            f"{design_prompt['file']}"
+        )
+        context = self.workspace.prompt_context()
+        active_prompt_ids = tuple(
+            str(record["id"])
+            for record in self.workspace.list_prompts()
+            if record["active"]
+        )
+        content = f"""{self._assistant_skill_instructions()}
 
-Refine {current} from the requirements below.
+Refine {current} using the active project prompt ledger below. Read it in
+order. Later prompts take precedence only where they explicitly change or
+contradict an earlier requirement; preserve every unaffected earlier
+requirement. The immediate change is {design_prompt['id']}.
 
-Requested change:
-{prompt}
+{context}
 
 The semantic baseline is {baseline}.
 Preserve all behavior not explicitly changed.
@@ -627,6 +1081,9 @@ and verification results.
             prompt=prompt,
             content=content,
             workflow_spec=current,
+            prompt_id=str(design_prompt["id"]),
+            active_prompt_ids=active_prompt_ids,
+            baseline_file=baseline,
         )
         self._emit(f"Refinement brief: {record['content_file']}")
         self._emit("Pass this brief to a repository-aware coding assistant:")

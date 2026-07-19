@@ -28,17 +28,19 @@ def sample(value: str @ User) -> str:
 """
 
 
-def _studio(tmp_path, responses=()):
+def _studio(tmp_path, responses=(), secret_responses=()):
     root = tmp_path / "project"
     root.mkdir()
     (root / "workflow.py").write_text(WORKFLOW_SOURCE)
     workspace = Workspace(root, home=tmp_path / "home")
     answers = iter(responses)
+    secret_answers = iter(secret_responses)
     output: list[str] = []
     studio = Studio(
         workspace,
         input_func=lambda prompt: next(answers),
         output_func=output.append,
+        secret_input_func=lambda prompt: next(secret_answers),
     )
     return studio, workspace, output
 
@@ -88,7 +90,8 @@ def test_studio_create_saves_code_first_assistant_handoff(tmp_path):
     assert "Use $zippergen-workflows." in content
     assert "visible Python source" in content
     assert "Do not deploy" in content
-    assert output[0].startswith("Creation brief:")
+    assert output[0].startswith("Registered project prompt P001:")
+    assert output[1].startswith("Creation brief:")
 
 
 def test_studio_create_reads_multiline_prompt_from_project_file(tmp_path):
@@ -111,7 +114,8 @@ def test_studio_create_reads_multiline_prompt_from_project_file(tmp_path):
         "Never return an unapproved draft."
     )
     assert output[0] == "Prompt file: prompts/reviewed answer.md"
-    assert output[1].startswith("Creation brief:")
+    assert output[1].startswith("Registered project prompt P001:")
+    assert output[2].startswith("Creation brief:")
 
 
 def test_studio_refine_saves_semantic_baseline_and_handoff(tmp_path):
@@ -128,7 +132,8 @@ def test_studio_refine_saves_semantic_baseline_and_handoff(tmp_path):
     assert str(baselines[0]) in content
     assert "Preserve all behavior not explicitly changed" in content
     assert "zippergen diff" in content
-    assert output[0].startswith("Refinement brief:")
+    assert output[0].startswith("Registered project prompt P001:")
+    assert output[1].startswith("Refinement brief:")
 
 
 def test_studio_refine_reads_prompt_from_absolute_file(tmp_path):
@@ -147,7 +152,8 @@ def test_studio_refine_reads_prompt_from_absolute_file(tmp_path):
     content = briefs[0].read_text()
     assert "Add human review.\nPreserve the existing model call." in content
     assert output[0] == f"Prompt file: {prompt_file}"
-    assert output[1].startswith("Refinement brief:")
+    assert output[1].startswith("Registered project prompt P001:")
+    assert output[2].startswith("Refinement brief:")
 
 
 def test_studio_prompt_file_errors_are_actionable(tmp_path):
@@ -176,11 +182,129 @@ def test_studio_commands_are_discoverable(tmp_path):
 
     assert studio.execute("help") is True
     assert "show | inspect" in output[-1]
+    assert "project init [NAME]" in output[-1]
+    assert "prompts move ID before|after ID" in output[-1]
     assert "create --file PATH" in output[-1]
     assert "refine --file PATH" in output[-1]
+    assert "providers set local [URL]" in output[-1]
     assert studio.execute("not-a-command") is True
     assert output[-1].startswith("Unknown command")
     assert studio.execute("exit") is False
+
+
+def test_studio_project_and_prompt_commands_manage_visible_design_context(tmp_path):
+    studio, workspace, output = _studio(tmp_path)
+
+    studio.execute("project init Tutorial")
+    studio.execute("prompts add First requirement")
+    studio.execute("prompts add Second requirement")
+    studio.execute("prompts move P002 before P001")
+    studio.execute("prompts remove P001")
+    studio.execute("prompts context")
+
+    assert workspace.project_manifest()["name"] == "Tutorial"
+    assert workspace.manifest_path.exists()
+    records = workspace.list_prompts()
+    assert [record["id"] for record in records] == ["P002", "P001"]
+    assert records[0]["active"] is True
+    assert records[1]["active"] is False
+    assert "Second requirement" in output[-1]
+    assert "First requirement" not in output[-1]
+
+
+def test_studio_replacement_preserves_prompt_history(tmp_path):
+    studio, workspace, output = _studio(tmp_path)
+
+    studio.execute("prompts add Keep retries bounded")
+    studio.execute("prompts replace P001 Use exactly three retries")
+    studio.execute("prompts")
+
+    records = workspace.list_prompts()
+    assert [record["id"] for record in records] == ["P001", "P002"]
+    assert records[0]["active"] is False
+    assert records[1]["replaces"] == "P001"
+    assert any("P001" in line and "archived" in line for line in output)
+    assert any("P002" in line and "active" in line for line in output)
+
+
+def test_studio_handoff_contains_all_active_prompts_in_order(tmp_path):
+    studio, workspace, _output = _studio(tmp_path)
+    studio.create_request("Create a concise answer workflow.")
+    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    studio.refine_request("Add an explicit reviewer.")
+
+    refine_records = list(workspace.requests_directory.glob("*-refine.json"))
+    assert len(refine_records) == 1
+    metadata = json.loads(refine_records[0].read_text())
+    brief = refine_records[0].with_suffix(".md").read_text()
+
+    assert metadata["prompt_id"] == "P002"
+    assert metadata["active_prompt_ids"] == ["P001", "P002"]
+    assert brief.index("P001 [initial]") < brief.index("P002 [refinement]")
+    assert "Later prompts take precedence only where" in brief
+    assert "preserve every unaffected earlier" in brief
+
+
+def test_studio_current_is_a_complete_project_dashboard(tmp_path):
+    studio, workspace, output = _studio(tmp_path)
+    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    studio.create_request("Create a sampled workflow.")
+    output.clear()
+
+    studio.show_current()
+
+    assert "Project: project" in output
+    assert "Prompts: 1 active, 0 archived (1 total)" in output
+    assert "Workflow: workflow.py:sample" in output
+    assert "Workflow name: sample" in output
+    assert "Participants (2): User, Writer" in output
+    assert "Connector bindings: none" in output
+    assert "Validation: valid" in output
+    assert "LLM assignments:" in output
+    assert any("Writer: mock" in line for line in output)
+    assert "Providers: mock (ready; built in)" in output
+    assert "Run: none" in output
+    assert "Deployment: none" in output
+
+
+def test_studio_current_is_explicit_before_a_workflow_exists(tmp_path):
+    studio, _workspace, output = _studio(tmp_path)
+
+    studio.show_current()
+
+    assert "Workflow: none" in output
+    assert "Workflow name: none" in output
+    assert "Participants (0): none" in output
+    assert "Connector bindings: none" in output
+    assert "Validation: not available" in output
+    assert "LLM assignments: none" in output
+    assert "Providers: none" in output
+
+
+def test_studio_configures_api_and_local_providers_without_displaying_secrets(
+    tmp_path,
+):
+    studio, workspace, output = _studio(
+        tmp_path,
+        secret_responses=["super-secret-key"],
+    )
+
+    studio.execute("providers set openai")
+    studio.execute("providers set local http://localhost:1234/v1")
+    studio.execute("providers")
+
+    assert workspace.load_secrets() == {"OPENAI_API_KEY": "super-secret-key"}
+    assert workspace.provider_profiles()["local"]["base_url"] == (
+        "http://localhost:1234/v1"
+    )
+    assert workspace.secrets_path.stat().st_mode & 0o077 == 0
+    assert all("super-secret-key" not in line for line in output)
+    assert any("openai: ready" in line for line in output)
+    assert any("local: endpoint http://localhost:1234/v1" in line for line in output)
+
+    studio.execute("providers reset openai")
+    assert "OPENAI_API_KEY" not in workspace.load_secrets()
+    assert "openai" not in workspace.provider_profiles()
 
 
 def test_studio_deploys_current_workflow_and_remembers_name(tmp_path, monkeypatch):
@@ -270,9 +394,10 @@ def test_studio_models_configures_and_displays_llm_active_lifelines(tmp_path):
         "lifelines": {"Writer": "openai:gpt-4o-mini"},
     }
     assert any("Writer (echo)" in line for line in output)
-    assert output[-1] == (
+    assert (
         "  Writer: openai:gpt-4o-mini (override; actions: echo)"
-    )
+    ) in output
+    assert output[-1].startswith("  Provider openai: not configured")
 
 
 def test_studio_model_profile_is_used_for_run_and_deploy(tmp_path, monkeypatch):

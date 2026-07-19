@@ -1,7 +1,7 @@
 # Prompt-First ZipperGen Studio - Design Spec
 
 **Date:** 2026-07-18
-**Status:** First vertical slice implemented
+**Status:** Design/inspection layer implemented; execution slice retained
 
 ## Product promise
 
@@ -29,6 +29,7 @@ Describe the workflow:
 # Multiline requirements use a project-relative UTF-8 file instead:
 zippergen [no workflow]> create --file prompts/review-reply.md
 
+Registered project prompt P001: prompts/review-reply.md
 Creation brief: ~/.zippergen/workspaces/.../requests/...-create.md
 Pass this brief to a repository-aware coding assistant.
 
@@ -83,8 +84,29 @@ the prompt and generated source contract must be stable from the beginning.
 ## Project workspace
 
 Studio discovers the project root by walking upward from the current directory
-and preferring a directory containing `.git`, then `pyproject.toml`. If neither
-exists, the current directory is the project root.
+and preferring the nearest `zippergen.toml`, then a directory containing
+`.git`, then `pyproject.toml`. If `--project PATH` is supplied, that exact
+directory is used. If no marker exists, the current directory is the root.
+
+The visible project layer is deliberately separate from private runtime state:
+
+```text
+zippergen-tutorial/
+|-- zippergen.toml
+|-- prompts/
+|   |-- index.toml
+|   `-- *.md
+|-- workflows/
+|-- tests/
+`-- zippergen/             # optional source checkout, ignored by outer Git
+```
+
+`project init [NAME]` creates the manifest and empty prompt index. If a nested
+`zippergen/` checkout exists, the manifest records it as the framework
+directory, workflow discovery excludes it, and coding-assistant briefs point
+to its repository guidance and workflow skill. Project initialization also
+keeps the nested checkout and the optional transparent tutorial runtime out of
+the outer project's Git index.
 
 State lives outside the checkout by default:
 
@@ -115,6 +137,33 @@ The non-secret context is:
 - last named deployment; and
 - last selected semantic view.
 
+The visible `zippergen.toml` contains the project name, prompt directory, and
+optional framework-checkout directory. It contains no current run, secret, or
+machine-specific deployment state.
+
+## Ordered prompt ledger
+
+Natural-language requirements are durable project inputs rather than terminal
+or assistant-chat history. Each ledger entry has:
+
+- a stable ID (`P001`, `P002`, ...);
+- an `initial` or `refinement` provenance label;
+- an ordered Markdown source file;
+- active or archived state;
+- optional workflow association and replacement provenance; and
+- a title derived from its first Markdown heading or nonempty line.
+
+The two provenance labels use the same lifecycle. Removing a prompt archives
+it; replacing one creates a new entry and preserves the old entry. Reordering
+is explicit and versionable. A coding-assistant handoff always includes every
+active entry in ledger order and identifies the immediate request. Later
+prompts take precedence only where they explicitly change or contradict an
+earlier requirement; all unaffected earlier requirements remain in force.
+
+The ledger is design intent. Visible Python, tests, and semantic validation are
+the executable truth. A prompt never becomes an automatically deployed opaque
+workflow.
+
 Each run record contains:
 
 - run ID and timestamps;
@@ -137,11 +186,17 @@ The same concepts appear in interactive and noninteractive forms.
 ### Context and selection
 
 ```text
+project init [NAME]
+project show
 current
 use
 use path/to/workflow.py:workflow
 runs
 ```
+
+`current` reports the project and manifest, prompt counts, current workflow and
+semantic name, participants, human actions, effects, validation state,
+effective model routes, provider readiness, current run, and deployment.
 
 `use` without an argument discovers top-level `@workflow` functions with AST
 inspection, avoiding imports and their possible side effects, and opens a
@@ -211,14 +266,65 @@ create [PROMPT]
 create --file PATH
 refine "Add a compliance review after retry exhaustion"
 refine --file PATH
+prompts
+prompts add [PROMPT]
+prompts add --file PATH
+prompts show ID
+prompts context
+prompts enable|disable|remove ID
+prompts replace ID [PROMPT|--file PATH]
+prompts move ID before|after ID
 ```
 
 `--file` reads the complete UTF-8 prompt without forcing multiline
 requirements through a single-line terminal input. Relative paths resolve from
-the discovered project root; absolute paths and `~` are accepted. Prompt files
-are ordinary reviewable project inputs and may be versioned, but must not
-contain secrets. The generated assistant handoff and semantic baseline remain
-outside the checkout.
+the discovered project root; absolute paths and `~` are accepted. A file under
+the canonical prompt directory is registered in place; an external file is
+imported. Inline requirements are written to numbered Markdown files. Prompt
+files and `index.toml` are ordinary reviewable project inputs and may be
+versioned, but must not contain secrets. The generated assistant handoff and
+semantic baseline remain outside the checkout.
+
+### Model and provider configuration
+
+```text
+models show
+models default SPEC
+models set LIFELINE SPEC
+models reset LIFELINE|all
+providers
+providers set openai|anthropic|mistral
+providers set local [BASE_URL]
+providers reset NAME
+```
+
+Model routing and provider credentials are separate concepts. Routes use
+compact explicit specs and may be inherited or overridden per LLM-active
+lifeline. Provider readiness is visible without revealing secrets. API keys
+are entered without echo and stored only in the owner-readable development
+secret file; a local provider stores only its non-secret endpoint. Development
+runs temporarily inject the selected configured providers and restore the
+process environment afterward.
+
+### Future connector and human-channel bindings
+
+The project and dashboard contracts reserve connector bindings as a separate
+layer, but this slice does not pretend to configure services it cannot yet
+validate. A lifeline remains a role, authority, or sequential participant; it
+is not itself a Gmail token, Google Sheet, or Telegram chat. A later slice will
+bind declared effect/human action capabilities to named adapters, for example:
+
+```text
+connectors bind Mailer gmail:work-account
+connectors bind Records google-sheets:review-log
+humans set Reviewer telegram:review-team
+```
+
+Those bindings must keep OAuth/API credentials private and make permissions,
+idempotency, durable task identity, delivery, authenticated response, retries,
+and audit behavior inspectable before execution. `current` already reports
+`Connector bindings: none` so the future layer has an explicit place rather
+than being confused with model routing or hidden inside prompt text.
 
 The assistant handoff contains:
 
@@ -269,8 +375,11 @@ capability, not a check for a particular function name.
 ```text
 zippergen.workspace
   project discovery
+  visible manifest and ordered prompt ledger
   workspace/run/request paths
   atomic JSON state
+  atomic TOML project state
+  private provider profiles and secrets
   AST workflow discovery
 
 zippergen.dev
@@ -281,7 +390,8 @@ zippergen.dev
 
 zippergen.studio
   line-oriented command loop
-  help/current/use/show/run/resume/create/refine/deploy/operations
+  project/prompts/current/use/show/models/providers/run/resume/create/refine
+  deploy/operations
   thin calls into workspace, dev, semantic, and deployment application APIs
 
 zippergen.serve
