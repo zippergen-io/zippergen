@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 from zippergen.studio import Studio
@@ -90,6 +91,29 @@ def test_studio_create_saves_code_first_assistant_handoff(tmp_path):
     assert output[0].startswith("Creation brief:")
 
 
+def test_studio_create_reads_multiline_prompt_from_project_file(tmp_path):
+    studio, workspace, output = _studio(tmp_path)
+    prompts = workspace.root / "prompts"
+    prompts.mkdir()
+    (prompts / "reviewed answer.md").write_text(
+        "Create a reviewed answer workflow.\n\n"
+        "Never return an unapproved draft.\n",
+        encoding="utf-8",
+    )
+
+    studio.execute('create --file "prompts/reviewed answer.md"')
+
+    records = list(workspace.requests_directory.glob("*-create.json"))
+    assert len(records) == 1
+    metadata = json.loads(records[0].read_text())
+    assert metadata["prompt"] == (
+        "Create a reviewed answer workflow.\n\n"
+        "Never return an unapproved draft."
+    )
+    assert output[0] == "Prompt file: prompts/reviewed answer.md"
+    assert output[1].startswith("Creation brief:")
+
+
 def test_studio_refine_saves_semantic_baseline_and_handoff(tmp_path):
     studio, workspace, output = _studio(tmp_path)
     workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
@@ -107,11 +131,53 @@ def test_studio_refine_saves_semantic_baseline_and_handoff(tmp_path):
     assert output[0].startswith("Refinement brief:")
 
 
+def test_studio_refine_reads_prompt_from_absolute_file(tmp_path):
+    studio, workspace, output = _studio(tmp_path)
+    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    prompt_file = tmp_path / "change.md"
+    prompt_file.write_text(
+        "Add human review.\nPreserve the existing model call.\n",
+        encoding="utf-8",
+    )
+
+    studio.execute(f'refine --file "{prompt_file}"')
+
+    briefs = list(workspace.requests_directory.glob("*-refine.md"))
+    assert len(briefs) == 1
+    content = briefs[0].read_text()
+    assert "Add human review.\nPreserve the existing model call." in content
+    assert output[0] == f"Prompt file: {prompt_file}"
+    assert output[1].startswith("Refinement brief:")
+
+
+def test_studio_prompt_file_errors_are_actionable(tmp_path):
+    studio, workspace, _output = _studio(tmp_path)
+    (workspace.root / "empty.md").write_text("", encoding="utf-8")
+    (workspace.root / "prompt-directory").mkdir()
+    (workspace.root / "not-utf8.md").write_bytes(b"\xff")
+
+    for command, expected in (
+        ("create --file", "Use create --file PATH."),
+        ("create --file missing.md", "Prompt file does not exist:"),
+        ("create --file empty.md", "Prompt file is empty:"),
+        ("create --file prompt-directory", "Prompt path is a directory:"),
+        ("create --file not-utf8.md", "Prompt file must contain UTF-8 text:"),
+    ):
+        try:
+            studio.execute(command)
+        except SystemExit as exc:
+            assert expected in str(exc)
+        else:
+            raise AssertionError(f"{command!r} should fail")
+
+
 def test_studio_commands_are_discoverable(tmp_path):
     studio, _workspace, output = _studio(tmp_path)
 
     assert studio.execute("help") is True
     assert "show | inspect" in output[-1]
+    assert "create --file PATH" in output[-1]
+    assert "refine --file PATH" in output[-1]
     assert studio.execute("not-a-command") is True
     assert output[-1].startswith("Unknown command")
     assert studio.execute("exit") is False

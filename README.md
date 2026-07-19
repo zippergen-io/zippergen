@@ -96,13 +96,21 @@ API key, Studio asks for it without echo and saves it once in an owner-only
 development secret file. Later runs and post-crash resumes reuse it; the value
 is never copied into workspace, run, or request JSON.
 
-To begin from natural language, enter `create` and describe the workflow. The
-first Studio integration writes and prints a structured brief for a
-repository-aware coding assistant, including the required source, tests,
+To begin from natural language, keep substantial requirements in a readable
+UTF-8 file and give Studio its path. This repository ships an example:
+
+```text
+zippergen [no workflow]> create --file prompts/reviewed_answer.md
+```
+
+Relative paths are resolved from the project root; quoted paths, absolute
+paths, and `~` are supported. Plain `create` still asks for a short one-line
+description. The first Studio integration writes and prints a structured brief
+for a repository-aware coding assistant, including the required source, tests,
 validation, semantic views, and no-deployment boundary. After the assistant
 creates the visible Python source, `use` selects it. For an existing workflow,
-`refine "describe the change"` also saves a semantic baseline for a meaningful
-before/after diff.
+`refine --file prompts/reviewed_answer_refinement.md` also saves a semantic
+baseline for a meaningful before/after diff.
 
 When the mock/fake development run is satisfactory, `deploy` enters the
 existing guided, secret-aware deployment path explicitly. Use `--no-start` for
@@ -358,9 +366,18 @@ provides the deterministic protocol validation, projections, views, and diffs.
 This keeps generated workflows as ordinary reviewable code instead of hiding
 them behind a separate visual builder or opaque generation service.
 
-Studio exposes this handoff as `create` and `refine`. It stores requests and
-semantic baselines outside the Git checkout under the project workspace, so
-they do not pollute commits or contain deployment secrets.
+Studio exposes this handoff as `create` and `refine`. Multiline requirements
+can remain in normal, versioned prompt files:
+
+```text
+zippergen [no workflow]> create --file prompts/reviewed_answer.md
+zippergen [reviewed_answer]> refine --file prompts/reviewed_answer_refinement.md
+```
+
+Studio stores the generated assistant requests and semantic baselines outside
+the Git checkout under the project workspace, so those derived artifacts do
+not pollute commits or contain deployment secrets. Prompt files themselves are
+ordinary project inputs; never put API keys or other secrets in them.
 
 This repository includes a reusable coding-assistant skill at
 `.agents/skills/zippergen-workflows/`. Codex discovers it automatically, and

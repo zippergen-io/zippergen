@@ -26,6 +26,9 @@ zippergen [no workflow]> create
 Describe the workflow:
 > Draft an answer. A reviewer may request at most three revisions.
 
+# Multiline requirements use a project-relative UTF-8 file instead:
+zippergen [no workflow]> create --file prompts/review-reply.md
+
 Creation brief: ~/.zippergen/workspaces/.../requests/...-create.md
 Pass this brief to a repository-aware coding assistant.
 
@@ -204,9 +207,18 @@ or mutates the old run to force progress.
 ### Prompt creation and refinement
 
 ```text
-create
+create [PROMPT]
+create --file PATH
 refine "Add a compliance review after retry exhaustion"
+refine --file PATH
 ```
+
+`--file` reads the complete UTF-8 prompt without forcing multiline
+requirements through a single-line terminal input. Relative paths resolve from
+the discovered project root; absolute paths and `~` are accepted. Prompt files
+are ordinary reviewable project inputs and may be versioned, but must not
+contain secrets. The generated assistant handoff and semantic baseline remain
+outside the checkout.
 
 The assistant handoff contains:
 

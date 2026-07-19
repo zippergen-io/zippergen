@@ -323,31 +323,44 @@ commands with \texttt{uv run zippergen}. Enter \texttt{help} now; it is the
 built-in reminder for creation, selection, inspection, model routing,
 execution, refinement, deployment, and operation.
 
-\subsubsection*{Step 2: turn one prompt into a rigorous brief}
+\subsubsection*{Step 2: load a multiline prompt from a file}
 
-Enter \texttt{create}. Studio asks for one description. Paste the following
-paragraph as a single line:
+Long requirements do not belong in a single-line terminal question. This
+checkout therefore ships the complete, readable tutorial prompt at
+\path{prompts/reviewed_answer.md}. Open that file in an editor if you want to
+read or change its headings and bullet points. It fixes the generated source,
+workflow, and test names so the remaining steps are reproducible.
+
+At the Studio prompt, load the file:
 
 \begin{lstlisting}[style=shell]
-zippergen [no workflow]> create
-Describe the workflow: Create workflows/reviewed_answer.py with a workflow named reviewed_answer. Requester owns request and max_retries. Writer uses an LLM to draft and revise an answer. Reviewer uses a separate LLM to assess every draft, then a human approves or rejects it. A rejection sends the draft back to Writer while retries remain. Never return an unapproved draft; return an explicit failure after exhaustion. Declare mock as the default model. Declare request as a deployment input defaulting to "Explain why the sky is blue in two sentences." and max_retries as an integer deployment input defaulting to 2. Add conditional OpenAI and Anthropic API-key fields, and include the generated workflow file in the deployment bundle. Add focused tests in tests/test_reviewed_answer.py and do not deploy.
+create --file prompts/reviewed_answer.md
 \end{lstlisting}
 
-The prompt fixes the file and workflow names so later commands are
-reproducible. Studio wraps it in repository-aware instructions and prints a
-line similar to:
+The path is resolved relative to the project root, not the directory from
+which Studio happened to be launched. Studio reads the whole UTF-8 file,
+preserving paragraphs and lists, wraps it in repository-aware instructions,
+and prints lines similar to:
 
 \begin{lstlisting}[style=shell]
+Prompt file: prompts/reviewed_answer.md
 Creation brief: /Users/you/.zippergen/workspaces/.../requests/...-create.md
 \end{lstlisting}
 
-Keep this terminal open. The brief is non-secret and outside Git. It asks the
-assistant to identify participants, ownership, messages, action kinds,
-decisions, loops, deployment needs, safety assumptions, and acceptance
+The prompt file is ordinary, reviewable project input and may be committed.
+The generated assistant brief is a separate, non-secret file outside Git. It
+asks the assistant to identify participants, ownership, messages, action
+kinds, decisions, loops, deployment needs, safety assumptions, and acceptance
 examples before editing. It also requires tests, validation, semantic views,
 and all exact local projections. No workflow file has been created yet;
-\texttt{create} prepares the handoff, and Step~3 asks the coding assistant to
-perform the source edit.
+\texttt{create --file} prepares the handoff, and Step~3 asks the coding
+assistant to perform the source edit.
+
+For your own workflow, create any UTF-8 text or Markdown file in an editor and
+enter \texttt{create --file PATH}. Quote a path containing spaces. Absolute
+paths and paths beginning with \texttt{\string~} are accepted too. Never put an
+API key or other secret in a prompt file. Plain \texttt{create} remains
+available for a genuinely short, one-line description.
 
 \begin{notebox}{Why Studio creates a brief instead of hidden code}
 Natural language is flexible; executable coordination must be precise. The
@@ -638,21 +651,22 @@ changing behavior unless another paid run is intentional:
 models reset all
 \end{lstlisting}
 
-This changes only routing; it does not delete saved development secrets. Now
-enter a concrete change:
+This changes only routing; it does not delete saved development secrets. The
+checkout also ships the refinement prompt as readable project input. Enter:
 
 \begin{lstlisting}[style=shell]
-refine "Include the automated review concerns in Writer's revision prompt. Preserve the human approval authority and retry bound."
+refine --file prompts/reviewed_answer_refinement.md
 \end{lstlisting}
 
 This step is useful because creation and later modification must follow the
 same safe cycle; it is not required merely to deploy the initially generated
-workflow. Studio saves a semantic pre-edit baseline and a refinement brief. Pass its path
-to Codex as in Step~3. The brief requires preserved unmentioned behavior,
-focused tests, validation, changed projections, and \texttt{zippergen diff}
-against the baseline. Afterward repeat \texttt{validate}, the communication and
-action views, both changed projections, and a fresh \texttt{run}. Never resume
-an old incomplete run after changing workflow meaning.
+workflow. Studio reads the multiline file, saves a semantic pre-edit baseline,
+and creates a refinement brief. Pass its path to Codex as in Step~3. The brief
+requires preserved unmentioned behavior, focused tests, validation, changed
+projections, and \texttt{zippergen diff} against the baseline. Afterward repeat
+\texttt{validate}, the communication and action views, both changed
+projections, and a fresh \texttt{run}. Never resume an old incomplete run after
+changing workflow meaning.
 
 \subsubsection*{Step 11: perform the pre-deployment review}
 
@@ -800,8 +814,8 @@ models         # configure default and per-lifeline LLMs
 run            # fresh guided, durable development run
 resume         # continue the current incomplete managed run
 runs           # list this project's managed development runs
-create         # prepare a new-workflow coding-assistant brief
-refine         # prepare a change brief plus semantic baseline
+create --file PATH  # prepare a brief from a multiline prompt file
+refine --file PATH  # prepare a change brief plus semantic baseline
 deploy         # explicitly enter guided named deployment
 exit           # leave Studio
 \end{lstlisting}
@@ -915,12 +929,18 @@ normal Studio prerequisite.
 
 \subsection{Start from a prompt, or refine an existing workflow}
 
-To begin from natural language, enter \texttt{create} and then describe the
-coordination in ordinary language:
+For a multiline description, keep the prompt in an ordinary project file and
+give Studio its path. The shipped tutorial prompt is an example:
 
 \begin{lstlisting}[style=shell]
-zippergen [tutorial_review]> create
-Describe the workflow: Draft an answer; allow three revisions; require human approval.
+create --file prompts/reviewed_answer.md
+\end{lstlisting}
+
+For a short idea, plain \texttt{create} still asks one inline question:
+
+\begin{lstlisting}[style=shell]
+create
+Describe the workflow: Draft an answer and require human approval.
 \end{lstlisting}
 
 Studio saves and prints a structured coding-assistant brief. The brief asks for
@@ -936,10 +956,11 @@ loads, validates, projects, renders, and runs the result. After source creation,
 enter \texttt{use} to discover and select the new workflow.
 \end{notebox}
 
-For an existing selected workflow, describe only the intended change:
+For an existing selected workflow, use the same file form for a substantial
+change:
 
 \begin{lstlisting}[style=shell]
-refine "When the retry budget is exhausted, ask Compliance for a final review."
+refine --file prompts/reviewed_answer_refinement.md
 \end{lstlisting}
 
 Studio saves a semantic pre-edit baseline and includes its unique path in the
@@ -1065,8 +1086,9 @@ Develop & \texttt{run}; guided inputs and unique managed store &
 Human decision & Inline in the same terminal & \texttt{tasks} and
 \texttt{approve} from another terminal or notification adapter. \\
 Continue & \texttt{resume} & Re-run against the same explicit SQLite store. \\
-Prompt change & \texttt{create} or \texttt{refine} brief & Manually request a
-snapshot, assistant edit, validation, views, projections, and semantic diff. \\
+Prompt change & \texttt{create --file PATH} or
+\texttt{refine --file PATH} & Manually request a snapshot, assistant edit,
+validation, views, projections, and semantic diff. \\
 Deploy/operate & \texttt{deploy}, then remembered \texttt{status},
 \texttt{logs}, \texttt{restart}, \texttt{stop} & Named deployment commands,
 explicit options, profiles, and service-manager operations. \\
@@ -2325,6 +2347,22 @@ models show
 
 If no workflow is selected, enter \texttt{use} first.
 
+\subsection*{Studio cannot read a prompt file}
+
+Studio resolves a relative prompt path from the project root shown at startup.
+Confirm that the file exists there and is UTF-8 text:
+
+\begin{lstlisting}[style=shell]
+# Run these in the operating-system shell, not inside Studio:
+cd "$HOME/Projects/zippergen-tutorial"
+ls prompts/reviewed_answer.md
+\end{lstlisting}
+
+Then return to Studio and enter
+\texttt{create --file prompts/reviewed\_answer.md}. If a path contains spaces,
+quote the whole path. Studio reports the absolute path when a file is missing
+and explicitly distinguishes an empty file, a directory, and invalid UTF-8.
+
 \subsection*{The shell says \texttt{command not found: --input} or \texttt{--store}}
 
 The preceding multiline command ended early. Re-enter the entire command and
@@ -2473,8 +2511,9 @@ $\square$ & Studio opens the tutorial workflow without a
 \texttt{ZIPPERGEN\_HOME} export or explicit store path. & \\
 $\square$ & \texttt{current}, \texttt{use}, and the selectable \texttt{show}
 views make project and workflow context clear. & \\
-$\square$ & \texttt{create} produces a coding-assistant brief and the assistant
-creates visible source plus a focused test at the requested paths. & \\
+$\square$ & \texttt{create --file prompts/reviewed\_answer.md} reads the
+multiline prompt and produces a coding-assistant brief; the assistant creates
+visible source plus a focused test at the requested paths. & \\
 $\square$ & \texttt{models show} lists only LLM-active lifelines, and default
 plus per-lifeline routes survive reopening Studio. & \\
 $\square$ & Studio \texttt{run} collects both inputs and presents rejection and
@@ -2523,7 +2562,7 @@ appears; do not prefix them with \texttt{uv run zippergen}:
 
 \begin{lstlisting}[style=shell]
 current
-create
+create --file prompts/reviewed_answer.md
 # After the coding assistant creates source:
 use workflows/reviewed_answer.py:reviewed_answer
 show
@@ -2533,7 +2572,7 @@ models show
 run
 resume
 runs
-refine "Describe one intended semantic change"
+refine --file prompts/reviewed_answer_refinement.md
 \end{lstlisting}
 
 The listing above stays on the free mock backend. Only after following Optional

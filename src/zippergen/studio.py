@@ -21,7 +21,8 @@ OutputFunc = Callable[[str], object]
 
 
 _HELP = """Commands:
-  create                         describe a new workflow for a coding assistant
+  create [PROMPT]                prepare a new-workflow coding-assistant brief
+  create --file PATH             read a multiline workflow prompt from a file
   use [PATH.py:WORKFLOW]         select a workflow; no argument opens a selector
   current                        show project, workflow, and current run context
   show | inspect                 choose a code-first semantic view
@@ -37,7 +38,8 @@ _HELP = """Commands:
   run [LLM]                      start a run; optional LLM overrides its default once
   resume                         resume the current incomplete run
   runs                           list managed development runs
-  refine [PROMPT]                save a semantic refinement handoff
+  refine [PROMPT]                prepare a semantic refinement handoff
+  refine --file PATH             read a multiline refinement prompt from a file
   deploy [NAME] [--no-start]     configure deployment; optionally defer startup
   status|doctor|logs [NAME]      inspect the remembered named deployment
   start|restart|stop [NAME]      operate the remembered named deployment
@@ -149,16 +151,60 @@ class Studio:
         elif command == "runs":
             self.show_runs()
         elif command == "create":
-            self.create_request(" ".join(args).strip())
+            self.create_request(self._request_prompt(args, command="create"))
         elif command == "refine":
-            self.refine_request(" ".join(args).strip())
+            self.refine_request(self._request_prompt(args, command="refine"))
         elif command == "deploy":
             self.deploy_workflow(args)
         elif command in {"status", "doctor", "logs", "start", "restart", "stop"}:
             self.deployment_action(command, args)
         else:
-            self._emit(f"Unknown command: {command}. Type 'help' for available commands.")
+            self._emit(
+                f"Unknown command: {command}. Type 'help' for available commands."
+            )
         return True
+
+    def _request_prompt(self, args: list[str], *, command: str) -> str:
+        if not args:
+            return ""
+        if args[0] == "--file":
+            if len(args) != 2:
+                raise SystemExit(f"Use {command} --file PATH.")
+            entered = Path(args[1]).expanduser()
+            prompt_file = (
+                entered
+                if entered.is_absolute()
+                else self.workspace.root / entered
+            ).resolve()
+            try:
+                prompt = prompt_file.read_text(encoding="utf-8").strip()
+            except FileNotFoundError:
+                raise SystemExit(
+                    f"Prompt file does not exist: {prompt_file}"
+                ) from None
+            except IsADirectoryError:
+                raise SystemExit(
+                    f"Prompt path is a directory: {prompt_file}"
+                ) from None
+            except UnicodeDecodeError:
+                raise SystemExit(
+                    f"Prompt file must contain UTF-8 text: {prompt_file}"
+                ) from None
+            except OSError as exc:
+                raise SystemExit(
+                    f"Could not read prompt file {prompt_file}: {exc}"
+                ) from exc
+            if not prompt:
+                raise SystemExit(f"Prompt file is empty: {prompt_file}")
+            try:
+                displayed = prompt_file.relative_to(self.workspace.root)
+            except ValueError:
+                displayed = prompt_file
+            self._emit(f"Prompt file: {displayed}")
+            return prompt
+        if "--file" in args:
+            raise SystemExit(f"Use {command} --file PATH.")
+        return " ".join(args).strip()
 
     def _current_context(self):
         from zippergen.serve import load_workflow_spec
