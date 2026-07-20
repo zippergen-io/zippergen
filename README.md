@@ -247,9 +247,21 @@ prints it, `task path` gives its absolute path for integrations, and `task
 history` lists the private archive. A later `create` or `refine` deliberately
 replaces the current task; the prompt ledger remains the durable design record.
 
+The task cannot silently lag behind that record. Studio fingerprints the
+ordered active ledger when it prepares a task. Immediately before `assistant`,
+`task`, `task show`, `task path`, or `current`, it compares the fingerprint
+again. If prompt text, order, or active/archive status changed, Studio first
+generates one new task from every currently active prompt in table order and
+archives the previous task with an explicit refresh link. The checkmark names
+the included IDs. A second inspection or assistant launch does not generate
+another task unless the ledger changed again. Archived prompts are retained in
+the ledger history but are not sent in the active assistant context.
+
 `assistant codex` or plain `assistant` opens the locally installed Codex CLI;
 `assistant claude` opens Claude Code. Studio starts either tool interactively
-in the project root and asks it to execute the same fixed task. It does not call
+in the project root and asks it to execute the synchronized fixed task. Thus
+there is no separate prompt-copying step: the assistant receives the complete
+ordered active context through `.zippergen/current-task.md`. Studio does not call
 an assistant through a ZipperGen workflow provider and needs no ZipperGen API
 key or MCP configuration. Install and authenticate the chosen tool once:
 [`codex login`](https://learn.chatgpt.com/docs/developer-commands?surface=cli#cli-codex-login)

@@ -594,6 +594,18 @@ a summary, \texttt{task show} for its complete text, \texttt{task path} when an
 external integration needs the absolute path, or \texttt{task history} for the
 private timestamped archive. You do not copy or paste any task path into Codex.
 
+These commands do more than read an old file. Studio records a fingerprint of
+the ordered active prompt ledger when it prepares the task. Immediately before
+\texttt{task}, \texttt{task show}, \texttt{task path}, \texttt{current}, or
+\texttt{assistant}, it compares the fingerprint again. If prompt text, table
+order, or active/archive status changed, Studio first creates one refreshed
+task containing every currently active prompt in table order. It prints, for
+example, \texttt{[success] Task refreshed from the current prompt ledger:
+P002, P001.}, stores a link to the superseded request in the private archive,
+and then performs the requested command. Repeating the command creates no new
+task unless the ledger changes again. Archived prompts remain in ledger history
+but are absent from the assistant context.
+
 \begin{notebox}{Why Studio creates a brief instead of hidden code}
 Natural language is flexible; executable coordination must be precise. The
 brief supplies repository rules and acceptance checks. The resulting ordinary
@@ -614,8 +626,11 @@ assistant claude
 Choose one of the two commands; do not run both for the same task. Plain
 \texttt{assistant} remains an alias for \texttt{assistant codex}. Studio opens
 the selected local coding assistant interactively in the project root and tells
-it to read \path{.zippergen/current-task.md}. There is no task path to copy and
-no second prompt to compose. The assistant can inspect and edit the application
+it to read \path{.zippergen/current-task.md}. Just before launch, Studio applies
+the freshness check described above, so the file contains the whole active
+prompt ledger in its explicit order. There is no task path to copy, no list of
+prompts to pass manually, and no second prompt to compose. The assistant can
+inspect and edit the application
 project, ask for its normal approvals, run checks, and report the result. When
 its session ends, the same ZipperGen Studio session continues.
 
@@ -989,7 +1004,11 @@ run
 The refinement must come before the assistant call. Each \texttt{refine}
 replaces the generated \texttt{current-task.md} with a new task containing the
 full active prompt ledger, the immediate change, the selected workflow, and
-the pre-change semantic baseline.
+the pre-change semantic baseline. If an active prompt is subsequently edited,
+archived, restored, replaced, added, or reordered, the next task inspection or
+assistant launch refreshes that task automatically. Use \texttt{refine}, rather
+than merely \texttt{prompts add}, for a behavioral change to an existing
+workflow because \texttt{refine} also records the pre-change semantic baseline.
 
 \subsubsection*{Step 11: perform the pre-deployment review}
 

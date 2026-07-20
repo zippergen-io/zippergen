@@ -83,9 +83,9 @@ _HELP = """Commands:
   create [PROMPT]                prepare a new-workflow coding-assistant brief
   create --file PATH             read a multiline workflow prompt from a file
   create --edit [PATH]           compose a prompt, then prepare the task
-  task                            show the current coding-assistant task
-  task show|path|history          inspect the stable task or private history
-  assistant [codex|claude]       open a coding assistant on the current task
+  task                            show the current freshness-checked task
+  task show|path|history          inspect the synchronized task or its history
+  assistant [codex|claude]       sync prompts, then open a coding assistant
   editor [show|set CMD|reset]     inspect or remember the terminal editor
   edit [workflow|file PATH]       edit with the remembered/default editor
   edit ... --editor CMD           choose an editor for this invocation only
@@ -868,18 +868,22 @@ class Studio:
                 return
             self._emit("Task history")
             self._emit("────────────")
-            self._emit("  Request                  Kind        Prompt  Created")
+            self._emit(
+                "  Request                  Kind        Prompt  "
+                "Refreshes                 Created"
+            )
             for record in records:
                 self._emit(
                     f"  {str(record['request_id']):24} "
                     f"{str(record['kind']):11} "
                     f"{str(record.get('prompt_id') or '—'):6}  "
+                    f"{str(record.get('refreshes_request') or '—'):24}  "
                     f"{record.get('created_at') or '—'}"
                 )
             self._emit()
             return
 
-        record = self.workspace.current_request()
+        record = self._ensure_current_task_fresh()
         if record is None:
             if action in {"show", "path"}:
                 raise SystemExit(
@@ -906,6 +910,8 @@ class Studio:
                 ("Request", record["request_id"], None),
                 ("Prompt", record.get("prompt_id") or "—", None),
                 ("Workflow", record.get("workflow_spec") or "new workflow", None),
+                ("Refreshes", record.get("refreshes_request") or "—", None),
+                ("Context", "matches the current ordered prompt ledger", "success"),
                 ("File", ".zippergen/current-task.md", None),
                 ("Next", "assistant codex · assistant claude", None),
             ],
@@ -917,7 +923,7 @@ class Studio:
         ):
             raise SystemExit("Use assistant, assistant codex, or assistant claude.")
         assistant = args[0].lower() if args else "codex"
-        record = self.workspace.current_request()
+        record = self._ensure_current_task_fresh()
         if record is None:
             raise SystemExit(
                 "No current task. Use create or refine before starting the assistant."
@@ -998,7 +1004,7 @@ class Studio:
         manifest = self.workspace.project_manifest()
         records = self.workspace.list_prompts()
         active_prompts = sum(bool(record["active"]) for record in records)
-        request = self.workspace.current_request()
+        request = self._ensure_current_task_fresh(announce=False)
         self._emit("Current")
         self._emit("═══════")
         self._emit()
@@ -1658,28 +1664,43 @@ class Studio:
             "DSL/CLI reference completely before editing workflow code."
         )
 
-    def create_request(
-        self,
-        prompt: str,
-        *,
-        source_path: str | Path | None = None,
-    ) -> None:
-        if not prompt:
-            prompt = self.input("Describe the workflow: ").strip()
-        if not prompt:
-            raise SystemExit("The workflow description must not be empty.")
-        design_prompt = self.workspace.add_prompt(
-            kind="initial",
-            content=prompt,
-            source_path=source_path,
-        )
-        context = self.workspace.prompt_context()
-        active_prompt_ids = tuple(
+    def _active_prompt_ids(self) -> tuple[str, ...]:
+        return tuple(
             str(record["id"])
             for record in self.workspace.list_prompts()
             if record["active"]
         )
-        content = f"""# Current ZipperGen task
+
+    def _task_ledger_instruction(
+        self,
+        *,
+        prompt_id: str | None,
+        label: str,
+        refreshes_request: str | None = None,
+    ) -> str:
+        if refreshes_request is None:
+            return f"The immediate {label} is {prompt_id or 'not identified'}."
+        return (
+            f"This task refreshes {refreshes_request} because the project prompt "
+            "ledger changed. The active ledger below is authoritative; its prompt "
+            "IDs, order, status, and text were captured immediately before this "
+            f"task was written. The original {label} was "
+            f"{prompt_id or 'not identified'}."
+        )
+
+    def _creation_task_content(
+        self,
+        *,
+        prompt_id: str | None,
+        refreshes_request: str | None = None,
+    ) -> str:
+        context = self.workspace.prompt_context()
+        ledger_instruction = self._task_ledger_instruction(
+            prompt_id=prompt_id,
+            label="request",
+            refreshes_request=refreshes_request,
+        )
+        return f"""# Current ZipperGen task
 
 This generated task is the complete instruction for the coding assistant.
 Work in the project root {self.workspace.root}. Keep workflow source and tests
@@ -1697,8 +1718,8 @@ project has a more appropriate established location.
 
 The active project prompt ledger is the durable design context. Read it in
 order. Later prompts take precedence only where they explicitly change an
-earlier requirement; preserve every unaffected earlier requirement. The
-immediate request is {design_prompt['id']}.
+earlier requirement; preserve every unaffected earlier requirement.
+{ledger_instruction}
 
 {context}
 
@@ -1710,12 +1731,140 @@ full code views, and inspect every new participant's exact local projection.
 Do not deploy or start a service. Report generated files, assumptions, and
 verification results.
 """
+
+    def _refinement_task_content(
+        self,
+        *,
+        workflow_spec: str,
+        prompt_id: str | None,
+        baseline_file: str | Path,
+        refreshes_request: str | None = None,
+    ) -> str:
+        context = self.workspace.prompt_context()
+        ledger_instruction = self._task_ledger_instruction(
+            prompt_id=prompt_id,
+            label="change",
+            refreshes_request=refreshes_request,
+        )
+        return f"""# Current ZipperGen task
+
+This generated task is the complete instruction for the coding assistant.
+Work in the project root {self.workspace.root}. Keep workflow source and tests
+visible in the repository. Do not deploy or start a service.
+
+## Repository guidance
+
+{self._assistant_skill_instructions()}
+
+## Task
+
+Refine {workflow_spec} using the active project prompt ledger below. Read it in
+order. Later prompts take precedence only where they explicitly change or
+contradict an earlier requirement; preserve every unaffected earlier
+requirement. {ledger_instruction}
+
+{context}
+
+The semantic baseline is {baseline_file}.
+Preserve all behavior not explicitly changed.
+Update source, deployment metadata, and focused tests together when needed.
+Validate the result, show communication-only and full code views,
+inspect every changed participant's exact local projection, and compare the
+result with the baseline using `zippergen diff`. Do not deploy or start a
+service. Report assumptions, intended semantic changes, preserved behavior,
+and verification results.
+"""
+
+    def _ensure_current_task_fresh(
+        self,
+        *,
+        announce: bool = True,
+    ) -> dict[str, object] | None:
+        record = self.workspace.current_request()
+        if record is None:
+            return None
+        fingerprint = self.workspace.prompt_ledger_fingerprint()
+        if record.get("prompt_ledger_fingerprint") == fingerprint:
+            return record
+        kind = str(record.get("kind") or "")
+        prompt_id = str(record.get("prompt_id") or "") or None
+        workflow_spec = str(record.get("workflow_spec") or "") or None
+        baseline_file = str(record.get("baseline_file") or "") or None
+        refreshes_request = str(record["request_id"])
+        if kind == "create":
+            content = self._creation_task_content(
+                prompt_id=prompt_id,
+                refreshes_request=refreshes_request,
+            )
+        elif kind == "refine":
+            if workflow_spec is None or baseline_file is None:
+                raise WorkspaceError(
+                    f"Refinement task {refreshes_request} is missing its workflow "
+                    "or semantic baseline. Prepare a new refinement."
+                )
+            content = self._refinement_task_content(
+                workflow_spec=workflow_spec,
+                prompt_id=prompt_id,
+                baseline_file=baseline_file,
+                refreshes_request=refreshes_request,
+            )
+        else:
+            raise WorkspaceError(
+                f"Cannot refresh unsupported task kind {kind!r}. "
+                "Use create or refine."
+            )
+        prompt = str(record.get("prompt") or "")
+        if prompt_id is not None:
+            try:
+                prompt = str(self.workspace.prompt(prompt_id)["content"])
+            except WorkspaceError:
+                pass
+        active_prompt_ids = self._active_prompt_ids()
+        refreshed = self.workspace.save_request(
+            kind=kind,
+            prompt=prompt,
+            content=content,
+            workflow_spec=workflow_spec,
+            prompt_id=prompt_id,
+            active_prompt_ids=active_prompt_ids,
+            prompt_ledger_fingerprint=fingerprint,
+            baseline_file=baseline_file,
+            refreshes_request=refreshes_request,
+        )
+        if announce:
+            ids = ", ".join(active_prompt_ids) or "none"
+            self._success(
+                f"Task refreshed from the current prompt ledger: {ids}."
+            )
+        return refreshed
+
+    def create_request(
+        self,
+        prompt: str,
+        *,
+        source_path: str | Path | None = None,
+    ) -> None:
+        if not prompt:
+            prompt = self.input("Describe the workflow: ").strip()
+        if not prompt:
+            raise SystemExit("The workflow description must not be empty.")
+        design_prompt = self.workspace.add_prompt(
+            kind="initial",
+            content=prompt,
+            source_path=source_path,
+        )
+        active_prompt_ids = self._active_prompt_ids()
+        prompt_fingerprint = self.workspace.prompt_ledger_fingerprint()
+        content = self._creation_task_content(
+            prompt_id=str(design_prompt["id"]),
+        )
         self.workspace.save_request(
             kind="create",
             prompt=prompt,
             content=content,
             prompt_id=str(design_prompt["id"]),
             active_prompt_ids=active_prompt_ids,
+            prompt_ledger_fingerprint=prompt_fingerprint,
         )
         prompt_action = (
             "registered" if design_prompt["created"] else "already active"
@@ -1760,40 +1909,13 @@ verification results.
             source_path=source_path,
             workflow_spec=current,
         )
-        context = self.workspace.prompt_context()
-        active_prompt_ids = tuple(
-            str(record["id"])
-            for record in self.workspace.list_prompts()
-            if record["active"]
+        active_prompt_ids = self._active_prompt_ids()
+        prompt_fingerprint = self.workspace.prompt_ledger_fingerprint()
+        content = self._refinement_task_content(
+            workflow_spec=current,
+            prompt_id=str(design_prompt["id"]),
+            baseline_file=baseline,
         )
-        content = f"""# Current ZipperGen task
-
-This generated task is the complete instruction for the coding assistant.
-Work in the project root {self.workspace.root}. Keep workflow source and tests
-visible in the repository. Do not deploy or start a service.
-
-## Repository guidance
-
-{self._assistant_skill_instructions()}
-
-## Task
-
-Refine {current} using the active project prompt ledger below. Read it in
-order. Later prompts take precedence only where they explicitly change or
-contradict an earlier requirement; preserve every unaffected earlier
-requirement. The immediate change is {design_prompt['id']}.
-
-{context}
-
-The semantic baseline is {baseline}.
-Preserve all behavior not explicitly changed.
-Update source, deployment metadata, and focused tests together when needed.
-Validate the result, show communication-only and full code views,
-inspect every changed participant's exact local projection, and compare the
-result with the baseline using `zippergen diff`. Do not deploy or start a
-service. Report assumptions, intended semantic changes, preserved behavior,
-and verification results.
-"""
         self.workspace.save_request(
             kind="refine",
             prompt=prompt,
@@ -1801,6 +1923,7 @@ and verification results.
             workflow_spec=current,
             prompt_id=str(design_prompt["id"]),
             active_prompt_ids=active_prompt_ids,
+            prompt_ledger_fingerprint=prompt_fingerprint,
             baseline_file=baseline,
         )
         prompt_action = (

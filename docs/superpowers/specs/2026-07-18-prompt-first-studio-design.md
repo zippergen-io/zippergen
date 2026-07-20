@@ -187,6 +187,14 @@ active entry in ledger order and identifies the immediate request. Later
 prompts take precedence only where they explicitly change or contradict an
 earlier requirement; all unaffected earlier requirements remain in force.
 
+Each handoff records a fingerprint of the ordered active entries, including
+their IDs, content, and relevant provenance. Before task inspection, dashboard
+display, or assistant launch, Studio compares it with the live ledger. A
+mismatch creates a new archived handoff from the current active context, links
+it to the request it refreshes, atomically replaces the stable task mirror, and
+then continues. An unchanged fingerprint is idempotent. Archived entries do
+not appear in the active context.
+
 The ledger is design intent. Visible Python, tests, and semantic validation are
 the executable truth. A prompt never becomes an automatically deployed opaque
 workflow.
@@ -330,7 +338,10 @@ mirrored atomically at the fixed, ignored `.zippergen/current-task.md` path.
 path` prints only its stable absolute path, and `task history` lists the private
 immutable archive. `assistant codex` (also plain `assistant`) launches the local
 Codex CLI; `assistant claude` launches Claude Code. Both use the project as the
-working directory and the current task as the initial instruction. The chosen
+working directory and the freshness-checked current task as the initial
+instruction. Task inspection, `current`, and assistant launch first regenerate
+a stale task from the complete ordered active ledger; the prior request remains
+in history and the refreshed record names it. The chosen
 tool requires its own one-time installation and authentication, but no
 ZipperGen provider or MCP setup. It may still use tools or MCP servers from its
 own independent configuration.

@@ -279,6 +279,31 @@ def test_workspace_updates_prompt_content_without_changing_identity(tmp_path):
     assert len(workspace.list_prompts()) == 1
 
 
+def test_workspace_prompt_fingerprint_tracks_active_content_and_order(tmp_path):
+    root = tmp_path / "project"
+    root.mkdir()
+    workspace = Workspace(root, home=tmp_path / "state")
+    workspace.add_prompt(kind="initial", content="Original requirement.")
+    workspace.add_prompt(kind="refinement", content="Later requirement.")
+
+    original = workspace.prompt_ledger_fingerprint()
+
+    workspace.move_prompt("P002", relation="before", other_id="P001")
+    reordered = workspace.prompt_ledger_fingerprint()
+    assert reordered != original
+
+    workspace.update_prompt_content("P001", content="Corrected requirement.")
+    edited = workspace.prompt_ledger_fingerprint()
+    assert edited != reordered
+
+    workspace.set_prompt_active("P002", active=False)
+    archived = workspace.prompt_ledger_fingerprint()
+    assert archived != edited
+
+    workspace.set_prompt_active("P002", active=True)
+    assert workspace.prompt_ledger_fingerprint() == edited
+
+
 def test_workspace_provider_configuration_keeps_secrets_private(tmp_path):
     root = tmp_path / "project"
     root.mkdir()

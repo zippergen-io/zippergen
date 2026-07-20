@@ -190,6 +190,50 @@ def test_studio_task_commands_expose_one_stable_task_and_private_history(tmp_pat
     assert any("create" in line and "P001" in line for line in output)
 
 
+def test_studio_task_show_refreshes_stale_prompt_context_once(tmp_path):
+    studio, workspace, output = _studio(tmp_path)
+    studio.create_request("Create a review workflow.")
+    original = workspace.current_request()
+    assert original is not None
+    workspace.add_prompt(
+        kind="refinement",
+        content="Add an explicit failure result after retry exhaustion.",
+    )
+    workspace.set_prompt_active("P001", active=False)
+    output.clear()
+
+    studio.execute("task show")
+
+    refreshed = workspace.current_request()
+    assert refreshed is not None
+    assert refreshed["request_id"] != original["request_id"]
+    assert refreshed["refreshes_request"] == original["request_id"]
+    assert refreshed["active_prompt_ids"] == ["P002"]
+    assert refreshed["prompt_ledger_fingerprint"] == (
+        workspace.prompt_ledger_fingerprint()
+    )
+    assert output[0] == "✓ Task refreshed from the current prompt ledger: P002."
+    assert "Add an explicit failure result" in output[1]
+    assert "Create a review workflow." not in output[1]
+    assert len(workspace.list_requests()) == 2
+
+    output.clear()
+    studio.execute("task show")
+
+    assert output == [workspace.current_task_path.read_text().rstrip()]
+    assert len(workspace.list_requests()) == 2
+
+    output.clear()
+    studio.execute("task history")
+
+    assert "Refreshes" in output[2]
+    assert any(
+        str(refreshed["request_id"]) in line
+        and str(original["request_id"]) in line
+        for line in output
+    )
+
+
 def test_studio_assistant_launches_codex_in_project_on_the_stable_task(
     tmp_path, monkeypatch
 ):
@@ -219,6 +263,51 @@ def test_studio_assistant_launches_codex_in_project_on_the_stable_task(
     assert output[0] == "Assistant"
     assert any("MCP" in line and "not required" in line for line in output)
     assert output[-1].startswith("✓ Codex session ended")
+
+
+def test_studio_assistant_refreshes_edited_and_reordered_prompts_before_launch(
+    tmp_path, monkeypatch
+):
+    studio, workspace, output = _studio(tmp_path)
+    studio.create_request("Original creation requirement.")
+    original = workspace.current_request()
+    assert original is not None
+    workspace.add_prompt(
+        kind="refinement",
+        content="Apply this refinement first in the active order.",
+    )
+    workspace.move_prompt("P002", relation="before", other_id="P001")
+    workspace.update_prompt_content(
+        "P001",
+        content="Corrected creation requirement.",
+    )
+    output.clear()
+    calls: list[tuple[list[str], Path, bool]] = []
+    monkeypatch.setattr("zippergen.studio.shutil.which", lambda name: "/bin/codex")
+
+    def fake_run(arguments, *, cwd, check):
+        task = workspace.current_task_path.read_text()
+        assert task.index("P002 [refinement]") < task.index("P001 [initial]")
+        assert "Corrected creation requirement." in task
+        assert "Original creation requirement." not in task
+        calls.append((arguments, cwd, check))
+        return subprocess.CompletedProcess(arguments, 0)
+
+    monkeypatch.setattr("zippergen.studio.subprocess.run", fake_run)
+
+    studio.execute("assistant")
+
+    refreshed = workspace.current_request()
+    assert refreshed is not None
+    assert refreshed["request_id"] != original["request_id"]
+    assert refreshed["refreshes_request"] == original["request_id"]
+    assert refreshed["active_prompt_ids"] == ["P002", "P001"]
+    assert refreshed["prompt_ledger_fingerprint"] == (
+        workspace.prompt_ledger_fingerprint()
+    )
+    assert calls
+    assert output[0] == "✓ Task refreshed from the current prompt ledger: P002, P001."
+    assert output[1] == "Assistant"
 
 
 def test_studio_assistant_can_launch_claude_code_on_the_same_task(

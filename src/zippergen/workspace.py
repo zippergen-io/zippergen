@@ -725,6 +725,28 @@ class Workspace:
             )
         return "\n".join(lines)
 
+    def prompt_ledger_fingerprint(self) -> str:
+        """Fingerprint the ordered active prompt context given to assistants."""
+
+        active = [
+            {
+                "id": record["id"],
+                "kind": record["kind"],
+                "file": record["file"],
+                "replaces": record.get("replaces"),
+                "content": record["content"],
+            }
+            for record in self.list_prompts()
+            if record["active"]
+        ]
+        payload = json.dumps(
+            active,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
     def default_state(self) -> dict[str, Any]:
         return {
             "schema_version": WORKSPACE_SCHEMA_VERSION,
@@ -1063,7 +1085,9 @@ class Workspace:
         workflow_spec: str | None = None,
         prompt_id: str | None = None,
         active_prompt_ids: tuple[str, ...] = (),
+        prompt_ledger_fingerprint: str | None = None,
         baseline_file: str | Path | None = None,
+        refreshes_request: str | None = None,
     ) -> dict[str, Any]:
         base = f"{_identifier_timestamp()}-{_slug(kind)}"
         request_id = base
@@ -1079,7 +1103,9 @@ class Workspace:
             "workflow_spec": workflow_spec,
             "prompt_id": prompt_id,
             "active_prompt_ids": list(active_prompt_ids),
+            "prompt_ledger_fingerprint": prompt_ledger_fingerprint,
             "baseline_file": str(baseline_file) if baseline_file else None,
+            "refreshes_request": refreshes_request,
             "prompt": prompt,
             "content_file": str(self.requests_directory / f"{request_id}.md"),
             "task_file": str(self.current_task_path),
