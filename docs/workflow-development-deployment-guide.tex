@@ -325,9 +325,10 @@ outside the Git checkout.}
 \subsection{The complete prompt-to-deployment walk-through}
 
 This subsection carries out every box in Figure~\ref{fig:studio-path} in small
-steps. It creates \path{workflows/reviewed_answer.py:reviewed_answer} from a
-prompt. The shipped \path{zippergen/examples/tutorial_review.py:tutorial_review} is the
-deterministic fallback if a coding assistant is not available.
+steps. It creates a reviewed-answer workflow from a natural-language
+specification. Studio and the coding assistant handle its Python filename and
+symbol. The shipped \path{zippergen/examples/tutorial_review.py:tutorial_review}
+is the deterministic fallback if a coding assistant is not available.
 
 \subsubsection*{Step 1: open Studio without selecting a workflow}
 
@@ -475,10 +476,10 @@ create
 \end{lstlisting}
 
 \begin{lstlisting}
-# Reviewed-answer tutorial workflow
+# Reviewed Answer
 
-Create `workflows/reviewed_answer.py` with a workflow named
-`reviewed_answer`.
+Produce a helpful answer to a request, subject to automated review and explicit
+human approval.
 
 ## Participants and behavior
 
@@ -490,16 +491,15 @@ Create `workflows/reviewed_answer.py` with a workflow named
 - Never return an unapproved draft. Return an explicit failure after retry
   exhaustion.
 
-## Development and deployment requirements
+## Inputs and operation
 
-- Declare `mock` as the default model.
-- Declare `request` as a deployment input defaulting to
+- The application accepts a `request` input, defaulting to
   `Explain why the sky is blue in two sentences.`
-- Declare `max_retries` as an integer deployment input defaulting to `2`.
-- Add conditional OpenAI and Anthropic API-key fields.
-- Include the generated workflow file in the deployment bundle.
-- Add focused tests in `tests/test_reviewed_answer.py`.
-- Do not deploy or start a service.
+- It accepts an integer `max_retries` input, defaulting to `2`.
+- Use the deterministic mock model by default so the application can be tried
+  without a paid model account.
+- A deployment may instead use OpenAI or Anthropic. Request the corresponding
+  API key only when that provider is selected.
 \end{lstlisting}
 
 Save the file and exit the editor. Studio reads the whole UTF-8 document,
@@ -525,6 +525,13 @@ ownership, messages, action kinds, decisions, loops, deployment needs, safety
 assumptions, and acceptance examples before editing. It also requires tests,
 validation, semantic views, and all exact local projections. No workflow file
 has been created yet; Step~3 starts the coding assistant on this task.
+
+Notice that the specification does not choose a Python filename or symbol,
+request tests and validation, or repeat the prohibition on deployment. Those
+are development mechanics supplied automatically by Studio's generated task.
+The specification contains only durable application intent. After generation,
+Studio discovers the resulting workflow so the user can select it with
+\texttt{use} without knowing its source path in advance.
 
 The everyday specification commands are intentionally uniform:
 
@@ -622,36 +629,32 @@ Reviewer. Then inspect the checkout in the ordinary terminal:
 
 \begin{lstlisting}[style=shell]
 git status --short
-git diff -- workflows/reviewed_answer.py tests/test_reviewed_answer.py
+git diff
 \end{lstlisting}
 
 Do not commit merely because code was generated. First complete the checks
-below. If generation is unavailable or fails, return to Studio and use the
-equivalent shipped workflow:
-
-\begin{lstlisting}[style=shell]
-use zippergen/examples/tutorial_review.py:tutorial_review
-\end{lstlisting}
-
-Substitute that reference for the generated workflow in later commands.
+below. If generation is unavailable or fails, continue with Step~4 and select
+the shipped \texttt{tutorial\_review} workflow instead. The selector displays
+its internal source reference; the user does not have to type it.
 
 \subsubsection*{Step 4: select and validate the generated workflow}
 
 Return to the Studio terminal and enter:
 
 \begin{lstlisting}[style=shell]
-use workflows/reviewed_answer.py:reviewed_answer
+use
 current
 validate
 \end{lstlisting}
 
-The suffix after the colon names the Python workflow object. It does not name
-a deployment. \texttt{current} should show the selected workflow, no run, no
-deployment, and default LLM \texttt{mock}. Every validation check should begin
-with a green check mark. A red cross identifies the failed check and is
-followed by its explanation. If the path is wrong, inspect
-\texttt{git status --short} and enter plain \texttt{use} for the numbered
-workflow selector.
+Studio displays the discovered workflows. Select the newly generated
+reviewed-answer workflow by its number; there is no path or Python symbol to
+type. The selected entry may display an internal reference of the form
+\texttt{PATH.py:NAME}: the suffix names the Python workflow object, not a
+deployment. \texttt{current} should then show the selected workflow, no run,
+no deployment, and default LLM \texttt{mock}. Every validation check should
+begin with a green check mark. A red cross identifies the failed check and is
+followed by its explanation.
 
 \subsubsection*{Step 5: inspect increasing degrees of detail}
 
@@ -985,10 +988,11 @@ that tests pass and no key appears in the diff. Commit the reviewed manifest,
 canonical specification, workflow source, and tests; private Studio state and
 secrets remain outside the checkout.
 
-Run the generated focused test and the type checker:
+Run the project tests and the type checker. The assistant chose the individual
+test filename, so the tutorial does not require it:
 
 \begin{lstlisting}[style=shell]
-uv run --project zippergen python -m pytest -q tests/test_reviewed_answer.py
+uv run --project zippergen --with pytest python -m pytest -q tests
 uvx pyright
 \end{lstlisting}
 
@@ -997,11 +1001,11 @@ download the type-checker on first use and should end with zero errors; skip it
 temporarily only when network policy blocks that download, and record the
 unverified check.
 
-If both succeed, stage exactly the generated source and focused test, inspect
-the staged diff, and commit:
+If both succeed, stage the visible application contract, generated workflow
+directory, and tests, inspect the staged diff, and commit:
 
 \begin{lstlisting}[style=shell]
-git add zippergen.toml specification.md workflows/reviewed_answer.py tests/test_reviewed_answer.py
+git add zippergen.toml specification.md workflows tests
 git diff --cached
 git commit -m "Add reviewed answer workflow"
 \end{lstlisting}
@@ -2290,16 +2294,10 @@ Paste the following text into the editor, save it, and exit:
 \begin{lstlisting}[numbers=none]
 # Add compliance review after exhaustion
 
-Refine workbench/tutorial_review.py:tutorial_review. If Reviewer exhausts the
-max_retries budget without approving a draft, add a separate Compliance human
-lifeline that reviews the last draft. If Compliance approves, release that
-draft to Requester; otherwise send the existing explicit failure notice. Keep
-all Reviewer-approved paths and the retry bound unchanged. Update the
-deployment bundle file path to the workbench copy. Add focused tests, validate
-the workflow, show the communication-only view, show exact local projections
-for Reviewer and Compliance, and compare the result with the semantic baseline
-supplied by Studio. Do not deploy or start any service. Explain assumptions
-and the semantic changes.
+If Reviewer exhausts the max_retries budget without approving a draft, a
+separate Compliance human participant reviews the last draft. If Compliance
+approves, release that draft to Requester; otherwise send the existing explicit
+failure notice. Keep all Reviewer-approved paths and the retry bound unchanged.
 \end{lstlisting}
 
 Studio stores the text at \path{.zippergen/pending-refinement.md}, records its
@@ -2385,7 +2383,7 @@ Enter \texttt{create} and use this structure in the automatically opened
 \begin{lstlisting}[numbers=none]
 # Workflow title
 
-Create <path.py>:<workflow_name> from the following requirements:
+- Purpose and successful outcome: ...
 - Participants and responsibilities: ...
 - Inputs and initial owners: ...
 - Messages and data crossing boundaries: ...
@@ -2393,12 +2391,8 @@ Create <path.py>:<workflow_name> from the following requirements:
 - Decision and loop owners: ...
 - Parallel work: ...
 - Final outputs and owners: ...
-- Deployment fields, secrets, packages, setup, and bundled files: ...
+- External services, credentials, and deployment constraints: ...
 - Safety/idempotency requirements: ...
-
-Add fake/mock tests. Run validate, the communication-only view, the full view,
-and exact projections for all participants. Do not deploy until I explicitly
-ask.
 \end{lstlisting}
 
 Later behavioral changes go into the single pending document opened by
@@ -2975,7 +2969,7 @@ task
 task show
 assistant codex      # or: assistant claude
 # After the coding assistant creates source:
-use workflows/reviewed_answer.py:reviewed_answer
+use                  # select the discovered workflow by number
 show
 validate
 models reset all

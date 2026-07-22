@@ -2601,9 +2601,11 @@ The canonical workflow specification is the durable source of truth.
 Before editing, summarize participants, owned inputs and outputs, messages,
 action kinds, owned decisions and loops, deployment requirements, retry and
 safety assumptions, and acceptance examples. Then create visible Python source
-and focused mock/fake tests. Run validation, show the communication-only and
-full code views, and inspect every new participant's exact local projection.
-Do not deploy or start a service. Report generated files, assumptions, and
+and focused mock/fake tests. When deployment metadata is present, keep its
+bundle self-contained by including the workflow source and any required
+project assets. Run validation, show the communication-only and full code
+views, and inspect every new participant's exact local projection. Do not
+deploy or start a service. Report generated files, assumptions, and
 verification results.
 """
 
@@ -2645,6 +2647,8 @@ refinement; the user will reconcile it in Studio after reviewing your changes.
 The semantic baseline is {baseline_file}.
 Preserve all behavior not explicitly changed.
 Update source, deployment metadata, and focused tests together when needed.
+Keep any deployment bundle self-contained by including the workflow source and
+required project assets.
 Validate the result, show communication-only and full code views,
 inspect every changed participant's exact local projection, and compare the
 result with the baseline using `zippergen diff`. Do not deploy or start a

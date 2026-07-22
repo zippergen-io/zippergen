@@ -1,7 +1,7 @@
-# Reviewed-answer tutorial workflow
+# Reviewed Answer
 
-Create `workflows/reviewed_answer.py` with a workflow named
-`reviewed_answer`.
+Produce a helpful answer to a request, subject to automated review and explicit
+human approval.
 
 ## Participants and behavior
 
@@ -13,13 +13,12 @@ Create `workflows/reviewed_answer.py` with a workflow named
 - Never return an unapproved draft. Return an explicit failure after retry
   exhaustion.
 
-## Development and deployment requirements
+## Inputs and operation
 
-- Declare `mock` as the default model.
-- Declare `request` as a deployment input defaulting to
+- The application accepts a `request` input, defaulting to
   `Explain why the sky is blue in two sentences.`
-- Declare `max_retries` as an integer deployment input defaulting to `2`.
-- Add conditional OpenAI and Anthropic API-key fields.
-- Include the generated workflow file in the deployment bundle.
-- Add focused tests in `tests/test_reviewed_answer.py`.
-- Do not deploy or start a service.
+- It accepts an integer `max_retries` input, defaulting to `2`.
+- Use the deterministic mock model by default so the application can be tried
+  without a paid model account.
+- A deployment may instead use OpenAI or Anthropic. Request the corresponding
+  API key only when that provider is selected.
