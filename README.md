@@ -40,14 +40,22 @@ uv sync
 uv run zippergen
 ```
 
-Python 3.11 or later. No external dependencies: stdlib only (LLM backends
-optional). `pip install -e .` remains an alternative to `uv sync`.
+Python 3.11 or later. `prompt-toolkit` provides Studio's interactive terminal
+experience; LLM backends remain optional. `pip install -e .` is an alternative
+to `uv sync`.
 
 ## ZipperGen Studio
 
 Running `zippergen` with no subcommand opens the project-aware development
 workspace. It discovers the Git/project root, remembers the current workflow,
 and makes the main path visible through `help` and numbered selectors.
+
+Studio supports project-aware Tab completion. Command and subcommand menus are
+supplemented with the workflows, participants, LLM-active participants,
+providers, remembered deployment, and project files that are valid at the
+cursor. Up/down arrows navigate private per-project command history; a faint
+history suggestion can be accepted with the right arrow. Piped commands and
+programmatic callers retain the ordinary non-interactive input path.
 
 For workflow development, the application project may be separate from the
 framework checkout. This is especially useful while developing ZipperGen from
@@ -329,8 +337,8 @@ override, not a required setup step.
 To give one project a fresh private Studio context, enter `project reset` in
 Studio. The command first previews what will be reset and asks for confirmation.
 It moves the current project's workspace state, managed development runs,
-assistant-task history, model/provider preferences, development secrets, and
-generated task/drafts to an owner-only backup below
+assistant-task and command history, model/provider preferences, development
+secrets, and generated task/drafts to an owner-only backup below
 `$ZIPPERGEN_HOME/resets/`. It then continues with no workflow, run, or task
 selected. Visible workflow source, tests, `specification.md`, `zippergen.toml`, Git history,
 and the framework checkout are preserved. Deployment profiles and running

@@ -9,10 +9,16 @@ import shutil
 import subprocess
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
+
+from prompt_toolkit import PromptSession
+from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
+from prompt_toolkit.completion import Completer, Completion, CompleteEvent
+from prompt_toolkit.document import Document
+from prompt_toolkit.history import FileHistory
 
 from zippergen.dev import default_llm_spec, run_dev
 from zippergen.models import normalize_llm_overrides
@@ -72,6 +78,7 @@ _STUDIO_COMMANDS = {
     "project",
     "prompts",
     "providers",
+    "quit",
     "refine",
     "restart",
     "resume",
@@ -87,6 +94,178 @@ _STUDIO_COMMANDS = {
     "validate",
     "workflow",
 }
+
+_COMMAND_COMPLETIONS = (
+    ("project", "initialize, inspect, or reset the project"),
+    ("create", "write or reopen the canonical specification"),
+    ("spec", "inspect or refine the workflow specification"),
+    ("task", "inspect the current coding-assistant task"),
+    ("assistant", "open Codex or Claude on the current task"),
+    ("editor", "inspect or configure the terminal editor"),
+    ("edit", "edit the selected workflow or another project file"),
+    ("use", "select a discovered workflow"),
+    ("current", "show project, workflow, model, and runtime context"),
+    ("show", "inspect code-first workflow views"),
+    ("inspect", "alias for show"),
+    ("workflow", "alias for current"),
+    ("validate", "validate the selected workflow"),
+    ("models", "configure default and participant-specific models"),
+    ("providers", "configure model-provider readiness"),
+    ("run", "start a managed development run"),
+    ("resume", "resume the current incomplete run"),
+    ("runs", "list managed development runs"),
+    ("refine", "short alias for spec refine"),
+    ("deploy", "prepare or start a named deployment"),
+    ("status", "show deployment status"),
+    ("doctor", "check deployment readiness"),
+    ("logs", "show deployment logs"),
+    ("start", "start a deployment"),
+    ("restart", "restart a deployment"),
+    ("stop", "stop a deployment"),
+    ("help", "show all Studio commands"),
+    ("exit", "leave Studio"),
+    ("quit", "alias for exit"),
+)
+
+_SUBCOMMAND_COMPLETIONS = {
+    "project": (
+        ("init", "create the visible project manifest"),
+        ("show", "show visible project configuration"),
+        ("reset", "back up and reset private project state"),
+    ),
+    "spec": (
+        ("show", "show the canonical specification"),
+        ("edit", "edit the canonical specification"),
+        ("path", "print the automatic specification path"),
+        ("refine", "create or reopen the pending refinement"),
+        ("pending", "show the pending refinement"),
+        ("reconcile", "accept an integrated refinement"),
+        ("discard", "archive an unwanted refinement"),
+        ("history", "list reconciled and discarded refinements"),
+    ),
+    "task": (
+        ("show", "show the complete assistant task"),
+        ("path", "print the generated task path"),
+        ("history", "list previous assistant tasks"),
+    ),
+    "assistant": (
+        ("codex", "open Codex in the project root"),
+        ("claude", "open Claude Code in the project root"),
+    ),
+    "editor": (
+        ("show", "show the effective editor"),
+        ("set", "remember a project editor"),
+        ("reset", "restore automatic editor discovery"),
+    ),
+    "edit": (
+        ("workflow", "edit the selected workflow source"),
+        ("file", "edit a project file"),
+    ),
+    "show": (
+        ("overview", "compact workflow summary"),
+        ("protocol", "global protocol code"),
+        ("communications", "communications only"),
+        ("actions", "actions and prompts"),
+        ("full", "complete workflow code"),
+        ("agent", "one exact local projection"),
+        ("agents", "selected-participant focus view"),
+    ),
+    "models": (
+        ("show", "show effective model routing"),
+        ("default", "set the inherited default model"),
+        ("set", "override one LLM-active participant"),
+        ("reset", "restore inheritance or reset all routing"),
+    ),
+    "providers": (
+        ("show", "show provider readiness"),
+        ("set", "configure a provider"),
+        ("reset", "remove provider configuration"),
+    ),
+}
+
+_MODEL_COMPLETIONS = (
+    ("mock", "deterministic built-in model"),
+    ("local:", "local OpenAI-compatible model"),
+    ("openai:", "OpenAI model"),
+    ("anthropic:", "Anthropic model"),
+    ("mistral:", "Mistral model"),
+)
+
+
+def _completion_words(text: str) -> tuple[list[str], str]:
+    """Split the completed shell words from the word under the cursor."""
+
+    boundary = -1
+    quote: str | None = None
+    escaped = False
+    for index, character in enumerate(text):
+        if escaped:
+            escaped = False
+            continue
+        if character == "\\" and quote != "'":
+            escaped = True
+            continue
+        if character in {"'", '"'}:
+            if quote is None:
+                quote = character
+            elif quote == character:
+                quote = None
+            continue
+        if character.isspace() and quote is None:
+            boundary = index
+    prefix = text[: boundary + 1]
+    fragment = text[boundary + 1 :]
+    try:
+        words = shlex.split(prefix)
+    except ValueError:
+        words = prefix.split()
+    return words, fragment
+
+
+def _unquote_completion_fragment(fragment: str) -> str:
+    if not fragment:
+        return ""
+    try:
+        parsed = shlex.split(fragment)
+    except ValueError:
+        parsed = []
+    if len(parsed) == 1:
+        return parsed[0]
+    if fragment[0] in {"'", '"'}:
+        fragment = fragment[1:]
+    return fragment.replace("\\ ", " ").replace("\\\t", "\t")
+
+
+class StudioCompleter(Completer):
+    """Prompt-toolkit adapter for Studio's project-aware candidates."""
+
+    def __init__(self, studio: Studio) -> None:
+        self.studio = studio
+
+    def get_completions(
+        self,
+        document: Document,
+        complete_event: CompleteEvent,
+    ) -> Iterator[Completion]:
+        del complete_event
+        words, raw_fragment = _completion_words(document.text_before_cursor)
+        fragment = _unquote_completion_fragment(raw_fragment)
+        try:
+            candidates = self.studio.completion_candidates(words, fragment)
+        except (Exception, SystemExit):
+            # Completion is assistive and must never make command entry fail
+            # because project state or a workflow is temporarily invalid.
+            return
+        for value, description in candidates:
+            if not value.lower().startswith(fragment.lower()):
+                continue
+            inserted = shlex.quote(value) if any(c.isspace() for c in value) else value
+            yield Completion(
+                inserted,
+                start_position=-len(raw_fragment),
+                display=value,
+                display_meta=description,
+            )
 
 
 def _canonical_provider(value: str) -> str:
@@ -173,6 +352,13 @@ class Studio:
         self.workspace = workspace
         self.input = input_func
         self.output = output_func
+        self._prompt_toolkit_enabled = (
+            input_func is input
+            and output_func is print
+            and bool(getattr(sys.stdin, "isatty", lambda: False)())
+            and bool(getattr(sys.stdout, "isatty", lambda: False)())
+        )
+        self._prompt_session: PromptSession[str] | None = None
         self.color = (
             output_func is print
             and bool(getattr(sys.stdout, "isatty", lambda: False)())
@@ -248,13 +434,56 @@ class Studio:
         self._emit(f"Project: {self.workspace.root}")
         current = self.workspace.current_workflow
         self._emit(f"Workflow: {current}" if current else "No workflow selected.")
-        self._emit("Type 'help' for commands; 'show' opens the inspection menu.")
+        self._emit(
+            "Type 'help' for commands; press Tab to complete; "
+            "'show' opens the inspection menu."
+        )
+
+    def _new_prompt_session(self) -> PromptSession[str]:
+        self.workspace.directory.mkdir(parents=True, exist_ok=True)
+        try:
+            self.workspace.directory.chmod(0o700)
+        except OSError:
+            pass
+        return PromptSession(
+            history=FileHistory(str(self._studio_history_path())),
+            completer=StudioCompleter(self),
+            auto_suggest=AutoSuggestFromHistory(),
+            complete_while_typing=False,
+            enable_history_search=True,
+        )
+
+    def _studio_history_path(self) -> Path:
+        return self.workspace.directory / "studio.history"
+
+    def _protect_studio_history(self) -> None:
+        try:
+            self._studio_history_path().chmod(0o600)
+        except FileNotFoundError:
+            pass
+        except OSError:
+            # The containing workspace is already owner-only. Failure to make
+            # the file stricter must not make the interactive shell unusable.
+            pass
+
+    def _read_command(self) -> str:
+        if not self._prompt_toolkit_enabled:
+            return self.input(self._prompt())
+        if self._prompt_session is None:
+            self._prompt_session = self._new_prompt_session()
+        try:
+            return self._prompt_session.prompt(
+                self._prompt(),
+                complete_in_thread=True,
+            )
+        finally:
+            self._protect_studio_history()
 
     def run(self) -> int:
         self.welcome()
         while True:
             try:
-                line = self.input(self._prompt())
+                line = self._read_command()
             except EOFError:
                 self._emit()
                 return 0
@@ -271,6 +500,190 @@ class Studio:
                 )
             except (SystemExit, WorkspaceError, ValueError) as exc:
                 self._error(str(exc))
+
+    def _completion_lifelines(self, *, llm_only: bool = False) -> list[str]:
+        if self.workspace.current_workflow is None:
+            return []
+        try:
+            _current, workflow, module = self._current_context()
+            if llm_only:
+                return list(self._llm_action_lifelines(workflow, module))
+            return self._agent_names(workflow)
+        except (Exception, SystemExit):
+            return []
+
+    def _path_completion_candidates(
+        self,
+        fragment: str,
+    ) -> list[tuple[str, str]]:
+        """Complete paths while presenting project-relative values by default."""
+
+        expanded = Path(fragment).expanduser() if fragment else Path()
+        absolute = expanded.is_absolute()
+        target = expanded if absolute else self.workspace.root / expanded
+        directory = target if fragment.endswith(("/", os.sep)) else target.parent
+        name_prefix = "" if fragment.endswith(("/", os.sep)) else target.name
+        try:
+            children = sorted(
+                directory.iterdir(),
+                key=lambda path: (not path.is_dir(), path.name.lower()),
+            )
+        except OSError:
+            return []
+        candidates: list[tuple[str, str]] = []
+        for child in children:
+            if not child.name.startswith(name_prefix):
+                continue
+            if child.name.startswith(".") and not name_prefix.startswith("."):
+                continue
+            if fragment.startswith("~"):
+                try:
+                    value = "~/" + child.relative_to(Path.home()).as_posix()
+                except ValueError:
+                    value = str(child)
+            elif absolute:
+                value = str(child)
+            else:
+                try:
+                    value = child.relative_to(self.workspace.root).as_posix()
+                except ValueError:
+                    value = str(child)
+            if child.is_dir():
+                value += "/"
+            candidates.append((value, "directory" if child.is_dir() else "file"))
+            if len(candidates) >= 100:
+                break
+        return candidates
+
+    def _editor_completion_candidates(self) -> list[tuple[str, str]]:
+        return [
+            (name, "available terminal editor")
+            for name in ("micro", "nano", "vim", "vi")
+            if shutil.which(name) is not None
+        ]
+
+    def completion_candidates(
+        self,
+        words: list[str],
+        fragment: str = "",
+    ) -> list[tuple[str, str]]:
+        """Return context-sensitive candidates for the word under the cursor."""
+
+        if not words:
+            return list(_COMMAND_COMPLETIONS)
+        command = words[0].lower()
+        args = words[1:]
+        if not args and command in _SUBCOMMAND_COMPLETIONS:
+            return list(_SUBCOMMAND_COMPLETIONS[command])
+        if command == "inspect":
+            command = "show"
+        if command == "show":
+            if not args:
+                return list(_SUBCOMMAND_COMPLETIONS["show"])
+            if args[0].lower() in {"agent", "agents"}:
+                used = {value.lower() for value in args[1:]}
+                return [
+                    (name, "workflow participant")
+                    for name in self._completion_lifelines()
+                    if name.lower() not in used
+                ]
+            return []
+        if command == "use":
+            try:
+                workflows = self.workspace.discover_workflows()
+            except (WorkspaceError, OSError):
+                workflows = []
+            return [(value, "discovered workflow") for value in workflows]
+        if command == "models":
+            if not args:
+                return list(_SUBCOMMAND_COMPLETIONS["models"])
+            action = args[0].lower()
+            if action == "default":
+                return list(_MODEL_COMPLETIONS)
+            if action == "set":
+                if len(args) == 1:
+                    return [
+                        (name, "LLM-active participant")
+                        for name in self._completion_lifelines(llm_only=True)
+                    ]
+                return list(_MODEL_COMPLETIONS)
+            if action == "reset" and len(args) == 1:
+                return [("all", "reset the complete model profile")] + [
+                    (name, "LLM-active participant")
+                    for name in self._completion_lifelines(llm_only=True)
+                ]
+            return []
+        if command == "providers":
+            if not args:
+                return list(_SUBCOMMAND_COMPLETIONS["providers"])
+            if args[0].lower() in {"set", "reset"}:
+                return [
+                    (name, "model provider") for name in _SUPPORTED_PROVIDERS
+                    if name != "mock"
+                ]
+            return []
+        if command in {"run"}:
+            return list(_MODEL_COMPLETIONS)
+        if command in {"create", "refine"}:
+            if "--file" in args and args[-1] == "--file":
+                return self._path_completion_candidates(fragment)
+            if "--editor" in args and args[-1] == "--editor":
+                return self._editor_completion_candidates()
+            if not args:
+                return [
+                    ("--file", "import text from an existing file"),
+                    ("--editor", "choose an editor for this invocation"),
+                ]
+            return []
+        if command == "spec" and args and args[0].lower() == "refine":
+            if "--file" in args and args[-1] == "--file":
+                return self._path_completion_candidates(fragment)
+            if "--editor" in args and args[-1] == "--editor":
+                return self._editor_completion_candidates()
+            return [
+                ("--file", "import text into the pending refinement"),
+                ("--editor", "choose an editor for this invocation"),
+            ]
+        if command == "spec" and args and args[0].lower() == "edit":
+            if "--editor" in args and args[-1] == "--editor":
+                return self._editor_completion_candidates()
+            return [("--editor", "choose an editor for this invocation")]
+        if command == "spec" and args and args[0].lower() in {
+            "reconcile",
+            "discard",
+        }:
+            return [("--yes", "confirm without another prompt")]
+        if command == "project" and args and args[0].lower() == "reset":
+            return [("--yes", "confirm without another prompt")]
+        if command == "edit":
+            if "--editor" in args and args[-1] == "--editor":
+                return self._editor_completion_candidates()
+            if args and args[0].lower() == "file":
+                return self._path_completion_candidates(fragment)
+            return []
+        if command == "editor" and args and args[0].lower() == "set":
+            return self._editor_completion_candidates()
+        if command == "assistant" and not args:
+            return list(_SUBCOMMAND_COMPLETIONS["assistant"])
+        if command in {"deploy", "status", "doctor", "logs", "start", "restart", "stop"}:
+            values: list[tuple[str, str]] = []
+            deployment = self.workspace.load().get("last_deployment")
+            if deployment:
+                values.append((str(deployment), "remembered deployment"))
+            if command == "deploy":
+                values.append(("--no-start", "prepare without starting"))
+            return values
+        if command == "prompts":
+            legacy = [("list", "list legacy prompt entries")]
+            if self.workspace.list_prompts():
+                legacy.extend(
+                    (action, "inspect legacy prompt history")
+                    for action in ("show", "inspect", "path", "context")
+                )
+            if self.workspace.specification() is None:
+                legacy.append(("add", "legacy compatibility only"))
+            return legacy
+        return []
 
     def execute(self, line: str, *, show_boundary: bool = False) -> bool:
         try:
@@ -1100,6 +1513,10 @@ class Studio:
                 self._warning("Please enter 'y' or 'n'.")
 
         result = self.workspace.reset_private_state()
+        # The history file was moved with the private workspace. Recreate the
+        # prompt session on the next loop iteration so subsequent commands are
+        # written to a fresh private history rather than the archived path.
+        self._prompt_session = None
         backup = result["backup_directory"]
         self._emit_table(
             "Project reset",

@@ -23,7 +23,9 @@ classifiers = [
   "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 
-dependencies = []
+dependencies = [
+  "prompt-toolkit>=3.0.52,<4",
+]
 
 [project.urls]
 Homepage = "https://github.com/zippergen-io/zippergen"

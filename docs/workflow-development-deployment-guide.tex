@@ -344,7 +344,7 @@ Expected beginning:
 ZipperGen Studio
 Project: /path/to/zippergen-tutorial
 No workflow selected.
-Type 'help' for commands; 'show' opens the inspection menu.
+Type 'help' for commands; press Tab to complete; 'show' opens the inspection menu.
 zippergen [no workflow]>
 \end{lstlisting}
 
@@ -352,6 +352,17 @@ Everything after the last line is a Studio command. Do not prefix Studio
 commands with \texttt{zippergen}. Enter \texttt{help} now; it is the
 built-in reminder for creation, selection, inspection, model routing,
 execution, refinement, deployment, and operation.
+
+Press Tab at any point while entering a command. Studio completes commands and
+subcommands and, where relevant, offers the workflows, participants,
+LLM-active participants, providers, remembered deployment, and project files
+that are valid in the current context. For example, type \texttt{sp} followed
+by Tab to obtain \texttt{spec}; after selecting the tutorial workflow,
+\texttt{show agent W} followed by Tab completes \texttt{Writer}. Use the up
+and down arrows for private per-project command history. A faint suggestion
+from that history is accepted with the right arrow. This interactive support
+is provided by \texttt{prompt-toolkit}; scripts and piped input keep the plain
+non-interactive input path.
 
 Initialize the visible project contract, then inspect the initial dashboard:
 
@@ -373,8 +384,9 @@ If you later need to clear stale remembered context for this project, do not
 delete hidden directories by hand. Inside Studio, enter \texttt{project reset}.
 Studio shows a preview and asks for confirmation. A confirmed reset moves the
 project's private workspace, development runs and stores, assistant-task and
-refinement history, model/provider preferences, development secrets, current
-generated task, and pending refinement to an owner-only backup below
+refinement history, Studio command history, model/provider preferences,
+development secrets, current generated task, and pending refinement to an
+owner-only backup below
 \path{ZIPPERGEN_HOME/resets}. It does not alter workflow source, tests, the
 visible \path{specification.md}, \path{zippergen.toml}, Git history, or the nested
 framework checkout. It also does not stop or delete deployments. This is a
@@ -2848,10 +2860,11 @@ project reset
 The preview separates preserved project files from affected private state.
 Answer \texttt{y} only after checking the project path and counts. On success,
 Studio prints the exact backup directory below \path{ZIPPERGEN_HOME/resets} and
-continues as \texttt{zippergen [no workflow]>}. Assistant requests, run records,
-SQLite development stores, private development keys, model/provider choices,
-and generated \path{.zippergen} task data are in that backup rather than being
-deleted. The canonical specification, workflow source, tests, manifest, Git
+continues as \texttt{zippergen [no workflow]>}. Assistant requests, Studio
+command history, run records, SQLite development stores, private development
+keys, model/provider choices, and generated \path{.zippergen} task data are in
+that backup rather than being deleted. The canonical specification, workflow
+source, tests, manifest, Git
 repository, and framework checkout remain where they were. Deployment
 profiles, stores, logs, and running services are not part of this reset; stop
 them separately as shown above. The explicit \texttt{project reset --yes} form

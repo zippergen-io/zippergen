@@ -3,7 +3,10 @@ import subprocess
 from io import StringIO
 from pathlib import Path
 
-from zippergen.studio import Studio
+from prompt_toolkit.completion import CompleteEvent
+from prompt_toolkit.document import Document
+
+from zippergen.studio import Studio, StudioCompleter
 from zippergen.workspace import Workspace, WorkspaceError
 
 
@@ -45,6 +48,73 @@ def _studio(tmp_path, responses=(), secret_responses=()):
         secret_input_func=lambda prompt: next(secret_answers),
     )
     return studio, workspace, output
+
+
+def _completions(studio: Studio, text: str) -> list[str]:
+    document = Document(text, cursor_position=len(text))
+    event = CompleteEvent(completion_requested=True)
+    return [
+        completion.text
+        for completion in StudioCompleter(studio).get_completions(document, event)
+    ]
+
+
+def test_studio_completion_is_context_and_project_aware(tmp_path):
+    studio, workspace, _output = _studio(tmp_path)
+    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    (workspace.root / "requirements.md").write_text("Create a workflow.\n")
+    notes = workspace.root / "notes folder"
+    notes.mkdir()
+    (notes / "spec.md").write_text("Another workflow.\n")
+
+    assert _completions(studio, "sp") == ["spec"]
+    assert {"refine", "reconcile"}.issubset(_completions(studio, "spec r"))
+    assert _completions(studio, "use wor") == ["workflow.py:sample"]
+    assert _completions(studio, "show agent W") == ["Writer"]
+    assert _completions(studio, "models set W") == ["Writer"]
+    assert _completions(studio, "providers set a") == ["anthropic"]
+    assert _completions(studio, "create --file req") == ["requirements.md"]
+    assert _completions(studio, "create --file 'notes f") == ["'notes folder/'"]
+    assert _completions(studio, "create --file 'notes folder/'") == [
+        "'notes folder/spec.md'"
+    ]
+
+
+def test_studio_run_uses_prompt_toolkit_session_when_interactive(tmp_path):
+    studio, _workspace, output = _studio(tmp_path)
+    prompts: list[tuple[str, bool]] = []
+
+    class FakeSession:
+        def prompt(self, value: str, *, complete_in_thread: bool) -> str:
+            prompts.append((value, complete_in_thread))
+            return "exit"
+
+    studio._prompt_toolkit_enabled = True
+    studio._prompt_session = FakeSession()  # type: ignore[assignment]
+
+    assert studio.run() == 0
+    assert prompts == [("zippergen [no workflow]> ", True)]
+    assert any("press Tab to complete" in line for line in output)
+
+
+def test_studio_command_history_is_owner_only(tmp_path):
+    studio, workspace, _output = _studio(tmp_path)
+    workspace.directory.mkdir(parents=True)
+    history = workspace.directory / "studio.history"
+    history.write_text("# command\n+current\n")
+    history.chmod(0o644)
+
+    studio._protect_studio_history()
+
+    assert history.stat().st_mode & 0o777 == 0o600
+
+
+def test_studio_completion_never_breaks_input_on_invalid_private_state(tmp_path):
+    studio, workspace, _output = _studio(tmp_path)
+    workspace.directory.mkdir(parents=True)
+    workspace.state_path.write_text("not valid JSON")
+
+    assert _completions(studio, "status ") == []
 
 
 def test_studio_use_discovers_workflow_without_importing_for_selection(tmp_path):
