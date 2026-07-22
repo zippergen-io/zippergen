@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Literal
 
 from prompt_toolkit import PromptSession
+from prompt_toolkit.application.current import get_app
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.completion import Completer, Completion, CompleteEvent
 from prompt_toolkit.document import Document
@@ -100,7 +101,7 @@ _COMMAND_COMPLETIONS = (
     ("create", "write or reopen the canonical specification"),
     ("spec", "inspect or refine the workflow specification"),
     ("task", "inspect the current coding-assistant task"),
-    ("assistant", "open Codex or Claude on the current task"),
+    ("assistant", "run Codex or Claude on the current task"),
     ("editor", "inspect or configure the terminal editor"),
     ("edit", "edit the selected workflow or another project file"),
     ("use", "select a discovered workflow"),
@@ -150,7 +151,7 @@ _SUBCOMMAND_COMPLETIONS = {
     ),
     "assistant": (
         ("codex", "open Codex in the project root"),
-        ("claude", "open Claude Code in the project root"),
+        ("claude", "run Claude Code once on the current task"),
     ),
     "editor": (
         ("show", "show the effective editor"),
@@ -307,7 +308,7 @@ _HELP = """Commands:
   spec history                   list reconciled/discarded private history
   task                            show the current freshness-checked task
   task show|path|history          inspect the synchronized task or its history
-  assistant [codex|claude]       sync the spec, then open a coding assistant
+  assistant [codex|claude]       sync the spec, then run a coding assistant
   editor [show|set CMD|reset]     inspect or remember the terminal editor
   edit [workflow|file PATH]       edit with the remembered/default editor
   edit ... --editor CMD           choose an editor for this invocation only
@@ -451,9 +452,41 @@ class Studio:
             history=FileHistory(str(self._studio_history_path())),
             completer=StudioCompleter(self),
             auto_suggest=AutoSuggestFromHistory(),
+            bottom_toolbar=self._completion_toolbar,
             complete_while_typing=False,
             enable_history_search=True,
         )
+
+    def completion_explanation(self, text: str) -> str:
+        """Explain the sole completion match that Tab can insert."""
+
+        words, raw_fragment = _completion_words(text)
+        fragment = _unquote_completion_fragment(raw_fragment)
+        if not fragment:
+            return ""
+        try:
+            candidates = self.completion_candidates(words, fragment)
+        except (Exception, SystemExit):
+            return ""
+        matches = [
+            (value, description)
+            for value, description in candidates
+            if value.lower().startswith(fragment.lower())
+        ]
+        if len(matches) != 1:
+            return ""
+        value, description = matches[0]
+        return f" Tab: {value} — {description} "
+
+    def _completion_toolbar(self) -> str:
+        """Render metadata even when prompt-toolkit has no menu to display."""
+
+        try:
+            text = get_app().current_buffer.document.text_before_cursor
+        except Exception:
+            # Completion help is optional and must never disrupt command input.
+            return ""
+        return self.completion_explanation(text)
 
     def _studio_history_path(self) -> Path:
         return self.workspace.directory / "studio.history"
@@ -1945,6 +1978,15 @@ class Studio:
                     tool,
                     None,
                 ),
+                (
+                    "Mode",
+                    (
+                        "one-shot task; return to Studio"
+                        if assistant == "claude"
+                        else "interactive task session"
+                    ),
+                    None,
+                ),
                 ("Task", relative_task, "success"),
                 ("Project", self.workspace.root, None),
                 (
@@ -1967,7 +2009,16 @@ class Studio:
                 instruction,
             ]
         else:
-            command = [executable, instruction]
+            # Claude's explicit print/agent mode executes the supplied task and
+            # returns. acceptEdits permits project-local source changes while
+            # retaining Claude Code's permission boundary for other commands.
+            command = [
+                executable,
+                "--print",
+                "--permission-mode",
+                "acceptEdits",
+                instruction,
+            ]
         try:
             completed = subprocess.run(
                 command,

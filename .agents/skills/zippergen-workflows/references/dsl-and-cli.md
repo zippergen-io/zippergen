@@ -105,6 +105,38 @@ else:
 Keep guards free of external effects. The `else` of a `while` represents the
 exit protocol, not an error handler.
 
+## Reusable protocol fragments
+
+Use `@fragment` for a reusable or conceptually coherent coordination
+subsequence that belongs inside a larger global workflow. A fragment may be
+worth naming even when called only once if it keeps a long protocol at a
+reviewable size:
+
+```python
+from zippergen import fragment
+
+
+@fragment
+def request_review(draft):
+    Writer(draft) >> Reviewer(draft)
+    Reviewer: approved = approve_reply(draft)
+    Reviewer(approved) >> Writer(approved)
+
+
+@workflow
+def answer(topic: str @ User):
+    User(topic) >> Writer(topic)
+    Writer: draft = draft_reply(topic)
+    request_review(draft)
+```
+
+Calling the fragment inside `@workflow` records its statements directly in the
+surrounding protocol, as if they had been written inline. Fragment parameters
+are the DSL values already in scope at the call site; lifelines and other
+module-level DSL values may be referenced as globals. A fragment is not a
+separately loaded, run, deployed, or durable sub-workflow. Use a top-level
+`@workflow` when independent execution and deployment are required.
+
 ## Parallel work
 
 Use a parallel region only for independent branches. Each branch must contain

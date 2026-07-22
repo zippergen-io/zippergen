@@ -359,7 +359,10 @@ subcommands and, where relevant, offers the workflows, participants,
 LLM-active participants, providers, remembered deployment, and project files
 that are valid in the current context. For example, type \texttt{sp} followed
 by Tab to obtain \texttt{spec}; after selecting the tutorial workflow,
-\texttt{show agent W} followed by Tab completes \texttt{Writer}. Use the up
+\texttt{show agent W} followed by Tab completes \texttt{Writer}. When several
+matches exist, the completion menu explains each one. When exactly one match
+exists---for example, \texttt{resu} for \texttt{resume}---the bottom line shows
+that match and its explanation even though no menu is necessary. Use the up
 and down arrows for private per-project command history. A faint suggestion
 from that history is accepted with the right arrow. This interactive support
 is provided by \texttt{prompt-toolkit}; scripts and piped input keep the plain
@@ -485,7 +488,7 @@ even when a terminal's interactive question cannot accept a multiline paste.
 create
 \end{lstlisting}
 
-\begin{lstlisting}
+\begin{lstlisting}[numbers=none]
 # Reviewed Answer
 
 Produce a helpful answer to a request, subject to automated review and explicit
@@ -661,9 +664,27 @@ Studio displays the discovered workflows. Select the newly generated
 reviewed-answer workflow by its number; there is no path or Python symbol to
 type. The selected entry may display an internal reference of the form
 \texttt{PATH.py:NAME}: the suffix names the Python workflow object, not a
-deployment. \texttt{current} should then show the selected workflow, no run,
-no deployment, and default LLM \texttt{mock}. Every validation check should
-begin with a green check mark. A red cross identifies the failed check and is
+deployment. The three commands have deliberately different jobs:
+
+\begin{description}
+  \item[\texttt{use}] discovers top-level workflow objects, loads the chosen
+        object, and remembers its \texttt{PATH.py:NAME} reference as the current
+        workflow for later Studio commands. It neither runs nor deploys it.
+  \item[\texttt{current}] rebuilds the project dashboard from the current files
+        and machine-specific Studio state. Once a workflow is selected, this
+        includes a fresh validation summary as well as participants, model
+        routing, provider readiness, the managed run, and deployment. Thus the
+        green \texttt{Validation: valid} mark immediately after \texttt{use} is
+        expected: \texttt{current} has checked the selected source; it is not a
+        success mark cached by \texttt{use}.
+  \item[\texttt{validate}] runs the validator explicitly and prints every
+        individual check, including the exact local projection checks. It does
+        not modify, execute, or deploy the workflow.
+\end{description}
+
+\texttt{current} should show no run, no deployment, and default LLM
+\texttt{mock}. In the detailed \texttt{validate} output, every successful check
+begins with a green check mark. A red cross identifies a failed check and is
 followed by its explanation.
 
 \subsubsection*{Step 5: inspect increasing degrees of detail}
@@ -930,7 +951,7 @@ Studio creates the automatically named, ignored file
 \path{.zippergen/pending-refinement.md} and opens it. Paste this change, save,
 and exit the editor:
 
-\begin{lstlisting}
+\begin{lstlisting}[numbers=none]
 Add a FactChecker participant. Reviewer must request a factual check before
 the human decision. Preserve the bounded retry and approval behavior. Add
 focused tests and do not deploy.
@@ -1591,6 +1612,34 @@ For a well-formed protocol, every projected send has a corresponding receive.
 The code therefore serves simultaneously as executable behavior, design
 documentation, and an audit surface.
 
+A global protocol does not have to be one monolithic function. Reusable or
+conceptually coherent subsequences can be given meaningful names so that the
+top-level protocol stays a reasonable size. Decorate such a helper with
+\texttt{@fragment}, then call it inside a \texttt{@workflow} body:
+
+\begin{lstlisting}[style=python]
+from zippergen import fragment, workflow
+
+@fragment
+def request_review(draft):
+    Writer(draft) >> Reviewer(draft)
+    Reviewer: approved = review(draft)
+    Reviewer(approved) >> Writer(approved)
+
+@workflow
+def reviewed_answer(request: str @ Requester):
+    Requester(request) >> Writer(request)
+    Writer: draft = write_draft(request)
+    request_review(draft)
+\end{lstlisting}
+
+A fragment is an authoring-time, reusable piece of the same global protocol.
+Its statements are inlined into the surrounding workflow before validation and
+projection; it is not a separately deployed workflow, participant, process, or
+durable run. It can still be useful when called only once if it names a coherent
+protocol stage. Use another top-level \texttt{@workflow} only when the unit
+should be loaded, run, and deployed independently.
+
 \subsection{Important words}
 
 \begin{longtable}{p{0.20\linewidth}p{0.73\linewidth}}
@@ -1792,7 +1841,12 @@ and
 
 Normally, stay in Studio and enter \texttt{assistant codex} or
 \texttt{assistant claude}. Studio supplies the project directory and
-\path{.zippergen/current-task.md} instruction. Neither path requires MCP. Any
+\path{.zippergen/current-task.md} instruction. Codex opens its interactive
+repository session with that task already submitted. Claude Code uses its
+documented one-shot agent mode with project-local edits accepted, executes the
+task, prints its report, and then returns to Studio instead of opening an empty
+prompt. Other commands remain subject to Claude Code's configured permission
+rules. Neither path requires MCP. Any
 MCP server already configured in the chosen tool remains optional and is not
 configured or required by ZipperGen.
 

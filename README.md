@@ -53,7 +53,9 @@ and makes the main path visible through `help` and numbered selectors.
 Studio supports project-aware Tab completion. Command and subcommand menus are
 supplemented with the workflows, participants, LLM-active participants,
 providers, remembered deployment, and project files that are valid at the
-cursor. Up/down arrows navigate private per-project command history; a faint
+cursor. When only one match exists, the bottom toolbar still displays its
+description; multiple matches show their descriptions in the completion menu.
+Up/down arrows navigate private per-project command history; a faint
 history suggestion can be accepted with the right arrow. Piped commands and
 programmatic callers retain the ordinary non-interactive input path.
 
@@ -263,8 +265,10 @@ and archives the previous task with an explicit refresh link. A second
 inspection or launch creates nothing new until the context changes.
 
 `assistant codex` or plain `assistant` opens the locally installed Codex CLI;
-`assistant claude` opens Claude Code. Studio starts either tool interactively
-in the project root and asks it to execute the synchronized fixed task. Thus
+`assistant claude` runs Claude Code's one-shot agent mode with project-local
+edits accepted. Studio starts either tool in the project root and asks it to
+execute the synchronized fixed task; Claude prints its report and returns to
+Studio rather than opening an empty prompt. Thus
 there is no separate prompt-copying step: the assistant receives the complete
 specification context through `.zippergen/current-task.md`. Studio does not call
 an assistant through a ZipperGen workflow provider and needs no ZipperGen API

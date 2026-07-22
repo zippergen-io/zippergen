@@ -80,6 +80,16 @@ def test_studio_completion_is_context_and_project_aware(tmp_path):
     ]
 
 
+def test_studio_explains_a_single_completion_match(tmp_path):
+    studio, _workspace, _output = _studio(tmp_path)
+
+    assert studio.completion_explanation("resu") == (
+        " Tab: resume — resume the current incomplete run "
+    )
+    assert studio.completion_explanation("spec r") == ""
+    assert studio.completion_explanation("") == ""
+
+
 def test_studio_run_uses_prompt_toolkit_session_when_interactive(tmp_path):
     studio, _workspace, output = _studio(tmp_path)
     prompts: list[tuple[str, bool]] = []
@@ -415,12 +425,18 @@ def test_studio_assistant_can_launch_claude_code_on_the_same_task(
 
     studio.execute("assistant claude")
 
-    assert calls[0][0][0] == "/bin/claude"
-    assert len(calls[0][0]) == 2
-    assert ".zippergen/current-task.md" in calls[0][0][1]
+    assert calls[0][0][0:4] == [
+        "/bin/claude",
+        "--print",
+        "--permission-mode",
+        "acceptEdits",
+    ]
+    assert len(calls[0][0]) == 5
+    assert ".zippergen/current-task.md" in calls[0][0][4]
     assert calls[0][1] == workspace.root
     assert calls[0][2] is False
     assert any("Tool" in line and "Claude Code" in line for line in output)
+    assert any("Mode" in line and "one-shot task" in line for line in output)
     assert output[-1].startswith("✓ Claude Code session ended")
 
 

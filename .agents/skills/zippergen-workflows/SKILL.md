@@ -45,6 +45,9 @@ Otherwise choose the smallest reasonable workflow and state the assumption.
 1. Inspect analogous examples and public APIs in the target repository.
 2. Write a top-level Python module containing lifelines, variables, action
    declarations, one global `@workflow`, and deployment metadata when needed.
+   Keep that global protocol readable: extract named `@fragment` helpers for
+   coherent stages when leaving them inline would make the workflow difficult
+   to understand, review, or maintain.
 3. Keep external calls in `@effect`; keep deterministic transforms in `@pure`;
    use `@llm` only for model judgment or generation; use `@human` for explicit
    human control points.
@@ -56,6 +59,10 @@ Otherwise choose the smallest reasonable workflow and state the assumption.
 
 Do not invent a generic agent for every function. A lifeline represents a
 sequential participant or trust/ownership boundary, not merely a code module.
+Likewise, do not wait for literal duplication before using `@fragment`: a
+single long protocol may be decomposed into meaningful coordination
+subprograms. Keep participant transfers and owned control flow explicit, and
+avoid tiny fragments that merely scatter a short protocol across files.
 
 ## Refine from prompts
 
