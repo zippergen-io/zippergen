@@ -381,17 +381,24 @@ generated task at \path{.zippergen/current-task.md}; Git ignores that file.
 Repeating \texttt{project init} is safe; it reports the existing manifest
 instead of overwriting it.
 
-If you later need to clear stale remembered context for this project, do not
-delete hidden directories by hand. Inside Studio, enter \texttt{project reset}.
-Studio shows a preview and asks for confirmation. A confirmed reset moves the
-project's private workspace, development runs and stores, assistant-task and
-refinement history, Studio command history, model/provider preferences,
-development secrets, current generated task, and pending refinement to an
-owner-only backup below
-\path{ZIPPERGEN_HOME/resets}. It does not alter workflow source, tests, the
-visible \path{specification.md}, \path{zippergen.toml}, Git history, or the nested
-framework checkout. It also does not stop or delete deployments. This is a
-recovery command, not a normal tutorial step.
+If you later need a reset, do not delete hidden directories or visible project
+files by hand. Plain \texttt{project reset} first asks which scope you mean:
+\emph{Fresh design cycle}, \emph{Studio state only}, or \emph{Cancel}. The
+state-only choice archives runs and stores, assistant-task/refinement/command
+history, model/provider preferences, development secrets, generated tasks, and
+pending refinement while retaining every visible project file. The fresh
+choice additionally archives \path{zippergen.toml},
+\path{specification.md}, and legacy prompt material. Both keep workflow source,
+tests, Git history, the nested framework checkout, and deployments. Archives
+are owner-only below \path{ZIPPERGEN_HOME/resets}.
+
+This distinction explains the complete restart sequence. Choose the fresh
+design cycle, confirm it, then enter \texttt{project init} and \texttt{create}.
+The manifest is genuinely new and the specification contains only the writing
+guide described in Step~2, not the previous requirements. For automation, the
+explicit commands are \texttt{project reset fresh --yes} and
+\texttt{project reset state --yes}; ambiguous
+\texttt{project reset --yes} is rejected.
 
 \begin{notebox}{How Studio reports outcomes}
 A green \(\checkmark\) means an operation or check succeeded. A yellow
@@ -467,9 +474,12 @@ Long requirements do not belong in a single-line terminal question, and the
 user should not have to invent or remember a prompt filename. Enter
 \texttt{create}. Studio creates the fixed project file
 \path{specification.md}, opens it in the editor selected in Step~1b, and
-waits. Copy the complete text below into that editor. Copying into an editor is
-reliable even when a terminal's interactive question cannot accept a
-multiline paste.
+waits. On the first creation it contains a short comment explaining what a
+specification should cover and which development mechanics to omit. Write
+below that comment or replace it with the complete text below. Studio removes
+the guide automatically after real requirements are saved; leaving the guide
+untouched does not create an assistant task. Copying into an editor is reliable
+even when a terminal's interactive question cannot accept a multiline paste.
 
 \begin{lstlisting}[style=shell]
 create
@@ -1129,7 +1139,7 @@ providers      # provider/key readiness without displaying secrets
 run            # fresh guided, durable development run
 resume         # continue the current incomplete managed run
 runs           # list this project's managed development runs
-project reset  # preview and back up private context, then start fresh
+project reset  # choose fresh design, state-only reset, or cancel
 create          # create/reopen specification.md and prepare a brief
 refine          # short alias for spec refine
 assistant codex # execute the current task; assistant claude is also supported
@@ -2845,10 +2855,10 @@ If the destination already exists, choose a different explicit name. Moving is
 safer than recursive deletion and keeps the audit trail recoverable.
 
 To reset only this project's private Studio/development context while retaining
-the checkout, reopen Studio from the project root and enter:
+the visible project, reopen Studio from the project root and enter:
 
 \begin{lstlisting}[style=shell]
-project reset
+project reset state
 \end{lstlisting}
 
 The preview separates preserved project files from affected private state.
@@ -2861,8 +2871,12 @@ that backup rather than being deleted. The canonical specification, workflow
 source, tests, manifest, Git
 repository, and framework checkout remain where they were. Deployment
 profiles, stores, logs, and running services are not part of this reset; stop
-them separately as shown above. The explicit \texttt{project reset --yes} form
-is intended for scripts after equivalent checks, not casual interactive use.
+them separately as shown above. The explicit
+\texttt{project reset state --yes} form is intended for scripts after
+equivalent checks, not casual interactive use. To restart the design tutorial
+instead, choose the fresh option from plain \texttt{project reset}; its preview
+shows that the manifest, specification, and legacy prompt material will also
+be archived while source, tests, and Git remain.
 
 To abandon the workbench branch only after committing or otherwise preserving
 anything important, switch back normally:
@@ -2929,10 +2943,11 @@ $\square$ & Named foreground deployment reaches a durable task and result. & \\
 $\square$ & Optional supervised restart preserves the pending task. & \\
 $\square$ & Logs, status, trace, doctor, restart, and stop commands are understood. & \\
 $\square$ & No secret appears in source, Git diff, public profile, or service file. & \\
-$\square$ & As the final cleanup check, \texttt{project reset} previews its
-scope, creates a recoverable private backup, returns to no selected workflow,
-and preserves source, the canonical specification, manifest, Git data, framework checkout, and
-deployment artifacts. & \\
+$\square$ & Plain \texttt{project reset} makes fresh-design, state-only, and
+cancel scopes explicit. The state-only choice preserves every project file;
+the fresh choice recoverably archives the manifest, specification, legacy
+prompts, and private state while preserving source, tests, Git, framework
+checkout, and deployment artifacts. & \\
 \bottomrule
 \end{longtable}
 

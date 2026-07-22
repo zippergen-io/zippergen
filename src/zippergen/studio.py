@@ -24,7 +24,7 @@ from zippergen.dev import default_llm_spec, run_dev
 from zippergen.models import normalize_llm_overrides
 from zippergen.semantic import semantic_snapshot, workflow_semantics
 from zippergen.view import ViewOptions, workflow_view_data
-from zippergen.workspace import Workspace, WorkspaceError
+from zippergen.workspace import SPECIFICATION_GUIDE, Workspace, WorkspaceError
 
 
 InputFunc = Callable[[str], str]
@@ -290,7 +290,9 @@ def _validate_model_spec(value: str) -> str:
 _HELP = """Commands:
   project init [NAME]            create the project manifest
   project show                   show visible project configuration
-  project reset [--yes]          back up and reset private project state
+  project reset                  choose fresh design or state-only reset
+  project reset fresh [--yes]    archive manifest, spec, legacy prompts, state
+  project reset state [--yes]    reset private state; keep all project files
   create                         write/reopen the canonical specification
   create [DESCRIPTION]           set the canonical specification without an editor
   create --file PATH             import a specification; its name is not retained
@@ -654,7 +656,14 @@ class Studio:
         }:
             return [("--yes", "confirm without another prompt")]
         if command == "project" and args and args[0].lower() == "reset":
-            return [("--yes", "confirm without another prompt")]
+            if len(args) == 1:
+                return [
+                    ("fresh", "start a fresh design cycle"),
+                    ("state", "reset private Studio state only"),
+                ]
+            if args[1].lower() in {"fresh", "state"}:
+                return [("--yes", "confirm without another prompt")]
+            return []
         if command == "edit":
             if "--editor" in args and args[-1] == "--editor":
                 return self._editor_completion_candidates()
@@ -901,6 +910,27 @@ class Studio:
             raise SystemExit(f"Prompt file is empty: {prompt_file}")
         return prompt
 
+    def _prepare_specification_editor(self, target: Path) -> None:
+        """Place a removable guide in a specification that has no intent yet."""
+
+        if self.workspace.specification() is not None:
+            return
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(SPECIFICATION_GUIDE, encoding="utf-8")
+
+    def _finish_specification_editor(self, target: Path) -> str:
+        """Read user intent, remove the guide, and retain it after empty edits."""
+
+        prompt = self.workspace.specification()
+        if prompt is None:
+            self._prepare_specification_editor(target)
+            raise SystemExit(
+                "No application requirements were written. The specification "
+                "guide was kept; enter 'create' and write below its comment."
+            )
+        self.workspace.save_specification(prompt)
+        return prompt
+
     def _editor_override(
         self,
         args: list[str],
@@ -927,11 +957,9 @@ class Studio:
             self.workspace.initialize_project()
             ensured = self.workspace.ensure_specification()
             target = self.workspace.specification_path
-            if not target.exists():
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.touch()
+            self._prepare_specification_editor(target)
             self._launch_editor(target, override=editor_override)
-            prompt = self._read_prompt_file(target)
+            prompt = self._finish_specification_editor(target)
             self.create_request(prompt, specification_already_saved=True)
             if ensured["migrated"]:
                 self._info(
@@ -1001,16 +1029,22 @@ class Studio:
             )
 
     def _confirm_spec_action(self, question: str) -> bool:
+        return self._confirm_action(
+            question,
+            cancel_message="Specification action cancelled; nothing was changed.",
+        )
+
+    def _confirm_action(self, question: str, *, cancel_message: str) -> bool:
         while True:
             try:
                 answer = self.input(question).strip().lower()
             except (EOFError, KeyboardInterrupt):
-                self._warning("Specification action cancelled; nothing was changed.")
+                self._warning(cancel_message)
                 return False
             if answer in {"y", "yes"}:
                 return True
             if answer in {"n", "no"}:
-                self._warning("Specification action cancelled; nothing was changed.")
+                self._warning(cancel_message)
                 return False
             self._warning("Please enter 'y' or 'n'.")
 
@@ -1036,11 +1070,9 @@ class Studio:
             self.workspace.initialize_project()
             ensured = self.workspace.ensure_specification()
             target = self.workspace.specification_path
-            if not target.exists():
-                target.parent.mkdir(parents=True, exist_ok=True)
-                target.touch()
+            self._prepare_specification_editor(target)
             self._launch_editor(target, override=editor_override)
-            self._read_prompt_file(target)
+            self._finish_specification_editor(target)
             self._emit_table(
                 "Specification updated",
                 [
@@ -1411,12 +1443,46 @@ class Studio:
                 ],
             )
             return
-        if args[0] == "reset" and args[1:] in ([], ["--yes"]):
-            self.reset_project(confirm=args[1:] != ["--yes"])
+        if args[0] == "reset":
+            rest = args[1:]
+            if not rest:
+                selected = self._select(
+                    "Choose reset scope",
+                    [
+                        "Fresh design cycle — archive manifest, specification, "
+                        "legacy prompts, and private Studio state",
+                        "Studio state only — keep manifest, specification, "
+                        "source, tests, and Git",
+                        "Cancel — change nothing",
+                    ],
+                )
+                choice = str(selected)
+                if choice.startswith("Cancel"):
+                    self._warning("Project reset cancelled; nothing was changed.")
+                    return
+                mode = "fresh" if choice.startswith("Fresh") else "state"
+                self.reset_project(mode=mode, confirm=True)
+                return
+            if rest[0] not in {"fresh", "state"} or rest[1:] not in (
+                [],
+                ["--yes"],
+            ):
+                raise SystemExit(
+                    "Use project reset, project reset fresh [--yes], or "
+                    "project reset state [--yes]."
+                )
+            explicit_mode: Literal["fresh", "state"] = (
+                "fresh" if rest[0] == "fresh" else "state"
+            )
+            self.reset_project(
+                mode=explicit_mode,
+                confirm=rest[1:] != ["--yes"],
+            )
             return
         if args[0] != "init" or len(args) > 2:
             raise SystemExit(
-                "Use project show, project init [NAME], or project reset [--yes]."
+                "Use project show, project init [NAME], project reset, "
+                "project reset fresh [--yes], or project reset state [--yes]."
             )
         existed = self.workspace.manifest_path.exists()
         manifest = self.workspace.initialize_project(
@@ -1429,22 +1495,50 @@ class Studio:
         self._emit(f"Project: {manifest['name']}")
         self._emit(f"Specification: {self.workspace.specification_path}")
 
-    def reset_project(self, *, confirm: bool = True) -> None:
+    def reset_project(
+        self,
+        *,
+        mode: Literal["fresh", "state"],
+        confirm: bool = True,
+    ) -> None:
         summary = self.workspace.private_state_summary()
-        if not summary["workspace_exists"] and not summary["project_local_exists"]:
+        project_exists = self.workspace.root.is_dir()
+        manifest_exists = self.workspace.manifest_path.exists()
+        specification_exists = self.workspace.specification_path.exists()
+        legacy_prompts_exist = (
+            self.workspace.prompts_directory != self.workspace.root
+            and self.workspace.prompts_directory.exists()
+        )
+        private_exists = bool(
+            summary["workspace_exists"] or summary["project_local_exists"]
+        )
+        visible_design_exists = bool(
+            manifest_exists or specification_exists or legacy_prompts_exist
+        )
+        if mode == "state" and not private_exists:
             self._warning(
-                "This project's private Studio state is already empty. "
-                "Visible project files were not changed."
+                "Private Studio state is already empty. The manifest, "
+                "specification, source, tests, and Git were not changed."
+            )
+            return
+        if mode == "fresh" and not private_exists and not visible_design_exists:
+            self._warning(
+                "This project already has no manifest, specification, legacy "
+                "prompts, or private Studio state. Source, tests, and Git were "
+                "not changed."
             )
             return
 
-        project_exists = self.workspace.root.is_dir()
-        project_status = "kept" if project_exists else "not present"
         git_exists = (self.workspace.root / ".git").exists()
-
+        fresh = mode == "fresh"
         self._emit_table(
             "Project reset preview",
             [
+                (
+                    "Mode",
+                    "fresh design cycle" if fresh else "Studio state only",
+                    "warning" if fresh else "info",
+                ),
                 (
                     "Project",
                     (
@@ -1454,15 +1548,21 @@ class Studio:
                     ),
                     "success" if project_exists else "warning",
                 ),
+                ("Workflow source and tests", "kept", "success"),
                 (
-                    "Source and tests",
-                    project_status,
-                    "success" if project_exists else "warning",
+                    "Manifest",
+                    "archive" if fresh and manifest_exists else "kept",
+                    "warning" if fresh and manifest_exists else "success",
                 ),
                 (
-                    "Specification, source, and manifest",
-                    project_status,
-                    "success" if project_exists else "warning",
+                    "Specification",
+                    "archive" if fresh and specification_exists else "kept",
+                    "warning" if fresh and specification_exists else "success",
+                ),
+                (
+                    "Legacy prompts",
+                    "archive" if fresh and legacy_prompts_exist else "kept/none",
+                    "warning" if fresh and legacy_prompts_exist else None,
                 ),
                 (
                     "Git history",
@@ -1470,66 +1570,72 @@ class Studio:
                     "success" if git_exists else None,
                 ),
                 (
-                    "Remembered workflow",
-                    summary["current_workflow"] or "none",
-                    "warning" if summary["current_workflow"] else None,
+                    "Private Studio state",
+                    "archive" if private_exists else "already empty",
+                    "warning" if private_exists else None,
                 ),
                 ("Managed runs", summary["runs"], None),
                 ("Assistant tasks", summary["requests"], None),
                 ("Development secrets", summary["development_secrets"], None),
-                ("Model profiles", summary["model_profiles"], None),
-                ("Provider profiles", summary["provider_profiles"], None),
-                (
-                    "State health",
-                    (
-                        "unreadable data will still be backed up"
-                        if summary["warnings"]
-                        else "readable"
-                    ),
-                    "warning" if summary["warnings"] else "success",
-                ),
                 (
                     "Deployments",
-                    "kept and not stopped; only the remembered name is reset",
+                    "kept and not stopped; remembered name is cleared",
                     "warning" if summary["last_deployment"] else None,
                 ),
-                ("Action", "move private state to a recoverable backup", "warning"),
+                (
+                    "Next",
+                    (
+                        "project init · create"
+                        if fresh
+                        else "use · create · current"
+                    ),
+                    None,
+                ),
             ],
         )
         if confirm:
-            while True:
-                try:
-                    answer = self.input(
-                        "Reset this project's private Studio state? [y/n]: "
-                    ).strip().lower()
-                except (EOFError, KeyboardInterrupt):
-                    self._warning("Project reset cancelled; nothing was changed.")
-                    return
-                if answer in {"y", "yes"}:
-                    break
-                if answer in {"n", "no"}:
-                    self._warning("Project reset cancelled; nothing was changed.")
-                    return
-                self._warning("Please enter 'y' or 'n'.")
+            action = (
+                "Start a fresh design cycle"
+                if fresh
+                else "Reset only private Studio state"
+            )
+            if not self._confirm_action(
+                f"{action}? [y/n]: ",
+                cancel_message="Project reset cancelled; nothing was changed.",
+            ):
+                return
 
-        result = self.workspace.reset_private_state()
-        # The history file was moved with the private workspace. Recreate the
-        # prompt session on the next loop iteration so subsequent commands are
-        # written to a fresh private history rather than the archived path.
+        result = (
+            self.workspace.reset_fresh_design()
+            if fresh
+            else self.workspace.reset_private_state()
+        )
+        # Command history was moved with the private workspace. Recreate the
+        # prompt session on the next loop iteration.
         self._prompt_session = None
         backup = result["backup_directory"]
         self._emit_table(
             "Project reset",
             [
+                (
+                    "Mode",
+                    "fresh design cycle" if fresh else "Studio state only",
+                    "success",
+                ),
                 ("Status", "complete", "success"),
                 ("Backup", backup or "none needed", "success"),
+                ("Manifest", "not created" if fresh else "kept", None),
+                ("Specification", "not written" if fresh else "kept", None),
+                ("Source and tests", "kept", "success"),
                 ("Workflow", "none selected", None),
                 ("Run", "none selected", None),
                 ("Assistant task", "none", None),
                 (
                     "Next",
                     (
-                        "use · create · current"
+                        "project init · create"
+                        if fresh and project_exists
+                        else "use · create · current"
                         if project_exists
                         else "exit and recreate the project directory"
                     ),

@@ -536,7 +536,11 @@ def test_studio_create_opens_automatic_specification_and_prepares_task(
 
     def fake_run(arguments, *, cwd, check):
         calls.append(arguments)
-        Path(arguments[-1]).write_text(
+        target = Path(arguments[-1])
+        guide = target.read_text(encoding="utf-8")
+        assert "zippergen:specification-guide" in guide
+        assert "Do not choose Python filenames" in guide
+        target.write_text(
             "Create a reviewed answer workflow.\n"
             "Never return an unapproved draft.\n",
             encoding="utf-8",
@@ -555,9 +559,38 @@ def test_studio_create_opens_automatic_specification_and_prepares_task(
         "Create a reviewed answer workflow.\n"
         "Never return an unapproved draft."
     )
+    assert "zippergen:specification-guide" not in (
+        workspace.specification_path.read_text()
+    )
     assert workspace.current_task_path.exists()
     assert any("Editor closed" in line for line in output)
     assert any("specification.md" in line for line in output)
+
+
+def test_studio_create_keeps_guide_when_no_requirements_are_written(
+    tmp_path,
+    monkeypatch,
+):
+    studio, workspace, _output = _studio(tmp_path)
+    monkeypatch.setattr(
+        "zippergen.studio.shutil.which",
+        lambda name: "/usr/bin/micro" if name == "micro" else None,
+    )
+    monkeypatch.setattr(
+        "zippergen.studio.subprocess.run",
+        lambda arguments, **kwargs: subprocess.CompletedProcess(arguments, 0),
+    )
+
+    try:
+        studio.execute("create --editor micro")
+    except SystemExit as exc:
+        assert "No application requirements were written" in str(exc)
+    else:
+        raise AssertionError("the untouched guide must not become a task")
+
+    assert workspace.specification() is None
+    assert "zippergen:specification-guide" in workspace.specification_path.read_text()
+    assert workspace.current_request() is None
 
 
 def test_studio_path_free_create_always_uses_canonical_specification_name(
@@ -870,7 +903,8 @@ def test_studio_commands_are_discoverable(tmp_path):
     assert studio.execute("help") is True
     assert "show | inspect" in output[-1]
     assert "project init [NAME]" in output[-1]
-    assert "project reset [--yes]" in output[-1]
+    assert "project reset fresh [--yes]" in output[-1]
+    assert "project reset state [--yes]" in output[-1]
     assert "legacy prompt-ledger migration/compatibility" in output[-1]
     assert "task show|path|history" in output[-1]
     assert "assistant" in output[-1]
@@ -1015,7 +1049,7 @@ def test_studio_project_reset_can_be_cancelled_without_changes(tmp_path):
     studio.create_request("Create a review workflow.")
     output.clear()
 
-    studio.execute("project reset")
+    studio.execute("project reset state")
 
     assert workspace.current_workflow == "workflow.py:sample"
     assert workspace.current_request() is not None
@@ -1034,13 +1068,13 @@ def test_studio_project_reset_interrupt_is_a_clean_cancellation(tmp_path):
 
     studio.input = interrupt
 
-    studio.execute("project reset")
+    studio.execute("project reset state")
 
     assert workspace.current_workflow == "workflow.py:sample"
     assert output[-1] == "⚠ Project reset cancelled; nothing was changed."
 
 
-def test_studio_project_reset_backs_up_state_and_continues_fresh(tmp_path):
+def test_studio_project_reset_state_backs_up_only_private_context(tmp_path):
     studio, workspace, output = _studio(tmp_path, responses=["perhaps", "yes"])
     studio.execute("project init Tutorial")
     studio.create_request("Create a review workflow.")
@@ -1048,7 +1082,7 @@ def test_studio_project_reset_backs_up_state_and_continues_fresh(tmp_path):
     workspace.save_secrets({"OPENAI_API_KEY": "private"})
     output.clear()
 
-    studio.execute("project reset")
+    studio.execute("project reset state")
 
     assert "⚠ Please enter 'y' or 'n'." in output
     assert workspace.current_workflow is None
@@ -1068,21 +1102,81 @@ def test_studio_project_reset_backs_up_state_and_continues_fresh(tmp_path):
     assert studio._prompt() == "zippergen [no workflow]> "
 
 
-def test_studio_project_reset_yes_is_noninteractive_and_idempotent(tmp_path):
+def test_studio_plain_project_reset_makes_both_scopes_explicit(tmp_path):
+    studio, workspace, output = _studio(tmp_path, responses=["3"])
+    studio.execute("project init Tutorial")
+    studio.create_request("Create a review workflow.")
+    output.clear()
+
+    studio.execute("project reset")
+
+    assert output[0] == "Choose reset scope"
+    assert any("Fresh design cycle" in line for line in output)
+    assert any("Studio state only" in line for line in output)
+    assert output[-1] == "⚠ Project reset cancelled; nothing was changed."
+    assert workspace.manifest_path.exists()
+    assert workspace.specification() == "Create a review workflow."
+
+
+def test_studio_project_reset_rejects_ambiguous_noninteractive_form(tmp_path):
+    studio, workspace, _output = _studio(tmp_path)
+    studio.execute("project init Tutorial")
+
+    try:
+        studio.execute("project reset --yes")
+    except SystemExit as exc:
+        assert "project reset fresh" in str(exc)
+        assert "project reset state" in str(exc)
+    else:
+        raise AssertionError("a noninteractive reset must name its scope")
+
+    assert workspace.manifest_path.exists()
+
+
+def test_studio_project_reset_fresh_archives_design_then_init_is_new(tmp_path):
+    studio, workspace, output = _studio(tmp_path, responses=["1", "yes"])
+    studio.execute("project init Tutorial")
+    workspace.add_prompt(kind="initial", content="Legacy requirement.")
+    studio.create_request("Create a review workflow.")
+    output.clear()
+
+    studio.execute("project reset")
+
+    assert not workspace.manifest_path.exists()
+    assert not workspace.specification_path.exists()
+    assert not (workspace.root / "prompts").exists()
+    assert (workspace.root / "workflow.py").exists()
+    assert workspace.current_request() is None
+    backups = list(workspace.resets_directory.iterdir())
+    assert len(backups) == 1
+    archived = backups[0] / "project-visible"
+    assert (archived / "zippergen.toml").exists()
+    assert (archived / "specification.md").exists()
+    assert (archived / "prompts" / "index.toml").exists()
+    assert any("fresh design cycle" in line for line in output)
+    assert any("project init · create" in line for line in output)
+
+    output.clear()
+    studio.execute('project init "Tutorial again"')
+    assert any("Project manifest created" in line for line in output)
+    assert workspace.project_manifest()["name"] == "Tutorial again"
+
+
+def test_studio_project_reset_state_yes_is_noninteractive_and_idempotent(tmp_path):
     studio, workspace, output = _studio(tmp_path)
     workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
 
-    studio.execute("project reset --yes")
+    studio.execute("project reset state --yes")
 
     assert workspace.current_workflow is None
     assert any("✓ complete" in line for line in output)
 
     output.clear()
-    studio.execute("project reset --yes")
+    studio.execute("project reset state --yes")
 
     assert output == [
-        "⚠ This project's private Studio state is already empty. "
-        "Visible project files were not changed."
+        "⚠ Private Studio state is already empty. The manifest, "
+        "specification, source, tests, and Git were not changed."
     ]
 
 
@@ -1093,7 +1187,7 @@ def test_studio_project_reset_handles_a_missing_project_directory(tmp_path):
     output: list[str] = []
     studio = Studio(workspace, output_func=output.append)
 
-    studio.execute("project reset --yes")
+    studio.execute("project reset state --yes")
 
     assert workspace.current_workflow is None
     assert any(str(root) in line and "missing" in line for line in output)

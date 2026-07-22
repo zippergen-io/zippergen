@@ -214,13 +214,16 @@ Creation
 zippergen [no workflow]> assistant codex
 ```
 
-`create` creates or reopens the fixed canonical file, waits for a successful
-editor exit, and rejects an empty specification before preparing the task. No
-prompt filename or ID is required. `spec show`, `spec edit`, and `spec path`
-inspect, edit, or locate the same document. For a genuinely short experiment,
-`create DESCRIPTION` writes it without opening an editor. The advanced
-`create --file PATH` form imports an existing UTF-8 document into
-`specification.md`; its original filename does not become project state.
+`create` creates or reopens the fixed canonical file and waits for a successful
+editor exit. A new file starts with a comment-only writing guide covering
+durable intent while excluding filenames, tests, commands, and coding-assistant
+instructions. Studio removes that guide after real requirements are saved and
+will not turn an untouched guide into a task. No prompt filename or ID is
+required. `spec show`, `spec edit`, and `spec path` inspect, edit, or locate the
+same document. For a genuinely short experiment, `create DESCRIPTION` writes
+it without opening an editor. The advanced `create --file PATH` form imports
+an existing UTF-8 document into `specification.md`; its original filename does
+not become project state.
 
 For an existing selected workflow, `spec refine` creates or reopens exactly one
 automatically named `.zippergen/pending-refinement.md`:
@@ -334,16 +337,22 @@ Workspace state and managed development stores live below
 `~/.zippergen/workspaces/` by default. `ZIPPERGEN_HOME` is an optional advanced
 override, not a required setup step.
 
-To give one project a fresh private Studio context, enter `project reset` in
-Studio. The command first previews what will be reset and asks for confirmation.
-It moves the current project's workspace state, managed development runs,
-assistant-task and command history, model/provider preferences, development
-secrets, and generated task/drafts to an owner-only backup below
-`$ZIPPERGEN_HOME/resets/`. It then continues with no workflow, run, or task
-selected. Visible workflow source, tests, `specification.md`, `zippergen.toml`, Git history,
-and the framework checkout are preserved. Deployment profiles and running
-services are also untouched; only the remembered deployment name is cleared.
-`project reset --yes` is the explicit noninteractive form.
+`project reset` never has an implicit scope. It opens a three-choice menu:
+
+1. **Fresh design cycle** archives `zippergen.toml`, `specification.md`, any
+   legacy prompt directory, and all private Studio state. Workflow source,
+   tests, Git history, the framework checkout, and deployments remain in
+   place. `project init` then genuinely creates a new manifest, and `create`
+   opens a new guided specification.
+2. **Studio state only** archives managed runs, assistant-task and command
+   history, model/provider preferences, development secrets, generated tasks,
+   and pending refinements while keeping every visible project file.
+3. **Cancel** changes nothing.
+
+Every archive is owner-only and recoverable below `$ZIPPERGEN_HOME/resets/`.
+The unambiguous noninteractive forms are `project reset fresh --yes` and
+`project reset state --yes`; plain `project reset --yes` is intentionally not
+accepted. Neither reset mode stops or removes deployments.
 
 ## Hello, ZipperGen
 

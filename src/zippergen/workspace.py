@@ -36,6 +36,20 @@ CURRENT_TASK_NAME = "current-task.md"
 SPECIFICATION_FILE_NAME = "specification.md"
 PENDING_REFINEMENT_NAME = "pending-refinement.md"
 SPEC_HISTORY_DIRECTORY = "spec-history"
+SPECIFICATION_GUIDE = """<!-- zippergen:specification-guide
+Write the durable application requirements below this comment, then save and
+close the editor. Studio removes this guide automatically.
+
+Useful subjects include:
+- purpose and successful outcome;
+- participants and responsibilities;
+- inputs, decisions, retries, and failure behavior;
+- models, external services, credentials, and operational constraints.
+
+Do not choose Python filenames or add instructions about tests, validation,
+deployment commands, or coding assistants. Studio supplies those mechanics.
+-->
+"""
 
 _IGNORED_DISCOVERY_PARTS = {
     ".git",
@@ -195,6 +209,15 @@ def _prompt_title(content: str) -> str:
         if title:
             return title[:100]
     return "Untitled prompt"
+
+
+def _without_specification_guide(content: str) -> str:
+    stripped = content.strip()
+    if stripped.startswith("<!-- zippergen:specification-guide"):
+        _guide, separator, remainder = stripped.partition("-->")
+        if separator:
+            return remainder.strip()
+    return stripped
 
 
 def _decorator_name(node: ast.expr) -> str | None:
@@ -450,6 +473,7 @@ class Workspace:
             raise WorkspaceError(
                 f"Could not read project specification {path}: {exc}"
             ) from exc
+        content = _without_specification_guide(content)
         return content or None
 
     def save_specification(self, content: str) -> Path:
@@ -1192,6 +1216,104 @@ class Workspace:
             "project_local_moved": any(
                 source != self.directory for source, _destination in moved
             ),
+        }
+
+    def reset_fresh_design(self) -> dict[str, object]:
+        """Archive visible design context plus private state for a fresh cycle.
+
+        Workflow source, tests, Git data, and the framework checkout are never
+        included. Everything moved remains recoverable in the reset archive.
+        """
+
+        specification = self.specification_path
+        prompts = self.prompts_directory
+        if prompts == self.root:
+            raise WorkspaceError(
+                "Cannot fresh-reset a legacy prompts_directory that resolves to "
+                "the project root. Change it to a project subdirectory first."
+            )
+        candidates = [self.manifest_path, specification, prompts]
+        present = [
+            source
+            for source in candidates
+            if source.exists() or source.is_symlink()
+        ]
+        visible: list[Path] = []
+        for source in present:
+            if source in visible:
+                continue
+            if any(
+                other != source
+                and other.is_dir()
+                and source.is_relative_to(other)
+                for other in present
+            ):
+                continue
+            visible.append(source)
+
+        private = self.reset_private_state()
+        backup_value = private.get("backup_directory")
+        backup = Path(str(backup_value)) if backup_value else None
+        if not visible:
+            return {
+                **private,
+                "backup_directory": backup,
+                "visible_moved": (),
+            }
+        if backup is None:
+            self.resets_directory.mkdir(parents=True, exist_ok=True)
+            self.resets_directory.chmod(0o700)
+            base = f"{self.directory.name}-{_identifier_timestamp()}"
+            backup = self.resets_directory / base
+            suffix = 2
+            while backup.exists():
+                backup = self.resets_directory / f"{base}-{suffix}"
+                suffix += 1
+            backup.mkdir(mode=0o700)
+
+        moved: list[tuple[Path, Path]] = []
+        try:
+            for source in visible:
+                relative = source.relative_to(self.root)
+                destination = backup / "project-visible" / relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                source.rename(destination)
+                moved.append((source, destination))
+            metadata_path = backup / "reset.json"
+            metadata = (
+                _read_json(metadata_path)
+                if metadata_path.exists()
+                else {
+                    "schema_version": 1,
+                    "project_root": str(self.root),
+                    "reset_at": _timestamp(),
+                }
+            )
+            metadata.update(
+                {
+                    "reset_kind": "fresh_design",
+                    "visible_moved": [
+                        str(source.relative_to(self.root))
+                        for source, _destination in moved
+                    ],
+                }
+            )
+            _atomic_write_json(metadata_path, metadata)
+            metadata_path.chmod(0o600)
+        except (OSError, WorkspaceError) as exc:
+            for source, destination in reversed(moved):
+                if destination.exists() and not source.exists():
+                    source.parent.mkdir(parents=True, exist_ok=True)
+                    destination.rename(source)
+            raise WorkspaceError(
+                "Could not archive the visible design context safely; private "
+                f"state remains recoverable at {backup}: {exc}"
+            ) from exc
+
+        return {
+            **private,
+            "backup_directory": backup,
+            "visible_moved": tuple(source for source, _destination in moved),
         }
 
     def load(self) -> dict[str, Any]:
