@@ -57,16 +57,16 @@ source:
 zippergen-tutorial/          # project, Git root, and coding-assistant root
 ├── .zippergen/              # generated current task; ignored by Git
 ├── zippergen.toml           # visible project contract
-├── prompts/                 # ordered, versionable design intent
+├── specification.md         # canonical, versionable design intent
 ├── workflows/
 ├── tests/
 └── zippergen/               # optional local framework checkout
 ```
 
 Pass the parent with `zippergen studio --project PATH` for the first session.
-Inside Studio, `project init [NAME]` creates `zippergen.toml`, the prompt
-ledger, and safe Git ignores. A manifest takes precedence during later project
-discovery; an explicit `--project` path is always used exactly.
+Inside Studio, `project init [NAME]` creates `zippergen.toml` and safe Git
+ignores; `create` adds `specification.md`. A manifest takes precedence during
+later project discovery; an explicit `--project` path is always used exactly.
 
 When using a nested editable checkout, expose its CLI once and initialize the
 parent from the parent directory:
@@ -119,11 +119,12 @@ command from its prompts, tables, warnings, or errors. Only the command family
 is shown; prompt text, paths, model specifications, and secret values are never
 repeated in the boundary. Empty input and `exit` produce no boundary.
 
-`current` is the concise project dashboard: project and manifest, active and
-archived prompt counts, workflow name, participants, human actions, external
-effects, validation state, effective per-lifeline model assignments, provider
-readiness, connector bindings, run, and deployment. It remains useful before a
-workflow exists; unknown fields are shown as `none` rather than guessed.
+`current` is the concise project dashboard: project and manifest, canonical
+specification and pending-refinement state, workflow name, participants, human
+actions, external effects, validation state, effective per-lifeline model
+assignments, provider readiness, connector bindings, run, and deployment. It
+remains useful before a workflow exists; unknown fields are shown as `none`
+rather than guessed.
 
 Connector bindings are intentionally reported but not configured in this
 slice. Future Gmail, Google Sheets, Telegram, email, and human-channel adapters
@@ -169,18 +170,18 @@ API key, Studio asks for it without echo and saves it once in an owner-only
 development secret file. Later runs and post-crash resumes reuse it; the value
 is never copied into workspace, run, or request JSON.
 
-To begin from natural language, keep substantial requirements in a readable
-UTF-8 file. Studio can open the file in a terminal editor, then consume it as
-soon as the editor closes. Choose a project-specific preference once:
+To begin from natural language, let Studio maintain one readable, versioned
+`specification.md`. Studio owns the filename and opens it in a terminal editor.
+Choose a project-specific editor preference once:
 
 ```text
 zippergen [no workflow]> editor set micro
 zippergen [no workflow]> editor show
-zippergen [no workflow]> create --edit
+zippergen [no workflow]> create
 ```
 
 The remembered preference survives Studio restarts and computer crashes. A
-one-off choice does not change it: use `--editor nano` on the `create --edit`
+one-off choice does not change it: use `--editor nano` on the `create`
 command, or enter `edit workflow --editor micro`. Without a preference,
 Studio tries `$VISUAL`, `$EDITOR`, then `micro`, `nano`, `vim`, and `vi`.
 `editor reset` restores that automatic discovery. Studio runs the editor
@@ -188,92 +189,73 @@ directly in the existing terminal; this uses neither an LLM nor MCP. Commands
 with arguments must be quoted for one-off use, for example
 `--editor "code --wait"`.
 
-This repository also ships a complete example prompt, so the tutorial can
-load it without changing it first:
+After saving the specification and leaving the editor, Studio prepares the
+coding-assistant handoff:
 
 ```text
-zippergen [no workflow]> create --file prompts/reviewed_answer.md
+zippergen [no workflow]> create
 
 ── Output: create ──────────────────────────────────────
 Creation
 ────────
-  Prompt   ✓ P001 registered — prompts/reviewed_answer.md
-  Task     ✓ .zippergen/current-task.md
-  Next       assistant codex · assistant claude
-  Inspect    task · task show · task history
+  Specification  ✓ specification.md
+  Task           ✓ .zippergen/current-task.md
+  Next             assistant codex · assistant claude
+  Inspect          task · task show · task history
 
 zippergen [no workflow]> assistant codex
 ```
 
-Relative paths are resolved from the project root; quoted paths, absolute
-paths, and `~` are supported. Studio registers a file already under the
-project's `prompts/` directory, or imports an external file there. Inline
-`create` and `refine` descriptions are also saved as numbered Markdown files.
-Plain `create` still asks for a short one-line description. `--edit` differs
-from `--file`: it creates or opens a project-local file first, waits for a
-successful editor exit, and rejects an empty file before preparing the task.
-No filename is required. Studio stages the editor draft privately, derives its
-title from the first Markdown heading or nonempty line, assigns the next stable
-ID, and registers a conventional file such as
-`prompts/003-change-writer-model.md`. Supplying an explicit path remains
-available when its name matters.
+`create` creates or reopens the fixed canonical file, waits for a successful
+editor exit, and rejects an empty specification before preparing the task. No
+prompt filename or ID is required. `spec show`, `spec edit`, and `spec path`
+inspect, edit, or locate the same document. For a genuinely short experiment,
+`create DESCRIPTION` writes it without opening an editor. The advanced
+`create --file PATH` form imports an existing UTF-8 document into
+`specification.md`; its original filename does not become project state.
 
-Every entry receives a stable ID such as `P001`. `prompts` renders a table with
-position, ID, kind, status, title, and file. The ID-centered operations are:
+For an existing selected workflow, `spec refine` creates or reopens exactly one
+automatically named `.zippergen/pending-refinement.md`:
 
 ```text
-prompts inspect P002
-prompts path P002
-prompts edit P002
-prompts archive P002
-prompts restore P002
-prompts move P003 before P002
+zippergen [reviewed_answer]> spec refine
+zippergen [reviewed_answer]> spec pending
 ```
 
-They need no filename. Archiving removes an entry from future assistant context
-while preserving history; restoring reverses that choice. Moving changes
-explicit precedence. The older enable/disable/remove spellings remain aliases.
+Running `spec refine` again opens that same pending document. The short
+`refine` command is an alias; `refine CHANGE` appends a small addition rather
+than creating another permanent prompt file. Studio records a semantic
+pre-change baseline and builds the handoff from the canonical specification,
+the pending change, and the selected workflow.
 
-The original design is labelled `initial`; later additions are labelled
-`refinement`. This is provenance, not a separate subsystem: both kinds use the
-same IDs, table, editing, archiving, replacement, and ordering commands. The
-generated coding-assistant handoff contains every active prompt in table order.
-Later prompts override earlier ones only where they explicitly conflict; all
-unaffected earlier requirements remain in force.
-
-For a new refinement that has not yet been written, simply enter
-`refine --edit`; naming is automatic. `prompts edit P002` corrects the
-registered text while retaining `P002`. For a substantive semantic change,
-`prompts replace P002 --edit` creates a new ID and archives `P002`, making the
-history explicit; its editor starts with P002's current text.
-All three accept an optional path and one-off `--editor` choice. The command
-`edit file PATH` merely edits a file; it does not register design intent or
-prepare an assistant task. `edit workflow` opens the selected workflow source,
-after which `validate`, `show`, and `run` are the expected checks.
+The assistant must integrate the change coherently into `specification.md`
+alongside code and tests, while leaving the pending document for human review.
+After inspection, `spec reconcile` verifies that the canonical specification
+changed, asks for confirmation, archives the pending text privately, and
+clears it. `spec discard` safely archives an unwanted change; `spec history`
+lists both outcomes. Accepted specification history belongs in Git.
 
 The handoff also includes required source, tests, validation, semantic views,
 and the no-deployment boundary. Studio writes the complete current handoff to
 the fixed, generated `.zippergen/current-task.md` file and keeps timestamped
 private copies in the project workspace. `task` summarizes it, `task show`
 prints it, `task path` gives its absolute path for integrations, and `task
-history` lists the private archive. A later `create` or `refine` deliberately
-replaces the current task; the prompt ledger remains the durable design record.
+history` lists the private archive. A later `create` or `spec refine`
+deliberately replaces the current task; `specification.md` remains the durable
+design record.
 
 The task cannot silently lag behind that record. Studio fingerprints the
-ordered active ledger when it prepares a task. Immediately before `assistant`,
+canonical specification and pending refinement. Immediately before `assistant`,
 `task`, `task show`, `task path`, or `current`, it compares the fingerprint
-again. If prompt text, order, or active/archive status changed, Studio first
-generates one new task from every currently active prompt in table order and
-archives the previous task with an explicit refresh link. The checkmark names
-the included IDs. A second inspection or assistant launch does not generate
-another task unless the ledger changed again. Archived prompts are retained in
-the ledger history but are not sent in the active assistant context.
+again. If either document changed, Studio generates one new synchronized task
+and archives the previous task with an explicit refresh link. A second
+inspection or launch creates nothing new until the context changes.
 
 `assistant codex` or plain `assistant` opens the locally installed Codex CLI;
 `assistant claude` opens Claude Code. Studio starts either tool interactively
 in the project root and asks it to execute the synchronized fixed task. Thus
 there is no separate prompt-copying step: the assistant receives the complete
-ordered active context through `.zippergen/current-task.md`. Studio does not call
+specification context through `.zippergen/current-task.md`. Studio does not call
 an assistant through a ZipperGen workflow provider and needs no ZipperGen API
 key or MCP configuration. Install and authenticate the chosen tool once:
 [`codex login`](https://learn.chatgpt.com/docs/developer-commands?surface=cli#cli-codex-login)
@@ -283,20 +265,23 @@ Each assistant retains its own model settings, approvals, and independently
 configured tools. MCP is optional, not part of the ZipperGen handoff. Another
 repository-aware coding assistant can consume `task show` or the file path.
 
-After the assistant creates visible Python source, `use` selects it. For an existing workflow,
-`refine --file prompts/reviewed_answer_refinement.md` additionally saves a
-semantic baseline for a meaningful before/after diff.
+After the assistant creates visible Python source, `use` selects it. For an
+existing workflow, `spec refine` additionally saves a semantic baseline for a
+meaningful before/after diff.
 
 Every later source/design change uses the same visible loop:
 
 ```text
-zippergen [reviewed_answer]> refine --edit
+zippergen [reviewed_answer]> spec refine
+zippergen [reviewed_answer]> spec pending
 zippergen [reviewed_answer]> task       # optional summary
 zippergen [reviewed_answer]> assistant claude  # or: assistant codex
 zippergen [reviewed_answer]> current
 zippergen [reviewed_answer]> validate
 zippergen [reviewed_answer]> show communications
 zippergen [reviewed_answer]> run
+zippergen [reviewed_answer]> spec show
+zippergen [reviewed_answer]> spec reconcile
 ```
 
 A model change has two forms. Use `models set Writer SPEC` or `models default
@@ -347,7 +332,7 @@ It moves the current project's workspace state, managed development runs,
 assistant-task history, model/provider preferences, development secrets, and
 generated task/drafts to an owner-only backup below
 `$ZIPPERGEN_HOME/resets/`. It then continues with no workflow, run, or task
-selected. Visible workflow source, tests, prompts, `zippergen.toml`, Git history,
+selected. Visible workflow source, tests, `specification.md`, `zippergen.toml`, Git history,
 and the framework checkout are preserved. Deployment profiles and running
 services are also untouched; only the remembered deployment name is cleared.
 `project reset --yes` is the explicit noninteractive form.
@@ -575,26 +560,25 @@ provides the deterministic protocol validation, projections, views, and diffs.
 This keeps generated workflows as ordinary reviewable code instead of hiding
 them behind a separate visual builder or opaque generation service.
 
-Studio exposes this handoff as `create` and `refine`. Multiline requirements
-can remain in normal, versioned prompt files:
+Studio exposes this handoff as `create` and `spec refine`. Multiline accepted
+requirements remain in one normal, versioned specification:
 
 ```text
-zippergen [no workflow]> create --file prompts/reviewed_answer.md
-zippergen [reviewed_answer]> refine --file prompts/reviewed_answer_refinement.md
+zippergen [no workflow]> create
+zippergen [reviewed_answer]> spec refine
 ```
 
-These are not disposable chat messages. Studio records them in the project's
-ordered prompt ledger and gives the coding assistant the complete active
-design context alongside the current workflow. `initial` and `refinement` are
-retained as provenance labels but use the same listing, ordering, activation,
-replacement, and context mechanism. The Python workflow remains executable
-truth; the prompt ledger is durable intent and history.
+These are not disposable chat messages. Studio gives the coding assistant the
+canonical `specification.md`, one pending refinement, and the current workflow.
+The assistant integrates an accepted change back into the canonical document;
+Git preserves its history. The Python workflow remains executable truth while
+the specification remains durable intent.
 
 Studio stores timestamped assistant requests and semantic baselines outside
 the Git checkout under the project workspace. It mirrors only the current
 generated task at `.zippergen/current-task.md`, which `project init` adds to
-`.gitignore`. Prompt files themselves are ordinary project inputs; never put
-API keys or other secrets in prompts or generated tasks.
+`.gitignore`. The canonical specification is ordinary project input; never put
+API keys or other secrets in it, the pending refinement, or generated tasks.
 
 This repository includes a reusable coding-assistant skill at
 `.agents/skills/zippergen-workflows/`. Codex discovers it automatically, and

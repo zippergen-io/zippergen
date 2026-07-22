@@ -1,10 +1,11 @@
-"""Project-aware state for the prompt-first ZipperGen development experience.
+"""Project-aware state for the ZipperGen development experience.
 
-Visible project intent lives in ``zippergen.toml`` and an ordered ``prompts/``
-ledger so it can be reviewed and versioned. Machine-specific workspace state
-and its separate owner-only secret file stay below ``ZIPPERGEN_HOME`` rather
-than in the user's Git checkout; the ordinary workspace record is non-secret.
-The regular CLI
+Visible project intent lives in ``zippergen.toml`` and one canonical
+``specification.md`` so it can be reviewed and versioned. Studio owns the
+filename and keeps one pending refinement below the project-local, ignored
+``.zippergen/`` directory. Machine-specific workspace state and its separate
+owner-only secret file stay below ``ZIPPERGEN_HOME`` rather than in the user's
+Git checkout; the ordinary workspace record is non-secret. The regular CLI
 remains stateless; ``zippergen studio`` and ``zippergen dev`` use this module to
 remember a current workflow and managed development runs.
 """
@@ -32,6 +33,9 @@ PROJECT_MANIFEST_NAME = "zippergen.toml"
 PROMPT_INDEX_NAME = "index.toml"
 PROJECT_TASK_DIRECTORY = ".zippergen"
 CURRENT_TASK_NAME = "current-task.md"
+SPECIFICATION_FILE_NAME = "specification.md"
+PENDING_REFINEMENT_NAME = "pending-refinement.md"
+SPEC_HISTORY_DIRECTORY = "spec-history"
 
 _IGNORED_DISCOVERY_PARTS = {
     ".git",
@@ -169,6 +173,19 @@ def _safe_project_directory(root: Path, value: object, *, field: str) -> Path:
     return resolved
 
 
+def _safe_project_file(root: Path, value: object, *, field: str) -> Path:
+    raw = str(value).strip()
+    path = Path(raw)
+    if not raw or path.is_absolute() or ".." in path.parts or path.name in {"", "."}:
+        raise WorkspaceError(
+            f"{field} must be a relative file inside the project; got {raw!r}."
+        )
+    resolved = (root / path).resolve()
+    if not resolved.is_relative_to(root):
+        raise WorkspaceError(f"{field} escapes the project root: {raw!r}.")
+    return resolved
+
+
 def _prompt_title(content: str) -> str:
     for raw in content.splitlines():
         line = raw.strip()
@@ -258,6 +275,23 @@ class Workspace:
         return self.root / PROJECT_TASK_DIRECTORY / CURRENT_TASK_NAME
 
     @property
+    def pending_refinement_path(self) -> Path:
+        """Return Studio's stable, automatically named refinement document."""
+
+        return self.root / PROJECT_TASK_DIRECTORY / PENDING_REFINEMENT_NAME
+
+    @property
+    def specification_path(self) -> Path:
+        """Return the visible, versionable canonical specification path."""
+
+        manifest = self.project_manifest()
+        return _safe_project_file(
+            self.root,
+            manifest["specification_file"],
+            field="specification_file",
+        )
+
+    @property
     def manifest_path(self) -> Path:
         return self.root / PROJECT_MANIFEST_NAME
 
@@ -268,6 +302,7 @@ class Workspace:
             return {
                 "schema_version": PROJECT_SCHEMA_VERSION,
                 "name": self.root.name,
+                "specification_file": SPECIFICATION_FILE_NAME,
                 "prompts_directory": "prompts",
                 "framework_directory": None,
                 "exists": False,
@@ -296,6 +331,14 @@ class Workspace:
             prompts,
             field="prompts_directory",
         )
+        specification = str(
+            manifest.get("specification_file") or SPECIFICATION_FILE_NAME
+        )
+        _safe_project_file(
+            self.root,
+            specification,
+            field="specification_file",
+        )
         framework_value = manifest.get("framework_directory")
         framework = str(framework_value).strip() if framework_value else None
         if framework:
@@ -307,6 +350,7 @@ class Workspace:
         return {
             "schema_version": PROJECT_SCHEMA_VERSION,
             "name": name,
+            "specification_file": specification,
             "prompts_directory": prompts,
             "framework_directory": framework,
             "exists": True,
@@ -316,10 +360,16 @@ class Workspace:
         self,
         *,
         name: str | None = None,
+        specification_file: str = SPECIFICATION_FILE_NAME,
         prompts_directory: str = "prompts",
         framework_directory: str | None = None,
     ) -> dict[str, object]:
-        """Create the visible project manifest and empty prompt ledger."""
+        """Create the visible project manifest.
+
+        The canonical specification itself is created by ``create`` or
+        ``spec edit``. Legacy prompt-ledger files are left untouched and are
+        migrated only when their design context is first needed.
+        """
 
         if self.manifest_path.exists():
             manifest = self.project_manifest()
@@ -328,7 +378,6 @@ class Workspace:
                 if manifest.get("framework_directory")
                 else None
             )
-            self._ensure_prompt_index()
             return manifest
         project_name = str(name or self.root.name).strip()
         if not project_name:
@@ -337,6 +386,11 @@ class Workspace:
             self.root,
             prompts_directory,
             field="prompts_directory",
+        )
+        _safe_project_file(
+            self.root,
+            specification_file,
+            field="specification_file",
         )
         if framework_directory is None and (
             self.root / "zippergen" / "pyproject.toml"
@@ -352,7 +406,7 @@ class Workspace:
             "# Visible, versionable ZipperGen project configuration.\n"
             f"schema_version = {PROJECT_SCHEMA_VERSION}\n"
             f"name = {_toml_string(project_name)}\n"
-            f"prompts_directory = {_toml_string(prompts_directory)}\n"
+            f"specification_file = {_toml_string(specification_file)}\n"
         )
         if framework_directory:
             content += (
@@ -360,7 +414,6 @@ class Workspace:
             )
         _atomic_write_text(self.manifest_path, content)
         self._ensure_project_gitignore(framework_directory)
-        self._ensure_prompt_index()
         return self.project_manifest()
 
     def _ensure_project_gitignore(self, framework_directory: str | None) -> None:
@@ -384,6 +437,256 @@ class Workspace:
                     + "\n".join(missing)
                     + "\n",
                 )
+
+    def specification(self) -> str | None:
+        """Return the canonical project specification, if one has been written."""
+
+        path = self.specification_path
+        try:
+            content = path.read_text(encoding="utf-8").strip()
+        except FileNotFoundError:
+            return None
+        except (OSError, UnicodeDecodeError) as exc:
+            raise WorkspaceError(
+                f"Could not read project specification {path}: {exc}"
+            ) from exc
+        return content or None
+
+    def save_specification(self, content: str) -> Path:
+        """Write the one canonical, visible project specification."""
+
+        specification = content.strip()
+        if not specification:
+            raise WorkspaceError("The workflow specification must not be empty.")
+        self.initialize_project()
+        _atomic_write_text(self.specification_path, specification.rstrip() + "\n")
+        return self.specification_path
+
+    def _legacy_specification_content(self) -> str | None:
+        """Render active legacy prompt entries without changing or deleting them."""
+
+        records = [record for record in self.list_prompts() if record["active"]]
+        if not records:
+            return None
+        if len(records) == 1:
+            return str(records[0]["content"])
+        lines = [
+            "# Workflow specification",
+            "",
+            "<!-- Migrated from the former ordered prompt ledger. The original "
+            "prompt files remain available for history. -->",
+        ]
+        for record in records:
+            lines.extend(
+                [
+                    "",
+                    f"## {record['title']}",
+                    "",
+                    str(record["content"]),
+                ]
+            )
+        return "\n".join(lines)
+
+    def ensure_specification(
+        self,
+        *,
+        initial_content: str | None = None,
+    ) -> dict[str, object]:
+        """Ensure canonical intent exists, migrating an old ledger when present."""
+
+        self.initialize_project()
+        existing = self.specification()
+        if existing is not None:
+            return {
+                "path": self.specification_path,
+                "content": existing,
+                "created": False,
+                "migrated": False,
+            }
+        legacy = self._legacy_specification_content()
+        content = legacy or (initial_content or "").strip()
+        if not content:
+            return {
+                "path": self.specification_path,
+                "content": None,
+                "created": False,
+                "migrated": False,
+            }
+        self.save_specification(content)
+        return {
+            "path": self.specification_path,
+            "content": content,
+            "created": True,
+            "migrated": legacy is not None,
+        }
+
+    def pending_refinement(self) -> str | None:
+        """Return the single pending refinement, if it contains text."""
+
+        try:
+            content = self.pending_refinement_path.read_text(encoding="utf-8").strip()
+        except FileNotFoundError:
+            return None
+        except (OSError, UnicodeDecodeError) as exc:
+            raise WorkspaceError(
+                f"Could not read pending refinement {self.pending_refinement_path}: "
+                f"{exc}"
+            ) from exc
+        return content or None
+
+    def begin_pending_refinement(self) -> Path:
+        """Create the stable pending file and remember the accepted-spec baseline."""
+
+        if self.specification() is None:
+            raise WorkspaceError(
+                "No workflow specification exists. Use 'create' or 'spec edit' first."
+            )
+        path = self.pending_refinement_path
+        if self.pending_refinement() is None:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if not path.exists():
+                _atomic_write_text(path, "")
+            self.update(
+                pending_specification_fingerprint=self.specification_fingerprint(
+                    include_pending=False
+                ),
+                pending_refinement_created_at=_timestamp(),
+                pending_semantic_baseline=None,
+            )
+        return path
+
+    def save_pending_refinement(
+        self,
+        content: str,
+        *,
+        append: bool = False,
+    ) -> dict[str, object]:
+        """Create or update the one automatically named pending refinement."""
+
+        refinement = content.strip()
+        if not refinement:
+            raise WorkspaceError("The pending refinement must not be empty.")
+        existed = self.pending_refinement() is not None
+        self.begin_pending_refinement()
+        if append and existed:
+            current = self.pending_refinement() or ""
+            if refinement != current:
+                refinement = current.rstrip() + "\n\n" + refinement
+            else:
+                refinement = current
+        _atomic_write_text(
+            self.pending_refinement_path,
+            refinement.rstrip() + "\n",
+        )
+        return {
+            "path": self.pending_refinement_path,
+            "content": refinement,
+            "created": not existed,
+        }
+
+    def specification_context(self) -> str:
+        """Render the exact canonical and pending requirements sent to assistants."""
+
+        specification = self.specification()
+        pending = self.pending_refinement()
+        lines = [
+            "# Canonical workflow specification",
+            f"Source: {self.specification_path.relative_to(self.root).as_posix()}",
+            "",
+            specification or "No canonical specification has been written.",
+        ]
+        if pending is not None:
+            lines.extend(
+                [
+                    "",
+                    "# Pending refinement",
+                    "Source: .zippergen/pending-refinement.md",
+                    "",
+                    pending,
+                ]
+            )
+        return "\n".join(lines)
+
+    def specification_fingerprint(self, *, include_pending: bool = True) -> str:
+        """Fingerprint the exact specification context given to assistants."""
+
+        payload: dict[str, object] = {
+            "specification": self.specification(),
+        }
+        if include_pending:
+            payload["pending_refinement"] = self.pending_refinement()
+        encoded = json.dumps(
+            payload,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+    @property
+    def spec_history_directory(self) -> Path:
+        return self.requests_directory / SPEC_HISTORY_DIRECTORY
+
+    def archive_pending_refinement(self, *, status: str) -> dict[str, object]:
+        """Clear the pending document into recoverable private history."""
+
+        if status not in {"reconciled", "discarded"}:
+            raise WorkspaceError(f"Unsupported refinement history status: {status}.")
+        content = self.pending_refinement()
+        if content is None:
+            raise WorkspaceError("There is no pending refinement.")
+        self.spec_history_directory.mkdir(parents=True, exist_ok=True)
+        base = f"{_identifier_timestamp()}-{status}"
+        path = self.spec_history_directory / f"{base}.md"
+        suffix = 2
+        while path.exists():
+            path = self.spec_history_directory / f"{base}-{suffix}.md"
+            suffix += 1
+        _atomic_write_text(path, content.rstrip() + "\n")
+        _atomic_write_json(
+            path.with_suffix(".json"),
+            {
+                "schema_version": 1,
+                "status": status,
+                "created_at": self.load().get("pending_refinement_created_at"),
+                "archived_at": _timestamp(),
+                "content_file": str(path),
+            },
+        )
+        try:
+            self.pending_refinement_path.unlink()
+        except FileNotFoundError:
+            pass
+        try:
+            self.current_task_path.unlink()
+        except FileNotFoundError:
+            pass
+        self.update(
+            pending_specification_fingerprint=None,
+            pending_refinement_created_at=None,
+            pending_semantic_baseline=None,
+            current_request=None,
+            task_cleared=True,
+        )
+        return {"status": status, "content": content, "history_path": path}
+
+    def list_spec_history(self) -> list[dict[str, object]]:
+        """Return reconciled/discarded refinements, newest first."""
+
+        if not self.spec_history_directory.exists():
+            return []
+        records: list[dict[str, object]] = []
+        for path in self.spec_history_directory.glob("*.json"):
+            try:
+                record = _read_json(path)
+            except WorkspaceError:
+                continue
+            records.append(record)
+        return sorted(
+            records,
+            key=lambda record: str(record.get("archived_at") or ""),
+            reverse=True,
+        )
 
     @property
     def prompts_directory(self) -> Path:
@@ -757,6 +1060,10 @@ class Workspace:
             "last_deployment": None,
             "last_view": "protocol",
             "current_request": None,
+            "task_cleared": False,
+            "pending_specification_fingerprint": None,
+            "pending_refinement_created_at": None,
+            "pending_semantic_baseline": None,
             "editor_command": None,
             "model_profiles": {},
             "providers": {},
@@ -780,6 +1087,7 @@ class Workspace:
         local_directory = self.root / PROJECT_TASK_DIRECTORY
         local_items = (
             self.current_task_path,
+            self.pending_refinement_path,
             local_directory / "prompt-drafts",
         )
         return {
@@ -805,6 +1113,10 @@ class Workspace:
         sources = [
             (self.directory, "workspace"),
             (self.current_task_path, f"project-local/{CURRENT_TASK_NAME}"),
+            (
+                self.pending_refinement_path,
+                f"project-local/{PENDING_REFINEMENT_NAME}",
+            ),
             (local_directory / "prompt-drafts", "project-local/prompt-drafts"),
         ]
         present = [
@@ -898,6 +1210,10 @@ class Workspace:
         # This field was added additively so existing workspaces keep working
         # without a schema migration.
         state.setdefault("current_request", None)
+        state.setdefault("task_cleared", False)
+        state.setdefault("pending_specification_fingerprint", None)
+        state.setdefault("pending_refinement_created_at", None)
+        state.setdefault("pending_semantic_baseline", None)
         state.setdefault("editor_command", None)
         state.setdefault("model_profiles", {})
         state.setdefault("providers", {})
@@ -1206,6 +1522,7 @@ class Workspace:
         prompt_id: str | None = None,
         active_prompt_ids: tuple[str, ...] = (),
         prompt_ledger_fingerprint: str | None = None,
+        specification_fingerprint: str | None = None,
         baseline_file: str | Path | None = None,
         refreshes_request: str | None = None,
     ) -> dict[str, Any]:
@@ -1224,6 +1541,13 @@ class Workspace:
             "prompt_id": prompt_id,
             "active_prompt_ids": list(active_prompt_ids),
             "prompt_ledger_fingerprint": prompt_ledger_fingerprint,
+            "specification_file": str(self.specification_path),
+            "pending_refinement_file": (
+                str(self.pending_refinement_path)
+                if self.pending_refinement() is not None
+                else None
+            ),
+            "specification_fingerprint": specification_fingerprint,
             "baseline_file": str(baseline_file) if baseline_file else None,
             "refreshes_request": refreshes_request,
             "prompt": prompt,
@@ -1236,7 +1560,7 @@ class Workspace:
         _atomic_write_text(Path(record["content_file"]), task_content)
         _atomic_write_json(self.requests_directory / f"{request_id}.json", record)
         _atomic_write_text(self.current_task_path, task_content)
-        self.update(current_request=request_id)
+        self.update(current_request=request_id, task_cleared=False)
         return record
 
     def request_path(self, request_id: str) -> Path:
@@ -1279,7 +1603,10 @@ class Workspace:
     def current_request(self) -> dict[str, Any] | None:
         """Return the current handoff and restore its stable mirror if needed."""
 
-        request_id = self.load().get("current_request")
+        state = self.load()
+        if state.get("task_cleared"):
+            return None
+        request_id = state.get("current_request")
         record: dict[str, Any] | None = None
         if request_id:
             try:

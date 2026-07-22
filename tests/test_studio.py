@@ -93,8 +93,12 @@ def test_studio_create_saves_code_first_assistant_handoff(tmp_path):
     assert "visible Python source" in content
     assert "Do not deploy" in content
     assert content == workspace.current_task_path.read_text()
+    assert workspace.specification_path.name == "specification.md"
+    assert workspace.specification() == (
+        "Draft an answer and ask a reviewer to approve it."
+    )
     assert output[0] == "Creation"
-    assert any("✓ P001 registered" in line for line in output)
+    assert any("✓ specification.md" in line for line in output)
     assert any("✓ .zippergen/current-task.md" in line for line in output)
     assert any("assistant" in line for line in output)
     assert all("Pass this brief" not in line for line in output)
@@ -119,17 +123,31 @@ def test_studio_create_reads_multiline_prompt_from_project_file(tmp_path):
         "Create a reviewed answer workflow.\n\n"
         "Never return an unapproved draft."
     )
+    assert workspace.specification() == metadata["prompt"]
+    assert metadata["specification_file"] == str(workspace.specification_path)
     assert output[0] == "Creation"
-    assert any(
-        "P001 registered — prompts/reviewed answer.md" in line
-        for line in output
-    )
+    assert any("✓ specification.md" in line for line in output)
     assert all("Loaded prompt file" not in line for line in output)
+
+
+def test_studio_inline_create_does_not_replace_an_existing_specification(tmp_path):
+    studio, workspace, _output = _studio(tmp_path)
+    studio.create_request("Original accepted requirements.")
+
+    try:
+        studio.execute("create Different requirements")
+    except SystemExit as exc:
+        assert "canonical specification already exists" in str(exc)
+    else:
+        raise AssertionError("inline create must not overwrite accepted intent")
+
+    assert workspace.specification() == "Original accepted requirements."
 
 
 def test_studio_refine_saves_semantic_baseline_and_handoff(tmp_path):
     studio, workspace, output = _studio(tmp_path)
     workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    workspace.save_specification("Echo a value through Writer and return it.")
 
     studio.refine_request("Add a human review before returning the result.")
 
@@ -141,14 +159,20 @@ def test_studio_refine_saves_semantic_baseline_and_handoff(tmp_path):
     assert str(baselines[0]) in content
     assert "Preserve all behavior not explicitly changed" in content
     assert "zippergen diff" in content
+    assert "# Canonical workflow specification" in content
+    assert "# Pending refinement" in content
+    assert workspace.pending_refinement() == (
+        "Add a human review before returning the result."
+    )
     assert output[0] == "Refinement"
-    assert any("✓ P001 registered" in line for line in output)
+    assert any("✓ created — .zippergen/pending-refinement.md" in line for line in output)
     assert any("✓ .zippergen/current-task.md" in line for line in output)
 
 
 def test_studio_refine_reads_prompt_from_absolute_file(tmp_path):
     studio, workspace, output = _studio(tmp_path)
     workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    workspace.save_specification("Echo a value through Writer and return it.")
     prompt_file = tmp_path / "change.md"
     prompt_file.write_text(
         "Add human review.\nPreserve the existing model call.\n",
@@ -162,7 +186,9 @@ def test_studio_refine_reads_prompt_from_absolute_file(tmp_path):
     content = briefs[0].read_text()
     assert "Add human review.\nPreserve the existing model call." in content
     assert output[0] == "Refinement"
-    assert any("✓ P001 registered" in line for line in output)
+    assert workspace.pending_refinement() == (
+        "Add human review.\nPreserve the existing model call."
+    )
     assert all("Loaded prompt file" not in line for line in output)
 
 
@@ -187,19 +213,18 @@ def test_studio_task_commands_expose_one_stable_task_and_private_history(tmp_pat
     output.clear()
     studio.execute("task history")
     assert output[0] == "Task history"
-    assert any("create" in line and "P001" in line for line in output)
+    assert any("create" in line for line in output)
 
 
-def test_studio_task_show_refreshes_stale_prompt_context_once(tmp_path):
+def test_studio_task_show_refreshes_stale_specification_context_once(tmp_path):
     studio, workspace, output = _studio(tmp_path)
     studio.create_request("Create a review workflow.")
     original = workspace.current_request()
     assert original is not None
-    workspace.add_prompt(
-        kind="refinement",
-        content="Add an explicit failure result after retry exhaustion.",
+    workspace.save_specification(
+        "Create a review workflow and add an explicit failure result after "
+        "retry exhaustion."
     )
-    workspace.set_prompt_active("P001", active=False)
     output.clear()
 
     studio.execute("task show")
@@ -208,13 +233,11 @@ def test_studio_task_show_refreshes_stale_prompt_context_once(tmp_path):
     assert refreshed is not None
     assert refreshed["request_id"] != original["request_id"]
     assert refreshed["refreshes_request"] == original["request_id"]
-    assert refreshed["active_prompt_ids"] == ["P002"]
-    assert refreshed["prompt_ledger_fingerprint"] == (
-        workspace.prompt_ledger_fingerprint()
+    assert refreshed["specification_fingerprint"] == (
+        workspace.specification_fingerprint()
     )
-    assert output[0] == "✓ Task refreshed from the current prompt ledger: P002."
-    assert "Add an explicit failure result" in output[1]
-    assert "Create a review workflow." not in output[1]
+    assert output[0] == "✓ Task refreshed from the current specification context."
+    assert "add an explicit failure result" in output[1]
     assert len(workspace.list_requests()) == 2
 
     output.clear()
@@ -265,29 +288,20 @@ def test_studio_assistant_launches_codex_in_project_on_the_stable_task(
     assert output[-1].startswith("✓ Codex session ended")
 
 
-def test_studio_assistant_refreshes_edited_and_reordered_prompts_before_launch(
+def test_studio_assistant_refreshes_edited_specification_before_launch(
     tmp_path, monkeypatch
 ):
     studio, workspace, output = _studio(tmp_path)
     studio.create_request("Original creation requirement.")
     original = workspace.current_request()
     assert original is not None
-    workspace.add_prompt(
-        kind="refinement",
-        content="Apply this refinement first in the active order.",
-    )
-    workspace.move_prompt("P002", relation="before", other_id="P001")
-    workspace.update_prompt_content(
-        "P001",
-        content="Corrected creation requirement.",
-    )
+    workspace.save_specification("Corrected creation requirement.")
     output.clear()
     calls: list[tuple[list[str], Path, bool]] = []
     monkeypatch.setattr("zippergen.studio.shutil.which", lambda name: "/bin/codex")
 
     def fake_run(arguments, *, cwd, check):
         task = workspace.current_task_path.read_text()
-        assert task.index("P002 [refinement]") < task.index("P001 [initial]")
         assert "Corrected creation requirement." in task
         assert "Original creation requirement." not in task
         calls.append((arguments, cwd, check))
@@ -301,12 +315,11 @@ def test_studio_assistant_refreshes_edited_and_reordered_prompts_before_launch(
     assert refreshed is not None
     assert refreshed["request_id"] != original["request_id"]
     assert refreshed["refreshes_request"] == original["request_id"]
-    assert refreshed["active_prompt_ids"] == ["P002", "P001"]
-    assert refreshed["prompt_ledger_fingerprint"] == (
-        workspace.prompt_ledger_fingerprint()
+    assert refreshed["specification_fingerprint"] == (
+        workspace.specification_fingerprint()
     )
     assert calls
-    assert output[0] == "✓ Task refreshed from the current prompt ledger: P002, P001."
+    assert output[0] == "✓ Task refreshed from the current specification context."
     assert output[1] == "Assistant"
 
 
@@ -441,7 +454,7 @@ def test_studio_edits_selected_workflow_with_preference_or_one_off_override(
     assert output[-1] == "Next: validate · show · run"
 
 
-def test_studio_create_can_write_prompt_in_editor_and_prepare_task(
+def test_studio_create_opens_automatic_specification_and_prepares_task(
     tmp_path, monkeypatch
 ):
     studio, workspace, output = _studio(tmp_path)
@@ -462,22 +475,22 @@ def test_studio_create_can_write_prompt_in_editor_and_prepare_task(
 
     monkeypatch.setattr("zippergen.studio.subprocess.run", fake_run)
 
-    studio.execute("create --edit prompts/reviewed_answer.md --editor micro")
+    studio.execute("create --editor micro")
 
     assert calls == [[
         "/usr/bin/micro",
-        str(workspace.root / "prompts" / "reviewed_answer.md"),
+        str(workspace.specification_path),
     ]]
-    assert workspace.prompt("P001")["content"] == (
+    assert workspace.specification() == (
         "Create a reviewed answer workflow.\n"
         "Never return an unapproved draft."
     )
     assert workspace.current_task_path.exists()
     assert any("Editor closed" in line for line in output)
-    assert any("P001 registered" in line for line in output)
+    assert any("specification.md" in line for line in output)
 
 
-def test_studio_path_free_create_derives_canonical_prompt_name(
+def test_studio_path_free_create_always_uses_canonical_specification_name(
     tmp_path, monkeypatch
 ):
     studio, workspace, _output = _studio(tmp_path)
@@ -500,41 +513,59 @@ def test_studio_path_free_create_derives_canonical_prompt_name(
 
     studio.execute("create --edit --editor micro")
 
-    record = workspace.prompt("P001")
-    assert record["kind"] == "initial"
-    assert record["title"] == "Reviewed answer policy"
-    assert record["file"] == "prompts/001-reviewed-answer-policy.md"
-    assert ".zippergen/prompt-drafts" in calls[0][-1]
-    assert list((workspace.root / ".zippergen" / "prompt-drafts").iterdir()) == []
+    assert workspace.specification_path == workspace.root / "specification.md"
+    assert workspace.specification() == (
+        "# Reviewed answer policy\n\nNever return an unapproved draft."
+    )
+    assert calls[0][-1] == str(workspace.specification_path)
+    assert not (workspace.root / "prompts").exists()
 
 
-def test_studio_refine_can_compose_change_in_editor(tmp_path, monkeypatch):
+def test_studio_spec_refine_reopens_one_pending_file(tmp_path, monkeypatch):
     studio, workspace, _output = _studio(tmp_path)
     workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    workspace.save_specification("Echo the input through Writer.")
     monkeypatch.setattr(
         "zippergen.studio.shutil.which",
         lambda name: "/usr/bin/micro" if name == "micro" else None,
     )
 
+    calls = 0
+
     def fake_run(arguments, *, cwd, check):
-        Path(arguments[-1]).write_text(
-            "Add human approval before returning the result.\n"
-        )
+        nonlocal calls
+        target = Path(arguments[-1])
+        assert target == workspace.pending_refinement_path
+        if calls == 0:
+            target.write_text("Add human approval before returning the result.\n")
+        else:
+            assert "Add human approval" in target.read_text()
+            target.write_text(
+                "Add human approval before returning the result.\n"
+                "Use a yes/no decision.\n"
+            )
+        calls += 1
         return subprocess.CompletedProcess(arguments, 0)
 
     monkeypatch.setattr("zippergen.studio.subprocess.run", fake_run)
 
-    studio.execute("refine --edit --editor micro")
+    studio.execute("spec refine --editor micro")
+    first_baselines = list(
+        workspace.requests_directory.glob("*-semantic-before.json")
+    )
+    studio.execute("spec refine --editor micro")
 
     request = workspace.current_request()
     assert request is not None
     assert request["kind"] == "refine"
-    assert request["prompt_id"] == "P001"
-    assert workspace.prompt("P001")["file"] == (
-        "prompts/001-add-human-approval-before-returning-the-result.md"
+    assert workspace.pending_refinement() == (
+        "Add human approval before returning the result.\n"
+        "Use a yes/no decision."
     )
-    assert list(workspace.requests_directory.glob("*-semantic-before.json"))
-    assert list((workspace.root / ".zippergen" / "prompt-drafts").iterdir()) == []
+    assert len(first_baselines) == 1
+    assert list(workspace.requests_directory.glob("*-semantic-before.json")) == (
+        first_baselines
+    )
 
 
 def test_studio_prompt_replacement_can_be_composed_in_editor(
@@ -655,7 +686,7 @@ def test_studio_invalid_prompt_edit_leaves_registered_content_untouched(
     assert len(list((workspace.root / ".zippergen" / "prompt-drafts").iterdir())) == 1
 
 
-def test_studio_failed_registration_preserves_path_free_draft(
+def test_studio_failed_create_editor_preserves_canonical_draft(
     tmp_path, monkeypatch
 ):
     studio, workspace, _output = _studio(tmp_path)
@@ -666,24 +697,19 @@ def test_studio_failed_registration_preserves_path_free_draft(
 
     def fake_run(arguments, *, cwd, check):
         Path(arguments[-1]).write_text("# Important draft\n\nDo not lose this.\n")
-        return subprocess.CompletedProcess(arguments, 0)
-
-    def fail_registration(**kwargs):
-        raise WorkspaceError("simulated ledger failure")
+        return subprocess.CompletedProcess(arguments, 3)
 
     monkeypatch.setattr("zippergen.studio.subprocess.run", fake_run)
-    monkeypatch.setattr(workspace, "add_prompt", fail_registration)
 
     try:
-        studio.execute("create --edit --editor micro")
-    except WorkspaceError as exc:
-        assert "simulated ledger failure" in str(exc)
+        studio.execute("create --editor micro")
+    except SystemExit as exc:
+        assert "Editor exited with status 3" in str(exc)
     else:
-        raise AssertionError("registration should fail")
+        raise AssertionError("failed editor should stop creation")
 
-    drafts = list((workspace.root / ".zippergen" / "prompt-drafts").iterdir())
-    assert len(drafts) == 1
-    assert "Do not lose this" in drafts[0].read_text()
+    assert "Do not lose this" in workspace.specification_path.read_text()
+    assert workspace.current_request() is None
 
 
 def test_studio_editor_errors_are_safe_and_actionable(tmp_path, monkeypatch):
@@ -694,8 +720,8 @@ def test_studio_editor_errors_are_safe_and_actionable(tmp_path, monkeypatch):
     for command, expected in (
         ("editor set missing", "Editor executable was not found: missing"),
         (
-            "create --edit ../outside.md --editor missing",
-            "Prompt must be inside the project root",
+            "create --editor missing",
+            "Editor executable was not found: missing",
         ),
         ("edit workflow --editor missing", "Editor executable was not found: missing"),
     ):
@@ -708,7 +734,7 @@ def test_studio_editor_errors_are_safe_and_actionable(tmp_path, monkeypatch):
     assert not (workspace.root.parent / "outside.md").exists()
 
 
-def test_studio_does_not_register_prompt_after_failed_editor(
+def test_studio_does_not_prepare_task_after_failed_editor(
     tmp_path, monkeypatch
 ):
     studio, workspace, _output = _studio(tmp_path)
@@ -723,17 +749,16 @@ def test_studio_does_not_register_prompt_after_failed_editor(
     monkeypatch.setattr("zippergen.studio.subprocess.run", fake_run)
 
     try:
-        studio.execute("create --edit prompts/new.md --editor micro")
+        studio.execute("create --editor micro")
     except SystemExit as exc:
         assert "Editor exited with status 3" in str(exc)
     else:
         raise AssertionError("failed editor should stop creation")
 
-    assert workspace.list_prompts() == []
     assert workspace.current_request() is None
 
 
-def test_studio_refuses_to_edit_managed_prompt_index(tmp_path, monkeypatch):
+def test_studio_refuses_manual_filename_for_create_editor(tmp_path, monkeypatch):
     studio, _workspace, _output = _studio(tmp_path)
     monkeypatch.setattr(
         "zippergen.studio.shutil.which",
@@ -741,11 +766,11 @@ def test_studio_refuses_to_edit_managed_prompt_index(tmp_path, monkeypatch):
     )
 
     try:
-        studio.execute("create --edit prompts/index.toml --editor micro")
+        studio.execute("create --edit prompts/custom.md --editor micro")
     except SystemExit as exc:
-        assert "reserved for the managed ledger" in str(exc)
+        assert "only used when create opens the specification editor" in str(exc)
     else:
-        raise AssertionError("managed prompt index should not be edited as a prompt")
+        raise AssertionError("create should own the specification filename")
 
 
 def test_studio_prompt_file_errors_are_actionable(tmp_path):
@@ -776,17 +801,15 @@ def test_studio_commands_are_discoverable(tmp_path):
     assert "show | inspect" in output[-1]
     assert "project init [NAME]" in output[-1]
     assert "project reset [--yes]" in output[-1]
-    assert "prompts move ID before|after ID" in output[-1]
+    assert "legacy prompt-ledger migration/compatibility" in output[-1]
     assert "task show|path|history" in output[-1]
     assert "assistant" in output[-1]
     assert "editor [show|set CMD|reset]" in output[-1]
     assert "edit [workflow|file PATH]" in output[-1]
     assert "create --file PATH" in output[-1]
-    assert "create --edit [PATH]" in output[-1]
+    assert "spec edit" in output[-1]
+    assert "spec refine" in output[-1]
     assert "refine --file PATH" in output[-1]
-    assert "refine --edit [PATH]" in output[-1]
-    assert "prompts edit ID" in output[-1]
-    assert "prompts archive|restore ID" in output[-1]
     assert "providers set local [URL]" in output[-1]
     assert studio.execute("not-a-command") is True
     assert output[-1].startswith("✗ Unknown command")
@@ -964,7 +987,7 @@ def test_studio_project_reset_backs_up_state_and_continues_fresh(tmp_path):
     assert not workspace.current_task_path.exists()
     assert workspace.manifest_path.exists()
     assert (workspace.root / "workflow.py").exists()
-    assert workspace.prompt("P001")["content"] == "Create a review workflow."
+    assert workspace.specification() == "Create a review workflow."
     backups = list(workspace.resets_directory.iterdir())
     assert len(backups) == 1
     assert (backups[0] / "workspace" / "workspace.json").exists()
@@ -1007,6 +1030,126 @@ def test_studio_project_reset_handles_a_missing_project_directory(tmp_path):
     assert any(
         "exit and recreate the project directory" in line for line in output
     )
+
+
+def test_studio_spec_commands_use_automatic_paths_and_append_one_pending_change(
+    tmp_path,
+):
+    studio, workspace, output = _studio(tmp_path)
+    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    studio.create_request("Echo the request through Writer.")
+    output.clear()
+
+    studio.execute("spec path")
+    assert output == [str(workspace.root / "specification.md")]
+
+    output.clear()
+    studio.execute("spec refine Add bounded retries")
+    studio.execute("refine Return an explicit failure after exhaustion")
+
+    assert workspace.pending_refinement_path == (
+        workspace.root / ".zippergen" / "pending-refinement.md"
+    )
+    assert workspace.pending_refinement() == (
+        "Add bounded retries\n\nReturn an explicit failure after exhaustion"
+    )
+    assert len(
+        list(workspace.requests_directory.glob("*-semantic-before.json"))
+    ) == 1
+    assert any("short alias for 'spec refine'" in line for line in output)
+    assert not (workspace.root / "prompts").exists()
+
+    output.clear()
+    studio.execute("spec pending")
+    assert output[0] == "Pending refinement"
+    assert any("Add bounded retries" in line for line in output)
+
+
+def test_studio_reconcile_requires_integrated_spec_and_keeps_private_history(
+    tmp_path,
+):
+    studio, workspace, output = _studio(tmp_path)
+    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    studio.create_request("Echo the request through Writer.")
+    studio.execute("spec refine Add a human approval before returning")
+
+    try:
+        studio.execute("spec reconcile --yes")
+    except SystemExit as exc:
+        assert "canonical specification has not changed" in str(exc)
+    else:
+        raise AssertionError("an unintegrated refinement must not be reconciled")
+
+    workspace.save_specification(
+        "Echo the request through Writer and require human approval before return."
+    )
+    output.clear()
+    studio.execute("spec reconcile --yes")
+
+    assert workspace.pending_refinement() is None
+    assert workspace.current_request() is None
+    assert not workspace.current_task_path.exists()
+    assert workspace.list_spec_history()[0]["status"] == "reconciled"
+    assert any("✓ reconciled" in line for line in output)
+    assert any("✓ cleared" in line for line in output)
+
+
+def test_studio_spec_discard_is_explicit_and_recoverable(tmp_path):
+    studio, workspace, output = _studio(tmp_path)
+    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    studio.create_request("Echo the request through Writer.")
+    studio.execute("spec refine Remove Writer")
+    output.clear()
+
+    studio.execute("spec discard --yes")
+
+    assert workspace.pending_refinement() is None
+    assert workspace.list_spec_history()[0]["status"] == "discarded"
+    assert any("⚠ discarded" in line for line in output)
+
+
+def test_studio_spec_show_migrates_legacy_prompt_ledger_once(tmp_path):
+    studio, workspace, output = _studio(tmp_path)
+    first = workspace.add_prompt(kind="initial", content="Create a reviewer.")
+    second = workspace.add_prompt(
+        kind="refinement",
+        content="Add bounded retries.",
+    )
+    output.clear()
+
+    studio.execute("spec show")
+
+    assert "Create a reviewer." in workspace.specification()
+    assert "Add bounded retries." in workspace.specification()
+    assert (workspace.root / str(first["file"])).exists()
+    assert (workspace.root / str(second["file"])).exists()
+    assert any("Migrated the former active prompt ledger" in line for line in output)
+
+    output.clear()
+    studio.execute("spec show")
+    assert all(
+        not line.startswith("• Migrated the former active prompt ledger")
+        for line in output
+    )
+
+
+def test_studio_legacy_prompt_ledger_is_read_only_after_migration(tmp_path):
+    studio, workspace, output = _studio(tmp_path)
+    workspace.add_prompt(kind="initial", content="Create a reviewer.")
+    studio.execute("spec show")
+
+    try:
+        studio.execute("prompts add This must not become hidden design intent")
+    except SystemExit as exc:
+        assert "canonical specification" in str(exc)
+        assert "spec refine" in str(exc)
+    else:
+        raise AssertionError("a migrated legacy ledger must be read-only")
+
+    assert len(workspace.list_prompts()) == 1
+    output.clear()
+    studio.execute("prompts inspect P001")
+    assert "Create a reviewer." in output
 
 
 def test_studio_prompt_table_inspection_path_archive_and_restore(tmp_path):
@@ -1062,7 +1205,7 @@ def test_studio_replacement_preserves_prompt_history(tmp_path):
     assert any("P002" in line and "active" in line for line in output)
 
 
-def test_studio_handoff_contains_all_active_prompts_in_order(tmp_path):
+def test_studio_handoff_contains_canonical_spec_and_pending_refinement(tmp_path):
     studio, workspace, _output = _studio(tmp_path)
     studio.create_request("Create a concise answer workflow.")
     workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
@@ -1073,11 +1216,16 @@ def test_studio_handoff_contains_all_active_prompts_in_order(tmp_path):
     metadata = json.loads(refine_records[0].read_text())
     brief = refine_records[0].with_suffix(".md").read_text()
 
-    assert metadata["prompt_id"] == "P002"
-    assert metadata["active_prompt_ids"] == ["P001", "P002"]
-    assert brief.index("P001 [initial]") < brief.index("P002 [refinement]")
-    assert "Later prompts take precedence only where" in brief
-    assert "preserve every unaffected earlier" in brief
+    assert metadata["prompt_id"] is None
+    assert metadata["specification_fingerprint"] == (
+        workspace.specification_fingerprint()
+    )
+    assert brief.index("# Canonical workflow specification") < brief.index(
+        "# Pending refinement"
+    )
+    assert "Create a concise answer workflow." in brief
+    assert "Add an explicit reviewer." in brief
+    assert "preserve every unaffected requirement" in brief
 
 
 def test_studio_current_is_a_complete_project_dashboard(tmp_path):
@@ -1094,7 +1242,8 @@ def test_studio_current_is_a_complete_project_dashboard(tmp_path):
     assert "Models" in output
     assert "Runtime" in output
     assert any("Name" in line and "project" in line for line in output)
-    assert any("Prompts" in line and "1 active" in line for line in output)
+    assert any("Specification" in line and "ready" in line for line in output)
+    assert any("Refinement" in line and "none" in line for line in output)
     assert any("Editor" in line and "automatic" in line for line in output)
     assert any("Selected" in line and "workflow.py:sample" in line for line in output)
     assert any("Name" in line and "sample" in line for line in output)

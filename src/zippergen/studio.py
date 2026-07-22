@@ -78,6 +78,7 @@ _STUDIO_COMMANDS = {
     "run",
     "runs",
     "show",
+    "spec",
     "start",
     "status",
     "stop",
@@ -108,32 +109,28 @@ def _validate_model_spec(value: str) -> str:
 
 
 _HELP = """Commands:
-  project init [NAME]            create zippergen.toml and the prompt ledger
+  project init [NAME]            create the project manifest
   project show                   show visible project configuration
   project reset [--yes]          back up and reset private project state
-  create [PROMPT]                prepare a new-workflow coding-assistant brief
-  create --file PATH             read a multiline workflow prompt from a file
-  create --edit [PATH]           compose a prompt, then prepare the task
+  create                         write/reopen the canonical specification
+  create [DESCRIPTION]           set the canonical specification without an editor
+  create --file PATH             import a specification; its name is not retained
+  spec show                      show the canonical workflow specification
+  spec edit                      edit it at Studio's automatic path
+  spec path                      print that automatic path
+  spec refine                    create/reopen the one pending refinement
+  refine                         short alias for spec refine
+  spec pending                   inspect the pending refinement
+  spec reconcile [--yes]         accept an integrated refinement and clear it
+  spec discard [--yes]           archive an unwanted pending refinement
+  spec history                   list reconciled/discarded private history
   task                            show the current freshness-checked task
   task show|path|history          inspect the synchronized task or its history
-  assistant [codex|claude]       sync prompts, then open a coding assistant
+  assistant [codex|claude]       sync the spec, then open a coding assistant
   editor [show|set CMD|reset]     inspect or remember the terminal editor
   edit [workflow|file PATH]       edit with the remembered/default editor
   edit ... --editor CMD           choose an editor for this invocation only
-  prompts                        list the ordered project prompt ledger
-  prompts add [PROMPT]           add design intent without preparing a handoff
-  prompts add --file PATH        import/register a UTF-8 prompt file
-  prompts add --edit [PATH]      compose and register project design intent
-  prompts show|inspect ID        show one prompt and its metadata verbatim
-  prompts path ID                print the prompt's absolute file path
-  prompts edit ID                edit one prompt without changing its stable ID
-  prompts context                show all active prompts in precedence order
-  prompts archive|restore ID     exclude/include a prompt in future handoffs
-  prompts remove|disable ID      aliases for archive; enable aliases restore
-  prompts replace ID [PROMPT]    supersede a prompt while preserving its history
-  prompts replace ID --edit [PATH]
-                                 compose and register a replacement prompt
-  prompts move ID before|after ID
+  prompts                        legacy prompt-ledger migration/compatibility
   use [PATH.py:WORKFLOW]         select a workflow; no argument opens a selector
   current                        show the complete project/workflow dashboard
   show | inspect                 choose a code-first semantic view
@@ -153,9 +150,8 @@ _HELP = """Commands:
   run [LLM]                      start a run; optional LLM overrides its default once
   resume                         resume the current incomplete run
   runs                           list managed development runs
-  refine [PROMPT]                prepare a semantic refinement handoff
-  refine --file PATH             read a multiline refinement prompt from a file
-  refine --edit [PATH]           compose a refinement, then prepare the task
+  refine [CHANGE]                append to the one pending refinement
+  refine --file PATH             import text into that pending refinement
   deploy [NAME] [--no-start]     configure deployment; optionally defer startup
   status|doctor|logs [NAME]      inspect the remembered named deployment
   start|restart|stop [NAME]      operate the remembered named deployment
@@ -298,6 +294,8 @@ class Studio:
             self._emit(_HELP.rstrip())
         elif command == "project":
             self.configure_project(args)
+        elif command == "spec":
+            self.manage_spec(args)
         elif command == "prompts":
             self.manage_prompts(args)
         elif command == "task":
@@ -350,23 +348,9 @@ class Studio:
         elif command == "runs":
             self.show_runs()
         elif command == "create":
-            prompt_input = self._request_prompt(args, command="create")
-            self.create_request(
-                prompt_input.content,
-                source_path=prompt_input.source_path,
-            )
-            self._finish_prompt_input(prompt_input)
+            self.create_from_command(args)
         elif command == "refine":
-            if self.workspace.current_workflow is None:
-                raise SystemExit(
-                    "No workflow selected. Use 'use' before preparing a refinement."
-                )
-            prompt_input = self._request_prompt(args, command="refine")
-            self.refine_request(
-                prompt_input.content,
-                source_path=prompt_input.source_path,
-            )
-            self._finish_prompt_input(prompt_input)
+            self.manage_spec(["refine", *args], alias=True)
         elif command == "deploy":
             self.deploy_workflow(args)
         elif command in {"status", "doctor", "logs", "start", "restart", "stop"}:
@@ -503,6 +487,304 @@ class Studio:
         if not prompt:
             raise SystemExit(f"Prompt file is empty: {prompt_file}")
         return prompt
+
+    def _editor_override(
+        self,
+        args: list[str],
+        *,
+        usage: str,
+    ) -> tuple[list[str], str | None]:
+        values = list(args)
+        if "--editor" not in values:
+            return values, None
+        index = values.index("--editor")
+        if index != len(values) - 2:
+            raise SystemExit(usage)
+        return values[:index], values[-1]
+
+    def create_from_command(self, args: list[str]) -> None:
+        """Create a handoff while keeping specification filenames automatic."""
+
+        values, editor_override = self._editor_override(
+            args,
+            usage="Use create [DESCRIPTION], create --file PATH, or "
+            "create [--edit] [--editor COMMAND].",
+        )
+        if not values or values == ["--edit"]:
+            self.workspace.initialize_project()
+            ensured = self.workspace.ensure_specification()
+            target = self.workspace.specification_path
+            if not target.exists():
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.touch()
+            self._launch_editor(target, override=editor_override)
+            prompt = self._read_prompt_file(target)
+            self.create_request(prompt, specification_already_saved=True)
+            if ensured["migrated"]:
+                self._info(
+                    "The former active prompt ledger was migrated into the "
+                    "canonical specification; its original files were kept."
+                )
+            return
+        if editor_override is not None:
+            raise SystemExit(
+                "--editor is only used when create opens the specification editor."
+            )
+        if values[0] == "--file":
+            if len(values) != 2:
+                raise SystemExit("Use create --file PATH.")
+            entered = Path(values[1]).expanduser()
+            source = (
+                entered
+                if entered.is_absolute()
+                else self.workspace.root / entered
+            ).resolve()
+            prompt = self._read_prompt_file(source)
+        elif "--file" in values or "--edit" in values:
+            raise SystemExit(
+                "Use create [DESCRIPTION], create --file PATH, or plain create "
+                "to open the automatic specification file."
+            )
+        else:
+            prompt = " ".join(values).strip()
+        self.create_request(prompt)
+
+    def _show_specification(self) -> None:
+        ensured = self.workspace.ensure_specification()
+        content = ensured["content"]
+        if content is None:
+            self._emit_table(
+                "Workflow specification",
+                [
+                    ("Status", "not written; use create or spec edit", "warning"),
+                    ("File", self.workspace.specification_path, None),
+                ],
+            )
+            return
+        self._emit_table(
+            "Workflow specification",
+            [
+                ("Status", "canonical", "success"),
+                ("File", self.workspace.specification_path, None),
+                (
+                    "Pending",
+                    "yes; use spec pending"
+                    if self.workspace.pending_refinement() is not None
+                    else "none",
+                    "warning"
+                    if self.workspace.pending_refinement() is not None
+                    else None,
+                ),
+            ],
+        )
+        self._emit("Requirements")
+        self._emit("────────────")
+        self._emit(str(content))
+        self._emit()
+        if ensured["migrated"]:
+            self._info(
+                "Migrated the former active prompt ledger into specification.md; "
+                "the original prompt files were kept."
+            )
+
+    def _confirm_spec_action(self, question: str) -> bool:
+        while True:
+            try:
+                answer = self.input(question).strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                self._warning("Specification action cancelled; nothing was changed.")
+                return False
+            if answer in {"y", "yes"}:
+                return True
+            if answer in {"n", "no"}:
+                self._warning("Specification action cancelled; nothing was changed.")
+                return False
+            self._warning("Please enter 'y' or 'n'.")
+
+    def manage_spec(self, args: list[str], *, alias: bool = False) -> None:
+        """Manage one canonical specification and one pending refinement."""
+
+        if not args or args == ["show"]:
+            self._show_specification()
+            return
+        action, *rest = args
+        action = action.lower()
+        if action == "path" and not rest:
+            self.workspace.initialize_project()
+            self._emit(self.workspace.specification_path)
+            return
+        if action == "edit":
+            values, editor_override = self._editor_override(
+                rest,
+                usage="Use spec edit [--editor COMMAND].",
+            )
+            if values:
+                raise SystemExit("Use spec edit [--editor COMMAND].")
+            self.workspace.initialize_project()
+            ensured = self.workspace.ensure_specification()
+            target = self.workspace.specification_path
+            if not target.exists():
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.touch()
+            self._launch_editor(target, override=editor_override)
+            self._read_prompt_file(target)
+            self._emit_table(
+                "Specification updated",
+                [
+                    ("File", target, "success"),
+                    ("Pending", "unchanged", None),
+                    ("Next", "task · assistant · validate", None),
+                ],
+            )
+            if ensured["migrated"]:
+                self._info(
+                    "The former prompt ledger was migrated before editing; "
+                    "its original files were kept."
+                )
+            return
+        if action == "pending" and not rest:
+            pending = self.workspace.pending_refinement()
+            if pending is None:
+                self._emit_table(
+                    "Pending refinement",
+                    [("Status", "none; use spec refine", None)],
+                )
+                return
+            self._emit_table(
+                "Pending refinement",
+                [
+                    ("Status", "waiting to be integrated", "warning"),
+                    ("File", ".zippergen/pending-refinement.md", None),
+                    ("Edit", "spec refine", None),
+                    ("Apply", "assistant codex · assistant claude", None),
+                ],
+            )
+            self._emit("Requested change")
+            self._emit("────────────────")
+            self._emit(pending)
+            self._emit()
+            return
+        if action == "refine":
+            if self.workspace.current_workflow is None:
+                raise SystemExit(
+                    "No workflow selected. Use 'use' before preparing a refinement."
+                )
+            ensured = self.workspace.ensure_specification()
+            if ensured["content"] is None:
+                raise SystemExit(
+                    "No workflow specification exists. Use 'create' or "
+                    "'spec edit' first."
+                )
+            values, editor_override = self._editor_override(
+                rest,
+                usage="Use spec refine [CHANGE|--file PATH] "
+                "[--editor COMMAND].",
+            )
+            existing = self.workspace.pending_refinement()
+            if not values or values == ["--edit"]:
+                target = self.workspace.begin_pending_refinement()
+                self._launch_editor(target, override=editor_override)
+                refinement = self._read_prompt_file(target)
+                append = False
+            elif values[0] == "--file":
+                if len(values) != 2 or editor_override is not None:
+                    raise SystemExit("Use spec refine --file PATH.")
+                entered = Path(values[1]).expanduser()
+                source = (
+                    entered
+                    if entered.is_absolute()
+                    else self.workspace.root / entered
+                ).resolve()
+                refinement = self._read_prompt_file(source)
+                append = existing is not None
+            elif "--file" in values or "--edit" in values or editor_override is not None:
+                raise SystemExit(
+                    "Use spec refine [CHANGE|--file PATH] [--editor COMMAND]."
+                )
+            else:
+                refinement = " ".join(values).strip()
+                append = existing is not None
+            self.refine_request(refinement, append=append)
+            if ensured["migrated"]:
+                self._info(
+                    "The former active prompt ledger was migrated into the "
+                    "canonical specification; its original files were kept."
+                )
+            if alias:
+                self._info("'refine' is the short alias for 'spec refine'.")
+            return
+        if action in {"reconcile", "discard"}:
+            if rest not in ([], ["--yes"]):
+                raise SystemExit(f"Use spec {action} [--yes].")
+            pending = self.workspace.pending_refinement()
+            if pending is None:
+                raise SystemExit("There is no pending refinement.")
+            if action == "reconcile":
+                baseline = self.workspace.load().get(
+                    "pending_specification_fingerprint"
+                )
+                current = self.workspace.specification_fingerprint(
+                    include_pending=False
+                )
+                if baseline == current:
+                    raise SystemExit(
+                        "The canonical specification has not changed since this "
+                        "refinement began. Run the assistant or use 'spec edit' to "
+                        "integrate the change before reconciling it."
+                    )
+            if rest != ["--yes"]:
+                verb = "Accept and clear" if action == "reconcile" else "Discard"
+                if not self._confirm_spec_action(
+                    f"{verb} the pending refinement? [y/n]: "
+                ):
+                    return
+            result = self.workspace.archive_pending_refinement(
+                status="reconciled" if action == "reconcile" else "discarded"
+            )
+            self._emit_table(
+                "Specification refinement",
+                [
+                    (
+                        "Status",
+                        result["status"],
+                        "success" if action == "reconcile" else "warning",
+                    ),
+                    ("Pending", "cleared", "success"),
+                    ("History", result["history_path"], None),
+                    ("Next", "spec show · current", None),
+                ],
+            )
+            return
+        if action == "history" and not rest:
+            records = self.workspace.list_spec_history()
+            if not records:
+                self._emit_table(
+                    "Specification history",
+                    [
+                        (
+                            "Status",
+                            "none; accepted specification history lives in Git",
+                            None,
+                        )
+                    ],
+                )
+                return
+            self._emit("Specification refinement history")
+            self._emit("────────────────────────────────")
+            self._emit("  Status       Created                    Archived")
+            for record in records:
+                self._emit(
+                    f"  {str(record.get('status') or 'unknown'):<12} "
+                    f"{str(record.get('created_at') or '—'):<26} "
+                    f"{record.get('archived_at') or '—'}"
+                )
+            self._emit()
+            self._emit("Canonical specification history is versioned by Git.")
+            return
+        raise SystemExit(
+            "Use spec show, spec edit, spec path, spec refine, spec pending, "
+            "spec reconcile [--yes], spec discard [--yes], or spec history."
+        )
 
     def _project_path(self, value: str | Path, *, label: str = "File") -> Path:
         entered = Path(value).expanduser()
@@ -658,10 +940,10 @@ class Studio:
             next_steps = "validate · show · run"
         elif len(args) == 2 and args[0] == "file":
             target = self._project_path(args[1])
-            next_steps = "inspect the change or use create/refine --file"
+            next_steps = "inspect the change; this generic edit was not registered"
         elif len(args) == 1:
             target = self._project_path(args[0])
-            next_steps = "inspect the change or use create/refine --file"
+            next_steps = "inspect the change; this generic edit was not registered"
         else:
             raise SystemExit(
                 "Use edit, edit workflow, or edit file PATH [--editor COMMAND]."
@@ -681,15 +963,39 @@ class Studio:
     def configure_project(self, args: list[str]) -> None:
         if not args or args == ["show"]:
             manifest = self.workspace.project_manifest()
-            self._emit(f"Project: {manifest['name']}")
-            self._emit(f"Root: {self.workspace.root}")
-            self._emit(
-                f"Manifest: {self.workspace.manifest_path} "
-                f"({'present' if manifest['exists'] else 'not created'})"
-            )
-            self._emit(f"Prompts: {self.workspace.prompts_directory}")
-            self._emit(
-                f"Framework checkout: {manifest.get('framework_directory') or 'none'}"
+            self._emit_table(
+                "Project",
+                [
+                    ("Name", manifest["name"], None),
+                    ("Root", self.workspace.root, None),
+                    (
+                        "Manifest",
+                        f"{self.workspace.manifest_path} "
+                        f"({'present' if manifest['exists'] else 'not created'})",
+                        "success" if manifest["exists"] else "warning",
+                    ),
+                    (
+                        "Specification",
+                        self.workspace.specification_path,
+                        "success"
+                        if self.workspace.specification() is not None
+                        else "warning",
+                    ),
+                    (
+                        "Pending",
+                        ".zippergen/pending-refinement.md"
+                        if self.workspace.pending_refinement() is not None
+                        else "none",
+                        "warning"
+                        if self.workspace.pending_refinement() is not None
+                        else None,
+                    ),
+                    (
+                        "Framework checkout",
+                        manifest.get("framework_directory") or "none",
+                        None,
+                    ),
+                ],
             )
             return
         if args[0] == "reset" and args[1:] in ([], ["--yes"]):
@@ -708,7 +1014,7 @@ class Studio:
             f"Project manifest {result}: {self.workspace.manifest_path}"
         )
         self._emit(f"Project: {manifest['name']}")
-        self._emit(f"Prompt ledger: {self.workspace.prompt_index_path}")
+        self._emit(f"Specification: {self.workspace.specification_path}")
 
     def reset_project(self, *, confirm: bool = True) -> None:
         summary = self.workspace.private_state_summary()
@@ -741,7 +1047,7 @@ class Studio:
                     "success" if project_exists else "warning",
                 ),
                 (
-                    "Prompts and manifest",
+                    "Specification, source, and manifest",
                     project_status,
                     "success" if project_exists else "warning",
                 ),
@@ -860,6 +1166,17 @@ class Studio:
             return
         action, *rest = args
         action = action.lower()
+        if (
+            action
+            not in {"show", "inspect", "path", "context"}
+            and self.workspace.specification() is not None
+        ):
+            raise SystemExit(
+                "This project now uses the canonical specification. Legacy "
+                "prompts remain inspectable, but cannot be changed. Use 'spec "
+                "edit' for the accepted specification or 'spec refine' for a "
+                "pending change."
+            )
         if action in {"show", "inspect"} and len(rest) == 1:
             record = self.workspace.prompt(rest[0])
             position = next(
@@ -1017,20 +1334,18 @@ class Studio:
             if not records:
                 self._emit_table(
                     "Task history",
-                    [("Status", "none; use create or refine", "warning")],
+                    [("Status", "none; use create or spec refine", "warning")],
                 )
                 return
             self._emit("Task history")
             self._emit("────────────")
             self._emit(
-                "  Request                  Kind        Prompt  "
-                "Refreshes                 Created"
+                "  Request                  Kind        Refreshes                 Created"
             )
             for record in records:
                 self._emit(
                     f"  {str(record['request_id']):24} "
                     f"{str(record['kind']):11} "
-                    f"{str(record.get('prompt_id') or '—'):6}  "
                     f"{str(record.get('refreshes_request') or '—'):24}  "
                     f"{record.get('created_at') or '—'}"
                 )
@@ -1041,11 +1356,11 @@ class Studio:
         if record is None:
             if action in {"show", "path"}:
                 raise SystemExit(
-                    "No current task. Use create or refine to prepare one."
+                    "No current task. Use create or spec refine to prepare one."
                 )
             self._emit_table(
                 "Current task",
-                [("Status", "none; use create or refine", "warning")],
+                [("Status", "none; use create or spec refine", "warning")],
             )
             return
         if action == "path":
@@ -1062,10 +1377,9 @@ class Studio:
                 ("Status", "ready", "success"),
                 ("Kind", record["kind"], None),
                 ("Request", record["request_id"], None),
-                ("Prompt", record.get("prompt_id") or "—", None),
                 ("Workflow", record.get("workflow_spec") or "new workflow", None),
                 ("Refreshes", record.get("refreshes_request") or "—", None),
-                ("Context", "matches the current ordered prompt ledger", "success"),
+                ("Context", "matches the current specification", "success"),
                 ("File", ".zippergen/current-task.md", None),
                 ("Next", "assistant codex · assistant claude", None),
             ],
@@ -1080,7 +1394,8 @@ class Studio:
         record = self._ensure_current_task_fresh()
         if record is None:
             raise SystemExit(
-                "No current task. Use create or refine before starting the assistant."
+                "No current task. Use create or spec refine before starting the "
+                "assistant."
             )
         tool = "Claude Code" if assistant == "claude" else "Codex CLI"
         executable = shutil.which(assistant)
@@ -1156,9 +1471,9 @@ class Studio:
 
         state = self.workspace.load()
         manifest = self.workspace.project_manifest()
-        records = self.workspace.list_prompts()
-        active_prompts = sum(bool(record["active"]) for record in records)
         request = self._ensure_current_task_fresh(announce=False)
+        specification = self.workspace.specification()
+        pending = self.workspace.pending_refinement()
         self._emit("Current")
         self._emit("═══════")
         self._emit()
@@ -1177,11 +1492,22 @@ class Studio:
                     "success" if manifest["exists"] else "warning",
                 ),
                 (
-                    "Prompts",
-                    f"{active_prompts} active · "
-                    f"{len(records) - active_prompts} archived · "
-                    f"{len(records)} total",
-                    None,
+                    "Specification",
+                    (
+                        f"ready — {self.workspace.specification_path.name}"
+                        if specification is not None
+                        else "not written; use create or spec edit"
+                    ),
+                    "success" if specification is not None else "warning",
+                ),
+                (
+                    "Refinement",
+                    (
+                        "pending — use spec pending or spec refine"
+                        if pending is not None
+                        else "none"
+                    ),
+                    "warning" if pending is not None else None,
                 ),
                 (
                     "Task",
@@ -1189,7 +1515,7 @@ class Studio:
                         f"{request['request_id']} ({request['kind']}) — "
                         ".zippergen/current-task.md"
                         if request
-                        else "none; use create or refine"
+                        else "none; use create or spec refine"
                     ),
                     "success" if request else "warning",
                 ),
@@ -1818,42 +2144,22 @@ class Studio:
             "DSL/CLI reference completely before editing workflow code."
         )
 
-    def _active_prompt_ids(self) -> tuple[str, ...]:
-        return tuple(
-            str(record["id"])
-            for record in self.workspace.list_prompts()
-            if record["active"]
-        )
-
-    def _task_ledger_instruction(
-        self,
-        *,
-        prompt_id: str | None,
-        label: str,
-        refreshes_request: str | None = None,
-    ) -> str:
+    def _task_refresh_instruction(self, refreshes_request: str | None) -> str:
         if refreshes_request is None:
-            return f"The immediate {label} is {prompt_id or 'not identified'}."
+            return ""
         return (
-            f"This task refreshes {refreshes_request} because the project prompt "
-            "ledger changed. The active ledger below is authoritative; its prompt "
-            "IDs, order, status, and text were captured immediately before this "
-            f"task was written. The original {label} was "
-            f"{prompt_id or 'not identified'}."
+            f"This task refreshes {refreshes_request} because the canonical "
+            "specification or pending refinement changed. The documents below "
+            "were captured immediately before this task was written."
         )
 
     def _creation_task_content(
         self,
         *,
-        prompt_id: str | None,
         refreshes_request: str | None = None,
     ) -> str:
-        context = self.workspace.prompt_context()
-        ledger_instruction = self._task_ledger_instruction(
-            prompt_id=prompt_id,
-            label="request",
-            refreshes_request=refreshes_request,
-        )
+        context = self.workspace.specification_context()
+        refresh_instruction = self._task_refresh_instruction(refreshes_request)
         return f"""# Current ZipperGen task
 
 This generated task is the complete instruction for the coding assistant.
@@ -1870,10 +2176,8 @@ Create a new ZipperGen Python workflow in this project from the requirements
 below. Choose a clear module and workflow name under workflows/ unless the
 project has a more appropriate established location.
 
-The active project prompt ledger is the durable design context. Read it in
-order. Later prompts take precedence only where they explicitly change an
-earlier requirement; preserve every unaffected earlier requirement.
-{ledger_instruction}
+The canonical workflow specification is the durable source of truth.
+{refresh_instruction}
 
 {context}
 
@@ -1890,16 +2194,14 @@ verification results.
         self,
         *,
         workflow_spec: str,
-        prompt_id: str | None,
         baseline_file: str | Path,
         refreshes_request: str | None = None,
     ) -> str:
-        context = self.workspace.prompt_context()
-        ledger_instruction = self._task_ledger_instruction(
-            prompt_id=prompt_id,
-            label="change",
-            refreshes_request=refreshes_request,
-        )
+        context = self.workspace.specification_context()
+        refresh_instruction = self._task_refresh_instruction(refreshes_request)
+        specification_file = self.workspace.specification_path.relative_to(
+            self.workspace.root
+        ).as_posix()
         return f"""# Current ZipperGen task
 
 This generated task is the complete instruction for the coding assistant.
@@ -1912,12 +2214,16 @@ visible in the repository. Do not deploy or start a service.
 
 ## Task
 
-Refine {workflow_spec} using the active project prompt ledger below. Read it in
-order. Later prompts take precedence only where they explicitly change or
-contradict an earlier requirement; preserve every unaffected earlier
-requirement. {ledger_instruction}
+Refine {workflow_spec} using the canonical specification and the single pending
+refinement below. The pending refinement changes only what it says explicitly;
+preserve every unaffected requirement and behavior. {refresh_instruction}
 
 {context}
+
+Integrate the requested change coherently into {specification_file} itself so that
+the canonical specification remains a clean description of the current
+application, not a chronological change log. Do not delete or clear the pending
+refinement; the user will reconcile it in Studio after reviewing your changes.
 
 The semantic baseline is {baseline_file}.
 Preserve all behavior not explicitly changed.
@@ -1937,17 +2243,18 @@ and verification results.
         record = self.workspace.current_request()
         if record is None:
             return None
-        fingerprint = self.workspace.prompt_ledger_fingerprint()
-        if record.get("prompt_ledger_fingerprint") == fingerprint:
+        ensured = self.workspace.ensure_specification()
+        if ensured["content"] is None:
+            return record
+        fingerprint = self.workspace.specification_fingerprint()
+        if record.get("specification_fingerprint") == fingerprint:
             return record
         kind = str(record.get("kind") or "")
-        prompt_id = str(record.get("prompt_id") or "") or None
         workflow_spec = str(record.get("workflow_spec") or "") or None
         baseline_file = str(record.get("baseline_file") or "") or None
         refreshes_request = str(record["request_id"])
         if kind == "create":
             content = self._creation_task_content(
-                prompt_id=prompt_id,
                 refreshes_request=refreshes_request,
             )
         elif kind == "refine":
@@ -1958,37 +2265,31 @@ and verification results.
                 )
             content = self._refinement_task_content(
                 workflow_spec=workflow_spec,
-                prompt_id=prompt_id,
                 baseline_file=baseline_file,
                 refreshes_request=refreshes_request,
             )
         else:
             raise WorkspaceError(
                 f"Cannot refresh unsupported task kind {kind!r}. "
-                "Use create or refine."
+                "Use create or spec refine."
             )
-        prompt = str(record.get("prompt") or "")
-        if prompt_id is not None:
-            try:
-                prompt = str(self.workspace.prompt(prompt_id)["content"])
-            except WorkspaceError:
-                pass
-        active_prompt_ids = self._active_prompt_ids()
+        prompt = (
+            self.workspace.pending_refinement()
+            if kind == "refine"
+            else self.workspace.specification()
+        ) or str(record.get("prompt") or "")
         refreshed = self.workspace.save_request(
             kind=kind,
             prompt=prompt,
             content=content,
             workflow_spec=workflow_spec,
-            prompt_id=prompt_id,
-            active_prompt_ids=active_prompt_ids,
-            prompt_ledger_fingerprint=fingerprint,
+            specification_fingerprint=fingerprint,
             baseline_file=baseline_file,
             refreshes_request=refreshes_request,
         )
         if announce:
-            ids = ", ".join(active_prompt_ids) or "none"
             self._success(
-                f"Task refreshed from the current prompt ledger: {ids}."
+                "Task refreshed from the current specification context."
             )
         return refreshed
 
@@ -1997,39 +2298,36 @@ and verification results.
         prompt: str,
         *,
         source_path: str | Path | None = None,
+        specification_already_saved: bool = False,
     ) -> None:
         if not prompt:
             prompt = self.input("Describe the workflow: ").strip()
         if not prompt:
             raise SystemExit("The workflow description must not be empty.")
-        design_prompt = self.workspace.add_prompt(
-            kind="initial",
-            content=prompt,
-            source_path=source_path,
-        )
-        active_prompt_ids = self._active_prompt_ids()
-        prompt_fingerprint = self.workspace.prompt_ledger_fingerprint()
-        content = self._creation_task_content(
-            prompt_id=str(design_prompt["id"]),
-        )
+        del source_path  # imported content is normalized into Studio's fixed path
+        if not specification_already_saved:
+            existing = self.workspace.specification()
+            if existing is not None and existing != prompt.strip():
+                raise SystemExit(
+                    "A canonical specification already exists. Use 'create' or "
+                    "'spec edit' to reopen it instead of replacing it from the "
+                    "command line."
+                )
+            self.workspace.save_specification(prompt)
+        prompt_fingerprint = self.workspace.specification_fingerprint()
+        content = self._creation_task_content()
         self.workspace.save_request(
             kind="create",
             prompt=prompt,
             content=content,
-            prompt_id=str(design_prompt["id"]),
-            active_prompt_ids=active_prompt_ids,
-            prompt_ledger_fingerprint=prompt_fingerprint,
-        )
-        prompt_action = (
-            "registered" if design_prompt["created"] else "already active"
+            specification_fingerprint=prompt_fingerprint,
         )
         self._emit_table(
             "Creation",
             [
                 (
-                    "Prompt",
-                    f"{design_prompt['id']} {prompt_action} — "
-                    f"{design_prompt['file']}",
+                    "Specification",
+                    self.workspace.specification_path.name,
                     "success",
                 ),
                 ("Task", ".zippergen/current-task.md", "success"),
@@ -2043,53 +2341,57 @@ and verification results.
         prompt: str,
         *,
         source_path: str | Path | None = None,
+        append: bool = False,
     ) -> None:
         current, workflow, module = self._current_context()
         if not prompt:
             prompt = self.input("Describe the change: ").strip()
         if not prompt:
             raise SystemExit("The refinement description must not be empty.")
+        del source_path  # pending refinement always uses Studio's fixed path
+        ensured = self.workspace.ensure_specification()
+        if ensured["content"] is None:
+            raise SystemExit(
+                "No workflow specification exists. Use 'create' or 'spec edit' first."
+            )
+        pending = self.workspace.save_pending_refinement(prompt, append=append)
         self.workspace.requests_directory.mkdir(parents=True, exist_ok=True)
-        baseline = self.workspace.requests_directory / (
-            f"{time.strftime('%Y%m%d-%H%M%S')}-{time.time_ns() % 1_000_000_000:09d}"
-            "-semantic-before.json"
-        )
-        baseline.write_text(
-            json.dumps(semantic_snapshot(workflow, module), indent=2, default=str) + "\n"
-        )
-        design_prompt = self.workspace.add_prompt(
-            kind="refinement",
-            content=prompt,
-            source_path=source_path,
-            workflow_spec=current,
-        )
-        active_prompt_ids = self._active_prompt_ids()
-        prompt_fingerprint = self.workspace.prompt_ledger_fingerprint()
+        state = self.workspace.load()
+        stored_baseline = state.get("pending_semantic_baseline")
+        baseline = Path(str(stored_baseline)) if stored_baseline else None
+        if baseline is None or not baseline.exists():
+            baseline = self.workspace.requests_directory / (
+                f"{time.strftime('%Y%m%d-%H%M%S')}-"
+                f"{time.time_ns() % 1_000_000_000:09d}-semantic-before.json"
+            )
+            baseline.write_text(
+                json.dumps(semantic_snapshot(workflow, module), indent=2, default=str)
+                + "\n"
+            )
+            self.workspace.update(pending_semantic_baseline=str(baseline))
+        prompt_fingerprint = self.workspace.specification_fingerprint()
         content = self._refinement_task_content(
             workflow_spec=current,
-            prompt_id=str(design_prompt["id"]),
             baseline_file=baseline,
         )
         self.workspace.save_request(
             kind="refine",
-            prompt=prompt,
+            prompt=str(pending["content"]),
             content=content,
             workflow_spec=current,
-            prompt_id=str(design_prompt["id"]),
-            active_prompt_ids=active_prompt_ids,
-            prompt_ledger_fingerprint=prompt_fingerprint,
+            specification_fingerprint=prompt_fingerprint,
             baseline_file=baseline,
-        )
-        prompt_action = (
-            "registered" if design_prompt["created"] else "already active"
         )
         self._emit_table(
             "Refinement",
             [
                 (
-                    "Prompt",
-                    f"{design_prompt['id']} {prompt_action} — "
-                    f"{design_prompt['file']}",
+                    "Pending",
+                    (
+                        "created — .zippergen/pending-refinement.md"
+                        if pending["created"]
+                        else "updated — .zippergen/pending-refinement.md"
+                    ),
                     "success",
                 ),
                 ("Workflow", current, None),

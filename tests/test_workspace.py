@@ -428,6 +428,73 @@ def test_workspace_prompt_fingerprint_tracks_active_content_and_order(tmp_path):
     assert workspace.prompt_ledger_fingerprint() == edited
 
 
+def test_workspace_manages_one_canonical_spec_and_one_pending_refinement(tmp_path):
+    root = tmp_path / "project"
+    root.mkdir()
+    workspace = Workspace(root, home=tmp_path / "state")
+
+    manifest = workspace.initialize_project(name="Review project")
+
+    assert manifest["specification_file"] == "specification.md"
+    assert workspace.specification_path == root / "specification.md"
+    assert workspace.specification() is None
+    assert not workspace.prompt_index_path.exists()
+    assert "prompts_directory" not in workspace.manifest_path.read_text()
+
+    workspace.save_specification("# Reviewed answer\n\nRequire human approval.")
+    accepted_fingerprint = workspace.specification_fingerprint(
+        include_pending=False
+    )
+    first = workspace.save_pending_refinement("Add bounded retries.")
+    second = workspace.save_pending_refinement(
+        "Return an explicit failure after exhaustion.",
+        append=True,
+    )
+
+    assert first["path"] == root / ".zippergen" / "pending-refinement.md"
+    assert first["created"] is True
+    assert second["created"] is False
+    assert workspace.pending_refinement() == (
+        "Add bounded retries.\n\nReturn an explicit failure after exhaustion."
+    )
+    assert workspace.load()["pending_specification_fingerprint"] == (
+        accepted_fingerprint
+    )
+    assert workspace.specification_fingerprint() != accepted_fingerprint
+
+    workspace.save_pending_refinement("bounded", append=True)
+    assert workspace.pending_refinement().endswith("\n\nbounded")
+
+    archived = workspace.archive_pending_refinement(status="reconciled")
+
+    assert archived["status"] == "reconciled"
+    assert workspace.pending_refinement() is None
+    assert Path(archived["history_path"]).read_text().startswith(
+        "Add bounded retries."
+    )
+    assert workspace.list_spec_history()[0]["status"] == "reconciled"
+
+
+def test_workspace_migrates_active_legacy_prompts_without_deleting_history(tmp_path):
+    root = tmp_path / "project"
+    root.mkdir()
+    workspace = Workspace(root, home=tmp_path / "state")
+    first = workspace.add_prompt(kind="initial", content="Create a reviewer.")
+    second = workspace.add_prompt(
+        kind="refinement",
+        content="Add bounded retries.",
+    )
+
+    migrated = workspace.ensure_specification()
+
+    assert migrated["migrated"] is True
+    assert "Create a reviewer." in workspace.specification()
+    assert "Add bounded retries." in workspace.specification()
+    assert (root / str(first["file"])).exists()
+    assert (root / str(second["file"])).exists()
+    assert len(workspace.list_prompts()) == 2
+
+
 def test_workspace_provider_configuration_keeps_secrets_private(tmp_path):
     root = tmp_path / "project"
     root.mkdir()
