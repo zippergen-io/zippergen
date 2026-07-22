@@ -775,6 +775,7 @@ def test_studio_commands_are_discoverable(tmp_path):
     assert studio.execute("help") is True
     assert "show | inspect" in output[-1]
     assert "project init [NAME]" in output[-1]
+    assert "project reset [--yes]" in output[-1]
     assert "prompts move ID before|after ID" in output[-1]
     assert "task show|path|history" in output[-1]
     assert "assistant" in output[-1]
@@ -852,6 +853,49 @@ def test_studio_interactive_errors_have_a_failure_mark(tmp_path):
     )
 
 
+def test_studio_interactive_commands_have_a_clear_output_boundary(tmp_path):
+    studio, _workspace, output = _studio(
+        tmp_path,
+        responses=["current", "exit"],
+    )
+
+    assert studio.run() == 0
+
+    boundaries = [line for line in output if line.startswith("── Output:")]
+    assert len(boundaries) == 1
+    assert boundaries[0].startswith("── Output: current ")
+    assert output[output.index(boundaries[0]) - 1] == ""
+    assert all("exit" not in line for line in boundaries)
+
+
+def test_studio_boundaries_hide_arguments_and_skip_empty_or_exit(tmp_path):
+    studio, _workspace, output = _studio(tmp_path)
+
+    studio.execute(
+        "create Never expose SECRET_SENTINEL in a boundary",
+        show_boundary=True,
+    )
+
+    boundary = next(line for line in output if line.startswith("── Output:"))
+    assert boundary.startswith("── Output: create ")
+    assert "SECRET_SENTINEL" not in boundary
+
+    output.clear()
+    assert studio.execute("", show_boundary=True) is True
+    assert studio.execute("exit", show_boundary=True) is False
+    assert output == []
+
+
+def test_studio_parse_errors_receive_an_input_boundary(tmp_path):
+    studio, _workspace, output = _studio(tmp_path)
+
+    studio.execute('create "unterminated', show_boundary=True)
+
+    assert output[0] == ""
+    assert output[1].startswith("── Output: input ")
+    assert output[2].startswith("✗ Could not parse command:")
+
+
 def test_studio_project_and_prompt_commands_manage_visible_design_context(tmp_path):
     studio, workspace, output = _studio(tmp_path)
 
@@ -870,6 +914,99 @@ def test_studio_project_and_prompt_commands_manage_visible_design_context(tmp_pa
     assert records[1]["active"] is False
     assert "Second requirement" in output[-1]
     assert "First requirement" not in output[-1]
+
+
+def test_studio_project_reset_can_be_cancelled_without_changes(tmp_path):
+    studio, workspace, output = _studio(tmp_path, responses=["n"])
+    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    studio.create_request("Create a review workflow.")
+    output.clear()
+
+    studio.execute("project reset")
+
+    assert workspace.current_workflow == "workflow.py:sample"
+    assert workspace.current_request() is not None
+    assert workspace.current_task_path.exists()
+    assert not workspace.resets_directory.exists()
+    assert output[0] == "Project reset preview"
+    assert output[-1] == "⚠ Project reset cancelled; nothing was changed."
+
+
+def test_studio_project_reset_interrupt_is_a_clean_cancellation(tmp_path):
+    studio, workspace, output = _studio(tmp_path)
+    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+
+    def interrupt(_prompt):
+        raise KeyboardInterrupt
+
+    studio.input = interrupt
+
+    studio.execute("project reset")
+
+    assert workspace.current_workflow == "workflow.py:sample"
+    assert output[-1] == "⚠ Project reset cancelled; nothing was changed."
+
+
+def test_studio_project_reset_backs_up_state_and_continues_fresh(tmp_path):
+    studio, workspace, output = _studio(tmp_path, responses=["perhaps", "yes"])
+    studio.execute("project init Tutorial")
+    studio.create_request("Create a review workflow.")
+    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    workspace.save_secrets({"OPENAI_API_KEY": "private"})
+    output.clear()
+
+    studio.execute("project reset")
+
+    assert "⚠ Please enter 'y' or 'n'." in output
+    assert workspace.current_workflow is None
+    assert workspace.current_request() is None
+    assert workspace.load_secrets() == {}
+    assert not workspace.current_task_path.exists()
+    assert workspace.manifest_path.exists()
+    assert (workspace.root / "workflow.py").exists()
+    assert workspace.prompt("P001")["content"] == "Create a review workflow."
+    backups = list(workspace.resets_directory.iterdir())
+    assert len(backups) == 1
+    assert (backups[0] / "workspace" / "workspace.json").exists()
+    assert (backups[0] / "project-local" / "current-task.md").exists()
+    assert any(line == "Project reset" for line in output)
+    assert any("✓ complete" in line for line in output)
+    assert any("✓ " + str(backups[0]) in line for line in output)
+    assert studio._prompt() == "zippergen [no workflow]> "
+
+
+def test_studio_project_reset_yes_is_noninteractive_and_idempotent(tmp_path):
+    studio, workspace, output = _studio(tmp_path)
+    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+
+    studio.execute("project reset --yes")
+
+    assert workspace.current_workflow is None
+    assert any("✓ complete" in line for line in output)
+
+    output.clear()
+    studio.execute("project reset --yes")
+
+    assert output == [
+        "⚠ This project's private Studio state is already empty. "
+        "Visible project files were not changed."
+    ]
+
+
+def test_studio_project_reset_handles_a_missing_project_directory(tmp_path):
+    root = tmp_path / "deleted-project"
+    workspace = Workspace(root, home=tmp_path / "home")
+    workspace.update(current_workflow="workflows/deleted.py:deleted")
+    output: list[str] = []
+    studio = Studio(workspace, output_func=output.append)
+
+    studio.execute("project reset --yes")
+
+    assert workspace.current_workflow is None
+    assert any(str(root) in line and "missing" in line for line in output)
+    assert any(
+        "exit and recreate the project directory" in line for line in output
+    )
 
 
 def test_studio_prompt_table_inspection_path_archive_and_restore(tmp_path):

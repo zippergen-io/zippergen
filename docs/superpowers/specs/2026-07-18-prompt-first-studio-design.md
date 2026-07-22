@@ -23,12 +23,15 @@ Project: /path/to/project
 No workflow selected.
 
 zippergen [no workflow]> create
+
+── Output: create ──────────────────────────────────────
 Describe the workflow:
 > Draft an answer. A reviewer may request at most three revisions.
 
 # Multiline requirements use a project-relative UTF-8 file instead:
 zippergen [no workflow]> create --file prompts/review-reply.md
 
+── Output: create ──────────────────────────────────────
 Creation
 ────────
   Prompt   ✓ P001 registered — prompts/review-reply.md
@@ -38,11 +41,17 @@ Creation
 
 zippergen [no workflow]> assistant codex
 
+── Output: assistant ───────────────────────────────────
+
 # After the assistant creates and verifies the visible Python source:
 zippergen [no workflow]> use workflows/review_reply.py:review_reply
+
+── Output: use ─────────────────────────────────────────
 ✓ Current workflow: workflows/review_reply.py:review_reply
 
 zippergen [review_reply]> show
+
+── Output: show ────────────────────────────────────────
   1. Overview
   2. Protocol
   3. Communications only
@@ -52,6 +61,8 @@ zippergen [review_reply]> show
   7. Selected participants
 
 zippergen [review_reply]> run
+
+── Output: run ─────────────────────────────────────────
 Request [Explain the sky]: Explain durable execution.
 Maximum retries [2]: 3
 
@@ -64,9 +75,13 @@ Result: ...
 Run: review-reply-20260718-120000
 
 zippergen [review_reply]> deploy review-reply
+
+── Output: deploy ──────────────────────────────────────
 Deployment: review-reply
 
 zippergen [review_reply]> status
+
+── Output: status ──────────────────────────────────────
 ```
 
 Studio saves a structured assistant handoff and can open either the local Codex
@@ -90,6 +105,14 @@ Meaning never depends on color alone. ANSI color is automatic only when Studio
 is writing to an interactive terminal, is suppressed when `NO_COLOR` is set,
 and is absent from redirected output. Scriptable JSON output is unchanged.
 Optional providers that are not selected are warnings, not failures.
+
+Every nonempty Studio command that can produce output begins a command block
+with a blank line and a fixed rule such as `── Output: current ──`. This makes
+the boundary between terminal-echoed input and Studio output unambiguous for
+long tables and code views. The rule includes only a recognized command family,
+never arguments or values. Empty input and `exit` produce no rule. Interactive
+sessions and repeated `studio --command` invocations use the same grouping;
+the standalone scriptable CLI and its JSON formats are unchanged.
 
 ## Non-negotiable boundaries
 
@@ -144,6 +167,11 @@ $ZIPPERGEN_HOME/workspaces/<project-name>-<path-hash>/
 `-- runs/
     |-- <run-id>.json
     `-- <run-id>.sqlite
+
+$ZIPPERGEN_HOME/resets/<project-name>-<path-hash>-<timestamp>/
+|-- reset.json
+|-- workspace/             # recoverable private state backup
+`-- project-local/         # generated task and unfinished prompt drafts
 ```
 
 `ZIPPERGEN_HOME` remains an advanced override. With no override, the existing
@@ -167,6 +195,15 @@ The non-secret context is:
 The visible `zippergen.toml` contains the project name, prompt directory, and
 optional framework-checkout directory. It contains no current run, secret, or
 machine-specific deployment state.
+
+`project reset` is project-scoped and recoverable. It previews the affected
+private context, requires `y`/`yes` confirmation, and moves it to the reset
+archive before returning Studio to its default state. Source, tests, the
+manifest, prompt files, Git data, and the framework checkout are never reset.
+Named deployment artifacts and running services are also outside its scope;
+the workspace merely forgets its last deployment name. `--yes` exists for an
+explicit noninteractive invocation. Corrupt private records are backed up
+without needing to be parsed first.
 
 ## Ordered prompt ledger
 
@@ -223,6 +260,7 @@ The same concepts appear in interactive and noninteractive forms.
 ```text
 project init [NAME]
 project show
+project reset [--yes]
 current
 use
 use path/to/workflow.py:workflow

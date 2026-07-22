@@ -56,6 +56,36 @@ _STATUS_COLORS = {
     "error": "31",
     "info": "36",
 }
+_STUDIO_COMMANDS = {
+    "?",
+    "assistant",
+    "create",
+    "current",
+    "deploy",
+    "doctor",
+    "edit",
+    "editor",
+    "help",
+    "inspect",
+    "logs",
+    "models",
+    "project",
+    "prompts",
+    "providers",
+    "refine",
+    "restart",
+    "resume",
+    "run",
+    "runs",
+    "show",
+    "start",
+    "status",
+    "stop",
+    "task",
+    "use",
+    "validate",
+    "workflow",
+}
 
 
 def _canonical_provider(value: str) -> str:
@@ -80,6 +110,7 @@ def _validate_model_spec(value: str) -> str:
 _HELP = """Commands:
   project init [NAME]            create zippergen.toml and the prompt ledger
   project show                   show visible project configuration
+  project reset [--yes]          back up and reset private project state
   create [PROMPT]                prepare a new-workflow coding-assistant brief
   create --file PATH             read a multiline workflow prompt from a file
   create --edit [PATH]           compose a prompt, then prepare the task
@@ -204,6 +235,13 @@ class Studio:
     def _info(self, message: str, *, indent: int = 0) -> None:
         self._status("info", message, indent=indent)
 
+    def _emit_output_boundary(self, command: str) -> None:
+        """Separate one command's interaction from its echoed input line."""
+
+        label = f" Output: {command} "
+        self._emit()
+        self._emit(f"──{label}{'─' * max(2, 58 - len(label))}")
+
     def _prompt(self) -> str:
         current = self.workspace.current_workflow
         label = current.rsplit(":", 1)[-1] if current else "no workflow"
@@ -228,7 +266,7 @@ class Studio:
                 self._warning("Use 'exit' to leave Studio.")
                 continue
             try:
-                if not self.execute(line):
+                if not self.execute(line, show_boundary=True):
                     return 0
             except KeyboardInterrupt:
                 self._warning(
@@ -238,10 +276,12 @@ class Studio:
             except (SystemExit, WorkspaceError, ValueError) as exc:
                 self._error(str(exc))
 
-    def execute(self, line: str) -> bool:
+    def execute(self, line: str, *, show_boundary: bool = False) -> bool:
         try:
             parts = shlex.split(line)
         except ValueError as exc:
+            if show_boundary:
+                self._emit_output_boundary("input")
             self._error(f"Could not parse command: {exc}")
             return True
         if not parts:
@@ -250,6 +290,10 @@ class Studio:
         command = command.lower()
         if command in {"exit", "quit"}:
             return False
+        if show_boundary:
+            self._emit_output_boundary(
+                command if command in _STUDIO_COMMANDS else "command"
+            )
         if command in {"help", "?"}:
             self._emit(_HELP.rstrip())
         elif command == "project":
@@ -648,8 +692,13 @@ class Studio:
                 f"Framework checkout: {manifest.get('framework_directory') or 'none'}"
             )
             return
+        if args[0] == "reset" and args[1:] in ([], ["--yes"]):
+            self.reset_project(confirm=args[1:] != ["--yes"])
+            return
         if args[0] != "init" or len(args) > 2:
-            raise SystemExit("Use project show or project init [NAME].")
+            raise SystemExit(
+                "Use project show, project init [NAME], or project reset [--yes]."
+            )
         existed = self.workspace.manifest_path.exists()
         manifest = self.workspace.initialize_project(
             name=args[1] if len(args) == 2 else None
@@ -660,6 +709,111 @@ class Studio:
         )
         self._emit(f"Project: {manifest['name']}")
         self._emit(f"Prompt ledger: {self.workspace.prompt_index_path}")
+
+    def reset_project(self, *, confirm: bool = True) -> None:
+        summary = self.workspace.private_state_summary()
+        if not summary["workspace_exists"] and not summary["project_local_exists"]:
+            self._warning(
+                "This project's private Studio state is already empty. "
+                "Visible project files were not changed."
+            )
+            return
+
+        project_exists = self.workspace.root.is_dir()
+        project_status = "kept" if project_exists else "not present"
+        git_exists = (self.workspace.root / ".git").exists()
+
+        self._emit_table(
+            "Project reset preview",
+            [
+                (
+                    "Project",
+                    (
+                        self.workspace.root
+                        if project_exists
+                        else f"{self.workspace.root} (missing)"
+                    ),
+                    "success" if project_exists else "warning",
+                ),
+                (
+                    "Source and tests",
+                    project_status,
+                    "success" if project_exists else "warning",
+                ),
+                (
+                    "Prompts and manifest",
+                    project_status,
+                    "success" if project_exists else "warning",
+                ),
+                (
+                    "Git history",
+                    "kept" if git_exists else "not present",
+                    "success" if git_exists else None,
+                ),
+                (
+                    "Remembered workflow",
+                    summary["current_workflow"] or "none",
+                    "warning" if summary["current_workflow"] else None,
+                ),
+                ("Managed runs", summary["runs"], None),
+                ("Assistant tasks", summary["requests"], None),
+                ("Development secrets", summary["development_secrets"], None),
+                ("Model profiles", summary["model_profiles"], None),
+                ("Provider profiles", summary["provider_profiles"], None),
+                (
+                    "State health",
+                    (
+                        "unreadable data will still be backed up"
+                        if summary["warnings"]
+                        else "readable"
+                    ),
+                    "warning" if summary["warnings"] else "success",
+                ),
+                (
+                    "Deployments",
+                    "kept and not stopped; only the remembered name is reset",
+                    "warning" if summary["last_deployment"] else None,
+                ),
+                ("Action", "move private state to a recoverable backup", "warning"),
+            ],
+        )
+        if confirm:
+            while True:
+                try:
+                    answer = self.input(
+                        "Reset this project's private Studio state? [y/n]: "
+                    ).strip().lower()
+                except (EOFError, KeyboardInterrupt):
+                    self._warning("Project reset cancelled; nothing was changed.")
+                    return
+                if answer in {"y", "yes"}:
+                    break
+                if answer in {"n", "no"}:
+                    self._warning("Project reset cancelled; nothing was changed.")
+                    return
+                self._warning("Please enter 'y' or 'n'.")
+
+        result = self.workspace.reset_private_state()
+        backup = result["backup_directory"]
+        self._emit_table(
+            "Project reset",
+            [
+                ("Status", "complete", "success"),
+                ("Backup", backup or "none needed", "success"),
+                ("Workflow", "none selected", None),
+                ("Run", "none selected", None),
+                ("Assistant task", "none", None),
+                (
+                    "Next",
+                    (
+                        "use · create · current"
+                        if project_exists
+                        else "exit and recreate the project directory"
+                    ),
+                    None,
+                ),
+            ],
+        )
 
     def _emit_prompt_list(self) -> None:
         records = self.workspace.list_prompts()

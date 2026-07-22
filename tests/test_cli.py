@@ -321,6 +321,8 @@ def test_studio_commands_remember_workflow_and_render_code(
     captured = capsys.readouterr()
     assert rc == 0
     assert "ZipperGen Studio" in captured.out
+    assert "── Output: current " in captured.out
+    assert "── Output: show " in captured.out
     assert f"Workflow: {workflow_path.name}:hello" in captured.out
     assert "def hello(topic: str @ User)" in captured.out
     assert "return reply @ User" in captured.out

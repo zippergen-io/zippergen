@@ -1421,7 +1421,7 @@ def _studio_command(args) -> int:
     if args.command:
         studio.welcome()
         for command in args.command:
-            if not studio.execute(command):
+            if not studio.execute(command, show_boundary=True):
                 break
         return 0
     return studio.run()

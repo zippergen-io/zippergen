@@ -86,11 +86,15 @@ Project: /path/to/zippergen
 No workflow selected.
 
 zippergen [no workflow]> use
+
+── Output: use ─────────────────────────────────────────
 Workflows
   1. examples/tutorial_review.py:tutorial_review
   ...
 
 zippergen [tutorial_review]> show
+
+── Output: show ────────────────────────────────────────
   1. Overview
   2. Protocol
   3. Communications only
@@ -108,6 +112,12 @@ optional setup, and red `✗` means the command or check failed. The symbols
 remain in plain output, while ANSI color is enabled only on an interactive
 terminal. Redirected output, `NO_COLOR`, and the scriptable CLI's JSON modes
 remain color-free.
+
+Interactive commands also begin with a consistent output boundary such as
+`── Output: current ──`. The blank line and labelled rule separate the echoed
+command from its prompts, tables, warnings, or errors. Only the command family
+is shown; prompt text, paths, model specifications, and secret values are never
+repeated in the boundary. Empty input and `exit` produce no boundary.
 
 `current` is the concise project dashboard: project and manifest, active and
 archived prompt counts, workflow name, participants, human actions, external
@@ -183,6 +193,8 @@ load it without changing it first:
 
 ```text
 zippergen [no workflow]> create --file prompts/reviewed_answer.md
+
+── Output: create ──────────────────────────────────────
 Creation
 ────────
   Prompt   ✓ P001 registered — prompts/reviewed_answer.md
@@ -328,6 +340,17 @@ uv run zippergen dev --resume
 Workspace state and managed development stores live below
 `~/.zippergen/workspaces/` by default. `ZIPPERGEN_HOME` is an optional advanced
 override, not a required setup step.
+
+To give one project a fresh private Studio context, enter `project reset` in
+Studio. The command first previews what will be reset and asks for confirmation.
+It moves the current project's workspace state, managed development runs,
+assistant-task history, model/provider preferences, development secrets, and
+generated task/drafts to an owner-only backup below
+`$ZIPPERGEN_HOME/resets/`. It then continues with no workflow, run, or task
+selected. Visible workflow source, tests, prompts, `zippergen.toml`, Git history,
+and the framework checkout are preserved. Deployment profiles and running
+services are also untouched; only the remembered deployment name is cleared.
+`project reset --yes` is the explicit noninteractive form.
 
 ## Hello, ZipperGen
 

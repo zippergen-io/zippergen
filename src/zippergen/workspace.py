@@ -249,6 +249,7 @@ class Workspace:
         self.secrets_path = self.directory / "development.secrets.json"
         self.runs_directory = self.directory / "runs"
         self.requests_directory = self.directory / "requests"
+        self.resets_directory = self.home / "resets"
 
     @property
     def current_task_path(self) -> Path:
@@ -760,6 +761,125 @@ class Workspace:
             "model_profiles": {},
             "providers": {},
             "updated_at": _timestamp(),
+        }
+
+    def private_state_summary(self) -> dict[str, object]:
+        """Summarize project-private state without exposing secret values."""
+
+        warnings: list[str] = []
+        try:
+            state = self.load()
+        except (WorkspaceError, OSError, UnicodeDecodeError) as exc:
+            state = self.default_state()
+            warnings.append(str(exc))
+        try:
+            secret_count: int | str = len(self.load_secrets())
+        except (WorkspaceError, OSError, UnicodeDecodeError) as exc:
+            secret_count = "present but unreadable"
+            warnings.append(str(exc))
+        local_directory = self.root / PROJECT_TASK_DIRECTORY
+        local_items = (
+            self.current_task_path,
+            local_directory / "prompt-drafts",
+        )
+        return {
+            "current_workflow": state.get("current_workflow"),
+            "current_run": state.get("current_run"),
+            "last_deployment": state.get("last_deployment"),
+            "runs": len(list(self.runs_directory.glob("*.json"))),
+            "requests": len(list(self.requests_directory.glob("*.json"))),
+            "development_secrets": secret_count,
+            "model_profiles": len(state.get("model_profiles") or {}),
+            "provider_profiles": len(state.get("providers") or {}),
+            "workspace_exists": self.directory.exists(),
+            "project_local_exists": any(
+                path.exists() or path.is_symlink() for path in local_items
+            ),
+            "warnings": tuple(warnings),
+        }
+
+    def reset_private_state(self) -> dict[str, object]:
+        """Move this project's private state to a recoverable reset archive."""
+
+        local_directory = self.root / PROJECT_TASK_DIRECTORY
+        sources = [
+            (self.directory, "workspace"),
+            (self.current_task_path, f"project-local/{CURRENT_TASK_NAME}"),
+            (local_directory / "prompt-drafts", "project-local/prompt-drafts"),
+        ]
+        present = [
+            (source, name)
+            for source, name in sources
+            if source.exists() or source.is_symlink()
+        ]
+        if not present:
+            return {
+                "backup_directory": None,
+                "workspace_moved": False,
+                "project_local_moved": False,
+            }
+
+        self.resets_directory.mkdir(parents=True, exist_ok=True)
+        self.resets_directory.chmod(0o700)
+        base = f"{self.directory.name}-{_identifier_timestamp()}"
+        backup = self.resets_directory / base
+        suffix = 2
+        while backup.exists():
+            backup = self.resets_directory / f"{base}-{suffix}"
+            suffix += 1
+        backup.mkdir(mode=0o700)
+
+        moved: list[tuple[Path, Path]] = []
+        try:
+            for source, name in present:
+                destination = backup / name
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                source.rename(destination)
+                moved.append((source, destination))
+            try:
+                local_directory.rmdir()
+            except OSError:
+                pass
+            metadata = backup / "reset.json"
+            _atomic_write_json(
+                metadata,
+                {
+                    "schema_version": 1,
+                    "project_root": str(self.root),
+                    "reset_at": _timestamp(),
+                    "workspace_source": str(self.directory),
+                    "project_local_source": str(local_directory),
+                    "workspace_moved": any(
+                        source == self.directory for source, _destination in moved
+                    ),
+                    "project_local_moved": any(
+                        source != self.directory for source, _destination in moved
+                    ),
+                },
+            )
+            metadata.chmod(0o600)
+        except OSError as exc:
+            for source, destination in reversed(moved):
+                if destination.exists() and not source.exists():
+                    source.parent.mkdir(parents=True, exist_ok=True)
+                    destination.rename(source)
+            for directory in (backup / "project-local", backup):
+                try:
+                    directory.rmdir()
+                except OSError:
+                    pass
+            raise WorkspaceError(
+                f"Could not reset private project state safely: {exc}"
+            ) from exc
+
+        return {
+            "backup_directory": backup,
+            "workspace_moved": any(
+                source == self.directory for source, _destination in moved
+            ),
+            "project_local_moved": any(
+                source != self.directory for source, _destination in moved
+            ),
         }
 
     def load(self) -> dict[str, Any]:

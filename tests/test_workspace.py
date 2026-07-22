@@ -141,6 +141,130 @@ def test_workspace_updates_run_and_saves_assistant_request(tmp_path):
     ).read_text()
 
 
+def test_workspace_reset_archives_private_state_and_keeps_project_files(tmp_path):
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / ".git").mkdir()
+    workflow = root / "workflow.py"
+    workflow.write_text("@workflow\ndef review(): pass\n")
+    workspace = Workspace(root, home=tmp_path / "state")
+    workspace.initialize_project(name="Review project")
+    workspace.add_prompt(kind="initial", content="Keep source visible.")
+    workspace.select_workflow("workflow.py:review", cwd=root)
+    workspace.new_run(
+        workflow_spec="workflow.py:review",
+        workflow_name="review",
+        fingerprint="abc",
+        inputs={},
+        llm="mock",
+    )
+    workspace.save_request(
+        kind="create",
+        prompt="Keep source visible.",
+        content="Create the workflow.\n",
+    )
+    workspace.save_model_profile(
+        "workflow.py:review",
+        default="mock",
+        lifelines={},
+    )
+    workspace.save_provider_profile(
+        "openai",
+        {"kind": "api", "key_env": "OPENAI_API_KEY"},
+    )
+    workspace.save_secrets({"OPENAI_API_KEY": "private"})
+    workspace.update(last_deployment="review-service")
+    drafts = root / ".zippergen" / "prompt-drafts"
+    drafts.mkdir(parents=True)
+    (drafts / "unfinished.md").write_text("Do not lose this draft.\n")
+    deployment = workspace.home / "deployments" / "review-service.json"
+    deployment.parent.mkdir(parents=True)
+    deployment.write_text("{}\n")
+
+    summary = workspace.private_state_summary()
+    assert summary["runs"] == 1
+    assert summary["requests"] == 1
+    assert summary["development_secrets"] == 1
+    assert summary["project_local_exists"] is True
+
+    result = workspace.reset_private_state()
+
+    backup = Path(result["backup_directory"])
+    assert result["workspace_moved"] is True
+    assert result["project_local_moved"] is True
+    assert (backup / "workspace" / "workspace.json").exists()
+    assert (backup / "workspace" / "development.secrets.json").exists()
+    assert list((backup / "workspace" / "runs").glob("*.json"))
+    assert list((backup / "workspace" / "requests").glob("*.json"))
+    assert (backup / "project-local" / "current-task.md").exists()
+    assert (
+        backup / "project-local" / "prompt-drafts" / "unfinished.md"
+    ).exists()
+    metadata = json.loads((backup / "reset.json").read_text())
+    assert metadata["project_root"] == str(root)
+    assert metadata["workspace_moved"] is True
+    assert metadata["project_local_moved"] is True
+
+    assert workflow.exists()
+    assert workspace.manifest_path.exists()
+    assert workspace.prompt("P001")["content"] == "Keep source visible."
+    assert (root / ".git").exists()
+    assert deployment.exists()
+    assert not workspace.directory.exists()
+    assert not workspace.current_task_path.exists()
+    assert workspace.current_workflow is None
+    assert workspace.current_run_id is None
+    assert workspace.load()["last_deployment"] is None
+    assert workspace.load_secrets() == {}
+
+    empty = workspace.reset_private_state()
+    assert empty["backup_directory"] is None
+
+
+def test_workspace_reset_can_archive_unreadable_private_state(tmp_path):
+    root = tmp_path / "project"
+    root.mkdir()
+    workspace = Workspace(root, home=tmp_path / "state")
+    workspace.directory.mkdir(parents=True)
+    workspace.state_path.write_text("{broken")
+    workspace.secrets_path.write_text("{also-broken")
+
+    summary = workspace.private_state_summary()
+
+    assert len(summary["warnings"]) == 2
+    assert summary["development_secrets"] == "present but unreadable"
+
+    result = workspace.reset_private_state()
+
+    backup = Path(result["backup_directory"])
+    assert (backup / "workspace" / "workspace.json").read_text() == "{broken"
+    assert (
+        backup / "workspace" / "development.secrets.json"
+    ).read_text() == "{also-broken"
+    assert workspace.load()["current_workflow"] is None
+
+
+def test_workspace_reset_supports_home_inside_project_tooling_directory(tmp_path):
+    root = tmp_path / "project"
+    root.mkdir()
+    workspace = Workspace(root, home=root / ".zippergen")
+    workspace.select_workflow("workflow.py:review", cwd=root)
+    workspace.save_request(
+        kind="create",
+        prompt="Create a review workflow.",
+        content="Create the workflow.\n",
+    )
+
+    result = workspace.reset_private_state()
+
+    backup = Path(result["backup_directory"])
+    assert backup.is_relative_to(root / ".zippergen" / "resets")
+    assert (backup / "workspace" / "workspace.json").exists()
+    assert (backup / "project-local" / "current-task.md").exists()
+    assert workspace.current_workflow is None
+    assert workspace.private_state_summary()["project_local_exists"] is False
+
+
 def test_workspace_keeps_model_profiles_per_workflow(tmp_path):
     root = tmp_path / "project"
     root.mkdir()
