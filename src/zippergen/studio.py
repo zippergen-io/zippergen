@@ -1107,13 +1107,21 @@ class Studio:
             cancel_message="Specification action cancelled; nothing was changed.",
         )
 
-    def _confirm_action(self, question: str, *, cancel_message: str) -> bool:
+    def _confirm_action(
+        self,
+        question: str,
+        *,
+        cancel_message: str,
+        default: bool | None = None,
+    ) -> bool:
         while True:
             try:
                 answer = self.input(question).strip().lower()
             except (EOFError, KeyboardInterrupt):
                 self._warning(cancel_message)
                 return False
+            if not answer and default is not None:
+                return default
             if answer in {"y", "yes"}:
                 return True
             if answer in {"n", "no"}:
@@ -3363,6 +3371,114 @@ class Studio:
         finally:
             os.chdir(previous)
 
+    def _deployment_secret_reuse_arguments(
+        self,
+        *,
+        name: str,
+        spec,
+        model_specs: tuple[str, ...],
+    ) -> list[str]:
+        """Offer selected development provider keys as deployment field values."""
+
+        from zippergen.serve import (
+            _deployment_profile_path,
+            _load_deployment_profile,
+            _load_deployment_secrets,
+        )
+
+        selected_secret_names = {
+            secret_name
+            for model_spec in model_specs
+            if (
+                secret_name := _PROVIDER_SECRETS.get(
+                    _canonical_provider(model_spec)
+                )
+            )
+        }
+        if not selected_secret_names:
+            return []
+
+        available = self.workspace.development_provider_environment(model_specs)
+        existing: dict[str, str] = {}
+        if _deployment_profile_path(name).exists():
+            existing = _load_deployment_secrets(_load_deployment_profile(name))
+
+        selected_fields = [
+            field
+            for field in spec.fields
+            if field.secret
+            and field.target_name in selected_secret_names
+        ]
+        retained_fields = [
+            field for field in selected_fields if field.target_name in existing
+        ]
+        reusable_fields = [
+            field
+            for field in selected_fields
+            if field.target_name in available
+            and field.target_name not in existing
+        ]
+        if not retained_fields and not reusable_fields:
+            return []
+
+        arguments: list[str] = []
+        if retained_fields:
+            retained_names = sorted(
+                {field.target_name for field in retained_fields}
+            )
+            for field in retained_fields:
+                arguments.extend(
+                    ["--set", f"{field.name}={existing[field.target_name]}"]
+                )
+            noun = "credential" if len(retained_names) == 1 else "credentials"
+            self._success(
+                f"Keeping {len(retained_names)} existing deployment {noun}; "
+                "values remain hidden."
+            )
+
+        if not reusable_fields:
+            return arguments
+
+        secret_names = sorted(
+            {field.target_name for field in reusable_fields}
+        )
+        self._emit_table(
+            "Deployment credentials",
+            [
+                (
+                    "Available",
+                    ", ".join(secret_names) + " in private Studio storage",
+                    "success",
+                ),
+                ("Deployment", name, None),
+                ("Storage", "separate private deployment secret file", None),
+            ],
+        )
+        if not self._confirm_action(
+            f"Reuse the configured credential"
+            f"{'s' if len(secret_names) != 1 else ''} for deployment {name}? "
+            "[Y/n]: ",
+            cancel_message=(
+                "Credential reuse declined; the deployer will request separate "
+                "values."
+            ),
+            default=True,
+        ):
+            return arguments
+
+        for field in reusable_fields:
+            # Studio calls serve.main() in-process. This is not an OS command
+            # line, and neither the argument nor its value is rendered.
+            arguments.extend(
+                ["--set", f"{field.name}={available[field.target_name]}"]
+            )
+        noun = "credential" if len(secret_names) == 1 else "credentials"
+        self._success(
+            f"Reusing {len(secret_names)} configured {noun}; values remain "
+            "hidden and deployment-scoped."
+        )
+        return arguments
+
     def deploy_workflow(self, args: list[str]) -> None:
         from zippergen.deployment import deployment_spec_from_module
         from zippergen.serve import _deployment_name_from_workflow, _slug
@@ -3401,9 +3517,18 @@ class Studio:
         )
         arguments.extend(["--llm", str(profile["default"])])
         overrides = profile.get("lifelines") or {}
+        selected_specs = [str(profile["default"])]
         if isinstance(overrides, dict):
             for lifeline, model in sorted(overrides.items()):
                 arguments.extend(["--llm-for", f"{lifeline}={model}"])
+                selected_specs.append(str(model))
+        arguments.extend(
+            self._deployment_secret_reuse_arguments(
+                name=name,
+                spec=spec,
+                model_specs=tuple(selected_specs),
+            )
+        )
         rc = self._run_project_cli(arguments)
         if rc != 0:
             raise SystemExit(f"Deployment {name} did not complete successfully.")

@@ -34,6 +34,27 @@ def sample(value: str @ User) -> str:
     return result @ User
 """
 
+DEPLOYMENT_SOURCE = WORKFLOW_SOURCE + """
+
+from zippergen import DeploymentField, DeploymentSpec
+
+zippergen_deployment = DeploymentSpec(
+    name="sample",
+    fields=(
+        DeploymentField(
+            "openai_api_key",
+            "OpenAI API key",
+            target="env",
+            env="OPENAI_API_KEY",
+            secret=True,
+            required=True,
+            when="llm",
+            when_values=("openai*",),
+        ),
+    ),
+)
+"""
+
 
 def _studio(tmp_path, responses=(), secret_responses=()):
     root = tmp_path / "project"
@@ -1896,6 +1917,116 @@ def test_studio_can_prepare_deployment_without_starting_it(tmp_path, monkeypatch
         "--llm",
         "mock",
     ]
+
+
+def test_studio_offers_private_provider_key_reuse_for_first_deployment(
+    tmp_path,
+    monkeypatch,
+):
+    studio, workspace, output = _studio(tmp_path, responses=[""])
+    (workspace.root / "workflow.py").write_text(DEPLOYMENT_SOURCE)
+    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    workspace.save_model_profile(
+        "workflow.py:sample",
+        default="openai:gpt-4o-mini",
+        lifelines={},
+    )
+    workspace.save_secrets({"OPENAI_API_KEY": "development-secret"})
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(tmp_path / "deployment-home"))
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        "zippergen.serve.main",
+        lambda arguments: calls.append(arguments) or 0,
+    )
+
+    studio.deploy_workflow(["sample-reuse", "--no-start"])
+
+    assert calls[0][-2:] == [
+        "--set",
+        "openai_api_key=development-secret",
+    ]
+    assert any(
+        "Available" in line and "OPENAI_API_KEY" in line for line in output
+    )
+    assert any(
+        line.startswith("✓ Reusing 1 configured credential") for line in output
+    )
+    assert all("development-secret" not in line for line in output)
+
+
+def test_studio_can_decline_provider_key_reuse_for_deployment(
+    tmp_path,
+    monkeypatch,
+):
+    studio, workspace, output = _studio(tmp_path, responses=["n"])
+    (workspace.root / "workflow.py").write_text(DEPLOYMENT_SOURCE)
+    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    workspace.save_model_profile(
+        "workflow.py:sample",
+        default="openai:gpt-4o-mini",
+        lifelines={},
+    )
+    workspace.save_secrets({"OPENAI_API_KEY": "development-secret"})
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(tmp_path / "deployment-home"))
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        "zippergen.serve.main",
+        lambda arguments: calls.append(arguments) or 0,
+    )
+
+    studio.deploy_workflow(["sample-separate", "--no-start"])
+
+    assert "--set" not in calls[0]
+    assert any(
+        "Credential reuse declined" in line for line in output
+    )
+    assert all("development-secret" not in line for line in output)
+
+
+def test_studio_redeploy_keeps_existing_deployment_provider_key(
+    tmp_path,
+    monkeypatch,
+):
+    studio, workspace, output = _studio(tmp_path)
+    (workspace.root / "workflow.py").write_text(DEPLOYMENT_SOURCE)
+    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    workspace.save_model_profile(
+        "workflow.py:sample",
+        default="openai:gpt-4o-mini",
+        lifelines={},
+    )
+    profile_path = tmp_path / "deployment-home" / "sample-existing.json"
+    profile_path.parent.mkdir()
+    profile_path.write_text("{}")
+    monkeypatch.setattr(
+        "zippergen.serve._deployment_profile_path",
+        lambda name: profile_path,
+    )
+    monkeypatch.setattr(
+        "zippergen.serve._load_deployment_profile",
+        lambda name: {"name": name, "secrets_file": "private.json"},
+    )
+    monkeypatch.setattr(
+        "zippergen.serve._load_deployment_secrets",
+        lambda profile: {"OPENAI_API_KEY": "existing-deployment-secret"},
+    )
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        "zippergen.serve.main",
+        lambda arguments: calls.append(arguments) or 0,
+    )
+
+    studio.deploy_workflow(["sample-existing", "--no-start"])
+
+    assert calls[0][-2:] == [
+        "--set",
+        "openai_api_key=existing-deployment-secret",
+    ]
+    assert any(
+        line.startswith("✓ Keeping 1 existing deployment credential")
+        for line in output
+    )
+    assert all("existing-deployment-secret" not in line for line in output)
 
 
 def test_studio_operates_remembered_deployment(tmp_path, monkeypatch):

@@ -1140,12 +1140,27 @@ deploy reviewed-answer-tutorial --no-start
 \end{lstlisting}
 
 Studio carries the current default and per-lifeline routes into the deployment
-profile. The deployer asks for declared inputs and requests provider keys again
-if the current model profile still selects real providers, because deployment
-secrets are deliberately isolated from development. With the recommended
-\texttt{models reset all} above, all routes are mock and no provider key is
-needed. Deployment writes enabled secrets to the deployment's separate
-mode-0600 file, not its non-secret profile.
+profile. If the current model profile selects a real provider and its key was
+configured earlier, Studio displays a \emph{Deployment credentials} summary
+containing the key's name but never its value:
+
+\begin{lstlisting}[style=shell]
+Deployment credentials
+  Available   [success] OPENAI_API_KEY in private Studio storage
+  Deployment             reviewed-answer-tutorial
+  Storage                separate private deployment secret file
+
+Reuse the configured credential for deployment reviewed-answer-tutorial? [Y/n]:
+\end{lstlisting}
+
+Press Enter to reuse it. Studio copies the hidden value directly into the
+deployment's separate mode-0600 file, so the guided deployer does not request
+the key again. Enter \texttt{n} only when this deployment should use a different
+credential; the deployer then asks for that value without echo. A later
+\texttt{deploy reviewed-answer-tutorial} retains the deployment's existing key
+and prints that it is keeping the saved value, without presenting another
+secret prompt. With the recommended \texttt{models reset all} above, all routes
+are mock and no provider key is needed.
 
 Read every prompt. The request and retry budget are runtime inputs, not another
 description of the workflow. A successful ending prints
@@ -1444,10 +1459,14 @@ brief, source code, or Git. Values already supplied by the process environment
 are used temporarily but are not copied into the private file.
 
 This is lightweight local secret storage, not an operating-system keychain or
-enterprise secret manager. Deployment secrets are scoped separately and are
-not silently copied from development. If a real deployment needs the key, the
-guided deployer requests it once and writes it to that deployment's own private
-mode-0600 secrets file.
+enterprise secret manager. Deployment secrets are scoped separately. When a
+selected real provider has a matching key in private Studio storage, the first
+deployment explicitly offers to reuse it. Pressing Enter accepts the default;
+Studio transfers the hidden value directly into that deployment's own private
+mode-0600 secrets file. It never displays the value or puts it in project
+state. Answering \texttt{n} preserves the option to enter a distinct deployment
+credential. A later deployment with the same name keeps its already-saved
+deployment key without asking for it again.
 
 \subsection{Move explicitly from development to deployment}
 
@@ -1464,7 +1483,10 @@ deploy tutorial-review-studio --no-start
 
 The same guided deployer described later carries the current default and
 per-lifeline model routes, collects declared settings and deployment-scoped
-secrets, validates readiness, and prints the resulting deployment name. The
+secrets, validates readiness, and prints the resulting deployment name. If a
+selected provider key is already configured, Studio first shows only its
+environment-variable name and asks whether to reuse it; accepting avoids
+another secret-entry prompt while retaining a separate deployment copy. The
 \texttt{--no-start} flag prepares the bundle and deployment environment without
 installing or starting a user service. After a successful preparation, Studio
 remembers that name. Inspect it first:

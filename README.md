@@ -194,6 +194,15 @@ API key, Studio asks for it without echo and saves it once in an owner-only
 development secret file. Later runs and post-crash resumes reuse it; the value
 is never copied into workspace, run, or request JSON.
 
+Development and deployment secrets remain separate, but Studio does not make
+you paste the same provider key twice. On the first deployment of a selected
+real provider, Studio identifies a matching configured key by environment
+variable name and asks whether to reuse it. Press Enter to accept the default.
+The value is copied directly between private stores, is never displayed, and
+becomes scoped to that named deployment. Answer `n` to enter a different
+deployment credential. Later deployments with the same name retain their
+existing deployment key without prompting again.
+
 To begin from natural language, let Studio maintain one readable, versioned
 `specification.md`. Studio owns the filename and opens it in a terminal editor.
 Choose a project-specific editor preference once:
