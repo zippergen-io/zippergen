@@ -81,6 +81,13 @@ class _AssistantResult:
     error: str | None = None
 
 
+@dataclass(frozen=True)
+class _CodexOutput:
+    report: str | None = None
+    diagnostics: tuple[str, ...] = ()
+    suppressed_diagnostics: int = 0
+
+
 class _LocalProviderError(RuntimeError):
     """A local OpenAI-compatible endpoint could not be verified."""
 
@@ -3058,8 +3065,28 @@ class Studio:
     ) -> tuple[str, StatusKind]:
         verification = str(record.get("assistant_verification") or "")
         checks = record.get("assistant_verification_checks")
-        count = len(checks) if isinstance(checks, list) else 0
-        suffix = f" — {count} reported check{'s' if count != 1 else ''}"
+        counts = {"passed": 0, "failed": 0, "not_run": 0}
+        if isinstance(checks, list):
+            for check in checks:
+                if not isinstance(check, dict):
+                    continue
+                status = str(check.get("status") or "")
+                if status in counts:
+                    counts[status] += 1
+        total = sum(counts.values())
+        if verification == "passed":
+            suffix = f" — {total} check{'s' if total != 1 else ''}"
+        else:
+            parts = [
+                f"{count} {label}"
+                for label, count in (
+                    ("passed", counts["passed"]),
+                    ("failed", counts["failed"]),
+                    ("not run", counts["not_run"]),
+                )
+                if count
+            ]
+            suffix = f" — {', '.join(parts)}" if parts else " — no checks reported"
         if verification == "passed":
             return f"passed{suffix}", "success"
         if verification == "failed":
@@ -3077,7 +3104,12 @@ class Studio:
         value = record.get("assistant_verification_summary")
         return str(value) if value else None
 
-    def _emit_task_verification_checks(self, record: dict[str, object]) -> None:
+    def _emit_task_verification_checks(
+        self,
+        record: dict[str, object],
+        *,
+        problems_only: bool = False,
+    ) -> None:
         checks = record.get("assistant_verification_checks")
         if not isinstance(checks, list) or not checks:
             return
@@ -3091,6 +3123,8 @@ class Studio:
             if not isinstance(value, dict):
                 continue
             status = str(value.get("status") or "not_run")
+            if problems_only and status == "passed":
+                continue
             command = str(value.get("command") or "unspecified command")
             detail = str(value.get("detail") or "")
             outcome = command if not detail else f"{command} — {detail}"
@@ -3102,7 +3136,12 @@ class Studio:
                 )
             )
         if rows:
-            self._emit_table("Assistant verification checks", rows)
+            title = (
+                "Failed or incomplete assistant checks"
+                if problems_only
+                else "Assistant verification checks"
+            )
+            self._emit_table(title, rows)
 
     def _task_next(self, record: dict[str, object]) -> str:
         status = str(record.get("status") or "prepared")
@@ -3399,6 +3438,124 @@ class Studio:
             except OSError:
                 pass
 
+    def _parse_codex_output(
+        self,
+        stdout: object,
+        stderr: object,
+    ) -> _CodexOutput:
+        """Condense Codex JSONL while dropping known internal cache noise."""
+
+        report: str | None = None
+        diagnostics: list[str] = []
+        suppressed = 0
+        stderr_text = stderr if isinstance(stderr, str) else ""
+        for raw_line in stderr_text.splitlines():
+            line = " ".join(raw_line.split())
+            if not line:
+                continue
+            if (
+                "codex_models_manager::manager: failed to renew cache TTL"
+                in line
+                and "supports_reasoning_summaries" in line
+            ) or "could not create PATH aliases: Operation not permitted" in line:
+                suppressed += 1
+                continue
+            diagnostics.append(line[:1000])
+
+        stdout_text = stdout if isinstance(stdout, str) else ""
+        for raw_line in stdout_text.splitlines():
+            if not raw_line.strip():
+                continue
+            try:
+                event = json.loads(raw_line)
+            except json.JSONDecodeError:
+                diagnostics.append(" ".join(raw_line.split())[:1000])
+                continue
+            if not isinstance(event, dict):
+                continue
+            item = event.get("item")
+            if isinstance(item, dict) and item.get("type") == "agent_message":
+                text = item.get("text")
+                if isinstance(text, str) and text.strip():
+                    report = text.strip()[:20_000]
+            event_type = str(event.get("type") or "")
+            if event_type in {"error", "turn.failed"}:
+                error = event.get("error")
+                message = (
+                    error.get("message")
+                    if isinstance(error, dict)
+                    else event.get("message") or error
+                )
+                if message:
+                    diagnostics.append(" ".join(str(message).split())[:1000])
+        return _CodexOutput(
+            report=report,
+            diagnostics=tuple(diagnostics[:20]),
+            suppressed_diagnostics=suppressed,
+        )
+
+    def _emit_codex_output(self, output: _CodexOutput) -> None:
+        if output.report:
+            self._emit("Assistant report")
+            self._emit("────────────────")
+            self._emit(output.report)
+            self._emit()
+        for diagnostic in output.diagnostics[:3]:
+            self._warning(f"Codex diagnostic: {diagnostic}")
+        if len(output.diagnostics) > 3:
+            self._warning(
+                f"Codex emitted {len(output.diagnostics) - 3} additional "
+                "diagnostic lines; the assistant verification record is "
+                "authoritative for reported checks."
+            )
+
+    def _ensure_assistant_test_environment(self) -> None:
+        """Fail before spending an assistant run when nested tests cannot run."""
+
+        framework = self.workspace.project_manifest().get("framework_directory")
+        if not framework:
+            return
+        uv = shutil.which("uv")
+        if uv is None:
+            project = shlex.quote(str(framework))
+            raise SystemExit(
+                "The nested ZipperGen development environment requires uv, but "
+                "the uv command was not found. Install uv, then run "
+                f"'uv sync --project {project}' once before starting the "
+                "assistant. No assistant was started."
+            )
+        command = [
+            uv,
+            "run",
+            "--offline",
+            "--project",
+            str(framework),
+            "python",
+            "-c",
+            "import pytest",
+        ]
+        try:
+            completed = subprocess.run(
+                command,
+                cwd=self.workspace.root,
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+        except OSError as exc:
+            raise SystemExit(
+                f"Could not inspect the nested development environment: {exc}"
+            ) from exc
+        if completed.returncode != 0:
+            project = shlex.quote(str(framework))
+            raise SystemExit(
+                "The nested ZipperGen development environment is not synchronized, "
+                "so the assistant could not verify application tests offline. "
+                f"In an ordinary terminal run 'uv sync --project {project}' "
+                "once, then return and run the assistant again. No assistant "
+                "was started."
+            )
+
     def run_assistant(self, args: list[str]) -> None:
         rerun = "--rerun" in args
         interactive = "--interactive" in args
@@ -3464,6 +3621,7 @@ class Studio:
                 "the current task remains available at "
                 f"{self.workspace.current_task_path}."
             )
+        self._ensure_assistant_test_environment()
         try:
             self.workspace.assistant_result_path.unlink(missing_ok=True)
         except OSError as exc:
@@ -3484,6 +3642,9 @@ class Studio:
             assistant_verification_summary=None,
             assistant_verification_checks=[],
             assistant_result_error=None,
+            assistant_report=None,
+            assistant_cli_diagnostics=[],
+            assistant_suppressed_diagnostics=0,
             studio_process_id=os.getpid(),
             lifecycle_inferred=False,
         )
@@ -3514,6 +3675,15 @@ class Studio:
                     "not required; the assistant keeps its own configured tools",
                     None,
                 ),
+                (
+                    "Output",
+                    (
+                        "condensed; final report and failed checks appear on return"
+                        if assistant == "codex" and not interactive
+                        else "live assistant terminal output"
+                    ),
+                    None,
+                ),
             ],
         )
         instruction = (
@@ -3533,6 +3703,7 @@ class Studio:
             command = [
                 executable,
                 "exec",
+                "--json",
                 "--skip-git-repo-check",
                 "--cd",
                 str(self.workspace.root),
@@ -3550,10 +3721,17 @@ class Studio:
                 instruction,
             ]
         try:
+            capture_codex = assistant == "codex" and not interactive
+            capture_options: dict[str, object] = (
+                {"capture_output": True, "text": True}
+                if capture_codex
+                else {}
+            )
             completed = subprocess.run(
                 command,
                 cwd=self.workspace.root,
                 check=False,
+                **capture_options,
             )
         except KeyboardInterrupt:
             self.workspace.update_request(
@@ -3578,6 +3756,12 @@ class Studio:
             raise SystemExit(
                 f"Could not start {tool}: {exc}"
             ) from exc
+        codex_output = (
+            self._parse_codex_output(completed.stdout, completed.stderr)
+            if assistant == "codex" and not interactive
+            else _CodexOutput()
+        )
+        self._emit_codex_output(codex_output)
         if completed.returncode != 0:
             assistant_result = self._consume_assistant_result()
             self.workspace.update_request(
@@ -3591,6 +3775,11 @@ class Studio:
                     dict(check) for check in assistant_result.checks
                 ],
                 assistant_result_error=assistant_result.error,
+                assistant_report=codex_output.report,
+                assistant_cli_diagnostics=list(codex_output.diagnostics),
+                assistant_suppressed_diagnostics=(
+                    codex_output.suppressed_diagnostics
+                ),
                 result_specification_fingerprint=(
                     self.workspace.specification_fingerprint()
                 ),
@@ -3614,6 +3803,9 @@ class Studio:
                 dict(check) for check in assistant_result.checks
             ],
             assistant_result_error=assistant_result.error,
+            assistant_report=codex_output.report,
+            assistant_cli_diagnostics=list(codex_output.diagnostics),
+            assistant_suppressed_diagnostics=codex_output.suppressed_diagnostics,
             result_specification_fingerprint=result_fingerprint,
             specification_context_changed=changed,
         )
@@ -3664,6 +3856,8 @@ class Studio:
                 ("Next", self._task_next(record), None),
             ],
         )
+        if assistant_result.verification != "passed":
+            self._emit_task_verification_checks(record, problems_only=True)
 
     def show_current(self) -> None:
         from zippergen.serve import _validate_workflow
@@ -5097,13 +5291,19 @@ class Studio:
         return f"""The application project root is the current directory. The
 ZipperGen framework checkout is the separate nested project `{base}/`; its
 `pyproject.toml` owns the framework dependencies. From the application root,
-invoke the framework with `uv run --project {quoted} zippergen ...` and run
+invoke the framework with `uv run --offline --project {quoted} zippergen ...`
+and run
 application tests explicitly with
-`uv run --project {quoted} --with pytest pytest tests`. Do not run bare
+`uv run --offline --project {quoted} pytest tests`. Do not run bare
 `uv run pytest` from the application root: it may recursively collect
 `{base}/tests` under the wrong environment. The nested framework suite is not
 the application's broader suite; run it separately only if this task actually
-changes framework source."""
+changes framework source. Pytest is a declared framework development
+dependency installed by the tutorial's initial `uv sync`. Do not use
+`--with pytest`, install packages, or request network access during the
+assistant run.
+If pytest is missing, report verification as incomplete and tell the user to
+run `uv sync --project {quoted}` once in an ordinary terminal."""
 
     def _assistant_completion_instructions(self) -> str:
         result = self.workspace.assistant_result_path.relative_to(

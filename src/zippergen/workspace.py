@@ -27,7 +27,7 @@ from typing import Any
 WORKSPACE_SCHEMA_VERSION = 1
 RUN_SCHEMA_VERSION = 1
 REQUEST_SCHEMA_VERSION = 1
-ASSISTANT_TASK_CONTRACT_VERSION = 2
+ASSISTANT_TASK_CONTRACT_VERSION = 3
 PROJECT_SCHEMA_VERSION = 1
 PROMPT_LEDGER_SCHEMA_VERSION = 1
 PROJECT_MANIFEST_NAME = "zippergen.toml"
@@ -1736,6 +1736,9 @@ class Workspace:
             "assistant_verification_summary": None,
             "assistant_verification_checks": [],
             "assistant_result_error": None,
+            "assistant_report": None,
+            "assistant_cli_diagnostics": [],
+            "assistant_suppressed_diagnostics": 0,
             "result_specification_fingerprint": None,
         }
         self.requests_directory.mkdir(parents=True, exist_ok=True)

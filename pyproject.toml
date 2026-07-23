@@ -27,6 +27,11 @@ dependencies = [
   "prompt-toolkit>=3.0.52,<4",
 ]
 
+[dependency-groups]
+dev = [
+  "pytest>=8,<10",
+]
+
 [project.urls]
 Homepage = "https://github.com/zippergen-io/zippergen"
 Repository = "https://github.com/zippergen-io/zippergen"

@@ -136,7 +136,7 @@ def test_workspace_updates_run_and_saves_assistant_request(tmp_path):
         (workspace.requests_directory / f"{request['request_id']}.json").read_text()
     )
     assert metadata["prompt"] == "Create a review workflow"
-    assert metadata["task_contract_version"] == 2
+    assert metadata["task_contract_version"] == 3
     assert metadata["task_file"] == str(workspace.current_task_path)
     assert metadata["status"] == "prepared"
 

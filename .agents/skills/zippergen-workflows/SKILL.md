@@ -121,7 +121,10 @@ framework checkout. If `zippergen.toml` declares `framework_directory`, use
 that nested project's environment for ZipperGen commands, run application
 tests by their explicit path, and do not let a bare recursive pytest invocation
 mistake the framework's own tests for the application suite. Run the framework
-suite separately only when framework source changed.
+suite separately only when framework source changed. Do not use transient
+dependency flags such as `--with pytest` during a restricted assistant run;
+use the project's declared, initially synchronized development dependencies
+and prefer the package runner's offline mode during verification.
 
 ## Inspect as code
 

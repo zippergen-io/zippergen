@@ -386,7 +386,7 @@ def test_studio_refreshes_a_pre_verification_contract_task_before_launch(
     assert refreshed is not None
     assert refreshed["request_id"] != original["request_id"]
     assert refreshed["refreshes_request"] == original["request_id"]
-    assert refreshed["task_contract_version"] == 2
+    assert refreshed["task_contract_version"] == 3
     assert "assistant-result.json" in output[1]
     assert output[0] == "✓ Task refreshed from the current specification context."
 
@@ -401,7 +401,8 @@ def test_studio_assistant_launches_codex_in_project_on_the_stable_task(
 
     monkeypatch.setattr("zippergen.studio.shutil.which", lambda name: "/bin/codex")
 
-    def fake_run(arguments, *, cwd, check):
+    def fake_run(arguments, *, cwd, check, **kwargs):
+        assert kwargs == {"capture_output": True, "text": True}
         calls.append((arguments, cwd, check))
         return subprocess.CompletedProcess(arguments, 0)
 
@@ -409,14 +410,15 @@ def test_studio_assistant_launches_codex_in_project_on_the_stable_task(
 
     studio.execute("assistant")
 
-    assert calls[0][0][0:5] == [
+    assert calls[0][0][0:6] == [
         "/bin/codex",
         "exec",
+        "--json",
         "--skip-git-repo-check",
         "--cd",
         str(workspace.root),
     ]
-    assert ".zippergen/current-task.md" in calls[0][0][5]
+    assert ".zippergen/current-task.md" in calls[0][0][6]
     assert calls[0][1] == workspace.root
     assert calls[0][2] is False
     assert output[0] == "Assistant"
@@ -447,7 +449,7 @@ def test_studio_assistant_records_passed_verification_separately_from_exit(
     output.clear()
     monkeypatch.setattr("zippergen.studio.shutil.which", lambda name: "/bin/codex")
 
-    def fake_run(arguments, *, cwd, check):
+    def fake_run(arguments, *, cwd, check, **kwargs):
         workspace.assistant_result_path.write_text(
             json.dumps(
                 {
@@ -461,7 +463,7 @@ def test_studio_assistant_records_passed_verification_separately_from_exit(
                             "detail": "Workflow is valid.",
                         },
                         {
-                            "command": "uv run --with pytest pytest tests/test_sample.py",
+                            "command": "uv run pytest tests/test_sample.py",
                             "status": "passed",
                             "detail": "2 passed.",
                         },
@@ -469,7 +471,28 @@ def test_studio_assistant_records_passed_verification_separately_from_exit(
                 }
             )
         )
-        return subprocess.CompletedProcess(arguments, 0)
+        events = [
+            {"type": "thread.started", "thread_id": "thread-1"},
+            {
+                "type": "item.completed",
+                "item": {
+                    "type": "agent_message",
+                    "text": "Updated the workflow and completed verification.",
+                },
+            },
+            {"type": "turn.completed"},
+        ]
+        stderr = (
+            "2026-07-23T21:05:59Z ERROR codex_models_manager::manager: "
+            "failed to renew cache TTL: missing field "
+            "`supports_reasoning_summaries`\n"
+        )
+        return subprocess.CompletedProcess(
+            arguments,
+            0,
+            stdout="\n".join(json.dumps(event) for event in events),
+            stderr=stderr,
+        )
 
     monkeypatch.setattr("zippergen.studio.subprocess.run", fake_run)
 
@@ -481,17 +504,25 @@ def test_studio_assistant_records_passed_verification_separately_from_exit(
     assert request["assistant_exit_code"] == 0
     assert request["assistant_verification"] == "passed"
     assert len(request["assistant_verification_checks"]) == 2
+    assert request["assistant_suppressed_diagnostics"] == 1
+    assert request["assistant_cli_diagnostics"] == []
+    assert request["assistant_report"] == (
+        "Updated the workflow and completed verification."
+    )
     assert not workspace.assistant_result_path.exists()
+    assert all("supports_reasoning_summaries" not in line for line in output)
+    assert any("Assistant report" in line for line in output)
+    assert any("Updated the workflow" in line for line in output)
     assert any("verification passed" in line.lower() for line in output)
     assert any(
-        "Verification" in line and "passed" in line and "2 reported checks" in line
+        "Verification" in line and "passed" in line and "2 checks" in line
         for line in output
     )
 
     output.clear()
     studio.execute("task")
     assert any(
-        "Verification" in line and "passed" in line and "2 reported checks" in line
+        "Verification" in line and "passed" in line and "2 checks" in line
         for line in output
     )
     assert any(
@@ -508,7 +539,7 @@ def test_studio_assistant_does_not_hide_a_failed_check_behind_zero_exit(
     output.clear()
     monkeypatch.setattr("zippergen.studio.shutil.which", lambda name: "/bin/codex")
 
-    def fake_run(arguments, *, cwd, check):
+    def fake_run(arguments, *, cwd, check, **kwargs):
         workspace.assistant_result_path.write_text(
             json.dumps(
                 {
@@ -545,6 +576,11 @@ def test_studio_assistant_does_not_hide_a_failed_check_behind_zero_exit(
     assert any(
         "Next" in line and "assistant codex --rerun" in line for line in output
     )
+    assert "Failed or incomplete assistant checks" in output
+    assert any(
+        "uv run pytest" in line and "prompt_toolkit was unavailable" in line
+        for line in output
+    )
 
     output.clear()
     studio.execute("task")
@@ -565,11 +601,57 @@ def test_studio_task_explains_nested_framework_test_environment(tmp_path):
     studio.create_request("Create a review workflow.")
 
     task = workspace.current_task_path.read_text()
-    assert "uv run --project zippergen zippergen" in task
-    assert "uv run --project zippergen --with pytest pytest tests" in task
+    assert "uv run --offline --project zippergen zippergen" in task
+    assert "uv run --offline --project zippergen pytest tests" in task
     assert "Do not run bare\n`uv run pytest`" in task
     assert "assistant-result.json" in task
     assert '"verification": "passed"' in task
+
+
+def test_studio_assistant_stops_before_launch_when_nested_tests_are_not_synced(
+    tmp_path, monkeypatch
+):
+    studio, workspace, _output = _studio(tmp_path)
+    framework = workspace.root / "zippergen"
+    framework.mkdir()
+    (framework / "pyproject.toml").write_text("[project]\nname = 'zippergen'\n")
+    workspace.initialize_project()
+    studio.create_request("Create a review workflow.")
+    calls: list[list[str]] = []
+
+    def find_tool(name: str):
+        return {"codex": "/bin/codex", "uv": "/bin/uv"}.get(name)
+
+    def fake_run(arguments, **kwargs):
+        calls.append(arguments)
+        return subprocess.CompletedProcess(
+            arguments,
+            1,
+            stdout="",
+            stderr="No module named pytest",
+        )
+
+    monkeypatch.setattr("zippergen.studio.shutil.which", find_tool)
+    monkeypatch.setattr("zippergen.studio.subprocess.run", fake_run)
+
+    with pytest.raises(SystemExit, match="uv sync --project zippergen"):
+        studio.execute("assistant codex")
+
+    assert calls == [
+        [
+            "/bin/uv",
+            "run",
+            "--offline",
+            "--project",
+            "zippergen",
+            "python",
+            "-c",
+            "import pytest",
+        ]
+    ]
+    request = workspace.current_request()
+    assert request is not None
+    assert request["status"] == "prepared"
 
 
 def test_studio_assistant_codex_can_still_run_interactively(
@@ -581,7 +663,7 @@ def test_studio_assistant_codex_can_still_run_interactively(
     calls: list[tuple[list[str], Path, bool]] = []
     monkeypatch.setattr("zippergen.studio.shutil.which", lambda name: "/bin/codex")
 
-    def fake_run(arguments, *, cwd, check):
+    def fake_run(arguments, *, cwd, check, **kwargs):
         calls.append((arguments, cwd, check))
         return subprocess.CompletedProcess(arguments, 0)
 
@@ -617,7 +699,7 @@ def test_studio_assistant_refreshes_edited_specification_before_launch(
     calls: list[tuple[list[str], Path, bool]] = []
     monkeypatch.setattr("zippergen.studio.shutil.which", lambda name: "/bin/codex")
 
-    def fake_run(arguments, *, cwd, check):
+    def fake_run(arguments, *, cwd, check, **kwargs):
         task = workspace.current_task_path.read_text()
         assert "Corrected creation requirement." in task
         assert "Original creation requirement." not in task
@@ -654,7 +736,7 @@ def test_studio_assistant_can_launch_claude_code_on_the_same_task(
 
     monkeypatch.setattr("zippergen.studio.shutil.which", find_assistant)
 
-    def fake_run(arguments, *, cwd, check):
+    def fake_run(arguments, *, cwd, check, **kwargs):
         calls.append((arguments, cwd, check))
         return subprocess.CompletedProcess(arguments, 0)
 
@@ -735,7 +817,7 @@ def test_studio_completed_refinement_task_waits_for_review_without_refreshing(
     assert original is not None
     monkeypatch.setattr("zippergen.studio.shutil.which", lambda name: "/bin/codex")
 
-    def fake_run(arguments, *, cwd, check):
+    def fake_run(arguments, *, cwd, check, **kwargs):
         workspace.save_specification(
             "Echo the request through Writer and require human approval "
             "before returning."
@@ -826,7 +908,7 @@ def test_studio_explicit_assistant_rerun_prepares_a_new_task(
     assert first is not None
     monkeypatch.setattr("zippergen.studio.shutil.which", lambda name: "/bin/codex")
 
-    def fake_run(arguments, *, cwd, check):
+    def fake_run(arguments, *, cwd, check, **kwargs):
         workspace.save_specification(
             "Echo the request through Writer and require human approval "
             "before returning."

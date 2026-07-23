@@ -676,12 +676,26 @@ The generated task also explains the tutorial's two-project layout. The
 application lives at the tutorial root, while \path{zippergen/pyproject.toml}
 defines the environment for the nested framework checkout. It therefore tells
 the assistant to invoke the framework from the application root with
-\texttt{uv run --project zippergen zippergen ...} and to run application tests
-by the explicit \path{tests} path. A bare \texttt{uv run pytest} at the tutorial
-root is deliberately forbidden: it can collect \path{zippergen/tests} while
+\texttt{uv run --offline --project zippergen zippergen ...} and to run
+application tests by the explicit \path{tests} path. A bare
+\texttt{uv run pytest} at the tutorial root is deliberately forbidden: it can
+collect \path{zippergen/tests} while
 using an environment that did not install the framework dependencies. The
 framework's own suite is separate and is needed only when framework source was
-actually changed.
+actually changed. Pytest is a declared development dependency installed by the
+initial \texttt{uv sync}; the assistant must not add
+\texttt{--with pytest}, install packages, or request PyPI access. If the local
+environment has not been synchronized after an update, run
+\texttt{uv sync --project zippergen} once in the ordinary terminal and then
+rerun the assistant deliberately. Studio checks this prerequisite offline
+before starting Codex or Claude, so a missing pytest installation does not
+consume an assistant run.
+
+For one-shot Codex runs, Studio uses Codex's structured JSON output mode and
+shows the final assistant report rather than its raw execution trace. Known
+internal model-cache diagnostics are suppressed; unexpected diagnostics are
+condensed into warnings. Interactive Codex sessions retain their ordinary
+terminal output.
 
 There is no assistant queue or scheduled background job. The command runs
 synchronously: before launch, \texttt{task} says
@@ -709,7 +723,7 @@ Current task
   Status     [warning] awaiting human review
   Assistant            Codex -- returned ...
   Execution            assistant session ended; nothing is scheduled
-  Verification [success] passed -- 5 reported checks
+  Verification [success] passed -- 5 checks
   Verification note    Validation, projections, diff, and focused tests passed.
   Context    [success] assistant result is preserved for review
   Next                  use / current / validate / show / task close
@@ -719,8 +733,10 @@ The verification result is an explicit assistant report, not an independent
 proof and not permission to deploy. If it is \texttt{failed} or
 \texttt{incomplete}, Studio shows that state prominently and proposes
 inspection, validation, and an intentional assistant rerun instead of implying
-that the change is ready. Human review of the visible code and semantic views
-remains mandatory.
+that the change is ready. Immediately below the review table it prints only
+failed or unexecuted checks; the complete reported check list remains
+available through \texttt{task}. Human review of the visible code and semantic
+views remains mandatory.
 
 For this initial creation task, use \texttt{task close} after the generated
 workflow has passed the review below. The command removes only the stable
@@ -1213,7 +1229,7 @@ Run the project tests and the type checker. The assistant chose the individual
 test filename, so the tutorial does not require it:
 
 \begin{lstlisting}[style=shell]
-uv run --project zippergen --with pytest python -m pytest -q tests
+uv run --offline --project zippergen python -m pytest -q tests
 uvx pyright
 \end{lstlisting}
 
