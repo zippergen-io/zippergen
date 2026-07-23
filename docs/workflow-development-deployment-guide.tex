@@ -861,8 +861,14 @@ Each \texttt{providers set} command asks for its API key without echo and saves
 it in owner-only Studio storage. \texttt{providers} reports readiness but
 never prints a secret. For a local OpenAI-compatible or Ollama endpoint use
 \texttt{providers set local URL}, followed by a model such as
-\texttt{ollama:qwen2.5:7b}. The model identifiers above are examples; use
-models enabled for your provider accounts when necessary.
+\texttt{ollama:qwen2.5:7b}. Studio immediately requests the endpoint's
+OpenAI-compatible \texttt{/models} route with a three-second timeout. It saves
+the URL only when the response is valid, then reports the check time and number
+of available models. Enter \texttt{providers check local} after reconnecting
+an SSH tunnel or restarting the model server. A failed recheck changes the
+display to \texttt{unreachable} and explains that the server or tunnel should
+be checked. The model identifiers above are examples; use models enabled for
+your provider accounts when necessary.
 
 \begin{figure}[htbp]
 \centering
@@ -1157,6 +1163,7 @@ show           # choose a semantic code view from a numbered list
 validate       # validate the selected workflow and every projection
 models         # configure default and per-lifeline LLMs
 providers      # provider/key readiness without displaying secrets
+providers check local # recheck a configured local model server or SSH tunnel
 run            # fresh guided, durable development run
 resume         # continue the current incomplete managed run
 runs           # list this project's managed development runs

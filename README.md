@@ -168,11 +168,18 @@ Provider configuration is separate from model routing:
 zippergen [tutorial_review]> providers
 zippergen [tutorial_review]> providers set openai
 zippergen [tutorial_review]> providers set local http://127.0.0.1:11434/v1
+zippergen [tutorial_review]> providers check local
 ```
 
 API keys are entered without echo and remain in owner-only Studio secret
 storage. Local endpoint settings and non-secret routing are remembered, while
 `providers` displays readiness without ever displaying a key.
+`providers set local` calls the endpoint's OpenAI-compatible `/models` route
+with a short timeout and saves the URL only after a successful response. The
+saved status includes the check time and model count. Use `providers check
+local` after reconnecting an SSH tunnel or restarting the model server; a
+failed recheck is displayed as unreachable instead of leaving an old green
+status.
 
 `run openai:gpt-4o-mini` remains a one-run override of the default; explicit
 lifeline overrides remain in effect. If any selected provider needs a declared

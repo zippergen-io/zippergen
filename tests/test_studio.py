@@ -2,7 +2,9 @@ import json
 import subprocess
 from io import StringIO
 from pathlib import Path
+from urllib.error import URLError
 
+import pytest
 from prompt_toolkit.completion import CompleteEvent
 from prompt_toolkit.document import Document
 
@@ -73,6 +75,8 @@ def test_studio_completion_is_context_and_project_aware(tmp_path):
     assert _completions(studio, "show agent W") == ["Writer"]
     assert _completions(studio, "models set W") == ["Writer"]
     assert _completions(studio, "providers set a") == ["anthropic"]
+    assert _completions(studio, "providers ch") == ["check"]
+    assert _completions(studio, "providers check l") == ["local"]
     assert _completions(studio, "create --file req") == ["requirements.md"]
     assert _completions(studio, "create --file 'notes f") == ["'notes folder/'"]
     assert _completions(studio, "create --file 'notes folder/'") == [
@@ -931,6 +935,7 @@ def test_studio_commands_are_discoverable(tmp_path):
     assert "spec refine" in output[-1]
     assert "refine --file PATH" in output[-1]
     assert "providers set local [URL]" in output[-1]
+    assert "providers check local" in output[-1]
     assert studio.execute("not-a-command") is True
     assert output[-1].startswith("✗ Unknown command")
     assert studio.execute("exit") is False
@@ -1452,28 +1457,124 @@ def test_studio_current_is_explicit_before_a_workflow_exists(tmp_path):
 
 def test_studio_configures_api_and_local_providers_without_displaying_secrets(
     tmp_path,
+    monkeypatch,
 ):
     studio, workspace, output = _studio(
         tmp_path,
         secret_responses=["super-secret-key"],
     )
+    requests: list[tuple[str, float]] = []
+
+    class ModelsResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        def read(self, limit=-1):
+            assert limit == 1_048_577
+            return json.dumps(
+                {
+                    "object": "list",
+                    "data": [
+                        {"id": "qwen2.5:7b"},
+                        {"id": "llama3.2:3b"},
+                    ],
+                }
+            ).encode("utf-8")
+
+    def fake_urlopen(req, *, timeout):
+        requests.append((req.full_url, timeout))
+        return ModelsResponse()
+
+    monkeypatch.setattr("zippergen.studio.request.urlopen", fake_urlopen)
 
     studio.execute("providers set openai")
     studio.execute("providers set local http://localhost:1234/v1")
+    studio.execute("providers check local")
     studio.execute("providers")
 
     assert workspace.load_secrets() == {"OPENAI_API_KEY": "super-secret-key"}
     assert workspace.provider_profiles()["local"]["base_url"] == (
         "http://localhost:1234/v1"
     )
+    assert workspace.provider_profiles()["local"]["check_status"] == "reachable"
+    assert workspace.provider_profiles()["local"]["model_count"] == "2"
+    assert requests == [
+        ("http://localhost:1234/v1/models", 3.0),
+        ("http://localhost:1234/v1/models", 3.0),
+    ]
     assert workspace.secrets_path.stat().st_mode & 0o077 == 0
     assert all("super-secret-key" not in line for line in output)
     assert any("openai: ready" in line for line in output)
-    assert any("local: endpoint http://localhost:1234/v1" in line for line in output)
+    assert any(
+        "local: ready; endpoint http://localhost:1234/v1; 2 models; checked"
+        in line
+        for line in output
+    )
 
     studio.execute("providers reset openai")
     assert "OPENAI_API_KEY" not in workspace.load_secrets()
     assert "openai" not in workspace.provider_profiles()
+
+
+def test_studio_does_not_replace_local_endpoint_when_check_fails(
+    tmp_path,
+    monkeypatch,
+):
+    studio, workspace, _output = _studio(tmp_path)
+    original = {
+        "kind": "local",
+        "base_url": "http://localhost:11434/v1",
+        "check_status": "reachable",
+        "checked_at": "2026-07-23T10:00:00+0200",
+        "model_count": "1",
+    }
+    workspace.save_provider_profile("local", original)
+
+    def fail_urlopen(req, *, timeout):
+        raise URLError("connection refused")
+
+    monkeypatch.setattr("zippergen.studio.request.urlopen", fail_urlopen)
+
+    with pytest.raises(SystemExit, match="endpoint was not saved"):
+        studio.execute("providers set local http://localhost:9999/v1")
+
+    assert workspace.provider_profiles()["local"] == original
+
+
+def test_studio_records_failed_local_provider_recheck(tmp_path, monkeypatch):
+    studio, workspace, output = _studio(tmp_path)
+    workspace.save_provider_profile(
+        "local",
+        {
+            "kind": "local",
+            "base_url": "http://localhost:11434/v1",
+            "check_status": "reachable",
+            "checked_at": "2026-07-23T10:00:00+0200",
+            "model_count": "1",
+        },
+    )
+
+    def fail_urlopen(req, *, timeout):
+        raise URLError("connection refused")
+
+    monkeypatch.setattr("zippergen.studio.request.urlopen", fail_urlopen)
+
+    with pytest.raises(SystemExit, match="SSH tunnel"):
+        studio.execute("providers check local")
+
+    profile = workspace.provider_profiles()["local"]
+    assert profile["check_status"] == "unreachable"
+    assert profile["check_error"] == "connection refused"
+    output.clear()
+    studio.execute("providers")
+    assert any(
+        "local: endpoint http://localhost:11434/v1; unreachable" in line
+        and "connection refused" in line
+        for line in output
+    )
 
 
 def test_studio_deploys_current_workflow_and_remembers_name(tmp_path, monkeypatch):

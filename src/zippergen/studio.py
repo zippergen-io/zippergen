@@ -13,6 +13,9 @@ from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
+from urllib import request
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlsplit, urlunsplit
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.application.current import get_app
@@ -39,6 +42,16 @@ class _PromptInput:
     content: str
     source_path: Path | None = None
     draft_path: Path | None = None
+
+
+@dataclass(frozen=True)
+class _LocalProviderCheck:
+    checked_at: str
+    model_count: int
+
+
+class _LocalProviderError(RuntimeError):
+    """A local OpenAI-compatible endpoint could not be verified."""
 
 
 _PROVIDER_ALIASES = {
@@ -180,6 +193,7 @@ _SUBCOMMAND_COMPLETIONS = {
     "providers": (
         ("show", "show provider readiness"),
         ("set", "configure a provider"),
+        ("check", "recheck local-provider connectivity"),
         ("reset", "remove provider configuration"),
     ),
 }
@@ -328,6 +342,7 @@ _HELP = """Commands:
   providers                      show model-provider readiness without secrets
   providers set openai|anthropic|mistral
   providers set local [URL]      configure a local OpenAI-compatible endpoint
+  providers check local          recheck the saved local endpoint
   providers reset NAME           remove a saved provider configuration
   run [LLM]                      start a run; optional LLM overrides its default once
   resume                         resume the current incomplete run
@@ -651,6 +666,8 @@ class Studio:
         if command == "providers":
             if not args:
                 return list(_SUBCOMMAND_COMPLETIONS["providers"])
+            if args[0].lower() == "check":
+                return [("local", "saved local OpenAI-compatible endpoint")]
             if args[0].lower() in {"set", "reset"}:
                 return [
                     (name, "model provider") for name in _SUPPORTED_PROVIDERS
@@ -2501,10 +2518,29 @@ class Studio:
             return "success", "ready; built in"
         profiles = self.workspace.provider_profiles()
         if canonical == "local":
-            base_url = profiles.get("local", {}).get(
+            profile = profiles.get("local", {})
+            base_url = profile.get(
                 "base_url",
                 os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434/v1"),
             )
+            check_status = profile.get("check_status")
+            checked_at = profile.get("checked_at")
+            if check_status == "reachable" and checked_at:
+                count = profile.get("model_count", "0")
+                noun = "model" if count == "1" else "models"
+                kind: StatusKind = "success" if count != "0" else "warning"
+                state = "ready" if count != "0" else "reachable but no models"
+                return (
+                    kind,
+                    f"{state}; endpoint {base_url}; {count} {noun}; "
+                    f"checked {checked_at}",
+                )
+            if check_status == "unreachable" and checked_at:
+                detail = profile.get("check_error", "connection failed")
+                return (
+                    "error",
+                    f"endpoint {base_url}; unreachable at {checked_at}: {detail}",
+                )
             return "warning", f"endpoint {base_url}; availability unchecked"
         secret_name = _PROVIDER_SECRETS.get(canonical)
         if secret_name is None:
@@ -2524,6 +2560,89 @@ class Studio:
             kind, status = self._provider_readiness(provider)
             self._status(kind, f"{provider}: {status}", indent=2)
         self._emit("API-key values are never displayed or written to the project.")
+
+    def _local_models_url(self, base_url: str) -> str:
+        parsed = urlsplit(base_url.strip())
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise SystemExit(
+                "A local provider URL must be a complete http:// or https:// URL."
+            )
+        if parsed.username or parsed.password:
+            raise SystemExit(
+                "Do not embed credentials in a local provider URL."
+            )
+        path = parsed.path.rstrip("/")
+        return urlunsplit(
+            (parsed.scheme, parsed.netloc, f"{path}/models", "", "")
+        )
+
+    def _local_check_error(self, value: object) -> str:
+        printable = "".join(
+            character if character.isprintable() else " "
+            for character in str(value)
+        )
+        return " ".join(printable.split())[:240] or "connection failed"
+
+    def _check_local_provider(self, base_url: str) -> _LocalProviderCheck:
+        models_url = self._local_models_url(base_url)
+        req = request.Request(
+            models_url,
+            headers={
+                "Accept": "application/json",
+                "User-Agent": "ZipperGen-Studio/0.1",
+            },
+            method="GET",
+        )
+        try:
+            with request.urlopen(req, timeout=3.0) as response:
+                raw = response.read(1_048_577)
+        except HTTPError as exc:
+            raw_detail = exc.read(512).decode("utf-8", errors="replace")
+            detail = self._local_check_error(raw_detail) if raw_detail.strip() else ""
+            suffix = f": {detail}" if detail else ""
+            raise _LocalProviderError(f"HTTP {exc.code}{suffix}") from exc
+        except URLError as exc:
+            raise _LocalProviderError(
+                self._local_check_error(exc.reason)
+            ) from exc
+        except (TimeoutError, OSError) as exc:
+            raise _LocalProviderError(self._local_check_error(exc)) from exc
+        if len(raw) > 1_048_576:
+            raise _LocalProviderError(
+                "the /models response exceeded the 1 MiB safety limit"
+            )
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise _LocalProviderError(
+                "the /models endpoint did not return valid UTF-8 JSON"
+            ) from exc
+        models = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(models, list):
+            raise _LocalProviderError(
+                "the /models response is not OpenAI-compatible "
+                "(expected a JSON 'data' list)"
+            )
+        return _LocalProviderCheck(
+            checked_at=time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            model_count=len(models),
+        )
+
+    def _save_local_provider_check(
+        self,
+        base_url: str,
+        result: _LocalProviderCheck,
+    ) -> None:
+        self.workspace.save_provider_profile(
+            "local",
+            {
+                "kind": "local",
+                "base_url": base_url,
+                "check_status": "reachable",
+                "checked_at": result.checked_at,
+                "model_count": str(result.model_count),
+            },
+        )
 
     def configure_providers(self, args: list[str]) -> None:
         if not args or args == ["show"]:
@@ -2559,13 +2678,27 @@ class Studio:
                     or existing
                     or "http://127.0.0.1:11434/v1"
                 )
-                if not base_url.startswith(("http://", "https://")):
-                    raise SystemExit("A local provider URL must begin with http:// or https://.")
-                self.workspace.save_provider_profile(
-                    "local",
-                    {"kind": "local", "base_url": base_url},
+                # Validate the URL and prove OpenAI compatibility before
+                # replacing any previously working endpoint.
+                self._local_models_url(base_url)
+                try:
+                    result = self._check_local_provider(base_url)
+                except _LocalProviderError as exc:
+                    raise SystemExit(
+                        f"Could not verify local provider at {base_url}: {exc}. "
+                        "Check that the model server and any SSH tunnel are "
+                        "running; the endpoint was not saved."
+                    ) from exc
+                self._save_local_provider_check(base_url, result)
+                noun = "model" if result.model_count == 1 else "models"
+                message = (
+                    f"Configured local provider: reachable; "
+                    f"{result.model_count} {noun}; endpoint {base_url}"
                 )
-                self._success(f"Configured local provider endpoint: {base_url}")
+                if result.model_count:
+                    self._success(message)
+                else:
+                    self._warning(message + "; install or load a model before running")
                 return
             if len(rest) != 1:
                 raise SystemExit(f"Use providers set {provider}.")
@@ -2594,6 +2727,45 @@ class Studio:
                 f"Configured {provider}: {self._provider_status(provider)}"
             )
             return
+        if action == "check" and len(rest) == 1:
+            provider = _canonical_provider(rest[0])
+            if provider != "local":
+                raise SystemExit("Only the local provider has an endpoint check.")
+            profile = self.workspace.provider_profiles().get("local")
+            if not profile or not profile.get("base_url"):
+                raise SystemExit(
+                    "No local endpoint is configured. Use 'providers set local'."
+                )
+            base_url = profile["base_url"]
+            try:
+                result = self._check_local_provider(base_url)
+            except _LocalProviderError as exc:
+                checked_at = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+                self.workspace.save_provider_profile(
+                    "local",
+                    {
+                        "kind": "local",
+                        "base_url": base_url,
+                        "check_status": "unreachable",
+                        "checked_at": checked_at,
+                        "check_error": str(exc)[:240],
+                    },
+                )
+                raise SystemExit(
+                    f"Local provider is unreachable at {base_url}: {exc}. "
+                    "Check that the model server and any SSH tunnel are running."
+                ) from exc
+            self._save_local_provider_check(base_url, result)
+            noun = "model" if result.model_count == 1 else "models"
+            message = (
+                f"Local provider is reachable: {result.model_count} {noun}; "
+                f"endpoint {base_url}"
+            )
+            if result.model_count:
+                self._success(message)
+            else:
+                self._warning(message + "; install or load a model before running")
+            return
         if action == "reset" and len(rest) == 1:
             provider = _canonical_provider(rest[0])
             if provider not in _SUPPORTED_PROVIDERS or provider == "mock":
@@ -2611,7 +2783,8 @@ class Studio:
             return
         raise SystemExit(
             "Use providers, providers set openai|anthropic|mistral, "
-            "providers set local [URL], or providers reset NAME."
+            "providers set local [URL], providers check local, or "
+            "providers reset NAME."
         )
 
     def show_runs(self) -> None:
