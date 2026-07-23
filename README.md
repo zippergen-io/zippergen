@@ -160,6 +160,8 @@ zippergen [tutorial_review]> models default mock
 zippergen [tutorial_review]> models set Writer openai:gpt-4o-mini
 zippergen [tutorial_review]> models set Reviewer claude:claude-sonnet-4-6
 zippergen [tutorial_review]> models show
+zippergen [tutorial_review]> models check
+zippergen [tutorial_review]> models check Reviewer
 ```
 
 Provider configuration is separate from model routing:
@@ -178,9 +180,15 @@ When `models default` or `models set` selects a configured API provider, Studio
 queries that provider's model endpoint with the saved key before changing the
 routing profile. A green check confirms that the exact model or alias is
 available to that key; an unavailable model is rejected without changing the
-profile. Local model identifiers are checked against the endpoint's live model
-list. A temporarily unreachable provider produces an explicit yellow
-“saved but unchecked” warning so offline configuration remains possible.
+profile. `models check` repeats those availability checks later without saving
+or changing anything. With no argument it checks the default and every
+LLM-active participant, while `models check Reviewer` checks only Reviewer's
+effective route. Identical routes are queried once and the result explicitly
+reports that routing is unchanged. Local model identifiers are checked against
+the endpoint's live model list. A temporarily unreachable provider produces an
+explicit yellow “saved but unchecked” warning during assignment, or an
+“unverified” result during the read-only check, so offline configuration
+remains possible.
 `providers set local` calls the endpoint's OpenAI-compatible `/models` route
 with a short timeout and saves the URL only after a successful response. The
 saved status includes the check time and model count. Use `providers check

@@ -95,6 +95,11 @@ def test_studio_completion_is_context_and_project_aware(tmp_path):
     assert _completions(studio, "use wor") == ["workflow.py:sample"]
     assert _completions(studio, "show agent W") == ["Writer"]
     assert _completions(studio, "models set W") == ["Writer"]
+    assert "check" in _completions(studio, "models ch")
+    assert _completions(studio, "models check W") == ["Writer"]
+    assert {"all", "default"}.issubset(
+        _completions(studio, "models check ")
+    )
     assert _completions(studio, "providers set a") == ["anthropic"]
     assert _completions(studio, "providers ch") == ["check"]
     assert _completions(studio, "providers check l") == ["local"]
@@ -2124,6 +2129,148 @@ def test_studio_models_verifies_mistral_model_before_saving(
         and "is available with the configured mistral API key" in line
         for line in output
     )
+
+
+def test_studio_models_check_is_read_only_and_deduplicates_effective_routes(
+    tmp_path,
+    monkeypatch,
+):
+    studio, workspace, output = _studio(tmp_path)
+    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    workspace.save_model_profile(
+        "workflow.py:sample",
+        default="mistral:mistral-small-latest",
+        lifelines={},
+    )
+    workspace.save_provider_profile(
+        "mistral",
+        {"kind": "api", "key_env": "MISTRAL_API_KEY"},
+    )
+    workspace.save_secrets({"MISTRAL_API_KEY": "private-mistral-key"})
+    before = workspace.model_profile("workflow.py:sample")
+    requests = []
+
+    class ModelResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        def read(self, limit=-1):
+            assert limit == 1_048_577
+            return b'{"id":"mistral-small-latest","object":"model"}'
+
+    def fake_urlopen(req, *, timeout):
+        requests.append(req)
+        assert timeout == 3.0
+        return ModelResponse()
+
+    monkeypatch.setattr("zippergen.studio.request.urlopen", fake_urlopen)
+
+    studio.execute("models check")
+
+    assert len(requests) == 1
+    assert workspace.model_profile("workflow.py:sample") == before
+    assert any(line == "Model connectivity" for line in output)
+    assert any(
+        "Routes" in line and "1 unique across 2 assignments" in line
+        for line in output
+    )
+    assert any(
+        line.startswith("  ✓ Default, Writer:")
+        and "is available with the configured mistral API key" in line
+        for line in output
+    )
+    assert any(
+        "Status" in line and "all selected models are available" in line
+        for line in output
+    )
+    assert any(
+        "Routing" in line and "unchanged" in line for line in output
+    )
+    assert all("private-mistral-key" not in line for line in output)
+
+
+def test_studio_models_check_reports_unavailable_routes_without_saving(
+    tmp_path,
+    monkeypatch,
+):
+    studio, workspace, output = _studio(tmp_path)
+    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    workspace.save_model_profile(
+        "workflow.py:sample",
+        default="mock",
+        lifelines={"Writer": "mistral:mistral-smol-latest"},
+    )
+    workspace.save_provider_profile(
+        "mistral",
+        {"kind": "api", "key_env": "MISTRAL_API_KEY"},
+    )
+    workspace.save_secrets({"MISTRAL_API_KEY": "private-mistral-key"})
+    before = workspace.model_profile("workflow.py:sample")
+
+    def fake_urlopen(req, *, timeout):
+        raise HTTPError(
+            req.full_url,
+            404,
+            "Not Found",
+            {},
+            BytesIO(b'{"message":"model not found"}'),
+        )
+
+    monkeypatch.setattr("zippergen.studio.request.urlopen", fake_urlopen)
+
+    with pytest.raises(
+        SystemExit,
+        match="connectivity check failed for Writer.*Routing was not changed",
+    ):
+        studio.execute("models check all")
+
+    assert workspace.model_profile("workflow.py:sample") == before
+    assert any(
+        line.startswith("  ✓ Default:") and "mock is built in" in line
+        for line in output
+    )
+    assert any(
+        line.startswith("  ✗ Writer:")
+        and "not available with the configured mistral API key" in line
+        for line in output
+    )
+    assert any(
+        "Unavailable" in line and "1" in line for line in output
+    )
+    assert any(
+        "Routing" in line and "unchanged" in line for line in output
+    )
+
+
+def test_studio_models_check_accepts_a_case_insensitive_lifeline(tmp_path):
+    studio, workspace, output = _studio(tmp_path)
+    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+
+    studio.execute("models check writer")
+
+    assert any("Scope" in line and "Writer" in line for line in output)
+    assert any(
+        line.startswith("  ✓ Writer:") and "mock is built in" in line
+        for line in output
+    )
+
+
+def test_studio_models_menu_exposes_the_read_only_check(tmp_path):
+    studio, workspace, output = _studio(tmp_path, responses=["3"])
+    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    before = workspace.model_profile("workflow.py:sample")
+
+    studio.execute("models")
+
+    assert workspace.model_profile("workflow.py:sample") == before
+    assert any(
+        "Check effective model connectivity (read-only)" in line
+        for line in output
+    )
+    assert any(line == "Model connectivity" for line in output)
 
 
 def test_studio_models_rejects_unavailable_mistral_model_without_saving(

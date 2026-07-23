@@ -200,6 +200,7 @@ _SUBCOMMAND_COMPLETIONS = {
     ),
     "models": (
         ("show", "show effective model routing"),
+        ("check", "check configured models without changing routing"),
         ("default", "set the inherited default model"),
         ("set", "override one LLM-active participant"),
         ("reset", "restore inheritance or reset all routing"),
@@ -353,6 +354,8 @@ _HELP = """Commands:
   validate                       validate the current workflow
   models                         configure default/per-lifeline LLMs interactively
   models show                    show the current workflow's model routing
+  models check [all|default|LIFELINE]
+                                 verify effective models without changing them
   models default SPEC            set and verify the inherited default LLM
   models set LIFELINE SPEC       override and verify one LLM-active lifeline
   models reset LIFELINE|all      restore inheritance or reset the whole profile
@@ -674,6 +677,14 @@ class Studio:
                         for name in self._completion_lifelines(llm_only=True)
                     ]
                 return list(_MODEL_COMPLETIONS)
+            if action == "check" and len(args) == 1:
+                return [
+                    ("all", "default and all LLM-active participants"),
+                    ("default", "inherited default model"),
+                ] + [
+                    (name, "effective model for this LLM-active participant")
+                    for name in self._completion_lifelines(llm_only=True)
+                ]
             if action == "reset" and len(args) == 1:
                 return [("all", "reset the complete model profile")] + [
                     (name, "LLM-active participant")
@@ -2833,13 +2844,37 @@ class Studio:
         active = self._llm_action_lifelines(workflow, module)
         changed: tuple[str, str] | None = None
 
+        if args and args[0].lower() == "check":
+            if len(args) > 2:
+                raise SystemExit(
+                    "Use models check, models check all, models check default, "
+                    "or models check LIFELINE."
+                )
+            self._check_model_connectivity(
+                workflow=workflow,
+                profile=profile,
+                active=active,
+                target=args[1] if len(args) == 2 else "all",
+            )
+            return
+
         if not args or args == ["show"]:
             if not args:
                 choices = ["Default for all unassigned lifelines"] + [
                     f"{name} ({', '.join(actions)})"
                     for name, actions in active.items()
                 ]
+                check_choice = "Check effective model connectivity (read-only)"
+                choices.append(check_choice)
                 selected = str(self._select("Configure models", choices))
+                if selected == check_choice:
+                    self._check_model_connectivity(
+                        workflow=workflow,
+                        profile=profile,
+                        active=active,
+                        target="all",
+                    )
+                    return
                 if selected == choices[0]:
                     entered = self.input(f"Default model [{default}]: ").strip()
                     if entered:
@@ -2897,8 +2932,9 @@ class Studio:
                 overrides.pop(args[1], None)
         else:
             raise SystemExit(
-                "Use models, models show, models default SPEC, models set "
-                "LIFELINE SPEC, or models reset LIFELINE|all."
+                "Use models, models show, models check [all|default|LIFELINE], "
+                "models default SPEC, models set LIFELINE SPEC, or models reset "
+                "LIFELINE|all."
             )
 
         verification = (
@@ -2913,6 +2949,129 @@ class Studio:
             self._status(verification.kind, verification.message)
         self._success(f"Saved model routing for {workflow.name}.")
         self._emit_models(workflow=workflow, module=module, profile=saved)
+
+    def _check_model_connectivity(
+        self,
+        *,
+        workflow,
+        profile: dict[str, object],
+        active: dict[str, list[str]],
+        target: str,
+    ) -> None:
+        """Verify effective model routes without modifying their profile."""
+
+        default = str(profile["default"])
+        raw_overrides = profile.get("lifelines") or {}
+        assert isinstance(raw_overrides, dict)
+        overrides = {str(name): str(spec) for name, spec in raw_overrides.items()}
+        requested = target.strip()
+        normalized = requested.lower()
+
+        if normalized == "all":
+            assignments = [("Default", default)] + [
+                (lifeline, overrides.get(lifeline, default))
+                for lifeline in active
+            ]
+            scope = "default and all LLM-active participants"
+        elif normalized == "default":
+            assignments = [("Default", default)]
+            scope = "default"
+        else:
+            matches = {lifeline.lower(): lifeline for lifeline in active}
+            lifeline = matches.get(normalized)
+            if lifeline is None:
+                available = ", ".join(active) or "none"
+                raise SystemExit(
+                    f"{requested!r} has no LLM actions. Use default, all, or an "
+                    f"LLM-active lifeline: {available}."
+                )
+            assignments = [(lifeline, overrides.get(lifeline, default))]
+            scope = lifeline
+
+        routes: dict[str, list[str]] = {}
+        for label, spec in assignments:
+            routes.setdefault(spec, []).append(label)
+
+        self._emit_table(
+            "Model connectivity",
+            [
+                ("Workflow", workflow.name, None),
+                ("Scope", scope, None),
+                (
+                    "Routes",
+                    f"{len(routes)} unique across {len(assignments)} assignment"
+                    f"{'s' if len(assignments) != 1 else ''}",
+                    None,
+                ),
+                ("Mode", "read-only; routing will not be changed", "success"),
+            ],
+        )
+        self._emit("Checks")
+        self._emit("──────")
+        available_count = 0
+        warning_count = 0
+        failure_count = 0
+        failed_labels: list[str] = []
+        for spec, labels in routes.items():
+            label = ", ".join(labels)
+            try:
+                verification = self._verify_model_spec(
+                    label,
+                    spec,
+                    for_save=False,
+                )
+            except SystemExit as exc:
+                failure_count += 1
+                failed_labels.extend(labels)
+                self._error(f"{label}: {exc}", indent=2)
+                continue
+            if verification.kind == "success":
+                available_count += 1
+            elif verification.kind == "warning":
+                warning_count += 1
+            else:
+                failure_count += 1
+                failed_labels.extend(labels)
+            self._status(
+                verification.kind,
+                verification.message,
+                indent=2,
+            )
+        self._emit()
+
+        if failure_count:
+            result = "one or more selected models are unavailable"
+            result_kind: StatusKind = "error"
+        elif warning_count:
+            result = "one or more selected models could not be verified"
+            result_kind = "warning"
+        else:
+            result = "all selected models are available"
+            result_kind = "success"
+        self._emit_table(
+            "Connectivity result",
+            [
+                ("Status", result, result_kind),
+                ("Available routes", available_count, None),
+                (
+                    "Unverified routes",
+                    warning_count,
+                    "warning" if warning_count else None,
+                ),
+                (
+                    "Unavailable routes",
+                    failure_count,
+                    "error" if failure_count else None,
+                ),
+                ("Routing", "unchanged", "success"),
+            ],
+        )
+        if failure_count:
+            raise SystemExit(
+                "Model connectivity check failed for "
+                + ", ".join(failed_labels)
+                + ". Routing was not changed."
+            )
 
     def _resolved_model(self, spec: str) -> tuple[str, str | None]:
         provider = _canonical_provider(spec)
@@ -3002,7 +3161,13 @@ class Studio:
             return None, "the model response exceeded the 1 MiB safety limit"
         return True, None
 
-    def _verify_model_spec(self, label: str, spec: str) -> _ModelVerification:
+    def _verify_model_spec(
+        self,
+        label: str,
+        spec: str,
+        *,
+        for_save: bool = True,
+    ) -> _ModelVerification:
         provider, model = self._resolved_model(spec)
         if provider == "mock":
             return _ModelVerification(
@@ -3023,10 +3188,14 @@ class Studio:
             try:
                 result = self._check_local_provider(base_url)
             except _LocalProviderError as exc:
+                message = (
+                    f"saved {resolved}, but availability could not be checked"
+                    if for_save
+                    else f"{resolved} could not be checked"
+                )
                 return _ModelVerification(
                     "warning",
-                    f"{label}: saved {resolved}, but availability could not be "
-                    f"checked at {base_url}: {exc}.",
+                    f"{label}: {message} at {base_url}: {exc}.",
                 )
             if model not in result.model_ids:
                 available = ", ".join(result.model_ids[:8]) or "none"
@@ -3042,9 +3211,14 @@ class Studio:
 
         api_key = self._provider_api_key(provider)
         if not api_key:
+            message = (
+                f"saved {resolved}, but it was not checked"
+                if for_save
+                else f"{resolved} could not be checked"
+            )
             return _ModelVerification(
                 "warning",
-                f"{label}: saved {resolved}, but it was not checked because "
+                f"{label}: {message} because "
                 f"{provider} is not configured. Use 'providers set {provider}'.",
             )
         available, detail = self._remote_model_available(provider, model, api_key)
@@ -3056,10 +3230,14 @@ class Studio:
             )
         if available is None:
             suffix = f": {detail}" if detail else ""
+            message = (
+                f"saved {resolved}, but {provider} availability could not be checked"
+                if for_save
+                else f"{resolved} could not be checked with {provider}"
+            )
             return _ModelVerification(
                 "warning",
-                f"{label}: saved {resolved}, but {provider} availability "
-                f"could not be checked{suffix}.",
+                f"{label}: {message}{suffix}.",
             )
         return _ModelVerification(
             "success",

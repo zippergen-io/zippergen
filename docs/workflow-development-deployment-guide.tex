@@ -765,6 +765,7 @@ Enter:
 \begin{lstlisting}[style=shell]
 models reset all
 models show
+models check
 \end{lstlisting}
 
 Studio lists only lifelines containing \texttt{@llm} action sites, together
@@ -903,6 +904,7 @@ models default mock
 models set Writer openai:gpt-4o-mini
 models set Reviewer claude:claude-sonnet-4-6
 models show
+models check
 \end{lstlisting}
 \end{minipage}
 
@@ -931,6 +933,16 @@ deliberately chosen routing but prints a yellow \emph{saved but unchecked}
 warning; the provider will still enforce the selection when the workflow runs.
 If no key has been configured yet, Studio likewise saves the non-secret route
 with a warning and tells you which \texttt{providers set} command is needed.
+
+\texttt{models check} is the read-only recheck command. With no argument, or
+with \texttt{all}, it checks the default plus every LLM-active participant.
+\texttt{models check Reviewer} checks only Reviewer's effective assignment;
+\texttt{models check default} checks only the inherited default. Studio queries
+an identical effective route only once, labels every assignment covered by the
+result, and finishes with \texttt{Routing: unchanged}. A green result confirms
+that the provider accepted the configured key and exact model identifier at
+check time. A yellow result means connectivity or configuration prevented a
+conclusive check; it is not proof that a generation call will succeed later.
 
 \begin{figure}[htbp]
 \centering
@@ -1256,6 +1268,7 @@ use            # discover workflows and select one from a numbered list
 show           # choose a semantic code view from a numbered list
 validate       # validate the selected workflow and every projection
 models         # configure default and per-lifeline LLMs
+models check   # recheck effective model availability without changing routes
 providers      # provider/key readiness without displaying secrets
 providers check local # recheck a configured local model server or SSH tunnel
 run            # fresh guided, durable development run
@@ -1436,6 +1449,7 @@ for Reviewer:
 models set Writer openai:gpt-4o-mini
 models set Reviewer claude:claude-sonnet-4-6
 models show
+models check
 run
 \end{lstlisting}
 
@@ -2915,7 +2929,8 @@ than assigning a model to an unrelated participant.
 
 \subsection*{A real model run reports an authentication or model error}
 
-Use \texttt{models show} to verify provider prefixes and model identifiers.
+Use \texttt{models show} to inspect provider prefixes and model identifiers,
+then use \texttt{models check} for a fresh, read-only availability check.
 Confirm that the account key belongs to that provider and that the named model
 is enabled for the account. Do not print the key while diagnosing. To continue
 the tutorial without network access or charges, enter
@@ -3092,8 +3107,9 @@ $\square$ & The assistant receives the canonical specification plus pending
 change; \texttt{spec reconcile} requires prior integration, performs no hidden
 merge, archives the change, and clears the pending transaction only after
 confirmation. & \\
-$\square$ & \texttt{models show} lists only LLM-active lifelines, and default
-plus per-lifeline routes survive reopening Studio. & \\
+$\square$ & \texttt{models show} lists only LLM-active lifelines, default plus
+per-lifeline routes survive reopening Studio, and \texttt{models check} verifies
+their effective models without changing the profile. & \\
 $\square$ & Studio \texttt{run} collects both inputs and presents rejection and
 approval in the same terminal. & \\
 $\square$ & Studio \texttt{resume} continues the same managed run after an
@@ -3161,6 +3177,7 @@ show
 validate
 models reset all
 models show
+models check
 run
 resume
 runs
@@ -3182,6 +3199,7 @@ providers set anthropic
 models set Writer openai:gpt-4o-mini
 models set Reviewer claude:claude-sonnet-4-6
 models show
+models check
 run
 models reset all
 \end{lstlisting}
