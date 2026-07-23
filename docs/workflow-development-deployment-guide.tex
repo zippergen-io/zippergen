@@ -565,11 +565,13 @@ its content into \path{specification.md} and does not retain that source
 filename as project configuration.
 
 Studio fingerprints the canonical specification when it prepares a task.
-Immediately before \texttt{task}, \texttt{task show}, \texttt{task path},
-\texttt{current}, or \texttt{assistant}, it compares that fingerprint with the
-live document. If the specification changed, Studio creates one refreshed
-private task and then performs the requested command. Repeating the command
-creates no new history entry until the context changes.
+While the task is still \texttt{ready for assistant}, Studio compares that
+fingerprint before \texttt{task}, \texttt{task show}, \texttt{task path},
+\texttt{current}, or \texttt{assistant}. If an input document changed, Studio
+creates one refreshed private task and records which older request it replaces.
+After an assistant has run, its expected edits are output awaiting review, not
+new task input: Studio preserves the executed request instead of silently
+creating another ``ready'' task.
 
 Projects made with an older Studio may still contain
 \path{prompts/index.toml} and numbered prompt files. On the first
@@ -604,6 +606,35 @@ assistant can
 inspect and edit the application
 project, ask for its normal approvals, run checks, and report the result. When
 its session ends, the same ZipperGen Studio session continues.
+
+There is no assistant queue or scheduled background job. The command runs
+synchronously: before launch, \texttt{task} says
+\texttt{ready for assistant} and
+\texttt{Execution: not started; nothing is scheduled}. A successful return
+changes the same request to \texttt{awaiting human review} and replaces the
+assistant suggestion with the concrete review path. A failed or interrupted
+session remains visible and retryable. If Studio or the computer stops while
+the assistant is running, the orphaned state is recovered as
+\texttt{assistant interrupted} on the next inspection. Studio refuses to start an
+\texttt{awaiting human review} task accidentally; use
+\texttt{assistant codex --rerun} or
+\texttt{assistant claude --rerun} only when a second pass is intentional.
+
+\begin{lstlisting}[style=shell]
+task
+Current task
+  Status     [warning] awaiting human review
+  Assistant            Codex -- returned ...
+  Execution            assistant session ended; nothing is scheduled
+  Context    [success] assistant result is preserved for review
+  Next                  use / current / validate / show / task close
+\end{lstlisting}
+
+For this initial creation task, use \texttt{task close} after the generated
+workflow has passed the review below. The command removes only the stable
+\path{.zippergen/current-task.md} mirror; timestamped private history remains.
+Refinement tasks close differently: their explicit acceptance operation is
+\texttt{spec reconcile}, while \texttt{spec discard} records rejection.
 
 If Studio says that \texttt{codex} is missing, the prepared task remains safe.
 Open a second operating-system terminal. If npm is already installed, install
@@ -815,6 +846,22 @@ No export must be repeated. The workflow, model routing, run record, and
 development secrets live below \path{$HOME/.zippergen/workspaces} by default.
 A shell export disappears with its shell; Studio's workspace record does not.
 
+The initial creation task has now been generated, inspected, validated, run,
+and recovery-tested. Close that development task explicitly:
+
+\begin{lstlisting}[style=shell]
+task
+task close
+\end{lstlisting}
+
+\texttt{task} should say \texttt{awaiting human review} and show
+\texttt{task close} in its \texttt{Next} row. Confirm the close when Studio
+asks. This does not remove the specification, workflow, tests, run, or private
+task history; it only records that this creation task is no longer open.
+\texttt{current} will then show no current development task. The optional
+model-routing step below and later deployment do not require an open assistant
+task.
+
 \subsubsection*{Optional Step 9: route two lifelines to different real models}
 
 Only do this after the mock path succeeds and only if you have provider
@@ -984,6 +1031,8 @@ or another permanent prompt fragment. The short \texttt{refine} command is a
 first-class alias. Supplying short text, for example \texttt{refine Also keep
 the mock backend as the default}, appends it to the existing pending document.
 \texttt{spec pending} displays the complete change without opening the editor.
+Appending here never appends a chronological note to
+\path{specification.md}.
 
 This step is useful because creation and later modification must follow the
 same safe cycle; it is not required merely to deploy the initially generated
@@ -1014,15 +1063,28 @@ spec show             # verify the assistant integrated the requirement
 spec reconcile        # confirm, archive, and clear the pending change
 \end{lstlisting}
 
-The refinement must come before the assistant call. If either document changes,
-the next task inspection or assistant launch refreshes the task automatically.
+The refinement must come before the assistant call. Before the first assistant
+launch, editing either input document refreshes the prepared task
+automatically. After the assistant returns, \texttt{task} reports
+\texttt{awaiting human review}; it does not reinterpret the expected edits as
+a new task. Its \texttt{Next} row names the review commands above. Nothing is
+scheduled, and a second assistant launch requires an explicit
+\texttt{--rerun}.
+
+\texttt{spec reconcile} is an acceptance and cleanup operation, not a merge
+engine. The coherent fusion happens either manually with \texttt{spec edit} or
+through \texttt{assistant codex}/\texttt{assistant claude}. Simple copying is
+possible in an editor but is usually the wrong result: the canonical document
+should describe the current application cleanly rather than accumulate update
+notes.
 \texttt{spec reconcile} refuses to clear the pending document when the
 canonical specification has not changed since refinement began; this catches
 an assistant that changed code but forgot the durable requirements. It asks
-for human confirmation and then moves the pending text into recoverable
-private history. Use \texttt{spec discard} for an unwanted change and
-\texttt{spec history} to list reconciled and discarded refinements. Accepted
-specification history remains visible in Git.
+for human confirmation, accepts the already-integrated canonical document,
+moves the pending text into recoverable private history, and closes the task.
+Use \texttt{spec discard} for an unwanted change and \texttt{spec history} to
+list reconciled and discarded refinements. Accepted specification history
+remains visible in Git.
 
 \subsubsection*{Step 11: perform the pre-deployment review}
 
@@ -1173,6 +1235,8 @@ spec edit      # edit the same automatically named specification.md
 spec refine    # create/reopen the one pending refinement
 spec pending   # inspect that change without opening the editor
 spec reconcile # accept an integrated change and clear pending state
+task            # lifecycle: prepared, running, review, failed/interrupted
+task close      # close a reviewed creation task; history remains
 use            # discover workflows and select one from a numbered list
 show           # choose a semantic code view from a numbered list
 validate       # validate the selected workflow and every projection
@@ -1186,6 +1250,7 @@ project reset  # choose fresh design, state-only reset, or cancel
 create          # create/reopen specification.md and prepare a brief
 refine          # short alias for spec refine
 assistant codex # execute the current task; assistant claude is also supported
+assistant codex --rerun # deliberately repeat a task awaiting review
 deploy         # explicitly enter guided named deployment
 exit           # leave Studio
 \end{lstlisting}
@@ -1324,7 +1389,10 @@ workflow model provider, and neither automates deployment. The assistant edits
 ordinary files in the checkout; ZipperGen then loads, validates, projects,
 renders, and runs the result. Other coding assistants can read the same task
 through \texttt{task show} or \texttt{task path}. After source creation, enter
-\texttt{use} to discover and select the new workflow.
+\texttt{use} to discover and select the new workflow. The task is not a queued
+job: Studio records the synchronous assistant return as
+\texttt{awaiting human review}, and \texttt{task close} closes the reviewed
+creation handoff without deleting its history.
 \end{notebox}
 
 For an existing selected workflow, open or reopen the one pending change:
@@ -1338,7 +1406,9 @@ the canonical specification plus pending refinement in the assistant brief.
 The assistant is required to update \path{specification.md}, preserve behavior
 not mentioned in the request, validate the result, inspect changed projections,
 and run \texttt{zippergen diff} against that baseline. After review,
-\texttt{spec reconcile} clears the pending transaction.
+\texttt{spec reconcile} accepts the already-integrated canonical
+specification, archives the pending transaction, and closes the task. It does
+not itself concatenate or rewrite the two documents.
 
 \subsection{Use a real LLM without repeating an API-key export}
 
@@ -2990,12 +3060,16 @@ result table; \texttt{task show} exposes the complete task. & \\
 $\square$ & \texttt{assistant} launches Codex in the project root without a
 copied path or MCP setup; the assistant creates visible source plus a focused
 test at the requested paths. & \\
+$\square$ & After the assistant returns, \texttt{task} reports
+\texttt{awaiting human review}, states that nothing is scheduled, and lists
+review commands instead of suggesting another assistant run. & \\
 $\square$ & \texttt{spec refine} creates or reopens exactly one automatically
 named pending refinement; the \texttt{refine} alias and repeated edits do not
 create a pile of prompt files. & \\
 $\square$ & The assistant receives the canonical specification plus pending
-change; \texttt{spec reconcile} requires integration, archives the change, and
-clears the pending transaction only after confirmation. & \\
+change; \texttt{spec reconcile} requires prior integration, performs no hidden
+merge, archives the change, and clears the pending transaction only after
+confirmation. & \\
 $\square$ & \texttt{models show} lists only LLM-active lifelines, and default
 plus per-lifeline routes survive reopening Studio. & \\
 $\square$ & Studio \texttt{run} collects both inputs and presents rejection and

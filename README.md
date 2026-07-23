@@ -257,10 +257,13 @@ the pending change, and the selected workflow.
 
 The assistant must integrate the change coherently into `specification.md`
 alongside code and tests, while leaving the pending document for human review.
-After inspection, `spec reconcile` verifies that the canonical specification
-changed, asks for confirmation, archives the pending text privately, and
-clears it. `spec discard` safely archives an unwanted change; `spec history`
-lists both outcomes. Accepted specification history belongs in Git.
+This can also be done manually with `spec edit`. `spec reconcile` does not
+perform a merge: after inspection it verifies that the canonical specification
+changed, asks whether to accept that existing integration, archives the pending
+text privately, and clears it. `refine CHANGE` appends only to the pending
+document, never to the canonical specification. `spec discard` safely archives
+an unwanted change; `spec history` lists both outcomes. Accepted specification
+history belongs in Git.
 
 The handoff also includes required source, tests, validation, semantic views,
 and the no-deployment boundary. Studio writes the complete current handoff to
@@ -272,11 +275,13 @@ deliberately replaces the current task; `specification.md` remains the durable
 design record.
 
 The task cannot silently lag behind that record. Studio fingerprints the
-canonical specification and pending refinement. Immediately before `assistant`,
-`task`, `task show`, `task path`, or `current`, it compares the fingerprint
-again. If either document changed, Studio generates one new synchronized task
-and archives the previous task with an explicit refresh link. A second
-inspection or launch creates nothing new until the context changes.
+canonical specification and pending refinement. While a task is still
+`ready for assistant`, Studio compares the fingerprint before `assistant`,
+`task`, `task show`, `task path`, or `current`. If either input document
+changed, Studio generates one synchronized replacement and records which
+request it refreshes. Once an assistant has run, expected edits no longer look
+like stale task input: the same request moves to `awaiting human review` and is
+preserved until it is reconciled, discarded, deliberately rerun, or closed.
 
 `assistant codex` or plain `assistant` opens the locally installed Codex CLI;
 `assistant claude` runs Claude Code's one-shot agent mode with project-local
@@ -294,9 +299,22 @@ Each assistant retains its own model settings, approvals, and independently
 configured tools. MCP is optional, not part of the ZipperGen handoff. Another
 repository-aware coding assistant can consume `task show` or the file path.
 
+Assistant commands execute immediately and synchronously; Studio has no hidden
+task queue or scheduled assistant job. Before launch, `task` reports `ready for
+assistant` and `Execution: not started; nothing is scheduled`. A successful
+return records the assistant and time, then reports `awaiting human review`
+with the actual review commands. A failed or interrupted session remains
+visible and retryable; after a Studio or computer crash, an orphaned `running`
+record is recovered as `assistant interrupted` on the next inspection. Studio
+blocks an accidental second execution while review is pending; use `assistant
+codex --rerun` or `assistant claude --rerun` only when another pass is
+intentional.
+
 After the assistant creates visible Python source, `use` selects it. For an
 existing workflow, `spec refine` additionally saves a semantic baseline for a
-meaningful before/after diff.
+meaningful before/after diff. A refinement task closes through `spec reconcile`
+or `spec discard`; after reviewing an initial creation task, `task close`
+clears its stable mirror while retaining private task history.
 
 Every later source/design change uses the same visible loop:
 

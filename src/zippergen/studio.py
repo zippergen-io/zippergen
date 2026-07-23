@@ -174,6 +174,7 @@ _SUBCOMMAND_COMPLETIONS = {
         ("show", "show the complete assistant task"),
         ("path", "print the generated task path"),
         ("history", "list previous assistant tasks"),
+        ("close", "close a reviewed creation task"),
     ),
     "assistant": (
         ("codex", "open Codex in the project root"),
@@ -335,7 +336,10 @@ _HELP = """Commands:
   spec history                   list reconciled/discarded private history
   task                            show the current freshness-checked task
   task show|path|history          inspect the synchronized task or its history
+  task close [--yes]              close a reviewed creation task
   assistant [codex|claude]       sync the spec, then run a coding assistant
+  assistant [codex|claude] --rerun
+                                 deliberately rerun a task awaiting review
   editor [show|set CMD|reset]     inspect or remember the terminal editor
   edit [workflow|file PATH]       edit with the remembered/default editor
   edit ... --editor CMD           choose an editor for this invocation only
@@ -718,6 +722,8 @@ class Studio:
             "discard",
         }:
             return [("--yes", "confirm without another prompt")]
+        if command == "task" and args and args[0].lower() == "close":
+            return [("--yes", "confirm without another prompt")]
         if command == "project" and args and args[0].lower() == "reset":
             if len(args) == 1:
                 return [
@@ -735,8 +741,12 @@ class Studio:
             return []
         if command == "editor" and args and args[0].lower() == "set":
             return self._editor_completion_candidates()
-        if command == "assistant" and not args:
-            return list(_SUBCOMMAND_COMPLETIONS["assistant"])
+        if command == "assistant":
+            if not args:
+                return list(_SUBCOMMAND_COMPLETIONS["assistant"])
+            if len(args) == 1 and args[0].lower() in {"codex", "claude"}:
+                return [("--rerun", "deliberately rerun a task awaiting review")]
+            return []
         if command in {"deploy", "status", "doctor", "logs", "start", "restart", "stop"}:
             values: list[tuple[str, str]] = []
             deployment = self.workspace.load().get("last_deployment")
@@ -1158,13 +1168,41 @@ class Studio:
                     [("Status", "none; use spec refine", None)],
                 )
                 return
+            request_record = self._ensure_current_task_fresh(announce=False)
+            task_record = (
+                request_record
+                if request_record and request_record.get("kind") == "refine"
+                else None
+            )
+            task_status = (
+                str(task_record.get("status") or "prepared")
+                if task_record
+                else "prepared"
+            )
+            if task_status == "awaiting_review":
+                pending_status = "assistant returned; awaiting human review"
+                pending_kind: StatusKind = "warning"
+                assert task_record is not None
+                next_action = self._task_next(task_record)
+            elif task_status == "assistant_running":
+                pending_status = "assistant is integrating the change"
+                pending_kind = "info"
+                next_action = "wait for the assistant session to return"
+            elif task_status in {"assistant_failed", "assistant_interrupted"}:
+                pending_status = "assistant did not finish; refinement remains open"
+                pending_kind = "error"
+                next_action = "task · assistant codex · assistant claude"
+            else:
+                pending_status = "waiting to be integrated"
+                pending_kind = "warning"
+                next_action = "assistant codex · assistant claude"
             self._emit_table(
                 "Pending refinement",
                 [
-                    ("Status", "waiting to be integrated", "warning"),
+                    ("Status", pending_status, pending_kind),
                     ("File", ".zippergen/pending-refinement.md", None),
                     ("Edit", "spec refine", None),
-                    ("Apply", "assistant codex · assistant claude", None),
+                    ("Next", next_action, None),
                 ],
             )
             self._emit("Requested change")
@@ -1257,7 +1295,18 @@ class Studio:
                         result["status"],
                         "success" if action == "reconcile" else "warning",
                     ),
+                    (
+                        "Canonical",
+                        (
+                            "existing integration accepted; no automatic merge "
+                            "was performed"
+                            if action == "reconcile"
+                            else "unchanged by discard"
+                        ),
+                        "success" if action == "reconcile" else None,
+                    ),
                     ("Pending", "cleared", "success"),
+                    ("Task", "closed; private history retained", "success"),
                     ("History", result["history_path"], None),
                     ("Next", "spec show · current", None),
                 ],
@@ -1909,12 +1958,161 @@ class Studio:
             "before|after ID."
         )
 
-    def manage_task(self, args: list[str]) -> None:
-        if len(args) > 1 or (
-            args and args[0].lower() not in {"show", "path", "history"}
+    def _normalize_task_lifecycle(
+        self,
+        record: dict[str, object],
+    ) -> dict[str, object]:
+        """Add lifecycle meaning to tasks created before lifecycle tracking."""
+
+        if record.get("status") == "assistant_running":
+            raw_pid = record.get("studio_process_id")
+            process_is_live = False
+            if isinstance(raw_pid, int) and raw_pid > 0:
+                try:
+                    os.kill(raw_pid, 0)
+                except ProcessLookupError:
+                    process_is_live = False
+                except PermissionError:
+                    process_is_live = True
+                else:
+                    process_is_live = True
+            if not process_is_live:
+                return self.workspace.update_request(
+                    str(record["request_id"]),
+                    status="assistant_interrupted",
+                    assistant_finished_at=time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                    assistant_error=(
+                        "the Studio process ended before the assistant returned"
+                    ),
+                    result_specification_fingerprint=(
+                        self.workspace.specification_fingerprint()
+                    ),
+                )
+            return record
+        if record.get("status"):
+            return record
+        changes: dict[str, object] = {"status": "prepared"}
+        if (
+            record.get("kind") == "refine"
+            and self.workspace.pending_refinement() is not None
         ):
-            raise SystemExit("Use task, task show, task path, or task history.")
+            baseline = self.workspace.load().get(
+                "pending_specification_fingerprint"
+            )
+            current = self.workspace.specification_fingerprint(
+                include_pending=False
+            )
+            if baseline and baseline != current:
+                changes = {
+                    "status": "awaiting_review",
+                    "lifecycle_inferred": True,
+                    "result_specification_fingerprint": (
+                        self.workspace.specification_fingerprint()
+                    ),
+                }
+        return self.workspace.update_request(
+            str(record["request_id"]),
+            **changes,
+        )
+
+    def _task_state(
+        self,
+        record: dict[str, object],
+    ) -> tuple[str, StatusKind]:
+        status = str(record.get("status") or "prepared")
+        states: dict[str, tuple[str, StatusKind]] = {
+            "prepared": ("ready for assistant", "success"),
+            "assistant_running": ("assistant running", "info"),
+            "awaiting_review": ("awaiting human review", "warning"),
+            "assistant_failed": ("assistant failed", "error"),
+            "assistant_interrupted": ("assistant interrupted", "warning"),
+            "reconciled": ("reconciled", "success"),
+            "discarded": ("discarded", "warning"),
+            "closed": ("closed", "success"),
+        }
+        return states.get(status, (status.replace("_", " "), "warning"))
+
+    def _task_next(self, record: dict[str, object]) -> str:
+        status = str(record.get("status") or "prepared")
+        kind = str(record.get("kind") or "")
+        if status == "awaiting_review":
+            if kind == "refine":
+                if record.get("specification_context_changed") is False:
+                    return (
+                        "spec edit · assistant codex --rerun · "
+                        "assistant claude --rerun"
+                    )
+                return "current · validate · show · run · spec reconcile"
+            return "use · current · validate · show · task close"
+        if status == "assistant_running":
+            return "wait for the assistant session to return"
+        if status in {"assistant_failed", "assistant_interrupted"}:
+            return "inspect changes · assistant codex · assistant claude"
+        return "assistant codex · assistant claude"
+
+    def _task_execution(self, record: dict[str, object]) -> str:
+        status = str(record.get("status") or "prepared")
+        if status == "assistant_running":
+            return "running synchronously now; nothing is queued"
+        if status == "prepared":
+            return "not started; nothing is scheduled"
+        if record.get("manual_integration") and not record.get("assistant"):
+            return "assistant not run; nothing is scheduled"
+        return "assistant session ended; nothing is scheduled"
+
+    def _task_assistant(self, record: dict[str, object]) -> str:
+        assistant = record.get("assistant")
+        status = str(record.get("status") or "prepared")
+        if assistant:
+            finished = record.get("assistant_finished_at")
+            if status == "assistant_running":
+                return (
+                    f"{assistant} — started "
+                    f"{record.get('assistant_started_at') or 'now'}"
+                )
+            if finished:
+                return f"{assistant} — returned {finished}"
+            return str(assistant)
+        if record.get("lifecycle_inferred"):
+            return "not recorded; review inferred from specification change"
+        if record.get("manual_integration"):
+            return "not used; canonical specification was edited manually"
+        return "not started"
+
+    def _task_context(
+        self,
+        record: dict[str, object],
+    ) -> tuple[str, StatusKind]:
+        status = str(record.get("status") or "prepared")
+        current = self.workspace.specification_fingerprint()
+        if status == "awaiting_review":
+            result = record.get("result_specification_fingerprint")
+            if result and result != current:
+                if record.get("manual_integration"):
+                    return "changed again after manual integration", "warning"
+                return "changed again after the assistant returned", "warning"
+            if record.get("manual_integration"):
+                return "manual integration is preserved for review", "success"
+            return "assistant result is preserved for review", "success"
+        if record.get("specification_fingerprint") == current:
+            return "matches the current specification", "success"
+        return "changed since this task was prepared", "warning"
+
+    def manage_task(self, args: list[str]) -> None:
+        if len(args) > 2 or (
+            args and args[0].lower() not in {"show", "path", "history", "close"}
+        ):
+            raise SystemExit(
+                "Use task, task show, task path, task history, or "
+                "task close [--yes]."
+            )
         action = args[0].lower() if args else "summary"
+        rest = args[1:]
+        if action != "close" and rest:
+            raise SystemExit(
+                "Use task, task show, task path, task history, or "
+                "task close [--yes]."
+            )
         if action == "history":
             records = self.workspace.list_requests()
             if not records:
@@ -1926,12 +2124,15 @@ class Studio:
             self._emit("Task history")
             self._emit("────────────")
             self._emit(
-                "  Request                  Kind        Refreshes                 Created"
+                "  Request                  Kind        State              "
+                "Refreshes                 Created"
             )
             for record in records:
+                state, _state_kind = self._task_state(record)
                 self._emit(
                     f"  {str(record['request_id']):24} "
                     f"{str(record['kind']):11} "
+                    f"{state:18} "
                     f"{str(record.get('refreshes_request') or '—'):24}  "
                     f"{record.get('created_at') or '—'}"
                 )
@@ -1940,13 +2141,38 @@ class Studio:
 
         record = self._ensure_current_task_fresh()
         if record is None:
-            if action in {"show", "path"}:
+            if action in {"show", "path", "close"}:
                 raise SystemExit(
                     "No current task. Use create or spec refine to prepare one."
                 )
             self._emit_table(
                 "Current task",
                 [("Status", "none; use create or spec refine", "warning")],
+            )
+            return
+        record = self._normalize_task_lifecycle(record)
+        if action == "close":
+            if rest not in ([], ["--yes"]):
+                raise SystemExit("Use task close [--yes].")
+            if self.workspace.pending_refinement() is not None:
+                raise SystemExit(
+                    "A refinement is still pending. Review it, then use "
+                    "'spec reconcile' to accept it or 'spec discard' to reject it."
+                )
+            if rest != ["--yes"] and not self._confirm_action(
+                "Close the current reviewed task? [y/n]: ",
+                cancel_message="Task close cancelled; nothing was changed.",
+            ):
+                return
+            closed = self.workspace.clear_current_task()
+            self._emit_table(
+                "Task closed",
+                [
+                    ("Status", "closed", "success"),
+                    ("Request", closed["request_id"], None),
+                    ("History", "retained; use task history", None),
+                    ("Next", "current", None),
+                ],
             )
             return
         if action == "path":
@@ -1957,31 +2183,64 @@ class Studio:
                 self.workspace.current_task_path.read_text(encoding="utf-8").rstrip()
             )
             return
+        state, state_kind = self._task_state(record)
+        context, context_kind = self._task_context(record)
         self._emit_table(
             "Current task",
             [
-                ("Status", "ready", "success"),
+                ("Status", state, state_kind),
                 ("Kind", record["kind"], None),
                 ("Request", record["request_id"], None),
                 ("Workflow", record.get("workflow_spec") or "new workflow", None),
+                ("Assistant", self._task_assistant(record), None),
+                ("Execution", self._task_execution(record), None),
                 ("Refreshes", record.get("refreshes_request") or "—", None),
-                ("Context", "matches the current specification", "success"),
+                ("Context", context, context_kind),
                 ("File", ".zippergen/current-task.md", None),
-                ("Next", "assistant codex · assistant claude", None),
+                ("Next", self._task_next(record), None),
             ],
         )
 
     def run_assistant(self, args: list[str]) -> None:
-        if len(args) > 1 or (
-            args and args[0].lower() not in {"codex", "claude"}
-        ):
-            raise SystemExit("Use assistant, assistant codex, or assistant claude.")
-        assistant = args[0].lower() if args else "codex"
-        record = self._ensure_current_task_fresh()
+        rerun = "--rerun" in args
+        values = [value for value in args if value != "--rerun"]
+        if len(values) > 1 or any(
+            value.lower() not in {"codex", "claude"} for value in values
+        ) or args.count("--rerun") > 1:
+            raise SystemExit(
+                "Use assistant, assistant codex, assistant claude, or "
+                "assistant [codex|claude] --rerun."
+            )
+        assistant = values[0].lower() if values else "codex"
+        record = self._ensure_current_task_fresh(for_assistant=True)
         if record is None:
             raise SystemExit(
                 "No current task. Use create or spec refine before starting the "
                 "assistant."
+            )
+        status = str(record.get("status") or "prepared")
+        if status == "awaiting_review":
+            manual_first_pass = bool(record.get("manual_integration")) and not bool(
+                record.get("assistant")
+            )
+            if not rerun and not manual_first_pass:
+                raise SystemExit(
+                    "The assistant has already returned and this task is awaiting "
+                    "human review. Use current, validate, show, and then "
+                    "'spec reconcile'; use 'assistant "
+                    f"{assistant} --rerun' only to run it deliberately again."
+                )
+            record = self._ensure_current_task_fresh(
+                for_assistant=True,
+                force=True,
+            )
+            assert record is not None
+            status = str(record.get("status") or "prepared")
+        if status == "assistant_running":
+            raise SystemExit(
+                "This task is already marked as running. Wait for the assistant "
+                "session to return; after an interrupted Studio process, prepare "
+                "or refine the task again before retrying."
             )
         tool = "Claude Code" if assistant == "claude" else "Codex CLI"
         executable = shutil.which(assistant)
@@ -1997,6 +2256,17 @@ class Studio:
                 "the current task remains available at "
                 f"{self.workspace.current_task_path}."
             )
+        started_at = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+        record = self.workspace.update_request(
+            str(record["request_id"]),
+            status="assistant_running",
+            assistant=("Claude Code" if assistant == "claude" else "Codex"),
+            assistant_started_at=started_at,
+            assistant_finished_at=None,
+            assistant_exit_code=None,
+            studio_process_id=os.getpid(),
+            lifecycle_inferred=False,
+        )
         relative_task = self.workspace.current_task_path.relative_to(
             self.workspace.root
         ).as_posix()
@@ -2055,19 +2325,86 @@ class Studio:
                 cwd=self.workspace.root,
                 check=False,
             )
+        except KeyboardInterrupt:
+            self.workspace.update_request(
+                str(record["request_id"]),
+                status="assistant_interrupted",
+                assistant_finished_at=time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                result_specification_fingerprint=(
+                    self.workspace.specification_fingerprint()
+                ),
+            )
+            raise
         except OSError as exc:
+            self.workspace.update_request(
+                str(record["request_id"]),
+                status="assistant_failed",
+                assistant_finished_at=time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                assistant_error=str(exc)[:240],
+                result_specification_fingerprint=(
+                    self.workspace.specification_fingerprint()
+                ),
+            )
             raise SystemExit(
                 f"Could not start {tool}: {exc}"
             ) from exc
         if completed.returncode != 0:
+            self.workspace.update_request(
+                str(record["request_id"]),
+                status="assistant_failed",
+                assistant_finished_at=time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                assistant_exit_code=completed.returncode,
+                result_specification_fingerprint=(
+                    self.workspace.specification_fingerprint()
+                ),
+            )
             raise SystemExit(
                 f"{assistant.capitalize()} exited with status "
                 f"{completed.returncode}; the task remains at "
                 f"{self.workspace.current_task_path}."
             )
+        result_fingerprint = self.workspace.specification_fingerprint()
+        changed = record.get("specification_fingerprint") != result_fingerprint
+        record = self.workspace.update_request(
+            str(record["request_id"]),
+            status="awaiting_review",
+            assistant_finished_at=time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            assistant_exit_code=0,
+            result_specification_fingerprint=result_fingerprint,
+            specification_context_changed=changed,
+        )
         self._success(
-            f"{'Claude Code' if assistant == 'claude' else 'Codex'} session ended. "
-            "Inspect the generated files, then use current, validate, and show."
+            f"{'Claude Code' if assistant == 'claude' else 'Codex'} session "
+            "ended successfully."
+        )
+        kind = str(record.get("kind") or "")
+        specification_result = (
+            "changed since task preparation"
+            if changed
+            else (
+                "unchanged; reconciliation will refuse until it is integrated"
+                if kind == "refine"
+                else "unchanged; review the generated workflow files"
+            )
+        )
+        self._emit_table(
+            "Review required",
+            [
+                ("Status", "awaiting human review", "warning"),
+                (
+                    "Specification",
+                    specification_result,
+                    "success" if changed else "warning",
+                ),
+                (
+                    "Refinement",
+                    "still open; Studio never accepts it automatically"
+                    if kind == "refine"
+                    else "not applicable",
+                    "warning" if kind == "refine" else None,
+                ),
+                ("Next", self._task_next(record), None),
+            ],
         )
 
     def show_current(self) -> None:
@@ -2078,6 +2415,22 @@ class Studio:
         request = self._ensure_current_task_fresh(announce=False)
         specification = self.workspace.specification()
         pending = self.workspace.pending_refinement()
+        task_state, task_state_kind = (
+            self._task_state(request)
+            if request
+            else ("none; use create or spec refine", "warning")
+        )
+        refinement_status = (
+            (
+                "pending — awaiting human review; use spec pending"
+                if request
+                and request.get("kind") == "refine"
+                and request.get("status") == "awaiting_review"
+                else "pending — use spec pending or spec refine"
+            )
+            if pending is not None
+            else "none"
+        )
         self._emit("Current")
         self._emit("═══════")
         self._emit()
@@ -2106,22 +2459,23 @@ class Studio:
                 ),
                 (
                     "Refinement",
-                    (
-                        "pending — use spec pending or spec refine"
-                        if pending is not None
-                        else "none"
-                    ),
+                    refinement_status,
                     "warning" if pending is not None else None,
                 ),
                 (
                     "Task",
                     (
                         f"{request['request_id']} ({request['kind']}) — "
-                        ".zippergen/current-task.md"
+                        f"{task_state}; .zippergen/current-task.md"
                         if request
-                        else "none; use create or spec refine"
+                        else task_state
                     ),
-                    "success" if request else "warning",
+                    task_state_kind,
+                ),
+                *(
+                    [("Task next", self._task_next(request), None)]
+                    if request
+                    else []
                 ),
                 (
                     "Editor",
@@ -3189,15 +3543,53 @@ and verification results.
         self,
         *,
         announce: bool = True,
+        for_assistant: bool = False,
+        force: bool = False,
     ) -> dict[str, object] | None:
         record = self.workspace.current_request()
         if record is None:
             return None
+        record = self._normalize_task_lifecycle(record)
+        if (
+            not force
+            and record.get("status") == "prepared"
+            and record.get("kind") == "refine"
+            and self.workspace.pending_refinement() is not None
+        ):
+            baseline = self.workspace.load().get(
+                "pending_specification_fingerprint"
+            )
+            current_canonical = self.workspace.specification_fingerprint(
+                include_pending=False
+            )
+            if baseline and baseline != current_canonical:
+                record = self.workspace.update_request(
+                    str(record["request_id"]),
+                    status="awaiting_review",
+                    manual_integration=True,
+                    result_specification_fingerprint=(
+                        self.workspace.specification_fingerprint()
+                    ),
+                    specification_context_changed=True,
+                )
+                if announce:
+                    self._info(
+                        "Canonical specification changed while the refinement "
+                        "was open; preserving the task for human review."
+                    )
+                return record
         ensured = self.workspace.ensure_specification()
         if ensured["content"] is None:
             return record
         fingerprint = self.workspace.specification_fingerprint()
-        if record.get("specification_fingerprint") == fingerprint:
+        status = str(record.get("status") or "prepared")
+        may_refresh = status == "prepared" or (
+            for_assistant
+            and status in {"assistant_failed", "assistant_interrupted"}
+        )
+        if not force and not may_refresh:
+            return record
+        if not force and record.get("specification_fingerprint") == fingerprint:
             return record
         kind = str(record.get("kind") or "")
         workflow_spec = str(record.get("workflow_spec") or "") or None

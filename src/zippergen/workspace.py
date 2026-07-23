@@ -677,6 +677,19 @@ class Workspace:
                 "content_file": str(path),
             },
         )
+        state = self.load()
+        current_request = state.get("current_request")
+        if current_request:
+            try:
+                self.update_request(
+                    str(current_request),
+                    status=status,
+                    closed_at=_timestamp(),
+                )
+            except WorkspaceError:
+                # Refinement reconciliation must still be able to clear an
+                # orphaned handoff whose archived metadata is missing.
+                pass
         try:
             self.pending_refinement_path.unlink()
         except FileNotFoundError:
@@ -1676,6 +1689,12 @@ class Workspace:
             "content_file": str(self.requests_directory / f"{request_id}.md"),
             "task_file": str(self.current_task_path),
             "created_at": _timestamp(),
+            "status": "prepared",
+            "assistant": None,
+            "assistant_started_at": None,
+            "assistant_finished_at": None,
+            "assistant_exit_code": None,
+            "result_specification_fingerprint": None,
         }
         self.requests_directory.mkdir(parents=True, exist_ok=True)
         task_content = content.rstrip() + "\n"
@@ -1684,6 +1703,37 @@ class Workspace:
         _atomic_write_text(self.current_task_path, task_content)
         self.update(current_request=request_id, task_cleared=False)
         return record
+
+    def update_request(
+        self,
+        request_id: str,
+        **changes: object,
+    ) -> dict[str, Any]:
+        """Update one assistant handoff's lifecycle metadata."""
+
+        record = self.load_request(request_id)
+        record.update(changes)
+        record["updated_at"] = _timestamp()
+        _atomic_write_json(self.request_path(request_id), record)
+        return record
+
+    def clear_current_task(self, *, status: str = "closed") -> dict[str, Any]:
+        """Close the current handoff while retaining its private history."""
+
+        record = self.current_request()
+        if record is None:
+            raise WorkspaceError("There is no current task.")
+        closed = self.update_request(
+            str(record["request_id"]),
+            status=status,
+            closed_at=_timestamp(),
+        )
+        try:
+            self.current_task_path.unlink()
+        except FileNotFoundError:
+            pass
+        self.update(current_request=None, task_cleared=True)
+        return closed
 
     def request_path(self, request_id: str) -> Path:
         return self.requests_directory / f"{request_id}.json"

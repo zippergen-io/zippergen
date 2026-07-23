@@ -133,6 +133,15 @@ def test_workspace_updates_run_and_saves_assistant_request(tmp_path):
     )
     assert metadata["prompt"] == "Create a review workflow"
     assert metadata["task_file"] == str(workspace.current_task_path)
+    assert metadata["status"] == "prepared"
+
+    workspace.update_request(
+        str(request["request_id"]),
+        status="awaiting_review",
+        assistant="Codex",
+    )
+    assert workspace.current_request()["status"] == "awaiting_review"
+    assert workspace.current_request()["assistant"] == "Codex"
 
     workspace.current_task_path.write_text("stale task\n")
     workspace.current_request()

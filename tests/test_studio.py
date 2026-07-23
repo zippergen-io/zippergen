@@ -369,7 +369,11 @@ def test_studio_assistant_launches_codex_in_project_on_the_stable_task(
     assert calls[0][2] is False
     assert output[0] == "Assistant"
     assert any("MCP" in line and "not required" in line for line in output)
-    assert output[-1].startswith("✓ Codex session ended")
+    assert any(line.startswith("✓ Codex session ended") for line in output)
+    assert any(
+        "Status" in line and "awaiting human review" in line for line in output
+    )
+    assert workspace.current_request()["status"] == "awaiting_review"
 
 
 def test_studio_assistant_refreshes_edited_specification_before_launch(
@@ -441,7 +445,8 @@ def test_studio_assistant_can_launch_claude_code_on_the_same_task(
     assert calls[0][2] is False
     assert any("Tool" in line and "Claude Code" in line for line in output)
     assert any("Mode" in line and "one-shot task" in line for line in output)
-    assert output[-1].startswith("✓ Claude Code session ended")
+    assert any(line.startswith("✓ Claude Code session ended") for line in output)
+    assert workspace.current_request()["status"] == "awaiting_review"
 
 
 def test_studio_assistant_reports_missing_codex_without_losing_task(
@@ -484,6 +489,264 @@ def test_studio_assistant_reports_missing_claude_and_rejects_unknown_tools(
     else:
         raise AssertionError("unknown assistants should be rejected")
     assert workspace.current_task_path.exists()
+
+
+def test_studio_completed_refinement_task_waits_for_review_without_refreshing(
+    tmp_path,
+    monkeypatch,
+):
+    studio, workspace, output = _studio(tmp_path)
+    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    workspace.save_specification("Echo the request through Writer.")
+    studio.refine_request("Require human approval before returning.")
+    original = workspace.current_request()
+    assert original is not None
+    monkeypatch.setattr("zippergen.studio.shutil.which", lambda name: "/bin/codex")
+
+    def fake_run(arguments, *, cwd, check):
+        workspace.save_specification(
+            "Echo the request through Writer and require human approval "
+            "before returning."
+        )
+        return subprocess.CompletedProcess(arguments, 0)
+
+    monkeypatch.setattr("zippergen.studio.subprocess.run", fake_run)
+
+    studio.execute("assistant codex")
+    completed = workspace.current_request()
+    assert completed is not None
+    assert completed["request_id"] == original["request_id"]
+    assert completed["status"] == "awaiting_review"
+    assert completed["assistant"] == "Codex"
+    assert completed["assistant_exit_code"] == 0
+    output.clear()
+
+    studio.execute("task")
+
+    reviewed = workspace.current_request()
+    assert reviewed is not None
+    assert reviewed["request_id"] == original["request_id"]
+    assert len(workspace.list_requests()) == 1
+    assert any(
+        "Status" in line and "awaiting human review" in line for line in output
+    )
+    assert any(
+        "Execution" in line and "nothing is scheduled" in line for line in output
+    )
+    assert any(
+        "Next" in line and "spec reconcile" in line for line in output
+    )
+    assert all("Task refreshed" not in line for line in output)
+
+    output.clear()
+    studio.execute("current")
+
+    assert any(
+        "Task" in line and "awaiting human review" in line for line in output
+    )
+    assert any(
+        "Task next" in line and "spec reconcile" in line for line in output
+    )
+    assert any(
+        "Refinement" in line and "awaiting human review" in line
+        for line in output
+    )
+
+    output.clear()
+    studio.execute("spec pending")
+
+    assert any(
+        "Status" in line and "awaiting human review" in line for line in output
+    )
+    assert any(
+        "Next" in line and "spec reconcile" in line for line in output
+    )
+
+    with pytest.raises(SystemExit, match="already returned.*awaiting human review"):
+        studio.execute("assistant codex")
+
+
+def test_studio_explicit_assistant_rerun_prepares_a_new_task(
+    tmp_path,
+    monkeypatch,
+):
+    studio, workspace, _output = _studio(tmp_path)
+    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    workspace.save_specification("Echo the request through Writer.")
+    studio.refine_request("Require human approval before returning.")
+    first = workspace.current_request()
+    assert first is not None
+    monkeypatch.setattr("zippergen.studio.shutil.which", lambda name: "/bin/codex")
+
+    def fake_run(arguments, *, cwd, check):
+        workspace.save_specification(
+            "Echo the request through Writer and require human approval "
+            "before returning."
+        )
+        return subprocess.CompletedProcess(arguments, 0)
+
+    monkeypatch.setattr("zippergen.studio.subprocess.run", fake_run)
+    studio.execute("assistant codex")
+
+    studio.execute("assistant codex --rerun")
+
+    rerun = workspace.current_request()
+    assert rerun is not None
+    assert rerun["request_id"] != first["request_id"]
+    assert rerun["refreshes_request"] == first["request_id"]
+    assert rerun["status"] == "awaiting_review"
+    assert len(workspace.list_requests()) == 2
+
+
+def test_studio_failed_and_interrupted_assistants_have_explicit_task_states(
+    tmp_path,
+    monkeypatch,
+):
+    studio, workspace, output = _studio(tmp_path)
+    studio.create_request("Create a review workflow.")
+    monkeypatch.setattr("zippergen.studio.shutil.which", lambda name: "/bin/codex")
+    monkeypatch.setattr(
+        "zippergen.studio.subprocess.run",
+        lambda arguments, **kwargs: subprocess.CompletedProcess(arguments, 7),
+    )
+
+    with pytest.raises(SystemExit, match="exited with status 7"):
+        studio.execute("assistant codex")
+
+    failed = workspace.current_request()
+    assert failed is not None
+    assert failed["status"] == "assistant_failed"
+    assert failed["assistant_exit_code"] == 7
+    output.clear()
+    studio.execute("task")
+    assert any("Status" in line and "assistant failed" in line for line in output)
+
+    def interrupt(arguments, **kwargs):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("zippergen.studio.subprocess.run", interrupt)
+    with pytest.raises(KeyboardInterrupt):
+        studio.execute("assistant codex")
+
+    interrupted = workspace.current_request()
+    assert interrupted is not None
+    assert interrupted["status"] == "assistant_interrupted"
+
+
+def test_studio_recovers_an_orphaned_running_assistant_as_interrupted(
+    tmp_path,
+    monkeypatch,
+):
+    studio, workspace, output = _studio(tmp_path)
+    studio.create_request("Create a review workflow.")
+    request = workspace.current_request()
+    assert request is not None
+    workspace.update_request(
+        str(request["request_id"]),
+        status="assistant_running",
+        assistant="Codex",
+        studio_process_id=12345,
+    )
+
+    def missing_process(pid, signal):
+        assert (pid, signal) == (12345, 0)
+        raise ProcessLookupError
+
+    monkeypatch.setattr("zippergen.studio.os.kill", missing_process)
+    output.clear()
+
+    studio.execute("task")
+
+    recovered = workspace.current_request()
+    assert recovered is not None
+    assert recovered["status"] == "assistant_interrupted"
+    assert any(
+        "Status" in line and "assistant interrupted" in line for line in output
+    )
+
+
+def test_studio_infers_review_state_for_an_existing_integrated_refinement(
+    tmp_path,
+):
+    studio, workspace, output = _studio(tmp_path)
+    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    workspace.save_specification("Echo the request through Writer.")
+    studio.refine_request("Require human approval before returning.")
+    original = workspace.current_request()
+    assert original is not None
+    metadata_path = workspace.request_path(str(original["request_id"]))
+    metadata = json.loads(metadata_path.read_text())
+    metadata.pop("status")
+    metadata_path.write_text(json.dumps(metadata))
+    workspace.save_specification(
+        "Echo the request through Writer and require human approval "
+        "before returning."
+    )
+    output.clear()
+
+    studio.execute("task")
+
+    migrated = workspace.current_request()
+    assert migrated is not None
+    assert migrated["request_id"] == original["request_id"]
+    assert migrated["status"] == "awaiting_review"
+    assert migrated["lifecycle_inferred"] is True
+    assert len(workspace.list_requests()) == 1
+    assert any(
+        "Status" in line and "awaiting human review" in line for line in output
+    )
+    assert any(
+        "Assistant" in line and "review inferred" in line for line in output
+    )
+
+
+def test_studio_manual_spec_integration_is_reviewable_without_an_assistant(
+    tmp_path,
+):
+    studio, workspace, output = _studio(tmp_path)
+    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    workspace.save_specification("Echo the request through Writer.")
+    studio.refine_request("Require human approval before returning.")
+    original = workspace.current_request()
+    assert original is not None
+    workspace.save_specification(
+        "Echo the request through Writer and require human approval "
+        "before returning."
+    )
+    output.clear()
+
+    studio.execute("task")
+
+    manual = workspace.current_request()
+    assert manual is not None
+    assert manual["request_id"] == original["request_id"]
+    assert manual["status"] == "awaiting_review"
+    assert manual["manual_integration"] is True
+    assert any(
+        "Assistant" in line and "edited manually" in line for line in output
+    )
+    assert any(
+        "Execution" in line and "assistant not run" in line for line in output
+    )
+    assert any("Next" in line and "spec reconcile" in line for line in output)
+
+
+def test_studio_task_close_keeps_history_and_refinements_use_reconcile(tmp_path):
+    studio, workspace, output = _studio(tmp_path)
+    studio.create_request("Create a review workflow.")
+
+    studio.execute("task close --yes")
+
+    assert workspace.current_request() is None
+    assert not workspace.current_task_path.exists()
+    assert workspace.list_requests()[0]["status"] == "closed"
+    assert any(line == "Task closed" for line in output)
+
+    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    workspace.save_specification("Echo the request through Writer.")
+    studio.refine_request("Require human approval.")
+    with pytest.raises(SystemExit, match="spec reconcile.*spec discard"):
+        studio.execute("task close --yes")
 
 
 def test_studio_remembers_shows_and_resets_editor_preference(
@@ -1275,8 +1538,12 @@ def test_studio_reconcile_requires_integrated_spec_and_keeps_private_history(
     assert workspace.current_request() is None
     assert not workspace.current_task_path.exists()
     assert workspace.list_spec_history()[0]["status"] == "reconciled"
+    assert workspace.list_requests()[0]["status"] == "reconciled"
     assert any("✓ reconciled" in line for line in output)
     assert any("✓ cleared" in line for line in output)
+    assert any(
+        "Canonical" in line and "no automatic merge" in line for line in output
+    )
 
 
 def test_studio_spec_discard_is_explicit_and_recoverable(tmp_path):
