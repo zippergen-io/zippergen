@@ -26,6 +26,7 @@ from zippergen.syntax import (
     ActStmt,
     AnyStmt,
     CoregionStmt,
+    AssistantAction,
     EffectAction,
     EmptyStmt,
     Expr,
@@ -180,6 +181,8 @@ def _action_kind(action: object) -> str:
         return "pure"
     if isinstance(action, EffectAction):
         return "effect"
+    if isinstance(action, AssistantAction):
+        return "assistant"
     if isinstance(action, HumanAction):
         return "human"
     if isinstance(action, PlannerAction):
@@ -225,6 +228,40 @@ def _render_action(action: object, *, full: bool) -> list[str]:
             ")",
             f"def {action.name}({params}) -> {result_type}: ...",
         ]
+    if isinstance(action, AssistantAction):
+        instruction_value = (
+            action.instructions
+            if full and action.instructions_file is None
+            else (
+                f"<loaded from {action.instructions_file}>"
+                if full
+                else "<hidden at this detail level>"
+            )
+        )
+        arguments = [f"instructions={instruction_value!r}"]
+        if action.instructions_file is not None:
+            arguments = [f"instructions_file={action.instructions_file!r}"]
+        if action.backend is not None:
+            arguments.append(f"backend={action.backend!r}")
+        if action.workspace is not None:
+            arguments.append(f"workspace={action.workspace!r}")
+        if action.timeout is not None:
+            arguments.append(f"timeout={action.timeout!r}")
+        rendered = [
+            f"@assistant({', '.join(arguments)})",
+            f"def {action.name}({params}) -> {result_type}: ...",
+        ]
+        if full and action.instructions_file is not None:
+            comments = [
+                "# Loaded assistant instructions "
+                f"(sha256 {action.instructions_sha256[:12]}):"
+            ]
+            comments.extend(
+                f"# {line}" if line else "#"
+                for line in action.instructions.rstrip().splitlines()
+            )
+            rendered = [rendered[0], *comments, rendered[1]]
+        return rendered
     if isinstance(action, HumanAction):
         return [
             f"@human(kind={action.kind!r}, instruction={action.instruction!r})",

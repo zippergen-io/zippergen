@@ -294,6 +294,7 @@ def _run_setup_hook(
     module: ModuleType,
     llm: str,
     llms: dict[str, str],
+    assistant: str | None,
     store_path: str,
     inputs: dict[str, object],
     options: dict[str, object],
@@ -313,6 +314,7 @@ def _run_setup_hook(
             module=module,
             llm=llm,
             llms=llms,
+            assistant=assistant,
             llm_idle_timeout=None,
             store_path=store_path,
             inputs=inputs,
@@ -334,6 +336,7 @@ def run_dev(
     provided_inputs: dict[str, object] | None = None,
     llm: str | None = None,
     llms: dict[str, str] | None = None,
+    assistant: str | None = None,
     options: dict[str, object] | None = None,
     services: str | None = None,
     timeout: float = 0.0,
@@ -350,6 +353,7 @@ def run_dev(
         provided_inputs
         or llm is not None
         or llms
+        or assistant is not None
         or options
         or services is not None
     ):
@@ -382,6 +386,9 @@ def run_dev(
         inputs = dict(record.get("inputs") or {})
         selected_llm = str(record.get("llm") or "mock")
         selected_llms = normalize_llm_overrides(record.get("llms"))
+        selected_assistant = (
+            str(record["assistant"]) if record.get("assistant") else None
+        )
         run_options = dict(record.get("options") or {})
         run_services = record.get("services")
         output_func(f"Resuming run {selected_run_id}")
@@ -403,6 +410,7 @@ def run_dev(
         )
         selected_llm = llm or default_llm_spec(module)
         selected_llms = normalize_llm_overrides(llms)
+        selected_assistant = assistant
         effective_llm_routes(workflow, selected_llm, selected_llms)
         run_options = dict(options or {})
         run_services = services
@@ -413,6 +421,7 @@ def run_dev(
             inputs=inputs,
             llm=selected_llm,
             llms=selected_llms,
+            assistant=selected_assistant,
             options=run_options,
             services=run_services,
         )
@@ -468,6 +477,7 @@ def run_dev(
                 module=module,
                 llm=selected_llm,
                 llms=selected_llms,
+                assistant=selected_assistant,
                 store_path=store_path,
                 inputs=inputs,
                 options=run_options,
@@ -489,6 +499,8 @@ def run_dev(
                 ui=False,
                 mock_delay=(0.0, 0.0),
                 human_backend=managed_human_backend,
+                assistant=selected_assistant,
+                assistant_root=str(workspace.root),
             )
             result = workflow(**inputs)
     except KeyboardInterrupt:

@@ -83,7 +83,17 @@ from zippergen.semantic import (
     semantic_snapshot,
     workflow_semantics,
 )
-from zippergen.syntax import Workflow, Lifeline
+from zippergen.syntax import (
+    ActStmt,
+    AssistantAction,
+    CoregionStmt,
+    IfStmt,
+    ParallelStmt,
+    SeqStmt,
+    WhileStmt,
+    Workflow,
+    Lifeline,
+)
 from zippergen.projection import project
 from zippergen.store import (
     complete_human_task,
@@ -105,6 +115,7 @@ class RunConfig:
     module: ModuleType
     llm: str | None
     llms: dict[str, str]
+    assistant: str | None
     llm_idle_timeout: float | None
     store_path: str | None
     inputs: dict[str, object]
@@ -452,6 +463,7 @@ def _run_args_from_deployment(profile: dict[str, object]):
         llm=profile.get("llm") or None,
         llm_for=_jsonable_kv_pairs(normalize_llm_overrides(profile.get("llms"))),
         llm_idle_timeout=profile.get("llm_idle_timeout"),
+        assistant=profile.get("assistant") or None,
         store=str(profile["store"]),
         input=[],
         input_json=json.dumps(profile.get("inputs") or {}, default=str),
@@ -916,6 +928,40 @@ def _doctor_checks(name: str, *, include_systemd: bool = True) -> list[dict[str,
                 f"{len(deployment_spec.setup)} setup step(s)",
             ))
 
+    if workflow is not None:
+        assistant_actions = _assistant_actions(workflow)
+        default_assistant = profile.get("assistant")
+        missing_selection = [
+            action.name
+            for action in assistant_actions
+            if action.backend is None and default_assistant not in {"codex", "claude"}
+        ]
+        if missing_selection:
+            checks.append(_doctor_check(
+                "fail",
+                "assistant backend",
+                "no backend selected for: " + ", ".join(missing_selection),
+            ))
+        selected_assistants = {
+            str(action.backend or default_assistant)
+            for action in assistant_actions
+            if action.backend or default_assistant
+        }
+        for selected in sorted(selected_assistants):
+            executable = shutil.which(selected)
+            if executable:
+                checks.append(_doctor_check(
+                    "ok",
+                    f"assistant {selected}",
+                    executable,
+                ))
+            else:
+                checks.append(_doctor_check(
+                    "fail",
+                    f"assistant {selected}",
+                    f"executable {selected!r} is not on PATH",
+                ))
+
     environment = _deployment_environment(profile)
     declared_values = {
         field.name: _profile_field_value(profile, field, environment)
@@ -1346,6 +1392,7 @@ def _run_workflow_command(args) -> int:
         module=module,
         llm=args.llm,
         llms=llms,
+        assistant=args.assistant,
         llm_idle_timeout=args.llm_idle_timeout,
         store_path=store_path,
         inputs=inputs,
@@ -1364,6 +1411,8 @@ def _run_workflow_command(args) -> int:
         "execution": args.execution,
         "store_path": store_path,
         "show_decisions": args.show_decisions,
+        "assistant": args.assistant,
+        "assistant_root": str(Path.cwd()),
     }
     if llms:
         wf.configure(
@@ -1398,6 +1447,7 @@ def _dev_command(args) -> int:
         provided_inputs=inputs,
         llm=args.llm,
         llms=normalize_llm_overrides(_parse_inputs(args.llm_for)),
+        assistant=args.assistant,
         options=options,
         services=args.services,
         timeout=args.timeout,
@@ -1515,6 +1565,47 @@ def _validate_workflow(workflow: Workflow, module: ModuleType) -> dict[str, obje
                 f"{len(declaration.setup)} setup step(s)"
             ),
         })
+
+    assistant_actions = _assistant_actions(workflow)
+    for action in assistant_actions:
+        if action.instructions_path is None:
+            checks.append({
+                "status": "ok",
+                "name": f"assistant instructions {action.name}",
+                "detail": (
+                    f"inline Markdown; sha256 "
+                    f"{action.instructions_sha256[:12]}"
+                ),
+            })
+            continue
+        path = Path(action.instructions_path)
+        if not path.is_file():
+            checks.append({
+                "status": "fail",
+                "name": f"assistant instructions {action.name}",
+                "detail": f"file no longer exists: {path}",
+            })
+            continue
+        current_text = path.read_text(encoding="utf-8")
+        current_hash = hashlib.sha256(current_text.encode("utf-8")).hexdigest()
+        if current_hash != action.instructions_sha256:
+            checks.append({
+                "status": "fail",
+                "name": f"assistant instructions {action.name}",
+                "detail": (
+                    "file changed after the workflow was imported; reload the "
+                    f"workflow: {path}"
+                ),
+            })
+        else:
+            checks.append({
+                "status": "ok",
+                "name": f"assistant instructions {action.name}",
+                "detail": (
+                    f"{action.instructions_file}; sha256 "
+                    f"{action.instructions_sha256[:12]}; automatically bundled"
+                ),
+            })
 
     try:
         render_workflow(workflow, module, options=ViewOptions(detail="full"))
@@ -1813,7 +1904,41 @@ def _copy_deployment_source(source: Path, target: Path) -> None:
         shutil.copy2(source, target)
 
 
-def _bundle_deployment(profile: dict[str, object], spec: DeploymentSpec) -> None:
+def _assistant_actions(workflow: Workflow) -> tuple[AssistantAction, ...]:
+    """Return each first-class assistant action used by a global workflow."""
+
+    found: list[AssistantAction] = []
+    seen: set[int] = set()
+
+    def visit(stmt) -> None:
+        if isinstance(stmt, ActStmt):
+            if isinstance(stmt.action, AssistantAction) and id(stmt.action) not in seen:
+                seen.add(id(stmt.action))
+                found.append(stmt.action)
+        elif isinstance(stmt, SeqStmt):
+            visit(stmt.first)
+            visit(stmt.second)
+        elif isinstance(stmt, IfStmt):
+            visit(stmt.branch_true)
+            visit(stmt.branch_false)
+        elif isinstance(stmt, WhileStmt):
+            visit(stmt.body)
+            visit(stmt.exit_body)
+        elif isinstance(stmt, ParallelStmt):
+            for branch in stmt.branches:
+                visit(branch)
+        elif isinstance(stmt, CoregionStmt):
+            return
+
+    visit(workflow.body)
+    return tuple(found)
+
+
+def _bundle_deployment(
+    profile: dict[str, object],
+    spec: DeploymentSpec,
+    workflow: Workflow,
+) -> None:
     source_cwd = Path(str(profile.get("source_cwd") or profile["cwd"])).expanduser().resolve()
     source_workflow = str(profile.get("source_workflow") or profile["workflow"])
     module_ref, separator, workflow_name = source_workflow.partition(":")
@@ -1840,6 +1965,19 @@ def _bundle_deployment(profile: dict[str, object], spec: DeploymentSpec) -> None
         path = path.resolve()
         if not path.exists():
             raise SystemExit(f"Declared deployment file does not exist: {path}")
+        if path not in sources:
+            sources.append(path)
+    for action in _assistant_actions(workflow):
+        if action.instructions_path is None:
+            continue
+        path = Path(action.instructions_path).resolve()
+        try:
+            path.relative_to(source_cwd)
+        except ValueError as exc:
+            raise SystemExit(
+                f"Assistant instruction file for {action.name!r} is outside "
+                f"the project root and cannot be bundled portably: {path}"
+            ) from exc
         if path not in sources:
             sources.append(path)
 
@@ -1989,6 +2127,8 @@ def _apply_deploy_arguments(
     profile["llms"] = llms
     if args.llm_idle_timeout is not None:
         profile["llm_idle_timeout"] = args.llm_idle_timeout
+    if args.assistant is not None:
+        profile["assistant"] = args.assistant
     if args.services is not None:
         profile["services"] = args.services
     if args.timeout is not None:
@@ -2035,6 +2175,7 @@ def _apply_deploy_arguments(
 def _finalize_guided_deployment(
     profile: dict[str, object],
     spec: DeploymentSpec,
+    workflow: Workflow,
     values: dict[str, object],
     secrets: dict[str, str],
     args,
@@ -2050,7 +2191,7 @@ def _finalize_guided_deployment(
     profile["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
 
     if not args.no_bundle:
-        _bundle_deployment(profile, spec)
+        _bundle_deployment(profile, spec, workflow)
     # Persist enough state to resume configuration even if dependency install
     # or an interactive OAuth step fails.
     _write_deployment_artifacts(profile)
@@ -2102,6 +2243,7 @@ def _deploy_command(args) -> int:
                 "llm": None,
                 "llms": {},
                 "llm_idle_timeout": None,
+                "assistant": None,
                 "services": None,
                 "options": {},
                 "inputs": {},
@@ -2119,13 +2261,17 @@ def _deploy_command(args) -> int:
         print(spec.description)
         print()
     values, secrets = _apply_deploy_arguments(profile, args, spec, workflow)
-    return _finalize_guided_deployment(profile, spec, values, secrets, args)
+    return _finalize_guided_deployment(
+        profile, spec, workflow, values, secrets, args
+    )
 
 
 def _configure_deployment_command(args) -> int:
     profile, _workflow, _module, spec = _deployment_context(args.name)
     values, secrets = _apply_deploy_arguments(profile, args, spec, _workflow)
-    rc = _finalize_guided_deployment(profile, spec, values, secrets, args)
+    rc = _finalize_guided_deployment(
+        profile, spec, _workflow, values, secrets, args
+    )
     if rc == 0 and args.restart and args.no_start:
         lifecycle_args = argparse.Namespace(name=args.name, enable=False, dry_run=False)
         return _deployment_lifecycle_command(lifecycle_args, "restart")
@@ -2157,6 +2303,7 @@ def _deploy_local_command(args) -> int:
         "llm": args.llm,
         "llms": llms,
         "llm_idle_timeout": args.llm_idle_timeout,
+        "assistant": args.assistant,
         "services": args.services,
         "options": options,
         "inputs": inputs,
@@ -2414,6 +2561,11 @@ def _add_guided_deployment_arguments(
         ),
     )
     parser.add_argument("--llm-idle-timeout", type=float, help="Release a managed local LLM after this idle time.")
+    parser.add_argument(
+        "--assistant",
+        choices=("codex", "claude"),
+        help="Default coding-assistant backend for @assistant actions.",
+    )
     parser.add_argument("--store", help="SQLite store path.")
     parser.add_argument("--log", help="Deployment log path.")
     parser.add_argument("--input", action="append", default=[], metavar="name=value", help="Workflow input value.")
@@ -2454,6 +2606,11 @@ def main(argv=None) -> int:
     dev.add_argument("--project", help="Project root; defaults to discovery from the current directory.")
     dev.add_argument("--llm", metavar="SPEC", help="LLM spec; defaults to the workflow declaration or mock.")
     dev.add_argument(
+        "--assistant",
+        choices=("codex", "claude"),
+        help="Default coding-assistant backend for @assistant actions.",
+    )
+    dev.add_argument(
         "--llm-for",
         action="append",
         default=[],
@@ -2478,6 +2635,11 @@ def main(argv=None) -> int:
         help="Override the LLM for one lifeline; repeat as needed.",
     )
     rn.add_argument("--llm-idle-timeout", type=float, help="Release a managed local LLM after this many idle seconds.")
+    rn.add_argument(
+        "--assistant",
+        choices=("codex", "claude"),
+        help="Default coding-assistant backend for @assistant actions.",
+    )
     rn.add_argument("--store", help="SQLite store path. Defaults to ~/.zippergen/runs/<workflow>.sqlite")
     rn.add_argument("--input", action="append", default=[], metavar="name=value", help="Workflow input value.")
     rn.add_argument("--input-json", help="Workflow inputs as a JSON object.")
@@ -2535,6 +2697,11 @@ def main(argv=None) -> int:
         help="Override the LLM for one lifeline; repeat as needed.",
     )
     dl.add_argument("--llm-idle-timeout", type=float, help="Release a managed local LLM after this many idle seconds.")
+    dl.add_argument(
+        "--assistant",
+        choices=("codex", "claude"),
+        help="Default coding-assistant backend for @assistant actions.",
+    )
     dl.add_argument("--store", help="SQLite store path. Defaults to $ZIPPERGEN_HOME/runs/<name>.sqlite")
     dl.add_argument("--log", help="Log path. Defaults to $ZIPPERGEN_HOME/logs/<name>.log")
     dl.add_argument("--input", action="append", default=[], metavar="name=value", help="Workflow input value.")

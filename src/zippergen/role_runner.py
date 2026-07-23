@@ -135,6 +135,7 @@ class RoleRunner:
         *,
         llm_backend=None,
         human_backend=None,
+        assistant_backend=None,
         trace=None,
         monitor=None,
         formula_conditions: dict | None = None,
@@ -145,6 +146,9 @@ class RoleRunner:
         if human_backend is None:
             from zippergen.human_backends import make_cli_human_backend
             human_backend = make_cli_human_backend()
+        if assistant_backend is None:
+            from zippergen.assistant_backends import make_cli_assistant_backend
+            assistant_backend = make_cli_assistant_backend()
 
         self.conn = conn
         self.role = role
@@ -152,6 +156,7 @@ class RoleRunner:
         self.ns = ns
         self.llm_backend = llm_backend
         self.human_backend = human_backend
+        self.assistant_backend = assistant_backend
         self.trace = trace
         self.monitor = monitor
         self.formula_conditions = formula_conditions or {}
@@ -279,6 +284,7 @@ class RoleRunner:
             outs,
             self.llm_backend,
             self.human_backend,
+            self.assistant_backend,
         ), None
 
     def step(self, residual, trace):
@@ -294,6 +300,7 @@ class RoleRunner:
             self.formula_conditions,
             self.stop,
             journal=self.journal,
+            assistant_backend=self.assistant_backend,
         )
 
     def replay_committed(self) -> None:
@@ -371,7 +378,7 @@ class RoleRunner:
 
 
 def run_role(conn, role: str, local_stmt, env: dict, ns: dict, *,
-             llm_backend=None, human_backend=None, trace=None,
+             llm_backend=None, human_backend=None, assistant_backend=None, trace=None,
              monitor=None, formula_conditions: dict | None = None) -> dict:
     return RoleRunner(
         conn,
@@ -381,6 +388,7 @@ def run_role(conn, role: str, local_stmt, env: dict, ns: dict, *,
         ns,
         llm_backend=llm_backend,
         human_backend=human_backend,
+        assistant_backend=assistant_backend,
         trace=trace,
         monitor=monitor,
         formula_conditions=formula_conditions,

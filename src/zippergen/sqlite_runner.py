@@ -78,6 +78,7 @@ class LocalSupervisor:
         store_path: str,
         llm_backend=None,
         human_backend=None,
+        assistant_backend=None,
         verbose: bool = False,
         trace=None,
         timeout: float = 60.0,
@@ -91,6 +92,10 @@ class LocalSupervisor:
             from zippergen.human_backends import make_sqlite_human_backend
             human_backend = make_sqlite_human_backend()
         self.human_backend = human_backend
+        if assistant_backend is None:
+            from zippergen.assistant_backends import make_cli_assistant_backend
+            assistant_backend = make_cli_assistant_backend()
+        self.assistant_backend = assistant_backend
         self.trace = trace if trace is not None else (console_trace if verbose else None)
         self.timeout = timeout
         self.stop = threading.Event()
@@ -151,6 +156,7 @@ class LocalSupervisor:
                         self.wf.ns,
                         llm_backend=self.llm_backend,
                         human_backend=human_backend,
+                        assistant_backend=self.assistant_backend,
                         trace=self.trace,
                         monitor=monitors.get(lifeline.name),
                         formula_conditions=formula_conditions,
@@ -280,6 +286,7 @@ def run_sqlite(
     store_path: str | None = None,
     llm_backend=None,
     human_backend=None,
+    assistant_backend=None,
     verbose: bool = False,
     trace=None,
     timeout: float = 60.0,
@@ -295,6 +302,7 @@ def run_sqlite(
                 store_path=path,
                 llm_backend=llm_backend,
                 human_backend=human_backend,
+                assistant_backend=assistant_backend,
                 verbose=verbose,
                 trace=trace,
                 timeout=timeout,
@@ -307,6 +315,7 @@ def run_sqlite(
         store_path=store_path,
         llm_backend=llm_backend,
         human_backend=human_backend,
+        assistant_backend=assistant_backend,
         verbose=verbose,
         trace=trace,
         timeout=timeout,

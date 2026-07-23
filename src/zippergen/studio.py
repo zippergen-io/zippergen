@@ -137,7 +137,7 @@ _COMMAND_COMPLETIONS = (
     ("workflow", "alias for current"),
     ("validate", "validate the selected workflow"),
     ("models", "configure default and participant-specific models"),
-    ("providers", "configure model-provider readiness"),
+    ("providers", "show or configure model-provider settings"),
     ("run", "start a managed development run"),
     ("resume", "resume the current incomplete run"),
     ("runs", "list managed development runs"),
@@ -177,7 +177,7 @@ _SUBCOMMAND_COMPLETIONS = {
         ("close", "close a reviewed creation task"),
     ),
     "assistant": (
-        ("codex", "open Codex in the project root"),
+        ("codex", "run Codex once on the current task"),
         ("claude", "run Claude Code once on the current task"),
     ),
     "editor": (
@@ -206,7 +206,7 @@ _SUBCOMMAND_COMPLETIONS = {
         ("reset", "restore inheritance or reset all routing"),
     ),
     "providers": (
-        ("show", "show provider readiness"),
+        ("show", "show configuration and the last local check"),
         ("set", "configure a provider"),
         ("check", "recheck local-provider connectivity"),
         ("reset", "remove provider configuration"),
@@ -341,6 +341,7 @@ _HELP = """Commands:
   assistant [codex|claude]       sync the spec, then run a coding assistant
   assistant [codex|claude] --rerun
                                  deliberately rerun a task awaiting review
+  assistant codex --interactive  open an interactive Codex session instead
   editor [show|set CMD|reset]     inspect or remember the terminal editor
   edit [workflow|file PATH]       edit with the remembered/default editor
   edit ... --editor CMD           choose an editor for this invocation only
@@ -359,12 +360,12 @@ _HELP = """Commands:
   models default SPEC            set and verify the inherited default LLM
   models set LIFELINE SPEC       override and verify one LLM-active lifeline
   models reset LIFELINE|all      restore inheritance or reset the whole profile
-  providers                      show model-provider readiness without secrets
+  providers                      show configuration and the last local check
   providers set openai|anthropic|mistral
   providers set local [URL]      configure a local OpenAI-compatible endpoint
   providers check local          recheck the saved local endpoint
   providers reset NAME           remove a saved provider configuration
-  run [LLM]                      start a run; optional LLM overrides its default once
+  run [LLM] [--assistant TOOL]   start a run with optional one-run backends
   resume                         resume the current incomplete run
   runs                           list managed development runs
   refine [CHANGE]                append to the one pending refinement
@@ -703,7 +704,15 @@ class Studio:
                 ]
             return []
         if command in {"run"}:
-            return list(_MODEL_COMPLETIONS)
+            if args and args[-1] == "--assistant":
+                return [
+                    ("codex", "run @assistant actions with Codex CLI"),
+                    ("claude", "run @assistant actions with Claude Code"),
+                ]
+            return [
+                *_MODEL_COMPLETIONS,
+                ("--assistant", "select the coding-assistant action backend"),
+            ]
         if command in {"create", "refine"}:
             if "--file" in args and args[-1] == "--file":
                 return self._path_completion_candidates(fragment)
@@ -755,8 +764,22 @@ class Studio:
         if command == "assistant":
             if not args:
                 return list(_SUBCOMMAND_COMPLETIONS["assistant"])
-            if len(args) == 1 and args[0].lower() in {"codex", "claude"}:
-                return [("--rerun", "deliberately rerun a task awaiting review")]
+            if args[0].lower() == "codex":
+                values = []
+                if "--rerun" not in args:
+                    values.append(
+                        ("--rerun", "deliberately rerun a task awaiting review")
+                    )
+                if "--interactive" not in args:
+                    values.append(
+                        ("--interactive", "open an interactive Codex session")
+                    )
+                return values
+            if args[0].lower() == "claude":
+                if "--rerun" not in args:
+                    return [
+                        ("--rerun", "deliberately rerun a task awaiting review")
+                    ]
             return []
         if command in {"deploy", "status", "doctor", "logs", "start", "restart", "stop"}:
             values: list[tuple[str, str]] = []
@@ -825,18 +848,35 @@ class Studio:
         elif command == "providers":
             self.configure_providers(args)
         elif command == "run":
-            if len(args) > 1:
-                raise SystemExit("Use run or run LLM_SPEC.")
+            assistant_backend = None
+            run_args = list(args)
+            if "--assistant" in run_args:
+                index = run_args.index("--assistant")
+                if index + 1 >= len(run_args):
+                    raise SystemExit(
+                        "Use run [LLM_SPEC] --assistant codex|claude."
+                    )
+                assistant_backend = run_args[index + 1].lower()
+                del run_args[index:index + 2]
+                if assistant_backend not in {"codex", "claude"}:
+                    raise SystemExit(
+                        "Assistant backend must be codex or claude."
+                    )
+            if len(run_args) > 1:
+                raise SystemExit(
+                    "Use run [LLM_SPEC] [--assistant codex|claude]."
+                )
             profile = self._run_model_profile()
             default_model = profile.get("default")
             run_dev(
                 self.workspace,
                 llm=(
-                    args[0]
-                    if args
+                    run_args[0]
+                    if run_args
                     else str(default_model) if default_model else None
                 ),
                 llms=normalize_llm_overrides(profile.get("lifelines")),
+                assistant=assistant_backend,
                 interactive=True,
                 input_func=self.input,
                 output_func=self.output,
@@ -2222,15 +2262,25 @@ class Studio:
 
     def run_assistant(self, args: list[str]) -> None:
         rerun = "--rerun" in args
-        values = [value for value in args if value != "--rerun"]
+        interactive = "--interactive" in args
+        values = [
+            value
+            for value in args
+            if value not in {"--rerun", "--interactive"}
+        ]
         if len(values) > 1 or any(
             value.lower() not in {"codex", "claude"} for value in values
-        ) or args.count("--rerun") > 1:
+        ) or args.count("--rerun") > 1 or args.count("--interactive") > 1:
             raise SystemExit(
                 "Use assistant, assistant codex, assistant claude, or "
-                "assistant [codex|claude] --rerun."
+                "assistant [codex|claude] --rerun. Use "
+                "assistant codex --interactive only for an interactive session."
             )
         assistant = values[0].lower() if values else "codex"
+        if interactive and assistant != "codex":
+            raise SystemExit(
+                "--interactive is supported only with assistant codex."
+            )
         record = self._ensure_current_task_fresh(for_assistant=True)
         if record is None:
             raise SystemExit(
@@ -2283,6 +2333,7 @@ class Studio:
             assistant_started_at=started_at,
             assistant_finished_at=None,
             assistant_exit_code=None,
+            assistant_mode=("interactive" if interactive else "one_shot"),
             studio_process_id=os.getpid(),
             lifecycle_inferred=False,
         )
@@ -2300,9 +2351,9 @@ class Studio:
                 (
                     "Mode",
                     (
-                        "one-shot task; return to Studio"
-                        if assistant == "claude"
-                        else "interactive task session"
+                        "interactive task session"
+                        if interactive
+                        else "one-shot task; returns to Studio automatically"
                     ),
                     None,
                 ),
@@ -2320,9 +2371,17 @@ class Studio:
             "keep all generated code visible, run the requested verification, and "
             "do not deploy."
         )
-        if assistant == "codex":
+        if assistant == "codex" and interactive:
             command = [
                 executable,
+                "--cd",
+                str(self.workspace.root),
+                instruction,
+            ]
+        elif assistant == "codex":
+            command = [
+                executable,
+                "exec",
                 "--cd",
                 str(self.workspace.root),
                 instruction,
@@ -2532,6 +2591,11 @@ class Studio:
                 for site in action_sites
                 if isinstance(site, dict) and site.get("kind") == "effect"
             ]
+            assistant_actions = [
+                f"{site.get('lifeline')}.{site.get('action')}"
+                for site in action_sites
+                if isinstance(site, dict) and site.get("kind") == "assistant"
+            ]
             active_models = self._llm_action_lifelines(workflow, module)
             llm_participants = list(active_models)
             validation = _validate_workflow(workflow, module)
@@ -2566,6 +2630,16 @@ class Studio:
                         "Effects",
                         f"{len(effect_actions)} — "
                         + (", ".join(effect_actions) if effect_actions else "none"),
+                        None,
+                    ),
+                    (
+                        "Assistant actions",
+                        f"{len(assistant_actions)} — "
+                        + (
+                            ", ".join(assistant_actions)
+                            if assistant_actions
+                            else "none"
+                        ),
                         None,
                     ),
                     ("Connectors", "none", None),
@@ -2604,7 +2678,9 @@ class Studio:
             }
             providers = sorted({_canonical_provider(spec) for spec in selected_specs})
             for provider in providers:
-                kind, provider_status = self._provider_readiness(provider)
+                kind, provider_status = self._provider_configuration_status(
+                    provider
+                )
                 model_rows.append(
                     (f"Provider {provider}", provider_status, kind)
                 )
@@ -2619,6 +2695,7 @@ class Studio:
                     ("LLM-active participants", "0 — none", None),
                     ("Human actions", "0 — none", None),
                     ("Effects", "0 — none", None),
+                    ("Assistant actions", "0 — none", None),
                     ("Connectors", "none", None),
                     ("Validation", "not available", "warning"),
                 ],
@@ -2649,6 +2726,11 @@ class Studio:
                 [
                     ("Run", f"{run['run_id']} ({run['status']})", run_kind),
                     ("Store", run["store"], None),
+                    (
+                        "Assistant",
+                        run.get("assistant") or "none selected",
+                        None,
+                    ),
                 ]
             )
         runtime_rows.append(
@@ -2830,7 +2912,7 @@ class Studio:
             )
         selected = {default} | {str(value) for value in overrides.values()}
         for provider in sorted({_canonical_provider(spec) for spec in selected}):
-            kind, status = self._provider_readiness(provider)
+            kind, status = self._provider_configuration_status(provider)
             self._status(kind, f"Provider {provider}: {status}", indent=2)
 
     def configure_models(self, args: list[str]) -> None:
@@ -3245,10 +3327,13 @@ class Studio:
             f"{provider} API key.",
         )
 
-    def _provider_readiness(self, provider: str) -> tuple[StatusKind, str]:
+    def _provider_configuration_status(
+        self,
+        provider: str,
+    ) -> tuple[StatusKind, str]:
         canonical = _canonical_provider(provider)
         if canonical == "mock":
-            return "success", "ready; built in"
+            return "success", "available; built in"
         profiles = self.workspace.provider_profiles()
         if canonical == "local":
             profile = profiles.get("local", {})
@@ -3262,7 +3347,11 @@ class Studio:
                 count = profile.get("model_count", "0")
                 noun = "model" if count == "1" else "models"
                 kind: StatusKind = "success" if count != "0" else "warning"
-                state = "ready" if count != "0" else "reachable but no models"
+                state = (
+                    "last check succeeded"
+                    if count != "0"
+                    else "last check reached the endpoint but found no models"
+                )
                 return (
                     kind,
                     f"{state}; endpoint {base_url}; {count} {noun}; "
@@ -3272,27 +3361,42 @@ class Studio:
                 detail = profile.get("check_error", "connection failed")
                 return (
                     "error",
-                    f"endpoint {base_url}; unreachable at {checked_at}: {detail}",
+                    f"last check failed; endpoint {base_url}; "
+                    f"checked {checked_at}: {detail}",
                 )
-            return "warning", f"endpoint {base_url}; availability unchecked"
+            return (
+                "warning",
+                f"not checked; endpoint {base_url}; use 'providers check local'",
+            )
         secret_name = _PROVIDER_SECRETS.get(canonical)
         if secret_name is None:
             return "error", "unsupported"
         if os.environ.get(secret_name):
-            return "success", f"ready; {secret_name} is in the environment"
+            return (
+                "success",
+                f"configured; {secret_name} is in the environment; not tested here",
+            )
         if self.workspace.load_secrets().get(secret_name):
-            return "success", f"ready; {secret_name} is in private Studio storage"
+            return (
+                "success",
+                f"configured; {secret_name} is in private Studio storage; "
+                "not tested here",
+            )
         return "warning", f"not configured; use 'providers set {canonical}'"
 
     def _provider_status(self, provider: str) -> str:
-        return self._provider_readiness(provider)[1]
+        return self._provider_configuration_status(provider)[1]
 
     def _emit_providers(self) -> None:
-        self._emit("Model providers")
+        self._emit("Provider configuration")
         for provider in _SUPPORTED_PROVIDERS:
-            kind, status = self._provider_readiness(provider)
+            kind, status = self._provider_configuration_status(provider)
             self._status(kind, f"{provider}: {status}", indent=2)
         self._emit("API-key values are never displayed or written to the project.")
+        self._emit(
+            "Use 'models check' for current configured-model availability; "
+            "use 'providers check local' to refresh the local endpoint."
+        )
 
     def _local_models_url(self, base_url: str) -> str:
         parsed = urlsplit(base_url.strip())

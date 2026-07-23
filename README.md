@@ -175,7 +175,11 @@ zippergen [tutorial_review]> providers check local
 
 API keys are entered without echo and remain in owner-only Studio secret
 storage. Local endpoint settings and non-secret routing are remembered, while
-`providers` displays readiness without ever displaying a key.
+`providers` displays configuration without ever displaying a key or contacting
+a remote API. For OpenAI, Anthropic, and Mistral, `configured` means only that
+the corresponding key is present; the line explicitly says `not tested here`.
+For a local endpoint, the command reports the last saved check result and its
+timestamp rather than presenting it as a new test.
 When `models default` or `models set` selects a configured API provider, Studio
 queries that provider's model endpoint with the saved key before changing the
 routing profile. A green check confirms that the exact model or alias is
@@ -300,11 +304,13 @@ request it refreshes. Once an assistant has run, expected edits no longer look
 like stale task input: the same request moves to `awaiting human review` and is
 preserved until it is reconciled, discarded, deliberately rerun, or closed.
 
-`assistant codex` or plain `assistant` opens the locally installed Codex CLI;
-`assistant claude` runs Claude Code's one-shot agent mode with project-local
-edits accepted. Studio starts either tool in the project root and asks it to
-execute the synchronized fixed task; Claude prints its report and returns to
-Studio rather than opening an empty prompt. Thus
+`assistant codex` or plain `assistant` runs the locally installed Codex CLI in
+one-shot execution mode; `assistant claude` does the same with Claude Code and
+project-local edits accepted. Studio starts either tool in the project root,
+asks it to execute the synchronized fixed task, and regains control
+automatically when the tool reports completion. Use
+`assistant codex --interactive` only when an interactive Codex conversation is
+actually useful. Thus
 there is no separate prompt-copying step: the assistant receives the complete
 specification context through `.zippergen/current-task.md`. Studio does not call
 an assistant through a ZipperGen workflow provider and needs no ZipperGen API
@@ -672,6 +678,60 @@ edits the Python module and tests; runs `validate`; renders the requested global
 and local code views; and verifies refinements against a pre-edit semantic
 snapshot. Deployment is still a separate explicit action, so generating code
 does not silently start services or perform live effects.
+
+### Coding assistants as workflow actions
+
+Studio's `assistant codex` command helps a developer edit the current
+ZipperGen project. A first-class `@assistant` action is different: it is an
+explicit step *inside an executing workflow*, owned by a lifeline and visible
+in global views, local projections, traces, validation, and semantic diffs.
+
+```python
+from zippergen import Lifeline, assistant, workflow
+
+Maintainer = Lifeline("Maintainer")
+
+
+@assistant(
+    instructions_file="prompts/update_release_notes.md",
+    workspace=".",
+)
+def update_release_notes(change: str) -> str: ...
+
+
+@workflow
+def maintain(change: str @ Maintainer) -> str:
+    Maintainer: report = update_release_notes(change)
+    return report @ Maintainer
+```
+
+The Markdown file contains the stable instruction; typed function parameters
+are supplied separately as runtime data. Use exactly one of
+`instructions="..."` and `instructions_file="..."`. Instruction files are
+fingerprinted in semantic snapshots, checked by `validate`, and copied
+automatically into guided deployment bundles.
+
+Choose the local CLI at runtime:
+
+```bash
+zippergen run workflows/maintain.py:maintain \
+  --assistant codex \
+  --input 'change=Document the new retry policy.'
+```
+
+`claude` is also supported. An action can request a fixed
+`backend="codex"` or `backend="claude"`, and Python callers can use
+`workflow.configure(assistant="codex")` or inject a custom
+`assistant_backend`. Runtime selection is preferable when environments differ.
+The backend invokes the CLI directly, without a shell.
+Inside Studio, the corresponding command is
+`run --assistant codex` (or `run MODEL_SPEC --assistant claude`); the selection
+is stored with the durable run so `resume` uses the same backend.
+
+Assistant actions are external effects with their own semantic action kind. In
+SQLite mode a completed result is journaled and replayed without launching the
+assistant again. The requested file operation should still be restart-safe:
+the process could fail after files change but before the result is recorded.
 
 For a complete beginner-oriented walkthrough—from installation and a mock
 workflow through prompt-driven refinement, semantic diff, durable approval,

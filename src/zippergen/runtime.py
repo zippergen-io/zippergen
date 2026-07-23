@@ -21,7 +21,7 @@ from zippergen.syntax import (
     SeqStmt, IfStmt, WhileStmt, IfRecvStmt, WhileRecvStmt,
     ParallelStmt, ParallelLocalStmt,
     VarExpr, LitExpr, Var,
-    LLMAction, PureAction, EffectAction, PlannerAction, HumanAction,
+    LLMAction, PureAction, EffectAction, AssistantAction, PlannerAction, HumanAction,
     Lifeline, Workflow, LocalStmt, AnyStmt,
     is_kappa_ctrl,
     _ordered_workflow_lifelines,
@@ -323,6 +323,8 @@ def _action_kind(action: object) -> str:
         return "pure"
     if isinstance(action, EffectAction):
         return "effect"
+    if isinstance(action, AssistantAction):
+        return "assistant"
     if isinstance(action, PlannerAction):
         return "planner"
     if isinstance(action, HumanAction):
@@ -333,7 +335,10 @@ def _action_kind(action: object) -> str:
 
 
 def _action_visible(action: object) -> bool:
-    return not isinstance(action, (PureAction, EffectAction, HumanAction)) or action.visible
+    return (
+        not isinstance(action, (PureAction, EffectAction, AssistantAction, HumanAction))
+        or action.visible
+    )
 
 
 def _receive_any(
@@ -398,14 +403,46 @@ def _python_action_out_map(action, values: tuple, outs) -> dict:
     }
 
 
-def external_out_map(action, named_inputs, outs, llm_backend, human_backend) -> dict:
-    """Output env-delta for an external (LLM/Human/Planner/Effect) action — the same
-    computation _exec performs for these branches, factored for the durable driver."""
+def _assistant_action_out_map(action, named_outputs, outs) -> dict:
+    result: dict[str, object] = {}
+    for (action_name, expected_type), var in zip(action.outputs, outs):
+        if action_name not in named_outputs:
+            raise RuntimeError(
+                f"Assistant backend for '{action.name}' did not return "
+                f"required output {action_name!r}."
+            )
+        value = named_outputs[action_name]
+        if type(value) is not expected_type:
+            raise TypeError(
+                f"Assistant backend for '{action.name}' returned "
+                f"{type(value).__name__} for {action_name!r}; expected "
+                f"{expected_type.__name__}."
+            )
+        result[var.name] = value
+    return result
+
+
+def external_out_map(
+    action,
+    named_inputs,
+    outs,
+    llm_backend,
+    human_backend,
+    assistant_backend,
+) -> dict:
+    """Return the environment delta for a durable external action.
+
+    This is the same LLM/Human/Planner/Effect/Assistant computation performed
+    by ``_exec``, factored for the durable driver.
+    """
     if isinstance(action, EffectAction):
         values = tuple(named_inputs[name] for name, _ in action.inputs)
         return _python_action_out_map(action, values, outs)
     if isinstance(action, PlannerAction):
         return {outs[0].name: _exec_planner(action, named_inputs, llm_backend, None, _next_act_seq())}
+    if isinstance(action, AssistantAction):
+        named_outputs = assistant_backend(action, named_inputs)
+        return _assistant_action_out_map(action, named_outputs, outs)
     if isinstance(action, HumanAction):
         if not action.visible:
             default = True if action.output_type is bool else ""
@@ -477,6 +514,7 @@ def _step(
     formula_conditions: dict[int, _Formula],
     stop: threading.Event | None,
     journal=None,
+    assistant_backend=None,
 ) -> tuple[LocalStmt | PendingExternal, bool]:
     """Execute at most one enabled local step.
 
@@ -491,6 +529,10 @@ def _step(
     in the journal) is applied directly from the recorded outputs, without
     calling the backend. Pure acts are always executed inline, journal or not.
     """
+    if assistant_backend is None:
+        from zippergen.assistant_backends import make_cli_assistant_backend
+        assistant_backend = make_cli_assistant_backend()
+
     match stmt:
         case EmptyStmt():
             return EmptyStmt(), False
@@ -499,13 +541,19 @@ def _step(
             return EmptyStmt(), True
 
         case SendStmt() | SelfAssignStmt():
-            _exec(stmt, env, ch, ns, llm_backend, human_backend, monitor, trace, formula_conditions, stop)
+            _exec(
+                stmt, env, ch, ns, llm_backend, human_backend, assistant_backend,
+                monitor, trace, formula_conditions, stop,
+            )
             return EmptyStmt(), True
 
         case ActStmt(lifeline=_, action=action, inputs=ins, outputs=outs):
             if journal is None or isinstance(action, PureAction):
                 # in-process, or a pure (deterministic, non-journaled) act
-                _exec(stmt, env, ch, ns, llm_backend, human_backend, monitor, trace, formula_conditions, stop)
+                _exec(
+                    stmt, env, ch, ns, llm_backend, human_backend, assistant_backend,
+                    monitor, trace, formula_conditions, stop,
+                )
                 return EmptyStmt(), True
             locator = journal.act_paths[id(stmt)]
             in_vals = tuple(_eval(x, env) for x in ins)
@@ -591,6 +639,7 @@ def _step(
             new_first, progressed = _step(
                 first, env, ch, ns, llm_backend, human_backend, monitor, trace,
                 formula_conditions, stop, journal=journal,
+                assistant_backend=assistant_backend,
             )
             if isinstance(new_first, PendingExternal):
                 return new_first, False
@@ -753,7 +802,10 @@ def _step(
             return cast(LocalStmt, exit_b), True
 
         case ParallelLocalStmt(branches=branches, branch_indices=labels) if journal is None:
-            _exec(stmt, env, ch, ns, llm_backend, human_backend, monitor, trace, formula_conditions, stop)
+            _exec(
+                stmt, env, ch, ns, llm_backend, human_backend, assistant_backend,
+                monitor, trace, formula_conditions, stop,
+            )
             return EmptyStmt(), True
 
         case ParallelLocalStmt(branches=branches, branch_indices=labels):
@@ -763,7 +815,8 @@ def _step(
                     continue
                 new_branch, progressed = _step(
                     branch, env, ch, ns, llm_backend, human_backend, monitor, trace,
-                    formula_conditions, stop, journal=journal)
+                    formula_conditions, stop, journal=journal,
+                    assistant_backend=assistant_backend)
                 if isinstance(new_branch, PendingExternal):
                     return new_branch, False           # propagate up; serve resolves
                 residuals[i] = new_branch
@@ -779,9 +832,19 @@ def _step(
             raise TypeError(f"Unknown local stmt: {type(stmt).__name__}")
 
 
-def _exec(stmt: LocalStmt, env: Env, ch: InProcessChannel, ns: dict, llm_backend, human_backend, monitor, trace,
-          formula_conditions: dict[int, _Formula] | None = None,
-          stop: threading.Event | None = None) -> None:
+def _exec(
+    stmt: LocalStmt,
+    env: Env,
+    ch: InProcessChannel,
+    ns: dict,
+    llm_backend,
+    human_backend,
+    assistant_backend,
+    monitor,
+    trace,
+    formula_conditions: dict[int, _Formula] | None = None,
+    stop: threading.Event | None = None,
+) -> None:
     """Execute a LocalStmt, updating env in place."""
     if formula_conditions is None:
         formula_conditions = {}
@@ -912,6 +975,9 @@ def _exec(stmt: LocalStmt, env: Env, ch: InProcessChannel, ns: dict, llm_backend
                 else:
                     named_outputs = human_backend(action, named_inputs)
                     out_map = {outs[0].name: named_outputs[action.output]}
+            elif isinstance(action, AssistantAction):
+                named_outputs = assistant_backend(action, named_inputs)
+                out_map = _assistant_action_out_map(action, named_outputs, outs)
             else:
                 named_outputs = llm_backend(action, named_inputs)
                 out_map = {
@@ -934,8 +1000,8 @@ def _exec(stmt: LocalStmt, env: Env, ch: InProcessChannel, ns: dict, llm_backend
                 })
 
         case SeqStmt(first=p1, second=p2):
-            _exec(cast(LocalStmt, p1), env, ch, ns, llm_backend, human_backend, monitor, trace, formula_conditions, stop)
-            _exec(cast(LocalStmt, p2), env, ch, ns, llm_backend, human_backend, monitor, trace, formula_conditions, stop)
+            _exec(cast(LocalStmt, p1), env, ch, ns, llm_backend, human_backend, assistant_backend, monitor, trace, formula_conditions, stop)
+            _exec(cast(LocalStmt, p2), env, ch, ns, llm_backend, human_backend, assistant_backend, monitor, trace, formula_conditions, stop)
 
         case ParallelLocalStmt(branches=branches, branch_indices=branch_indices):
             residuals = list(branches)
@@ -955,8 +1021,9 @@ def _exec(stmt: LocalStmt, env: Env, ch: InProcessChannel, ns: dict, llm_backend
                         continue
                     branch_trace = _with_parallel_branch(trace, f"P{labels[i] + 1}")
                     next_branch, did_step = _step(
-                        branch, env, ch, ns, llm_backend, human_backend, monitor,
-                        branch_trace, formula_conditions, stop,
+                        branch, env, ch, ns, llm_backend, human_backend,
+                        monitor, branch_trace, formula_conditions, stop,
+                        assistant_backend=assistant_backend,
                     )
                     if isinstance(next_branch, PendingExternal):
                         raise RuntimeError("Unexpected pending external action in in-memory parallel execution.")
@@ -1004,7 +1071,7 @@ def _exec(stmt: LocalStmt, env: Env, ch: InProcessChannel, ns: dict, llm_backend
                 trace({"type": "decision", "lifeline": B.name, "kind": "if", "value": flag,
                        "condition": getattr(c, "_src", None), "formula": formula_repr,
                        **_monitor_trace_fields(monitor)})
-            _exec(cast(LocalStmt, t if flag else f), env, ch, ns, llm_backend, human_backend, monitor, trace, formula_conditions, stop)
+            _exec(cast(LocalStmt, t if flag else f), env, ch, ns, llm_backend, human_backend, assistant_backend, monitor, trace, formula_conditions, stop)
 
         case IfRecvStmt(lifeline=A, bindings=ys, sender=B, branch_true=t, branch_false=f, channel=channel):
             seq, values, recv_vc, recv_view, recv_field_view = ch.get(B.name, A.name, channel, stop=stop)
@@ -1021,7 +1088,7 @@ def _exec(stmt: LocalStmt, env: Env, ch: InProcessChannel, ns: dict, llm_backend
                     "seq": seq, "ctrl": True,
                     **_recv_trace_fields(monitor, recv_vc),
                 })
-            _exec(cast(LocalStmt, t if flag else f), env, ch, ns, llm_backend, human_backend, monitor, trace, formula_conditions, stop)
+            _exec(cast(LocalStmt, t if flag else f), env, ch, ns, llm_backend, human_backend, assistant_backend, monitor, trace, formula_conditions, stop)
 
         case WhileStmt(condition=c, owner=B, body=body, exit_body=exit_b):
             # Same Formula-dispatch logic as IfStmt — see comment there.
@@ -1061,8 +1128,8 @@ def _exec(stmt: LocalStmt, env: Env, ch: InProcessChannel, ns: dict, llm_backend
                            **_monitor_trace_fields(monitor)})
                 if not flag:
                     break
-                _exec(cast(LocalStmt, body), env, ch, ns, llm_backend, human_backend, monitor, trace, formula_conditions, stop)
-            _exec(cast(LocalStmt, exit_b), env, ch, ns, llm_backend, human_backend, monitor, trace, formula_conditions, stop)
+                _exec(cast(LocalStmt, body), env, ch, ns, llm_backend, human_backend, assistant_backend, monitor, trace, formula_conditions, stop)
+            _exec(cast(LocalStmt, exit_b), env, ch, ns, llm_backend, human_backend, assistant_backend, monitor, trace, formula_conditions, stop)
 
         case WhileRecvStmt(lifeline=A, bindings=ys, sender=B, body=body, exit_body=exit_b, channel=channel):
             while True:
@@ -1082,8 +1149,8 @@ def _exec(stmt: LocalStmt, env: Env, ch: InProcessChannel, ns: dict, llm_backend
                     })
                 if not flag:
                     break
-                _exec(cast(LocalStmt, body), env, ch, ns, llm_backend, human_backend, monitor, trace, formula_conditions, stop)
-            _exec(cast(LocalStmt, exit_b), env, ch, ns, llm_backend, human_backend, monitor, trace, formula_conditions, stop)
+                _exec(cast(LocalStmt, body), env, ch, ns, llm_backend, human_backend, assistant_backend, monitor, trace, formula_conditions, stop)
+            _exec(cast(LocalStmt, exit_b), env, ch, ns, llm_backend, human_backend, assistant_backend, monitor, trace, formula_conditions, stop)
 
         case _:
             raise TypeError(f"Unknown local stmt: {type(stmt).__name__}")
@@ -1093,10 +1160,10 @@ def _exec(stmt: LocalStmt, env: Env, ch: InProcessChannel, ns: dict, llm_backend
 # Per-lifeline thread body
 # ---------------------------------------------------------------------------
 
-def _thread_body(local_stmt, env, ch, ns, result_box, llm_backend, human_backend,
+def _thread_body(local_stmt, env, ch, ns, result_box, llm_backend, human_backend, assistant_backend,
                  monitor, trace, formula_conditions, stop):
     try:
-        _exec(local_stmt, env, ch, ns, llm_backend, human_backend, monitor, trace, formula_conditions, stop)
+        _exec(local_stmt, env, ch, ns, llm_backend, human_backend, assistant_backend, monitor, trace, formula_conditions, stop)
         result_box.append(env)
     except Exception as exc:
         stop.set()  # unblock any threads waiting on queue.get()
@@ -1185,6 +1252,7 @@ def run(
     *,
     llm_backend=None,
     human_backend=None,
+    assistant_backend=None,
     verbose: bool = False,
     trace=None,
     timeout: float = 60.0,
@@ -1217,6 +1285,9 @@ def run(
     if human_backend is None:
         from zippergen.human_backends import make_cli_human_backend
         human_backend = make_cli_human_backend()
+    if assistant_backend is None:
+        from zippergen.assistant_backends import make_cli_assistant_backend
+        assistant_backend = make_cli_assistant_backend()
 
     if trace is None and verbose:
         trace = console_trace
@@ -1248,7 +1319,7 @@ def run(
 
         def make_target(stmt, e, b, mon):
             def target():
-                _thread_body(stmt, e, channels, wf.ns, b, llm_backend, human_backend,
+                _thread_body(stmt, e, channels, wf.ns, b, llm_backend, human_backend, assistant_backend,
                              mon, trace, formula_conditions, stop)
             return target
 
@@ -1380,6 +1451,9 @@ def _workflow_configure(
     execution: str | None = None,
     store_path: str | None = None,
     human_backend: object | None = None,
+    assistant: str | object | None = None,
+    assistant_backend: object | None = None,
+    assistant_root: str | None = None,
 ) -> Workflow:
     lifelines = _ordered_workflow_lifelines(wf)
 
@@ -1417,6 +1491,24 @@ def _workflow_configure(
         wf._rt._backend = built_backend
     if backend is not None:
         wf._rt._backend = backend
+    if assistant is not None and assistant_backend is not None:
+        raise ValueError(
+            "Use either 'assistant=' or 'assistant_backend=', not both."
+        )
+    if callable(assistant):
+        assistant_backend = assistant
+        assistant = None
+    if assistant is not None:
+        from zippergen.assistant_backends import make_cli_assistant_backend
+        assistant_backend = make_cli_assistant_backend(
+            str(assistant),
+            project_root=assistant_root,
+        )
+    elif assistant_backend is None and assistant_root is not None:
+        from zippergen.assistant_backends import make_cli_assistant_backend
+        assistant_backend = make_cli_assistant_backend(project_root=assistant_root)
+    if assistant_backend is not None:
+        wf._rt._assistant_backend = assistant_backend
 
     if ui is not None:
         wf._rt._ui_enabled = ui
@@ -1472,6 +1564,10 @@ def _workflow_run_once(wf: Workflow, kwargs: dict[str, object]) -> object:
         run_trace = None
         trace = wf._rt._trace
         human_backend = wf._rt._human_backend
+        assistant_backend = wf._rt._assistant_backend
+        if assistant_backend is None:
+            from zippergen.assistant_backends import make_cli_assistant_backend
+            assistant_backend = make_cli_assistant_backend()
         if wf._rt._webtrace is not None and wf._rt._ui_enabled:
             if wf._rt._webtrace.is_dashboard:
                 run_trace = wf._rt._webtrace.start_run(wf.name, lifelines)
@@ -1506,12 +1602,14 @@ def _workflow_run_once(wf: Workflow, kwargs: dict[str, object]) -> object:
                     store_path=store_path,
                     llm_backend=backend,
                     human_backend=human_backend,
+                    assistant_backend=assistant_backend,
                     trace=trace,
                     timeout=wf._rt._timeout,
                 )
             return run(wf, list(lifelines), initial_envs,
                        llm_backend=backend,
                        human_backend=human_backend,
+                       assistant_backend=assistant_backend,
                        trace=trace, timeout=wf._rt._timeout)
         finally:
             if wf._rt._webtrace is not None and wf._rt._ui_enabled:

@@ -374,10 +374,12 @@ mirrored atomically at the fixed, ignored `.zippergen/current-task.md` path.
 
 `task` summarizes the current handoff. `task show` prints it verbatim, `task
 path` prints only its stable absolute path, and `task history` lists the private
-immutable archive. `assistant codex` (also plain `assistant`) launches the local
-Codex CLI; `assistant claude` launches Claude Code. Both use the project as the
-working directory and the freshness-checked current task as the initial
-instruction. Task inspection, `current`, and assistant launch first regenerate
+immutable archive. `assistant codex` (also plain `assistant`) runs the local
+Codex CLI in one-shot mode; `assistant claude` does the same with Claude Code.
+Both return to Studio automatically, use the project as the working directory,
+and receive the freshness-checked current task as the initial instruction.
+`assistant codex --interactive` retains an explicit interactive escape hatch.
+Task inspection, `current`, and assistant launch first regenerate
 a stale task from the complete ordered active ledger; the prior request remains
 in history and the refreshed record names it. The chosen
 tool requires its own one-time installation and authentication, but no

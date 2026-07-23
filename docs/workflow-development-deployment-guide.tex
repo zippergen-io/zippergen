@@ -597,15 +597,16 @@ assistant claude
 \end{lstlisting}
 
 Choose one of the two commands; do not run both for the same task. Plain
-\texttt{assistant} remains an alias for \texttt{assistant codex}. Studio opens
-the selected local coding assistant interactively in the project root and tells
-it to read \path{.zippergen/current-task.md}. Just before launch, Studio applies
+\texttt{assistant} remains an alias for \texttt{assistant codex}. Studio runs
+the selected local coding assistant once in the project root and tells it to
+read \path{.zippergen/current-task.md}. Just before launch, Studio applies
 the freshness check described above, so the file contains the current
 canonical specification. There is no task path or prompt file to copy. The
-assistant can
-inspect and edit the application
-project, ask for its normal approvals, run checks, and report the result. When
-its session ends, the same ZipperGen Studio session continues.
+assistant autonomously inspects and edits the application project within its
+configured permission boundary, runs checks, reports the result, exits, and
+returns control to the same ZipperGen Studio session. Use
+\texttt{assistant codex --interactive} only when a conversation or interactive
+approval is genuinely needed.
 
 There is no assistant queue or scheduled background job. The command runs
 synchronously: before launch, \texttt{task} says
@@ -705,7 +706,7 @@ deployment. The three commands have deliberately different jobs:
         and machine-specific Studio state. Once a workflow is selected, this
         includes a fresh validation summary, all participants, an explicit
         \texttt{LLM-active participants} subset derived from actual
-        \texttt{@llm} action sites, model routing, provider readiness, the
+        \texttt{@llm} action sites, model routing, provider configuration, the
         managed run, and deployment. Thus the green
         \texttt{Validation: valid} mark immediately after \texttt{use} is
         expected: \texttt{current} has checked the selected source; it is not
@@ -909,8 +910,11 @@ models check
 \end{minipage}
 
 Each \texttt{providers set} command asks for its API key without echo and saves
-it in owner-only Studio storage. \texttt{providers} reports readiness but
-never prints a secret. For a local OpenAI-compatible or Ollama endpoint use
+it in owner-only Studio storage. Plain \texttt{providers} makes no remote
+request and never prints a secret. An API provider is \texttt{configured} when
+its key is present, and its line explicitly says \texttt{not tested here}. A
+local provider line reports the last saved check result and timestamp. For a
+local OpenAI-compatible or Ollama endpoint use
 \texttt{providers set local URL}, followed by a model such as
 \texttt{ollama:qwen2.5:7b}. Studio immediately requests the endpoint's
 OpenAI-compatible \texttt{/models} route with a three-second timeout. It saves
@@ -971,7 +975,7 @@ The provider commands display lines such as:
 \begin{lstlisting}[style=shell]
 OPENAI_API_KEY:
 ANTHROPIC_API_KEY:
-Configured anthropic: ready; ANTHROPIC_API_KEY is in private Studio storage
+Configured anthropic: configured; ANTHROPIC_API_KEY is in private Studio storage; not tested here
 \end{lstlisting}
 
 The configured line begins with a green check mark; unconfigured optional
@@ -1269,7 +1273,7 @@ show           # choose a semantic code view from a numbered list
 validate       # validate the selected workflow and every projection
 models         # configure default and per-lifeline LLMs
 models check   # recheck effective model availability without changing routes
-providers      # provider/key readiness without displaying secrets
+providers      # configuration/last local check; no remote API request
 providers check local # recheck a configured local model server or SSH tunnel
 run            # fresh guided, durable development run
 resume         # continue the current incomplete managed run
@@ -1825,6 +1829,9 @@ to start, restart, and supervise a deployment. \\
 side effect. \\
 \texttt{@effect} & Email, files, APIs, databases, or other external mutation &
 Make it retry-safe or idempotent. \\
+\texttt{@assistant} & Repository-aware work performed by Codex, Claude Code,
+or a custom assistant backend & The action, Markdown instruction fingerprint,
+typed inputs, owner, and result remain inspectable and durable. \\
 \texttt{@llm} & Model generation or judgment & Declare prompts, parse format,
 and typed outputs. \\
 \texttt{@human} & Confirmation, edit, selection, acknowledgement, or input &
@@ -1833,6 +1840,57 @@ Creates a durable task in SQLite execution. \\
 normal mechanism for coding-assistant source generation. \\
 \bottomrule
 \end{tabularx}
+
+\subsection{Coding assistants inside an executing workflow}
+
+The Studio command \texttt{assistant codex} is a development command: it asks
+an assistant to edit the current project. The \texttt{@assistant} decorator is
+different. It declares repository-aware assistant work as an explicit action
+inside the protocol. The owning lifeline, typed inputs, static instruction,
+result, trace event, and semantic change therefore remain visible.
+
+\begin{lstlisting}[language=Python]
+from zippergen import Lifeline, assistant, workflow
+
+Maintainer = Lifeline("Maintainer")
+
+@assistant(
+    instructions_file="prompts/update_release_notes.md",
+    workspace=".",
+)
+def update_release_notes(change: str) -> str: ...
+
+@workflow
+def maintain(change: str @ Maintainer) -> str:
+    Maintainer: report = update_release_notes(change)
+    return report @ Maintainer
+\end{lstlisting}
+
+Use exactly one of \texttt{instructions=} and
+\texttt{instructions\_file=}. A Markdown path is relative to the project,
+fingerprinted by semantic inspection, checked by \texttt{validate}, and copied
+automatically into a guided deployment bundle. Function parameters are
+dynamic workflow data and are passed separately from that static instruction.
+
+\begin{lstlisting}[language=bash]
+zippergen run workflows/maintain.py:maintain \
+  --assistant codex \
+  --input 'change=Document the new retry policy.'
+\end{lstlisting}
+
+\texttt{--assistant claude} selects Claude Code instead. Python callers may
+select a CLI or inject a custom backend:
+
+\begin{lstlisting}[language=Python]
+workflow.configure(assistant="codex")
+workflow.configure(assistant_backend=my_backend)
+\end{lstlisting}
+
+A Studio run uses \texttt{run --assistant codex}; that selection is recorded so
+\texttt{resume} retains it. A recorded SQLite result is replayed without
+launching the assistant again.
+Nevertheless, make the requested file operation safe to resume: a crash can
+occur after files change but before the action result is recorded.
 
 \section{Reference: prerequisites and installation details}
 \label{sec:install}
@@ -1969,12 +2027,11 @@ and
 
 Normally, stay in Studio and enter \texttt{assistant codex} or
 \texttt{assistant claude}. Studio supplies the project directory and
-\path{.zippergen/current-task.md} instruction. Codex opens its interactive
-repository session with that task already submitted. Claude Code uses its
-documented one-shot agent mode with project-local edits accepted, executes the
-task, prints its report, and then returns to Studio instead of opening an empty
-prompt. Other commands remain subject to Claude Code's configured permission
-rules. Neither path requires MCP. Any
+\path{.zippergen/current-task.md} instruction. Both tools use one-shot agent
+execution, perform the task, print their report, and return to Studio
+automatically instead of leaving an open assistant prompt. Codex retains the
+explicit \texttt{assistant codex --interactive} mode. Commands remain subject
+to each tool's configured permission rules. Neither path requires MCP. Any
 MCP server already configured in the chosen tool remains optional and is not
 configured or required by ZipperGen.
 
@@ -3087,7 +3144,7 @@ checkout, and automatic \path{specification.md} path; the visible files contain
 no private runtime state. & \\
 $\square$ & \texttt{current}, \texttt{use}, and the selectable \texttt{show}
 views make specification/refinement state, workflow name, participants, validation, model
-routes, provider readiness, and runtime context clear. & \\
+routes, provider configuration, and runtime context clear. & \\
 $\square$ & \texttt{editor set micro} remembers the installed project editor;
 \texttt{editor show}, \texttt{edit file}, and a one-off
 \texttt{--editor nano} behave as documented without MCP setup. & \\
@@ -3114,8 +3171,8 @@ $\square$ & Studio \texttt{run} collects both inputs and presents rejection and
 approval in the same terminal. & \\
 $\square$ & Studio \texttt{resume} continues the same managed run after an
 interruption. & \\
-$\square$ & \texttt{providers} configures local/API providers and reports
-readiness without displaying keys; secrets remain absent from
+$\square$ & \texttt{providers} distinguishes stored API credentials from
+timestamped local checks without displaying keys; secrets remain absent from
 source/request/run JSON and their private file has owner-only permissions. & \\
 $\square$ & \texttt{zippergen --help} works from the project root. & \\
 $\square$ & Direct mock run returns an approved and a rejected result. & \\

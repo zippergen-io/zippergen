@@ -1,19 +1,23 @@
-"""
-Layer 2: @llm, @pure, @effect, @planner, and @human decorators. Read Python
-annotations to produce action IR nodes.
+"""Layer 2 action decorators.
+
+``@llm``, ``@pure``, ``@effect``, ``@assistant``, ``@planner``, and ``@human``
+read Python annotations to produce action IR nodes.
 """
 
 from __future__ import annotations
 
 import inspect
+import hashlib
 import re
 from collections.abc import Callable
+from pathlib import Path
 
 from zippergen.syntax import (
-    ZType, LLMAction, PureAction, EffectAction, PlannerAction, HumanAction, Lifeline, is_ztype,
+    ZType, LLMAction, PureAction, EffectAction, AssistantAction, PlannerAction,
+    HumanAction, Lifeline, is_ztype,
 )
 
-__all__ = ["llm", "pure", "effect", "planner", "human"]
+__all__ = ["llm", "pure", "effect", "assistant", "planner", "human"]
 
 # Type alias for an output spec list/tuple (used by @llm)
 OutputSpec = list[tuple[str, ZType]] | tuple[tuple[str, ZType], ...]
@@ -58,7 +62,7 @@ def _single_output_from_return(fn: Callable) -> tuple[tuple[str, ZType], ...]:
     ret = fn.__annotations__.get("return")
     if ret is None or not is_ztype(ret):
         raise TypeError(
-            f"@pure '{fn.__name__}': return annotation must be a supported "
+            f"@action '{fn.__name__}': return annotation must be a supported "
             f"coordination type (e.g. -> bool)."
         )
     return ((fn.__name__, ret),)
@@ -261,6 +265,100 @@ def effect(fn: Callable | None = None, *, visible: bool = True):
         )
     if fn is not None:
         return decorator(fn)
+    return decorator
+
+
+# ---------------------------------------------------------------------------
+# @assistant decorator
+# ---------------------------------------------------------------------------
+
+def _assistant_instruction_path(fn: Callable, declared: str) -> Path:
+    path = Path(declared).expanduser()
+    if path.is_absolute():
+        return path.resolve()
+
+    # Action instruction files are project-relative.  This is stable for the
+    # CLI and deployment runner, both of which run from the project/bundle
+    # root.  A module-relative fallback keeps direct imports convenient.
+    project_candidate = (Path.cwd() / path).resolve()
+    if project_candidate.is_file():
+        return project_candidate
+    source = inspect.getsourcefile(fn)
+    if source:
+        module_candidate = (Path(source).resolve().parent / path).resolve()
+        if module_candidate.is_file():
+            return module_candidate
+    return project_candidate
+
+
+def assistant(
+    *,
+    instructions: str | None = None,
+    instructions_file: str | None = None,
+    backend: str | None = None,
+    workspace: str | None = None,
+    timeout: float | None = None,
+    visible: bool = True,
+):
+    """Declare a repository-aware coding-assistant action.
+
+    Exactly one of ``instructions`` and ``instructions_file`` is required.
+    Markdown files are read when the workflow module is imported, fingerprinted
+    as part of the semantic action definition, and automatically included in a
+    guided deployment bundle.
+
+    ``backend`` may request ``"codex"`` or ``"claude"`` for this action.  When
+    omitted, the runtime default selected with
+    ``workflow.configure(assistant="...")`` or ``ZIPPERGEN_ASSISTANT`` is used.
+    ``workspace`` is a static path, relative to the configured project root.
+    The decorated function's typed parameters become explicit dynamic inputs;
+    its return annotation declares the single typed result.
+    """
+    if (instructions is None) == (instructions_file is None):
+        raise TypeError(
+            "@assistant requires exactly one of 'instructions' or "
+            "'instructions_file'."
+        )
+    if backend is not None and backend not in {"codex", "claude"}:
+        raise ValueError(
+            f"@assistant backend must be 'codex' or 'claude', got {backend!r}."
+        )
+    if timeout is not None and timeout <= 0:
+        raise ValueError("@assistant timeout must be greater than zero.")
+
+    def decorator(fn: Callable) -> AssistantAction:
+        inputs = _extract_inputs(fn)
+        outputs = _single_output_from_return(fn)
+        path: Path | None = None
+        text = instructions
+        if instructions_file is not None:
+            path = _assistant_instruction_path(fn, instructions_file)
+            if not path.is_file():
+                raise FileNotFoundError(
+                    f"@assistant '{fn.__name__}': instruction file does not "
+                    f"exist: {path}"
+                )
+            text = path.read_text(encoding="utf-8")
+        assert text is not None
+        if not text.strip():
+            source = f"file {path}" if path is not None else "inline instructions"
+            raise ValueError(
+                f"@assistant '{fn.__name__}': {source} must not be empty."
+            )
+        return AssistantAction(
+            name=fn.__name__,
+            inputs=inputs,
+            outputs=outputs,
+            instructions=text,
+            instructions_file=instructions_file,
+            instructions_path=str(path) if path is not None else None,
+            instructions_sha256=hashlib.sha256(text.encode("utf-8")).hexdigest(),
+            backend=backend,
+            workspace=workspace,
+            timeout=timeout,
+            visible=visible,
+        )
+
     return decorator
 
 

@@ -25,7 +25,7 @@ __all__ = [
     "Expr",
     "VarExpr", "LitExpr",
     # Actions
-    "LLMAction", "PureAction", "EffectAction", "PlannerAction", "HumanAction",
+    "LLMAction", "PureAction", "EffectAction", "AssistantAction", "PlannerAction", "HumanAction",
     # Type + lifeline annotation helper
     "ZTypeAtLifeline",
     # Statements
@@ -281,6 +281,34 @@ class EffectAction:
 
 
 @dataclass(frozen=True)
+class AssistantAction:
+    """Repository-aware coding-assistant action.
+
+    The instruction text is part of the immutable action definition.  It may
+    have been declared inline or loaded from a Markdown file by
+    :func:`zippergen.actions.assistant`.  Execution is delegated to a runtime
+    assistant backend and is journaled as an external action in durable mode.
+    """
+
+    name: str
+    inputs: tuple[tuple[str, ZType], ...]
+    outputs: tuple[tuple[str, ZType], ...]
+    instructions: str
+    instructions_file: str | None = None
+    instructions_path: str | None = field(default=None, repr=False, compare=False)
+    instructions_sha256: str = ""
+    backend: str | None = None
+    workspace: str | None = None
+    timeout: float | None = None
+    visible: bool = True
+
+    def __repr__(self) -> str:
+        ins = ", ".join(f"{n}: {t.__name__}" for n, t in self.inputs)
+        outs = ", ".join(f"{n}: {t.__name__}" for n, t in self.outputs)
+        return f"AssistantAction({self.name!r}, ({ins}) -> ({outs}))"
+
+
+@dataclass(frozen=True)
 class PlannerAction:
     """IR node for an LLM-generated workflow action.
 
@@ -409,7 +437,14 @@ class CoregionStmt:
 class ActStmt:
     """act lifeline: outputs := action(inputs)"""
     lifeline: Lifeline
-    action: Union[LLMAction, PureAction, EffectAction, "PlannerAction", "HumanAction"]
+    action: Union[
+        LLMAction,
+        PureAction,
+        EffectAction,
+        AssistantAction,
+        "PlannerAction",
+        "HumanAction",
+    ]
     inputs: tuple[Expr, ...]
     outputs: tuple[Var, ...]
 
@@ -689,6 +724,7 @@ class _WorkflowRuntime:
     _replay_thread: object = field(default=None, repr=False)
     _last_kwargs: dict[str, object] = field(default_factory=dict, repr=False)
     _human_backend: object = field(default=None, repr=False)
+    _assistant_backend: object = field(default=None, repr=False)
     _execution: str = field(default="sqlite", repr=False)
     _store_path: str | None = field(default=None, repr=False)
     _store_tmpdir: object = field(default=None, repr=False)
@@ -752,6 +788,11 @@ class Workflow:
     def _human_backend(self, v): self._rt._human_backend = v
 
     @property
+    def _assistant_backend(self): return self._rt._assistant_backend
+    @_assistant_backend.setter
+    def _assistant_backend(self, v): self._rt._assistant_backend = v
+
+    @property
     def _execution(self): return self._rt._execution
     @_execution.setter
     def _execution(self, v): self._rt._execution = v
@@ -782,7 +823,10 @@ class Workflow:
                   show_decisions: bool = False,
                   execution: str | None = None,
                   store_path: str | None = None,
-                  human_backend: object | None = None) -> "Workflow":
+                  human_backend: object | None = None,
+                  assistant: str | Callable | None = None,
+                  assistant_backend: object | None = None,
+                  assistant_root: str | None = None) -> "Workflow":
         """Configure runtime parameters and return self for chaining.
 
         Parameters
@@ -807,6 +851,12 @@ class Workflow:
         human_backend : optional human-action callable. Development tools may
                   use the terminal backend with SQLite while deployed runs use
                   durable out-of-band tasks.
+        assistant : default coding-assistant CLI, ``"codex"`` or ``"claude"``;
+                  may also be a custom assistant backend callable.
+        assistant_backend : explicit callable
+                  ``(AssistantAction, inputs_dict) → outputs_dict``.
+        assistant_root : project root used to resolve an assistant action's
+                  static workspace; defaults to the current directory.
         """
         from zippergen.runtime import _workflow_configure
         return _workflow_configure(self, llm=llm, backend=backend, trace=trace, timeout=timeout,
@@ -814,7 +864,10 @@ class Workflow:
                                    llm_idle_timeout=llm_idle_timeout,
                                    show_decisions=show_decisions,
                                    execution=execution, store_path=store_path,
-                                   human_backend=human_backend)
+                                   human_backend=human_backend,
+                                   assistant=assistant,
+                                   assistant_backend=assistant_backend,
+                                   assistant_root=assistant_root)
 
     def _run_once(self, kwargs: dict[str, object]) -> object:
         from zippergen.runtime import _workflow_run_once

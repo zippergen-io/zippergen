@@ -135,6 +135,42 @@ def test_dev_collects_multiple_inputs_and_reviews_inline(tmp_path):
     assert output[-2] == "Result: [revise_reply:draft]"
 
 
+def test_dev_records_and_uses_assistant_backend(tmp_path, monkeypatch):
+    workspace = Workspace(_repository_root(), home=tmp_path / "home")
+    selections = []
+
+    def fake_factory(default=None, *, project_root=None):
+        selections.append((default, project_root))
+
+        def backend(action, inputs):
+            return {
+                action.outputs[0][0]: f"updated:{inputs['change']}"
+            }
+
+        return backend
+
+    monkeypatch.setattr(
+        "zippergen.assistant_backends.make_cli_assistant_backend",
+        fake_factory,
+    )
+
+    record = run_dev(
+        workspace,
+        workflow_spec=(
+            "examples/assistant_maintenance.py:assistant_maintenance"
+        ),
+        provided_inputs={"change": "Document retries"},
+        assistant="codex",
+        interactive=False,
+        output_func=lambda line: None,
+    )
+
+    assert record["status"] == "done"
+    assert record["assistant"] == "codex"
+    assert record["result"] == "updated:Document retries"
+    assert selections[-1] == ("codex", str(workspace.root))
+
+
 def test_dev_resume_claims_the_existing_pending_terminal_task(tmp_path):
     workspace = Workspace(_repository_root(), home=tmp_path / "home")
 

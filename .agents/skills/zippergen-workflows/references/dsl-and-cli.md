@@ -45,6 +45,9 @@ Choose an action by semantics, not convenience:
   side effects.
 - `@effect`: external I/O or mutation. Design retry-safe or idempotent behavior
   because durable execution may replay around failures.
+- `@assistant`: repository-aware work performed by a local coding-assistant
+  CLI. Keep instructions visible, declare dynamic inputs explicitly, and make
+  the requested file changes safe to resume.
 - `@llm`: model generation or judgment. Declare prompts, parse format, and all
   typed outputs explicitly.
 - `@human`: a durable human input, confirmation, edit, selection, or
@@ -71,6 +74,33 @@ def send_reply(address: str, body: str) -> str:
 
 Use `@effect(visible=False)` only for intentionally hidden operational work,
 not to conceal meaningful protocol behavior.
+
+Coding-assistant work is a distinct, inspectable external action:
+
+```python
+from zippergen import assistant
+
+
+@assistant(
+    instructions_file="prompts/update_release_notes.md",
+    workspace=".",
+)
+def update_release_notes(change: str) -> str: ...
+```
+
+Exactly one of `instructions=` and `instructions_file=` is required. Markdown
+paths are project-relative, fingerprinted in semantic snapshots, validated,
+and included automatically in guided deployment bundles. The function
+parameters are typed workflow data passed separately from the static
+instructions. Select the runtime CLI with `workflow.configure(assistant="codex")`,
+`zippergen run ... --assistant codex`, `ZIPPERGEN_ASSISTANT=codex`, or a static
+`backend="codex"`/`backend="claude"` on the action. Prefer runtime selection
+when the same workflow must run in different environments.
+
+An assistant action is journaled like other external actions in durable mode:
+a recorded result is replayed without launching the assistant again. The
+requested repository operation should nevertheless be restart-safe because a
+process can fail after the CLI changes files but before its result is recorded.
 
 ## Owned control flow
 

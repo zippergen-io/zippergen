@@ -385,21 +385,62 @@ def test_studio_assistant_launches_codex_in_project_on_the_stable_task(
 
     studio.execute("assistant")
 
+    assert calls[0][0][0:4] == [
+        "/bin/codex",
+        "exec",
+        "--cd",
+        str(workspace.root),
+    ]
+    assert ".zippergen/current-task.md" in calls[0][0][4]
+    assert calls[0][1] == workspace.root
+    assert calls[0][2] is False
+    assert output[0] == "Assistant"
+    assert any(
+        "Mode" in line and "returns to Studio automatically" in line
+        for line in output
+    )
+    assert any("MCP" in line and "not required" in line for line in output)
+    assert any(line.startswith("✓ Codex session ended") for line in output)
+    assert any(
+        "Status" in line and "awaiting human review" in line for line in output
+    )
+    request = workspace.current_request()
+    assert request is not None
+    assert request["assistant_mode"] == "one_shot"
+    assert request["status"] == "awaiting_review"
+
+
+def test_studio_assistant_codex_can_still_run_interactively(
+    tmp_path, monkeypatch
+):
+    studio, workspace, output = _studio(tmp_path)
+    studio.create_request("Create a review workflow.")
+    output.clear()
+    calls: list[tuple[list[str], Path, bool]] = []
+    monkeypatch.setattr("zippergen.studio.shutil.which", lambda name: "/bin/codex")
+
+    def fake_run(arguments, *, cwd, check):
+        calls.append((arguments, cwd, check))
+        return subprocess.CompletedProcess(arguments, 0)
+
+    monkeypatch.setattr("zippergen.studio.subprocess.run", fake_run)
+
+    studio.execute("assistant codex --interactive")
+
     assert calls[0][0][0:3] == [
         "/bin/codex",
         "--cd",
         str(workspace.root),
     ]
     assert ".zippergen/current-task.md" in calls[0][0][3]
-    assert calls[0][1] == workspace.root
-    assert calls[0][2] is False
-    assert output[0] == "Assistant"
-    assert any("MCP" in line and "not required" in line for line in output)
-    assert any(line.startswith("✓ Codex session ended") for line in output)
     assert any(
-        "Status" in line and "awaiting human review" in line for line in output
+        "Mode" in line and "interactive task session" in line
+        for line in output
     )
-    assert workspace.current_request()["status"] == "awaiting_review"
+    request = workspace.current_request()
+    assert request is not None
+    assert request["assistant_mode"] == "interactive"
+    assert request["status"] == "awaiting_review"
 
 
 def test_studio_assistant_refreshes_edited_specification_before_launch(
@@ -514,6 +555,9 @@ def test_studio_assistant_reports_missing_claude_and_rejects_unknown_tools(
         assert "assistant claude" in str(exc)
     else:
         raise AssertionError("unknown assistants should be rejected")
+
+    with pytest.raises(SystemExit, match="only with assistant codex"):
+        studio.execute("assistant claude --interactive")
     assert workspace.current_task_path.exists()
 
 
@@ -1733,7 +1777,10 @@ def test_studio_current_is_a_complete_project_dashboard(tmp_path):
     assert any("Connectors" in line and "none" in line for line in output)
     assert any("Validation" in line and "✓ valid" in line for line in output)
     assert any("Writer" in line and "mock" in line for line in output)
-    assert any("Provider mock" in line and "ready; built in" in line for line in output)
+    assert any(
+        "Provider mock" in line and "available; built in" in line
+        for line in output
+    )
     assert any("Run" in line and "none" in line for line in output)
     assert any("Deployment" in line and "none" in line for line in output)
 
@@ -1808,10 +1855,19 @@ def test_studio_configures_api_and_local_providers_without_displaying_secrets(
     ]
     assert workspace.secrets_path.stat().st_mode & 0o077 == 0
     assert all("super-secret-key" not in line for line in output)
-    assert any("openai: ready" in line for line in output)
     assert any(
-        "local: ready; endpoint http://localhost:1234/v1; 2 models; checked"
+        "openai: configured" in line and "not tested here" in line
+        for line in output
+    )
+    assert any(
+        "local: last check succeeded; endpoint http://localhost:1234/v1; "
+        "2 models; checked"
         in line
+        for line in output
+    )
+    assert any(line == "Provider configuration" for line in output)
+    assert any(
+        "Use 'models check' for current configured-model availability" in line
         for line in output
     )
 
@@ -1872,7 +1928,7 @@ def test_studio_records_failed_local_provider_recheck(tmp_path, monkeypatch):
     output.clear()
     studio.execute("providers")
     assert any(
-        "local: endpoint http://localhost:11434/v1; unreachable" in line
+        "local: last check failed; endpoint http://localhost:11434/v1" in line
         and "connection refused" in line
         for line in output
     )
@@ -2059,6 +2115,20 @@ def test_studio_run_accepts_an_llm_override(tmp_path, monkeypatch):
     studio.execute("run openai:gpt-4o-mini")
 
     assert calls[0]["llm"] == "openai:gpt-4o-mini"
+
+
+def test_studio_run_accepts_an_assistant_action_backend(tmp_path, monkeypatch):
+    studio, _workspace, _output = _studio(tmp_path)
+    calls = []
+    monkeypatch.setattr(
+        "zippergen.studio.run_dev",
+        lambda workspace, **kwargs: calls.append(kwargs),
+    )
+
+    studio.execute("run mock --assistant claude")
+
+    assert calls[0]["llm"] == "mock"
+    assert calls[0]["assistant"] == "claude"
 
 
 def test_studio_models_configures_and_displays_llm_active_lifelines(tmp_path):

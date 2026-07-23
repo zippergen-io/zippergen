@@ -1543,6 +1543,7 @@ class Workspace:
         inputs: dict[str, object],
         llm: str,
         llms: dict[str, str] | None = None,
+        assistant: str | None = None,
         options: dict[str, object] | None = None,
         services: str | None = None,
     ) -> dict[str, Any]:
@@ -1568,6 +1569,7 @@ class Workspace:
             "inputs": dict(inputs),
             "llm": llm,
             "llms": dict(llms or {}),
+            "assistant": assistant,
             "options": dict(options or {}),
             "services": services,
             "status": "created",

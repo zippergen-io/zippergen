@@ -14,6 +14,7 @@ from types import ModuleType
 from zippergen.deployment import deployment_spec_from_module
 from zippergen.syntax import (
     ActStmt,
+    AssistantAction,
     AnyStmt,
     CoregionStmt,
     EffectAction,
@@ -116,6 +117,16 @@ def _action_definition(action: object) -> dict[str, object]:
         base.update({"kind": "pure", "implementation_hash": _implementation_hash(action)})
     elif isinstance(action, EffectAction):
         base.update({"kind": "effect", "implementation_hash": _implementation_hash(action)})
+    elif isinstance(action, AssistantAction):
+        base.update({
+            "kind": "assistant",
+            "instructions_file": action.instructions_file,
+            "instructions_sha256": action.instructions_sha256,
+            "instructions": action.instructions,
+            "backend": action.backend,
+            "workspace": action.workspace,
+            "timeout": action.timeout,
+        })
     elif isinstance(action, PlannerAction):
         base.update({
             "kind": "planner",
