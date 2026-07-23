@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -12,7 +13,7 @@ import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 from urllib import request
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlsplit, urlunsplit
@@ -26,6 +27,14 @@ from prompt_toolkit.history import FileHistory
 
 from zippergen.dev import default_llm_spec, run_dev
 from zippergen.models import normalize_llm_overrides
+from zippergen.natural_language import (
+    NaturalCommandPlan,
+    NaturalLanguageStore,
+    deterministic_plan,
+    interpreter_prompt,
+    looks_sensitive,
+    parse_cli_plan,
+)
 from zippergen.semantic import semantic_snapshot, workflow_semantics
 from zippergen.view import ViewOptions, workflow_view_data
 from zippergen.workspace import SPECIFICATION_GUIDE, Workspace, WorkspaceError
@@ -35,6 +44,7 @@ InputFunc = Callable[[str], str]
 OutputFunc = Callable[[str], object]
 SecretInputFunc = Callable[[str], str]
 StatusKind = Literal["success", "warning", "error", "info"]
+CommandRisk = Literal["read-only", "configuration", "execution", "destructive"]
 
 
 @dataclass(frozen=True)
@@ -91,6 +101,7 @@ _STATUS_COLORS = {
 }
 _STUDIO_COMMANDS = {
     "?",
+    "ask",
     "assistant",
     "create",
     "current",
@@ -98,10 +109,13 @@ _STUDIO_COMMANDS = {
     "doctor",
     "edit",
     "editor",
+    "exit",
     "help",
     "inspect",
     "logs",
     "models",
+    "language",
+    "plan",
     "project",
     "prompts",
     "providers",
@@ -128,6 +142,9 @@ _COMMAND_COMPLETIONS = (
     ("spec", "inspect or refine the workflow specification"),
     ("task", "inspect the current coding-assistant task"),
     ("assistant", "run Codex or Claude on the current task"),
+    ("language", "inspect or configure natural-language commands"),
+    ("ask", "interpret and execute an explicit natural-language request"),
+    ("plan", "interpret natural language without executing it"),
     ("editor", "inspect or configure the terminal editor"),
     ("edit", "edit the selected workflow or another project file"),
     ("use", "select a discovered workflow"),
@@ -180,6 +197,14 @@ _SUBCOMMAND_COMPLETIONS = {
         ("codex", "run Codex once on the current task"),
         ("claude", "run Claude Code once on the current task"),
     ),
+    "language": (
+        ("show", "show interpreter, learning, and history status"),
+        ("set", "choose auto, Codex, Claude, or no CLI fallback"),
+        ("learning", "turn private project learning on or off"),
+        ("history", "show interpreted requests and outcomes"),
+        ("learned", "show reusable private interpretations"),
+        ("forget", "forget one learned interpretation or all"),
+    ),
     "editor": (
         ("show", "show the effective editor"),
         ("set", "remember a project editor"),
@@ -220,6 +245,216 @@ _MODEL_COMPLETIONS = (
     ("anthropic:", "Anthropic model"),
     ("mistral:", "Mistral model"),
 )
+
+
+def _is_explicit_studio_syntax(parts: list[str]) -> bool:
+    """Distinguish exact Studio syntax from natural prose beginning similarly."""
+
+    if not parts:
+        return False
+    command = parts[0].casefold()
+    args = parts[1:]
+    if command not in _STUDIO_COMMANDS:
+        return False
+    if command in {"exit", "quit", "help", "?", "current", "workflow", "validate"}:
+        return not args
+    if command in {
+        "ask",
+        "plan",
+        "assistant",
+        "create",
+        "prompts",
+        "refine",
+    }:
+        return True
+    if command == "run":
+        if not args:
+            return True
+        if len(args) == 1:
+            return not args[0].startswith("-")
+        if len(args) == 2:
+            return args[0] == "--assistant"
+        return len(args) == 3 and args[1] == "--assistant"
+    if command in {"use", "resume", "runs"}:
+        return command == "use" or not args
+    if command in {"status", "doctor", "logs", "start", "restart", "stop", "deploy"}:
+        if args and args[0].casefold() in {"of", "please", "the"}:
+            return False
+        return len(args) <= 2
+    allowed: dict[str, set[str]] = {
+        "project": {"init", "show", "reset"},
+        "spec": {
+            "show",
+            "edit",
+            "path",
+            "refine",
+            "pending",
+            "reconcile",
+            "discard",
+            "history",
+        },
+        "prompts": {"list", "show", "inspect", "path", "context", "add"},
+        "task": {"show", "path", "history", "close"},
+        "assistant": {"codex", "claude", "--rerun"},
+        "editor": {"show", "set", "reset"},
+        "edit": {"workflow", "file"},
+        "show": {
+            "overview",
+            "protocol",
+            "communications",
+            "communication",
+            "actions",
+            "full",
+            "complete",
+            "agent",
+            "agents",
+        },
+        "inspect": {
+            "overview",
+            "protocol",
+            "communications",
+            "communication",
+            "actions",
+            "full",
+            "complete",
+            "agent",
+            "agents",
+        },
+        "models": {"show", "check", "default", "set", "reset"},
+        "providers": {"show", "set", "check", "reset"},
+        "language": {
+            "show",
+            "set",
+            "learning",
+            "history",
+            "learned",
+            "forget",
+        },
+    }
+    if command in allowed:
+        return not args or args[0].casefold() in allowed[command]
+    return True
+
+
+def _is_allowed_natural_plan_command(parts: list[str]) -> bool:
+    """Validate the strict command subset exposed to repository interpreters."""
+
+    if not parts:
+        return False
+    command = parts[0].casefold()
+    args = parts[1:]
+    lowered = [value.casefold() for value in args]
+    if command in {"current", "workflow", "validate", "resume", "runs"}:
+        return not args
+    if command == "project":
+        return (
+            len(args) == 1
+            and lowered[0] == "show"
+            or 1 <= len(args) <= 2
+            and lowered[0] == "init"
+        )
+    if command in {"show", "inspect"}:
+        if len(args) == 1:
+            return lowered[0] in {
+                "overview",
+                "protocol",
+                "communications",
+                "actions",
+                "full",
+            }
+        if len(args) == 2 and lowered[0] == "agent":
+            return True
+        return len(args) >= 2 and lowered[0] == "agents"
+    if command == "spec":
+        if len(args) == 1:
+            return lowered[0] in {
+                "show",
+                "path",
+                "pending",
+                "history",
+                "reconcile",
+                "discard",
+                "refine",
+            }
+        return len(args) >= 2 and lowered[0] == "refine"
+    if command == "task":
+        return (
+            not args
+            or len(args) == 1
+            and lowered[0] in {"show", "path", "history", "close"}
+        )
+    if command == "models":
+        if len(args) == 1:
+            return lowered[0] in {"show", "check"}
+        if len(args) == 2:
+            return lowered[0] in {"check", "default", "reset"}
+        return len(args) == 3 and lowered[0] == "set"
+    if command == "providers":
+        if len(args) == 1:
+            return lowered[0] == "show"
+        if len(args) == 2:
+            return lowered[0] in {"check", "set", "reset"}
+        return (
+            len(args) == 3
+            and lowered[0] == "set"
+            and lowered[1] in {"local", "ollama"}
+        )
+    if command == "use":
+        return len(args) <= 1
+    if command == "create":
+        return True
+    if command == "refine":
+        return bool(args)
+    if command == "editor":
+        return (
+            len(args) == 1
+            and lowered[0] in {"show", "reset"}
+            or len(args) >= 2
+            and lowered[0] == "set"
+        )
+    if command == "edit":
+        return (
+            len(args) == 1
+            and lowered[0] == "workflow"
+            or len(args) == 2
+            and lowered[0] == "file"
+        )
+    if command == "run":
+        if not args:
+            return True
+        if len(args) == 1:
+            return not args[0].startswith("-")
+        if len(args) == 2:
+            return (
+                lowered[0] == "--assistant"
+                and lowered[1] in {"codex", "claude"}
+            )
+        return (
+            len(args) == 3
+            and lowered[1] == "--assistant"
+            and lowered[2] in {"codex", "claude"}
+        )
+    if command == "assistant":
+        return (
+            not args
+            or lowered[0] in {"codex", "claude"}
+            and all(
+                value in {"codex", "claude", "--rerun", "--interactive"}
+                for value in lowered
+            )
+        )
+    if command == "deploy":
+        return (
+            not args
+            or len(args) == 1
+            and (args[0] == "--no-start" or not args[0].startswith("-"))
+            or len(args) == 2
+            and args[1] == "--no-start"
+            and not args[0].startswith("-")
+        )
+    if command in {"status", "doctor", "logs", "start", "restart", "stop"}:
+        return len(args) <= 1
+    return False
 
 
 def _completion_words(text: str) -> tuple[list[str], str]:
@@ -318,6 +553,15 @@ def _validate_model_spec(value: str) -> str:
 
 
 _HELP = """Commands:
+  NATURAL LANGUAGE                describe a Studio operation in ordinary text
+  ask TEXT                        explicitly interpret and execute ordinary text
+  plan TEXT                       interpret ordinary text without executing it
+  language                        show interpreter and private learning status
+  language set auto|codex|claude|off
+                                  choose the repository-aware CLI fallback
+  language learning on|off        enable or disable private project learning
+  language history|learned        inspect interpretations and reusable examples
+  language forget ID|all          remove learned private interpretations
   project init [NAME]            create the project manifest
   project show                   show visible project configuration
   project reset                  choose fresh design or state-only reset
@@ -474,8 +718,8 @@ class Studio:
         current = self.workspace.current_workflow
         self._emit(f"Workflow: {current}" if current else "No workflow selected.")
         self._emit(
-            "Type 'help' for commands; press Tab to complete; "
-            "'show' opens the inspection menu."
+            "Type a command or describe what you want in ordinary language; "
+            "press Tab to complete; 'help' shows the exact commands."
         )
 
     def _new_prompt_session(self) -> PromptSession[str]:
@@ -781,6 +1025,33 @@ class Studio:
                         ("--rerun", "deliberately rerun a task awaiting review")
                     ]
             return []
+        if command == "language":
+            if not args:
+                return list(_SUBCOMMAND_COMPLETIONS["language"])
+            action = args[0].lower()
+            if action == "set":
+                return [
+                    ("auto", "prefer Codex, then Claude, when interpretation is needed"),
+                    ("codex", "use the repository-aware Codex CLI"),
+                    ("claude", "use the repository-aware Claude Code CLI"),
+                    ("off", "use deterministic and learned interpretations only"),
+                ]
+            if action == "learning":
+                return [
+                    ("on", "remember successful CLI interpretations privately"),
+                    ("off", "do not add learned interpretations"),
+                ]
+            if action == "forget":
+                learned = self._language_store().learned()
+                return [("all", "forget every learned interpretation")] + [
+                    (
+                        str(record.get("id") or ""),
+                        str(record.get("example") or "learned interpretation"),
+                    )
+                    for record in learned
+                    if record.get("id")
+                ]
+            return []
         if command in {"deploy", "status", "doctor", "logs", "start", "restart", "stop"}:
             values: list[tuple[str, str]] = []
             deployment = self.workspace.load().get("last_deployment")
@@ -801,16 +1072,39 @@ class Studio:
             return legacy
         return []
 
-    def execute(self, line: str, *, show_boundary: bool = False) -> bool:
+    def execute(
+        self,
+        line: str,
+        *,
+        show_boundary: bool = False,
+        _allow_natural: bool = True,
+    ) -> bool:
         try:
             parts = shlex.split(line)
         except ValueError as exc:
+            rough_parts = line.strip().split()
+            if _allow_natural and not _is_explicit_studio_syntax(rough_parts):
+                if show_boundary:
+                    self._emit_output_boundary("language")
+                self.interpret_natural_language(line)
+                return True
             if show_boundary:
                 self._emit_output_boundary("input")
             self._error(f"Could not parse command: {exc}")
             return True
         if not parts:
             return True
+        explicit = _is_explicit_studio_syntax(parts)
+        if _allow_natural and not explicit:
+            if show_boundary:
+                self._emit_output_boundary("language")
+            self.interpret_natural_language(line)
+            return True
+        if not explicit:
+            raise SystemExit(
+                f"Invalid planned Studio command: {line}. "
+                "The interpreter may only use documented Studio syntax."
+            )
         command, *args = parts
         command = command.lower()
         if command in {"exit", "quit"}:
@@ -821,6 +1115,16 @@ class Studio:
             )
         if command in {"help", "?"}:
             self._emit(_HELP.rstrip())
+        elif command == "ask":
+            if not args:
+                raise SystemExit("Use ask TEXT.")
+            self.interpret_natural_language(" ".join(args))
+        elif command == "plan":
+            if not args:
+                raise SystemExit("Use plan TEXT.")
+            self.interpret_natural_language(" ".join(args), preview_only=True)
+        elif command == "language":
+            self.manage_language(args)
         elif command == "project":
             self.configure_project(args)
         elif command == "spec":
@@ -902,10 +1206,645 @@ class Studio:
         elif command in {"status", "doctor", "logs", "start", "restart", "stop"}:
             self.deployment_action(command, args)
         else:
-            self._error(
-                f"Unknown command: {command}. Type 'help' for available commands."
+            raise SystemExit(
+                f"Unknown Studio command: {command}. "
+                "Type 'help' for available commands."
             )
         return True
+
+    def _language_store(self) -> NaturalLanguageStore:
+        return NaturalLanguageStore(self.workspace.natural_language_path)
+
+    def _language_participants(self) -> tuple[tuple[str, ...], tuple[str, ...]]:
+        try:
+            _current, workflow, module = self._current_context()
+            participants = tuple(self._agent_names(workflow))
+            active = tuple(self._llm_action_lifelines(workflow, module))
+            return participants, active
+        except (Exception, SystemExit):
+            return (), ()
+
+    def _language_backend(
+        self,
+        configured: str,
+        *,
+        required: bool,
+    ) -> tuple[Literal["codex", "claude"], str] | None:
+        mode = configured.casefold()
+        if mode == "off":
+            if required:
+                raise SystemExit(
+                    "I could not map this request to a deterministic or learned "
+                    "Studio command, and the repository-aware CLI fallback is off. "
+                    "Use an exact command or 'language set auto|codex|claude'."
+                )
+            return None
+        choices = ("codex", "claude") if mode == "auto" else (mode,)
+        for choice in choices:
+            if choice not in {"codex", "claude"}:
+                break
+            executable = shutil.which(choice)
+            if executable:
+                return (
+                    ("codex", executable)
+                    if choice == "codex"
+                    else ("claude", executable)
+                )
+        if not required:
+            return None
+        if mode == "auto":
+            raise SystemExit(
+                "This request needs repository-aware interpretation, but neither "
+                "Codex nor Claude Code is installed. Install and authenticate one, "
+                "use an exact Studio command, or use 'language set off'."
+            )
+        label = "Codex CLI" if mode == "codex" else "Claude Code"
+        raise SystemExit(
+            f"{label} is selected for natural-language interpretation but was "
+            f"not found. Install it or use 'language set auto|off'."
+        )
+
+    def _language_context(self) -> str:
+        state = self.workspace.load()
+        participants, active = self._language_participants()
+        manifest = self.workspace.project_manifest()
+        profile: dict[str, object] = {"default": None, "lifelines": {}}
+        if self.workspace.current_workflow:
+            try:
+                profile = self._run_model_profile()
+            except (Exception, SystemExit):
+                pass
+        current_request: dict[str, object] | None = None
+        try:
+            value = self.workspace.current_request()
+            if value is not None:
+                current_request = {
+                    "kind": value.get("kind"),
+                    "status": value.get("status"),
+                    "workflow_spec": value.get("workflow_spec"),
+                }
+        except WorkspaceError:
+            pass
+        context = {
+            "project_root": str(self.workspace.root),
+            "project_name": manifest.get("name"),
+            "manifest_exists": manifest.get("exists"),
+            "specification_file": str(
+                self.workspace.specification_path.relative_to(self.workspace.root)
+            ),
+            "specification_exists": self.workspace.specification() is not None,
+            "pending_refinement": self.workspace.pending_refinement() is not None,
+            "selected_workflow": self.workspace.current_workflow,
+            "discovered_workflows": self.workspace.discover_workflows(),
+            "participants": participants,
+            "llm_active_participants": active,
+            "model_profile": profile,
+            "current_run": state.get("current_run"),
+            "last_deployment": state.get("last_deployment"),
+            "current_task": current_request,
+        }
+        return json.dumps(context, indent=2, sort_keys=True, default=str)
+
+    def _interpret_with_cli(
+        self,
+        request_text: str,
+        *,
+        configured: str,
+    ) -> NaturalCommandPlan:
+        selected = self._language_backend(configured, required=True)
+        assert selected is not None
+        backend, executable = selected
+        label = "Codex" if backend == "codex" else "Claude Code"
+        self._info(
+            f"Interpreting with {label}; repository access is read-only."
+        )
+        prompt = interpreter_prompt(
+            request_text,
+            context=self._language_context(),
+        )
+        if backend == "codex":
+            command = [
+                executable,
+                "exec",
+                "--sandbox",
+                "read-only",
+                "--skip-git-repo-check",
+                "--cd",
+                str(self.workspace.root),
+                "-",
+            ]
+            stdin = prompt
+        else:
+            command = [
+                executable,
+                "--print",
+                "--permission-mode",
+                "plan",
+                prompt,
+            ]
+            stdin = None
+        completed = subprocess.run(
+            command,
+            cwd=self.workspace.root,
+            input=stdin,
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        if completed.returncode != 0:
+            detail = (completed.stderr or completed.stdout or "").strip()
+            if len(detail) > 500:
+                detail = detail[-500:]
+            raise SystemExit(
+                f"{label} could not interpret the request"
+                + (f": {detail}" if detail else ".")
+            )
+        try:
+            return parse_cli_plan(completed.stdout, source=backend)
+        except ValueError as exc:
+            raise SystemExit(f"{label} returned an invalid command plan: {exc}") from exc
+
+    def _canonical_natural_command(self, command_line: str) -> str:
+        try:
+            parts = shlex.split(command_line)
+        except ValueError as exc:
+            raise SystemExit(
+                f"Invalid planned Studio command {command_line!r}: {exc}"
+            ) from exc
+        if not parts or not _is_allowed_natural_plan_command(parts):
+            raise SystemExit(
+                f"The interpreter proposed unsupported Studio syntax: "
+                f"{command_line}"
+            )
+        top = parts[0].casefold()
+        allowed = {
+            "assistant",
+            "create",
+            "current",
+            "deploy",
+            "doctor",
+            "edit",
+            "editor",
+            "inspect",
+            "logs",
+            "models",
+            "project",
+            "providers",
+            "refine",
+            "restart",
+            "resume",
+            "run",
+            "runs",
+            "show",
+            "spec",
+            "start",
+            "status",
+            "stop",
+            "task",
+            "use",
+            "validate",
+            "workflow",
+        }
+        if top not in allowed:
+            raise SystemExit(
+                f"The interpreter may not invoke the Studio command {parts[0]!r}."
+            )
+
+        participants, _active = self._language_participants()
+        canonical = {name.casefold(): name for name in participants}
+
+        def replace(index: int) -> None:
+            if index < len(parts):
+                parts[index] = canonical.get(parts[index].casefold(), parts[index])
+
+        if top in {"show", "inspect"} and len(parts) >= 3:
+            if parts[1].casefold() == "agent":
+                replace(2)
+            elif parts[1].casefold() == "agents":
+                for index in range(2, len(parts)):
+                    replace(index)
+        elif top == "models" and len(parts) >= 3:
+            if parts[1].casefold() in {"set", "check", "reset"}:
+                replace(2)
+        return shlex.join(parts)
+
+    def _natural_command_risk(self, command_line: str) -> CommandRisk:
+        parts = shlex.split(command_line)
+        command = parts[0].casefold()
+        args = [value.casefold() for value in parts[1:]]
+        if command in {"current", "workflow", "validate", "runs", "status", "doctor", "logs"}:
+            return "read-only"
+        if command in {"show", "inspect"}:
+            return "read-only"
+        if command == "project" and args[:1] == ["show"]:
+            return "read-only"
+        if command == "spec" and (not args or args[0] in {"show", "path", "pending", "history"}):
+            return "read-only"
+        if command == "task" and (not args or args[0] in {"show", "path", "history"}):
+            return "read-only"
+        if command == "models" and (not args or args[0] in {"show", "check"}):
+            return "read-only"
+        if command == "providers" and (not args or args[0] in {"show", "check"}):
+            return "read-only"
+        if command == "editor" and (not args or args[0] == "show"):
+            return "read-only"
+        if command == "project" and args[:1] == ["reset"]:
+            return "destructive"
+        if command == "spec" and args[:1] == ["discard"]:
+            return "destructive"
+        if command == "task" and args[:1] == ["close"]:
+            return "destructive"
+        if command in {
+            "assistant",
+            "deploy",
+            "restart",
+            "resume",
+            "run",
+            "start",
+            "stop",
+        }:
+            return "execution"
+        return "configuration"
+
+    def _natural_preview_requested(self, request_text: str) -> bool:
+        text = " ".join(request_text.strip().casefold().split())
+        return bool(
+            re.match(
+                r"^(?:how (?:do|can|would) i|what command|which command|"
+                r"tell me how|show me how|how should i)\b",
+                text,
+            )
+        )
+
+    def _natural_command_after_confirmation(self, command_line: str) -> str:
+        """Avoid repeating an equivalent confirmation inside a planned command."""
+
+        parts = shlex.split(command_line)
+        lowered = [value.casefold() for value in parts]
+        if (
+            tuple(lowered[:2]) in {("spec", "discard"), ("task", "close")}
+            and "--yes" not in lowered
+        ):
+            parts.append("--yes")
+        return shlex.join(parts)
+
+    def _emit_natural_plan(
+        self,
+        request_text: str,
+        plan: NaturalCommandPlan,
+        *,
+        risk: CommandRisk | None,
+        preview: bool,
+    ) -> None:
+        source = {
+            "deterministic": "built-in interpreter",
+            "learned": (
+                "private learned interpretation"
+                + (f" {plan.learned_id}" if plan.learned_id else "")
+            ),
+            "codex": "Codex CLI (read-only)",
+            "claude": "Claude Code CLI (read-only)",
+        }[plan.source]
+        rows: list[tuple[str, object, StatusKind | None]] = [
+            ("Request", request_text.strip(), None),
+            ("Interpreter", source, None),
+            ("Meaning", plan.summary, None),
+        ]
+        if plan.clarification:
+            rows.append(("Status", "clarification required", "warning"))
+        else:
+            rows.extend(
+                [
+                    ("Safety", risk or "not classified", None),
+                    (
+                        "Mode",
+                        "preview only" if preview else "execute",
+                        "warning" if preview else "success",
+                    ),
+                ]
+            )
+        self._emit_table("Natural-language request", rows)
+        if plan.commands:
+            self._emit("Command plan")
+            self._emit("────────────")
+            for index, command in enumerate(plan.commands, start=1):
+                self._emit(f"  {index}  {command}")
+            self._emit()
+        if plan.clarification:
+            self._emit_table(
+                "Clarification needed",
+                [("Question", plan.clarification, "warning")],
+            )
+
+    def interpret_natural_language(
+        self,
+        request_text: str,
+        *,
+        preview_only: bool = False,
+    ) -> None:
+        request_text = request_text.strip()
+        if not request_text:
+            raise SystemExit("Describe the Studio operation you want.")
+        if looks_sensitive(request_text):
+            raise SystemExit(
+                "The request appears to contain a secret value and was not sent "
+                "to an interpreter or stored. Use 'providers set PROVIDER' so "
+                "Studio can collect the key privately."
+            )
+
+        store = self._language_store()
+        settings = store.load()
+        participants, active = self._language_participants()
+        plan = deterministic_plan(
+            request_text,
+            participants=participants,
+            llm_participants=active,
+        )
+        if plan is None:
+            plan = store.match(request_text)
+        if plan is None:
+            try:
+                plan = self._interpret_with_cli(
+                    request_text,
+                    configured=str(settings.get("interpreter") or "auto"),
+                )
+            except (SystemExit, KeyboardInterrupt) as exc:
+                store.record(
+                    request_text,
+                    None,
+                    status="failed",
+                    detail=str(exc),
+                )
+                raise
+
+        proposed_text = "\n".join(
+            (
+                plan.summary,
+                plan.clarification or "",
+                *plan.commands,
+            )
+        )
+        if looks_sensitive(proposed_text):
+            store.record(
+                request_text,
+                None,
+                status="failed",
+                detail="interpreter output contained secret-looking text",
+            )
+            raise SystemExit(
+                "The interpreter returned secret-looking text. Studio discarded "
+                "the plan without displaying, executing, or learning it."
+            )
+
+        try:
+            canonical_commands = tuple(
+                self._canonical_natural_command(command)
+                for command in plan.commands
+            )
+        except SystemExit:
+            store.record(
+                request_text,
+                None,
+                status="failed",
+                detail="interpreter proposed unsupported Studio syntax",
+            )
+            raise
+        plan = NaturalCommandPlan(
+            plan.summary,
+            canonical_commands,
+            plan.source,
+            clarification=plan.clarification,
+            learned_id=plan.learned_id,
+        )
+        if plan.clarification:
+            self._emit_natural_plan(
+                request_text,
+                plan,
+                risk=None,
+                preview=True,
+            )
+            store.record(request_text, plan, status="clarification")
+            return
+
+        risks = [self._natural_command_risk(command) for command in plan.commands]
+        order: tuple[CommandRisk, ...] = (
+            "read-only",
+            "configuration",
+            "execution",
+            "destructive",
+        )
+        risk: CommandRisk = "read-only"
+        for command_risk in risks:
+            if order.index(command_risk) > order.index(risk):
+                risk = cast(CommandRisk, command_risk)
+        preview = preview_only or self._natural_preview_requested(request_text)
+        self._emit_natural_plan(
+            request_text,
+            plan,
+            risk=risk,
+            preview=preview,
+        )
+        if preview:
+            self._info("Plan shown without execution.")
+            store.record(request_text, plan, status="previewed")
+            return
+
+        confirmed = False
+        if risk in {"execution", "destructive"}:
+            if not self._confirm_action(
+                f"Execute this {risk} plan? [y/n]: ",
+                cancel_message=(
+                    "Natural-language plan cancelled; nothing was executed."
+                ),
+                default=False,
+            ):
+                store.record(request_text, plan, status="cancelled")
+                return
+            confirmed = True
+
+        try:
+            for index, command in enumerate(plan.commands, start=1):
+                if len(plan.commands) > 1:
+                    self._info(
+                        f"Executing {index}/{len(plan.commands)}: {command}"
+                    )
+                execution_command = (
+                    self._natural_command_after_confirmation(command)
+                    if confirmed
+                    else command
+                )
+                result = self.execute(
+                    execution_command,
+                    _allow_natural=False,
+                )
+                if not result:
+                    raise SystemExit(
+                        "A natural-language plan may not leave Studio."
+                    )
+        except (SystemExit, WorkspaceError, ValueError) as exc:
+            store.record(
+                request_text,
+                plan,
+                status="failed",
+                detail=str(exc),
+            )
+            raise
+
+        learned = None
+        if plan.source in {"codex", "claude"}:
+            learned = store.remember(request_text, plan)
+        store.record(request_text, plan, status="executed")
+        self._success("Natural-language command plan completed.")
+        if learned is not None:
+            self._success(
+                "Learned private interpretation "
+                f"{learned['id']}; inspect it with 'language learned'."
+            )
+
+    def manage_language(self, args: list[str]) -> None:
+        store = self._language_store()
+        if not args or args == ["show"]:
+            state = store.load()
+            configured = str(state.get("interpreter") or "auto")
+            selected = self._language_backend(configured, required=False)
+            if configured == "off":
+                effective = "off; deterministic and learned requests only"
+                effective_kind: StatusKind = "warning"
+            elif selected is None:
+                effective = (
+                    f"{configured}; no supported interpreter CLI was found"
+                )
+                effective_kind = "warning"
+            else:
+                backend = "Codex CLI" if selected[0] == "codex" else "Claude Code"
+                effective = (
+                    f"{configured} → {backend}"
+                    if configured == "auto"
+                    else backend
+                )
+                effective_kind = "success"
+            learned = store.learned()
+            history = store.history()
+            self._emit_table(
+                "Natural-language commands",
+                [
+                    ("Interpreter", effective, effective_kind),
+                    (
+                        "Learning",
+                        "on; successful CLI plans are remembered privately"
+                        if state.get("learning", True)
+                        else "off",
+                        "success" if state.get("learning", True) else "warning",
+                    ),
+                    ("Learned", len(learned), None),
+                    ("History", len(history), None),
+                    ("Storage", store.path, None),
+                    (
+                        "Privacy",
+                        "owner-private; secret-looking requests are rejected",
+                        "success",
+                    ),
+                ],
+            )
+            return
+
+        action, *rest = args
+        action = action.casefold()
+        if action == "set" and len(rest) == 1:
+            mode = rest[0].casefold()
+            if mode not in {"auto", "codex", "claude", "off"}:
+                raise SystemExit("Use language set auto|codex|claude|off.")
+            if mode in {"codex", "claude"}:
+                self._language_backend(mode, required=True)
+            store.update_settings(interpreter=mode)
+            self._success(f"Natural-language CLI fallback: {mode}")
+            return
+        if action == "learning" and len(rest) == 1:
+            value = rest[0].casefold()
+            if value not in {"on", "off"}:
+                raise SystemExit("Use language learning on|off.")
+            store.update_settings(learning=value == "on")
+            self._success(f"Private natural-language learning: {value}")
+            return
+        if action == "history" and not rest:
+            history = list(reversed(store.history()))
+            if not history:
+                self._emit_table(
+                    "Natural-language history",
+                    [("Status", "no interpreted requests yet", "warning")],
+                )
+                return
+            self._emit("Natural-language history")
+            self._emit("────────────────────────")
+            for record in history[:25]:
+                status = str(record.get("status") or "unknown")
+                kind: StatusKind = (
+                    "success"
+                    if status == "executed"
+                    else "warning"
+                    if status in {"previewed", "clarification", "cancelled"}
+                    else "error"
+                )
+                commands = record.get("commands") or []
+                self._emit(
+                    f"  {self._status_mark(kind)} {record.get('id')}  "
+                    f"{status}  {record.get('request')}"
+                )
+                if commands:
+                    self._emit("      " + " · ".join(map(str, commands)))
+            self._emit()
+            return
+        if action == "learned" and not rest:
+            learned = store.learned()
+            if not learned:
+                self._emit_table(
+                    "Learned interpretations",
+                    [
+                        (
+                            "Status",
+                            "none; CLI fallback results will appear here",
+                            "warning",
+                        )
+                    ],
+                )
+                return
+            self._emit("Learned interpretations")
+            self._emit("───────────────────────")
+            for record in learned:
+                self._emit(
+                    f"  {record.get('id')}  {record.get('request_template')}"
+                )
+                commands = record.get("commands") or []
+                self._emit("      " + " · ".join(map(str, commands)))
+                self._emit(
+                    f"      source: {record.get('source')}; "
+                    f"uses: {record.get('uses', 0)}"
+                )
+            self._emit()
+            return
+        if action == "forget" and len(rest) == 1:
+            identifier = rest[0]
+            if identifier.casefold() == "all" and not self._confirm_action(
+                "Forget all learned natural-language interpretations? [y/n]: ",
+                cancel_message="Nothing was forgotten.",
+                default=False,
+            ):
+                return
+            removed = store.forget(identifier)
+            if not removed:
+                raise SystemExit(
+                    f"No learned interpretation matches {identifier!r}."
+                )
+            self._success(
+                f"Forgot {removed} learned interpretation"
+                f"{'s' if removed != 1 else ''}."
+            )
+            return
+        raise SystemExit(
+            "Use language, language set auto|codex|claude|off, "
+            "language learning on|off, language history, language learned, "
+            "or language forget ID|all."
+        )
 
     def _request_prompt(
         self,
@@ -1747,6 +2686,8 @@ class Studio:
                 ),
                 ("Managed runs", summary["runs"], None),
                 ("Assistant tasks", summary["requests"], None),
+                ("Language history", summary["language_history"], None),
+                ("Learned language", summary["language_learned"], None),
                 ("Development secrets", summary["development_secrets"], None),
                 (
                     "Deployments",
@@ -2382,6 +3323,7 @@ class Studio:
             command = [
                 executable,
                 "exec",
+                "--skip-git-repo-check",
                 "--cd",
                 str(self.workspace.root),
                 instruction,
@@ -2566,6 +3508,50 @@ class Studio:
                     ),
                     None,
                 ),
+            ],
+        )
+        language_store = self._language_store()
+        language_state = language_store.load()
+        configured_interpreter = str(
+            language_state.get("interpreter") or "auto"
+        )
+        selected_interpreter = self._language_backend(
+            configured_interpreter,
+            required=False,
+        )
+        if configured_interpreter == "off":
+            interpreter_status = "off; deterministic and learned requests only"
+            interpreter_kind: StatusKind = "warning"
+        elif selected_interpreter is None:
+            interpreter_status = (
+                f"{configured_interpreter}; no supported CLI was found"
+            )
+            interpreter_kind = "warning"
+        else:
+            label = (
+                "Codex CLI"
+                if selected_interpreter[0] == "codex"
+                else "Claude Code"
+            )
+            interpreter_status = (
+                f"{configured_interpreter} → {label}"
+                if configured_interpreter == "auto"
+                else label
+            )
+            interpreter_kind = "success"
+        self._emit_table(
+            "Natural language",
+            [
+                ("Interpreter", interpreter_status, interpreter_kind),
+                (
+                    "Learning",
+                    "on" if language_state.get("learning", True) else "off",
+                    "success"
+                    if language_state.get("learning", True)
+                    else "warning",
+                ),
+                ("Learned", len(language_store.learned()), None),
+                ("History", len(language_store.history()), None),
             ],
         )
         if state.get("current_workflow"):

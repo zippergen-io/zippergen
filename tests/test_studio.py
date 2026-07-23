@@ -385,13 +385,14 @@ def test_studio_assistant_launches_codex_in_project_on_the_stable_task(
 
     studio.execute("assistant")
 
-    assert calls[0][0][0:4] == [
+    assert calls[0][0][0:5] == [
         "/bin/codex",
         "exec",
+        "--skip-git-repo-check",
         "--cd",
         str(workspace.root),
     ]
-    assert ".zippergen/current-task.md" in calls[0][0][4]
+    assert ".zippergen/current-task.md" in calls[0][0][5]
     assert calls[0][1] == workspace.root
     assert calls[0][2] is False
     assert output[0] == "Assistant"
@@ -1269,8 +1270,8 @@ def test_studio_commands_are_discoverable(tmp_path):
     assert "refine --file PATH" in output[-1]
     assert "providers set local [URL]" in output[-1]
     assert "providers check local" in output[-1]
-    assert studio.execute("not-a-command") is True
-    assert output[-1].startswith("✗ Unknown command")
+    assert "NATURAL LANGUAGE" in output[-1]
+    assert "language history|learned" in output[-1]
     assert studio.execute("exit") is False
 
 
@@ -1282,13 +1283,13 @@ def test_studio_status_marks_use_color_only_when_enabled(tmp_path):
     studio = Studio(workspace, output_func=output.append, color=True)
 
     studio.execute("project init Tutorial")
-    studio.execute("not-a-command")
+    studio._error("Example failure")
 
     assert output[0].startswith(
         "\033[32m✓\033[0m Project manifest created:"
     )
     assert output[-1].startswith(
-        "\033[31m✗\033[0m Unknown command:"
+        "\033[31m✗\033[0m Example failure"
     )
 
 

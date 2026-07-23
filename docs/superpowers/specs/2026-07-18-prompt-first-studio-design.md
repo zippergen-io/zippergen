@@ -205,6 +205,28 @@ the workspace merely forgets its last deployment name. `--yes` exists for an
 explicit noninteractive invocation. Corrupt private records are backed up
 without needing to be parsed first.
 
+## Natural-language command layer
+
+Exact Studio commands remain authoritative and scriptable. Input that is not
+valid command syntax is interpreted as ordinary language. Common requests use
+deterministic mappings; unresolved project-dependent requests may invoke an
+authenticated Codex or Claude CLI with read-only repository access. The CLI
+returns a JSON plan containing documented Studio commands, not shell text.
+Studio validates, displays, risk-classifies, and executes that plan.
+
+Read-only and unambiguous reversible operations execute directly. Execution,
+deployment, and destructive plans require confirmation. `plan TEXT` forces a
+preview and `ask TEXT` explicitly requests interpretation. Secret-looking
+input is rejected before it reaches an interpreter or private history.
+
+Successful CLI interpretations are recorded in owner-private project state as
+the request, structured commands, and outcome; raw CLI output is discarded.
+Recognized command arguments are generalized into reusable slots such as
+participant, model, workflow, or deployment. The `language` command exposes
+the selected fallback, learning switch, history, learned patterns, and
+targeted forgetting. Private-state reset archives this material with the rest
+of the project-specific machine state.
+
 ## Ordered prompt ledger
 
 Natural-language requirements are durable project inputs rather than terminal

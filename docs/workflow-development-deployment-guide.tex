@@ -345,7 +345,8 @@ Expected beginning:
 ZipperGen Studio
 Project: /path/to/zippergen-tutorial
 No workflow selected.
-Type 'help' for commands; press Tab to complete; 'show' opens the inspection menu.
+Type a command or describe what you want in ordinary language;
+press Tab to complete; 'help' shows the exact commands.
 zippergen [no workflow]>
 \end{lstlisting}
 
@@ -429,6 +430,67 @@ text, paths, model values, or secrets. It therefore remains short even for a
 long \texttt{create} or \texttt{spec refine} command. Blank input and
 \texttt{exit} produce no boundary.
 \end{notebox}
+
+\subsubsection*{Step 1a: use commands or ordinary language}
+
+Studio's exact commands remain the durable, scriptable interface, but they do
+not have to be memorized. At the Studio prompt, try:
+
+\begin{lstlisting}[style=shell]
+What is the current state?
+Show me the whole protocol.
+Assign the mock model to Writer.
+\end{lstlisting}
+
+The first request becomes \texttt{current}; after a workflow is selected, the
+second becomes \texttt{show protocol}, and the third becomes
+\texttt{models set Writer mock}. Studio prints a
+\emph{Natural-language request} table and the exact command plan before any
+result, so natural language never hides which operation was chosen. Common
+requests use a deterministic interpreter and therefore need no model, network,
+or API key.
+
+When a request depends on repository details and no built-in interpretation
+matches, Studio may run the already authenticated Codex or Claude Code CLI
+once. The CLI receives non-secret project context and read-only repository
+access. It may inspect workflow code, \path{specification.md}, and other
+project Markdown, but it can return only a structured plan made from documented
+Studio commands. Studio validates that plan and performs the operations
+itself; model text is never executed as shell code.
+
+The execution rule is intentionally visible. Read-only requests and clear,
+reversible configuration changes run directly. Starting or stopping execution,
+deployment operations, and destructive changes require confirmation.
+\texttt{plan TEXT} always shows an interpretation without executing it;
+\texttt{ask TEXT} explicitly interprets and executes prose. A question such as
+\texttt{How do I show the protocol?} is also treated as preview-only.
+
+Inspect the language layer at any time:
+
+\begin{lstlisting}[style=shell]
+language
+language set auto
+language set codex       # or: language set claude
+language learning on
+language history
+language learned
+language forget L001
+\end{lstlisting}
+
+\texttt{auto} prefers Codex and then Claude when a repository-aware fallback
+is needed. It reuses the selected CLI's existing login; no separate ZipperGen
+provider key is needed. \texttt{language set off} retains deterministic and already learned
+interpretations without launching a CLI. After a successful CLI plan, Studio
+stores the accepted request, structured commands, and outcome in owner-private
+project state. It generalizes recognized values: an interpretation learned for
+\texttt{Writer} can later match the same wording for \texttt{Reviewer}.
+Nothing is added to the repository and \texttt{project reset state} archives
+this history with the other private state. Use \texttt{language learning off}
+to stop adding entries or \texttt{language forget ID|all} to remove them.
+
+Raw CLI output is not learned. Secret-looking requests are rejected before
+interpretation and are not stored; enter provider credentials through
+\texttt{providers set NAME}, which uses Studio's private secret input.
 
 \subsubsection*{Step 1b: choose a terminal editor once}
 

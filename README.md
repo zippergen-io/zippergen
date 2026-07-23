@@ -215,6 +215,38 @@ becomes scoped to that named deployment. Answer `n` to enter a different
 deployment credential. Later deployments with the same name retain their
 existing deployment key without prompting again.
 
+Studio accepts ordinary language as well as exact commands. Exact syntax keeps
+priority, while prose that is not valid command syntax enters a constrained
+interpreter:
+
+```text
+zippergen [reviewed_answer]> What is the current state?
+zippergen [reviewed_answer]> Show me the whole protocol.
+zippergen [reviewed_answer]> Assign openai:gpt-4o-mini to Writer.
+```
+
+Common requests are mapped deterministically without starting a model. For a
+project-dependent request, Studio can run the authenticated Codex or Claude
+CLI once with read-only repository access. The CLI returns a structured plan
+containing only documented Studio commands; it never receives authority to
+execute arbitrary shell text. Studio validates and displays the plan, runs
+read-only and clear reversible operations directly, and asks before execution
+or destructive operations. `plan TEXT` forces preview-only interpretation,
+while `ask TEXT` explicitly requests interpretation and execution.
+
+`language` shows the effective interpreter, learning mode, private history,
+and number of learned interpretations. `language set auto` prefers Codex and
+then Claude; `language set codex|claude|off` makes the choice explicit.
+The fallback reuses that CLI's existing login and does not require a separate
+ZipperGen model-provider key.
+Successful CLI interpretations are stored without raw CLI output in the
+owner-private project workspace and generalized over values such as
+participant names. `language history`, `language learned`, and `language
+forget ID|all` keep this behavior inspectable and reversible; `language
+learning off` disables new learned entries. Requests that look as though they
+contain a secret are neither sent nor stored and are redirected to Studio's
+private provider setup.
+
 To begin from natural language, let Studio maintain one readable, versioned
 `specification.md`. Studio owns the filename and opens it in a terminal editor.
 Choose a project-specific editor preference once:

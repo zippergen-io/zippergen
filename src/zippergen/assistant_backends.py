@@ -113,6 +113,7 @@ def make_cli_assistant_backend(
             command = [
                 executable,
                 "exec",
+                "--skip-git-repo-check",
                 "--cd",
                 str(workspace),
                 "-",

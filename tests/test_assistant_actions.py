@@ -171,6 +171,7 @@ def test_cli_backend_invokes_codex_without_a_shell(tmp_path, monkeypatch):
     assert captured["command"] == [
         "/tools/codex",
         "exec",
+        "--skip-git-repo-check",
         "--cd",
         str(tmp_path),
         "-",

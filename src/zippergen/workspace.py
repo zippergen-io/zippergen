@@ -36,6 +36,7 @@ CURRENT_TASK_NAME = "current-task.md"
 SPECIFICATION_FILE_NAME = "specification.md"
 PENDING_REFINEMENT_NAME = "pending-refinement.md"
 SPEC_HISTORY_DIRECTORY = "spec-history"
+NATURAL_LANGUAGE_STATE_NAME = "natural-language.json"
 SPECIFICATION_GUIDE = """<!-- zippergen:specification-guide
 Write the durable application requirements below this comment, then save and
 close the editor. Studio removes this guide automatically.
@@ -290,6 +291,12 @@ class Workspace:
         self.runs_directory = self.directory / "runs"
         self.requests_directory = self.directory / "requests"
         self.resets_directory = self.home / "resets"
+
+    @property
+    def natural_language_path(self) -> Path:
+        """Return the owner-private Studio language state path."""
+
+        return self.directory / NATURAL_LANGUAGE_STATE_NAME
 
     @property
     def current_task_path(self) -> Path:
@@ -1121,6 +1128,19 @@ class Workspace:
         except (WorkspaceError, OSError, UnicodeDecodeError) as exc:
             secret_count = "present but unreadable"
             warnings.append(str(exc))
+        language_history: int | str = 0
+        language_learned: int | str = 0
+        if self.natural_language_path.exists():
+            try:
+                from zippergen.natural_language import NaturalLanguageStore
+
+                language = NaturalLanguageStore(self.natural_language_path)
+                language_history = len(language.history())
+                language_learned = len(language.learned())
+            except (ValueError, OSError, UnicodeDecodeError) as exc:
+                language_history = "present but unreadable"
+                language_learned = "present but unreadable"
+                warnings.append(str(exc))
         local_directory = self.root / PROJECT_TASK_DIRECTORY
         local_items = (
             self.current_task_path,
@@ -1136,6 +1156,8 @@ class Workspace:
             "development_secrets": secret_count,
             "model_profiles": len(state.get("model_profiles") or {}),
             "provider_profiles": len(state.get("providers") or {}),
+            "language_history": language_history,
+            "language_learned": language_learned,
             "workspace_exists": self.directory.exists(),
             "project_local_exists": any(
                 path.exists() or path.is_symlink() for path in local_items

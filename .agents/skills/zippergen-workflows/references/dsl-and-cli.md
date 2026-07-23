@@ -296,6 +296,26 @@ inputs/outputs, messages and their control context, action kinds and
 implementations, action sites, control constructs, parallel regions, and
 deployment requirements. It deliberately ignores irrelevant source layout.
 
+## Studio natural-language commands
+
+Inside `zippergen studio` (or plain `zippergen` in an interactive terminal),
+exact Studio syntax remains authoritative. Input that is not valid command
+syntax may be written as ordinary prose:
+
+```text
+What is the current state?
+Show me the whole protocol.
+Assign openai:gpt-4o-mini to Writer.
+```
+
+Common requests are deterministic. More complex requests may use a
+repository-aware Codex or Claude CLI in read-only mode. The interpreter returns
+only a structured plan of documented Studio commands; Studio validates,
+displays, classifies, and executes the plan. `plan TEXT` never executes,
+`language` shows interpreter/learning status, and `language history` plus
+`language learned` expose owner-private interpretation records. Secret-looking
+prose is rejected before interpretation or storage.
+
 ## Review checklist
 
 Before handoff, verify:
