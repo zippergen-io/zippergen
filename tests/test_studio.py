@@ -367,6 +367,30 @@ def test_studio_task_show_refreshes_stale_specification_context_once(tmp_path):
     )
 
 
+def test_studio_refreshes_a_pre_verification_contract_task_before_launch(
+    tmp_path,
+):
+    studio, workspace, output = _studio(tmp_path)
+    studio.create_request("Create a review workflow.")
+    original = workspace.current_request()
+    assert original is not None
+    metadata_path = workspace.request_path(str(original["request_id"]))
+    metadata = json.loads(metadata_path.read_text())
+    metadata.pop("task_contract_version")
+    metadata_path.write_text(json.dumps(metadata))
+    output.clear()
+
+    studio.execute("task show")
+
+    refreshed = workspace.current_request()
+    assert refreshed is not None
+    assert refreshed["request_id"] != original["request_id"]
+    assert refreshed["refreshes_request"] == original["request_id"]
+    assert refreshed["task_contract_version"] == 2
+    assert "assistant-result.json" in output[1]
+    assert output[0] == "✓ Task refreshed from the current specification context."
+
+
 def test_studio_assistant_launches_codex_in_project_on_the_stable_task(
     tmp_path, monkeypatch
 ):
@@ -401,7 +425,10 @@ def test_studio_assistant_launches_codex_in_project_on_the_stable_task(
         for line in output
     )
     assert any("MCP" in line and "not required" in line for line in output)
-    assert any(line.startswith("✓ Codex session ended") for line in output)
+    assert any("Codex session returned to Studio" in line for line in output)
+    assert any(
+        "verification is incomplete" in line.lower() for line in output
+    )
     assert any(
         "Status" in line and "awaiting human review" in line for line in output
     )
@@ -409,6 +436,140 @@ def test_studio_assistant_launches_codex_in_project_on_the_stable_task(
     assert request is not None
     assert request["assistant_mode"] == "one_shot"
     assert request["status"] == "awaiting_review"
+    assert request["assistant_verification"] == "incomplete"
+
+
+def test_studio_assistant_records_passed_verification_separately_from_exit(
+    tmp_path, monkeypatch
+):
+    studio, workspace, output = _studio(tmp_path)
+    studio.create_request("Create a review workflow.")
+    output.clear()
+    monkeypatch.setattr("zippergen.studio.shutil.which", lambda name: "/bin/codex")
+
+    def fake_run(arguments, *, cwd, check):
+        workspace.assistant_result_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "verification": "passed",
+                    "summary": "Validation and focused application tests passed.",
+                    "checks": [
+                        {
+                            "command": "uv run zippergen validate workflow.py:sample",
+                            "status": "passed",
+                            "detail": "Workflow is valid.",
+                        },
+                        {
+                            "command": "uv run --with pytest pytest tests/test_sample.py",
+                            "status": "passed",
+                            "detail": "2 passed.",
+                        },
+                    ],
+                }
+            )
+        )
+        return subprocess.CompletedProcess(arguments, 0)
+
+    monkeypatch.setattr("zippergen.studio.subprocess.run", fake_run)
+
+    studio.execute("assistant")
+
+    request = workspace.current_request()
+    assert request is not None
+    assert request["status"] == "awaiting_review"
+    assert request["assistant_exit_code"] == 0
+    assert request["assistant_verification"] == "passed"
+    assert len(request["assistant_verification_checks"]) == 2
+    assert not workspace.assistant_result_path.exists()
+    assert any("verification passed" in line.lower() for line in output)
+    assert any(
+        "Verification" in line and "passed" in line and "2 reported checks" in line
+        for line in output
+    )
+
+    output.clear()
+    studio.execute("task")
+    assert any(
+        "Verification" in line and "passed" in line and "2 reported checks" in line
+        for line in output
+    )
+    assert any(
+        "Verification note" in line and "focused application tests passed" in line
+        for line in output
+    )
+
+
+def test_studio_assistant_does_not_hide_a_failed_check_behind_zero_exit(
+    tmp_path, monkeypatch
+):
+    studio, workspace, output = _studio(tmp_path)
+    studio.create_request("Create a review workflow.")
+    output.clear()
+    monkeypatch.setattr("zippergen.studio.shutil.which", lambda name: "/bin/codex")
+
+    def fake_run(arguments, *, cwd, check):
+        workspace.assistant_result_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "verification": "passed",
+                    "summary": "The focused test passed but broad collection failed.",
+                    "checks": [
+                        {
+                            "command": "uv run pytest",
+                            "status": "failed",
+                            "detail": "prompt_toolkit was unavailable during collection.",
+                        }
+                    ],
+                }
+            )
+        )
+        return subprocess.CompletedProcess(arguments, 0)
+
+    monkeypatch.setattr("zippergen.studio.subprocess.run", fake_run)
+
+    studio.execute("assistant")
+
+    request = workspace.current_request()
+    assert request is not None
+    assert request["status"] == "awaiting_review"
+    assert request["assistant_exit_code"] == 0
+    assert request["assistant_verification"] == "failed"
+    assert any(
+        "verification failures" in line.lower() for line in output
+    )
+    assert any(
+        "Verification" in line and "failed" in line for line in output
+    )
+    assert any(
+        "Next" in line and "assistant codex --rerun" in line for line in output
+    )
+
+    output.clear()
+    studio.execute("task")
+    assert "Assistant verification checks" in output
+    assert any(
+        "uv run pytest" in line and "prompt_toolkit was unavailable" in line
+        for line in output
+    )
+
+
+def test_studio_task_explains_nested_framework_test_environment(tmp_path):
+    studio, workspace, _output = _studio(tmp_path)
+    framework = workspace.root / "zippergen"
+    framework.mkdir()
+    (framework / "pyproject.toml").write_text("[project]\nname = 'zippergen'\n")
+    workspace.initialize_project()
+
+    studio.create_request("Create a review workflow.")
+
+    task = workspace.current_task_path.read_text()
+    assert "uv run --project zippergen zippergen" in task
+    assert "uv run --project zippergen --with pytest pytest tests" in task
+    assert "Do not run bare\n`uv run pytest`" in task
+    assert "assistant-result.json" in task
+    assert '"verification": "passed"' in task
 
 
 def test_studio_assistant_codex_can_still_run_interactively(
@@ -513,7 +674,7 @@ def test_studio_assistant_can_launch_claude_code_on_the_same_task(
     assert calls[0][2] is False
     assert any("Tool" in line and "Claude Code" in line for line in output)
     assert any("Mode" in line and "one-shot task" in line for line in output)
-    assert any(line.startswith("✓ Claude Code session ended") for line in output)
+    assert any("Claude Code session returned to Studio" in line for line in output)
     assert workspace.current_request()["status"] == "awaiting_review"
 
 
@@ -578,6 +739,22 @@ def test_studio_completed_refinement_task_waits_for_review_without_refreshing(
         workspace.save_specification(
             "Echo the request through Writer and require human approval "
             "before returning."
+        )
+        workspace.assistant_result_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "verification": "passed",
+                    "summary": "Validation and focused tests passed.",
+                    "checks": [
+                        {
+                            "command": "uv run zippergen validate workflow.py:sample",
+                            "status": "passed",
+                            "detail": "Workflow is valid.",
+                        }
+                    ],
+                }
+            )
         )
         return subprocess.CompletedProcess(arguments, 0)
 

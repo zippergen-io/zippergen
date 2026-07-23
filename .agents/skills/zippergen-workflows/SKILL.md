@@ -116,6 +116,12 @@ uv run zippergen show path/to/workflow.py:workflow --agent AgentName
 Use `--format json` when programmatic checking helps. Run focused tests first,
 then the repository's broader suite and static checks in proportion to risk.
 Treat load, projection, rendering, test, or type-check failures as blockers.
+Respect project boundaries when the application root contains a nested
+framework checkout. If `zippergen.toml` declares `framework_directory`, use
+that nested project's environment for ZipperGen commands, run application
+tests by their explicit path, and do not let a bare recursive pytest invocation
+mistake the framework's own tests for the application suite. Run the framework
+suite separately only when framework source changed.
 
 ## Inspect as code
 

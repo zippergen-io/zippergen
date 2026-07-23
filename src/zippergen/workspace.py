@@ -27,12 +27,14 @@ from typing import Any
 WORKSPACE_SCHEMA_VERSION = 1
 RUN_SCHEMA_VERSION = 1
 REQUEST_SCHEMA_VERSION = 1
+ASSISTANT_TASK_CONTRACT_VERSION = 2
 PROJECT_SCHEMA_VERSION = 1
 PROMPT_LEDGER_SCHEMA_VERSION = 1
 PROJECT_MANIFEST_NAME = "zippergen.toml"
 PROMPT_INDEX_NAME = "index.toml"
 PROJECT_TASK_DIRECTORY = ".zippergen"
 CURRENT_TASK_NAME = "current-task.md"
+ASSISTANT_RESULT_NAME = "assistant-result.json"
 SPECIFICATION_FILE_NAME = "specification.md"
 PENDING_REFINEMENT_NAME = "pending-refinement.md"
 SPEC_HISTORY_DIRECTORY = "spec-history"
@@ -303,6 +305,12 @@ class Workspace:
         """Return the stable, project-local coding-assistant handoff path."""
 
         return self.root / PROJECT_TASK_DIRECTORY / CURRENT_TASK_NAME
+
+    @property
+    def assistant_result_path(self) -> Path:
+        """Return the ephemeral, project-local assistant result handoff path."""
+
+        return self.root / PROJECT_TASK_DIRECTORY / ASSISTANT_RESULT_NAME
 
     @property
     def pending_refinement_path(self) -> Path:
@@ -1144,6 +1152,7 @@ class Workspace:
         local_directory = self.root / PROJECT_TASK_DIRECTORY
         local_items = (
             self.current_task_path,
+            self.assistant_result_path,
             self.pending_refinement_path,
             local_directory / "prompt-drafts",
         )
@@ -1172,6 +1181,10 @@ class Workspace:
         sources = [
             (self.directory, "workspace"),
             (self.current_task_path, f"project-local/{CURRENT_TASK_NAME}"),
+            (
+                self.assistant_result_path,
+                f"project-local/{ASSISTANT_RESULT_NAME}",
+            ),
             (
                 self.pending_refinement_path,
                 f"project-local/{PENDING_REFINEMENT_NAME}",
@@ -1693,6 +1706,7 @@ class Workspace:
             suffix += 1
         record: dict[str, Any] = {
             "schema_version": REQUEST_SCHEMA_VERSION,
+            "task_contract_version": ASSISTANT_TASK_CONTRACT_VERSION,
             "request_id": request_id,
             "kind": kind,
             "project_root": str(self.root),
@@ -1718,6 +1732,10 @@ class Workspace:
             "assistant_started_at": None,
             "assistant_finished_at": None,
             "assistant_exit_code": None,
+            "assistant_verification": None,
+            "assistant_verification_summary": None,
+            "assistant_verification_checks": [],
+            "assistant_result_error": None,
             "result_specification_fingerprint": None,
         }
         self.requests_directory.mkdir(parents=True, exist_ok=True)

@@ -122,6 +122,10 @@ def test_workspace_updates_run_and_saves_assistant_request(tmp_path):
         "Use $zippergen-workflows."
     )
     assert workspace.current_task_path == root / ".zippergen" / "current-task.md"
+    assert (
+        workspace.assistant_result_path
+        == root / ".zippergen" / "assistant-result.json"
+    )
     assert workspace.current_task_path.read_text() == Path(
         request["content_file"]
     ).read_text()
@@ -132,6 +136,7 @@ def test_workspace_updates_run_and_saves_assistant_request(tmp_path):
         (workspace.requests_directory / f"{request['request_id']}.json").read_text()
     )
     assert metadata["prompt"] == "Create a review workflow"
+    assert metadata["task_contract_version"] == 2
     assert metadata["task_file"] == str(workspace.current_task_path)
     assert metadata["status"] == "prepared"
 
@@ -172,6 +177,7 @@ def test_workspace_reset_archives_private_state_and_keeps_project_files(tmp_path
         prompt="Keep source visible.",
         content="Create the workflow.\n",
     )
+    workspace.assistant_result_path.write_text('{"verification": "passed"}\n')
     workspace.save_model_profile(
         "workflow.py:review",
         default="mock",
@@ -206,6 +212,7 @@ def test_workspace_reset_archives_private_state_and_keeps_project_files(tmp_path
     assert list((backup / "workspace" / "runs").glob("*.json"))
     assert list((backup / "workspace" / "requests").glob("*.json"))
     assert (backup / "project-local" / "current-task.md").exists()
+    assert (backup / "project-local" / "assistant-result.json").exists()
     assert (
         backup / "project-local" / "prompt-drafts" / "unfinished.md"
     ).exists()

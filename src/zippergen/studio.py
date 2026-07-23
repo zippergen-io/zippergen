@@ -37,7 +37,12 @@ from zippergen.natural_language import (
 )
 from zippergen.semantic import semantic_snapshot, workflow_semantics
 from zippergen.view import ViewOptions, workflow_view_data
-from zippergen.workspace import SPECIFICATION_GUIDE, Workspace, WorkspaceError
+from zippergen.workspace import (
+    ASSISTANT_TASK_CONTRACT_VERSION,
+    SPECIFICATION_GUIDE,
+    Workspace,
+    WorkspaceError,
+)
 
 
 InputFunc = Callable[[str], str]
@@ -45,6 +50,7 @@ OutputFunc = Callable[[str], object]
 SecretInputFunc = Callable[[str], str]
 StatusKind = Literal["success", "warning", "error", "info"]
 CommandRisk = Literal["read-only", "configuration", "execution", "destructive"]
+AssistantVerification = Literal["passed", "failed", "incomplete"]
 
 
 @dataclass(frozen=True)
@@ -65,6 +71,14 @@ class _LocalProviderCheck:
 class _ModelVerification:
     kind: StatusKind
     message: str
+
+
+@dataclass(frozen=True)
+class _AssistantResult:
+    verification: AssistantVerification
+    summary: str
+    checks: tuple[dict[str, str], ...] = ()
+    error: str | None = None
 
 
 class _LocalProviderError(RuntimeError):
@@ -1281,6 +1295,7 @@ class Studio:
                 current_request = {
                     "kind": value.get("kind"),
                     "status": value.get("status"),
+                    "verification": value.get("assistant_verification"),
                     "workflow_spec": value.get("workflow_spec"),
                 }
         except WorkspaceError:
@@ -2198,6 +2213,11 @@ class Studio:
                 "Pending refinement",
                 [
                     ("Status", pending_status, pending_kind),
+                    *(
+                        [("Verification", *self._task_verification(task_record))]
+                        if task_record
+                        else []
+                    ),
                     ("File", ".zippergen/pending-refinement.md", None),
                     ("Edit", "spec refine", None),
                     ("Next", next_action, None),
@@ -3032,10 +3052,77 @@ class Studio:
         }
         return states.get(status, (status.replace("_", " "), "warning"))
 
+    def _task_verification(
+        self,
+        record: dict[str, object],
+    ) -> tuple[str, StatusKind]:
+        verification = str(record.get("assistant_verification") or "")
+        checks = record.get("assistant_verification_checks")
+        count = len(checks) if isinstance(checks, list) else 0
+        suffix = f" — {count} reported check{'s' if count != 1 else ''}"
+        if verification == "passed":
+            return f"passed{suffix}", "success"
+        if verification == "failed":
+            return f"failed{suffix}", "error"
+        if verification == "incomplete":
+            return f"incomplete{suffix}", "warning"
+        status = str(record.get("status") or "prepared")
+        if status in {"prepared", "assistant_running"}:
+            return "not available yet", "info"
+        if record.get("manual_integration") and not record.get("assistant"):
+            return "not reported — manual integration", "warning"
+        return "not reported by this older assistant task", "warning"
+
+    def _task_verification_summary(self, record: dict[str, object]) -> str | None:
+        value = record.get("assistant_verification_summary")
+        return str(value) if value else None
+
+    def _emit_task_verification_checks(self, record: dict[str, object]) -> None:
+        checks = record.get("assistant_verification_checks")
+        if not isinstance(checks, list) or not checks:
+            return
+        rows: list[tuple[str, object, StatusKind | None]] = []
+        kinds: dict[str, StatusKind] = {
+            "passed": "success",
+            "failed": "error",
+            "not_run": "warning",
+        }
+        for index, value in enumerate(checks, start=1):
+            if not isinstance(value, dict):
+                continue
+            status = str(value.get("status") or "not_run")
+            command = str(value.get("command") or "unspecified command")
+            detail = str(value.get("detail") or "")
+            outcome = command if not detail else f"{command} — {detail}"
+            rows.append(
+                (
+                    f"{index}. {status}",
+                    outcome,
+                    kinds.get(status, "warning"),
+                )
+            )
+        if rows:
+            self._emit_table("Assistant verification checks", rows)
+
     def _task_next(self, record: dict[str, object]) -> str:
         status = str(record.get("status") or "prepared")
         kind = str(record.get("kind") or "")
         if status == "awaiting_review":
+            verification = str(record.get("assistant_verification") or "")
+            if verification != "passed" and record.get("assistant"):
+                backend = (
+                    "claude"
+                    if str(record.get("assistant")).lower().startswith("claude")
+                    else "codex"
+                )
+                review = (
+                    "use · current · validate · show"
+                    if kind == "create"
+                    else "current · validate · show"
+                )
+                return (
+                    f"{review} · assistant {backend} --rerun"
+                )
             if kind == "refine":
                 if record.get("specification_context_changed") is False:
                     return (
@@ -3194,12 +3281,123 @@ class Studio:
                 ("Workflow", record.get("workflow_spec") or "new workflow", None),
                 ("Assistant", self._task_assistant(record), None),
                 ("Execution", self._task_execution(record), None),
+                ("Verification", *self._task_verification(record)),
+                *(
+                    [
+                        (
+                            "Verification note",
+                            self._task_verification_summary(record),
+                            None,
+                        )
+                    ]
+                    if self._task_verification_summary(record)
+                    else []
+                ),
                 ("Refreshes", record.get("refreshes_request") or "—", None),
                 ("Context", context, context_kind),
                 ("File", ".zippergen/current-task.md", None),
                 ("Next", self._task_next(record), None),
             ],
         )
+        self._emit_task_verification_checks(record)
+
+    def _consume_assistant_result(self) -> _AssistantResult:
+        """Read and remove the assistant's bounded, project-local handoff."""
+
+        path = self.workspace.assistant_result_path
+        if not path.exists() and not path.is_symlink():
+            return _AssistantResult(
+                "incomplete",
+                "The assistant returned without writing its required verification record.",
+                error="assistant result file was not written",
+            )
+        try:
+            if path.is_symlink():
+                raise ValueError("the assistant result path must not be a symlink")
+            if path.stat().st_size > 256 * 1024:
+                raise ValueError("the assistant result is larger than 256 KiB")
+            value = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(value, dict):
+                raise ValueError("the assistant result must be a JSON object")
+            if value.get("schema_version") != 1:
+                raise ValueError("schema_version must be 1")
+            declared = value.get("verification")
+            if declared not in {"passed", "failed", "incomplete"}:
+                raise ValueError(
+                    "verification must be passed, failed, or incomplete"
+                )
+            raw_summary = value.get("summary")
+            if not isinstance(raw_summary, str) or not raw_summary.strip():
+                raise ValueError("summary must be a non-empty string")
+            summary = " ".join(raw_summary.split())[:1000]
+            raw_checks = value.get("checks")
+            if not isinstance(raw_checks, list):
+                raise ValueError("checks must be a JSON array")
+            if len(raw_checks) > 100:
+                raise ValueError("checks must contain at most 100 entries")
+            checks: list[dict[str, str]] = []
+            for index, raw_check in enumerate(raw_checks, start=1):
+                if not isinstance(raw_check, dict):
+                    raise ValueError(f"check {index} must be a JSON object")
+                command = raw_check.get("command")
+                check_status = raw_check.get("status")
+                detail = raw_check.get("detail", "")
+                if not isinstance(command, str) or not command.strip():
+                    raise ValueError(f"check {index} command must not be empty")
+                if check_status not in {"passed", "failed", "not_run"}:
+                    raise ValueError(
+                        f"check {index} status must be passed, failed, or not_run"
+                    )
+                if not isinstance(detail, str):
+                    raise ValueError(f"check {index} detail must be a string")
+                checks.append(
+                    {
+                        "command": " ".join(command.split())[:1000],
+                        "status": str(check_status),
+                        "detail": " ".join(detail.split())[:1000],
+                    }
+                )
+
+            verification = cast(AssistantVerification, declared)
+            check_statuses = {check["status"] for check in checks}
+            if "failed" in check_statuses:
+                if verification != "failed":
+                    summary = (
+                        f"{summary} Studio corrected the overall result because "
+                        "a reported check failed."
+                    )[:1000]
+                verification = "failed"
+            elif "not_run" in check_statuses:
+                if verification == "passed":
+                    summary = (
+                        f"{summary} Studio corrected the overall result because "
+                        "a requested check was not run."
+                    )[:1000]
+                if verification != "failed":
+                    verification = "incomplete"
+            elif not checks and verification == "passed":
+                verification = "incomplete"
+                summary = (
+                    f"{summary} Studio requires at least one reported check "
+                    "before verification can be marked passed."
+                )[:1000]
+            return _AssistantResult(
+                verification,
+                summary,
+                tuple(checks),
+            )
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+            detail = str(exc)
+            return _AssistantResult(
+                "incomplete",
+                f"Studio could not accept the assistant verification record: {detail}.",
+                error=detail[:1000],
+            )
+        finally:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     def run_assistant(self, args: list[str]) -> None:
         rerun = "--rerun" in args
@@ -3266,6 +3464,13 @@ class Studio:
                 "the current task remains available at "
                 f"{self.workspace.current_task_path}."
             )
+        try:
+            self.workspace.assistant_result_path.unlink(missing_ok=True)
+        except OSError as exc:
+            raise SystemExit(
+                "Could not clear the previous assistant verification handoff at "
+                f"{self.workspace.assistant_result_path}: {exc}"
+            ) from exc
         started_at = time.strftime("%Y-%m-%dT%H:%M:%S%z")
         record = self.workspace.update_request(
             str(record["request_id"]),
@@ -3275,6 +3480,10 @@ class Studio:
             assistant_finished_at=None,
             assistant_exit_code=None,
             assistant_mode=("interactive" if interactive else "one_shot"),
+            assistant_verification=None,
+            assistant_verification_summary=None,
+            assistant_verification_checks=[],
+            assistant_result_error=None,
             studio_process_id=os.getpid(),
             lifecycle_inferred=False,
         )
@@ -3310,7 +3519,8 @@ class Studio:
         instruction = (
             f"Read and execute {relative_task}. Follow the repository instructions, "
             "keep all generated code visible, run the requested verification, and "
-            "do not deploy."
+            "do not deploy. Before exiting, write the required structured result "
+            "to .zippergen/assistant-result.json."
         )
         if assistant == "codex" and interactive:
             command = [
@@ -3369,11 +3579,18 @@ class Studio:
                 f"Could not start {tool}: {exc}"
             ) from exc
         if completed.returncode != 0:
+            assistant_result = self._consume_assistant_result()
             self.workspace.update_request(
                 str(record["request_id"]),
                 status="assistant_failed",
                 assistant_finished_at=time.strftime("%Y-%m-%dT%H:%M:%S%z"),
                 assistant_exit_code=completed.returncode,
+                assistant_verification=assistant_result.verification,
+                assistant_verification_summary=assistant_result.summary,
+                assistant_verification_checks=[
+                    dict(check) for check in assistant_result.checks
+                ],
+                assistant_result_error=assistant_result.error,
                 result_specification_fingerprint=(
                     self.workspace.specification_fingerprint()
                 ),
@@ -3383,6 +3600,7 @@ class Studio:
                 f"{completed.returncode}; the task remains at "
                 f"{self.workspace.current_task_path}."
             )
+        assistant_result = self._consume_assistant_result()
         result_fingerprint = self.workspace.specification_fingerprint()
         changed = record.get("specification_fingerprint") != result_fingerprint
         record = self.workspace.update_request(
@@ -3390,13 +3608,31 @@ class Studio:
             status="awaiting_review",
             assistant_finished_at=time.strftime("%Y-%m-%dT%H:%M:%S%z"),
             assistant_exit_code=0,
+            assistant_verification=assistant_result.verification,
+            assistant_verification_summary=assistant_result.summary,
+            assistant_verification_checks=[
+                dict(check) for check in assistant_result.checks
+            ],
+            assistant_result_error=assistant_result.error,
             result_specification_fingerprint=result_fingerprint,
             specification_context_changed=changed,
         )
-        self._success(
+        self._info(
             f"{'Claude Code' if assistant == 'claude' else 'Codex'} session "
-            "ended successfully."
+            "returned to Studio."
         )
+        if assistant_result.verification == "passed":
+            self._success("Assistant reported that verification passed.")
+        elif assistant_result.verification == "failed":
+            self._error(
+                "Assistant reported verification failures; do not accept the "
+                "change until they are resolved."
+            )
+        else:
+            self._warning(
+                "Assistant verification is incomplete; a normal assistant exit "
+                "does not mean the checks passed."
+            )
         kind = str(record.get("kind") or "")
         specification_result = (
             "changed since task preparation"
@@ -3423,6 +3659,8 @@ class Studio:
                     else "not applicable",
                     "warning" if kind == "refine" else None,
                 ),
+                ("Verification", *self._task_verification(record)),
+                ("Verification note", assistant_result.summary, None),
                 ("Next", self._task_next(record), None),
             ],
         )
@@ -3494,6 +3732,11 @@ class Studio:
                 ),
                 *(
                     [("Task next", self._task_next(request), None)]
+                    if request
+                    else []
+                ),
+                *(
+                    [("Task verification", *self._task_verification(request))]
                     if request
                     else []
                 ),
@@ -4837,6 +5080,60 @@ class Studio:
             "DSL/CLI reference completely before editing workflow code."
         )
 
+    def _assistant_environment_instructions(self) -> str:
+        """Describe the project/runtime boundary without guessing shell state."""
+
+        manifest = self.workspace.project_manifest()
+        framework = manifest.get("framework_directory")
+        if not framework:
+            return (
+                "Run application checks from the project root. Use the Python "
+                "environment declared by this project's pyproject.toml when it "
+                "exists. Run focused application tests by explicit path before "
+                "considering a broader suite."
+            )
+        base = Path(str(framework)).as_posix().rstrip("/")
+        quoted = shlex.quote(base)
+        return f"""The application project root is the current directory. The
+ZipperGen framework checkout is the separate nested project `{base}/`; its
+`pyproject.toml` owns the framework dependencies. From the application root,
+invoke the framework with `uv run --project {quoted} zippergen ...` and run
+application tests explicitly with
+`uv run --project {quoted} --with pytest pytest tests`. Do not run bare
+`uv run pytest` from the application root: it may recursively collect
+`{base}/tests` under the wrong environment. The nested framework suite is not
+the application's broader suite; run it separately only if this task actually
+changes framework source."""
+
+    def _assistant_completion_instructions(self) -> str:
+        result = self.workspace.assistant_result_path.relative_to(
+            self.workspace.root
+        ).as_posix()
+        return f"""Before ending, write `{result}` as plain JSON with this shape:
+
+```json
+{{
+  "schema_version": 1,
+  "verification": "passed",
+  "summary": "One concise factual sentence.",
+  "checks": [
+    {{
+      "command": "the exact command that was run",
+      "status": "passed",
+      "detail": "the relevant outcome"
+    }}
+  ]
+}}
+```
+
+`verification` must be `passed`, `failed`, or `incomplete`; each check status
+must be `passed`, `failed`, or `not_run`. Report `failed` when any requested
+check fails. Report `incomplete` when a requested check could not be run or
+when the available environment did not test the intended scope. Claim
+`passed` only when every requested validation, semantic inspection/diff, and
+relevant test completed successfully. A coding-assistant session returning
+normally does not turn a failed command into a successful verification."""
+
     def _task_refresh_instruction(self, refreshes_request: str | None) -> str:
         if refreshes_request is None:
             return ""
@@ -4863,6 +5160,10 @@ visible in the repository. Do not deploy or start a service.
 
 {self._assistant_skill_instructions()}
 
+## Project environment
+
+{self._assistant_environment_instructions()}
+
 ## Task
 
 Create a new ZipperGen Python workflow in this project from the requirements
@@ -4883,6 +5184,10 @@ project assets. Run validation, show the communication-only and full code
 views, and inspect every new participant's exact local projection. Do not
 deploy or start a service. Report generated files, assumptions, and
 verification results.
+
+## Required completion record
+
+{self._assistant_completion_instructions()}
 """
 
     def _refinement_task_content(
@@ -4907,6 +5212,10 @@ visible in the repository. Do not deploy or start a service.
 
 {self._assistant_skill_instructions()}
 
+## Project environment
+
+{self._assistant_environment_instructions()}
+
 ## Task
 
 Refine {workflow_spec} using the canonical specification and the single pending
@@ -4930,6 +5239,10 @@ inspect every changed participant's exact local projection, and compare the
 result with the baseline using `zippergen diff`. Do not deploy or start a
 service. Report assumptions, intended semantic changes, preserved behavior,
 and verification results.
+
+## Required completion record
+
+{self._assistant_completion_instructions()}
 """
 
     def _ensure_current_task_fresh(
@@ -4982,7 +5295,12 @@ and verification results.
         )
         if not force and not may_refresh:
             return record
-        if not force and record.get("specification_fingerprint") == fingerprint:
+        if (
+            not force
+            and record.get("specification_fingerprint") == fingerprint
+            and record.get("task_contract_version")
+            == ASSISTANT_TASK_CONTRACT_VERSION
+        ):
             return record
         kind = str(record.get("kind") or "")
         workflow_spec = str(record.get("workflow_spec") or "") or None

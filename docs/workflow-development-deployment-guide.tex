@@ -665,23 +665,43 @@ read \path{.zippergen/current-task.md}. Just before launch, Studio applies
 the freshness check described above, so the file contains the current
 canonical specification. There is no task path or prompt file to copy. The
 assistant autonomously inspects and edits the application project within its
-configured permission boundary, runs checks, reports the result, exits, and
-returns control to the same ZipperGen Studio session. Use
+configured permission boundary, runs checks, writes a small structured
+verification handoff, exits, and returns control to the same ZipperGen Studio
+session. The handoff distinguishes the assistant process returning from the
+requested checks actually passing. Use
 \texttt{assistant codex --interactive} only when a conversation or interactive
 approval is genuinely needed.
+
+The generated task also explains the tutorial's two-project layout. The
+application lives at the tutorial root, while \path{zippergen/pyproject.toml}
+defines the environment for the nested framework checkout. It therefore tells
+the assistant to invoke the framework from the application root with
+\texttt{uv run --project zippergen zippergen ...} and to run application tests
+by the explicit \path{tests} path. A bare \texttt{uv run pytest} at the tutorial
+root is deliberately forbidden: it can collect \path{zippergen/tests} while
+using an environment that did not install the framework dependencies. The
+framework's own suite is separate and is needed only when framework source was
+actually changed.
 
 There is no assistant queue or scheduled background job. The command runs
 synchronously: before launch, \texttt{task} says
 \texttt{ready for assistant} and
-\texttt{Execution: not started; nothing is scheduled}. A successful return
+\texttt{Execution: not started; nothing is scheduled}. A normal return
 changes the same request to \texttt{awaiting human review} and replaces the
-assistant suggestion with the concrete review path. A failed or interrupted
-session remains visible and retryable. If Studio or the computer stops while
-the assistant is running, the orphaned state is recovered as
+assistant suggestion with the concrete review path. Separately,
+\texttt{Verification} is \texttt{passed}, \texttt{failed}, or
+\texttt{incomplete}, with a concise note and the number of checks the
+assistant reported. The \texttt{task} output lists each reported command and
+its outcome underneath the summary. A missing, malformed, or internally
+inconsistent handoff is never interpreted as success. A failed or interrupted
+assistant process remains visible and retryable. If Studio or the computer
+stops while the assistant is running, the orphaned state is recovered as
 \texttt{assistant interrupted} on the next inspection. Studio refuses to start an
 \texttt{awaiting human review} task accidentally; use
 \texttt{assistant codex --rerun} or
 \texttt{assistant claude --rerun} only when a second pass is intentional.
+Studio refreshes an older unexecuted task automatically before launch so that
+it also receives this verification contract.
 
 \begin{lstlisting}[style=shell]
 task
@@ -689,9 +709,18 @@ Current task
   Status     [warning] awaiting human review
   Assistant            Codex -- returned ...
   Execution            assistant session ended; nothing is scheduled
+  Verification [success] passed -- 5 reported checks
+  Verification note    Validation, projections, diff, and focused tests passed.
   Context    [success] assistant result is preserved for review
   Next                  use / current / validate / show / task close
 \end{lstlisting}
+
+The verification result is an explicit assistant report, not an independent
+proof and not permission to deploy. If it is \texttt{failed} or
+\texttt{incomplete}, Studio shows that state prominently and proposes
+inspection, validation, and an intentional assistant rerun instead of implying
+that the change is ready. Human review of the visible code and semantic views
+remains mandatory.
 
 For this initial creation task, use \texttt{task close} after the generated
 workflow has passed the review below. The command removes only the stable
