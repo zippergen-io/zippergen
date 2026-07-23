@@ -672,11 +672,13 @@ deployment. The three commands have deliberately different jobs:
         workflow for later Studio commands. It neither runs nor deploys it.
   \item[\texttt{current}] rebuilds the project dashboard from the current files
         and machine-specific Studio state. Once a workflow is selected, this
-        includes a fresh validation summary as well as participants, model
-        routing, provider readiness, the managed run, and deployment. Thus the
-        green \texttt{Validation: valid} mark immediately after \texttt{use} is
-        expected: \texttt{current} has checked the selected source; it is not a
-        success mark cached by \texttt{use}.
+        includes a fresh validation summary, all participants, an explicit
+        \texttt{LLM-active participants} subset derived from actual
+        \texttt{@llm} action sites, model routing, provider readiness, the
+        managed run, and deployment. Thus the green
+        \texttt{Validation: valid} mark immediately after \texttt{use} is
+        expected: \texttt{current} has checked the selected source; it is not
+        a success mark cached by \texttt{use}.
   \item[\texttt{validate}] runs the validator explicitly and prints every
         individual check, including the exact local projection checks. It does
         not modify, execute, or deploy the workflow.
@@ -869,6 +871,19 @@ an SSH tunnel or restarting the model server. A failed recheck changes the
 display to \texttt{unreachable} and explains that the server or tunnel should
 be checked. The model identifiers above are examples; use models enabled for
 your provider accounts when necessary.
+
+Studio verifies model routing at the point where it is entered. After a
+provider has been configured, \texttt{models default SPEC} and
+\texttt{models set LIFELINE SPEC} query that provider's model endpoint using
+the private key. A green check means that the exact model identifier or alias
+is available to that key. A name that the provider rejects is not saved, so a
+typing error cannot silently survive until the first workflow action. Local
+identifiers are compared with the endpoint's live \texttt{/models} response.
+If a configured provider is temporarily unreachable, Studio keeps the
+deliberately chosen routing but prints a yellow \emph{saved but unchecked}
+warning; the provider will still enforce the selection when the workflow runs.
+If no key has been configured yet, Studio likewise saves the non-secret route
+with a warning and tells you which \texttt{providers set} command is needed.
 
 \begin{figure}[htbp]
 \centering

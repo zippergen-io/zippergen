@@ -130,11 +130,11 @@ is shown; prompt text, paths, model specifications, and secret values are never
 repeated in the boundary. Empty input and `exit` produce no boundary.
 
 `current` is the concise project dashboard: project and manifest, canonical
-specification and pending-refinement state, workflow name, participants, human
-actions, external effects, validation state, effective per-lifeline model
-assignments, provider readiness, connector bindings, run, and deployment. It
-remains useful before a workflow exists; unknown fields are shown as `none`
-rather than guessed.
+specification and pending-refinement state, workflow name, all participants,
+the explicit subset containing `@llm` actions, human actions, external effects,
+validation state, effective per-lifeline model assignments, provider
+readiness, connector bindings, run, and deployment. It remains useful before a
+workflow exists; unknown fields are shown as `none` rather than guessed.
 
 Connector bindings are intentionally reported but not configured in this
 slice. Future Gmail, Google Sheets, Telegram, email, and human-channel adapters
@@ -174,6 +174,13 @@ zippergen [tutorial_review]> providers check local
 API keys are entered without echo and remain in owner-only Studio secret
 storage. Local endpoint settings and non-secret routing are remembered, while
 `providers` displays readiness without ever displaying a key.
+When `models default` or `models set` selects a configured API provider, Studio
+queries that provider's model endpoint with the saved key before changing the
+routing profile. A green check confirms that the exact model or alias is
+available to that key; an unavailable model is rejected without changing the
+profile. Local model identifiers are checked against the endpoint's live model
+list. A temporarily unreachable provider produces an explicit yellow
+“saved but unchecked” warning so offline configuration remains possible.
 `providers set local` calls the endpoint's OpenAI-compatible `/models` route
 with a short timeout and saves the URL only after a successful response. The
 saved status includes the check time and model count. Use `providers check

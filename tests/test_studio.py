@@ -1,8 +1,8 @@
 import json
 import subprocess
-from io import StringIO
+from io import BytesIO, StringIO
 from pathlib import Path
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 
 import pytest
 from prompt_toolkit.completion import CompleteEvent
@@ -1433,6 +1433,10 @@ def test_studio_current_is_a_complete_project_dashboard(tmp_path):
     assert any("Selected" in line and "workflow.py:sample" in line for line in output)
     assert any("Name" in line and "sample" in line for line in output)
     assert any("Participants" in line and "User, Writer" in line for line in output)
+    assert any(
+        "LLM-active participants" in line and "1 — Writer" in line
+        for line in output
+    )
     assert any("Connectors" in line and "none" in line for line in output)
     assert any("Validation" in line and "✓ valid" in line for line in output)
     assert any("Writer" in line and "mock" in line for line in output)
@@ -1449,6 +1453,10 @@ def test_studio_current_is_explicit_before_a_workflow_exists(tmp_path):
     assert output[0] == "Current"
     assert any("Selected" in line and "⚠ none" in line for line in output)
     assert any("Participants" in line and "0 — none" in line for line in output)
+    assert any(
+        "LLM-active participants" in line and "0 — none" in line
+        for line in output
+    )
     assert any("Connectors" in line and "none" in line for line in output)
     assert any("Validation" in line and "⚠ not available" in line for line in output)
     assert any("Assignments" in line and "none" in line for line in output)
@@ -1668,6 +1676,157 @@ def test_studio_models_configures_and_displays_llm_active_lifelines(tmp_path):
         "  Writer: openai:gpt-4o-mini (override; actions: echo)"
     ) in output
     assert output[-1].startswith("  ⚠ Provider openai: not configured")
+
+
+def test_studio_models_verifies_mistral_model_before_saving(
+    tmp_path,
+    monkeypatch,
+):
+    studio, workspace, output = _studio(tmp_path)
+    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    workspace.save_provider_profile(
+        "mistral",
+        {"kind": "api", "key_env": "MISTRAL_API_KEY"},
+    )
+    workspace.save_secrets({"MISTRAL_API_KEY": "private-mistral-key"})
+    requests = []
+
+    class ModelResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        def read(self, limit=-1):
+            assert limit == 1_048_577
+            return b'{"id":"mistral-small-latest","object":"model"}'
+
+    def fake_urlopen(req, *, timeout):
+        requests.append(req)
+        assert timeout == 3.0
+        return ModelResponse()
+
+    monkeypatch.setattr("zippergen.studio.request.urlopen", fake_urlopen)
+
+    studio.execute("models set Writer mistral:mistral-small-latest")
+
+    assert workspace.model_profile("workflow.py:sample")["lifelines"] == {
+        "Writer": "mistral:mistral-small-latest"
+    }
+    assert requests[0].full_url == (
+        "https://api.mistral.ai/v1/models/mistral-small-latest"
+    )
+    assert requests[0].get_header("Authorization") == (
+        "Bearer private-mistral-key"
+    )
+    assert all("private-mistral-key" not in line for line in output)
+    assert any(
+        line.startswith("✓ Writer:")
+        and "is available with the configured mistral API key" in line
+        for line in output
+    )
+
+
+def test_studio_models_rejects_unavailable_mistral_model_without_saving(
+    tmp_path,
+    monkeypatch,
+):
+    studio, workspace, _output = _studio(tmp_path)
+    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    workspace.save_provider_profile(
+        "mistral",
+        {"kind": "api", "key_env": "MISTRAL_API_KEY"},
+    )
+    workspace.save_secrets({"MISTRAL_API_KEY": "private-mistral-key"})
+
+    def fake_urlopen(req, *, timeout):
+        raise HTTPError(
+            req.full_url,
+            404,
+            "Not Found",
+            {},
+            BytesIO(b'{"message":"model not found"}'),
+        )
+
+    monkeypatch.setattr("zippergen.studio.request.urlopen", fake_urlopen)
+
+    with pytest.raises(SystemExit, match="not available.*routing was not changed"):
+        studio.execute("models set Writer mistral:mistral-smol-latest")
+
+    assert workspace.model_profile("workflow.py:sample")["lifelines"] == {}
+
+
+def test_studio_models_saves_an_explicit_unchecked_route_when_provider_is_offline(
+    tmp_path,
+    monkeypatch,
+):
+    studio, workspace, output = _studio(tmp_path)
+    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    workspace.save_provider_profile(
+        "mistral",
+        {"kind": "api", "key_env": "MISTRAL_API_KEY"},
+    )
+    workspace.save_secrets({"MISTRAL_API_KEY": "private-mistral-key"})
+
+    def fake_urlopen(req, *, timeout):
+        raise URLError("network is offline")
+
+    monkeypatch.setattr("zippergen.studio.request.urlopen", fake_urlopen)
+
+    studio.execute("models set Writer mistral:mistral-small-latest")
+
+    assert workspace.model_profile("workflow.py:sample")["lifelines"] == {
+        "Writer": "mistral:mistral-small-latest"
+    }
+    assert any(
+        line.startswith("⚠ Writer:")
+        and "availability could not be checked" in line
+        and "network is offline" in line
+        for line in output
+    )
+
+
+def test_studio_models_checks_local_model_identifiers(tmp_path, monkeypatch):
+    studio, workspace, output = _studio(tmp_path)
+    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    workspace.save_provider_profile(
+        "local",
+        {
+            "kind": "local",
+            "base_url": "http://localhost:11434/v1",
+        },
+    )
+
+    class ModelsResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        def read(self, limit=-1):
+            assert limit == 1_048_577
+            return b'{"object":"list","data":[{"id":"qwen2.5:7b"}]}'
+
+    monkeypatch.setattr(
+        "zippergen.studio.request.urlopen",
+        lambda req, *, timeout: ModelsResponse(),
+    )
+
+    studio.execute("models set Writer local:qwen2.5:7b")
+
+    assert any(
+        line.startswith("✓ Writer:")
+        and "is available from the local provider" in line
+        for line in output
+    )
+
+    with pytest.raises(SystemExit, match="Available models: qwen2.5:7b"):
+        studio.execute("models set Writer local:missing")
+    assert workspace.model_profile("workflow.py:sample")["lifelines"] == {
+        "Writer": "local:qwen2.5:7b"
+    }
 
 
 def test_studio_model_profile_is_used_for_run_and_deploy(tmp_path, monkeypatch):

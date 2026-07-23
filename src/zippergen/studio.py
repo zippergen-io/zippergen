@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Literal
 from urllib import request
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import quote, urlsplit, urlunsplit
 
 from prompt_toolkit import PromptSession
 from prompt_toolkit.application.current import get_app
@@ -48,6 +48,13 @@ class _PromptInput:
 class _LocalProviderCheck:
     checked_at: str
     model_count: int
+    model_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class _ModelVerification:
+    kind: StatusKind
+    message: str
 
 
 class _LocalProviderError(RuntimeError):
@@ -62,6 +69,12 @@ _PROVIDER_SECRETS = {
     "openai": "OPENAI_API_KEY",
     "anthropic": "ANTHROPIC_API_KEY",
     "mistral": "MISTRAL_API_KEY",
+}
+_PROVIDER_DEFAULT_MODELS = {
+    "local": ("OLLAMA_MODEL", "qwen2.5:7b"),
+    "openai": ("OPENAI_MODEL", "gpt-4o-mini"),
+    "anthropic": ("ANTHROPIC_MODEL", "claude-sonnet-4-6"),
+    "mistral": ("MISTRAL_MODEL", "mistral-small-latest"),
 }
 _SUPPORTED_PROVIDERS = ("mock", "local", "openai", "anthropic", "mistral")
 _STATUS_MARKS = {
@@ -336,8 +349,8 @@ _HELP = """Commands:
   validate                       validate the current workflow
   models                         configure default/per-lifeline LLMs interactively
   models show                    show the current workflow's model routing
-  models default SPEC            set the inherited default LLM
-  models set LIFELINE SPEC       override one LLM-active lifeline
+  models default SPEC            set and verify the inherited default LLM
+  models set LIFELINE SPEC       override and verify one LLM-active lifeline
   models reset LIFELINE|all      restore inheritance or reset the whole profile
   providers                      show model-provider readiness without secrets
   providers set openai|anthropic|mistral
@@ -2146,6 +2159,8 @@ class Studio:
                 for site in action_sites
                 if isinstance(site, dict) and site.get("kind") == "effect"
             ]
+            active_models = self._llm_action_lifelines(workflow, module)
+            llm_participants = list(active_models)
             validation = _validate_workflow(workflow, module)
             self._emit_table(
                 "Workflow",
@@ -2156,6 +2171,16 @@ class Studio:
                         "Participants",
                         f"{len(lifelines)} — "
                         + (", ".join(lifelines) if lifelines else "none"),
+                        None,
+                    ),
+                    (
+                        "LLM-active participants",
+                        f"{len(llm_participants)} — "
+                        + (
+                            ", ".join(llm_participants)
+                            if llm_participants
+                            else "none"
+                        ),
                         None,
                     ),
                     (
@@ -2182,7 +2207,6 @@ class Studio:
                 str(state["current_workflow"]),
                 default=default_llm_spec(module),
             )
-            active_models = self._llm_action_lifelines(workflow, module)
             overrides = profile.get("lifelines") or {}
             assert isinstance(overrides, dict)
             model_rows: list[tuple[str, object, StatusKind | None]] = [
@@ -2219,6 +2243,7 @@ class Studio:
                     ("Selected", "none", "warning"),
                     ("Name", "—", None),
                     ("Participants", "0 — none", None),
+                    ("LLM-active participants", "0 — none", None),
                     ("Human actions", "0 — none", None),
                     ("Effects", "0 — none", None),
                     ("Connectors", "none", None),
@@ -2444,6 +2469,7 @@ class Studio:
         default = str(profile["default"])
         overrides = dict(profile.get("lifelines") or {})
         active = self._llm_action_lifelines(workflow, module)
+        changed: tuple[str, str] | None = None
 
         if not args or args == ["show"]:
             if not args:
@@ -2456,6 +2482,7 @@ class Studio:
                     entered = self.input(f"Default model [{default}]: ").strip()
                     if entered:
                         default = _validate_model_spec(entered)
+                        changed = ("Default", default)
                 else:
                     index = choices.index(selected) - 1
                     lifeline = list(active)[index]
@@ -2468,11 +2495,17 @@ class Studio:
                         overrides.pop(lifeline, None)
                     elif entered:
                         overrides[lifeline] = _validate_model_spec(entered)
+                        changed = (lifeline, overrides[lifeline])
+                verification = (
+                    self._verify_model_spec(*changed) if changed is not None else None
+                )
                 profile = self.workspace.save_model_profile(
                     current,
                     default=default,
                     lifelines=overrides,
                 )
+                if verification is not None:
+                    self._status(verification.kind, verification.message)
             self._emit_models(
                 workflow=workflow,
                 module=module,
@@ -2483,6 +2516,7 @@ class Studio:
         action = args[0].lower()
         if action == "default" and len(args) == 2:
             default = _validate_model_spec(args[1])
+            changed = ("Default", default)
         elif action == "set" and len(args) == 3:
             lifeline, spec = args[1:]
             if lifeline not in active:
@@ -2492,6 +2526,7 @@ class Studio:
                     f"{available}."
                 )
             overrides[lifeline] = _validate_model_spec(spec)
+            changed = (lifeline, overrides[lifeline])
         elif action == "reset" and len(args) == 2:
             if args[1].lower() == "all":
                 default = default_llm_spec(module)
@@ -2504,13 +2539,171 @@ class Studio:
                 "LIFELINE SPEC, or models reset LIFELINE|all."
             )
 
+        verification = (
+            self._verify_model_spec(*changed) if changed is not None else None
+        )
         saved = self.workspace.save_model_profile(
             current,
             default=default,
             lifelines=overrides,
         )
+        if verification is not None:
+            self._status(verification.kind, verification.message)
         self._success(f"Saved model routing for {workflow.name}.")
         self._emit_models(workflow=workflow, module=module, profile=saved)
+
+    def _resolved_model(self, spec: str) -> tuple[str, str | None]:
+        provider = _canonical_provider(spec)
+        _prefix, separator, entered_model = spec.partition(":")
+        if provider == "mock":
+            return provider, None
+        if separator:
+            return provider, entered_model.strip()
+        environment_name, fallback = _PROVIDER_DEFAULT_MODELS[provider]
+        return provider, os.environ.get(environment_name, fallback)
+
+    def _provider_api_key(self, provider: str) -> str | None:
+        secret_name = _PROVIDER_SECRETS.get(provider)
+        if secret_name is None:
+            return None
+        return os.environ.get(secret_name) or self.workspace.load_secrets().get(
+            secret_name
+        )
+
+    def _api_model_request(
+        self,
+        provider: str,
+        model: str,
+        api_key: str,
+    ) -> request.Request:
+        encoded_model = quote(model, safe="")
+        if provider == "openai":
+            base_url = os.environ.get(
+                "OPENAI_BASE_URL",
+                "https://api.openai.com/v1",
+            )
+            models_url = self._local_models_url(base_url)
+            headers = {
+                "Accept": "application/json",
+                "Authorization": f"Bearer {api_key}",
+                "User-Agent": "ZipperGen-Studio/0.1",
+            }
+        elif provider == "anthropic":
+            models_url = "https://api.anthropic.com/v1/models"
+            headers = {
+                "Accept": "application/json",
+                "anthropic-version": "2023-06-01",
+                "x-api-key": api_key,
+                "User-Agent": "ZipperGen-Studio/0.1",
+            }
+        else:
+            assert provider == "mistral"
+            models_url = "https://api.mistral.ai/v1/models"
+            headers = {
+                "Accept": "application/json",
+                "Authorization": f"Bearer {api_key}",
+                "User-Agent": "ZipperGen-Studio/0.1",
+            }
+        return request.Request(
+            f"{models_url}/{encoded_model}",
+            headers=headers,
+            method="GET",
+        )
+
+    def _remote_model_available(
+        self,
+        provider: str,
+        model: str,
+        api_key: str,
+    ) -> tuple[bool | None, str | None]:
+        req = self._api_model_request(provider, model, api_key)
+        try:
+            with request.urlopen(req, timeout=3.0) as response:
+                raw = response.read(1_048_577)
+        except HTTPError as exc:
+            raw_detail = exc.read(512).decode("utf-8", errors="replace")
+            detail = self._local_check_error(raw_detail) if raw_detail.strip() else ""
+            suffix = f": {detail}" if detail else ""
+            if exc.code in {400, 404, 422}:
+                return False, f"HTTP {exc.code}{suffix}"
+            if exc.code in {408, 429} or exc.code >= 500:
+                return None, f"HTTP {exc.code}{suffix}"
+            raise SystemExit(
+                f"Could not verify model {model!r} with {provider}: "
+                f"HTTP {exc.code}{suffix}. Model routing was not changed."
+            ) from exc
+        except URLError as exc:
+            return None, self._local_check_error(exc.reason)
+        except (TimeoutError, OSError) as exc:
+            return None, self._local_check_error(exc)
+        if len(raw) > 1_048_576:
+            return None, "the model response exceeded the 1 MiB safety limit"
+        return True, None
+
+    def _verify_model_spec(self, label: str, spec: str) -> _ModelVerification:
+        provider, model = self._resolved_model(spec)
+        if provider == "mock":
+            return _ModelVerification(
+                "success",
+                f"{label}: mock is built in and available.",
+            )
+        assert model is not None
+        resolved = f"{spec} (resolved model: {model})" if ":" not in spec else spec
+        if provider == "local":
+            profile = self.workspace.provider_profiles().get("local", {})
+            base_url = profile.get(
+                "base_url",
+                os.environ.get(
+                    "OLLAMA_BASE_URL",
+                    "http://127.0.0.1:11434/v1",
+                ),
+            )
+            try:
+                result = self._check_local_provider(base_url)
+            except _LocalProviderError as exc:
+                return _ModelVerification(
+                    "warning",
+                    f"{label}: saved {resolved}, but availability could not be "
+                    f"checked at {base_url}: {exc}.",
+                )
+            if model not in result.model_ids:
+                available = ", ".join(result.model_ids[:8]) or "none"
+                raise SystemExit(
+                    f"Model {model!r} is not available from the local provider "
+                    f"at {base_url}. Available models: {available}. "
+                    "Model routing was not changed."
+                )
+            return _ModelVerification(
+                "success",
+                f"{label}: {resolved} is available from the local provider.",
+            )
+
+        api_key = self._provider_api_key(provider)
+        if not api_key:
+            return _ModelVerification(
+                "warning",
+                f"{label}: saved {resolved}, but it was not checked because "
+                f"{provider} is not configured. Use 'providers set {provider}'.",
+            )
+        available, detail = self._remote_model_available(provider, model, api_key)
+        if available is False:
+            suffix = f" ({detail})" if detail else ""
+            raise SystemExit(
+                f"Model {model!r} is not available with the configured "
+                f"{provider} API key{suffix}. Model routing was not changed."
+            )
+        if available is None:
+            suffix = f": {detail}" if detail else ""
+            return _ModelVerification(
+                "warning",
+                f"{label}: saved {resolved}, but {provider} availability "
+                f"could not be checked{suffix}.",
+            )
+        return _ModelVerification(
+            "success",
+            f"{label}: {resolved} is available with the configured "
+            f"{provider} API key.",
+        )
 
     def _provider_readiness(self, provider: str) -> tuple[StatusKind, str]:
         canonical = _canonical_provider(provider)
@@ -2626,6 +2819,12 @@ class Studio:
         return _LocalProviderCheck(
             checked_at=time.strftime("%Y-%m-%dT%H:%M:%S%z"),
             model_count=len(models),
+            model_ids=tuple(
+                str(item["id"])
+                for item in models
+                if isinstance(item, dict)
+                and isinstance(item.get("id"), str)
+            ),
         )
 
     def _save_local_provider_check(
