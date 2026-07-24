@@ -9,6 +9,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import threading
 import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
@@ -51,6 +52,7 @@ SecretInputFunc = Callable[[str], str]
 StatusKind = Literal["success", "warning", "error", "info"]
 CommandRisk = Literal["read-only", "configuration", "execution", "destructive"]
 AssistantVerification = Literal["passed", "failed", "incomplete"]
+_ASSISTANT_HEARTBEAT_SECONDS = 10.0
 
 
 @dataclass(frozen=True)
@@ -686,6 +688,22 @@ class Studio:
         self._emit()
         self._emit(f"──{label}{'─' * max(2, 58 - len(label))}")
 
+    @staticmethod
+    def _output_boundary_label(parts: list[str]) -> str:
+        """Name a command precisely without echoing user values or secrets."""
+
+        command = parts[0].casefold()
+        if len(parts) > 1 and command in {
+            "workflow",
+            "models",
+            "project",
+            "language",
+            "editor",
+            "edit",
+        }:
+            return f"{command} {parts[1].casefold()}"
+        return command
+
     def _prompt(self) -> str:
         current = self.workspace.current_workflow
         label = current.rsplit(":", 1)[-1] if current else "no workflow"
@@ -788,10 +806,22 @@ class Studio:
                 if not self.execute(line, show_boundary=True):
                     return 0
             except KeyboardInterrupt:
-                self._warning(
-                    "Command interrupted. Use 'current' to inspect context; "
-                    "use 'resume' for an incomplete managed run."
-                )
+                request_record = self.workspace.current_request()
+                if (
+                    request_record is not None
+                    and request_record.get("status") == "assistant_interrupted"
+                ):
+                    self._warning(
+                        "Assistant interrupted. Its request and any project "
+                        "changes were preserved; use 'workflow status' to "
+                        "inspect them and 'workflow implement codex --rerun' "
+                        "only when another pass is intentional."
+                    )
+                else:
+                    self._warning(
+                        "Command interrupted. Use 'current' to inspect context; "
+                        "use 'resume' for an incomplete managed run."
+                    )
             except (SystemExit, WorkspaceError, ValueError) as exc:
                 self._error(str(exc))
 
@@ -1219,9 +1249,7 @@ class Studio:
         if command in {"exit", "quit"}:
             return False
         if show_boundary:
-            self._emit_output_boundary(
-                command if command in _STUDIO_COMMANDS else "command"
-            )
+            self._emit_output_boundary(self._output_boundary_label(parts))
         if command in {"help", "?"}:
             self._emit(_HELP.rstrip())
         elif command == "ask":
@@ -3709,6 +3737,39 @@ class Studio:
                 "was started."
             )
 
+    def _start_assistant_heartbeat(
+        self,
+        tool: str,
+    ) -> tuple[threading.Event, threading.Thread]:
+        """Keep a condensed one-shot assistant visibly alive."""
+
+        stopped = threading.Event()
+        started = time.monotonic()
+        interval = max(0.01, _ASSISTANT_HEARTBEAT_SECONDS)
+
+        def report_progress() -> None:
+            while not stopped.wait(interval):
+                elapsed = max(0, int(time.monotonic() - started))
+                hours, remainder = divmod(elapsed, 3600)
+                minutes, seconds = divmod(remainder, 60)
+                duration = (
+                    f"{hours}:{minutes:02d}:{seconds:02d}"
+                    if hours
+                    else f"{minutes:02d}:{seconds:02d}"
+                )
+                self._info(
+                    f"{tool} is still working — {duration} elapsed. "
+                    "Press Control-C to interrupt safely."
+                )
+
+        thread = threading.Thread(
+            target=report_progress,
+            name="zippergen-assistant-progress",
+            daemon=True,
+        )
+        thread.start()
+        return stopped, thread
+
     def run_assistant(self, args: list[str]) -> None:
         rerun = "--rerun" in args
         interactive = "--interactive" in args
@@ -3874,22 +3935,43 @@ class Studio:
                 "acceptEdits",
                 instruction,
             ]
+        capture_codex = assistant == "codex" and not interactive
+        heartbeat_stop: threading.Event | None = None
+        heartbeat_thread: threading.Thread | None = None
+        if capture_codex:
+            self._info(
+                f"{tool} is working. Detailed output is condensed until it "
+                "returns; press Control-C to interrupt safely."
+            )
+            heartbeat_stop, heartbeat_thread = self._start_assistant_heartbeat(
+                tool
+            )
+        elif not interactive:
+            self._info(
+                f"{tool} is working with live output. Press Control-C to "
+                "interrupt safely."
+            )
         try:
-            capture_codex = assistant == "codex" and not interactive
-            if capture_codex:
-                completed = subprocess.run(
-                    command,
-                    cwd=self.workspace.root,
-                    check=False,
-                    capture_output=True,
-                    text=True,
-                )
-            else:
-                completed = subprocess.run(
-                    command,
-                    cwd=self.workspace.root,
-                    check=False,
-                )
+            try:
+                if capture_codex:
+                    completed = subprocess.run(
+                        command,
+                        cwd=self.workspace.root,
+                        check=False,
+                        capture_output=True,
+                        text=True,
+                    )
+                else:
+                    completed = subprocess.run(
+                        command,
+                        cwd=self.workspace.root,
+                        check=False,
+                    )
+            finally:
+                if heartbeat_stop is not None:
+                    heartbeat_stop.set()
+                if heartbeat_thread is not None:
+                    heartbeat_thread.join(timeout=0.5)
         except KeyboardInterrupt:
             self.workspace.update_request(
                 str(record["request_id"]),

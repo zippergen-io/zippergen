@@ -706,8 +706,11 @@ consume an assistant run.
 For one-shot Codex runs, Studio uses Codex's structured JSON output mode and
 shows the final assistant report rather than its raw execution trace. Known
 internal model-cache diagnostics are suppressed; unexpected diagnostics are
-condensed into warnings. Interactive Codex sessions retain their ordinary
-terminal output.
+condensed into warnings. Studio first prints that Codex is working and then
+prints periodic elapsed-time heartbeats, so the synchronous wait never looks
+like a frozen prompt. Control-C preserves the implementation request and any
+project changes; \texttt{workflow status} shows the interrupted state.
+Interactive Codex sessions retain their ordinary terminal output.
 
 There is no assistant queue or scheduled background job. The command runs
 synchronously: before launch, \texttt{workflow status} says the implementation

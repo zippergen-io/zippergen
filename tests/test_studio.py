@@ -1,5 +1,6 @@
 import json
 import subprocess
+import time
 from io import BytesIO, StringIO
 from pathlib import Path
 from urllib.error import HTTPError, URLError
@@ -452,6 +453,35 @@ def test_studio_assistant_launches_codex_in_project_on_the_stable_task(
     assert request["assistant_mode"] == "one_shot"
     assert request["status"] == "awaiting_review"
     assert request["assistant_verification"] == "incomplete"
+
+
+def test_studio_condensed_assistant_reports_progress_and_precise_boundary(
+    tmp_path, monkeypatch
+):
+    studio, _workspace, output = _studio(tmp_path)
+    studio.create_request("Create a review workflow.")
+    output.clear()
+    monkeypatch.setattr("zippergen.studio.shutil.which", lambda name: "/bin/codex")
+    monkeypatch.setattr("zippergen.studio._ASSISTANT_HEARTBEAT_SECONDS", 0.01)
+
+    def fake_run(arguments, *, cwd, check, **kwargs):
+        time.sleep(0.035)
+        return subprocess.CompletedProcess(arguments, 0)
+
+    monkeypatch.setattr("zippergen.studio.subprocess.run", fake_run)
+
+    studio.execute("workflow implement", show_boundary=True)
+
+    boundary = next(line for line in output if line.startswith("── Output:"))
+    assert boundary.startswith("── Output: workflow implement ")
+    assert any(
+        "Codex CLI is working" in line and "Control-C" in line
+        for line in output
+    )
+    assert any(
+        "Codex CLI is still working" in line and "elapsed" in line
+        for line in output
+    )
 
 
 def test_studio_assistant_records_passed_verification_separately_from_exit(
@@ -983,6 +1013,32 @@ def test_studio_failed_and_interrupted_assistants_have_explicit_task_states(
     interrupted = workspace.current_request()
     assert interrupted is not None
     assert interrupted["status"] == "assistant_interrupted"
+
+
+def test_studio_run_explains_recovery_after_assistant_interrupt(
+    tmp_path, monkeypatch
+):
+    studio, _workspace, output = _studio(
+        tmp_path,
+        responses=["workflow implement", "exit"],
+    )
+    studio.create_request("Create a review workflow.")
+    output.clear()
+    monkeypatch.setattr("zippergen.studio.shutil.which", lambda name: "/bin/codex")
+
+    def interrupt(arguments, **kwargs):
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("zippergen.studio.subprocess.run", interrupt)
+
+    assert studio.run() == 0
+
+    assert any(
+        "Assistant interrupted" in line
+        and "workflow status" in line
+        and "preserved" in line
+        for line in output
+    )
 
 
 def test_studio_recovers_an_orphaned_running_assistant_as_interrupted(
@@ -1663,7 +1719,7 @@ def test_studio_boundaries_hide_arguments_and_skip_empty_or_exit(tmp_path):
     )
 
     boundary = next(line for line in output if line.startswith("── Output:"))
-    assert boundary.startswith("── Output: workflow ")
+    assert boundary.startswith("── Output: workflow create ")
     assert "SECRET_SENTINEL" not in boundary
 
     output.clear()

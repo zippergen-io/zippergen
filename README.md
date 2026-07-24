@@ -357,7 +357,10 @@ preserved until it is reconciled, discarded, deliberately rerun, or closed.
 execution mode; `workflow implement claude` does the same with Claude Code and
 project-local edits accepted. Studio starts either tool in the project root,
 asks it to execute the synchronized fixed task, and regains control
-automatically when the tool reports completion. Use
+automatically when the tool reports completion. A condensed Codex run prints
+an immediate working notice and periodic elapsed-time heartbeats, so silence
+never looks like a frozen Studio session; Control-C preserves the request and
+any project changes for inspection through `workflow status`. Use
 `workflow implement codex --interactive` only when an interactive Codex conversation is
 actually useful. Thus
 there is no separate prompt-copying step: the assistant receives the complete
