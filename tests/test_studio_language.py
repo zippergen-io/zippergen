@@ -36,17 +36,19 @@ def sample(request: str @ User) -> str:
 """
 
 
-def _studio(tmp_path, responses=()):
+def _studio(tmp_path, responses=(), secret_responses=()):
     root = tmp_path / "project"
     root.mkdir()
     (root / "workflow.py").write_text(WORKFLOW_SOURCE)
     workspace = Workspace(root, home=tmp_path / "home")
     answers = iter(responses)
+    secret_answers = iter(secret_responses)
     output: list[str] = []
     studio = Studio(
         workspace,
         input_func=lambda prompt: next(answers),
         output_func=output.append,
+        secret_input_func=lambda prompt: next(secret_answers),
     )
     return studio, workspace, output
 
@@ -97,8 +99,25 @@ def test_natural_model_assignment_is_canonical_and_reversible(tmp_path):
 
     profile = workspace.model_profile("workflow.py:sample", default="mock")
     assert profile["lifelines"] == {"Writer": "mock"}
-    assert any("models set Writer mock" in line for line in output)
+    assert any("models assign Writer mock" in line for line in output)
     assert any("Natural-language command plan completed" in line for line in output)
+
+
+def test_natural_provider_configuration_uses_the_models_surface(
+    tmp_path,
+):
+    studio, workspace, output = _studio(
+        tmp_path,
+        secret_responses=["private-anthropic-key"],
+    )
+
+    studio.execute("Configure Claude as a model provider")
+
+    assert workspace.load_secrets()["ANTHROPIC_API_KEY"] == (
+        "private-anthropic-key"
+    )
+    assert any("models connect anthropic" in line for line in output)
+    assert not any("providers set" in line for line in output)
 
 
 def test_how_do_i_request_previews_without_execution(tmp_path):

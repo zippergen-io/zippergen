@@ -139,7 +139,6 @@ _STUDIO_COMMANDS = {
     "plan",
     "project",
     "prompts",
-    "providers",
     "quit",
     "refine",
     "restart",
@@ -174,8 +173,7 @@ _COMMAND_COMPLETIONS = (
     ("inspect", "alias for show"),
     ("workflow", "alias for current"),
     ("validate", "validate the selected workflow"),
-    ("models", "configure default and participant-specific models"),
-    ("providers", "show or configure model-provider settings"),
+    ("models", "show connections and configure model routing"),
     ("run", "start a managed development run"),
     ("resume", "resume the current incomplete run"),
     ("runs", "list managed development runs"),
@@ -245,17 +243,13 @@ _SUBCOMMAND_COMPLETIONS = {
         ("agents", "selected-participant focus view"),
     ),
     "models": (
-        ("show", "show effective model routing"),
+        ("show", "show provider connections and effective routing"),
+        ("connect", "configure a provider connection"),
+        ("disconnect", "remove a provider connection"),
         ("check", "check configured models without changing routing"),
         ("default", "set the inherited default model"),
-        ("set", "override one LLM-active participant"),
-        ("reset", "restore inheritance or reset all routing"),
-    ),
-    "providers": (
-        ("show", "show configuration and the last local check"),
-        ("set", "configure a provider"),
-        ("check", "recheck local-provider connectivity"),
-        ("reset", "remove provider configuration"),
+        ("assign", "assign a model to one LLM-active participant"),
+        ("inherit", "restore the default for one participant"),
     ),
 }
 
@@ -341,8 +335,15 @@ def _is_explicit_studio_syntax(parts: list[str]) -> bool:
             "agent",
             "agents",
         },
-        "models": {"show", "check", "default", "set", "reset"},
-        "providers": {"show", "set", "check", "reset"},
+        "models": {
+            "show",
+            "connect",
+            "disconnect",
+            "check",
+            "default",
+            "assign",
+            "inherit",
+        },
         "language": {
             "show",
             "set",
@@ -405,19 +406,21 @@ def _is_allowed_natural_plan_command(parts: list[str]) -> bool:
             and lowered[0] in {"show", "path", "history", "close"}
         )
     if command == "models":
+        if not args:
+            return True
         if len(args) == 1:
             return lowered[0] in {"show", "check"}
         if len(args) == 2:
-            return lowered[0] in {"check", "default", "reset"}
-        return len(args) == 3 and lowered[0] == "set"
-    if command == "providers":
-        if len(args) == 1:
-            return lowered[0] == "show"
-        if len(args) == 2:
-            return lowered[0] in {"check", "set", "reset"}
-        return (
-            len(args) == 3
-            and lowered[0] == "set"
+            return lowered[0] in {
+                "check",
+                "default",
+                "connect",
+                "disconnect",
+                "inherit",
+            }
+        return len(args) == 3 and (
+            lowered[0] == "assign"
+            or lowered[0] == "connect"
             and lowered[1] in {"local", "ollama"}
         )
     if command == "use":
@@ -570,7 +573,11 @@ def _validate_model_spec(value: str) -> str:
         )
     if separator and not model.strip():
         raise SystemExit(f"Model spec {value!r} is missing a model after ':'.")
-    return spec
+    if canonical == "mock":
+        if separator:
+            raise SystemExit("The built-in mock model is written simply as 'mock'.")
+        return "mock"
+    return f"{canonical}:{model.strip()}" if separator else canonical
 
 
 _HELP = """Commands:
@@ -618,18 +625,15 @@ _HELP = """Commands:
   show agent [NAME]              exact local projection (selector if omitted)
   show agents [NAME ...]         selected-participant focus view
   validate                       validate the current workflow
-  models                         configure default/per-lifeline LLMs interactively
-  models show                    show the current workflow's model routing
-  models check [all|default|LIFELINE]
+  models                         show provider connections and model routing
+  models show                    show the same combined model dashboard
+  models connect NAME [URL]      configure local/OpenAI/Anthropic/Mistral
+  models disconnect NAME         remove a saved provider connection
+  models check [all|default|LIFELINE|local]
                                  verify effective models without changing them
   models default SPEC            set and verify the inherited default LLM
-  models set LIFELINE SPEC       override and verify one LLM-active lifeline
-  models reset LIFELINE|all      restore inheritance or reset the whole profile
-  providers                      show configuration and the last local check
-  providers set openai|anthropic|mistral
-  providers set local [URL]      configure a local OpenAI-compatible endpoint
-  providers check local          recheck the saved local endpoint
-  providers reset NAME           remove a saved provider configuration
+  models assign LIFELINE SPEC    assign and verify one LLM-active lifeline
+  models inherit LIFELINE        restore inheritance from the default
   run [LLM] [--assistant TOOL]   start a run with optional one-run backends
   resume                         resume the current incomplete run
   runs                           list managed development runs
@@ -936,36 +940,32 @@ class Studio:
             action = args[0].lower()
             if action == "default":
                 return list(_MODEL_COMPLETIONS)
-            if action == "set":
+            if action == "assign":
                 if len(args) == 1:
                     return [
                         (name, "LLM-active participant")
                         for name in self._completion_lifelines(llm_only=True)
                     ]
                 return list(_MODEL_COMPLETIONS)
+            if action in {"connect", "disconnect"} and len(args) == 1:
+                return [
+                    (name, "model provider")
+                    for name in _SUPPORTED_PROVIDERS
+                    if name != "mock"
+                ]
             if action == "check" and len(args) == 1:
                 return [
                     ("all", "default and all LLM-active participants"),
                     ("default", "inherited default model"),
+                    ("local", "saved local model-server connection"),
                 ] + [
                     (name, "effective model for this LLM-active participant")
                     for name in self._completion_lifelines(llm_only=True)
                 ]
-            if action == "reset" and len(args) == 1:
-                return [("all", "reset the complete model profile")] + [
+            if action == "inherit" and len(args) == 1:
+                return [
                     (name, "LLM-active participant")
                     for name in self._completion_lifelines(llm_only=True)
-                ]
-            return []
-        if command == "providers":
-            if not args:
-                return list(_SUBCOMMAND_COMPLETIONS["providers"])
-            if args[0].lower() == "check":
-                return [("local", "saved local OpenAI-compatible endpoint")]
-            if args[0].lower() in {"set", "reset"}:
-                return [
-                    (name, "model provider") for name in _SUPPORTED_PROVIDERS
-                    if name != "mock"
                 ]
             return []
         if command in {"run"}:
@@ -1115,6 +1115,13 @@ class Studio:
             return True
         if not parts:
             return True
+        if parts[0].casefold() == "providers":
+            if show_boundary:
+                self._emit_output_boundary("models")
+            raise SystemExit(
+                "`providers` is not a Studio command. Provider connections are "
+                "managed with `models connect NAME`; use `models` to inspect them."
+            )
         explicit = _is_explicit_studio_syntax(parts)
         if _allow_natural and not explicit:
             if show_boundary:
@@ -1170,8 +1177,6 @@ class Studio:
             self.validate()
         elif command == "models":
             self.configure_models(args)
-        elif command == "providers":
-            self.configure_providers(args)
         elif command == "run":
             assistant_backend = None
             run_args = list(args)
@@ -1411,7 +1416,6 @@ class Studio:
             "logs",
             "models",
             "project",
-            "providers",
             "refine",
             "restart",
             "resume",
@@ -1446,7 +1450,7 @@ class Studio:
                 for index in range(2, len(parts)):
                     replace(index)
         elif top == "models" and len(parts) >= 3:
-            if parts[1].casefold() in {"set", "check", "reset"}:
+            if parts[1].casefold() in {"assign", "check", "inherit"}:
                 replace(2)
         return shlex.join(parts)
 
@@ -1465,8 +1469,6 @@ class Studio:
         if command == "task" and (not args or args[0] in {"show", "path", "history"}):
             return "read-only"
         if command == "models" and (not args or args[0] in {"show", "check"}):
-            return "read-only"
-        if command == "providers" and (not args or args[0] in {"show", "check"}):
             return "read-only"
         if command == "editor" and (not args or args[0] == "show"):
             return "read-only"
@@ -1570,7 +1572,7 @@ class Studio:
         if looks_sensitive(request_text):
             raise SystemExit(
                 "The request appears to contain a secret value and was not sent "
-                "to an interpreter or stored. Use 'providers set PROVIDER' so "
+                "to an interpreter or stored. Use 'models connect PROVIDER' so "
                 "Studio can collect the key privately."
             )
 
@@ -3722,17 +3724,20 @@ class Studio:
             ]
         try:
             capture_codex = assistant == "codex" and not interactive
-            capture_options: dict[str, object] = (
-                {"capture_output": True, "text": True}
-                if capture_codex
-                else {}
-            )
-            completed = subprocess.run(
-                command,
-                cwd=self.workspace.root,
-                check=False,
-                **capture_options,
-            )
+            if capture_codex:
+                completed = subprocess.run(
+                    command,
+                    cwd=self.workspace.root,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+            else:
+                completed = subprocess.run(
+                    command,
+                    cwd=self.workspace.root,
+                    check=False,
+                )
         except KeyboardInterrupt:
             self.workspace.update_request(
                 str(record["request_id"]),
@@ -4319,26 +4324,73 @@ class Studio:
         default = str(profile["default"])
         overrides = profile.get("lifelines") or {}
         assert isinstance(overrides, dict)
-        self._emit(f"Models for {workflow.name}")
-        self._emit(f"  Default: {default}")
+        self._emit("Routing")
+        self._emit("───────")
+        self._emit(f"  Workflow      {workflow.name}")
+        self._emit(f"  Default       {default}")
         if not active:
-            self._emit("  No LLM actions are present in this workflow.")
+            self._emit("  Assignments   none — no LLM actions in this workflow")
             return
         for lifeline, actions in active.items():
             explicit = overrides.get(lifeline)
             effective = str(explicit or default)
             source = "override" if explicit else "inherits default"
             self._emit(
-                f"  {lifeline}: {effective} ({source}; actions: "
+                f"  {lifeline:<13} {effective} ({source}; actions: "
                 + ", ".join(actions)
                 + ")"
             )
-        selected = {default} | {str(value) for value in overrides.values()}
-        for provider in sorted({_canonical_provider(spec) for spec in selected}):
-            kind, status = self._provider_configuration_status(provider)
-            self._status(kind, f"Provider {provider}: {status}", indent=2)
 
     def configure_models(self, args: list[str]) -> None:
+        action = args[0].lower() if args else "show"
+
+        if action == "connect":
+            if len(args) not in {2, 3}:
+                raise SystemExit("Use models connect NAME [URL].")
+            self._connect_model_provider(args[1:])
+            self._emit()
+            self._emit_model_connections()
+            return
+
+        if action == "disconnect":
+            if len(args) != 2:
+                raise SystemExit("Use models disconnect NAME.")
+            self._disconnect_model_provider(args[1])
+            self._emit()
+            self._emit_model_connections()
+            return
+
+        if action in {"show"}:
+            if len(args) > 1:
+                raise SystemExit("Use models or models show.")
+            self._emit("Model configuration")
+            self._emit("───────────────────")
+            self._emit_model_connections()
+            self._emit()
+            if not self.workspace.current_workflow:
+                self._emit("Routing")
+                self._emit("───────")
+                self._warning(
+                    "No workflow is selected; use 'use' to select one.",
+                    indent=2,
+                )
+                return
+            current, workflow, module = self._current_context()
+            profile = self.workspace.model_profile(
+                current,
+                default=default_llm_spec(module),
+            )
+            self._emit_models(
+                workflow=workflow,
+                module=module,
+                profile=profile,
+            )
+            return
+
+        if action == "check" and len(args) == 2 and args[1].lower() == "local":
+            self._recheck_local_model_provider()
+            return
+
         current, workflow, module = self._current_context()
         profile = self.workspace.model_profile(
             current,
@@ -4349,11 +4401,11 @@ class Studio:
         active = self._llm_action_lifelines(workflow, module)
         changed: tuple[str, str] | None = None
 
-        if args and args[0].lower() == "check":
+        if action == "check":
             if len(args) > 2:
                 raise SystemExit(
                     "Use models check, models check all, models check default, "
-                    "or models check LIFELINE."
+                    "models check LIFELINE, or models check local."
                 )
             self._check_model_connectivity(
                 workflow=workflow,
@@ -4363,63 +4415,10 @@ class Studio:
             )
             return
 
-        if not args or args == ["show"]:
-            if not args:
-                choices = ["Default for all unassigned lifelines"] + [
-                    f"{name} ({', '.join(actions)})"
-                    for name, actions in active.items()
-                ]
-                check_choice = "Check effective model connectivity (read-only)"
-                choices.append(check_choice)
-                selected = str(self._select("Configure models", choices))
-                if selected == check_choice:
-                    self._check_model_connectivity(
-                        workflow=workflow,
-                        profile=profile,
-                        active=active,
-                        target="all",
-                    )
-                    return
-                if selected == choices[0]:
-                    entered = self.input(f"Default model [{default}]: ").strip()
-                    if entered:
-                        default = _validate_model_spec(entered)
-                        changed = ("Default", default)
-                else:
-                    index = choices.index(selected) - 1
-                    lifeline = list(active)[index]
-                    effective = overrides.get(lifeline, default)
-                    entered = self.input(
-                        f"Model for {lifeline} [{effective}] "
-                        "(type 'inherit' to use the default): "
-                    ).strip()
-                    if entered.lower() in {"inherit", "default"}:
-                        overrides.pop(lifeline, None)
-                    elif entered:
-                        overrides[lifeline] = _validate_model_spec(entered)
-                        changed = (lifeline, overrides[lifeline])
-                verification = (
-                    self._verify_model_spec(*changed) if changed is not None else None
-                )
-                profile = self.workspace.save_model_profile(
-                    current,
-                    default=default,
-                    lifelines=overrides,
-                )
-                if verification is not None:
-                    self._status(verification.kind, verification.message)
-            self._emit_models(
-                workflow=workflow,
-                module=module,
-                profile=profile,
-            )
-            return
-
-        action = args[0].lower()
         if action == "default" and len(args) == 2:
             default = _validate_model_spec(args[1])
             changed = ("Default", default)
-        elif action == "set" and len(args) == 3:
+        elif action == "assign" and len(args) == 3:
             lifeline, spec = args[1:]
             if lifeline not in active:
                 available = ", ".join(active) or "none"
@@ -4429,19 +4428,24 @@ class Studio:
                 )
             overrides[lifeline] = _validate_model_spec(spec)
             changed = (lifeline, overrides[lifeline])
-        elif action == "reset" and len(args) == 2:
-            if args[1].lower() == "all":
-                default = default_llm_spec(module)
-                overrides = {}
-            else:
-                overrides.pop(args[1], None)
+        elif action == "inherit" and len(args) == 2:
+            lifeline = args[1]
+            if lifeline not in active:
+                available = ", ".join(active) or "none"
+                raise SystemExit(
+                    f"{lifeline!r} has no LLM actions. LLM-active lifelines: "
+                    f"{available}."
+                )
+            overrides.pop(lifeline, None)
         else:
             raise SystemExit(
-                "Use models, models show, models check [all|default|LIFELINE], "
-                "models default SPEC, models set LIFELINE SPEC, or models reset "
-                "LIFELINE|all."
+                "Use models, models connect NAME [URL], models disconnect NAME, "
+                "models check [all|default|LIFELINE|local], models default SPEC, "
+                "models assign LIFELINE SPEC, or models inherit LIFELINE."
             )
 
+        if changed is not None:
+            self._ensure_model_provider_connected(changed[1])
         verification = (
             self._verify_model_spec(*changed) if changed is not None else None
         )
@@ -4453,6 +4457,9 @@ class Studio:
         if verification is not None:
             self._status(verification.kind, verification.message)
         self._success(f"Saved model routing for {workflow.name}.")
+        self._emit()
+        self._emit_model_connections()
+        self._emit()
         self._emit_models(workflow=workflow, module=module, profile=saved)
 
     def _check_model_connectivity(
@@ -4724,7 +4731,7 @@ class Studio:
             return _ModelVerification(
                 "warning",
                 f"{label}: {message} because "
-                f"{provider} is not configured. Use 'providers set {provider}'.",
+                f"{provider} is not connected. Use 'models connect {provider}'.",
             )
         available, detail = self._remote_model_available(provider, model, api_key)
         if available is False:
@@ -4789,7 +4796,7 @@ class Studio:
                 )
             return (
                 "warning",
-                f"not checked; endpoint {base_url}; use 'providers check local'",
+                f"not checked; endpoint {base_url}; use 'models check local'",
             )
         secret_name = _PROVIDER_SECRETS.get(canonical)
         if secret_name is None:
@@ -4797,28 +4804,29 @@ class Studio:
         if os.environ.get(secret_name):
             return (
                 "success",
-                f"configured; {secret_name} is in the environment; not tested here",
+                f"connected; {secret_name} is in the environment; not tested here",
             )
         if self.workspace.load_secrets().get(secret_name):
             return (
                 "success",
-                f"configured; {secret_name} is in private Studio storage; "
+                f"connected; {secret_name} is in private Studio storage; "
                 "not tested here",
             )
-        return "warning", f"not configured; use 'providers set {canonical}'"
+        return "warning", f"not connected; use 'models connect {canonical}'"
 
     def _provider_status(self, provider: str) -> str:
         return self._provider_configuration_status(provider)[1]
 
-    def _emit_providers(self) -> None:
-        self._emit("Provider configuration")
+    def _emit_model_connections(self) -> None:
+        self._emit("Connections")
+        self._emit("───────────")
         for provider in _SUPPORTED_PROVIDERS:
             kind, status = self._provider_configuration_status(provider)
             self._status(kind, f"{provider}: {status}", indent=2)
         self._emit("API-key values are never displayed or written to the project.")
         self._emit(
-            "Use 'models check' for current configured-model availability; "
-            "use 'providers check local' to refresh the local endpoint."
+            "Use 'models check' for current assigned-model availability; "
+            "use 'models check local' to refresh the local endpoint."
         )
 
     def _local_models_url(self, base_url: str) -> str:
@@ -4910,148 +4918,166 @@ class Studio:
             },
         )
 
-    def configure_providers(self, args: list[str]) -> None:
-        if not args or args == ["show"]:
-            self._emit_providers()
+    def _provider_is_connected(self, provider: str) -> bool:
+        canonical = _canonical_provider(provider)
+        if canonical == "mock":
+            return True
+        if canonical == "local":
+            profile = self.workspace.provider_profiles().get("local", {})
+            return bool(profile.get("base_url"))
+        return bool(self._provider_api_key(canonical))
+
+    def _ensure_model_provider_connected(self, spec: str) -> None:
+        provider, _model = self._resolved_model(spec)
+        if self._provider_is_connected(provider):
             return
-        action, *rest = args
-        action = action.lower()
-        if action == "set" and rest:
-            provider = _canonical_provider(rest[0])
-            if provider not in _SUPPORTED_PROVIDERS:
-                raise SystemExit(
-                    "Provider must be mock, local/ollama, openai, "
-                    "anthropic/claude, or mistral."
-                )
-            if provider == "mock":
-                if len(rest) != 1:
-                    raise SystemExit("The built-in mock provider takes no settings.")
-                self._success("mock is built in and already ready.")
-                return
-            if provider == "local":
-                if len(rest) > 2:
-                    raise SystemExit("Use providers set local [BASE_URL].")
-                existing = self.workspace.provider_profiles().get("local", {}).get(
-                    "base_url"
-                )
-                base_url = (
-                    rest[1]
-                    if len(rest) == 2
-                    else self.input(
-                        "Local OpenAI-compatible base URL "
-                        f"[{existing or 'http://127.0.0.1:11434/v1'}]: "
-                    ).strip()
-                    or existing
-                    or "http://127.0.0.1:11434/v1"
-                )
-                # Validate the URL and prove OpenAI compatibility before
-                # replacing any previously working endpoint.
-                self._local_models_url(base_url)
-                try:
-                    result = self._check_local_provider(base_url)
-                except _LocalProviderError as exc:
-                    raise SystemExit(
-                        f"Could not verify local provider at {base_url}: {exc}. "
-                        "Check that the model server and any SSH tunnel are "
-                        "running; the endpoint was not saved."
-                    ) from exc
-                self._save_local_provider_check(base_url, result)
-                noun = "model" if result.model_count == 1 else "models"
-                message = (
-                    f"Configured local provider: reachable; "
-                    f"{result.model_count} {noun}; endpoint {base_url}"
-                )
-                if result.model_count:
-                    self._success(message)
-                else:
-                    self._warning(message + "; install or load a model before running")
-                return
-            if len(rest) != 1:
-                raise SystemExit(f"Use providers set {provider}.")
-            secret_name = _PROVIDER_SECRETS[provider]
-            secrets = self.workspace.load_secrets()
-            from_environment = bool(os.environ.get(secret_name))
-            if from_environment:
-                self._success(
-                    f"Using {secret_name} from the current environment; "
-                    "its value was not copied."
-                )
-            else:
-                existing = secrets.get(secret_name)
-                suffix = " (press Enter to keep the saved value)" if existing else ""
-                entered = self.secret_input(f"{secret_name}{suffix}: ").strip()
-                if entered:
-                    secrets[secret_name] = entered
-                    self.workspace.save_secrets(secrets)
-                elif not existing:
-                    raise SystemExit(f"{secret_name} must not be empty.")
-            self.workspace.save_provider_profile(
-                provider,
-                {"kind": "api", "key_env": secret_name},
+        entered = self.input(
+            f"{provider} is not connected. Connect it now? [Y/n]: "
+        ).strip().casefold()
+        if entered not in {"", "y", "yes"}:
+            raise SystemExit(
+                f"{provider} is not connected; model routing was not changed. "
+                f"Use 'models connect {provider}' when you are ready."
             )
-            self._success(
-                f"Configured {provider}: {self._provider_status(provider)}"
+        self._connect_model_provider([provider])
+
+    def _connect_model_provider(self, args: list[str]) -> None:
+        if not args:
+            raise SystemExit("Use models connect NAME [URL].")
+        provider = _canonical_provider(args[0])
+        if provider not in _SUPPORTED_PROVIDERS:
+            raise SystemExit(
+                "Provider must be local/ollama, openai, anthropic/claude, "
+                "or mistral."
             )
+        if provider == "mock":
+            if len(args) != 1:
+                raise SystemExit("The built-in mock model takes no settings.")
+            self._success("mock is built in and always available.")
             return
-        if action == "check" and len(rest) == 1:
-            provider = _canonical_provider(rest[0])
-            if provider != "local":
-                raise SystemExit("Only the local provider has an endpoint check.")
-            profile = self.workspace.provider_profiles().get("local")
-            if not profile or not profile.get("base_url"):
-                raise SystemExit(
-                    "No local endpoint is configured. Use 'providers set local'."
-                )
-            base_url = profile["base_url"]
+        if provider == "local":
+            if len(args) > 2:
+                raise SystemExit("Use models connect local [BASE_URL].")
+            existing = self.workspace.provider_profiles().get("local", {}).get(
+                "base_url"
+            )
+            base_url = (
+                args[1]
+                if len(args) == 2
+                else self.input(
+                    "Local OpenAI-compatible base URL "
+                    f"[{existing or 'http://127.0.0.1:11434/v1'}]: "
+                ).strip()
+                or existing
+                or "http://127.0.0.1:11434/v1"
+            )
+            # Prove OpenAI compatibility before replacing a working endpoint.
+            self._local_models_url(base_url)
             try:
                 result = self._check_local_provider(base_url)
             except _LocalProviderError as exc:
-                checked_at = time.strftime("%Y-%m-%dT%H:%M:%S%z")
-                self.workspace.save_provider_profile(
-                    "local",
-                    {
-                        "kind": "local",
-                        "base_url": base_url,
-                        "check_status": "unreachable",
-                        "checked_at": checked_at,
-                        "check_error": str(exc)[:240],
-                    },
-                )
                 raise SystemExit(
-                    f"Local provider is unreachable at {base_url}: {exc}. "
-                    "Check that the model server and any SSH tunnel are running."
+                    f"Could not connect to the local provider at {base_url}: "
+                    f"{exc}. Check that the model server and any SSH tunnel are "
+                    "running; the connection was not saved."
                 ) from exc
             self._save_local_provider_check(base_url, result)
             noun = "model" if result.model_count == 1 else "models"
             message = (
-                f"Local provider is reachable: {result.model_count} {noun}; "
-                f"endpoint {base_url}"
+                f"Connected local provider: reachable; "
+                f"{result.model_count} {noun}; endpoint {base_url}"
             )
             if result.model_count:
                 self._success(message)
             else:
                 self._warning(message + "; install or load a model before running")
             return
-        if action == "reset" and len(rest) == 1:
-            provider = _canonical_provider(rest[0])
-            if provider not in _SUPPORTED_PROVIDERS or provider == "mock":
-                raise SystemExit(
-                    "Reset provider must be local, openai, anthropic, or mistral."
-                )
-            self.workspace.remove_provider_profile(provider)
-            secret_name = _PROVIDER_SECRETS.get(provider)
-            if secret_name:
-                secrets = self.workspace.load_secrets()
-                if secret_name in secrets:
-                    secrets.pop(secret_name)
-                    self.workspace.save_secrets(secrets)
-            self._success(f"Reset provider configuration: {provider}")
-            return
-        raise SystemExit(
-            "Use providers, providers set openai|anthropic|mistral, "
-            "providers set local [URL], providers check local, or "
-            "providers reset NAME."
+        if len(args) != 1:
+            raise SystemExit(f"Use models connect {provider}.")
+        secret_name = _PROVIDER_SECRETS[provider]
+        secrets = self.workspace.load_secrets()
+        from_environment = bool(os.environ.get(secret_name))
+        if from_environment:
+            self._success(
+                f"Using {secret_name} from the current environment; "
+                "its value was not copied."
+            )
+        else:
+            existing = secrets.get(secret_name)
+            suffix = " (press Enter to keep the saved value)" if existing else ""
+            entered = self.secret_input(f"{secret_name}{suffix}: ").strip()
+            if entered:
+                secrets[secret_name] = entered
+                self.workspace.save_secrets(secrets)
+            elif not existing:
+                raise SystemExit(f"{secret_name} must not be empty.")
+        self.workspace.save_provider_profile(
+            provider,
+            {"kind": "api", "key_env": secret_name},
         )
+        self._success(f"Connected {provider}: {self._provider_status(provider)}")
+
+    def _recheck_local_model_provider(self) -> None:
+        profile = self.workspace.provider_profiles().get("local")
+        if not profile or not profile.get("base_url"):
+            raise SystemExit(
+                "No local model provider is connected. Use 'models connect local'."
+            )
+        base_url = profile["base_url"]
+        try:
+            result = self._check_local_provider(base_url)
+        except _LocalProviderError as exc:
+            checked_at = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+            self.workspace.save_provider_profile(
+                "local",
+                {
+                    "kind": "local",
+                    "base_url": base_url,
+                    "check_status": "unreachable",
+                    "checked_at": checked_at,
+                    "check_error": str(exc)[:240],
+                },
+            )
+            raise SystemExit(
+                f"Local provider is unreachable at {base_url}: {exc}. "
+                "Check that the model server and any SSH tunnel are running."
+            ) from exc
+        self._save_local_provider_check(base_url, result)
+        noun = "model" if result.model_count == 1 else "models"
+        message = (
+            f"Local provider is reachable: {result.model_count} {noun}; "
+            f"endpoint {base_url}"
+        )
+        if result.model_count:
+            self._success(message)
+        else:
+            self._warning(message + "; install or load a model before running")
+
+    def _disconnect_model_provider(self, name: str) -> None:
+        provider = _canonical_provider(name)
+        if provider not in _SUPPORTED_PROVIDERS or provider == "mock":
+            raise SystemExit(
+                "Disconnect must name local, openai, anthropic, or mistral."
+            )
+        self.workspace.remove_provider_profile(provider)
+        secret_name = _PROVIDER_SECRETS.get(provider)
+        removed_secret = False
+        if secret_name:
+            secrets = self.workspace.load_secrets()
+            if secret_name in secrets:
+                secrets.pop(secret_name)
+                self.workspace.save_secrets(secrets)
+                removed_secret = True
+        detail = (
+            " and removed its privately stored API key"
+            if removed_secret
+            else ""
+        )
+        self._success(f"Disconnected {provider}{detail}.")
+        if secret_name and os.environ.get(secret_name):
+            self._warning(
+                f"{secret_name} is still present in the current environment."
+            )
 
     def show_runs(self) -> None:
         runs = self.workspace.list_runs()

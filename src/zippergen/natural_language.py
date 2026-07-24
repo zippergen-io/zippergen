@@ -83,7 +83,11 @@ def _model_spec(value: str) -> str | None:
         re.IGNORECASE,
     )
     if explicit:
-        return explicit.group(0)
+        provider, model = explicit.group(0).split(":", 1)
+        provider = {"claude": "anthropic", "ollama": "local"}.get(
+            provider.casefold(), provider.casefold()
+        )
+        return f"{provider}:{model}"
 
     provider_then_model = re.search(
         r"\b(openai|anthropic|claude|mistral|local|ollama)"
@@ -238,14 +242,39 @@ def deterministic_plan(
             participant = active[0]
             return NaturalCommandPlan(
                 f"Assign {spec} to {participant}.",
-                (shlex.join(["models", "set", participant, spec]),),
+                (shlex.join(["models", "assign", participant, spec]),),
                 "deterministic",
             )
 
     if re.search(r"\b(show|display|list|what)\b.*\bproviders?\b", text):
         return NaturalCommandPlan(
-            "Show configured model providers.",
-            ("providers show",),
+            "Show model-provider connections and routing.",
+            ("models show",),
+            "deterministic",
+        )
+
+    provider_match = re.search(
+        r"\b(local|ollama|openai|anthropic|claude|mistral)\b", text
+    )
+    if provider_match and re.search(
+        r"\b(connect|configure|set up|setup)\b", text
+    ):
+        provider = {"claude": "anthropic", "ollama": "local"}.get(
+            provider_match.group(1), provider_match.group(1)
+        )
+        return NaturalCommandPlan(
+            f"Connect the {provider} model provider.",
+            (shlex.join(["models", "connect", provider]),),
+            "deterministic",
+        )
+
+    if provider_match and re.search(r"\b(disconnect|remove)\b", text):
+        provider = {"claude": "anthropic", "ollama": "local"}.get(
+            provider_match.group(1), provider_match.group(1)
+        )
+        return NaturalCommandPlan(
+            f"Disconnect the {provider} model provider.",
+            (shlex.join(["models", "disconnect", provider]),),
             "deterministic",
         )
 
@@ -344,20 +373,19 @@ Read-only:
 - show overview | show protocol | show communications | show actions | show full
 - show agent PARTICIPANT | show agents PARTICIPANT...
 - validate
-- models show | models check [all|default|PARTICIPANT]
-- providers show | providers check local
+- models | models show | models check [all|default|PARTICIPANT|local]
 - runs
 - status [DEPLOYMENT] | doctor [DEPLOYMENT] | logs [DEPLOYMENT]
 
 Local configuration and development:
 - project init [NAME]
 - use [PATH.py:WORKFLOW]
+- models connect local [BASE_URL]
+- models connect openai|anthropic|mistral
+- models disconnect local|openai|anthropic|mistral
 - models default PROVIDER:MODEL
-- models set PARTICIPANT PROVIDER:MODEL
-- models reset PARTICIPANT|all
-- providers set local [BASE_URL]
-- providers set openai|anthropic|mistral
-- providers reset local|openai|anthropic|mistral
+- models assign PARTICIPANT PROVIDER:MODEL
+- models inherit PARTICIPANT
 - create DESCRIPTION
 - spec refine DESCRIPTION
 - spec reconcile

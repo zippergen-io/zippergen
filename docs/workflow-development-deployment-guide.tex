@@ -444,7 +444,7 @@ Assign the mock model to Writer.
 
 The first request becomes \texttt{current}; after a workflow is selected, the
 second becomes \texttt{show protocol}, and the third becomes
-\texttt{models set Writer mock}. Studio prints a
+\texttt{models assign Writer mock}. Studio prints a
 \emph{Natural-language request} table and the exact command plan before any
 result, so natural language never hides which operation was chosen. Common
 requests use a deterministic interpreter and therefore need no model, network,
@@ -490,7 +490,7 @@ to stop adding entries or \texttt{language forget ID|all} to remove them.
 
 Raw CLI output is not learned. Secret-looking requests are rejected before
 interpretation and are not stored; enter provider credentials through
-\texttt{providers set NAME}, which uses Studio's private secret input.
+\texttt{models connect NAME}, which uses Studio's private secret input.
 
 \subsubsection*{Step 1b: choose a terminal editor once}
 
@@ -813,7 +813,7 @@ deployment. The three commands have deliberately different jobs:
         and machine-specific Studio state. Once a workflow is selected, this
         includes a fresh validation summary, all participants, an explicit
         \texttt{LLM-active participants} subset derived from actual
-        \texttt{@llm} action sites, model routing, provider configuration, the
+        \texttt{@llm} action sites, model routing, provider connections, the
         managed run, and deployment. Thus the green
         \texttt{Validation: valid} mark immediately after \texttt{use} is
         expected: \texttt{current} has checked the selected source; it is not
@@ -871,7 +871,7 @@ visible. Do not continue until the code answers all five clearly.
 Enter:
 
 \begin{lstlisting}[style=shell]
-models reset all
+models default mock
 models show
 models check
 \end{lstlisting}
@@ -881,8 +881,15 @@ with their action names. Requester is absent because message passing and pure
 validation do not require a model. Expected shape:
 
 \begin{lstlisting}[style=shell]
-Models for reviewed_answer
-  Default: mock
+Model configuration
+Connections
+  mock: available; built in
+  local: not checked; ...
+Routing
+  Workflow      reviewed_answer
+  Default       mock
+  Writer        mock (inherits default; actions: ...)
+  Reviewer      mock (inherits default; actions: ...)
   Writer: mock (inherits default; actions: draft_reply, revise_reply)
   Reviewer: mock (inherits default; actions: assess_draft)
 \end{lstlisting}
@@ -1005,45 +1012,45 @@ it in the provider console and create a replacement before continuing.
 
 \begin{minipage}{\linewidth}
 \begin{lstlisting}[style=shell]
-providers
-providers set openai
-providers set anthropic
+models
+models connect openai
+models connect anthropic
 models default mock
-models set Writer openai:gpt-4o-mini
-models set Reviewer claude:claude-sonnet-4-6
+models assign Writer openai:gpt-4o-mini
+models assign Reviewer anthropic:claude-sonnet-4-6
 models show
 models check
 \end{lstlisting}
 \end{minipage}
 
-Each \texttt{providers set} command asks for its API key without echo and saves
-it in owner-only Studio storage. Plain \texttt{providers} makes no remote
-request and never prints a secret. An API provider is \texttt{configured} when
+Each \texttt{models connect} command asks for its API key without echo and saves
+it in owner-only Studio storage. Plain \texttt{models} makes no remote
+request and never prints a secret. An API provider is \texttt{connected} when
 its key is present, and its line explicitly says \texttt{not tested here}. A
 local provider line reports the last saved check result and timestamp. For a
 local OpenAI-compatible or Ollama endpoint use
-\texttt{providers set local URL}, followed by a model such as
+\texttt{models connect local URL}, followed by a model such as
 \texttt{ollama:qwen2.5:7b}. Studio immediately requests the endpoint's
 OpenAI-compatible \texttt{/models} route with a three-second timeout. It saves
 the URL only when the response is valid, then reports the check time and number
-of available models. Enter \texttt{providers check local} after reconnecting
+of available models. Enter \texttt{models check local} after reconnecting
 an SSH tunnel or restarting the model server. A failed recheck changes the
 display to \texttt{unreachable} and explains that the server or tunnel should
 be checked. The model identifiers above are examples; use models enabled for
 your provider accounts when necessary.
 
 Studio verifies model routing at the point where it is entered. After a
-provider has been configured, \texttt{models default SPEC} and
-\texttt{models set LIFELINE SPEC} query that provider's model endpoint using
+provider has been connected, \texttt{models default SPEC} and
+\texttt{models assign LIFELINE SPEC} query that provider's model endpoint using
 the private key. A green check means that the exact model identifier or alias
 is available to that key. A name that the provider rejects is not saved, so a
 typing error cannot silently survive until the first workflow action. Local
 identifiers are compared with the endpoint's live \texttt{/models} response.
-If a configured provider is temporarily unreachable, Studio keeps the
+If a connected provider is temporarily unreachable, Studio keeps the
 deliberately chosen routing but prints a yellow \emph{saved but unchecked}
 warning; the provider will still enforce the selection when the workflow runs.
-If no key has been configured yet, Studio likewise saves the non-secret route
-with a warning and tells you which \texttt{providers set} command is needed.
+If no key has been connected yet, Studio offers to collect it privately and,
+if accepted, continues the original model assignment.
 
 \texttt{models check} is the read-only recheck command. With no argument, or
 with \texttt{all}, it checks the default plus every LLM-active participant.
@@ -1062,7 +1069,7 @@ conclusive check; it is not proof that a generation call will succeed later.
   \node[zgstage, text width=34mm, below left=of default] (writer)
     {Writer actions\\\texttt{openai:...}};
   \node[zgstage, text width=34mm, below right=of default] (reviewer)
-    {Reviewer actions\\\texttt{claude:...}};
+    {Reviewer actions\\\texttt{anthropic:...}};
   \node[zgplain, text width=31mm, below=of writer] (okey)
     {\texttt{OPENAI\_API\_KEY}\\private storage};
   \node[zgplain, text width=34mm, below=of reviewer] (akey)
@@ -1077,37 +1084,37 @@ are configuration; provider keys are separate secrets.}
 \label{fig:model-routing}
 \end{figure}
 
-The provider commands display lines such as:
+The model dashboard and connection commands display lines such as:
 
 \begin{lstlisting}[style=shell]
 OPENAI_API_KEY:
 ANTHROPIC_API_KEY:
-Configured anthropic: configured; ANTHROPIC_API_KEY is in private Studio storage; not tested here
+Connected anthropic: connected; ANTHROPIC_API_KEY is in private Studio storage; not tested here
 \end{lstlisting}
 
-The configured line begins with a green check mark; unconfigured optional
+The connected line begins with a green check mark; disconnected optional
 providers begin with a yellow warning sign. Paste each key only at the hidden
 Studio prompt---never into source, a shell command, an assistant prompt, or a
 Git-tracked \path{.env}. Development secrets are mode-0600 and absent from
 workspace, run, and request JSON. Existing environment values are used but not
-copied. Later development runs temporarily inject the selected configured
+copied. Later development runs temporarily inject the selected connected
 providers and restore the process environment afterward. Use
-\texttt{providers reset NAME} to remove a saved configuration and private key.
+\texttt{models disconnect NAME} to remove a saved connection and private key.
 
-Use \texttt{models reset Writer} to restore inheritance for one role, or
-\texttt{models reset all} for the declared default. The scriptable equivalent
+Use \texttt{models inherit Writer} to restore inheritance for one role, and
+\texttt{models default mock} to select the declared tutorial default. The scriptable equivalent
 is repeatable \texttt{--llm-for}:
 
 \begin{lstlisting}[style=shell]
 zippergen dev workflows/reviewed_answer.py:reviewed_answer \
   --llm mock \
   --llm-for Writer=openai:gpt-4o-mini \
-  --llm-for Reviewer=claude:claude-sonnet-4-6
+  --llm-for Reviewer=anthropic:claude-sonnet-4-6
 \end{lstlisting}
 
 \begin{notebox}{Two different meanings of ``change the model''}
 For a routing-only change, use \texttt{models default SPEC} or
-\texttt{models set LIFELINE SPEC}. Studio remembers that choice for runs and
+\texttt{models assign LIFELINE SPEC}. Studio remembers that choice for runs and
 deployment; source code does not change, so no refinement or coding assistant
 is needed. If the model choice must become versioned design intent, change
 declared workflow/deployment defaults, or accompany prompt, action, or test
@@ -1129,7 +1136,9 @@ If Step~9 used paid models, return to deterministic mock execution before
 changing behavior unless another paid run is intentional:
 
 \begin{lstlisting}[style=shell]
-models reset all
+models default mock
+models inherit Writer
+models inherit Reviewer
 \end{lstlisting}
 
 This changes only routing; it does not delete saved development secrets. Enter:
@@ -1282,8 +1291,9 @@ the key again. Enter \texttt{n} only when this deployment should use a different
 credential; the deployer then asks for that value without echo. A later
 \texttt{deploy reviewed-answer-tutorial} retains the deployment's existing key
 and prints that it is keeping the saved value, without presenting another
-secret prompt. With the recommended \texttt{models reset all} above, all routes
-are mock and no provider key is needed.
+secret prompt. With the recommended \texttt{models default mock} and
+\texttt{models inherit} commands above, all routes are mock and no provider
+key is needed.
 
 Read every prompt. The request and retry budget are runtime inputs, not another
 description of the workflow. A successful ending prints
@@ -1378,10 +1388,9 @@ task close      # close a reviewed creation task; history remains
 use            # discover workflows and select one from a numbered list
 show           # choose a semantic code view from a numbered list
 validate       # validate the selected workflow and every projection
-models         # configure default and per-lifeline LLMs
+models         # show provider connections and per-lifeline model routing
 models check   # recheck effective model availability without changing routes
-providers      # configuration/last local check; no remote API request
-providers check local # recheck a configured local model server or SSH tunnel
+models check local # recheck a connected local model server or SSH tunnel
 run            # fresh guided, durable development run
 resume         # continue the current incomplete managed run
 runs           # list this project's managed development runs
@@ -1557,22 +1566,23 @@ revocation precautions. When ready, configure one model for Writer and another
 for Reviewer:
 
 \begin{lstlisting}[style=shell]
-models set Writer openai:gpt-4o-mini
-models set Reviewer claude:claude-sonnet-4-6
+models assign Writer openai:gpt-4o-mini
+models assign Reviewer anthropic:claude-sonnet-4-6
 models show
 models check
 run
 \end{lstlisting}
 
-Studio remembers these routes per workflow. Because the tutorial declares
-conditional required secrets for both selected providers, it asks for both
-without echoing either value:
+Studio remembers these routes per workflow. When an assignment names a provider
+that is not connected yet, Studio offers to connect it immediately and then
+continues the original assignment. Accept each offer and enter the requested
+key without echoing its value:
 
 \begin{lstlisting}[style=shell]
-OpenAI API key:
-Saved OPENAI_API_KEY in private development secret storage.
-Anthropic API key:
-Saved ANTHROPIC_API_KEY in private development secret storage.
+openai is not connected. Connect it now? [Y/n]:
+OPENAI_API_KEY:
+anthropic is not connected. Connect it now? [Y/n]:
+ANTHROPIC_API_KEY:
 \end{lstlisting}
 
 The secrets are stored once below
@@ -1602,7 +1612,9 @@ selected, return to mock unless a real deployment is intentional, then choose
 a separate name:
 
 \begin{lstlisting}[style=shell]
-models reset all
+models default mock
+models inherit Writer
+models inherit Reviewer
 deploy tutorial-review-studio --no-start
 \end{lstlisting}
 
@@ -3098,7 +3110,8 @@ then use \texttt{models check} for a fresh, read-only availability check.
 Confirm that the account key belongs to that provider and that the named model
 is enabled for the account. Do not print the key while diagnosing. To continue
 the tutorial without network access or charges, enter
-\texttt{models reset all} and start a fresh mock \texttt{run}.
+\texttt{models default mock}, restore participant inheritance with
+\texttt{models inherit LIFELINE}, and start a fresh mock \texttt{run}.
 
 \subsection*{The workflow file cannot be found}
 
@@ -3251,7 +3264,7 @@ checkout, and automatic \path{specification.md} path; the visible files contain
 no private runtime state. & \\
 $\square$ & \texttt{current}, \texttt{use}, and the selectable \texttt{show}
 views make specification/refinement state, workflow name, participants, validation, model
-routes, provider configuration, and runtime context clear. & \\
+routes, provider connections, and runtime context clear. & \\
 $\square$ & \texttt{editor set micro} remembers the installed project editor;
 \texttt{editor show}, \texttt{edit file}, and a one-off
 \texttt{--editor nano} behave as documented without MCP setup. & \\
@@ -3278,9 +3291,10 @@ $\square$ & Studio \texttt{run} collects both inputs and presents rejection and
 approval in the same terminal. & \\
 $\square$ & Studio \texttt{resume} continues the same managed run after an
 interruption. & \\
-$\square$ & \texttt{providers} distinguishes stored API credentials from
-timestamped local checks without displaying keys; secrets remain absent from
-source/request/run JSON and their private file has owner-only permissions. & \\
+$\square$ & \texttt{models} distinguishes stored provider connections from
+timestamped local checks and model routing without displaying keys; secrets
+remain absent from source/request/run JSON and their private file has
+owner-only permissions. & \\
 $\square$ & \texttt{zippergen --help} works from the project root. & \\
 $\square$ & Direct mock run returns an approved and a rejected result. & \\
 $\square$ & \texttt{validate} succeeds for all three projections. & \\
@@ -3339,7 +3353,7 @@ assistant codex      # or: assistant claude
 use                  # select the discovered workflow by number
 show
 validate
-models reset all
+models default mock
 models show
 models check
 run
@@ -3358,21 +3372,25 @@ Step~9's account, billing, and key-safety instructions, the optional paid-model
 commands are:
 
 \begin{lstlisting}[style=shell]
-providers set openai
-providers set anthropic
-models set Writer openai:gpt-4o-mini
-models set Reviewer claude:claude-sonnet-4-6
+models connect openai
+models connect anthropic
+models assign Writer openai:gpt-4o-mini
+models assign Reviewer anthropic:claude-sonnet-4-6
 models show
 models check
 run
-models reset all
+models default mock
+models inherit Writer
+models inherit Reviewer
 \end{lstlisting}
 
 Only after reading the deployment chapters and choosing mock/fake services,
 enter this prepare-first operational sequence:
 
 \begin{lstlisting}[style=shell]
-models reset all
+models default mock
+models inherit Writer
+models inherit Reviewer
 deploy tutorial-review-studio --no-start
 doctor
 status
@@ -3386,8 +3404,8 @@ exit
 \end{lstlisting}
 
 No \texttt{ZIPPERGEN\_HOME} export or \texttt{STORE} variable is required for
-this path. Real model overrides are optional; use \texttt{models reset all} to
-stay on the free mock path. If a coding assistant is unavailable, select
+this path. Real model overrides are optional; use \texttt{models default mock}
+and \texttt{models inherit LIFELINE} to stay on the free mock path. If a coding assistant is unavailable, select
 \path{zippergen/examples/tutorial_review.py:tutorial_review} instead of the generated
 workflow.
 

@@ -94,15 +94,15 @@ def test_studio_completion_is_context_and_project_aware(tmp_path):
     assert {"refine", "reconcile"}.issubset(_completions(studio, "spec r"))
     assert _completions(studio, "use wor") == ["workflow.py:sample"]
     assert _completions(studio, "show agent W") == ["Writer"]
-    assert _completions(studio, "models set W") == ["Writer"]
+    assert _completions(studio, "models assign W") == ["Writer"]
     assert "check" in _completions(studio, "models ch")
     assert _completions(studio, "models check W") == ["Writer"]
     assert {"all", "default"}.issubset(
         _completions(studio, "models check ")
     )
-    assert _completions(studio, "providers set a") == ["anthropic"]
-    assert _completions(studio, "providers ch") == ["check"]
-    assert _completions(studio, "providers check l") == ["local"]
+    assert _completions(studio, "models connect a") == ["anthropic"]
+    assert _completions(studio, "models inh") == ["inherit"]
+    assert _completions(studio, "models inherit W") == ["Writer"]
     assert _completions(studio, "create --file req") == ["requirements.md"]
     assert _completions(studio, "create --file 'notes f") == ["'notes folder/'"]
     assert _completions(studio, "create --file 'notes folder/'") == [
@@ -1527,11 +1527,21 @@ def test_studio_commands_are_discoverable(tmp_path):
     assert "spec edit" in output[-1]
     assert "spec refine" in output[-1]
     assert "refine --file PATH" in output[-1]
-    assert "providers set local [URL]" in output[-1]
-    assert "providers check local" in output[-1]
+    assert "models connect NAME [URL]" in output[-1]
+    assert "models check [all|default|LIFELINE|local]" in output[-1]
     assert "NATURAL LANGUAGE" in output[-1]
     assert "language history|learned" in output[-1]
     assert studio.execute("exit") is False
+
+
+def test_studio_retires_the_providers_command_with_targeted_guidance(tmp_path):
+    studio, _workspace, _output = _studio(tmp_path)
+
+    with pytest.raises(
+        SystemExit,
+        match=r"`providers` is not a Studio command.*models connect NAME",
+    ):
+        studio.execute("providers set openai")
 
 
 def test_studio_status_marks_use_color_only_when_enabled(tmp_path):
@@ -2098,10 +2108,10 @@ def test_studio_configures_api_and_local_providers_without_displaying_secrets(
 
     monkeypatch.setattr("zippergen.studio.request.urlopen", fake_urlopen)
 
-    studio.execute("providers set openai")
-    studio.execute("providers set local http://localhost:1234/v1")
-    studio.execute("providers check local")
-    studio.execute("providers")
+    studio.execute("models connect openai")
+    studio.execute("models connect local http://localhost:1234/v1")
+    studio.execute("models check local")
+    studio.execute("models")
 
     assert workspace.load_secrets() == {"OPENAI_API_KEY": "super-secret-key"}
     assert workspace.provider_profiles()["local"]["base_url"] == (
@@ -2116,7 +2126,7 @@ def test_studio_configures_api_and_local_providers_without_displaying_secrets(
     assert workspace.secrets_path.stat().st_mode & 0o077 == 0
     assert all("super-secret-key" not in line for line in output)
     assert any(
-        "openai: configured" in line and "not tested here" in line
+        "openai: connected" in line and "not tested here" in line
         for line in output
     )
     assert any(
@@ -2125,13 +2135,13 @@ def test_studio_configures_api_and_local_providers_without_displaying_secrets(
         in line
         for line in output
     )
-    assert any(line == "Provider configuration" for line in output)
+    assert any(line == "Connections" for line in output)
     assert any(
-        "Use 'models check' for current configured-model availability" in line
+        "Use 'models check' for current assigned-model availability" in line
         for line in output
     )
 
-    studio.execute("providers reset openai")
+    studio.execute("models disconnect openai")
     assert "OPENAI_API_KEY" not in workspace.load_secrets()
     assert "openai" not in workspace.provider_profiles()
 
@@ -2155,8 +2165,8 @@ def test_studio_does_not_replace_local_endpoint_when_check_fails(
 
     monkeypatch.setattr("zippergen.studio.request.urlopen", fail_urlopen)
 
-    with pytest.raises(SystemExit, match="endpoint was not saved"):
-        studio.execute("providers set local http://localhost:9999/v1")
+    with pytest.raises(SystemExit, match="connection was not saved"):
+        studio.execute("models connect local http://localhost:9999/v1")
 
     assert workspace.provider_profiles()["local"] == original
 
@@ -2180,13 +2190,13 @@ def test_studio_records_failed_local_provider_recheck(tmp_path, monkeypatch):
     monkeypatch.setattr("zippergen.studio.request.urlopen", fail_urlopen)
 
     with pytest.raises(SystemExit, match="SSH tunnel"):
-        studio.execute("providers check local")
+        studio.execute("models check local")
 
     profile = workspace.provider_profiles()["local"]
     assert profile["check_status"] == "unreachable"
     assert profile["check_error"] == "connection refused"
     output.clear()
-    studio.execute("providers")
+    studio.execute("models")
     assert any(
         "local: last check failed; endpoint http://localhost:11434/v1" in line
         and "connection refused" in line
@@ -2391,12 +2401,14 @@ def test_studio_run_accepts_an_assistant_action_backend(tmp_path, monkeypatch):
     assert calls[0]["assistant"] == "claude"
 
 
-def test_studio_models_configures_and_displays_llm_active_lifelines(tmp_path):
-    studio, workspace, output = _studio(
-        tmp_path,
-        responses=["2", "openai:gpt-4o-mini"],
-    )
+def test_studio_models_displays_connections_and_llm_active_lifelines(tmp_path):
+    studio, workspace, output = _studio(tmp_path)
     workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    workspace.save_model_profile(
+        "workflow.py:sample",
+        default="mock",
+        lifelines={"Writer": "openai:gpt-4o-mini"},
+    )
 
     studio.execute("models")
 
@@ -2404,11 +2416,13 @@ def test_studio_models_configures_and_displays_llm_active_lifelines(tmp_path):
         "default": "mock",
         "lifelines": {"Writer": "openai:gpt-4o-mini"},
     }
-    assert any("Writer (echo)" in line for line in output)
-    assert (
-        "  Writer: openai:gpt-4o-mini (override; actions: echo)"
-    ) in output
-    assert output[-1].startswith("  ⚠ Provider openai: not configured")
+    assert any(line == "Connections" for line in output)
+    assert any(
+        "Writer" in line
+        and "openai:gpt-4o-mini (override; actions: echo)" in line
+        for line in output
+    )
+    assert any("openai: not connected" in line for line in output)
 
 
 def test_studio_models_verifies_mistral_model_before_saving(
@@ -2442,7 +2456,7 @@ def test_studio_models_verifies_mistral_model_before_saving(
 
     monkeypatch.setattr("zippergen.studio.request.urlopen", fake_urlopen)
 
-    studio.execute("models set Writer mistral:mistral-small-latest")
+    studio.execute("models assign Writer mistral:mistral-small-latest")
 
     assert workspace.model_profile("workflow.py:sample")["lifelines"] == {
         "Writer": "mistral:mistral-small-latest"
@@ -2457,6 +2471,75 @@ def test_studio_models_verifies_mistral_model_before_saving(
     assert any(
         line.startswith("✓ Writer:")
         and "is available with the configured mistral API key" in line
+        for line in output
+    )
+
+
+def test_studio_model_assignment_offers_to_connect_missing_provider(
+    tmp_path,
+    monkeypatch,
+):
+    studio, workspace, output = _studio(
+        tmp_path,
+        responses=[""],
+        secret_responses=["private-anthropic-key"],
+    )
+    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+
+    class ModelResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        def read(self, limit=-1):
+            assert limit == 1_048_577
+            return b'{"id":"claude-sonnet-4-6","object":"model"}'
+
+    monkeypatch.setattr(
+        "zippergen.studio.request.urlopen",
+        lambda req, *, timeout: ModelResponse(),
+    )
+
+    studio.execute("models assign Writer claude:claude-sonnet-4-6")
+
+    assert workspace.load_secrets()["ANTHROPIC_API_KEY"] == (
+        "private-anthropic-key"
+    )
+    assert workspace.model_profile("workflow.py:sample")["lifelines"] == {
+        "Writer": "anthropic:claude-sonnet-4-6"
+    }
+    assert any("Connected anthropic" in line for line in output)
+    assert all("private-anthropic-key" not in line for line in output)
+
+
+def test_studio_model_assignment_declines_missing_connection_without_saving(
+    tmp_path,
+):
+    studio, workspace, _output = _studio(tmp_path, responses=["n"])
+    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+
+    with pytest.raises(SystemExit, match="routing was not changed"):
+        studio.execute("models assign Writer openai:gpt-4o-mini")
+
+    assert workspace.model_profile("workflow.py:sample")["lifelines"] == {}
+
+
+def test_studio_models_inherit_removes_a_participant_assignment(tmp_path):
+    studio, workspace, output = _studio(tmp_path)
+    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    workspace.save_model_profile(
+        "workflow.py:sample",
+        default="mock",
+        lifelines={"Writer": "local:qwen2.5:7b"},
+    )
+
+    studio.execute("models inherit Writer")
+
+    assert workspace.model_profile("workflow.py:sample")["lifelines"] == {}
+    assert any(
+        "Writer" in line and "mock (inherits default" in line
         for line in output
     )
 
@@ -2588,19 +2671,16 @@ def test_studio_models_check_accepts_a_case_insensitive_lifeline(tmp_path):
     )
 
 
-def test_studio_models_menu_exposes_the_read_only_check(tmp_path):
-    studio, workspace, output = _studio(tmp_path, responses=["3"])
+def test_studio_models_dashboard_does_not_change_routing(tmp_path):
+    studio, workspace, output = _studio(tmp_path)
     workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
     before = workspace.model_profile("workflow.py:sample")
 
     studio.execute("models")
 
     assert workspace.model_profile("workflow.py:sample") == before
-    assert any(
-        "Check effective model connectivity (read-only)" in line
-        for line in output
-    )
-    assert any(line == "Model connectivity" for line in output)
+    assert any(line == "Connections" for line in output)
+    assert any(line == "Routing" for line in output)
 
 
 def test_studio_models_rejects_unavailable_mistral_model_without_saving(
@@ -2627,7 +2707,7 @@ def test_studio_models_rejects_unavailable_mistral_model_without_saving(
     monkeypatch.setattr("zippergen.studio.request.urlopen", fake_urlopen)
 
     with pytest.raises(SystemExit, match="not available.*routing was not changed"):
-        studio.execute("models set Writer mistral:mistral-smol-latest")
+        studio.execute("models assign Writer mistral:mistral-smol-latest")
 
     assert workspace.model_profile("workflow.py:sample")["lifelines"] == {}
 
@@ -2649,7 +2729,7 @@ def test_studio_models_saves_an_explicit_unchecked_route_when_provider_is_offlin
 
     monkeypatch.setattr("zippergen.studio.request.urlopen", fake_urlopen)
 
-    studio.execute("models set Writer mistral:mistral-small-latest")
+    studio.execute("models assign Writer mistral:mistral-small-latest")
 
     assert workspace.model_profile("workflow.py:sample")["lifelines"] == {
         "Writer": "mistral:mistral-small-latest"
@@ -2689,7 +2769,7 @@ def test_studio_models_checks_local_model_identifiers(tmp_path, monkeypatch):
         lambda req, *, timeout: ModelsResponse(),
     )
 
-    studio.execute("models set Writer local:qwen2.5:7b")
+    studio.execute("models assign Writer local:qwen2.5:7b")
 
     assert any(
         line.startswith("✓ Writer:")
@@ -2698,7 +2778,7 @@ def test_studio_models_checks_local_model_identifiers(tmp_path, monkeypatch):
     )
 
     with pytest.raises(SystemExit, match="Available models: qwen2.5:7b"):
-        studio.execute("models set Writer local:missing")
+        studio.execute("models assign Writer local:missing")
     assert workspace.model_profile("workflow.py:sample")["lifelines"] == {
         "Writer": "local:qwen2.5:7b"
     }
@@ -2743,7 +2823,7 @@ def test_studio_models_rejects_lifelines_without_llm_actions(tmp_path):
     workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
 
     try:
-        studio.execute("models set User openai:gpt-4o-mini")
+        studio.execute("models assign User openai:gpt-4o-mini")
     except SystemExit as exc:
         assert "has no LLM actions" in str(exc)
     else:

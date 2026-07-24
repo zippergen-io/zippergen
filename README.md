@@ -157,30 +157,31 @@ into both development runs and guided deployment:
 
 ```text
 zippergen [tutorial_review]> models default mock
-zippergen [tutorial_review]> models set Writer openai:gpt-4o-mini
-zippergen [tutorial_review]> models set Reviewer claude:claude-sonnet-4-6
+zippergen [tutorial_review]> models connect openai
+zippergen [tutorial_review]> models assign Writer openai:gpt-4o-mini
+zippergen [tutorial_review]> models assign Reviewer anthropic:claude-sonnet-4-6
 zippergen [tutorial_review]> models show
 zippergen [tutorial_review]> models check
 zippergen [tutorial_review]> models check Reviewer
 ```
 
-Provider configuration is separate from model routing:
+Provider connections and model routing share the same command family:
 
 ```text
-zippergen [tutorial_review]> providers
-zippergen [tutorial_review]> providers set openai
-zippergen [tutorial_review]> providers set local http://127.0.0.1:11434/v1
-zippergen [tutorial_review]> providers check local
+zippergen [tutorial_review]> models
+zippergen [tutorial_review]> models connect local http://127.0.0.1:11434/v1
+zippergen [tutorial_review]> models check local
+zippergen [tutorial_review]> models disconnect local
 ```
 
 API keys are entered without echo and remain in owner-only Studio secret
 storage. Local endpoint settings and non-secret routing are remembered, while
-`providers` displays configuration without ever displaying a key or contacting
-a remote API. For OpenAI, Anthropic, and Mistral, `configured` means only that
+`models` displays connections without ever displaying a key or contacting a
+remote API. For OpenAI, Anthropic, and Mistral, `connected` means only that
 the corresponding key is present; the line explicitly says `not tested here`.
 For a local endpoint, the command reports the last saved check result and its
 timestamp rather than presenting it as a new test.
-When `models default` or `models set` selects a configured API provider, Studio
+When `models default` or `models assign` selects a connected API provider, Studio
 queries that provider's model endpoint with the saved key before changing the
 routing profile. A green check confirms that the exact model or alias is
 available to that key; an unavailable model is rejected without changing the
@@ -193,9 +194,11 @@ the endpoint's live model list. A temporarily unreachable provider produces an
 explicit yellow “saved but unchecked” warning during assignment, or an
 “unverified” result during the read-only check, so offline configuration
 remains possible.
-`providers set local` calls the endpoint's OpenAI-compatible `/models` route
+If an assignment needs a connection that is not configured, Studio offers to
+collect it privately and then continues the original assignment.
+`models connect local` calls the endpoint's OpenAI-compatible `/models` route
 with a short timeout and saves the URL only after a successful response. The
-saved status includes the check time and model count. Use `providers check
+saved status includes the check time and model count. Use `models check
 local` after reconnecting an SSH tunnel or restarting the model server; a
 failed recheck is displayed as unreachable instead of leaving an old green
 status.
@@ -386,7 +389,7 @@ zippergen [reviewed_answer]> spec show
 zippergen [reviewed_answer]> spec reconcile
 ```
 
-A model change has two forms. Use `models set Writer SPEC` or `models default
+A model change has two forms. Use `models assign Writer SPEC` or `models default
 SPEC` when only the remembered run/deployment routing changes; no assistant is
 needed. Use `refine` followed by an assistant when the choice belongs in
 versioned design intent or requires source, action prompts, deployment
@@ -420,7 +423,7 @@ uv run zippergen dev examples/tutorial_review.py:tutorial_review
 uv run zippergen dev examples/tutorial_review.py:tutorial_review \
   --llm mock \
   --llm-for Writer=openai:gpt-4o-mini \
-  --llm-for Reviewer=claude:claude-sonnet-4-6
+  --llm-for Reviewer=anthropic:claude-sonnet-4-6
 uv run zippergen dev --resume
 ```
 
