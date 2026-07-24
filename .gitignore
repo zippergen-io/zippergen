@@ -41,6 +41,14 @@ Thumbs.db
 # Docs build
 docs/_build/
 texput.log
+docs/*.aux
+docs/*.fdb_latexmk
+docs/*.fls
+docs/*.log
+docs/*.out
+docs/*.synctex*
+docs/*.toc
+docs/workflow-development-deployment-guide.pdf
 
 # Local state created while following the development/deployment tutorial
 /tutorial-runtime/

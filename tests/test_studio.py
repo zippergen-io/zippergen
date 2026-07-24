@@ -96,10 +96,8 @@ def test_studio_completion_is_context_and_project_aware(tmp_path):
     assert _completions(studio, "show agent W") == ["Writer"]
     assert _completions(studio, "models assign W") == ["Writer"]
     assert "check" in _completions(studio, "models ch")
-    assert _completions(studio, "models check W") == ["Writer"]
-    assert {"all", "default"}.issubset(
-        _completions(studio, "models check ")
-    )
+    assert _completions(studio, "models check m") == ["mock"]
+    assert "all" in _completions(studio, "models check ")
     assert _completions(studio, "models connect a") == ["anthropic"]
     assert _completions(studio, "models inh") == ["inherit"]
     assert _completions(studio, "models inherit W") == ["Writer"]
@@ -1528,7 +1526,9 @@ def test_studio_commands_are_discoverable(tmp_path):
     assert "spec refine" in output[-1]
     assert "refine --file PATH" in output[-1]
     assert "models connect NAME [URL]" in output[-1]
-    assert "models check [all|default|LIFELINE|local]" in output[-1]
+    assert "models configure [NAME]" in output[-1]
+    assert "models check [NAME|all]" in output[-1]
+    assert "models assign LIFELINE NAME" in output[-1]
     assert "NATURAL LANGUAGE" in output[-1]
     assert "language history|learned" in output[-1]
     assert studio.execute("exit") is False
@@ -2110,7 +2110,6 @@ def test_studio_configures_api_and_local_providers_without_displaying_secrets(
 
     studio.execute("models connect openai")
     studio.execute("models connect local http://localhost:1234/v1")
-    studio.execute("models check local")
     studio.execute("models")
 
     assert workspace.load_secrets() == {"OPENAI_API_KEY": "super-secret-key"}
@@ -2120,7 +2119,6 @@ def test_studio_configures_api_and_local_providers_without_displaying_secrets(
     assert workspace.provider_profiles()["local"]["check_status"] == "reachable"
     assert workspace.provider_profiles()["local"]["model_count"] == "2"
     assert requests == [
-        ("http://localhost:1234/v1/models", 3.0),
         ("http://localhost:1234/v1/models", 3.0),
     ]
     assert workspace.secrets_path.stat().st_mode & 0o077 == 0
@@ -2137,7 +2135,7 @@ def test_studio_configures_api_and_local_providers_without_displaying_secrets(
     )
     assert any(line == "Connections" for line in output)
     assert any(
-        "Use 'models check' for current assigned-model availability" in line
+        "models configure" in line and "models check NAME" in line
         for line in output
     )
 
@@ -2171,7 +2169,7 @@ def test_studio_does_not_replace_local_endpoint_when_check_fails(
     assert workspace.provider_profiles()["local"] == original
 
 
-def test_studio_records_failed_local_provider_recheck(tmp_path, monkeypatch):
+def test_studio_records_failed_local_configuration_check(tmp_path, monkeypatch):
     studio, workspace, output = _studio(tmp_path)
     workspace.save_provider_profile(
         "local",
@@ -2183,22 +2181,30 @@ def test_studio_records_failed_local_provider_recheck(tmp_path, monkeypatch):
             "model_count": "1",
         },
     )
+    workspace.save_model_configuration(
+        "local-reviewer",
+        {
+            "provider": "local",
+            "model": "qwen2.5:7b",
+            "spec": "local:qwen2.5:7b",
+            "check_status": "not_checked",
+        },
+    )
 
     def fail_urlopen(req, *, timeout):
         raise URLError("connection refused")
 
     monkeypatch.setattr("zippergen.studio.request.urlopen", fail_urlopen)
 
-    with pytest.raises(SystemExit, match="SSH tunnel"):
-        studio.execute("models check local")
+    studio.execute("models check local-reviewer")
 
-    profile = workspace.provider_profiles()["local"]
-    assert profile["check_status"] == "unreachable"
-    assert profile["check_error"] == "connection refused"
+    configuration = workspace.model_configurations()["local-reviewer"]
+    assert configuration["check_status"] == "unverified"
+    assert "connection refused" in configuration["check_detail"]
     output.clear()
     studio.execute("models")
     assert any(
-        "local: last check failed; endpoint http://localhost:11434/v1" in line
+        "local-reviewer" in line and "unverified" in line
         and "connection refused" in line
         for line in output
     )
@@ -2425,17 +2431,10 @@ def test_studio_models_displays_connections_and_llm_active_lifelines(tmp_path):
     assert any("openai: not connected" in line for line in output)
 
 
-def test_studio_models_verifies_mistral_model_before_saving(
+def test_studio_models_configure_check_then_assign(
     tmp_path,
     monkeypatch,
 ):
-    studio, workspace, output = _studio(tmp_path)
-    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
-    workspace.save_provider_profile(
-        "mistral",
-        {"kind": "api", "key_env": "MISTRAL_API_KEY"},
-    )
-    workspace.save_secrets({"MISTRAL_API_KEY": "private-mistral-key"})
     requests = []
 
     class ModelResponse:
@@ -2456,7 +2455,25 @@ def test_studio_models_verifies_mistral_model_before_saving(
 
     monkeypatch.setattr("zippergen.studio.request.urlopen", fake_urlopen)
 
-    studio.execute("models assign Writer mistral:mistral-small-latest")
+    studio, workspace, output = _studio(
+        tmp_path,
+        responses=["mistral", "mistral-small-latest"],
+    )
+    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    workspace.save_provider_profile(
+        "mistral",
+        {"kind": "api", "key_env": "MISTRAL_API_KEY"},
+    )
+    workspace.save_secrets({"MISTRAL_API_KEY": "private-mistral-key"})
+
+    studio.execute("models configure fast-review")
+    assert requests == []
+    assert workspace.model_configurations()["fast-review"]["check_status"] == (
+        "not_checked"
+    )
+
+    studio.execute("models check fast-review")
+    studio.execute("models assign Writer fast-review")
 
     assert workspace.model_profile("workflow.py:sample")["lifelines"] == {
         "Writer": "mistral:mistral-small-latest"
@@ -2469,58 +2486,43 @@ def test_studio_models_verifies_mistral_model_before_saving(
     )
     assert all("private-mistral-key" not in line for line in output)
     assert any(
-        line.startswith("✓ Writer:")
+        "fast-review:" in line
         and "is available with the configured mistral API key" in line
         for line in output
     )
+    assert any("Writer" in line and "fast-review →" in line for line in output)
 
 
-def test_studio_model_assignment_offers_to_connect_missing_provider(
+def test_studio_model_configuration_guides_missing_provider_connection(
     tmp_path,
     monkeypatch,
 ):
     studio, workspace, output = _studio(
         tmp_path,
-        responses=[""],
+        responses=["claude-sonnet-4-6"],
         secret_responses=["private-anthropic-key"],
     )
-    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
-
-    class ModelResponse:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, traceback):
-            return False
-
-        def read(self, limit=-1):
-            assert limit == 1_048_577
-            return b'{"id":"claude-sonnet-4-6","object":"model"}'
-
-    monkeypatch.setattr(
-        "zippergen.studio.request.urlopen",
-        lambda req, *, timeout: ModelResponse(),
-    )
-
-    studio.execute("models assign Writer claude:claude-sonnet-4-6")
+    studio.execute("models configure anthropic")
 
     assert workspace.load_secrets()["ANTHROPIC_API_KEY"] == (
         "private-anthropic-key"
     )
-    assert workspace.model_profile("workflow.py:sample")["lifelines"] == {
-        "Writer": "anthropic:claude-sonnet-4-6"
-    }
+    configuration = workspace.model_configurations()[
+        "anthropic-claude-sonnet-4-6"
+    ]
+    assert configuration["spec"] == "anthropic:claude-sonnet-4-6"
+    assert configuration["check_status"] == "not_checked"
     assert any("Connected anthropic" in line for line in output)
     assert all("private-anthropic-key" not in line for line in output)
 
 
-def test_studio_model_assignment_declines_missing_connection_without_saving(
+def test_studio_model_assignment_requires_a_saved_configuration(
     tmp_path,
 ):
-    studio, workspace, _output = _studio(tmp_path, responses=["n"])
+    studio, workspace, _output = _studio(tmp_path)
     workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
 
-    with pytest.raises(SystemExit, match="routing was not changed"):
+    with pytest.raises(SystemExit, match="Unknown model configuration"):
         studio.execute("models assign Writer openai:gpt-4o-mini")
 
     assert workspace.model_profile("workflow.py:sample")["lifelines"] == {}
@@ -2544,23 +2546,32 @@ def test_studio_models_inherit_removes_a_participant_assignment(tmp_path):
     )
 
 
-def test_studio_models_check_is_read_only_and_deduplicates_effective_routes(
+def test_studio_models_check_updates_configuration_not_assignments(
     tmp_path,
     monkeypatch,
 ):
     studio, workspace, output = _studio(tmp_path)
     workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
-    workspace.save_model_profile(
-        "workflow.py:sample",
-        default="mistral:mistral-small-latest",
-        lifelines={},
+    workspace.save_model_configuration(
+        "review-model",
+        {
+            "provider": "mistral",
+            "model": "mistral-small-latest",
+            "spec": "mistral:mistral-small-latest",
+            "check_status": "not_checked",
+        },
     )
     workspace.save_provider_profile(
         "mistral",
         {"kind": "api", "key_env": "MISTRAL_API_KEY"},
     )
     workspace.save_secrets({"MISTRAL_API_KEY": "private-mistral-key"})
-    before = workspace.model_profile("workflow.py:sample")
+    workspace.save_model_assignment_profile(
+        "workflow.py:sample",
+        default="review-model",
+        lifelines={},
+    )
+    before = workspace.model_assignment_profile("workflow.py:sample")
     requests = []
 
     class ModelResponse:
@@ -2581,47 +2592,44 @@ def test_studio_models_check_is_read_only_and_deduplicates_effective_routes(
 
     monkeypatch.setattr("zippergen.studio.request.urlopen", fake_urlopen)
 
-    studio.execute("models check")
+    studio.execute("models check review-model")
 
     assert len(requests) == 1
-    assert workspace.model_profile("workflow.py:sample") == before
-    assert any(line == "Model connectivity" for line in output)
-    assert any(
-        "Routes" in line and "1 unique across 2 assignments" in line
-        for line in output
+    assert workspace.model_assignment_profile("workflow.py:sample") == before
+    assert workspace.model_configurations()["review-model"]["check_status"] == (
+        "available"
     )
+    assert any(line == "Configuration checks" for line in output)
     assert any(
-        line.startswith("  ✓ Default, Writer:")
+        "review-model:" in line
         and "is available with the configured mistral API key" in line
         for line in output
     )
-    assert any(
-        "Status" in line and "all selected models are available" in line
-        for line in output
-    )
-    assert any(
-        "Routing" in line and "unchanged" in line for line in output
-    )
+    assert any("assignments unchanged" in line for line in output)
     assert all("private-mistral-key" not in line for line in output)
 
 
-def test_studio_models_check_reports_unavailable_routes_without_saving(
+def test_studio_models_check_records_an_unavailable_configuration(
     tmp_path,
     monkeypatch,
 ):
     studio, workspace, output = _studio(tmp_path)
     workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
-    workspace.save_model_profile(
-        "workflow.py:sample",
-        default="mock",
-        lifelines={"Writer": "mistral:mistral-smol-latest"},
+    workspace.save_model_configuration(
+        "broken-reviewer",
+        {
+            "provider": "mistral",
+            "model": "mistral-smol-latest",
+            "spec": "mistral:mistral-smol-latest",
+            "check_status": "not_checked",
+        },
     )
     workspace.save_provider_profile(
         "mistral",
         {"kind": "api", "key_env": "MISTRAL_API_KEY"},
     )
     workspace.save_secrets({"MISTRAL_API_KEY": "private-mistral-key"})
-    before = workspace.model_profile("workflow.py:sample")
+    before = workspace.model_assignment_profile("workflow.py:sample")
 
     def fake_urlopen(req, *, timeout):
         raise HTTPError(
@@ -2636,37 +2644,30 @@ def test_studio_models_check_reports_unavailable_routes_without_saving(
 
     with pytest.raises(
         SystemExit,
-        match="connectivity check failed for Writer.*Routing was not changed",
+        match="check failed for broken-reviewer.*Assignments were not changed",
     ):
-        studio.execute("models check all")
+        studio.execute("models check broken-reviewer")
 
-    assert workspace.model_profile("workflow.py:sample") == before
+    assert workspace.model_assignment_profile("workflow.py:sample") == before
+    configuration = workspace.model_configurations()["broken-reviewer"]
+    assert configuration["check_status"] == "unavailable"
     assert any(
-        line.startswith("  ✓ Default:") and "mock is built in" in line
-        for line in output
-    )
-    assert any(
-        line.startswith("  ✗ Writer:")
+        "broken-reviewer:" in line
         and "not available with the configured mistral API key" in line
         for line in output
     )
+    with pytest.raises(SystemExit, match="broken-reviewer is unavailable"):
+        studio.execute("models assign Writer broken-reviewer")
+    assert workspace.model_profile("workflow.py:sample")["lifelines"] == {}
+
+
+def test_studio_models_check_accepts_a_case_insensitive_configuration(tmp_path):
+    studio, _workspace, output = _studio(tmp_path)
+
+    studio.execute("models check MOCK")
+
     assert any(
-        "Unavailable" in line and "1" in line for line in output
-    )
-    assert any(
-        "Routing" in line and "unchanged" in line for line in output
-    )
-
-
-def test_studio_models_check_accepts_a_case_insensitive_lifeline(tmp_path):
-    studio, workspace, output = _studio(tmp_path)
-    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
-
-    studio.execute("models check writer")
-
-    assert any("Scope" in line and "Writer" in line for line in output)
-    assert any(
-        line.startswith("  ✓ Writer:") and "mock is built in" in line
+        line.startswith("  ✓ mock:") and "built in" in line
         for line in output
     )
 
@@ -2680,76 +2681,62 @@ def test_studio_models_dashboard_does_not_change_routing(tmp_path):
 
     assert workspace.model_profile("workflow.py:sample") == before
     assert any(line == "Connections" for line in output)
-    assert any(line == "Routing" for line in output)
+    assert any(line == "Configurations" for line in output)
+    assert any(line == "Assignments" for line in output)
 
 
-def test_studio_models_rejects_unavailable_mistral_model_without_saving(
-    tmp_path,
-    monkeypatch,
-):
-    studio, workspace, _output = _studio(tmp_path)
-    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
-    workspace.save_provider_profile(
-        "mistral",
-        {"kind": "api", "key_env": "MISTRAL_API_KEY"},
-    )
-    workspace.save_secrets({"MISTRAL_API_KEY": "private-mistral-key"})
-
-    def fake_urlopen(req, *, timeout):
-        raise HTTPError(
-            req.full_url,
-            404,
-            "Not Found",
-            {},
-            BytesIO(b'{"message":"model not found"}'),
-        )
-
-    monkeypatch.setattr("zippergen.studio.request.urlopen", fake_urlopen)
-
-    with pytest.raises(SystemExit, match="not available.*routing was not changed"):
-        studio.execute("models assign Writer mistral:mistral-smol-latest")
-
-    assert workspace.model_profile("workflow.py:sample")["lifelines"] == {}
-
-
-def test_studio_models_saves_an_explicit_unchecked_route_when_provider_is_offline(
-    tmp_path,
-    monkeypatch,
-):
+def test_studio_models_assignment_warns_when_configuration_is_unchecked(tmp_path):
     studio, workspace, output = _studio(tmp_path)
     workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
-    workspace.save_provider_profile(
-        "mistral",
-        {"kind": "api", "key_env": "MISTRAL_API_KEY"},
+    workspace.save_model_configuration(
+        "review-model",
+        {
+            "provider": "mistral",
+            "model": "mistral-small-latest",
+            "spec": "mistral:mistral-small-latest",
+            "check_status": "not_checked",
+        },
     )
-    workspace.save_secrets({"MISTRAL_API_KEY": "private-mistral-key"})
 
-    def fake_urlopen(req, *, timeout):
-        raise URLError("network is offline")
-
-    monkeypatch.setattr("zippergen.studio.request.urlopen", fake_urlopen)
-
-    studio.execute("models assign Writer mistral:mistral-small-latest")
-
+    studio.execute("models assign Writer review-model")
     assert workspace.model_profile("workflow.py:sample")["lifelines"] == {
         "Writer": "mistral:mistral-small-latest"
     }
     assert any(
-        line.startswith("⚠ Writer:")
-        and "availability could not be checked" in line
-        and "network is offline" in line
+        "review-model is not_checked" in line
+        and "models check review-model" in line
         for line in output
     )
 
 
-def test_studio_models_checks_local_model_identifiers(tmp_path, monkeypatch):
+def test_studio_models_checks_local_configuration_identifiers(
+    tmp_path,
+    monkeypatch,
+):
     studio, workspace, output = _studio(tmp_path)
-    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
     workspace.save_provider_profile(
         "local",
         {
             "kind": "local",
             "base_url": "http://localhost:11434/v1",
+        },
+    )
+    workspace.save_model_configuration(
+        "local-writer",
+        {
+            "provider": "local",
+            "model": "qwen2.5:7b",
+            "spec": "local:qwen2.5:7b",
+            "check_status": "not_checked",
+        },
+    )
+    workspace.save_model_configuration(
+        "missing-local",
+        {
+            "provider": "local",
+            "model": "missing",
+            "spec": "local:missing",
+            "check_status": "not_checked",
         },
     )
 
@@ -2769,19 +2756,20 @@ def test_studio_models_checks_local_model_identifiers(tmp_path, monkeypatch):
         lambda req, *, timeout: ModelsResponse(),
     )
 
-    studio.execute("models assign Writer local:qwen2.5:7b")
+    studio.execute("models check local-writer")
 
     assert any(
-        line.startswith("✓ Writer:")
+        "local-writer:" in line
         and "is available from the local provider" in line
         for line in output
     )
 
-    with pytest.raises(SystemExit, match="Available models: qwen2.5:7b"):
-        studio.execute("models assign Writer local:missing")
-    assert workspace.model_profile("workflow.py:sample")["lifelines"] == {
-        "Writer": "local:qwen2.5:7b"
-    }
+    with pytest.raises(SystemExit, match="check failed for missing-local"):
+        studio.execute("models check missing-local")
+    assert workspace.model_configurations()["missing-local"]["check_status"] == (
+        "unavailable"
+    )
+    assert any("Available models: qwen2.5:7b" in line for line in output)
 
 
 def test_studio_model_profile_is_used_for_run_and_deploy(tmp_path, monkeypatch):

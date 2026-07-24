@@ -1118,6 +1118,7 @@ class Workspace:
             "pending_semantic_baseline": None,
             "editor_command": None,
             "model_profiles": {},
+            "model_configurations": {},
             "providers": {},
             "updated_at": _timestamp(),
         }
@@ -1164,6 +1165,9 @@ class Workspace:
             "requests": len(list(self.requests_directory.glob("*.json"))),
             "development_secrets": secret_count,
             "model_profiles": len(state.get("model_profiles") or {}),
+            "model_configurations": len(
+                state.get("model_configurations") or {}
+            ),
             "provider_profiles": len(state.get("providers") or {}),
             "language_history": language_history,
             "language_learned": language_learned,
@@ -1386,6 +1390,7 @@ class Workspace:
         state.setdefault("pending_semantic_baseline", None)
         state.setdefault("editor_command", None)
         state.setdefault("model_profiles", {})
+        state.setdefault("model_configurations", {})
         state.setdefault("providers", {})
         return state
 
@@ -1463,6 +1468,42 @@ class Workspace:
         raw_profile = raw_profiles.get(canonical) or {}
         if not isinstance(raw_profile, dict):
             raise WorkspaceError(f"Model profile for {canonical} must be an object.")
+        configurations = self.model_configurations()
+        default_configuration = raw_profile.get("default_configuration")
+        lifeline_configurations = raw_profile.get("lifeline_configurations")
+        if default_configuration:
+            if not isinstance(lifeline_configurations, dict):
+                raise WorkspaceError(
+                    f"Model configuration assignments for {canonical} "
+                    "must be an object."
+                )
+
+            def resolve(name: object, fallback: object) -> str:
+                configuration = configurations.get(str(name))
+                if configuration is None:
+                    return str(fallback)
+                return configuration["spec"]
+
+            raw_lifelines = raw_profile.get("lifelines") or {}
+            if not isinstance(raw_lifelines, dict):
+                raise WorkspaceError(
+                    f"Model lifeline overrides for {canonical} must be an object."
+                )
+            resolved_lifelines = {
+                str(lifeline): resolve(
+                    configuration_name,
+                    raw_lifelines.get(lifeline, default),
+                )
+                for lifeline, configuration_name
+                in lifeline_configurations.items()
+            }
+            return {
+                "default": resolve(
+                    default_configuration,
+                    raw_profile.get("default") or default,
+                ),
+                "lifelines": resolved_lifelines,
+            }
         raw_lifelines = raw_profile.get("lifelines") or {}
         if not isinstance(raw_lifelines, dict):
             raise WorkspaceError(
@@ -1499,6 +1540,266 @@ class Workspace:
         profiles[canonical] = profile
         self.update(model_profiles=profiles)
         return profile
+
+    def model_configurations(self) -> dict[str, dict[str, str]]:
+        """Return named, non-secret model configurations, including mock."""
+
+        raw = self.load().get("model_configurations") or {}
+        if not isinstance(raw, dict):
+            raise WorkspaceError(
+                "Workspace model_configurations must be an object."
+            )
+        configurations: dict[str, dict[str, str]] = {
+            "mock": {
+                "provider": "mock",
+                "model": "",
+                "spec": "mock",
+                "check_status": "available",
+                "check_detail": "built in",
+            }
+        }
+        for name, raw_configuration in raw.items():
+            if not isinstance(raw_configuration, dict):
+                raise WorkspaceError(
+                    f"Model configuration {name!r} must be an object."
+                )
+            configurations[str(name)] = {
+                str(key): str(value)
+                for key, value in raw_configuration.items()
+                if value is not None
+            }
+        return configurations
+
+    def save_model_configuration(
+        self,
+        name: str,
+        values: dict[str, str],
+    ) -> dict[str, str]:
+        """Create or replace one named, non-secret model configuration."""
+
+        normalized = name.strip()
+        if (
+            normalized.casefold() == "mock"
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", normalized)
+        ):
+            raise WorkspaceError(
+                "A model configuration name must start with a letter or digit, "
+                "contain only letters, digits, '.', '_' or '-', and must not "
+                "replace the built-in name 'mock'."
+            )
+        if not values.get("spec"):
+            raise WorkspaceError("A model configuration requires a model spec.")
+        state = self.load()
+        raw = state.get("model_configurations") or {}
+        if not isinstance(raw, dict):
+            raise WorkspaceError(
+                "Workspace model_configurations must be an object."
+            )
+        conflicting = next(
+            (
+                str(existing)
+                for existing in raw
+                if str(existing).casefold() == normalized.casefold()
+                and str(existing) != normalized
+            ),
+            None,
+        )
+        if conflicting is not None:
+            raise WorkspaceError(
+                f"Model configuration {normalized!r} differs only by case "
+                f"from existing configuration {conflicting!r}."
+            )
+        configurations = dict(raw)
+        configuration = {
+            str(key): str(value)
+            for key, value in values.items()
+            if value is not None
+        }
+        configurations[normalized] = configuration
+        self.update(model_configurations=configurations)
+        return configuration
+
+    def automatic_model_configuration_name(self, spec: str) -> str:
+        """Return a stable unused name for a compact model spec."""
+
+        normalized = spec.strip()
+        if normalized == "mock":
+            return "mock"
+        provider, separator, model = normalized.partition(":")
+        provider = {
+            "claude": "anthropic",
+            "ollama": "local",
+        }.get(provider.casefold(), provider.casefold())
+        stem = provider if not separator else f"{provider}-{model}"
+        stem = re.sub(r"[^A-Za-z0-9._-]+", "-", stem).strip("._-")
+        stem = stem[:56] or "model"
+        configurations = self.model_configurations()
+        for name, configuration in configurations.items():
+            if configuration.get("spec") == normalized:
+                return name
+        candidate = stem
+        suffix = 2
+        existing_names = {name.casefold() for name in configurations}
+        while candidate.casefold() in existing_names:
+            candidate = f"{stem[:59]}-{suffix}"
+            suffix += 1
+        return candidate
+
+    def ensure_model_configuration(self, spec: str) -> str:
+        """Return a configuration name for a legacy direct model spec."""
+
+        normalized = spec.strip()
+        if normalized == "mock":
+            return "mock"
+        configurations = self.model_configurations()
+        for name, configuration in configurations.items():
+            if configuration.get("spec") == normalized:
+                return name
+        provider, separator, model = normalized.partition(":")
+        provider = {
+            "claude": "anthropic",
+            "ollama": "local",
+        }.get(provider.casefold(), provider.casefold())
+        canonical_spec = (
+            f"{provider}:{model}" if separator else provider
+        )
+        name = self.automatic_model_configuration_name(canonical_spec)
+        self.save_model_configuration(
+            name,
+            {
+                "provider": provider,
+                "model": model,
+                "spec": canonical_spec,
+                "check_status": "not_checked",
+                "check_detail": "migrated from direct model routing",
+            },
+        )
+        return name
+
+    def model_assignment_profile(
+        self,
+        workflow_spec: str,
+        *,
+        default: str = "mock",
+    ) -> dict[str, Any]:
+        """Return named configuration assignments, migrating legacy routes."""
+
+        canonical = self.canonical_spec(workflow_spec, cwd=self.root)
+        state = self.load()
+        raw_profiles = state.get("model_profiles") or {}
+        if not isinstance(raw_profiles, dict):
+            raise WorkspaceError("Workspace model_profiles must be an object.")
+        raw_profile = raw_profiles.get(canonical) or {}
+        if not isinstance(raw_profile, dict):
+            raise WorkspaceError(f"Model profile for {canonical} must be an object.")
+        default_configuration = raw_profile.get("default_configuration")
+        raw_assignments = raw_profile.get("lifeline_configurations")
+        if default_configuration and isinstance(raw_assignments, dict):
+            return {
+                "default": str(default_configuration),
+                "lifelines": {
+                    str(name): str(configuration)
+                    for name, configuration in raw_assignments.items()
+                },
+            }
+        raw_lifelines = raw_profile.get("lifelines") or {}
+        if not isinstance(raw_lifelines, dict):
+            raise WorkspaceError(
+                f"Model lifeline overrides for {canonical} must be an object."
+            )
+        migrated_default = self.ensure_model_configuration(
+            str(raw_profile.get("default") or default)
+        )
+        migrated_lifelines = {
+            str(name): self.ensure_model_configuration(str(spec))
+            for name, spec in raw_lifelines.items()
+        }
+        return self.save_model_assignment_profile(
+            canonical,
+            default=migrated_default,
+            lifelines=migrated_lifelines,
+        )
+
+    def save_model_assignment_profile(
+        self,
+        workflow_spec: str,
+        *,
+        default: str,
+        lifelines: dict[str, str],
+    ) -> dict[str, Any]:
+        """Persist configuration names and resolved compatibility snapshots."""
+
+        configurations = self.model_configurations()
+        names = {default, *lifelines.values()}
+        missing = sorted(names - set(configurations))
+        if missing:
+            raise WorkspaceError(
+                "Unknown model configuration(s): " + ", ".join(missing)
+            )
+        canonical = self.canonical_spec(workflow_spec, cwd=self.root)
+        state = self.load()
+        raw_profiles = state.get("model_profiles") or {}
+        if not isinstance(raw_profiles, dict):
+            raise WorkspaceError("Workspace model_profiles must be an object.")
+        profiles = dict(raw_profiles)
+        profile = {
+            "default_configuration": default,
+            "lifeline_configurations": {
+                str(name): str(configuration)
+                for name, configuration in sorted(lifelines.items())
+            },
+            "default": configurations[default]["spec"],
+            "lifelines": {
+                str(name): configurations[configuration]["spec"]
+                for name, configuration in sorted(lifelines.items())
+            },
+        }
+        profiles[canonical] = profile
+        self.update(model_profiles=profiles)
+        return {
+            "default": default,
+            "lifelines": dict(profile["lifeline_configurations"]),
+        }
+
+    def model_configuration_usage(self, name: str) -> tuple[str, ...]:
+        """List workflows whose default or lifeline assignments use a name."""
+
+        raw_profiles = self.load().get("model_profiles") or {}
+        if not isinstance(raw_profiles, dict):
+            raise WorkspaceError("Workspace model_profiles must be an object.")
+        used: list[str] = []
+        for workflow_spec, raw_profile in raw_profiles.items():
+            if not isinstance(raw_profile, dict):
+                continue
+            assignments = raw_profile.get("lifeline_configurations") or {}
+            if (
+                raw_profile.get("default_configuration") == name
+                or isinstance(assignments, dict)
+                and name in assignments.values()
+            ):
+                used.append(str(workflow_spec))
+        return tuple(sorted(used))
+
+    def remove_model_configuration(self, name: str) -> None:
+        """Remove one unused named model configuration."""
+
+        if name == "mock":
+            raise WorkspaceError("The built-in mock configuration cannot be removed.")
+        usage = self.model_configuration_usage(name)
+        if usage:
+            raise WorkspaceError(
+                f"Model configuration {name!r} is still assigned in: "
+                + ", ".join(usage)
+            )
+        state = self.load()
+        raw = state.get("model_configurations") or {}
+        if not isinstance(raw, dict):
+            raise WorkspaceError(
+                "Workspace model_configurations must be an object."
+            )
+        configurations = dict(raw)
+        configurations.pop(name, None)
+        self.update(model_configurations=configurations)
 
     def provider_profiles(self) -> dict[str, dict[str, str]]:
         raw = self.load().get("providers") or {}

@@ -490,7 +490,7 @@ to stop adding entries or \texttt{language forget ID|all} to remove them.
 
 Raw CLI output is not learned. Secret-looking requests are rejected before
 interpretation and are not stored; enter provider credentials through
-\texttt{models connect NAME}, which uses Studio's private secret input.
+\texttt{models configure}, which uses Studio's private secret input.
 
 \subsubsection*{Step 1b: choose a terminal editor once}
 
@@ -872,8 +872,8 @@ Enter:
 
 \begin{lstlisting}[style=shell]
 models default mock
-models show
-models check
+models
+models check mock
 \end{lstlisting}
 
 Studio lists only lifelines containing \texttt{@llm} action sites, together
@@ -884,18 +884,20 @@ validation do not require a model. Expected shape:
 Model configuration
 Connections
   mock: available; built in
-  local: not checked; ...
-Routing
+  local: not connected; ...
+Configurations
+  mock: mock; available -- built in
+Assignments
   Workflow      reviewed_answer
-  Default       mock
-  Writer        mock (inherits default; actions: ...)
-  Reviewer      mock (inherits default; actions: ...)
+  Default       mock (mock)
   Writer: mock (inherits default; actions: draft_reply, revise_reply)
   Reviewer: mock (inherits default; actions: assess_draft)
 \end{lstlisting}
 
 Generated action names may differ, but Writer and Reviewer should appear. The
-non-secret profile is stored per workflow and survives a reboot.
+non-secret assignments are stored per workflow and survive a reboot. The
+built-in \texttt{mock} configuration needs no provider connection and is
+already checked.
 
 \subsubsection*{Step 7: make a durable mock run in one terminal}
 
@@ -1013,63 +1015,61 @@ it in the provider console and create a replacement before continuing.
 \begin{minipage}{\linewidth}
 \begin{lstlisting}[style=shell]
 models
-models connect openai
-models connect anthropic
 models default mock
-models assign Writer openai:gpt-4o-mini
-models assign Reviewer anthropic:claude-sonnet-4-6
-models show
+models configure openai
+models configure anthropic
 models check
+models assign Writer openai-gpt-4o-mini
+models assign Reviewer anthropic-claude-sonnet-4-6
+models
 \end{lstlisting}
 \end{minipage}
 
-Each \texttt{models connect} command asks for its API key without echo and saves
-it in owner-only Studio storage. Plain \texttt{models} makes no remote
-request and never prints a secret. An API provider is \texttt{connected} when
-its key is present, and its line explicitly says \texttt{not tested here}. A
-local provider line reports the last saved check result and timestamp. For a
-local OpenAI-compatible or Ollama endpoint use
-\texttt{models connect local URL}, followed by a model such as
-\texttt{ollama:qwen2.5:7b}. Studio immediately requests the endpoint's
-OpenAI-compatible \texttt{/models} route with a three-second timeout. It saves
-the URL only when the response is valid, then reports the check time and number
-of available models. Enter \texttt{models check local} after reconnecting
-an SSH tunnel or restarting the model server. A failed recheck changes the
-display to \texttt{unreachable} and explains that the server or tunnel should
-be checked. The model identifiers above are examples; use models enabled for
-your provider accounts when necessary.
+The normal model workflow is \emph{configure, check, assign}.
+\texttt{models configure PROVIDER} asks for a missing API key without echo,
+then asks for a model identifier. It creates a reusable, non-secret
+configuration name automatically---for example
+\texttt{openai-gpt-4o-mini}. You may instead enter
+\texttt{models configure writer-fast} and choose its provider and model when a
+short semantic name is useful. Plain \texttt{models} makes no remote request,
+never prints a secret, and displays three distinct sections: provider
+connections, model configurations, and workflow assignments.
 
-Studio verifies model routing at the point where it is entered. After a
-provider has been connected, \texttt{models default SPEC} and
-\texttt{models assign LIFELINE SPEC} query that provider's model endpoint using
-the private key. A green check means that the exact model identifier or alias
-is available to that key. A name that the provider rejects is not saved, so a
-typing error cannot silently survive until the first workflow action. Local
-identifiers are compared with the endpoint's live \texttt{/models} response.
-If a connected provider is temporarily unreachable, Studio keeps the
-deliberately chosen routing but prints a yellow \emph{saved but unchecked}
-warning; the provider will still enforce the selection when the workflow runs.
-If no key has been connected yet, Studio offers to collect it privately and,
-if accepted, continues the original model assignment.
+\texttt{models check} checks every saved configuration;
+\texttt{models check NAME} checks one. It records \texttt{available},
+\texttt{unverified}, or \texttt{unavailable}, but never changes which
+participant uses which model. A green result confirms that the provider
+accepted the configured key and exact model identifier at check time. A yellow
+result means connectivity prevented a conclusive answer. For a local
+OpenAI-compatible or Ollama endpoint, \texttt{models configure local} asks for
+the endpoint (normally \texttt{http://127.0.0.1:11434/v1}) and then a model.
+Local identifiers are checked against the live \texttt{/models} response.
 
-\texttt{models check} is the read-only recheck command. With no argument, or
-with \texttt{all}, it checks the default plus every LLM-active participant.
-\texttt{models check Reviewer} checks only Reviewer's effective assignment;
-\texttt{models check default} checks only the inherited default. Studio queries
-an identical effective route only once, labels every assignment covered by the
-result, and finishes with \texttt{Routing: unchanged}. A green result confirms
-that the provider accepted the configured key and exact model identifier at
-check time. A yellow result means connectivity or configuration prevented a
-conclusive check; it is not proof that a generation call will succeed later.
+\texttt{models assign LIFELINE NAME} and
+\texttt{models default NAME} only assign saved configurations; they do not
+contact the provider. Studio warns when a configuration has not yet been
+checked but allows the assignment so offline preparation remains possible. A
+configuration whose last conclusive check found it unavailable must be fixed or
+checked successfully before assignment.
+Use Tab completion rather than retyping generated names. Editing one named
+configuration with \texttt{models edit NAME} updates every assignment that
+refers to it. \texttt{models remove NAME} refuses to remove a configuration
+that is still in use.
+
+The advanced \texttt{models connect NAME [URL]} and
+\texttt{models disconnect NAME} commands manage provider connections directly.
+Most users do not need them because \texttt{models configure} collects a
+missing connection as part of the guided flow. The model identifiers above are
+examples; use models enabled for your provider accounts when necessary.
 
 \begin{figure}[htbp]
 \centering
 \begin{tikzpicture}[node distance=13mm and 18mm]
   \node[zgplain, text width=28mm] (default) {Default\\\texttt{mock}};
   \node[zgstage, text width=34mm, below left=of default] (writer)
-    {Writer actions\\\texttt{openai:...}};
+    {Writer actions\\\texttt{openai-gpt-...}\\\texttt{openai:...}};
   \node[zgstage, text width=34mm, below right=of default] (reviewer)
-    {Reviewer actions\\\texttt{anthropic:...}};
+    {Reviewer actions\\\texttt{anthropic-claude-...}\\\texttt{anthropic:...}};
   \node[zgplain, text width=31mm, below=of writer] (okey)
     {\texttt{OPENAI\_API\_KEY}\\private storage};
   \node[zgplain, text width=34mm, below=of reviewer] (akey)
@@ -1079,8 +1079,9 @@ conclusive check; it is not proof that a generation call will succeed later.
   \draw[zgdashed] (okey) -- (writer);
   \draw[zgdashed] (akey) -- (reviewer);
 \end{tikzpicture}
-\caption{One workflow routes LLM-active lifelines independently. Model names
-are configuration; provider keys are separate secrets.}
+\caption{One workflow assigns reusable named configurations to LLM-active
+lifelines independently. Provider/model specifications are non-secret;
+provider keys remain separate secrets.}
 \label{fig:model-routing}
 \end{figure}
 
@@ -1102,8 +1103,9 @@ providers and restore the process environment afterward. Use
 \texttt{models disconnect NAME} to remove a saved connection and private key.
 
 Use \texttt{models inherit Writer} to restore inheritance for one role, and
-\texttt{models default mock} to select the declared tutorial default. The scriptable equivalent
-is repeatable \texttt{--llm-for}:
+\texttt{models default mock} to select the declared tutorial default. Named
+configurations are a Studio convenience; the scriptable equivalent still uses
+the resolved provider/model specification with repeatable \texttt{--llm-for}:
 
 \begin{lstlisting}[style=shell]
 zippergen dev workflows/reviewed_answer.py:reviewed_answer \
@@ -1113,12 +1115,13 @@ zippergen dev workflows/reviewed_answer.py:reviewed_answer \
 \end{lstlisting}
 
 \begin{notebox}{Two different meanings of ``change the model''}
-For a routing-only change, use \texttt{models default SPEC} or
-\texttt{models assign LIFELINE SPEC}. Studio remembers that choice for runs and
-deployment; source code does not change, so no refinement or coding assistant
-is needed. If the model choice must become versioned design intent, change
-declared workflow/deployment defaults, or accompany prompt, action, or test
-changes, record it as a refinement and run an assistant. For example:
+For a routing-only change, create or edit a named configuration, check it, then
+use \texttt{models default NAME} or
+\texttt{models assign LIFELINE NAME}. Studio remembers that choice for runs
+and deployment; source code does not change, so no refinement or coding
+assistant is needed. If the model choice must become versioned design intent,
+change declared workflow/deployment defaults, or accompany prompt, action, or
+test changes, record it as a refinement and run an assistant. For example:
 
 \begin{lstlisting}[style=shell]
 refine Use openai:gpt-4o-mini for Writer and preserve all protocol behavior.
@@ -1388,9 +1391,10 @@ task close      # close a reviewed creation task; history remains
 use            # discover workflows and select one from a numbered list
 show           # choose a semantic code view from a numbered list
 validate       # validate the selected workflow and every projection
-models         # show provider connections and per-lifeline model routing
-models check   # recheck effective model availability without changing routes
-models check local # recheck a connected local model server or SSH tunnel
+models         # show connections, configurations, and assignments
+models configure [NAME] # guided provider and model setup
+models check [NAME] # verify saved configurations; assignments stay unchanged
+models assign LIFELINE NAME # route a participant to a configuration
 run            # fresh guided, durable development run
 resume         # continue the current incomplete managed run
 runs           # list this project's managed development runs
@@ -1566,23 +1570,24 @@ revocation precautions. When ready, configure one model for Writer and another
 for Reviewer:
 
 \begin{lstlisting}[style=shell]
-models assign Writer openai:gpt-4o-mini
-models assign Reviewer anthropic:claude-sonnet-4-6
-models show
+models configure openai
+models configure anthropic
 models check
+models assign Writer openai-gpt-4o-mini
+models assign Reviewer anthropic-claude-sonnet-4-6
+models
 run
 \end{lstlisting}
 
-Studio remembers these routes per workflow. When an assignment names a provider
-that is not connected yet, Studio offers to connect it immediately and then
-continues the original assignment. Accept each offer and enter the requested
-key without echoing its value:
+Studio creates the names automatically and remembers the assignments per
+workflow. During configuration it collects a missing connection, then asks for
+the exact model. Enter each requested key without echoing its value:
 
 \begin{lstlisting}[style=shell]
-openai is not connected. Connect it now? [Y/n]:
 OPENAI_API_KEY:
-anthropic is not connected. Connect it now? [Y/n]:
+Model identifier [gpt-4o-mini]:
 ANTHROPIC_API_KEY:
+Model identifier [claude-sonnet-4-6]:
 \end{lstlisting}
 
 The secrets are stored once below
@@ -3073,7 +3078,7 @@ subcommand. Start Studio from the Git root, then enter it at the Studio prompt:
 \begin{lstlisting}[style=shell]
 zippergen
 # The next line is entered only after zippergen [workflow]> appears:
-models show
+models
 \end{lstlisting}
 
 If no workflow is selected, enter \texttt{use} first.
@@ -3094,7 +3099,7 @@ ensure every continuation backslash is the final character on its line. This
 same mistake can cause ZipperGen to report a missing workflow input because
 only the first part of the intended command actually ran.
 
-\subsection*{\texttt{models show} lists no Writer or Reviewer}
+\subsection*{\texttt{models} lists no Writer or Reviewer}
 
 Run \texttt{current} to confirm the selected workflow, then
 \texttt{show actions}. Studio lists a lifeline in \texttt{models} only when that
@@ -3105,8 +3110,8 @@ than assigning a model to an unrelated participant.
 
 \subsection*{A real model run reports an authentication or model error}
 
-Use \texttt{models show} to inspect provider prefixes and model identifiers,
-then use \texttt{models check} for a fresh, read-only availability check.
+Use \texttt{models} to inspect configurations and assignments, then use
+\texttt{models check NAME} for a fresh availability check.
 Confirm that the account key belongs to that provider and that the named model
 is enabled for the account. Do not print the key while diagnosing. To continue
 the tutorial without network access or charges, enter
@@ -3284,9 +3289,9 @@ $\square$ & The assistant receives the canonical specification plus pending
 change; \texttt{spec reconcile} requires prior integration, performs no hidden
 merge, archives the change, and clears the pending transaction only after
 confirmation. & \\
-$\square$ & \texttt{models show} lists only LLM-active lifelines, default plus
-per-lifeline routes survive reopening Studio, and \texttt{models check} verifies
-their effective models without changing the profile. & \\
+$\square$ & \texttt{models} lists connections, reusable configurations, and
+only LLM-active lifeline assignments; \texttt{models check NAME} verifies a
+configuration without changing those assignments. & \\
 $\square$ & Studio \texttt{run} collects both inputs and presents rejection and
 approval in the same terminal. & \\
 $\square$ & Studio \texttt{resume} continues the same managed run after an
@@ -3354,8 +3359,8 @@ use                  # select the discovered workflow by number
 show
 validate
 models default mock
-models show
-models check
+models
+models check mock
 run
 resume
 runs
@@ -3372,12 +3377,12 @@ Step~9's account, billing, and key-safety instructions, the optional paid-model
 commands are:
 
 \begin{lstlisting}[style=shell]
-models connect openai
-models connect anthropic
-models assign Writer openai:gpt-4o-mini
-models assign Reviewer anthropic:claude-sonnet-4-6
-models show
+models configure openai
+models configure anthropic
 models check
+models assign Writer openai-gpt-4o-mini
+models assign Reviewer anthropic-claude-sonnet-4-6
+models
 run
 models default mock
 models inherit Writer
@@ -3501,26 +3506,31 @@ zippergen stop tutorial-review
 \label{app:source}
 
 The listing below is imported from the executable file at document build time.
-Compile this document from the nested framework checkout so the relative path
-resolves.
+Both files are part of the same Git repository. The build runs from this
+\path{docs} directory, so the relative path is stable for both \texttt{make}
+and ordinary TeX editors.
 
-\lstinputlisting[style=python,caption={examples/tutorial\_review.py}]{examples/tutorial_review.py}
+\IfFileExists{../examples/tutorial_review.py}{
+  \lstinputlisting[style=python,caption={examples/tutorial\_review.py}]{../examples/tutorial_review.py}
+}{
+  \lstinputlisting[style=python,caption={examples/tutorial\_review.py}]{examples/tutorial_review.py}
+}
 
 \section{Build this document}
 
-From the tutorial project root, with a TeX distribution installed:
+The repository contains every document source dependency. From the nested
+ZipperGen Git root, with a TeX Live or MacTeX distribution installed, run:
 
 \begin{lstlisting}[style=shell]
-cd zippergen
-mkdir -p docs/_build
-latexmk -pdf -interaction=nonstopmode -halt-on-error \
-  -outdir=docs/_build \
-  docs/workflow-development-deployment-guide.tex
+make docs
 \end{lstlisting}
 
 The PDF is then:
 \path{zippergen/docs/_build/workflow-development-deployment-guide.pdf}. TeX auxiliary
 files and the generated PDF live under the ignored \path{docs/_build}
-directory; the maintained source is the \texttt{.tex} file.
+directory; the maintained source is the \texttt{.tex} file. Run
+\texttt{make docs-check} for an installation check without compiling. Detailed
+requirements and the equivalent direct \texttt{latexmk} command are in
+\path{docs/README.md}.
 
 \end{document}

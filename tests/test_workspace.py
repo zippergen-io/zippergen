@@ -2,8 +2,11 @@ import json
 import tomllib
 from pathlib import Path
 
+import pytest
+
 from zippergen.workspace import (
     Workspace,
+    WorkspaceError,
     discover_project_root,
     discover_workflow_specs,
 )
@@ -304,6 +307,65 @@ def test_workspace_keeps_model_profiles_per_workflow(tmp_path):
         "default": "claude:claude-sonnet-4-6",
         "lifelines": {},
     }
+
+
+def test_workspace_migrates_direct_models_to_named_configurations(tmp_path):
+    root = tmp_path / "project"
+    root.mkdir()
+    workspace = Workspace(root, home=tmp_path / "state")
+    workspace.save_model_profile(
+        "review.py:review",
+        default="mock",
+        lifelines={"Writer": "openai:gpt-4o-mini"},
+    )
+
+    assignments = workspace.model_assignment_profile("review.py:review")
+
+    assert assignments == {
+        "default": "mock",
+        "lifelines": {"Writer": "openai-gpt-4o-mini"},
+    }
+    assert workspace.model_configurations()["openai-gpt-4o-mini"]["spec"] == (
+        "openai:gpt-4o-mini"
+    )
+    assert workspace.model_profile("review.py:review") == {
+        "default": "mock",
+        "lifelines": {"Writer": "openai:gpt-4o-mini"},
+    }
+
+
+def test_workspace_configuration_edits_update_every_assignment(tmp_path):
+    root = tmp_path / "project"
+    root.mkdir()
+    workspace = Workspace(root, home=tmp_path / "state")
+    workspace.save_model_configuration(
+        "writer",
+        {
+            "provider": "openai",
+            "model": "gpt-4o-mini",
+            "spec": "openai:gpt-4o-mini",
+        },
+    )
+    workspace.save_model_assignment_profile(
+        "review.py:review",
+        default="mock",
+        lifelines={"Writer": "writer"},
+    )
+
+    workspace.save_model_configuration(
+        "writer",
+        {
+            "provider": "openai",
+            "model": "gpt-4.1-mini",
+            "spec": "openai:gpt-4.1-mini",
+        },
+    )
+
+    assert workspace.model_profile("review.py:review")["lifelines"] == {
+        "Writer": "openai:gpt-4.1-mini"
+    }
+    with pytest.raises(WorkspaceError, match="still assigned"):
+        workspace.remove_model_configuration("writer")
 
 
 def test_workspace_initializes_visible_project_and_manages_prompt_ledger(tmp_path):

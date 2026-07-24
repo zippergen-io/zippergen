@@ -243,12 +243,16 @@ _SUBCOMMAND_COMPLETIONS = {
         ("agents", "selected-participant focus view"),
     ),
     "models": (
-        ("show", "show provider connections and effective routing"),
+        ("show", "show configurations, connections, and assignments"),
+        ("list", "list saved model configurations"),
+        ("configure", "create or reopen a model configuration"),
+        ("edit", "edit a saved model configuration"),
+        ("remove", "remove an unused model configuration"),
         ("connect", "configure a provider connection"),
         ("disconnect", "remove a provider connection"),
-        ("check", "check configured models without changing routing"),
-        ("default", "set the inherited default model"),
-        ("assign", "assign a model to one LLM-active participant"),
+        ("check", "check model configurations without changing assignments"),
+        ("default", "set the inherited default configuration"),
+        ("assign", "assign a configuration to one LLM-active participant"),
         ("inherit", "restore the default for one participant"),
     ),
 }
@@ -337,6 +341,10 @@ def _is_explicit_studio_syntax(parts: list[str]) -> bool:
         },
         "models": {
             "show",
+            "list",
+            "configure",
+            "edit",
+            "remove",
             "connect",
             "disconnect",
             "check",
@@ -409,11 +417,14 @@ def _is_allowed_natural_plan_command(parts: list[str]) -> bool:
         if not args:
             return True
         if len(args) == 1:
-            return lowered[0] in {"show", "check"}
+            return lowered[0] in {"show", "list", "check", "configure"}
         if len(args) == 2:
             return lowered[0] in {
                 "check",
                 "default",
+                "configure",
+                "edit",
+                "remove",
                 "connect",
                 "disconnect",
                 "inherit",
@@ -625,15 +636,17 @@ _HELP = """Commands:
   show agent [NAME]              exact local projection (selector if omitted)
   show agents [NAME ...]         selected-participant focus view
   validate                       validate the current workflow
-  models                         show provider connections and model routing
-  models show                    show the same combined model dashboard
-  models connect NAME [URL]      configure local/OpenAI/Anthropic/Mistral
-  models disconnect NAME         remove a saved provider connection
-  models check [all|default|LIFELINE|local]
-                                 verify effective models without changing them
-  models default SPEC            set and verify the inherited default LLM
-  models assign LIFELINE SPEC    assign and verify one LLM-active lifeline
+  models                         show configurations, connections, assignments
+  models configure [NAME]        create/reopen a guided model configuration
+  models list                    list all named model configurations
+  models check [NAME|all]        verify configurations without assigning them
+  models assign LIFELINE NAME    assign a checked or saved configuration
+  models default NAME            set the inherited default configuration
   models inherit LIFELINE        restore inheritance from the default
+  models edit NAME               edit a saved configuration
+  models remove NAME             remove an unused configuration
+  models connect NAME [URL]      advanced: configure a provider connection
+  models disconnect NAME         advanced: remove a provider connection
   run [LLM] [--assistant TOOL]   start a run with optional one-run backends
   resume                         resume the current incomplete run
   runs                           list managed development runs
@@ -852,6 +865,19 @@ class Studio:
         except (Exception, SystemExit):
             return []
 
+    def _completion_model_configurations(self) -> list[tuple[str, str]]:
+        try:
+            configurations = self.workspace.model_configurations()
+        except (WorkspaceError, OSError):
+            return []
+        return [
+            (
+                name,
+                f"{configuration.get('spec', 'unknown')} model configuration",
+            )
+            for name, configuration in configurations.items()
+        ]
+
     def _path_completion_candidates(
         self,
         fragment: str,
@@ -939,14 +965,16 @@ class Studio:
                 return list(_SUBCOMMAND_COMPLETIONS["models"])
             action = args[0].lower()
             if action == "default":
-                return list(_MODEL_COMPLETIONS)
+                return self._completion_model_configurations()
             if action == "assign":
                 if len(args) == 1:
                     return [
                         (name, "LLM-active participant")
                         for name in self._completion_lifelines(llm_only=True)
                     ]
-                return list(_MODEL_COMPLETIONS)
+                return self._completion_model_configurations()
+            if action in {"configure", "edit", "remove"} and len(args) == 1:
+                return self._completion_model_configurations()
             if action in {"connect", "disconnect"} and len(args) == 1:
                 return [
                     (name, "model provider")
@@ -955,13 +983,8 @@ class Studio:
                 ]
             if action == "check" and len(args) == 1:
                 return [
-                    ("all", "default and all LLM-active participants"),
-                    ("default", "inherited default model"),
-                    ("local", "saved local model-server connection"),
-                ] + [
-                    (name, "effective model for this LLM-active participant")
-                    for name in self._completion_lifelines(llm_only=True)
-                ]
+                    ("all", "all saved model configurations"),
+                ] + self._completion_model_configurations()
             if action == "inherit" and len(args) == 1:
                 return [
                     (name, "LLM-active participant")
@@ -1326,6 +1349,14 @@ class Studio:
             "participants": participants,
             "llm_active_participants": active,
             "model_profile": profile,
+            "model_configurations": {
+                name: {
+                    "spec": configuration.get("spec"),
+                    "status": configuration.get("check_status"),
+                }
+                for name, configuration
+                in self.workspace.model_configurations().items()
+            },
             "current_run": state.get("current_run"),
             "last_deployment": state.get("last_deployment"),
             "current_task": current_request,
@@ -1438,6 +1469,10 @@ class Studio:
 
         participants, _active = self._language_participants()
         canonical = {name.casefold(): name for name in participants}
+        configuration_names = {
+            name.casefold(): name
+            for name in self.workspace.model_configurations()
+        }
 
         def replace(index: int) -> None:
             if index < len(parts):
@@ -1449,9 +1484,18 @@ class Studio:
             elif parts[1].casefold() == "agents":
                 for index in range(2, len(parts)):
                     replace(index)
-        elif top == "models" and len(parts) >= 3:
-            if parts[1].casefold() in {"assign", "check", "inherit"}:
+        elif top == "models" and len(parts) >= 2:
+            action = parts[1].casefold()
+            if action in {"assign", "inherit"}:
                 replace(2)
+            if action == "assign" and len(parts) >= 4:
+                parts[3] = configuration_names.get(
+                    parts[3].casefold(), parts[3]
+                )
+            elif action in {"check", "edit", "remove", "default"} and len(parts) >= 3:
+                parts[2] = configuration_names.get(
+                    parts[2].casefold(), parts[2]
+                )
         return shlex.join(parts)
 
     def _natural_command_risk(self, command_line: str) -> CommandRisk:
@@ -1468,7 +1512,9 @@ class Studio:
             return "read-only"
         if command == "task" and (not args or args[0] in {"show", "path", "history"}):
             return "read-only"
-        if command == "models" and (not args or args[0] in {"show", "check"}):
+        if command == "models" and (
+            not args or args[0] in {"show", "list", "check"}
+        ):
             return "read-only"
         if command == "editor" and (not args or args[0] == "show"):
             return "read-only"
@@ -1477,6 +1523,8 @@ class Studio:
         if command == "spec" and args[:1] == ["discard"]:
             return "destructive"
         if command == "task" and args[:1] == ["close"]:
+            return "destructive"
+        if command == "models" and args[:1] == ["remove"]:
             return "destructive"
         if command in {
             "assistant",
@@ -1572,17 +1620,23 @@ class Studio:
         if looks_sensitive(request_text):
             raise SystemExit(
                 "The request appears to contain a secret value and was not sent "
-                "to an interpreter or stored. Use 'models connect PROVIDER' so "
+                "to an interpreter or stored. Use 'models configure' so "
                 "Studio can collect the key privately."
             )
 
         store = self._language_store()
         settings = store.load()
         participants, active = self._language_participants()
+        configurations = {
+            name: configuration["spec"]
+            for name, configuration
+            in self.workspace.model_configurations().items()
+        }
         plan = deterministic_plan(
             request_text,
             participants=participants,
             llm_participants=active,
+            model_configurations=configurations,
         )
         if plan is None:
             plan = store.match(request_text)
@@ -4078,31 +4132,46 @@ class Studio:
                     ),
                 ],
             )
-            profile = self.workspace.model_profile(
+            assignments = self.workspace.model_assignment_profile(
                 str(state["current_workflow"]),
                 default=default_llm_spec(module),
             )
-            overrides = profile.get("lifelines") or {}
+            configurations = self.workspace.model_configurations()
+            default_configuration = str(assignments["default"])
+            overrides = assignments.get("lifelines") or {}
             assert isinstance(overrides, dict)
             model_rows: list[tuple[str, object, StatusKind | None]] = [
-                ("Default", profile["default"], None)
+                (
+                    "Default",
+                    f"{default_configuration} → "
+                    f"{configurations[default_configuration]['spec']}",
+                    None,
+                )
             ]
             if active_models:
                 for lifeline, actions in active_models.items():
                     explicit = overrides.get(lifeline)
-                    effective = str(explicit or profile["default"])
+                    effective = str(explicit or default_configuration)
                     source = "override" if explicit else "default"
+                    spec = configurations.get(effective, {}).get(
+                        "spec", "missing"
+                    )
                     model_rows.append(
                         (
                             lifeline,
-                            f"{effective} ({source}; actions: {', '.join(actions)})",
+                            f"{effective} → {spec} "
+                            f"({source}; actions: {', '.join(actions)})",
                             None,
                         )
                     )
             else:
                 model_rows.append(("Assignments", "none", None))
-            selected_specs = {str(profile["default"])} | {
+            selected_configurations = {default_configuration} | {
                 str(value) for value in overrides.values()
+            }
+            selected_specs = {
+                configurations.get(name, {}).get("spec", "mock")
+                for name in selected_configurations
             }
             providers = sorted({_canonical_provider(spec) for spec in selected_specs})
             for provider in providers:
@@ -4313,21 +4382,56 @@ class Studio:
             default=default_llm_spec(module),
         )
 
-    def _emit_models(
+    def _configuration_status_kind(
+        self,
+        configuration: dict[str, str],
+    ) -> StatusKind:
+        status = configuration.get("check_status", "not_checked")
+        if status == "available":
+            return "success"
+        if status == "unavailable":
+            return "error"
+        return "warning"
+
+    def _emit_model_configurations(self) -> None:
+        configurations = self.workspace.model_configurations()
+        self._emit("Configurations")
+        self._emit("──────────────")
+        for name, configuration in configurations.items():
+            status = configuration.get("check_status", "not_checked")
+            detail = configuration.get("check_detail", "not checked")
+            checked_at = configuration.get("checked_at")
+            suffix = f"; checked {checked_at}" if checked_at else ""
+            self._status(
+                self._configuration_status_kind(configuration),
+                f"{name}: {configuration['spec']}; "
+                f"{status.replace('_', ' ')} — {detail}{suffix}",
+                indent=2,
+            )
+        self._emit(
+            "Configure → check → assign. Names are generated automatically "
+            "unless you provide one."
+        )
+
+    def _emit_model_assignments(
         self,
         *,
         workflow,
         module,
-        profile: dict[str, object],
+        assignments: dict[str, object],
     ) -> None:
         active = self._llm_action_lifelines(workflow, module)
-        default = str(profile["default"])
-        overrides = profile.get("lifelines") or {}
+        configurations = self.workspace.model_configurations()
+        default = str(assignments["default"])
+        overrides = assignments.get("lifelines") or {}
         assert isinstance(overrides, dict)
-        self._emit("Routing")
-        self._emit("───────")
+        self._emit("Assignments")
+        self._emit("───────────")
         self._emit(f"  Workflow      {workflow.name}")
-        self._emit(f"  Default       {default}")
+        self._emit(
+            f"  Default       {default} "
+            f"({configurations.get(default, {}).get('spec', 'missing')})"
+        )
         if not active:
             self._emit("  Assignments   none — no LLM actions in this workflow")
             return
@@ -4335,14 +4439,214 @@ class Studio:
             explicit = overrides.get(lifeline)
             effective = str(explicit or default)
             source = "override" if explicit else "inherits default"
+            spec = configurations.get(effective, {}).get("spec", "missing")
             self._emit(
-                f"  {lifeline:<13} {effective} ({source}; actions: "
+                f"  {lifeline:<13} {effective} → {spec} "
+                f"({source}; actions: "
                 + ", ".join(actions)
                 + ")"
             )
 
+    def _model_configuration_name(self, requested: str) -> str:
+        configurations = self.workspace.model_configurations()
+        canonical = {
+            name.casefold(): name for name in configurations
+        }.get(requested.casefold())
+        if canonical is None:
+            available = ", ".join(configurations) or "none"
+            raise SystemExit(
+                f"Unknown model configuration {requested!r}. Available: "
+                f"{available}. Use 'models configure' to create one."
+            )
+        return canonical
+
+    def _configure_model_configuration(
+        self,
+        args: list[str],
+        *,
+        edit_only: bool = False,
+    ) -> None:
+        if len(args) > 1:
+            command = "edit NAME" if edit_only else "configure [NAME]"
+            raise SystemExit(f"Use models {command}.")
+        configurations = self.workspace.model_configurations()
+        requested = args[0] if args else None
+        existing_name = None
+        if requested:
+            existing_name = {
+                name.casefold(): name for name in configurations
+            }.get(requested.casefold())
+        if edit_only and existing_name is None:
+            raise SystemExit(
+                f"Unknown model configuration {requested!r}. "
+                "Use 'models list' to see available names."
+            )
+        if existing_name == "mock":
+            raise SystemExit("The built-in mock configuration cannot be edited.")
+
+        existing = configurations.get(existing_name or "", {})
+        provider_hint = (
+            _canonical_provider(requested)
+            if requested and requested.casefold() in {
+                "local",
+                "ollama",
+                "openai",
+                "anthropic",
+                "claude",
+                "mistral",
+            }
+            else None
+        )
+        default_provider = existing.get("provider") or provider_hint or "local"
+        if provider_hint and not existing_name:
+            provider = provider_hint
+        else:
+            entered_provider = self.input(
+                f"Provider [{default_provider}]: "
+            ).strip()
+            provider = _canonical_provider(entered_provider or default_provider)
+        if provider not in _SUPPORTED_PROVIDERS:
+            raise SystemExit(
+                "Provider must be mock, local/ollama, openai, "
+                "anthropic/claude, or mistral."
+            )
+        if provider == "mock":
+            self._success("mock is built in and already configured.")
+            return
+        if not self._provider_is_connected(provider):
+            self._info(
+                f"{provider} needs a connection before its models can be checked."
+            )
+            self._connect_model_provider([provider])
+
+        _environment_name, fallback_model = _PROVIDER_DEFAULT_MODELS[provider]
+        default_model = (
+            existing.get("model")
+            if existing.get("provider") == provider
+            else None
+        ) or fallback_model
+        model = self.input(
+            f"Model identifier [{default_model}]: "
+        ).strip() or default_model
+        spec = _validate_model_spec(f"{provider}:{model}")
+
+        if existing_name:
+            name = existing_name
+        elif requested and provider_hint is None:
+            name = requested
+        else:
+            name = self.workspace.automatic_model_configuration_name(spec)
+            if name in configurations:
+                self._success(
+                    f"Model configuration already exists: {name} ({spec})"
+                )
+                self._emit(
+                    f"Next: models check {name} · "
+                    f"models assign LIFELINE {name}"
+                )
+                return
+        try:
+            self.workspace.save_model_configuration(
+                name,
+                {
+                    "provider": provider,
+                    "model": model,
+                    "spec": spec,
+                    "check_status": "not_checked",
+                    "check_detail": "run 'models check' before assignment",
+                },
+            )
+        except WorkspaceError as exc:
+            raise SystemExit(str(exc)) from exc
+        verb = "Updated" if existing_name else "Created"
+        self._success(f"{verb} model configuration: {name} ({spec})")
+        self._emit(
+            f"Next: models check {name} · models assign LIFELINE {name}"
+        )
+
+    def _check_model_configurations(self, target: str) -> None:
+        configurations = self.workspace.model_configurations()
+        if target.casefold() == "all":
+            selected = list(configurations)
+        else:
+            selected = [self._model_configuration_name(target)]
+        self._emit("Configuration checks")
+        self._emit("────────────────────")
+        failures: list[str] = []
+        for name in selected:
+            configuration = configurations[name]
+            if name == "mock":
+                self._success("mock: built in and available.", indent=2)
+                continue
+            try:
+                verification = self._verify_model_spec(
+                    name,
+                    configuration["spec"],
+                    for_save=False,
+                )
+            except SystemExit as exc:
+                detail = str(exc)
+                self.workspace.save_model_configuration(
+                    name,
+                    {
+                        **configuration,
+                        "check_status": "unavailable",
+                        "check_detail": detail[:240],
+                        "checked_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                    },
+                )
+                self._error(f"{name}: {detail}", indent=2)
+                failures.append(name)
+                continue
+            check_status = (
+                "available"
+                if verification.kind == "success"
+                else "unverified"
+            )
+            self.workspace.save_model_configuration(
+                name,
+                {
+                    **configuration,
+                    "check_status": check_status,
+                    "check_detail": verification.message,
+                    "checked_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                },
+            )
+            self._status(
+                verification.kind,
+                verification.message,
+                indent=2,
+            )
+        if failures:
+            raise SystemExit(
+                "Model configuration check failed for "
+                + ", ".join(failures)
+                + ". Assignments were not changed."
+            )
+        self._emit()
+        self._success("Configuration checks complete; assignments unchanged.")
+
     def configure_models(self, args: list[str]) -> None:
         action = args[0].lower() if args else "show"
+
+        if action == "configure":
+            self._configure_model_configuration(args[1:])
+            return
+
+        if action == "edit":
+            self._configure_model_configuration(args[1:], edit_only=True)
+            return
+
+        if action == "remove":
+            if len(args) != 2:
+                raise SystemExit("Use models remove NAME.")
+            name = self._model_configuration_name(args[1])
+            try:
+                self.workspace.remove_model_configuration(name)
+            except WorkspaceError as exc:
+                raise SystemExit(str(exc)) from exc
+            self._success(f"Removed model configuration: {name}")
+            return
 
         if action == "connect":
             if len(args) not in {2, 3}:
@@ -4360,230 +4664,127 @@ class Studio:
             self._emit_model_connections()
             return
 
-        if action in {"show"}:
+        if action in {"show", "list"}:
             if len(args) > 1:
-                raise SystemExit("Use models or models show.")
+                raise SystemExit("Use models, models show, or models list.")
+            if action == "list":
+                self._emit_model_configurations()
+                return
             self._emit("Model configuration")
             self._emit("───────────────────")
             self._emit_model_connections()
             self._emit()
+            self._emit_model_configurations()
             if not self.workspace.current_workflow:
-                self._emit("Routing")
-                self._emit("───────")
+                self._emit()
+                self._emit("Assignments")
+                self._emit("───────────")
                 self._warning(
                     "No workflow is selected; use 'use' to select one.",
                     indent=2,
                 )
                 return
             current, workflow, module = self._current_context()
-            profile = self.workspace.model_profile(
+            assignments = self.workspace.model_assignment_profile(
                 current,
                 default=default_llm_spec(module),
             )
-            self._emit_models(
+            self._emit()
+            self._emit_model_assignments(
                 workflow=workflow,
                 module=module,
-                profile=profile,
+                assignments=assignments,
             )
             return
-
-        if action == "check" and len(args) == 2 and args[1].lower() == "local":
-            self._recheck_local_model_provider()
-            return
-
-        current, workflow, module = self._current_context()
-        profile = self.workspace.model_profile(
-            current,
-            default=default_llm_spec(module),
-        )
-        default = str(profile["default"])
-        overrides = dict(profile.get("lifelines") or {})
-        active = self._llm_action_lifelines(workflow, module)
-        changed: tuple[str, str] | None = None
 
         if action == "check":
             if len(args) > 2:
-                raise SystemExit(
-                    "Use models check, models check all, models check default, "
-                    "models check LIFELINE, or models check local."
-                )
-            self._check_model_connectivity(
-                workflow=workflow,
-                profile=profile,
-                active=active,
-                target=args[1] if len(args) == 2 else "all",
+                raise SystemExit("Use models check [NAME|all].")
+            self._check_model_configurations(
+                args[1] if len(args) == 2 else "all"
             )
             return
 
+        current, workflow, module = self._current_context()
+        assignments = self.workspace.model_assignment_profile(
+            current,
+            default=default_llm_spec(module),
+        )
+        default = str(assignments["default"])
+        overrides = dict(assignments.get("lifelines") or {})
+        active = self._llm_action_lifelines(workflow, module)
+        changed_configuration: str | None = None
+
         if action == "default" and len(args) == 2:
-            default = _validate_model_spec(args[1])
-            changed = ("Default", default)
+            default = self._model_configuration_name(args[1])
+            changed_configuration = default
         elif action == "assign" and len(args) == 3:
-            lifeline, spec = args[1:]
-            if lifeline not in active:
+            entered_lifeline, entered_configuration = args[1:]
+            lifeline = {
+                name.casefold(): name for name in active
+            }.get(entered_lifeline.casefold())
+            if lifeline is None:
                 available = ", ".join(active) or "none"
                 raise SystemExit(
-                    f"{lifeline!r} has no LLM actions. LLM-active lifelines: "
+                    f"{entered_lifeline!r} has no LLM actions. "
+                    f"LLM-active lifelines: "
                     f"{available}."
                 )
-            overrides[lifeline] = _validate_model_spec(spec)
-            changed = (lifeline, overrides[lifeline])
+            configuration = self._model_configuration_name(
+                entered_configuration
+            )
+            overrides[lifeline] = configuration
+            changed_configuration = configuration
         elif action == "inherit" and len(args) == 2:
-            lifeline = args[1]
-            if lifeline not in active:
+            entered_lifeline = args[1]
+            lifeline = {
+                name.casefold(): name for name in active
+            }.get(entered_lifeline.casefold())
+            if lifeline is None:
                 available = ", ".join(active) or "none"
                 raise SystemExit(
-                    f"{lifeline!r} has no LLM actions. LLM-active lifelines: "
+                    f"{entered_lifeline!r} has no LLM actions. "
+                    f"LLM-active lifelines: "
                     f"{available}."
                 )
             overrides.pop(lifeline, None)
         else:
             raise SystemExit(
-                "Use models, models connect NAME [URL], models disconnect NAME, "
-                "models check [all|default|LIFELINE|local], models default SPEC, "
-                "models assign LIFELINE SPEC, or models inherit LIFELINE."
+                "Use models, models configure [NAME], models check [NAME|all], "
+                "models assign LIFELINE NAME, models default NAME, "
+                "models inherit LIFELINE, models edit NAME, or "
+                "models remove NAME."
             )
 
-        if changed is not None:
-            self._ensure_model_provider_connected(changed[1])
-        verification = (
-            self._verify_model_spec(*changed) if changed is not None else None
-        )
-        saved = self.workspace.save_model_profile(
+        if changed_configuration is not None:
+            configuration = self.workspace.model_configurations()[
+                changed_configuration
+            ]
+            status = configuration.get("check_status")
+            if status == "unavailable":
+                raise SystemExit(
+                    f"{changed_configuration} is unavailable. Run "
+                    f"'models check {changed_configuration}' again, or edit "
+                    "the configuration before assigning it."
+                )
+            if status != "available":
+                self._warning(
+                    f"{changed_configuration} is "
+                    f"{status or 'not checked'}; "
+                    f"use 'models check {changed_configuration}'."
+                )
+        saved = self.workspace.save_model_assignment_profile(
             current,
             default=default,
             lifelines=overrides,
         )
-        if verification is not None:
-            self._status(verification.kind, verification.message)
-        self._success(f"Saved model routing for {workflow.name}.")
+        self._success(f"Saved model assignments for {workflow.name}.")
         self._emit()
-        self._emit_model_connections()
-        self._emit()
-        self._emit_models(workflow=workflow, module=module, profile=saved)
-
-    def _check_model_connectivity(
-        self,
-        *,
-        workflow,
-        profile: dict[str, object],
-        active: dict[str, list[str]],
-        target: str,
-    ) -> None:
-        """Verify effective model routes without modifying their profile."""
-
-        default = str(profile["default"])
-        raw_overrides = profile.get("lifelines") or {}
-        assert isinstance(raw_overrides, dict)
-        overrides = {str(name): str(spec) for name, spec in raw_overrides.items()}
-        requested = target.strip()
-        normalized = requested.lower()
-
-        if normalized == "all":
-            assignments = [("Default", default)] + [
-                (lifeline, overrides.get(lifeline, default))
-                for lifeline in active
-            ]
-            scope = "default and all LLM-active participants"
-        elif normalized == "default":
-            assignments = [("Default", default)]
-            scope = "default"
-        else:
-            matches = {lifeline.lower(): lifeline for lifeline in active}
-            lifeline = matches.get(normalized)
-            if lifeline is None:
-                available = ", ".join(active) or "none"
-                raise SystemExit(
-                    f"{requested!r} has no LLM actions. Use default, all, or an "
-                    f"LLM-active lifeline: {available}."
-                )
-            assignments = [(lifeline, overrides.get(lifeline, default))]
-            scope = lifeline
-
-        routes: dict[str, list[str]] = {}
-        for label, spec in assignments:
-            routes.setdefault(spec, []).append(label)
-
-        self._emit_table(
-            "Model connectivity",
-            [
-                ("Workflow", workflow.name, None),
-                ("Scope", scope, None),
-                (
-                    "Routes",
-                    f"{len(routes)} unique across {len(assignments)} assignment"
-                    f"{'s' if len(assignments) != 1 else ''}",
-                    None,
-                ),
-                ("Mode", "read-only; routing will not be changed", "success"),
-            ],
+        self._emit_model_assignments(
+            workflow=workflow,
+            module=module,
+            assignments=saved,
         )
-        self._emit("Checks")
-        self._emit("──────")
-        available_count = 0
-        warning_count = 0
-        failure_count = 0
-        failed_labels: list[str] = []
-        for spec, labels in routes.items():
-            label = ", ".join(labels)
-            try:
-                verification = self._verify_model_spec(
-                    label,
-                    spec,
-                    for_save=False,
-                )
-            except SystemExit as exc:
-                failure_count += 1
-                failed_labels.extend(labels)
-                self._error(f"{label}: {exc}", indent=2)
-                continue
-            if verification.kind == "success":
-                available_count += 1
-            elif verification.kind == "warning":
-                warning_count += 1
-            else:
-                failure_count += 1
-                failed_labels.extend(labels)
-            self._status(
-                verification.kind,
-                verification.message,
-                indent=2,
-            )
-        self._emit()
-
-        if failure_count:
-            result = "one or more selected models are unavailable"
-            result_kind: StatusKind = "error"
-        elif warning_count:
-            result = "one or more selected models could not be verified"
-            result_kind = "warning"
-        else:
-            result = "all selected models are available"
-            result_kind = "success"
-        self._emit_table(
-            "Connectivity result",
-            [
-                ("Status", result, result_kind),
-                ("Available routes", available_count, None),
-                (
-                    "Unverified routes",
-                    warning_count,
-                    "warning" if warning_count else None,
-                ),
-                (
-                    "Unavailable routes",
-                    failure_count,
-                    "error" if failure_count else None,
-                ),
-                ("Routing", "unchanged", "success"),
-            ],
-        )
-        if failure_count:
-            raise SystemExit(
-                "Model connectivity check failed for "
-                + ", ".join(failed_labels)
-                + ". Routing was not changed."
-            )
 
     def _resolved_model(self, spec: str) -> tuple[str, str | None]:
         provider = _canonical_provider(spec)
@@ -4663,7 +4864,7 @@ class Studio:
                 return None, f"HTTP {exc.code}{suffix}"
             raise SystemExit(
                 f"Could not verify model {model!r} with {provider}: "
-                f"HTTP {exc.code}{suffix}. Model routing was not changed."
+                f"HTTP {exc.code}{suffix}. The configuration was not changed."
             ) from exc
         except URLError as exc:
             return None, self._local_check_error(exc.reason)
@@ -4714,7 +4915,7 @@ class Studio:
                 raise SystemExit(
                     f"Model {model!r} is not available from the local provider "
                     f"at {base_url}. Available models: {available}. "
-                    "Model routing was not changed."
+                    "The configuration was not changed."
                 )
             return _ModelVerification(
                 "success",
@@ -4738,7 +4939,7 @@ class Studio:
             suffix = f" ({detail})" if detail else ""
             raise SystemExit(
                 f"Model {model!r} is not available with the configured "
-                f"{provider} API key{suffix}. Model routing was not changed."
+                f"{provider} API key{suffix}. The configuration was not changed."
             )
         if available is None:
             suffix = f": {detail}" if detail else ""
@@ -4796,7 +4997,7 @@ class Studio:
                 )
             return (
                 "warning",
-                f"not checked; endpoint {base_url}; use 'models check local'",
+                f"not connected; use 'models configure local' for the guided setup",
             )
         secret_name = _PROVIDER_SECRETS.get(canonical)
         if secret_name is None:
@@ -4825,8 +5026,8 @@ class Studio:
             self._status(kind, f"{provider}: {status}", indent=2)
         self._emit("API-key values are never displayed or written to the project.")
         self._emit(
-            "Use 'models check' for current assigned-model availability; "
-            "use 'models check local' to refresh the local endpoint."
+            "Normal path: 'models configure' creates a model configuration; "
+            "'models check NAME' verifies it."
         )
 
     def _local_models_url(self, base_url: str) -> str:
@@ -4927,20 +5128,6 @@ class Studio:
             return bool(profile.get("base_url"))
         return bool(self._provider_api_key(canonical))
 
-    def _ensure_model_provider_connected(self, spec: str) -> None:
-        provider, _model = self._resolved_model(spec)
-        if self._provider_is_connected(provider):
-            return
-        entered = self.input(
-            f"{provider} is not connected. Connect it now? [Y/n]: "
-        ).strip().casefold()
-        if entered not in {"", "y", "yes"}:
-            raise SystemExit(
-                f"{provider} is not connected; model routing was not changed. "
-                f"Use 'models connect {provider}' when you are ready."
-            )
-        self._connect_model_provider([provider])
-
     def _connect_model_provider(self, args: list[str]) -> None:
         if not args:
             raise SystemExit("Use models connect NAME [URL].")
@@ -5016,42 +5203,6 @@ class Studio:
             {"kind": "api", "key_env": secret_name},
         )
         self._success(f"Connected {provider}: {self._provider_status(provider)}")
-
-    def _recheck_local_model_provider(self) -> None:
-        profile = self.workspace.provider_profiles().get("local")
-        if not profile or not profile.get("base_url"):
-            raise SystemExit(
-                "No local model provider is connected. Use 'models connect local'."
-            )
-        base_url = profile["base_url"]
-        try:
-            result = self._check_local_provider(base_url)
-        except _LocalProviderError as exc:
-            checked_at = time.strftime("%Y-%m-%dT%H:%M:%S%z")
-            self.workspace.save_provider_profile(
-                "local",
-                {
-                    "kind": "local",
-                    "base_url": base_url,
-                    "check_status": "unreachable",
-                    "checked_at": checked_at,
-                    "check_error": str(exc)[:240],
-                },
-            )
-            raise SystemExit(
-                f"Local provider is unreachable at {base_url}: {exc}. "
-                "Check that the model server and any SSH tunnel are running."
-            ) from exc
-        self._save_local_provider_check(base_url, result)
-        noun = "model" if result.model_count == 1 else "models"
-        message = (
-            f"Local provider is reachable: {result.model_count} {noun}; "
-            f"endpoint {base_url}"
-        )
-        if result.model_count:
-            self._success(message)
-        else:
-            self._warning(message + "; install or load a model before running")
 
     def _disconnect_model_provider(self, name: str) -> None:
         provider = _canonical_provider(name)

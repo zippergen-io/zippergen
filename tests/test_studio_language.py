@@ -108,6 +108,7 @@ def test_natural_provider_configuration_uses_the_models_surface(
 ):
     studio, workspace, output = _studio(
         tmp_path,
+        responses=["claude-sonnet-4-6"],
         secret_responses=["private-anthropic-key"],
     )
 
@@ -116,7 +117,10 @@ def test_natural_provider_configuration_uses_the_models_surface(
     assert workspace.load_secrets()["ANTHROPIC_API_KEY"] == (
         "private-anthropic-key"
     )
-    assert any("models connect anthropic" in line for line in output)
+    assert workspace.model_configurations()[
+        "anthropic-claude-sonnet-4-6"
+    ]["spec"] == "anthropic:claude-sonnet-4-6"
+    assert any("models configure anthropic" in line for line in output)
     assert not any("providers set" in line for line in output)
 
 

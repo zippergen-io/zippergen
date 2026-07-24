@@ -14,6 +14,7 @@ import re
 import shlex
 import tempfile
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
@@ -128,12 +129,14 @@ def deterministic_plan(
     *,
     participants: tuple[str, ...] = (),
     llm_participants: tuple[str, ...] = (),
+    model_configurations: Mapping[str, str] | None = None,
 ) -> NaturalCommandPlan | None:
     """Interpret common Studio requests without starting a model."""
 
     text = normalize_request(request)
     if not text:
         return None
+    configurations = dict(model_configurations or {})
 
     if re.search(r"\b(current|active)\s+task\b", text) or text in {
         "what is the task",
@@ -227,10 +230,16 @@ def deterministic_plan(
         )
 
     if re.search(r"\b(check|verify|test)\b.*\b(models?|routing)\b", text):
-        active = _mentioned_names(text, llm_participants)
-        target = active[0] if len(active) == 1 else "all"
+        mentioned_configurations = _mentioned_names(
+            text, tuple(configurations)
+        )
+        target = (
+            mentioned_configurations[0]
+            if len(mentioned_configurations) == 1
+            else "all"
+        )
         return NaturalCommandPlan(
-            f"Check model connectivity for {target}.",
+            f"Check model configuration {target}.",
             (shlex.join(["models", "check", target]),),
             "deterministic",
         )
@@ -238,11 +247,30 @@ def deterministic_plan(
     if re.search(r"\b(assign|set|use|route)\b", text):
         active = _mentioned_names(text, llm_participants)
         spec = _model_spec(request)
-        if len(active) == 1 and spec is not None:
+        mentioned_configurations = _mentioned_names(
+            text, tuple(configurations)
+        )
+        configuration = (
+            mentioned_configurations[0]
+            if len(mentioned_configurations) == 1
+            else next(
+                (
+                    name
+                    for name, configured_spec in configurations.items()
+                    if spec is not None and configured_spec == spec
+                ),
+                None,
+            )
+        )
+        if len(active) == 1 and configuration is not None:
             participant = active[0]
             return NaturalCommandPlan(
-                f"Assign {spec} to {participant}.",
-                (shlex.join(["models", "assign", participant, spec]),),
+                f"Assign {configuration} to {participant}.",
+                (
+                    shlex.join(
+                        ["models", "assign", participant, configuration]
+                    ),
+                ),
                 "deterministic",
             )
 
@@ -256,19 +284,17 @@ def deterministic_plan(
     provider_match = re.search(
         r"\b(local|ollama|openai|anthropic|claude|mistral)\b", text
     )
-    if provider_match and re.search(
-        r"\b(connect|configure|set up|setup)\b", text
-    ):
+    if provider_match and re.search(r"\b(configure|set up|setup)\b", text):
         provider = {"claude": "anthropic", "ollama": "local"}.get(
             provider_match.group(1), provider_match.group(1)
         )
         return NaturalCommandPlan(
-            f"Connect the {provider} model provider.",
-            (shlex.join(["models", "connect", provider]),),
+            f"Configure a {provider} model.",
+            (shlex.join(["models", "configure", provider]),),
             "deterministic",
         )
 
-    if provider_match and re.search(r"\b(disconnect|remove)\b", text):
+    if provider_match and re.search(r"\bdisconnect\b", text):
         provider = {"claude": "anthropic", "ollama": "local"}.get(
             provider_match.group(1), provider_match.group(1)
         )
@@ -373,18 +399,20 @@ Read-only:
 - show overview | show protocol | show communications | show actions | show full
 - show agent PARTICIPANT | show agents PARTICIPANT...
 - validate
-- models | models show | models check [all|default|PARTICIPANT|local]
+- models | models show | models list | models check [NAME|all]
 - runs
 - status [DEPLOYMENT] | doctor [DEPLOYMENT] | logs [DEPLOYMENT]
 
 Local configuration and development:
 - project init [NAME]
 - use [PATH.py:WORKFLOW]
+- models configure [NAME]
+- models edit NAME | models remove NAME
 - models connect local [BASE_URL]
 - models connect openai|anthropic|mistral
 - models disconnect local|openai|anthropic|mistral
-- models default PROVIDER:MODEL
-- models assign PARTICIPANT PROVIDER:MODEL
+- models default CONFIGURATION
+- models assign PARTICIPANT CONFIGURATION
 - models inherit PARTICIPANT
 - create DESCRIPTION
 - spec refine DESCRIPTION

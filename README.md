@@ -151,26 +151,34 @@ supervisor's main thread, so `Ctrl-C` leaves the durable task pending, stops the
 role threads before Studio accepts another command, and allows an immediate
 `resume` without competing readers on stdin.
 
-Use `models` to choose an inherited default and optional models for individual
-LLM-active lifelines. The profile is remembered with the workflow and carried
-into both development runs and guided deployment:
+Use `models` for a simple **configure → check → assign** flow. A named
+configuration combines a provider connection with one model identifier and can
+be reused by any LLM-active lifeline. Names are generated automatically unless
+you provide one:
 
 ```text
 zippergen [tutorial_review]> models default mock
-zippergen [tutorial_review]> models connect openai
-zippergen [tutorial_review]> models assign Writer openai:gpt-4o-mini
-zippergen [tutorial_review]> models assign Reviewer anthropic:claude-sonnet-4-6
-zippergen [tutorial_review]> models show
-zippergen [tutorial_review]> models check
-zippergen [tutorial_review]> models check Reviewer
+zippergen [tutorial_review]> models configure writer-fast
+Provider [local]: openai
+Model identifier [gpt-4o-mini]:
+zippergen [tutorial_review]> models check writer-fast
+zippergen [tutorial_review]> models assign Writer writer-fast
+zippergen [tutorial_review]> models configure anthropic
+zippergen [tutorial_review]> models check anthropic-claude-sonnet-4-6
+zippergen [tutorial_review]> models assign Reviewer anthropic-claude-sonnet-4-6
+zippergen [tutorial_review]> models
 ```
 
-Provider connections and model routing share the same command family:
+`models configure local` guides you through a local OpenAI-compatible endpoint
+and model. Provider-level connection commands remain available as an advanced
+surface:
 
 ```text
 zippergen [tutorial_review]> models
+zippergen [tutorial_review]> models configure local
+zippergen [tutorial_review]> models check local-qwen2.5-7b
+zippergen [tutorial_review]> models assign Writer local-qwen2.5-7b
 zippergen [tutorial_review]> models connect local http://127.0.0.1:11434/v1
-zippergen [tutorial_review]> models check local
 zippergen [tutorial_review]> models disconnect local
 ```
 
@@ -181,27 +189,20 @@ remote API. For OpenAI, Anthropic, and Mistral, `connected` means only that
 the corresponding key is present; the line explicitly says `not tested here`.
 For a local endpoint, the command reports the last saved check result and its
 timestamp rather than presenting it as a new test.
-When `models default` or `models assign` selects a connected API provider, Studio
-queries that provider's model endpoint with the saved key before changing the
-routing profile. A green check confirms that the exact model or alias is
-available to that key; an unavailable model is rejected without changing the
-profile. `models check` repeats those availability checks later without saving
-or changing anything. With no argument it checks the default and every
-LLM-active participant, while `models check Reviewer` checks only Reviewer's
-effective route. Identical routes are queried once and the result explicitly
-reports that routing is unchanged. Local model identifiers are checked against
-the endpoint's live model list. A temporarily unreachable provider produces an
-explicit yellow “saved but unchecked” warning during assignment, or an
-“unverified” result during the read-only check, so offline configuration
-remains possible.
-If an assignment needs a connection that is not configured, Studio offers to
-collect it privately and then continues the original assignment.
+`models configure` privately collects a missing connection, asks for a model,
+and saves the resulting configuration as unchecked. `models check NAME`
+queries the provider and records `available`, `unverified`, or `unavailable`
+without changing any assignment. `models check` checks every saved
+configuration. `models assign LIFELINE NAME` and `models default NAME` only
+route saved configurations; they do not contact a provider. Assigning an
+unchecked configuration is allowed but clearly warned about; a configuration
+known to be unavailable must be fixed or checked successfully first. Local
+model identifiers are checked against the endpoint's live model list.
 `models connect local` calls the endpoint's OpenAI-compatible `/models` route
 with a short timeout and saves the URL only after a successful response. The
-saved status includes the check time and model count. Use `models check
-local` after reconnecting an SSH tunnel or restarting the model server; a
-failed recheck is displayed as unreachable instead of leaving an old green
-status.
+saved status includes the check time and model count. After reconnecting an
+SSH tunnel or restarting the model server, use `models check NAME` on a local
+configuration for a fresh model-level check.
 
 `run openai:gpt-4o-mini` remains a one-run override of the default; explicit
 lifeline overrides remain in effect. If any selected provider needs a declared
@@ -389,9 +390,10 @@ zippergen [reviewed_answer]> spec show
 zippergen [reviewed_answer]> spec reconcile
 ```
 
-A model change has two forms. Use `models assign Writer SPEC` or `models default
-SPEC` when only the remembered run/deployment routing changes; no assistant is
-needed. Use `refine` followed by an assistant when the choice belongs in
+A model change has two forms. Use `models configure`, then `models check NAME`
+and `models assign Writer NAME` (or `models default NAME`) when only the
+remembered run/deployment routing changes; no assistant is needed. Use
+`refine` followed by an assistant when the choice belongs in
 versioned design intent or requires source, action prompts, deployment
 metadata, or tests to change. For example:
 
@@ -772,6 +774,9 @@ For a complete beginner-oriented walkthrough—from installation and a mock
 workflow through prompt-driven refinement, semantic diff, durable approval,
 guided deployment, and supervised operation—see
 [`docs/workflow-development-deployment-guide.tex`](docs/workflow-development-deployment-guide.tex).
+The repository contains all of its source dependencies. Build it from the Git
+root with `make docs`; see [`docs/README.md`](docs/README.md) for the TeX
+requirements and troubleshooting.
 
 ## Local Deployment
 
