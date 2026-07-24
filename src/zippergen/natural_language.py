@@ -143,8 +143,8 @@ def deterministic_plan(
         "show the task",
     }:
         return NaturalCommandPlan(
-            "Show the current coding-assistant task.",
-            ("task",),
+            "Show the current workflow implementation status.",
+            ("workflow status",),
             "deterministic",
         )
 
@@ -161,7 +161,7 @@ def deterministic_plan(
     if re.search(r"\b(validate|validation|check)\b.*\bworkflow\b", text):
         return NaturalCommandPlan(
             "Validate the selected workflow.",
-            ("validate",),
+            ("workflow validate",),
             "deterministic",
         )
 
@@ -180,31 +180,31 @@ def deterministic_plan(
         if re.search(r"\bcommunications?\b", text):
             return NaturalCommandPlan(
                 "Show workflow communications only.",
-                ("show communications",),
+                ("workflow show communications",),
                 "deterministic",
             )
         if re.search(r"\b(actions?|prompts?)\b", text):
             return NaturalCommandPlan(
                 "Show workflow actions and prompts.",
-                ("show actions",),
+                ("workflow show actions",),
                 "deterministic",
             )
         if re.search(r"\b(protocol|global protocol)\b", text):
             return NaturalCommandPlan(
                 "Show the global workflow protocol.",
-                ("show protocol",),
+                ("workflow show protocol",),
                 "deterministic",
             )
         if re.search(r"\b(full|complete|whole)\s+workflow\b", text):
             return NaturalCommandPlan(
                 "Show the complete workflow implementation.",
-                ("show full",),
+                ("workflow show full",),
                 "deterministic",
             )
         if re.search(r"\boverview\b", text):
             return NaturalCommandPlan(
                 "Show the workflow overview.",
-                ("show overview",),
+                ("workflow show overview",),
                 "deterministic",
             )
 
@@ -218,7 +218,7 @@ def deterministic_plan(
         participant = mentioned[0]
         return NaturalCommandPlan(
             f"Show {participant}'s exact local projection.",
-            (shlex.join(["show", "agent", participant]),),
+            (shlex.join(["workflow", "show", "agent", participant]),),
             "deterministic",
         )
 
@@ -307,14 +307,14 @@ def deterministic_plan(
     if re.search(r"\b(pending|current)\s+refinement\b", text):
         return NaturalCommandPlan(
             "Show the pending specification refinement.",
-            ("spec pending",),
+            ("workflow show pending",),
             "deterministic",
         )
 
     if re.search(r"\b(show|display|read)\b.*\bspec(?:ification)?\b", text):
         return NaturalCommandPlan(
             "Show the canonical workflow specification.",
-            ("spec show",),
+            ("workflow show spec",),
             "deterministic",
         )
 
@@ -394,18 +394,23 @@ COMMAND_CATALOG = """\
 Read-only:
 - current
 - project show
-- spec show | spec path | spec pending | spec history
-- task | task show | task path | task history
-- show overview | show protocol | show communications | show actions | show full
-- show agent PARTICIPANT | show agents PARTICIPANT...
-- validate
+- workflow
+- workflow show spec | workflow show pending
+- workflow show overview | workflow show protocol
+- workflow show communications | workflow show actions | workflow show full
+- workflow show agent PARTICIPANT | workflow show agents PARTICIPANT...
+- workflow status | workflow validate | workflow history | workflow path
 - models | models show | models list | models check [NAME|all]
 - runs
 - status [DEPLOYMENT] | doctor [DEPLOYMENT] | logs [DEPLOYMENT]
 
 Local configuration and development:
 - project init [NAME]
-- use [PATH.py:WORKFLOW]
+- workflow create DESCRIPTION
+- workflow refine DESCRIPTION
+- workflow edit spec | workflow edit code
+- workflow use [PATH.py:WORKFLOW]
+- workflow accept | workflow discard
 - models configure [NAME]
 - models edit NAME | models remove NAME
 - models connect local [BASE_URL]
@@ -414,18 +419,13 @@ Local configuration and development:
 - models default CONFIGURATION
 - models assign PARTICIPANT CONFIGURATION
 - models inherit PARTICIPANT
-- create DESCRIPTION
-- spec refine DESCRIPTION
-- spec reconcile
-- spec discard
-- task close
 - editor show | editor set COMMAND | editor reset
-- edit workflow | edit file PATH
+- edit file PATH
 
 Execution and deployment:
 - run [MODEL] [--assistant codex|claude]
 - resume
-- assistant [codex|claude]
+- workflow implement [codex|claude]
 - deploy [NAME] [--no-start]
 - start [NAME] | restart [NAME] | stop [NAME]
 
@@ -712,9 +712,13 @@ def _slot_positions(parts: list[str]) -> list[tuple[str, int]]:
     if not parts:
         return []
     command = parts[0].casefold()
-    if command in {"show", "inspect"} and len(parts) == 3:
-        if parts[1].casefold() == "agent":
-            return [("participant", 2)]
+    if (
+        command == "workflow"
+        and len(parts) == 4
+        and parts[1].casefold() == "show"
+        and parts[2].casefold() == "agent"
+    ):
+        return [("participant", 3)]
     if command == "models" and len(parts) >= 3:
         action = parts[1].casefold()
         if action == "set" and len(parts) == 4:
@@ -724,8 +728,12 @@ def _slot_positions(parts: list[str]) -> list[tuple[str, int]]:
             "default",
         }:
             return [("participant", 2)]
-    if command == "use" and len(parts) == 2:
-        return [("workflow", 1)]
+    if (
+        command == "workflow"
+        and len(parts) == 3
+        and parts[1].casefold() == "use"
+    ):
+        return [("workflow", 2)]
     if command in {"status", "doctor", "logs", "start", "restart", "stop"} and len(
         parts
     ) == 2:

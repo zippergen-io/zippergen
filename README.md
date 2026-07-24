@@ -59,6 +59,16 @@ Up/down arrows navigate private per-project command history; a faint
 history suggestion can be accepted with the right arrow. Piped commands and
 programmatic callers retain the ordinary non-interactive input path.
 
+The public command surface follows three themes:
+
+- `workflow` — specify, implement, inspect, and validate the application;
+- `models` — configure, check, and assign model configurations;
+- direct operational commands such as `run`, `deploy`, `status`, and `logs`.
+
+This keeps related steps together. For example, the complete design loop is
+discoverable below `workflow`, from `workflow create` through `workflow
+implement`, `workflow validate`, and `workflow accept`.
+
 For workflow development, the application project may be separate from the
 framework checkout. This is especially useful while developing ZipperGen from
 source:
@@ -75,7 +85,7 @@ zippergen-tutorial/          # project, Git root, and coding-assistant root
 
 Pass the parent with `zippergen studio --project PATH` for the first session.
 Inside Studio, `project init [NAME]` creates `zippergen.toml` and safe Git
-ignores; `create` adds `specification.md`. A manifest takes precedence during
+ignores; `workflow create` adds `specification.md`. A manifest takes precedence during
 later project discovery; an explicit `--project` path is always used exactly.
 
 When using a nested editable checkout, expose its CLI once and initialize the
@@ -95,16 +105,16 @@ ZipperGen Studio
 Project: /path/to/zippergen
 No workflow selected.
 
-zippergen [no workflow]> use
+zippergen [no workflow]> workflow use
 
-── Output: use ─────────────────────────────────────────
+── Output: workflow use ────────────────────────────────
 Workflows
   1. examples/tutorial_review.py:tutorial_review
   ...
 
-zippergen [tutorial_review]> show
+zippergen [tutorial_review]> workflow show
 
-── Output: show ────────────────────────────────────────
+── Output: workflow show ───────────────────────────────
   1. Overview
   2. Protocol
   3. Communications only
@@ -258,12 +268,12 @@ Choose a project-specific editor preference once:
 ```text
 zippergen [no workflow]> editor set micro
 zippergen [no workflow]> editor show
-zippergen [no workflow]> create
+zippergen [no workflow]> workflow create
 ```
 
 The remembered preference survives Studio restarts and computer crashes. A
-one-off choice does not change it: use `--editor nano` on the `create`
-command, or enter `edit workflow --editor micro`. Without a preference,
+one-off choice does not change it: use `--editor nano` on the `workflow create`
+command, or enter `workflow edit code --editor micro`. Without a preference,
 Studio tries `$VISUAL`, `$EDITOR`, then `micro`, `nano`, `vim`, and `vi`.
 `editor reset` restores that automatic discovery. Studio runs the editor
 directly in the existing terminal; this uses neither an LLM nor MCP. Commands
@@ -274,78 +284,81 @@ After saving the specification and leaving the editor, Studio prepares the
 coding-assistant handoff:
 
 ```text
-zippergen [no workflow]> create
+zippergen [no workflow]> workflow create
 
-── Output: create ──────────────────────────────────────
+── Output: workflow create ─────────────────────────────
 Creation
 ────────
   Specification  ✓ specification.md
-  Task           ✓ .zippergen/current-task.md
-  Next             assistant codex · assistant claude
-  Inspect          task · task show · task history
+  Implementation ✓ prepared
+  Next             workflow implement codex · workflow implement claude
+  Inspect          workflow status · workflow history
 
-zippergen [no workflow]> assistant codex
+zippergen [no workflow]> workflow implement codex
 ```
 
-`create` creates or reopens the fixed canonical file and waits for a successful
-editor exit. A new file starts with a comment-only writing guide covering
+`workflow create` creates or reopens the fixed canonical file and waits for a
+successful editor exit. A new file starts with a comment-only writing guide covering
 durable intent while excluding filenames, tests, commands, and coding-assistant
 instructions. Studio removes that guide after real requirements are saved and
 will not turn an untouched guide into a task. No prompt filename or ID is
-required. `spec show`, `spec edit`, and `spec path` inspect, edit, or locate the
-same document. For a genuinely short experiment, `create DESCRIPTION` writes
-it without opening an editor. The advanced `create --file PATH` form imports
+required. `workflow show spec`, `workflow edit spec`, and `workflow path`
+inspect, edit, or locate the same document. For a genuinely short experiment,
+`workflow create DESCRIPTION` writes it without opening an editor. The advanced
+`workflow create --file PATH` form imports
 an existing UTF-8 document into `specification.md`; its original filename does
 not become project state.
 
-For an existing selected workflow, `spec refine` creates or reopens exactly one
+For an existing selected workflow, `workflow refine` creates or reopens exactly one
 automatically named `.zippergen/pending-refinement.md`:
 
 ```text
-zippergen [reviewed_answer]> spec refine
-zippergen [reviewed_answer]> spec pending
+zippergen [reviewed_answer]> workflow refine
+zippergen [reviewed_answer]> workflow show pending
 ```
 
-Running `spec refine` again opens that same pending document. The short
-`refine` command is an alias; `refine CHANGE` appends a small addition rather
-than creating another permanent prompt file. Studio records a semantic
+Running `workflow refine` again opens that same pending document. `workflow
+refine CHANGE` appends a small addition rather than creating another permanent
+prompt file. Studio records a semantic
 pre-change baseline and builds the handoff from the canonical specification,
 the pending change, and the selected workflow.
 
 The assistant must integrate the change coherently into `specification.md`
 alongside code and tests, while leaving the pending document for human review.
-This can also be done manually with `spec edit`. `spec reconcile` does not
-perform a merge: after inspection it verifies that the canonical specification
-changed, asks whether to accept that existing integration, archives the pending
-text privately, and clears it. `refine CHANGE` appends only to the pending
-document, never to the canonical specification. `spec discard` safely archives
-an unwanted change; `spec history` lists both outcomes. Accepted specification
+This can also be done manually with `workflow edit spec`. `workflow accept`
+does not perform a merge: after inspection it verifies that the canonical
+specification changed, asks whether to accept that existing integration,
+archives the pending text privately, and clears it. `workflow refine CHANGE`
+appends only to the pending document, never to the canonical specification.
+`workflow discard` safely archives an unwanted change; `workflow history`
+lists both specification and implementation history. Accepted specification
 history belongs in Git.
 
 The handoff also includes required source, tests, validation, semantic views,
 and the no-deployment boundary. Studio writes the complete current handoff to
 the fixed, generated `.zippergen/current-task.md` file and keeps timestamped
-private copies in the project workspace. `task` summarizes it, `task show`
-prints it, `task path` gives its absolute path for integrations, and `task
-history` lists the private archive. A later `create` or `spec refine`
-deliberately replaces the current task; `specification.md` remains the durable
-design record.
+private copies in the project workspace. `workflow status` summarizes its
+lifecycle, while `workflow history` lists the private archive. The generated
+file is an implementation detail passed automatically to the selected coding
+assistant; users do not need to find or copy its path. A later `workflow
+create` or `workflow refine` deliberately replaces the current implementation
+request; `specification.md` remains the durable design record.
 
 The task cannot silently lag behind that record. Studio fingerprints the
-canonical specification and pending refinement. While a task is still
-`ready for assistant`, Studio compares the fingerprint before `assistant`,
-`task`, `task show`, `task path`, or `current`. If either input document
+canonical specification and pending refinement. While an implementation is
+still ready, Studio compares the fingerprint before `workflow implement`,
+`workflow status`, or `current`. If either input document
 changed, Studio generates one synchronized replacement and records which
 request it refreshes. Once an assistant has run, expected edits no longer look
-like stale task input: the same request moves to `awaiting human review` and is
+like stale input: the same request moves to `awaiting human review` and is
 preserved until it is reconciled, discarded, deliberately rerun, or closed.
 
-`assistant codex` or plain `assistant` runs the locally installed Codex CLI in
-one-shot execution mode; `assistant claude` does the same with Claude Code and
+`workflow implement codex` runs the locally installed Codex CLI in one-shot
+execution mode; `workflow implement claude` does the same with Claude Code and
 project-local edits accepted. Studio starts either tool in the project root,
 asks it to execute the synchronized fixed task, and regains control
 automatically when the tool reports completion. Use
-`assistant codex --interactive` only when an interactive Codex conversation is
+`workflow implement codex --interactive` only when an interactive Codex conversation is
 actually useful. Thus
 there is no separate prompt-copying step: the assistant receives the complete
 specification context through `.zippergen/current-task.md`. Studio does not call
@@ -356,50 +369,53 @@ for Codex, or follow Anthropic's
 [`claude` setup](https://docs.anthropic.com/en/docs/claude-code/getting-started).
 Each assistant retains its own model settings, approvals, and independently
 configured tools. MCP is optional, not part of the ZipperGen handoff. Another
-repository-aware coding assistant can consume `task show` or the file path.
+repository-aware coding assistant can consume the generated implementation
+request through an integration.
 
 Assistant commands execute immediately and synchronously; Studio has no hidden
-task queue or scheduled assistant job. Before launch, `task` reports `ready for
-assistant` and `Execution: not started; nothing is scheduled`. A successful
+task queue or scheduled assistant job. Before launch, `workflow status`
+reports a prepared implementation and `Execution: not started; nothing is
+scheduled`. A successful
 return records the assistant and time, then reports `awaiting human review`
 with the actual review commands. A failed or interrupted session remains
 visible and retryable; after a Studio or computer crash, an orphaned `running`
 record is recovered as `assistant interrupted` on the next inspection. Studio
-blocks an accidental second execution while review is pending; use `assistant
-codex --rerun` or `assistant claude --rerun` only when another pass is
-intentional.
+blocks an accidental second execution while review is pending; use `workflow
+implement codex --rerun` or `workflow implement claude --rerun` only when
+another pass is intentional.
 
-After the assistant creates visible Python source, `use` selects it. For an
-existing workflow, `spec refine` additionally saves a semantic baseline for a
-meaningful before/after diff. A refinement task closes through `spec reconcile`
-or `spec discard`; after reviewing an initial creation task, `task close`
-clears its stable mirror while retaining private task history.
+After the assistant creates visible Python source, `workflow use` selects it.
+For an existing workflow, `workflow refine` additionally saves a semantic
+baseline for a meaningful before/after diff. A reviewed refinement or initial
+creation closes through `workflow accept`; an unwanted refinement closes
+through `workflow discard`. Private implementation history remains available
+through `workflow history`.
 
 Every later source/design change uses the same visible loop:
 
 ```text
-zippergen [reviewed_answer]> spec refine
-zippergen [reviewed_answer]> spec pending
-zippergen [reviewed_answer]> task       # optional summary
-zippergen [reviewed_answer]> assistant claude  # or: assistant codex
+zippergen [reviewed_answer]> workflow refine
+zippergen [reviewed_answer]> workflow show pending
+zippergen [reviewed_answer]> workflow status       # optional summary
+zippergen [reviewed_answer]> workflow implement claude  # or: codex
 zippergen [reviewed_answer]> current
-zippergen [reviewed_answer]> validate
-zippergen [reviewed_answer]> show communications
+zippergen [reviewed_answer]> workflow validate
+zippergen [reviewed_answer]> workflow show communications
 zippergen [reviewed_answer]> run
-zippergen [reviewed_answer]> spec show
-zippergen [reviewed_answer]> spec reconcile
+zippergen [reviewed_answer]> workflow show spec
+zippergen [reviewed_answer]> workflow accept
 ```
 
 A model change has two forms. Use `models configure`, then `models check NAME`
 and `models assign Writer NAME` (or `models default NAME`) when only the
 remembered run/deployment routing changes; no assistant is needed. Use
-`refine` followed by an assistant when the choice belongs in
+`workflow refine` followed by `workflow implement` when the choice belongs in
 versioned design intent or requires source, action prompts, deployment
 metadata, or tests to change. For example:
 
 ```text
-zippergen [reviewed_answer]> refine Use openai:gpt-4o-mini for Writer and preserve all protocol behavior.
-zippergen [reviewed_answer]> assistant claude
+zippergen [reviewed_answer]> workflow refine Use openai:gpt-4o-mini for Writer and preserve all protocol behavior.
+zippergen [reviewed_answer]> workflow implement claude
 ```
 
 When the mock/fake development run is satisfactory, `deploy` enters the
@@ -438,8 +454,8 @@ override, not a required setup step.
 1. **Fresh design cycle** archives `zippergen.toml`, `specification.md`, any
    legacy prompt directory, and all private Studio state. Workflow source,
    tests, Git history, the framework checkout, and deployments remain in
-   place. `project init` then genuinely creates a new manifest, and `create`
-   opens a new guided specification.
+   place. `project init` then genuinely creates a new manifest, and `workflow
+   create` opens a new guided specification.
 2. **Studio state only** archives managed runs, assistant-task and command
    history, model/provider preferences, development secrets, generated tasks,
    and pending refinements while keeping every visible project file.
@@ -611,8 +627,8 @@ ZipperGen can render semantic views directly in the terminal. These views are
 generated from the workflow IR, so they do not require a diagramming tool and
 are suitable for both human review and coding assistants.
 
-In Studio, enter `show` for the selectable views below, or `show agent` for a
-participant selector. The scriptable equivalents are:
+In Studio, enter `workflow show` for the selectable views below, or `workflow
+show agent` for a participant selector. The scriptable equivalents are:
 
 ```bash
 # Complete global protocol
@@ -673,12 +689,12 @@ provides the deterministic protocol validation, projections, views, and diffs.
 This keeps generated workflows as ordinary reviewable code instead of hiding
 them behind a separate visual builder or opaque generation service.
 
-Studio exposes this handoff as `create` and `spec refine`. Multiline accepted
-requirements remain in one normal, versioned specification:
+Studio exposes this handoff as `workflow create` and `workflow refine`.
+Multiline accepted requirements remain in one normal, versioned specification:
 
 ```text
-zippergen [no workflow]> create
-zippergen [reviewed_answer]> spec refine
+zippergen [no workflow]> workflow create
+zippergen [reviewed_answer]> workflow refine
 ```
 
 These are not disposable chat messages. Studio gives the coding assistant the
@@ -718,7 +734,7 @@ does not silently start services or perform live effects.
 
 ### Coding assistants as workflow actions
 
-Studio's `assistant codex` command helps a developer edit the current
+Studio's `workflow implement codex` command helps a developer edit the current
 ZipperGen project. A first-class `@assistant` action is different: it is an
 explicit step *inside an executing workflow*, owned by a lifeline and visible
 in global views, local projections, traces, validation, and semantic diffs.

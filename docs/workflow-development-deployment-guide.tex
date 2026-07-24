@@ -228,7 +228,7 @@ The parent is now the tutorial project and coding-assistant root. Its nested
 \path{zippergen} directory is a separate framework checkout containing
 \path{AGENTS.md}, the workflow skill, framework source, and shipped examples.
 Studio will create the application project's fixed \path{specification.md}
-when you enter \texttt{create}; there is no prompt directory or prompt filename
+when you enter \texttt{workflow create}; there is no prompt directory or prompt filename
 to choose. The ignored \path{.zippergen/pending-refinement.md} is likewise
 created automatically only when a change is pending.
 \texttt{uv sync} creates the framework's local environment;
@@ -245,7 +245,7 @@ An older version of this guide cloned ZipperGen directly into
 \path{AGENTS.md}, \path{pyproject.toml}, and \path{src}, and
 there is no nested \path{zippergen} directory. Do not add a
 \texttt{zippergen/} prefix to framework paths. The Studio creation command is
-still simply \texttt{create}. For that flat checkout, run these equivalent
+still simply \texttt{workflow create}. For that flat checkout, run these equivalent
 installation commands from its root:
 \begin{quote}
 \texttt{uv sync --python 3.12}\\
@@ -300,10 +300,10 @@ precise understanding of every generated artifact.
 \centering
 \begin{tikzpicture}[node distance=5.5mm]
   \node[zgstage, text width=23mm] (intent) {Natural-language\\intent};
-  \node[zgstage, text width=24mm, right=of intent] (brief) {Studio task from\\specification};
+  \node[zgstage, text width=24mm, right=of intent] (brief) {Implementation request\\from specification};
   \node[zgstage, text width=23mm, right=of brief] (assistant) {Repository-aware\\coding assistant};
   \node[zgstage, text width=23mm, right=of assistant] (source) {Visible Python\\workflow};
-  \node[zgstage, text width=24mm, right=of source] (studio) {Show, validate,\\run, deploy};
+  \node[zgstage, text width=24mm, right=of source] (studio) {Inspect, validate,\\run, deploy};
   \node[zgstore, text width=31mm, below=10mm of brief] (ledger)
     {Canonical intent\\\texttt{specification.md}};
   \node[zgstore, text width=31mm, below=10mm of studio] (state)
@@ -355,12 +355,23 @@ commands with \texttt{zippergen}. Enter \texttt{help} now; it is the
 built-in reminder for creation, selection, inspection, model routing,
 execution, refinement, deployment, and operation.
 
+The command vocabulary has three memorable themes. Everything that changes or
+explains the application design lives below \texttt{workflow}: creation,
+refinement, coding-assistant implementation, selection, semantic views,
+validation, review, and history. Everything about model connections,
+configurations, checks, and assignments lives below \texttt{models}. Running
+and operating the resulting application stays direct:
+\texttt{run}, \texttt{resume}, \texttt{deploy}, \texttt{doctor},
+\texttt{status}, \texttt{logs}, \texttt{restart}, and \texttt{stop}. Thus a
+beginner can type \texttt{workflow}, \texttt{models}, or \texttt{current} to
+recover the next step instead of remembering several unrelated nouns.
+
 Press Tab at any point while entering a command. Studio completes commands and
 subcommands and, where relevant, offers the workflows, participants,
 LLM-active participants, providers, remembered deployment, and project files
-that are valid in the current context. For example, type \texttt{sp} followed
-by Tab to obtain \texttt{spec}; after selecting the tutorial workflow,
-\texttt{show agent W} followed by Tab completes \texttt{Writer}. When several
+that are valid in the current context. For example, type \texttt{wor} followed
+by Tab to obtain \texttt{workflow}; after selecting the tutorial workflow,
+\texttt{workflow show agent W} followed by Tab completes \texttt{Writer}. When several
 matches exist, the completion menu explains each one. When exactly one match
 exists---for example, \texttt{resu} for \texttt{resume}---the bottom line shows
 that match and its explanation even though no menu is necessary. Use the up
@@ -397,7 +408,8 @@ tests, Git history, the nested framework checkout, and deployments. Archives
 are owner-only below \path{ZIPPERGEN_HOME/resets}.
 
 This distinction explains the complete restart sequence. Choose the fresh
-design cycle, confirm it, then enter \texttt{project init} and \texttt{create}.
+design cycle, confirm it, then enter \texttt{project init} and \texttt{workflow
+create}.
 The manifest is genuinely new and the specification contains only the writing
 guide described in Step~2, not the previous requirements. For automation, the
 explicit commands are \texttt{project reset fresh --yes} and
@@ -427,7 +439,7 @@ Current
 The real terminal uses a continuous rule character; the ASCII form above is
 print-friendly. The boundary repeats only the command family, never its prompt
 text, paths, model values, or secrets. It therefore remains short even for a
-long \texttt{create} or \texttt{spec refine} command. Blank input and
+long \texttt{workflow create} or \texttt{workflow refine} command. Blank input and
 \texttt{exit} produce no boundary.
 \end{notebox}
 
@@ -443,7 +455,7 @@ Assign the mock model to Writer.
 \end{lstlisting}
 
 The first request becomes \texttt{current}; after a workflow is selected, the
-second becomes \texttt{show protocol}, and the third becomes
+second becomes \texttt{workflow show protocol}, and the third becomes
 \texttt{models assign Writer mock}. Studio prints a
 \emph{Natural-language request} table and the exact command plan before any
 result, so natural language never hides which operation was chosen. Common
@@ -524,8 +536,8 @@ or MCP server. A one-time choice can be supplied without changing the saved
 preference:
 
 \begin{lstlisting}[style=shell]
-edit workflow --editor nano
-create --editor micro
+workflow edit code --editor nano
+workflow create --editor micro
 \end{lstlisting}
 
 For an editor that needs arguments, quote the whole one-time command, for
@@ -537,7 +549,7 @@ failure. These checks keep ``edit this file'' scoped to the current project.
 
 Long requirements do not belong in a single-line terminal question, and the
 user should not have to invent or remember a prompt filename. Enter
-\texttt{create}. Studio creates the fixed project file
+\texttt{workflow create}. Studio creates the fixed project file
 \path{specification.md}, opens it in the editor selected in Step~1b, and
 waits. On the first creation it contains a short comment explaining what a
 specification should cover and which development mechanics to omit. Write
@@ -547,7 +559,7 @@ untouched does not create an assistant task. Copying into an editor is reliable
 even when a terminal's interactive question cannot accept a multiline paste.
 
 \begin{lstlisting}[style=shell]
-create
+workflow create
 \end{lstlisting}
 
 \begin{lstlisting}[numbers=none]
@@ -582,12 +594,12 @@ preserves its paragraphs and lists, and wraps it in repository-aware
 instructions. It prints a compact table instead of repeating the long text:
 
 \begin{lstlisting}[style=shell]
--- Output: create -----------------------------------------
+-- Output: workflow create --------------------------------
 Creation
   Specification  [success] specification.md
-  Task           [success] .zippergen/current-task.md
-  Next                     assistant codex / assistant claude
-  Inspect                  task / task show / task history
+  Implementation [success] prepared
+  Next                     workflow implement codex / workflow implement claude
+  Inspect                  workflow status / workflow history
 \end{lstlisting}
 
 There is no prompt ID, numbered prompt file, or ordering operation. The
@@ -595,49 +607,49 @@ canonical document is always \path{specification.md}; it is ordinary project
 source and should be reviewed and committed with the Python workflow. The
 generated, non-secret handoff is always
 \path{.zippergen/current-task.md}; Studio also keeps timestamped private task
-history outside Git. The task asks the assistant to identify participants,
+history outside Git. The implementation request asks the assistant to identify participants,
 ownership, messages, action kinds, decisions, loops, deployment needs, safety
 assumptions, and acceptance examples before editing. It also requires tests,
 validation, semantic views, and all exact local projections. No workflow file
-has been created yet; Step~3 starts the coding assistant on this task.
+has been created yet; Step~3 starts the coding assistant on this request.
 
 Notice that the specification does not choose a Python filename or symbol,
 request tests and validation, or repeat the prohibition on deployment. Those
 are development mechanics supplied automatically by Studio's generated task.
 The specification contains only durable application intent. After generation,
 Studio discovers the resulting workflow so the user can select it with
-\texttt{use} without knowing its source path in advance.
+\texttt{workflow use} without knowing its source path in advance.
 
 The everyday specification commands are intentionally uniform:
 
 \begin{lstlisting}[style=shell]
-spec show       # read the accepted requirements
-spec edit       # reopen the same specification.md
-spec path       # print its absolute path only when another tool needs it
-task            # inspect the generated assistant-task summary
-task show       # inspect the complete assistant instruction
-task history    # list timestamped private handoffs
+workflow show spec    # read the accepted requirements
+workflow edit spec    # reopen the same specification.md
+workflow path         # print its absolute path only when another tool needs it
+workflow status       # inspect the implementation lifecycle
+workflow history      # list specification and implementation history
 \end{lstlisting}
 
 An empty specification is rejected. Never put an API key or other secret in
-it. For a genuinely short experiment, \texttt{create DESCRIPTION} writes the
-same canonical file without opening an editor. Advanced users may import an
-existing UTF-8 document once with \texttt{create --file PATH}; Studio copies
+it. For a genuinely short experiment, \texttt{workflow create DESCRIPTION}
+writes the same canonical file without opening an editor. Advanced users may import an
+existing UTF-8 document once with \texttt{workflow create --file PATH}; Studio copies
 its content into \path{specification.md} and does not retain that source
 filename as project configuration.
 
 Studio fingerprints the canonical specification when it prepares a task.
-While the task is still \texttt{ready for assistant}, Studio compares that
-fingerprint before \texttt{task}, \texttt{task show}, \texttt{task path},
-\texttt{current}, or \texttt{assistant}. If an input document changed, Studio
-creates one refreshed private task and records which older request it replaces.
+While the implementation is still prepared, Studio compares that fingerprint
+before \texttt{workflow status}, \texttt{current}, or \texttt{workflow
+implement}. If an input document changed, Studio creates one refreshed private
+request and records which older request it replaces.
 After an assistant has run, its expected edits are output awaiting review, not
 new task input: Studio preserves the executed request instead of silently
 creating another ``ready'' task.
 
 Projects made with an older Studio may still contain
 \path{prompts/index.toml} and numbered prompt files. On the first
-\texttt{spec show}, \texttt{spec edit}, or \texttt{spec refine}, Studio safely
+\texttt{workflow show spec}, \texttt{workflow edit spec}, or \texttt{workflow
+refine}, Studio safely
 combines their active contents into \path{specification.md} and keeps every old
 file as history. New work then uses only the canonical specification model.
 
@@ -653,13 +665,13 @@ output as an automatically deployed workflow.
 At the same Studio prompt, enter:
 
 \begin{lstlisting}[style=shell]
-assistant codex
+workflow implement codex
 # Or, when Claude Code is installed:
-assistant claude
+workflow implement claude
 \end{lstlisting}
 
-Choose one of the two commands; do not run both for the same task. Plain
-\texttt{assistant} remains an alias for \texttt{assistant codex}. Studio runs
+Choose one of the two commands; do not run both for the same implementation
+request. Studio runs
 the selected local coding assistant once in the project root and tells it to
 read \path{.zippergen/current-task.md}. Just before launch, Studio applies
 the freshness check described above, so the file contains the current
@@ -669,7 +681,7 @@ configured permission boundary, runs checks, writes a small structured
 verification handoff, exits, and returns control to the same ZipperGen Studio
 session. The handoff distinguishes the assistant process returning from the
 requested checks actually passing. Use
-\texttt{assistant codex --interactive} only when a conversation or interactive
+\texttt{workflow implement codex --interactive} only when a conversation or interactive
 approval is genuinely needed.
 
 The generated task also explains the tutorial's two-project layout. The
@@ -698,35 +710,36 @@ condensed into warnings. Interactive Codex sessions retain their ordinary
 terminal output.
 
 There is no assistant queue or scheduled background job. The command runs
-synchronously: before launch, \texttt{task} says
-\texttt{ready for assistant} and
+synchronously: before launch, \texttt{workflow status} says the implementation
+is prepared and
 \texttt{Execution: not started; nothing is scheduled}. A normal return
 changes the same request to \texttt{awaiting human review} and replaces the
 assistant suggestion with the concrete review path. Separately,
 \texttt{Verification} is \texttt{passed}, \texttt{failed}, or
 \texttt{incomplete}, with a concise note and the number of checks the
-assistant reported. The \texttt{task} output lists each reported command and
+assistant reported. The \texttt{workflow status} output lists each reported command and
 its outcome underneath the summary. A missing, malformed, or internally
 inconsistent handoff is never interpreted as success. A failed or interrupted
 assistant process remains visible and retryable. If Studio or the computer
 stops while the assistant is running, the orphaned state is recovered as
 \texttt{assistant interrupted} on the next inspection. Studio refuses to start an
-\texttt{awaiting human review} task accidentally; use
-\texttt{assistant codex --rerun} or
-\texttt{assistant claude --rerun} only when a second pass is intentional.
+\texttt{awaiting human review} implementation accidentally; use
+\texttt{workflow implement codex --rerun} or
+\texttt{workflow implement claude --rerun} only when a second pass is intentional.
 Studio refreshes an older unexecuted task automatically before launch so that
 it also receives this verification contract.
 
 \begin{lstlisting}[style=shell]
-task
-Current task
+workflow status
+Workflow implementation
   Status     [warning] awaiting human review
   Assistant            Codex -- returned ...
   Execution            assistant session ended; nothing is scheduled
   Verification [success] passed -- 5 checks
   Verification note    Validation, projections, diff, and focused tests passed.
   Context    [success] assistant result is preserved for review
-  Next                  use / current / validate / show / task close
+  Next                  workflow use / current / workflow validate /
+                        workflow show / workflow accept
 \end{lstlisting}
 
 The verification result is an explicit assistant report, not an independent
@@ -735,14 +748,14 @@ proof and not permission to deploy. If it is \texttt{failed} or
 inspection, validation, and an intentional assistant rerun instead of implying
 that the change is ready. Immediately below the review table it prints only
 failed or unexecuted checks; the complete reported check list remains
-available through \texttt{task}. Human review of the visible code and semantic
+available through \texttt{workflow status}. Human review of the visible code and semantic
 views remains mandatory.
 
-For this initial creation task, use \texttt{task close} after the generated
-workflow has passed the review below. The command removes only the stable
-\path{.zippergen/current-task.md} mirror; timestamped private history remains.
-Refinement tasks close differently: their explicit acceptance operation is
-\texttt{spec reconcile}, while \texttt{spec discard} records rejection.
+For this initial creation, use \texttt{workflow accept} after the generated
+workflow has passed the review below. The command accepts the implementation
+while retaining timestamped private history. Refinements use the same
+acceptance command; \texttt{workflow discard} records rejection of a pending
+refinement.
 
 If Studio says that \texttt{codex} is missing, the prepared task remains safe.
 Open a second operating-system terminal. If npm is already installed, install
@@ -755,7 +768,7 @@ cd "$HOME/Projects/zippergen-tutorial"
 codex
 \end{lstlisting}
 
-Then return to Studio and enter \texttt{assistant codex} again.
+Then return to Studio and enter \texttt{workflow implement codex} again.
 Section~\ref{sec:codex} explains setup for both supported assistants and the
 no-assistant fallback in more detail. The task points
 the assistant to
@@ -764,15 +777,16 @@ skill is not installed at the parent project root. The long workflow
 specification remains in \path{specification.md} rather than being pasted into
 the assistant's terminal.
 
-\begin{notebox}{What \texttt{assistant} is---and is not}
-\texttt{assistant codex} and \texttt{assistant claude} are small launchers for
+\begin{notebox}{What \texttt{workflow implement} is---and is not}
+\texttt{workflow implement codex} and \texttt{workflow implement claude} are
+small launchers for
 the locally installed Codex CLI and Claude Code respectively. They do not send
 the task through ZipperGen's Writer or Reviewer model providers and need no
 ZipperGen API key. Each tool uses its own authentication, model settings,
 approval policy, and tools. MCP is not required. Independently configured MCP
 servers remain available to the chosen assistant, but Studio neither creates
-nor manages them. Another repository-aware assistant can instead read
-\texttt{task show} or \texttt{task path}.
+nor manages them. Integrations can also consume Studio's generated
+implementation request directly.
 \end{notebox}
 
 Wait for the assistant to report generated source, focused tests, validation,
@@ -794,9 +808,9 @@ its internal source reference; the user does not have to type it.
 Return to the Studio terminal and enter:
 
 \begin{lstlisting}[style=shell]
-use
+workflow use
 current
-validate
+workflow validate
 \end{lstlisting}
 
 Studio displays the discovered workflows. Select the newly generated
@@ -806,7 +820,7 @@ type. The selected entry may display an internal reference of the form
 deployment. The three commands have deliberately different jobs:
 
 \begin{description}
-  \item[\texttt{use}] discovers top-level workflow objects, loads the chosen
+  \item[\texttt{workflow use}] discovers top-level workflow objects, loads the chosen
         object, and remembers its \texttt{PATH.py:NAME} reference as the current
         workflow for later Studio commands. It neither runs nor deploys it.
   \item[\texttt{current}] rebuilds the project dashboard from the current files
@@ -815,25 +829,25 @@ deployment. The three commands have deliberately different jobs:
         \texttt{LLM-active participants} subset derived from actual
         \texttt{@llm} action sites, model routing, provider connections, the
         managed run, and deployment. Thus the green
-        \texttt{Validation: valid} mark immediately after \texttt{use} is
+        \texttt{Validation: valid} mark immediately after \texttt{workflow use} is
         expected: \texttt{current} has checked the selected source; it is not
-        a success mark cached by \texttt{use}.
-  \item[\texttt{validate}] runs the validator explicitly and prints every
+        a success mark cached by \texttt{workflow use}.
+  \item[\texttt{workflow validate}] runs the validator explicitly and prints every
         individual check, including the exact local projection checks. It does
         not modify, execute, or deploy the workflow.
 \end{description}
 
 \texttt{current} should show no run, no deployment, and default LLM
-\texttt{mock}. In the detailed \texttt{validate} output, every successful check
+\texttt{mock}. In the detailed \texttt{workflow validate} output, every successful check
 begins with a green check mark. A red cross identifies a failed check and is
 followed by its explanation.
 
 \subsubsection*{Step 5: inspect increasing degrees of detail}
 
-Enter \texttt{show} and choose each of the first five views once:
+Enter \texttt{workflow show} and choose each of the first five views once:
 
 \begin{lstlisting}[style=shell]
--- Output: show -------------------------------------------
+-- Output: workflow show ----------------------------------
 1. Overview
 2. Protocol
 3. Communications only
@@ -846,19 +860,19 @@ Enter \texttt{show} and choose each of the first five views once:
 Then use the direct forms:
 
 \begin{lstlisting}[style=shell]
-show communications
-show actions
-show full
-show agent Writer
-show agent Reviewer
-show agents Writer Reviewer
+workflow show communications
+workflow show actions
+workflow show full
+workflow show agent Writer
+workflow show agent Reviewer
+workflow show agents Writer Reviewer
 \end{lstlisting}
 
-All results are code. \texttt{show communications} hides local actions and
-retains messages and control. \texttt{show actions} reveals action calls and
-prompts. \texttt{show full} adds implementation and deployment requirements.
-\texttt{show agent Reviewer} is the exact projected local program.
-\texttt{show agents Writer Reviewer} is a focused global view with hidden
+All results are code. \texttt{workflow show communications} hides local actions
+and retains messages and control. \texttt{workflow show actions} reveals action
+calls and prompts. \texttt{workflow show full} adds implementation and deployment requirements.
+\texttt{workflow show agent Reviewer} is the exact projected local program.
+\texttt{workflow show agents Writer Reviewer} is a focused global view with hidden
 peers marked as boundaries; it is not a projection.
 
 Before running, confirm from these views who owns both inputs, who owns the
@@ -964,21 +978,21 @@ No export must be repeated. The workflow, model routing, run record, and
 development secrets live below \path{$HOME/.zippergen/workspaces} by default.
 A shell export disappears with its shell; Studio's workspace record does not.
 
-The initial creation task has now been generated, inspected, validated, run,
-and recovery-tested. Close that development task explicitly:
+The initial workflow has now been generated, inspected, validated, run,
+and recovery-tested. Accept that development result explicitly:
 
 \begin{lstlisting}[style=shell]
-task
-task close
+workflow status
+workflow accept
 \end{lstlisting}
 
-\texttt{task} should say \texttt{awaiting human review} and show
-\texttt{task close} in its \texttt{Next} row. Confirm the close when Studio
+\texttt{workflow status} should say \texttt{awaiting human review} and show
+\texttt{workflow accept} in its \texttt{Next} row. Confirm when Studio
 asks. This does not remove the specification, workflow, tests, run, or private
-task history; it only records that this creation task is no longer open.
-\texttt{current} will then show no current development task. The optional
+implementation history; it only records that this implementation is no longer open.
+\texttt{current} will then show no current workflow implementation. The optional
 model-routing step below and later deployment do not require an open assistant
-task.
+request.
 
 \subsubsection*{Optional Step 9: route two lifelines to different real models}
 
@@ -1124,8 +1138,8 @@ change declared workflow/deployment defaults, or accompany prompt, action, or
 test changes, record it as a refinement and run an assistant. For example:
 
 \begin{lstlisting}[style=shell]
-refine Use openai:gpt-4o-mini for Writer and preserve all protocol behavior.
-assistant claude
+workflow refine Use openai:gpt-4o-mini for Writer and preserve all protocol behavior.
+workflow implement claude
 \end{lstlisting}
 
 The second form appends to the one pending refinement and asks the assistant to
@@ -1147,7 +1161,7 @@ models inherit Reviewer
 This changes only routing; it does not delete saved development secrets. Enter:
 
 \begin{lstlisting}[style=shell]
-spec refine
+workflow refine
 \end{lstlisting}
 
 Studio creates the automatically named, ignored file
@@ -1160,12 +1174,12 @@ the human decision. Preserve the bounded retry and approval behavior. Add
 focused tests and do not deploy.
 \end{lstlisting}
 
-There is only one pending refinement. Entering \texttt{spec refine} again
+There is only one pending refinement. Entering \texttt{workflow refine} again
 reopens that same file; it never asks for a name and never creates P002, P003,
-or another permanent prompt fragment. The short \texttt{refine} command is a
-first-class alias. Supplying short text, for example \texttt{refine Also keep
-the mock backend as the default}, appends it to the existing pending document.
-\texttt{spec pending} displays the complete change without opening the editor.
+or another permanent prompt fragment. Supplying short text, for example
+\texttt{workflow refine Also keep the mock backend as the default}, appends it
+to the existing pending document. \texttt{workflow show pending} displays the
+complete change without opening the editor.
 Appending here never appends a chronological note to
 \path{specification.md}.
 
@@ -1173,8 +1187,9 @@ This step is useful because creation and later modification must follow the
 same safe cycle; it is not required merely to deploy the initially generated
 workflow. Studio saves one semantic pre-edit baseline and creates a task
 containing the accepted \path{specification.md}, the pending refinement, the
-selected workflow, and that baseline. Enter \texttt{task} if you want to
-inspect it, then \texttt{assistant} as in Step~3. The assistant is explicitly
+selected workflow, and that baseline. Enter \texttt{workflow status} if you
+want to inspect its lifecycle, then \texttt{workflow implement} as in Step~3.
+The assistant is explicitly
 required to integrate the change coherently into \path{specification.md},
 rather than turning that document into a chronological journal; it updates
 code and tests, validates changed projections, and runs
@@ -1185,45 +1200,47 @@ This is the complete repeatable change loop; use it for every later behavioral
 or source-level modification:
 
 \begin{lstlisting}[style=shell]
-spec refine            # create or reopen the one pending change
-spec pending           # optional: inspect it without editing
-task                 # optional: inspect the generated handoff
-assistant codex      # or: assistant claude
+workflow refine       # create or reopen the one pending change
+workflow show pending # optional: inspect it without editing
+workflow status       # optional: inspect the implementation lifecycle
+workflow implement codex # or: workflow implement claude
 current
-validate
-show communications
-show agent Writer    # choose every participant changed by the refinement
+workflow validate
+workflow show communications
+workflow show agent Writer # choose every participant changed by the refinement
 run
-spec show             # verify the assistant integrated the requirement
-spec reconcile        # confirm, archive, and clear the pending change
+workflow show spec    # verify the assistant integrated the requirement
+workflow accept       # confirm, archive, and clear the pending change
 \end{lstlisting}
 
 The refinement must come before the assistant call. Before the first assistant
 launch, editing either input document refreshes the prepared task
-automatically. After the assistant returns, \texttt{task} reports
+automatically. After the assistant returns, \texttt{workflow status} reports
 \texttt{awaiting human review}; it does not reinterpret the expected edits as
 a new task. Its \texttt{Next} row names the review commands above. Nothing is
 scheduled, and a second assistant launch requires an explicit
 \texttt{--rerun}.
 
-\texttt{spec reconcile} is an acceptance and cleanup operation, not a merge
-engine. The coherent fusion happens either manually with \texttt{spec edit} or
-through \texttt{assistant codex}/\texttt{assistant claude}. Simple copying is
+\texttt{workflow accept} is an acceptance and cleanup operation, not a merge
+engine. The coherent fusion happens either manually with \texttt{workflow edit
+spec} or through \texttt{workflow implement codex}/\texttt{workflow implement
+claude}. Simple copying is
 possible in an editor but is usually the wrong result: the canonical document
 should describe the current application cleanly rather than accumulate update
 notes.
-\texttt{spec reconcile} refuses to clear the pending document when the
+\texttt{workflow accept} refuses to clear the pending document when the
 canonical specification has not changed since refinement began; this catches
 an assistant that changed code but forgot the durable requirements. It asks
 for human confirmation, accepts the already-integrated canonical document,
-moves the pending text into recoverable private history, and closes the task.
-Use \texttt{spec discard} for an unwanted change and \texttt{spec history} to
-list reconciled and discarded refinements. Accepted specification history
-remains visible in Git.
+moves the pending text into recoverable private history, and closes the
+implementation. Use \texttt{workflow discard} for an unwanted change and
+\texttt{workflow history} to list accepted and discarded refinements together
+with implementation history. Accepted specification history remains visible
+in Git.
 
 \subsubsection*{Step 11: perform the pre-deployment review}
 
-Enter \texttt{show full}. In the ordinary terminal run:
+Enter \texttt{workflow show full}. In the ordinary terminal run:
 
 \begin{lstlisting}[style=shell]
 git status --short
@@ -1340,7 +1357,7 @@ the error and use the later \texttt{deploy --no-start} plus
 service start without reading \texttt{doctor} and \texttt{logs}.
 
 \begin{warningbox}{Deployment is a real operational action}
-First complete mock execution and inspect \texttt{show full}. A real model call
+First complete mock execution and inspect \texttt{workflow show full}. A real model call
 may cost money and an \texttt{@effect} may change an external system. Use fake
 services until effects and retry safety have been reviewed.
 \end{warningbox}
@@ -1368,29 +1385,37 @@ of course be different on your machine:
 ZipperGen Studio
 Project: /path/to/zippergen-tutorial
 Workflow: zippergen/examples/tutorial_review.py:tutorial_review
-Type 'help' for commands; 'show' opens the inspection menu.
+Type 'help' for commands; 'workflow show' opens the inspection menu.
 zippergen [tutorial_review]>
 \end{lstlisting}
 
 The text in square brackets is the current workflow object name, not a
-deployment name. Enter \texttt{help} at any time. The important first commands
-are:
+deployment name. Enter \texttt{help} at any time. The public commands follow
+three themes: \texttt{workflow} for specification, implementation, inspection,
+and validation; \texttt{models} for connections, configurations, checks, and
+assignments; and direct operational commands for running and deployment. The
+important commands are:
 
 \begin{lstlisting}[style=shell]
 project show   # visible manifest and automatic specification path
 current        # specification, workflow, models, run, deployment
 editor show    # effective terminal editor and preference source
 editor set micro # remember an installed editor for this project
-spec show      # canonical accepted requirements
-spec edit      # edit the same automatically named specification.md
-spec refine    # create/reopen the one pending refinement
-spec pending   # inspect that change without opening the editor
-spec reconcile # accept an integrated change and clear pending state
-task            # lifecycle: prepared, running, review, failed/interrupted
-task close      # close a reviewed creation task; history remains
-use            # discover workflows and select one from a numbered list
-show           # choose a semantic code view from a numbered list
-validate       # validate the selected workflow and every projection
+workflow       # workflow-development dashboard
+workflow create # create/reopen specification.md
+workflow refine # create/reopen the one pending refinement
+workflow edit spec # edit the canonical specification
+workflow edit code # edit the selected Python source
+workflow show spec # canonical accepted requirements
+workflow show pending # inspect the pending refinement
+workflow show  # choose a semantic code view
+workflow status # prepared, running, review, failed/interrupted
+workflow implement codex # or: workflow implement claude
+workflow validate # validate the workflow and projections
+workflow accept # accept a reviewed implementation
+workflow discard # reject and archive a pending refinement
+workflow history # specification and implementation history
+workflow use    # discover workflows and select one
 models         # show connections, configurations, and assignments
 models configure [NAME] # guided provider and model setup
 models check [NAME] # verify saved configurations; assignments stay unchanged
@@ -1399,10 +1424,6 @@ run            # fresh guided, durable development run
 resume         # continue the current incomplete managed run
 runs           # list this project's managed development runs
 project reset  # choose fresh design, state-only reset, or cancel
-create          # create/reopen specification.md and prepare a brief
-refine          # short alias for spec refine
-assistant codex # execute the current task; assistant claude is also supported
-assistant codex --rerun # deliberately repeat a task awaiting review
 deploy         # explicitly enter guided named deployment
 exit           # leave Studio
 \end{lstlisting}
@@ -1413,7 +1434,7 @@ These are Studio commands entered after the
 
 \subsection{Inspect the workflow as code}
 
-Enter \texttt{show}. Studio displays:
+Enter \texttt{workflow show}. Studio displays:
 
 \begin{lstlisting}[style=shell]
 1. Overview
@@ -1430,17 +1451,17 @@ menu is only a convenient selector. It does not introduce a separate diagram
 format. You can also name a view directly:
 
 \begin{lstlisting}[style=shell]
-show overview
-show protocol
-show communications
-show actions
-show full
-show agent Reviewer
-show agents Writer Reviewer
+workflow show overview
+workflow show protocol
+workflow show communications
+workflow show actions
+workflow show full
+workflow show agent Reviewer
+workflow show agents Writer Reviewer
 \end{lstlisting}
 
-\texttt{show agent Reviewer} is the exact program produced by formal
-projection for Reviewer. \texttt{show agents Writer Reviewer} is instead a
+\texttt{workflow show agent Reviewer} is the exact program produced by formal
+projection for Reviewer. \texttt{workflow show agents Writer Reviewer} is instead a
 focused global view that retains those participants and marks hidden peers as
 explicit boundaries. The distinction is explained fully later in the manual.
 
@@ -1519,13 +1540,13 @@ normal Studio prerequisite.
 For a multiline description, let Studio open the canonical project document:
 
 \begin{lstlisting}[style=shell]
-create
+workflow create
 \end{lstlisting}
 
 For a short idea, provide the description on the same line:
 
 \begin{lstlisting}[style=shell]
-create Draft an answer and require human approval.
+workflow create Draft an answer and require human approval.
 \end{lstlisting}
 
 Studio saves a structured coding-assistant task. It asks for visible Python
@@ -1535,22 +1556,23 @@ is \path{.zippergen/current-task.md}, which is ignored by Git; timestamped
 archives remain outside the checkout.
 
 \begin{notebox}{Current assistant boundary}
-Studio's \texttt{assistant codex} and \texttt{assistant claude} commands launch
-the selected local coding tool on the current task. Neither is a ZipperGen
+Studio's \texttt{workflow implement codex} and \texttt{workflow implement
+claude} commands launch the selected local coding tool on the current
+implementation request. Neither is a ZipperGen
 workflow model provider, and neither automates deployment. The assistant edits
 ordinary files in the checkout; ZipperGen then loads, validates, projects,
-renders, and runs the result. Other coding assistants can read the same task
-through \texttt{task show} or \texttt{task path}. After source creation, enter
-\texttt{use} to discover and select the new workflow. The task is not a queued
-job: Studio records the synchronous assistant return as
-\texttt{awaiting human review}, and \texttt{task close} closes the reviewed
-creation handoff without deleting its history.
+renders, and runs the result. Integrations can consume the same generated
+request directly. After source creation, enter \texttt{workflow use} to
+discover and select the new workflow. The request is not a queued job: Studio
+records the synchronous assistant return as \texttt{awaiting human review},
+and \texttt{workflow accept} closes the reviewed creation without deleting its
+history.
 \end{notebox}
 
 For an existing selected workflow, open or reopen the one pending change:
 
 \begin{lstlisting}[style=shell]
-spec refine
+workflow refine
 \end{lstlisting}
 
 Studio owns both filenames, saves a semantic pre-edit baseline, and includes
@@ -1558,8 +1580,9 @@ the canonical specification plus pending refinement in the assistant brief.
 The assistant is required to update \path{specification.md}, preserve behavior
 not mentioned in the request, validate the result, inspect changed projections,
 and run \texttt{zippergen diff} against that baseline. After review,
-\texttt{spec reconcile} accepts the already-integrated canonical
-specification, archives the pending transaction, and closes the task. It does
+\texttt{workflow accept} accepts the already-integrated canonical
+specification, archives the pending transaction, and closes the implementation.
+It does
 not itself concatenate or rewrite the two documents.
 
 \subsection{Use a real LLM without repeating an API-key export}
@@ -1668,7 +1691,7 @@ The scriptable equivalents outside Studio remain
 \begin{warningbox}{Deployment is a real operational action}
 Do not enter \texttt{deploy}, \texttt{start}, or \texttt{restart} merely to
 explore the menu. Read the deployment chapters first, remain on mock/fake
-services, and understand the declared setup and effects. The \texttt{show full}
+services, and understand the declared setup and effects. The \texttt{workflow show full}
 view exposes prompts and deployment requirements before this transition.
 \end{warningbox}
 
@@ -1682,17 +1705,17 @@ this table to understand why those sections contain more commands.
 \textbf{Need} & \textbf{Recommended Studio path} &
 \textbf{Detailed/scriptable path} \\
 \midrule
-Select workflow & \texttt{use} selector; remembered per project & Supply
+Select workflow & \texttt{workflow use} selector; remembered per project & Supply
 \path{path.py:workflow} to each command. \\
-Inspect & \texttt{show} selector & \texttt{zippergen show} with
+Inspect & \texttt{workflow show} selector & \texttt{zippergen show} with
 \texttt{--detail}, \texttt{--communications}, or participant flags. \\
 Develop & \texttt{run}; guided inputs and unique managed store &
 \texttt{zippergen run} with explicit inputs, timeout, and optionally store. \\
 Human decision & Inline in the same terminal & \texttt{tasks} and
 \texttt{approve} from another terminal or notification adapter. \\
 Continue & \texttt{resume} & Re-run against the same explicit SQLite store. \\
-Specification change & \texttt{create} or
-\texttt{spec refine} & Manually request a snapshot, assistant edit,
+Specification change & \texttt{workflow create} or
+\texttt{workflow refine} & Manually request a snapshot, assistant edit,
 validation, views, projections, and semantic diff. \\
 Deploy/operate & \texttt{deploy}, then remembered \texttt{status},
 \texttt{logs}, \texttt{restart}, \texttt{stop} & Named deployment commands,
@@ -1761,10 +1784,10 @@ There are three places where text is entered:
 \midrule
 Operating-system shell & \texttt{\%}, \texttt{\$}, or a directory name &
 \texttt{cd}, \texttt{git}, \texttt{zippergen}, \texttt{codex} \\
-ZipperGen Studio & \texttt{zippergen [workflow]>} & \texttt{show},
+ZipperGen Studio & \texttt{zippergen [workflow]>} & \texttt{workflow show},
 \texttt{models}, \texttt{run}, \texttt{deploy}, \texttt{status} \\
 Coding assistant & Codex conversation prompt & The Studio-generated task;
-\texttt{assistant} supplies it automatically \\
+\texttt{workflow implement} supplies it automatically \\
 \bottomrule
 \end{tabularx}
 
@@ -1967,7 +1990,7 @@ normal mechanism for coding-assistant source generation. \\
 
 \subsection{Coding assistants inside an executing workflow}
 
-The Studio command \texttt{assistant codex} is a development command: it asks
+The Studio command \texttt{workflow implement codex} is a development command: it asks
 an assistant to edit the current project. The \texttt{@assistant} decorator is
 different. It declares repository-aware assistant work as an explicit action
 inside the protocol. The owning lifeline, typed inputs, static instruction,
@@ -2149,12 +2172,12 @@ See Anthropic's
 and
 \href{https://docs.anthropic.com/en/docs/claude-code/cli-usage}{CLI reference}.
 
-Normally, stay in Studio and enter \texttt{assistant codex} or
-\texttt{assistant claude}. Studio supplies the project directory and
+Normally, stay in Studio and enter \texttt{workflow implement codex} or
+\texttt{workflow implement claude}. Studio supplies the project directory and
 \path{.zippergen/current-task.md} instruction. Both tools use one-shot agent
 execution, perform the task, print their report, and return to Studio
 automatically instead of leaving an open assistant prompt. Codex retains the
-explicit \texttt{assistant codex --interactive} mode. Commands remain subject
+explicit \texttt{workflow implement codex --interactive} mode. Commands remain subject
 to each tool's configured permission rules. Neither path requires MCP. Any
 MCP server already configured in the chosen tool remains optional and is not
 configured or required by ZipperGen.
@@ -2658,8 +2681,8 @@ In Studio, select the workbench copy and open the one automatically named
 pending refinement:
 
 \begin{lstlisting}[style=shell]
-use workbench/tutorial_review.py:tutorial_review
-spec refine
+workflow use workbench/tutorial_review.py:tutorial_review
+workflow refine
 \end{lstlisting}
 
 Paste the following text into the editor, save it, and exit:
@@ -2678,9 +2701,9 @@ own semantic baseline, and generates the complete task. No prompt filename or
 baseline placeholder is required. Inspect and execute it:
 
 \begin{lstlisting}[style=shell]
-spec pending
-task
-assistant
+workflow show pending
+workflow status
+workflow implement
 \end{lstlisting}
 
 The generated task supplies the nested skill, canonical specification, pending
@@ -2750,7 +2773,7 @@ git push -u origin tutorial/workflow-cycle
 
 \subsection{Specification template for a workflow created from scratch}
 
-Enter \texttt{create} and use this structure in the automatically opened
+Enter \texttt{workflow create} and use this structure in the automatically opened
 \path{specification.md}:
 
 \begin{lstlisting}[numbers=none]
@@ -2769,7 +2792,7 @@ Enter \texttt{create} and use this structure in the automatically opened
 \end{lstlisting}
 
 Later behavioral changes go into the single pending document opened by
-\texttt{spec refine}. The assistant integrates that change into this clean
+\texttt{workflow refine}. The assistant integrates that change into this clean
 canonical specification; after human review, Studio reconciles the pending
 document. Git, rather than a pile of active prompt fragments, preserves
 accepted history.
@@ -3081,15 +3104,16 @@ zippergen
 models
 \end{lstlisting}
 
-If no workflow is selected, enter \texttt{use} first.
+If no workflow is selected, enter \texttt{workflow use} first.
 
 \subsection*{Studio says the specification is empty}
 
-Enter \texttt{spec path} to see Studio's fixed path, then \texttt{spec edit} to
+Enter \texttt{workflow path} to see Studio's fixed path, then
+\texttt{workflow edit spec} to
 open it again. Add at least one real requirement, save, and leave the editor.
 The file must be valid nonempty UTF-8 text. No prompt directory, ID, or custom
 filename is required. If importing an existing document with the advanced
-\texttt{create --file PATH} form, Studio reports the resolved absolute path
+\texttt{workflow create --file PATH} form, Studio reports the resolved absolute path
 and distinguishes a missing file, directory, empty file, and invalid UTF-8.
 
 \subsection*{The shell says \texttt{command not found: --input} or \texttt{--store}}
@@ -3102,7 +3126,7 @@ only the first part of the intended command actually ran.
 \subsection*{\texttt{models} lists no Writer or Reviewer}
 
 Run \texttt{current} to confirm the selected workflow, then
-\texttt{show actions}. Studio lists a lifeline in \texttt{models} only when that
+\texttt{workflow show actions}. Studio lists a lifeline in \texttt{models} only when that
 lifeline contains an actual \texttt{@llm} action. A pure, human, or message-only
 lifeline does not need a model. If the generated workflow was meant to contain
 those actions, treat their absence as a generation/validation problem rather
@@ -3267,26 +3291,27 @@ $\square$ & Studio opens the tutorial workflow without a
 $\square$ & \texttt{project show} reports the parent project, nested framework
 checkout, and automatic \path{specification.md} path; the visible files contain
 no private runtime state. & \\
-$\square$ & \texttt{current}, \texttt{use}, and the selectable \texttt{show}
+$\square$ & \texttt{current}, \texttt{workflow use}, and the selectable
+\texttt{workflow show}
 views make specification/refinement state, workflow name, participants, validation, model
 routes, provider connections, and runtime context clear. & \\
 $\square$ & \texttt{editor set micro} remembers the installed project editor;
 \texttt{editor show}, \texttt{edit file}, and a one-off
 \texttt{--editor nano} behave as documented without MCP setup. & \\
-$\square$ & Plain \texttt{create} opens \path{specification.md} without asking
+$\square$ & \texttt{workflow create} opens \path{specification.md} without asking
 for a filename, creates \path{.zippergen/current-task.md}, and prints a concise
-result table; \texttt{task show} exposes the complete task. & \\
-$\square$ & \texttt{assistant} launches Codex in the project root without a
+result table; \texttt{workflow status} exposes its lifecycle. & \\
+$\square$ & \texttt{workflow implement codex} launches Codex in the project root without a
 copied path or MCP setup; the assistant creates visible source plus a focused
 test at the requested paths. & \\
-$\square$ & After the assistant returns, \texttt{task} reports
+$\square$ & After the assistant returns, \texttt{workflow status} reports
 \texttt{awaiting human review}, states that nothing is scheduled, and lists
 review commands instead of suggesting another assistant run. & \\
-$\square$ & \texttt{spec refine} creates or reopens exactly one automatically
-named pending refinement; the \texttt{refine} alias and repeated edits do not
+$\square$ & \texttt{workflow refine} creates or reopens exactly one automatically
+named pending refinement; repeated edits do not
 create a pile of prompt files. & \\
 $\square$ & The assistant receives the canonical specification plus pending
-change; \texttt{spec reconcile} requires prior integration, performs no hidden
+change; \texttt{workflow accept} requires prior integration, performs no hidden
 merge, archives the change, and clears the pending transaction only after
 confirmation. & \\
 $\square$ & \texttt{models} lists connections, reusable configurations, and
@@ -3302,7 +3327,7 @@ remain absent from source/request/run JSON and their private file has
 owner-only permissions. & \\
 $\square$ & \texttt{zippergen --help} works from the project root. & \\
 $\square$ & Direct mock run returns an approved and a rejected result. & \\
-$\square$ & \texttt{validate} succeeds for all three projections. & \\
+$\square$ & \texttt{workflow validate} succeeds for all three projections. & \\
 $\square$ & Global, communications, selected-agent, and local views are clear. & \\
 $\square$ & SQLite run reaches \texttt{waiting}; CLI approval reaches
 \texttt{done}. & \\
@@ -3347,29 +3372,28 @@ project show
 current
 editor show
 editor set micro      # use nano if micro is not installed
-create                # opens the automatic specification.md
-spec show
-spec edit
-spec path
-task
-task show
-assistant codex      # or: assistant claude
+workflow create       # opens the automatic specification.md
+workflow show spec
+workflow edit spec
+workflow path
+workflow status
+workflow implement codex # or: workflow implement claude
 # After the coding assistant creates source:
-use                  # select the discovered workflow by number
-show
-validate
+workflow use          # select the discovered workflow by number
+workflow show
+workflow validate
 models default mock
 models
 models check mock
 run
 resume
 runs
-spec refine           # creates or reopens one pending change
-spec pending
-assistant codex      # or: assistant claude
-spec show             # verify the change was integrated
-spec reconcile        # human-confirm and clear the pending change
-spec history
+workflow refine       # creates or reopens one pending change
+workflow show pending
+workflow implement codex # or: workflow implement claude
+workflow show spec    # verify the change was integrated
+workflow accept       # human-confirm and clear the pending change
+workflow history
 \end{lstlisting}
 
 The listing above stays on the free mock backend. Only after following Optional

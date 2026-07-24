@@ -75,7 +75,7 @@ def test_natural_show_phrase_wins_over_invalid_show_syntax(tmp_path):
 
     studio.execute("Show me the whole protocol")
 
-    assert any("show protocol" in line for line in output)
+    assert any("workflow show protocol" in line for line in output)
     assert any("@workflow" in line for line in output)
 
 
@@ -87,7 +87,7 @@ def test_natural_prose_with_an_apostrophe_is_not_treated_as_broken_shell_syntax(
 
     studio.execute("Show Writer's local view")
 
-    assert any("show agent Writer" in line for line in output)
+    assert any("workflow show agent Writer" in line for line in output)
     assert workspace.load()["last_view"] == "agent Writer"
 
 
@@ -163,7 +163,7 @@ def test_codex_fallback_is_read_only_and_learns_a_parameterized_plan(
         calls.append((command, kwargs))
         payload = {
             "summary": "Show Writer's local projection.",
-            "commands": ["show agent Writer"],
+            "commands": ["workflow show agent Writer"],
             "clarification": None,
         }
         return subprocess.CompletedProcess(
@@ -192,7 +192,9 @@ def test_codex_fallback_is_read_only_and_learns_a_parameterized_plan(
     assert learned[0]["request_template"] == (
         "what exactly can {participant} observe"
     )
-    assert learned[0]["commands"] == ["show agent {participant}"]
+    assert learned[0]["commands"] == [
+        "workflow show agent {participant}"
+    ]
     assert learned[0]["uses"] == 1
     assert any("private learned interpretation L001" in line for line in output)
 
@@ -312,7 +314,7 @@ def test_language_controls_are_inspectable_and_learned_items_can_be_forgotten(
         "What exactly can Writer observe?",
         NaturalCommandPlan(
             "Show Writer.",
-            ("show agent Writer",),
+            ("workflow show agent Writer",),
             "codex",
         ),
     )
@@ -399,7 +401,7 @@ def test_cli_json_parser_uses_the_last_structured_plan():
 def test_generalization_quotes_values_only_when_rendering(tmp_path):
     template, commands = generalize_interpretation(
         "Show what Lead Writer sees",
-        ("show agent 'Lead Writer'",),
+        ("workflow show agent 'Lead Writer'",),
     )
     store = NaturalLanguageStore(tmp_path / "natural-language.json")
     store.remember(
@@ -408,4 +410,4 @@ def test_generalization_quotes_values_only_when_rendering(tmp_path):
     )
 
     assert template == "show what {participant} sees"
-    assert commands == ("show agent {participant}",)
+    assert commands == ("workflow show agent {participant}",)

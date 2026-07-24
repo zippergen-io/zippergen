@@ -123,8 +123,6 @@ _STATUS_COLORS = {
 _STUDIO_COMMANDS = {
     "?",
     "ask",
-    "assistant",
-    "create",
     "current",
     "deploy",
     "doctor",
@@ -132,52 +130,29 @@ _STUDIO_COMMANDS = {
     "editor",
     "exit",
     "help",
-    "inspect",
     "logs",
     "models",
     "language",
     "plan",
     "project",
-    "prompts",
     "quit",
-    "refine",
     "restart",
     "resume",
     "run",
     "runs",
-    "show",
-    "spec",
     "start",
     "status",
     "stop",
-    "task",
-    "use",
-    "validate",
     "workflow",
 }
 
 _COMMAND_COMPLETIONS = (
     ("project", "initialize, inspect, or reset the project"),
-    ("create", "write or reopen the canonical specification"),
-    ("spec", "inspect or refine the workflow specification"),
-    ("task", "inspect the current coding-assistant task"),
-    ("assistant", "run Codex or Claude on the current task"),
-    ("language", "inspect or configure natural-language commands"),
-    ("ask", "interpret and execute an explicit natural-language request"),
-    ("plan", "interpret natural language without executing it"),
-    ("editor", "inspect or configure the terminal editor"),
-    ("edit", "edit the selected workflow or another project file"),
-    ("use", "select a discovered workflow"),
-    ("current", "show project, workflow, model, and runtime context"),
-    ("show", "inspect code-first workflow views"),
-    ("inspect", "alias for show"),
-    ("workflow", "alias for current"),
-    ("validate", "validate the selected workflow"),
-    ("models", "show connections and configure model routing"),
+    ("workflow", "design, implement, inspect, and validate the workflow"),
+    ("models", "configure, check, and assign reusable models"),
     ("run", "start a managed development run"),
     ("resume", "resume the current incomplete run"),
     ("runs", "list managed development runs"),
-    ("refine", "short alias for spec refine"),
     ("deploy", "prepare or start a named deployment"),
     ("status", "show deployment status"),
     ("doctor", "check deployment readiness"),
@@ -185,6 +160,12 @@ _COMMAND_COMPLETIONS = (
     ("start", "start a deployment"),
     ("restart", "restart a deployment"),
     ("stop", "stop a deployment"),
+    ("current", "show workflow, model, run, and deployment context"),
+    ("language", "inspect or configure natural-language commands"),
+    ("ask", "interpret and execute an explicit natural-language request"),
+    ("plan", "interpret natural language without executing it"),
+    ("editor", "inspect or configure the terminal editor"),
+    ("edit", "edit another project file"),
     ("help", "show all Studio commands"),
     ("exit", "leave Studio"),
     ("quit", "alias for exit"),
@@ -196,25 +177,19 @@ _SUBCOMMAND_COMPLETIONS = {
         ("show", "show visible project configuration"),
         ("reset", "back up and reset private project state"),
     ),
-    "spec": (
-        ("show", "show the canonical specification"),
-        ("edit", "edit the canonical specification"),
-        ("path", "print the automatic specification path"),
+    "workflow": (
+        ("create", "write the initial accepted specification"),
         ("refine", "create or reopen the pending refinement"),
-        ("pending", "show the pending refinement"),
-        ("reconcile", "accept an integrated refinement"),
-        ("discard", "archive an unwanted refinement"),
-        ("history", "list reconciled and discarded refinements"),
-    ),
-    "task": (
-        ("show", "show the complete assistant task"),
-        ("path", "print the generated task path"),
-        ("history", "list previous assistant tasks"),
-        ("close", "close a reviewed creation task"),
-    ),
-    "assistant": (
-        ("codex", "run Codex once on the current task"),
-        ("claude", "run Claude Code once on the current task"),
+        ("edit", "edit the specification or selected Python source"),
+        ("show", "inspect specifications or code-first semantic views"),
+        ("status", "show the current implementation lifecycle"),
+        ("implement", "run Codex or Claude on the current implementation"),
+        ("validate", "validate the selected workflow and projections"),
+        ("accept", "accept the reviewed workflow implementation"),
+        ("discard", "archive an unwanted pending refinement"),
+        ("history", "show specification and implementation history"),
+        ("path", "print the automatic specification path"),
+        ("use", "select a discovered workflow"),
     ),
     "language": (
         ("show", "show interpreter, learning, and history status"),
@@ -275,15 +250,11 @@ def _is_explicit_studio_syntax(parts: list[str]) -> bool:
     args = parts[1:]
     if command not in _STUDIO_COMMANDS:
         return False
-    if command in {"exit", "quit", "help", "?", "current", "workflow", "validate"}:
+    if command in {"exit", "quit", "help", "?", "current"}:
         return not args
     if command in {
         "ask",
         "plan",
-        "assistant",
-        "create",
-        "prompts",
-        "refine",
     }:
         return True
     if command == "run":
@@ -302,43 +273,23 @@ def _is_explicit_studio_syntax(parts: list[str]) -> bool:
         return len(args) <= 2
     allowed: dict[str, set[str]] = {
         "project": {"init", "show", "reset"},
-        "spec": {
-            "show",
-            "edit",
-            "path",
+        "workflow": {
+            "create",
             "refine",
-            "pending",
-            "reconcile",
+            "edit",
+            "show",
+            "status",
+            "implement",
+            "validate",
+            "accept",
             "discard",
             "history",
+            "path",
+            "use",
+            "prompts",
         },
-        "prompts": {"list", "show", "inspect", "path", "context", "add"},
-        "task": {"show", "path", "history", "close"},
-        "assistant": {"codex", "claude", "--rerun"},
         "editor": {"show", "set", "reset"},
-        "edit": {"workflow", "file"},
-        "show": {
-            "overview",
-            "protocol",
-            "communications",
-            "communication",
-            "actions",
-            "full",
-            "complete",
-            "agent",
-            "agents",
-        },
-        "inspect": {
-            "overview",
-            "protocol",
-            "communications",
-            "communication",
-            "actions",
-            "full",
-            "complete",
-            "agent",
-            "agents",
-        },
+        "edit": {"file"},
         "models": {
             "show",
             "list",
@@ -374,7 +325,7 @@ def _is_allowed_natural_plan_command(parts: list[str]) -> bool:
     command = parts[0].casefold()
     args = parts[1:]
     lowered = [value.casefold() for value in args]
-    if command in {"current", "workflow", "validate", "resume", "runs"}:
+    if command in {"current", "resume", "runs"}:
         return not args
     if command == "project":
         return (
@@ -383,36 +334,47 @@ def _is_allowed_natural_plan_command(parts: list[str]) -> bool:
             or 1 <= len(args) <= 2
             and lowered[0] == "init"
         )
-    if command in {"show", "inspect"}:
-        if len(args) == 1:
-            return lowered[0] in {
-                "overview",
-                "protocol",
-                "communications",
-                "actions",
-                "full",
-            }
-        if len(args) == 2 and lowered[0] == "agent":
+    if command == "workflow":
+        if not args:
             return True
-        return len(args) >= 2 and lowered[0] == "agents"
-    if command == "spec":
-        if len(args) == 1:
-            return lowered[0] in {
-                "show",
-                "path",
-                "pending",
-                "history",
-                "reconcile",
-                "discard",
-                "refine",
-            }
-        return len(args) >= 2 and lowered[0] == "refine"
-    if command == "task":
-        return (
-            not args
-            or len(args) == 1
-            and lowered[0] in {"show", "path", "history", "close"}
-        )
+        action = lowered[0]
+        if action in {
+            "status",
+            "validate",
+            "history",
+            "path",
+            "accept",
+            "discard",
+        }:
+            return len(args) <= 2
+        if action in {"create", "refine"}:
+            return True
+        if action == "implement":
+            return all(
+                value in {"implement", "codex", "claude", "--rerun", "--interactive"}
+                for value in lowered
+            )
+        if action == "use":
+            return len(args) <= 2
+        if action == "edit":
+            return len(args) <= 3
+        if action == "show":
+            if len(args) == 1:
+                return True
+            if len(args) == 2:
+                return lowered[1] in {
+                    "spec",
+                    "pending",
+                    "overview",
+                    "protocol",
+                    "communications",
+                    "actions",
+                    "full",
+                }
+            if len(args) == 3 and lowered[1] == "agent":
+                return True
+            return len(args) >= 3 and lowered[1] == "agents"
+        return False
     if command == "models":
         if not args:
             return True
@@ -434,12 +396,6 @@ def _is_allowed_natural_plan_command(parts: list[str]) -> bool:
             or lowered[0] == "connect"
             and lowered[1] in {"local", "ollama"}
         )
-    if command == "use":
-        return len(args) <= 1
-    if command == "create":
-        return True
-    if command == "refine":
-        return bool(args)
     if command == "editor":
         return (
             len(args) == 1
@@ -449,9 +405,7 @@ def _is_allowed_natural_plan_command(parts: list[str]) -> bool:
         )
     if command == "edit":
         return (
-            len(args) == 1
-            and lowered[0] == "workflow"
-            or len(args) == 2
+            len(args) == 2
             and lowered[0] == "file"
         )
     if command == "run":
@@ -468,15 +422,6 @@ def _is_allowed_natural_plan_command(parts: list[str]) -> bool:
             len(args) == 3
             and lowered[1] == "--assistant"
             and lowered[2] in {"codex", "claude"}
-        )
-    if command == "assistant":
-        return (
-            not args
-            or lowered[0] in {"codex", "claude"}
-            and all(
-                value in {"codex", "claude", "--rerun", "--interactive"}
-                for value in lowered
-            )
         )
     if command == "deploy":
         return (
@@ -606,36 +551,34 @@ _HELP = """Commands:
   project reset                  choose fresh design or state-only reset
   project reset fresh [--yes]    archive manifest, spec, legacy prompts, state
   project reset state [--yes]    reset private state; keep all project files
-  create                         write/reopen the canonical specification
-  create [DESCRIPTION]           set the canonical specification without an editor
-  create --file PATH             import a specification; its name is not retained
-  spec show                      show the canonical workflow specification
-  spec edit                      edit it at Studio's automatic path
-  spec path                      print that automatic path
-  spec refine                    create/reopen the one pending refinement
-  refine                         short alias for spec refine
-  spec pending                   inspect the pending refinement
-  spec reconcile [--yes]         accept an integrated refinement and clear it
-  spec discard [--yes]           archive an unwanted pending refinement
-  spec history                   list reconciled/discarded private history
-  task                            show the current freshness-checked task
-  task show|path|history          inspect the synchronized task or its history
-  task close [--yes]              close a reviewed creation task
-  assistant [codex|claude]       sync the spec, then run a coding assistant
-  assistant [codex|claude] --rerun
-                                 deliberately rerun a task awaiting review
-  assistant codex --interactive  open an interactive Codex session instead
+  workflow                       show the design and implementation dashboard
+  workflow create [DESCRIPTION]  write the initial accepted specification
+  workflow create --file PATH    import the initial specification
+  workflow refine [CHANGE]       create/reopen the one pending refinement
+  workflow refine --file PATH    append a refinement from a file
+  workflow edit [spec|code]      edit the specification or selected Python file
+  workflow show                  choose a code-first semantic view
+  workflow show spec|pending     inspect accepted or pending requirements
+  workflow show overview|protocol|communications|actions|full
+  workflow show agent [NAME]     exact local projection
+  workflow show agents [NAME...] selected-participant focus view
+  workflow status                show the current implementation lifecycle
+  workflow implement [codex|claude]
+                                 run an assistant and return to Studio
+  workflow implement TOOL --rerun
+                                 deliberately rerun an implementation in review
+  workflow implement codex --interactive
+                                 open an interactive Codex implementation
+  workflow validate              validate the workflow and every projection
+  workflow accept [--yes]        accept the reviewed workflow implementation
+  workflow discard [--yes]       archive an unwanted pending refinement
+  workflow history               show design and implementation history
+  workflow path                  print the automatic specification path
+  workflow use [PATH.py:NAME]    select a workflow; no argument opens a selector
   editor [show|set CMD|reset]     inspect or remember the terminal editor
-  edit [workflow|file PATH]       edit with the remembered/default editor
+  edit file PATH                  edit another project file
   edit ... --editor CMD           choose an editor for this invocation only
-  prompts                        legacy prompt-ledger migration/compatibility
-  use [PATH.py:WORKFLOW]         select a workflow; no argument opens a selector
   current                        show the complete project/workflow dashboard
-  show | inspect                 choose a code-first semantic view
-  show overview|protocol|communications|actions|full
-  show agent [NAME]              exact local projection (selector if omitted)
-  show agents [NAME ...]         selected-participant focus view
-  validate                       validate the current workflow
   models                         show configurations, connections, assignments
   models configure [NAME]        create/reopen a guided model configuration
   models list                    list all named model configurations
@@ -650,8 +593,6 @@ _HELP = """Commands:
   run [LLM] [--assistant TOOL]   start a run with optional one-run backends
   resume                         resume the current incomplete run
   runs                           list managed development runs
-  refine [CHANGE]                append to the one pending refinement
-  refine --file PATH             import text into that pending refinement
   deploy [NAME] [--no-start]     configure deployment; optionally defer startup
   status|doctor|logs [NAME]      inspect the remembered named deployment
   start|restart|stop [NAME]      operate the remembered named deployment
@@ -941,25 +882,75 @@ class Studio:
         args = words[1:]
         if not args and command in _SUBCOMMAND_COMPLETIONS:
             return list(_SUBCOMMAND_COMPLETIONS[command])
-        if command == "inspect":
-            command = "show"
-        if command == "show":
+        if command == "workflow":
             if not args:
-                return list(_SUBCOMMAND_COMPLETIONS["show"])
-            if args[0].lower() in {"agent", "agents"}:
-                used = {value.lower() for value in args[1:]}
-                return [
-                    (name, "workflow participant")
-                    for name in self._completion_lifelines()
-                    if name.lower() not in used
-                ]
+                return list(_SUBCOMMAND_COMPLETIONS["workflow"])
+            action = args[0].lower()
+            rest = args[1:]
+            if action == "show":
+                if not rest:
+                    return [
+                        ("spec", "accepted workflow specification"),
+                        ("pending", "pending refinement"),
+                        *_SUBCOMMAND_COMPLETIONS["show"],
+                    ]
+                if rest[0].lower() in {"agent", "agents"}:
+                    used = {value.lower() for value in rest[1:]}
+                    return [
+                        (name, "workflow participant")
+                        for name in self._completion_lifelines()
+                        if name.lower() not in used
+                    ]
+                return []
+            if action == "use":
+                try:
+                    workflows = self.workspace.discover_workflows()
+                except (WorkspaceError, OSError):
+                    workflows = []
+                return [(value, "discovered workflow") for value in workflows]
+            if action in {"create", "refine"}:
+                if "--file" in rest and rest[-1] == "--file":
+                    return self._path_completion_candidates(fragment)
+                if "--editor" in rest and rest[-1] == "--editor":
+                    return self._editor_completion_candidates()
+                if not rest:
+                    return [
+                        ("--file", "import text from an existing file"),
+                        ("--editor", "choose an editor for this invocation"),
+                    ]
+                return []
+            if action == "edit":
+                if "--editor" in rest and rest[-1] == "--editor":
+                    return self._editor_completion_candidates()
+                if not rest:
+                    return [
+                        ("spec", "edit the accepted specification"),
+                        ("code", "edit the selected Python workflow"),
+                    ]
+                return [("--editor", "choose an editor for this invocation")]
+            if action == "implement":
+                if not rest:
+                    return [
+                        ("codex", "implement with Codex"),
+                        ("claude", "implement with Claude Code"),
+                    ]
+                if rest[0].lower() == "codex":
+                    values = []
+                    if "--rerun" not in rest:
+                        values.append(
+                            ("--rerun", "deliberately rerun reviewed work")
+                        )
+                    if "--interactive" not in rest:
+                        values.append(
+                            ("--interactive", "open an interactive Codex session")
+                        )
+                    return values
+                if rest[0].lower() == "claude" and "--rerun" not in rest:
+                    return [("--rerun", "deliberately rerun reviewed work")]
+                return []
+            if action in {"accept", "discard"}:
+                return [("--yes", "confirm without another prompt")]
             return []
-        if command == "use":
-            try:
-                workflows = self.workspace.discover_workflows()
-            except (WorkspaceError, OSError):
-                workflows = []
-            return [(value, "discovered workflow") for value in workflows]
         if command == "models":
             if not args:
                 return list(_SUBCOMMAND_COMPLETIONS["models"])
@@ -1001,37 +992,6 @@ class Studio:
                 *_MODEL_COMPLETIONS,
                 ("--assistant", "select the coding-assistant action backend"),
             ]
-        if command in {"create", "refine"}:
-            if "--file" in args and args[-1] == "--file":
-                return self._path_completion_candidates(fragment)
-            if "--editor" in args and args[-1] == "--editor":
-                return self._editor_completion_candidates()
-            if not args:
-                return [
-                    ("--file", "import text from an existing file"),
-                    ("--editor", "choose an editor for this invocation"),
-                ]
-            return []
-        if command == "spec" and args and args[0].lower() == "refine":
-            if "--file" in args and args[-1] == "--file":
-                return self._path_completion_candidates(fragment)
-            if "--editor" in args and args[-1] == "--editor":
-                return self._editor_completion_candidates()
-            return [
-                ("--file", "import text into the pending refinement"),
-                ("--editor", "choose an editor for this invocation"),
-            ]
-        if command == "spec" and args and args[0].lower() == "edit":
-            if "--editor" in args and args[-1] == "--editor":
-                return self._editor_completion_candidates()
-            return [("--editor", "choose an editor for this invocation")]
-        if command == "spec" and args and args[0].lower() in {
-            "reconcile",
-            "discard",
-        }:
-            return [("--yes", "confirm without another prompt")]
-        if command == "task" and args and args[0].lower() == "close":
-            return [("--yes", "confirm without another prompt")]
         if command == "project" and args and args[0].lower() == "reset":
             if len(args) == 1:
                 return [
@@ -1049,26 +1009,6 @@ class Studio:
             return []
         if command == "editor" and args and args[0].lower() == "set":
             return self._editor_completion_candidates()
-        if command == "assistant":
-            if not args:
-                return list(_SUBCOMMAND_COMPLETIONS["assistant"])
-            if args[0].lower() == "codex":
-                values = []
-                if "--rerun" not in args:
-                    values.append(
-                        ("--rerun", "deliberately rerun a task awaiting review")
-                    )
-                if "--interactive" not in args:
-                    values.append(
-                        ("--interactive", "open an interactive Codex session")
-                    )
-                return values
-            if args[0].lower() == "claude":
-                if "--rerun" not in args:
-                    return [
-                        ("--rerun", "deliberately rerun a task awaiting review")
-                    ]
-            return []
         if command == "language":
             if not args:
                 return list(_SUBCOMMAND_COMPLETIONS["language"])
@@ -1104,17 +1044,135 @@ class Studio:
             if command == "deploy":
                 values.append(("--no-start", "prepare without starting"))
             return values
-        if command == "prompts":
-            legacy = [("list", "list legacy prompt entries")]
-            if self.workspace.list_prompts():
-                legacy.extend(
-                    (action, "inspect legacy prompt history")
-                    for action in ("show", "inspect", "path", "context")
-                )
-            if self.workspace.specification() is None:
-                legacy.append(("add", "legacy compatibility only"))
-            return legacy
         return []
+
+    def _show_workflow_dashboard(self) -> None:
+        specification = self.workspace.specification()
+        pending = self.workspace.pending_refinement()
+        record = self._ensure_current_task_fresh(announce=False)
+        state = "none"
+        state_kind: StatusKind | None = None
+        next_action = (
+            "workflow create"
+            if specification is None
+            else "workflow refine"
+        )
+        if record is not None:
+            record = self._normalize_task_lifecycle(record)
+            state, state_kind = self._task_state(record)
+            next_action = self._task_next(record)
+        self._emit_table(
+            "Workflow development",
+            [
+                (
+                    "Specification",
+                    (
+                        self.workspace.specification_path.relative_to(
+                            self.workspace.root
+                        )
+                        if specification is not None
+                        else "not written"
+                    ),
+                    "success" if specification is not None else "warning",
+                ),
+                (
+                    "Refinement",
+                    "pending" if pending is not None else "none",
+                    "warning" if pending is not None else None,
+                ),
+                (
+                    "Selected",
+                    self.workspace.current_workflow or "none",
+                    None if self.workspace.current_workflow else "warning",
+                ),
+                ("Implementation", state, state_kind),
+                ("Next", next_action, None),
+            ],
+        )
+
+    def manage_workflow(self, args: list[str]) -> None:
+        """Present specification, implementation, and inspection as one lifecycle."""
+
+        if not args:
+            self._show_workflow_dashboard()
+            return
+        action, *rest = args
+        action = action.casefold()
+        if action == "create":
+            self.create_from_command(rest)
+            return
+        if action == "refine":
+            self.manage_spec(["refine", *rest])
+            return
+        if action == "edit":
+            target = rest[0].casefold() if rest and not rest[0].startswith("-") else "spec"
+            options = rest[1:] if rest and not rest[0].startswith("-") else rest
+            if target == "spec":
+                self.manage_spec(["edit", *options])
+                return
+            if target == "code":
+                self.edit_file(["workflow", *options])
+                return
+            raise SystemExit("Use workflow edit [spec|code] [--editor COMMAND].")
+        if action == "show":
+            if rest and rest[0].casefold() == "spec":
+                if len(rest) != 1:
+                    raise SystemExit("Use workflow show spec.")
+                self.manage_spec(["show"])
+                return
+            if rest and rest[0].casefold() == "pending":
+                if len(rest) != 1:
+                    raise SystemExit("Use workflow show pending.")
+                self.manage_spec(["pending"])
+                return
+            self.show_workflow(rest)
+            return
+        if action == "status":
+            if rest:
+                raise SystemExit("Use workflow status.")
+            self.manage_task([])
+            return
+        if action == "implement":
+            self.run_assistant(rest)
+            return
+        if action == "validate":
+            if rest:
+                raise SystemExit("Use workflow validate.")
+            self.validate()
+            return
+        if action == "accept":
+            if rest not in ([], ["--yes"]):
+                raise SystemExit("Use workflow accept [--yes].")
+            if self.workspace.pending_refinement() is not None:
+                self.manage_spec(["reconcile", *rest])
+            else:
+                self.manage_task(["close", *rest])
+            return
+        if action == "discard":
+            self.manage_spec(["discard", *rest])
+            return
+        if action == "history":
+            if rest:
+                raise SystemExit("Use workflow history.")
+            self.manage_spec(["history"])
+            self._emit()
+            self.manage_task(["history"])
+            return
+        if action == "path":
+            if rest:
+                raise SystemExit("Use workflow path.")
+            self.manage_spec(["path"])
+            return
+        if action == "use":
+            self.use_workflow(rest)
+            return
+        if action == "prompts":
+            self.manage_prompts(rest)
+            return
+        raise SystemExit(
+            "Use workflow create, refine, edit, show, status, implement, "
+            "validate, accept, discard, history, path, or use."
+        )
 
     def execute(
         self,
@@ -1178,26 +1236,14 @@ class Studio:
             self.manage_language(args)
         elif command == "project":
             self.configure_project(args)
-        elif command == "spec":
-            self.manage_spec(args)
-        elif command == "prompts":
-            self.manage_prompts(args)
-        elif command == "task":
-            self.manage_task(args)
-        elif command == "assistant":
-            self.run_assistant(args)
+        elif command == "workflow":
+            self.manage_workflow(args)
         elif command == "editor":
             self.configure_editor(args)
         elif command == "edit":
             self.edit_file(args)
-        elif command in {"current", "workflow"}:
+        elif command == "current":
             self.show_current()
-        elif command == "use":
-            self.use_workflow(args)
-        elif command in {"show", "inspect"}:
-            self.show_workflow(args)
-        elif command == "validate":
-            self.validate()
         elif command == "models":
             self.configure_models(args)
         elif command == "run":
@@ -1246,10 +1292,6 @@ class Studio:
             )
         elif command == "runs":
             self.show_runs()
-        elif command == "create":
-            self.create_from_command(args)
-        elif command == "refine":
-            self.manage_spec(["refine", *args], alias=True)
         elif command == "deploy":
             self.deploy_workflow(args)
         elif command in {"status", "doctor", "logs", "start", "restart", "stop"}:
@@ -1436,30 +1478,21 @@ class Studio:
             )
         top = parts[0].casefold()
         allowed = {
-            "assistant",
-            "create",
             "current",
             "deploy",
             "doctor",
             "edit",
             "editor",
-            "inspect",
             "logs",
             "models",
             "project",
-            "refine",
             "restart",
             "resume",
             "run",
             "runs",
-            "show",
-            "spec",
             "start",
             "status",
             "stop",
-            "task",
-            "use",
-            "validate",
             "workflow",
         }
         if top not in allowed:
@@ -1478,11 +1511,14 @@ class Studio:
             if index < len(parts):
                 parts[index] = canonical.get(parts[index].casefold(), parts[index])
 
-        if top in {"show", "inspect"} and len(parts) >= 3:
-            if parts[1].casefold() == "agent":
-                replace(2)
-            elif parts[1].casefold() == "agents":
-                for index in range(2, len(parts)):
+        if top == "workflow" and len(parts) >= 4:
+            if parts[1].casefold() == "show" and parts[2].casefold() == "agent":
+                replace(3)
+            elif (
+                parts[1].casefold() == "show"
+                and parts[2].casefold() == "agents"
+            ):
+                for index in range(3, len(parts)):
                     replace(index)
         elif top == "models" and len(parts) >= 2:
             action = parts[1].casefold()
@@ -1502,15 +1538,17 @@ class Studio:
         parts = shlex.split(command_line)
         command = parts[0].casefold()
         args = [value.casefold() for value in parts[1:]]
-        if command in {"current", "workflow", "validate", "runs", "status", "doctor", "logs"}:
+        if command in {"current", "runs", "status", "doctor", "logs"}:
             return "read-only"
-        if command in {"show", "inspect"}:
-            return "read-only"
+        if command == "workflow":
+            if not args or args[0] in {"show", "status", "validate", "history", "path"}:
+                return "read-only"
+            if args[0] in {"discard", "accept"}:
+                return "destructive"
+            if args[0] == "implement":
+                return "execution"
+            return "configuration"
         if command == "project" and args[:1] == ["show"]:
-            return "read-only"
-        if command == "spec" and (not args or args[0] in {"show", "path", "pending", "history"}):
-            return "read-only"
-        if command == "task" and (not args or args[0] in {"show", "path", "history"}):
             return "read-only"
         if command == "models" and (
             not args or args[0] in {"show", "list", "check"}
@@ -1520,14 +1558,9 @@ class Studio:
             return "read-only"
         if command == "project" and args[:1] == ["reset"]:
             return "destructive"
-        if command == "spec" and args[:1] == ["discard"]:
-            return "destructive"
-        if command == "task" and args[:1] == ["close"]:
-            return "destructive"
         if command == "models" and args[:1] == ["remove"]:
             return "destructive"
         if command in {
-            "assistant",
             "deploy",
             "restart",
             "resume",
@@ -2067,7 +2100,8 @@ class Studio:
             self._prepare_specification_editor(target)
             raise SystemExit(
                 "No application requirements were written. The specification "
-                "guide was kept; enter 'create' and write below its comment."
+                "guide was kept; enter 'workflow create' and write below its "
+                "comment."
             )
         self.workspace.save_specification(prompt)
         return prompt
@@ -2091,8 +2125,8 @@ class Studio:
 
         values, editor_override = self._editor_override(
             args,
-            usage="Use create [DESCRIPTION], create --file PATH, or "
-            "create [--edit] [--editor COMMAND].",
+            usage="Use workflow create [DESCRIPTION], workflow create "
+            "--file PATH, or workflow create [--edit] [--editor COMMAND].",
         )
         if not values or values == ["--edit"]:
             self.workspace.initialize_project()
@@ -2110,11 +2144,12 @@ class Studio:
             return
         if editor_override is not None:
             raise SystemExit(
-                "--editor is only used when create opens the specification editor."
+                "--editor is only used when workflow create opens the "
+                "specification editor."
             )
         if values[0] == "--file":
             if len(values) != 2:
-                raise SystemExit("Use create --file PATH.")
+                raise SystemExit("Use workflow create --file PATH.")
             entered = Path(values[1]).expanduser()
             source = (
                 entered
@@ -2124,8 +2159,9 @@ class Studio:
             prompt = self._read_prompt_file(source)
         elif "--file" in values or "--edit" in values:
             raise SystemExit(
-                "Use create [DESCRIPTION], create --file PATH, or plain create "
-                "to open the automatic specification file."
+                "Use workflow create [DESCRIPTION], workflow create --file "
+                "PATH, or plain workflow create to open the automatic "
+                "specification file."
             )
         else:
             prompt = " ".join(values).strip()
@@ -2138,7 +2174,11 @@ class Studio:
             self._emit_table(
                 "Workflow specification",
                 [
-                    ("Status", "not written; use create or spec edit", "warning"),
+                    (
+                        "Status",
+                        "not written; use workflow create or workflow edit spec",
+                        "warning",
+                    ),
                     ("File", self.workspace.specification_path, None),
                 ],
             )
@@ -2150,7 +2190,7 @@ class Studio:
                 ("File", self.workspace.specification_path, None),
                 (
                     "Pending",
-                    "yes; use spec pending"
+                    "yes; use workflow show pending"
                     if self.workspace.pending_refinement() is not None
                     else "none",
                     "warning"
@@ -2197,7 +2237,7 @@ class Studio:
                 return False
             self._warning("Please enter 'y' or 'n'.")
 
-    def manage_spec(self, args: list[str], *, alias: bool = False) -> None:
+    def manage_spec(self, args: list[str]) -> None:
         """Manage one canonical specification and one pending refinement."""
 
         if not args or args == ["show"]:
@@ -2212,10 +2252,12 @@ class Studio:
         if action == "edit":
             values, editor_override = self._editor_override(
                 rest,
-                usage="Use spec edit [--editor COMMAND].",
+                usage="Use workflow edit spec [--editor COMMAND].",
             )
             if values:
-                raise SystemExit("Use spec edit [--editor COMMAND].")
+                raise SystemExit(
+                    "Use workflow edit spec [--editor COMMAND]."
+                )
             self.workspace.initialize_project()
             ensured = self.workspace.ensure_specification()
             target = self.workspace.specification_path
@@ -2227,7 +2269,12 @@ class Studio:
                 [
                     ("File", target, "success"),
                     ("Pending", "unchanged", None),
-                    ("Next", "task · assistant · validate", None),
+                    (
+                        "Next",
+                        "workflow status · workflow implement · "
+                        "workflow validate",
+                        None,
+                    ),
                 ],
             )
             if ensured["migrated"]:
@@ -2241,7 +2288,7 @@ class Studio:
             if pending is None:
                 self._emit_table(
                     "Pending refinement",
-                    [("Status", "none; use spec refine", None)],
+                    [("Status", "none; use workflow refine", None)],
                 )
                 return
             request_record = self._ensure_current_task_fresh(announce=False)
@@ -2267,11 +2314,16 @@ class Studio:
             elif task_status in {"assistant_failed", "assistant_interrupted"}:
                 pending_status = "assistant did not finish; refinement remains open"
                 pending_kind = "error"
-                next_action = "task · assistant codex · assistant claude"
+                next_action = (
+                    "workflow status · workflow implement codex · "
+                    "workflow implement claude"
+                )
             else:
                 pending_status = "waiting to be integrated"
                 pending_kind = "warning"
-                next_action = "assistant codex · assistant claude"
+                next_action = (
+                    "workflow implement codex · workflow implement claude"
+                )
             self._emit_table(
                 "Pending refinement",
                 [
@@ -2282,7 +2334,7 @@ class Studio:
                         else []
                     ),
                     ("File", ".zippergen/pending-refinement.md", None),
-                    ("Edit", "spec refine", None),
+                    ("Edit", "workflow refine", None),
                     ("Next", next_action, None),
                 ],
             )
@@ -2294,17 +2346,18 @@ class Studio:
         if action == "refine":
             if self.workspace.current_workflow is None:
                 raise SystemExit(
-                    "No workflow selected. Use 'use' before preparing a refinement."
+                    "No workflow selected. Use 'workflow use' before preparing "
+                    "a refinement."
                 )
             ensured = self.workspace.ensure_specification()
             if ensured["content"] is None:
                 raise SystemExit(
-                    "No workflow specification exists. Use 'create' or "
-                    "'spec edit' first."
+                    "No workflow specification exists. Use 'workflow create' "
+                    "or 'workflow edit spec' first."
                 )
             values, editor_override = self._editor_override(
                 rest,
-                usage="Use spec refine [CHANGE|--file PATH] "
+                usage="Use workflow refine [CHANGE|--file PATH] "
                 "[--editor COMMAND].",
             )
             existing = self.workspace.pending_refinement()
@@ -2315,7 +2368,7 @@ class Studio:
                 append = False
             elif values[0] == "--file":
                 if len(values) != 2 or editor_override is not None:
-                    raise SystemExit("Use spec refine --file PATH.")
+                    raise SystemExit("Use workflow refine --file PATH.")
                 entered = Path(values[1]).expanduser()
                 source = (
                     entered
@@ -2326,7 +2379,8 @@ class Studio:
                 append = existing is not None
             elif "--file" in values or "--edit" in values or editor_override is not None:
                 raise SystemExit(
-                    "Use spec refine [CHANGE|--file PATH] [--editor COMMAND]."
+                    "Use workflow refine [CHANGE|--file PATH] "
+                    "[--editor COMMAND]."
                 )
             else:
                 refinement = " ".join(values).strip()
@@ -2337,12 +2391,11 @@ class Studio:
                     "The former active prompt ledger was migrated into the "
                     "canonical specification; its original files were kept."
                 )
-            if alias:
-                self._info("'refine' is the short alias for 'spec refine'.")
             return
         if action in {"reconcile", "discard"}:
             if rest not in ([], ["--yes"]):
-                raise SystemExit(f"Use spec {action} [--yes].")
+                public_action = "accept" if action == "reconcile" else "discard"
+                raise SystemExit(f"Use workflow {public_action} [--yes].")
             pending = self.workspace.pending_refinement()
             if pending is None:
                 raise SystemExit("There is no pending refinement.")
@@ -2356,8 +2409,9 @@ class Studio:
                 if baseline == current:
                     raise SystemExit(
                         "The canonical specification has not changed since this "
-                        "refinement began. Run the assistant or use 'spec edit' to "
-                        "integrate the change before reconciling it."
+                        "refinement began. Run 'workflow implement' or use "
+                        "'workflow edit spec' to integrate the change before "
+                        "accepting it."
                     )
             if rest != ["--yes"]:
                 verb = "Accept and clear" if action == "reconcile" else "Discard"
@@ -2387,9 +2441,13 @@ class Studio:
                         "success" if action == "reconcile" else None,
                     ),
                     ("Pending", "cleared", "success"),
-                    ("Task", "closed; private history retained", "success"),
+                    (
+                        "Implementation",
+                        "accepted; private history retained",
+                        "success",
+                    ),
                     ("History", result["history_path"], None),
-                    ("Next", "spec show · current", None),
+                    ("Next", "workflow show spec · current", None),
                 ],
             )
             return
@@ -2420,8 +2478,9 @@ class Studio:
             self._emit("Canonical specification history is versioned by Git.")
             return
         raise SystemExit(
-            "Use spec show, spec edit, spec path, spec refine, spec pending, "
-            "spec reconcile [--yes], spec discard [--yes], or spec history."
+            "Use workflow show spec, workflow edit spec, workflow path, "
+            "workflow refine, workflow show pending, workflow accept [--yes], "
+            "workflow discard [--yes], or workflow history."
         )
 
     def _project_path(self, value: str | Path, *, label: str = "File") -> Path:
@@ -2560,14 +2619,17 @@ class Studio:
             index = args.index("--editor")
             if index != len(args) - 2:
                 raise SystemExit(
-                    "Use edit [workflow|file PATH] [--editor COMMAND]."
+                    "Use workflow edit code [--editor COMMAND] or "
+                    "edit file PATH [--editor COMMAND]."
                 )
             editor_override = args[-1]
             args = args[:index]
         if not args or args == ["workflow"]:
             current = self.workspace.current_workflow
             if current is None:
-                raise SystemExit("No workflow selected. Use 'use' first.")
+                raise SystemExit(
+                    "No workflow selected. Use 'workflow use' first."
+                )
             module_ref = self.workspace.absolute_spec(current).partition(":")[0]
             target = Path(module_ref)
             if target.suffix != ".py" or not target.is_file():
@@ -2575,7 +2637,7 @@ class Studio:
                     f"The selected workflow is not backed by a Python file: {current}"
                 )
             target = self._project_path(target, label="Workflow")
-            next_steps = "validate · show · run"
+            next_steps = "workflow validate · workflow show · run"
         elif len(args) == 2 and args[0] == "file":
             target = self._project_path(args[1])
             next_steps = "inspect the change; this generic edit was not registered"
@@ -2584,7 +2646,8 @@ class Studio:
             next_steps = "inspect the change; this generic edit was not registered"
         else:
             raise SystemExit(
-                "Use edit, edit workflow, or edit file PATH [--editor COMMAND]."
+                "Use workflow edit code [--editor COMMAND] or "
+                "edit file PATH [--editor COMMAND]."
             )
         self._launch_editor(target, override=editor_override)
         self._emit(f"Next: {next_steps}")
@@ -2594,7 +2657,10 @@ class Studio:
 
         current = self.workspace.current_workflow
         if not current:
-            raise SystemExit("No workflow selected. Use 'use' or 'create' first.")
+            raise SystemExit(
+                "No workflow selected. Use 'workflow use' or "
+                "'workflow create' first."
+            )
         workflow, module = load_workflow_spec(self.workspace.absolute_spec(current))
         return current, workflow, module
 
@@ -2768,7 +2834,7 @@ class Studio:
                     "warning" if private_exists else None,
                 ),
                 ("Managed runs", summary["runs"], None),
-                ("Assistant tasks", summary["requests"], None),
+                ("Implementation requests", summary["requests"], None),
                 ("Language history", summary["language_history"], None),
                 ("Learned language", summary["language_learned"], None),
                 ("Development secrets", summary["development_secrets"], None),
@@ -2780,9 +2846,9 @@ class Studio:
                 (
                     "Next",
                     (
-                        "project init · create"
+                        "project init · workflow create"
                         if fresh
-                        else "use · create · current"
+                        else "workflow use · workflow create · current"
                     ),
                     None,
                 ),
@@ -2824,13 +2890,13 @@ class Studio:
                 ("Source and tests", "kept", "success"),
                 ("Workflow", "none selected", None),
                 ("Run", "none selected", None),
-                ("Assistant task", "none", None),
+                ("Implementation request", "none", None),
                 (
                     "Next",
                     (
-                        "project init · create"
+                        "project init · workflow create"
                         if fresh and project_exists
-                        else "use · create · current"
+                        else "workflow use · workflow create · current"
                         if project_exists
                         else "exit and recreate the project directory"
                     ),
@@ -2844,7 +2910,13 @@ class Studio:
         if not records:
             self._emit_table(
                 "Prompts",
-                [("Status", "none; use create, refine, or prompts add", "warning")],
+                [
+                    (
+                        "Status",
+                        "none; use workflow create or workflow refine",
+                        "warning",
+                    )
+                ],
             )
             return
         active = sum(bool(record["active"]) for record in records)
@@ -2891,9 +2963,9 @@ class Studio:
         ):
             raise SystemExit(
                 "This project now uses the canonical specification. Legacy "
-                "prompts remain inspectable, but cannot be changed. Use 'spec "
-                "edit' for the accepted specification or 'spec refine' for a "
-                "pending change."
+                "prompts remain inspectable, but cannot be changed. Use "
+                "'workflow edit spec' for the accepted specification or "
+                "'workflow refine' for a pending change."
             )
         if action in {"show", "inspect"} and len(rest) == 1:
             record = self.workspace.prompt(rest[0])
@@ -3154,7 +3226,7 @@ class Studio:
             return "not available yet", "info"
         if record.get("manual_integration") and not record.get("assistant"):
             return "not reported — manual integration", "warning"
-        return "not reported by this older assistant task", "warning"
+        return "not reported by this older implementation request", "warning"
 
     def _task_verification_summary(self, record: dict[str, object]) -> str | None:
         value = record.get("assistant_verification_summary")
@@ -3211,26 +3283,35 @@ class Studio:
                     else "codex"
                 )
                 review = (
-                    "use · current · validate · show"
+                    "workflow use · current · workflow validate · workflow show"
                     if kind == "create"
-                    else "current · validate · show"
+                    else "current · workflow validate · workflow show"
                 )
                 return (
-                    f"{review} · assistant {backend} --rerun"
+                    f"{review} · workflow implement {backend} --rerun"
                 )
             if kind == "refine":
                 if record.get("specification_context_changed") is False:
                     return (
-                        "spec edit · assistant codex --rerun · "
-                        "assistant claude --rerun"
+                        "workflow edit spec · workflow implement codex --rerun · "
+                        "workflow implement claude --rerun"
                     )
-                return "current · validate · show · run · spec reconcile"
-            return "use · current · validate · show · task close"
+                return (
+                    "current · workflow validate · workflow show · run · "
+                    "workflow accept"
+                )
+            return (
+                "workflow use · current · workflow validate · workflow show · "
+                "workflow accept"
+            )
         if status == "assistant_running":
             return "wait for the assistant session to return"
         if status in {"assistant_failed", "assistant_interrupted"}:
-            return "inspect changes · assistant codex · assistant claude"
-        return "assistant codex · assistant claude"
+            return (
+                "workflow show · workflow implement codex · "
+                "workflow implement claude"
+            )
+        return "workflow implement codex · workflow implement claude"
 
     def _task_execution(self, record: dict[str, object]) -> str:
         status = str(record.get("status") or "prepared")
@@ -3278,33 +3359,39 @@ class Studio:
             return "assistant result is preserved for review", "success"
         if record.get("specification_fingerprint") == current:
             return "matches the current specification", "success"
-        return "changed since this task was prepared", "warning"
+        return "changed since this implementation was prepared", "warning"
 
     def manage_task(self, args: list[str]) -> None:
         if len(args) > 2 or (
             args and args[0].lower() not in {"show", "path", "history", "close"}
         ):
             raise SystemExit(
-                "Use task, task show, task path, task history, or "
-                "task close [--yes]."
+                "Use workflow status, workflow history, or "
+                "workflow accept [--yes]."
             )
         action = args[0].lower() if args else "summary"
         rest = args[1:]
         if action != "close" and rest:
             raise SystemExit(
-                "Use task, task show, task path, task history, or "
-                "task close [--yes]."
+                "Use workflow status, workflow history, or "
+                "workflow accept [--yes]."
             )
         if action == "history":
             records = self.workspace.list_requests()
             if not records:
                 self._emit_table(
-                    "Task history",
-                    [("Status", "none; use create or spec refine", "warning")],
+                    "Implementation history",
+                    [
+                        (
+                            "Status",
+                            "none; use workflow create or workflow refine",
+                            "warning",
+                        )
+                    ],
                 )
                 return
-            self._emit("Task history")
-            self._emit("────────────")
+            self._emit("Implementation history")
+            self._emit("──────────────────────")
             self._emit(
                 "  Request                  Kind        State              "
                 "Refreshes                 Created"
@@ -3325,34 +3412,44 @@ class Studio:
         if record is None:
             if action in {"show", "path", "close"}:
                 raise SystemExit(
-                    "No current task. Use create or spec refine to prepare one."
+                    "No current implementation. Use workflow create or "
+                    "workflow refine to prepare one."
                 )
             self._emit_table(
-                "Current task",
-                [("Status", "none; use create or spec refine", "warning")],
+                "Workflow implementation",
+                [
+                    (
+                        "Status",
+                        "none; use workflow create or workflow refine",
+                        "warning",
+                    )
+                ],
             )
             return
         record = self._normalize_task_lifecycle(record)
         if action == "close":
             if rest not in ([], ["--yes"]):
-                raise SystemExit("Use task close [--yes].")
+                raise SystemExit("Use workflow accept [--yes].")
             if self.workspace.pending_refinement() is not None:
                 raise SystemExit(
                     "A refinement is still pending. Review it, then use "
-                    "'spec reconcile' to accept it or 'spec discard' to reject it."
+                    "'workflow accept' to accept it or 'workflow discard' "
+                    "to reject it."
                 )
             if rest != ["--yes"] and not self._confirm_action(
-                "Close the current reviewed task? [y/n]: ",
-                cancel_message="Task close cancelled; nothing was changed.",
+                "Accept and close the reviewed workflow implementation? [y/n]: ",
+                cancel_message=(
+                    "Workflow acceptance cancelled; nothing was changed."
+                ),
             ):
                 return
             closed = self.workspace.clear_current_task()
             self._emit_table(
-                "Task closed",
+                "Workflow implementation accepted",
                 [
                     ("Status", "closed", "success"),
                     ("Request", closed["request_id"], None),
-                    ("History", "retained; use task history", None),
+                    ("History", "retained; use workflow history", None),
                     ("Next", "current", None),
                 ],
             )
@@ -3368,7 +3465,7 @@ class Studio:
         state, state_kind = self._task_state(record)
         context, context_kind = self._task_context(record)
         self._emit_table(
-            "Current task",
+            "Workflow implementation",
             [
                 ("Status", state, state_kind),
                 ("Kind", record["kind"], None),
@@ -3390,7 +3487,7 @@ class Studio:
                 ),
                 ("Refreshes", record.get("refreshes_request") or "—", None),
                 ("Context", context, context_kind),
-                ("File", ".zippergen/current-task.md", None),
+                ("Record", ".zippergen/current-task.md", None),
                 ("Next", self._task_next(record), None),
             ],
         )
@@ -3624,20 +3721,21 @@ class Studio:
             value.lower() not in {"codex", "claude"} for value in values
         ) or args.count("--rerun") > 1 or args.count("--interactive") > 1:
             raise SystemExit(
-                "Use assistant, assistant codex, assistant claude, or "
-                "assistant [codex|claude] --rerun. Use "
-                "assistant codex --interactive only for an interactive session."
+                "Use workflow implement, workflow implement codex, "
+                "workflow implement claude, or workflow implement "
+                "[codex|claude] --rerun. Use workflow implement codex "
+                "--interactive only for an interactive session."
             )
         assistant = values[0].lower() if values else "codex"
         if interactive and assistant != "codex":
             raise SystemExit(
-                "--interactive is supported only with assistant codex."
+                "--interactive is supported only with workflow implement codex."
             )
         record = self._ensure_current_task_fresh(for_assistant=True)
         if record is None:
             raise SystemExit(
-                "No current task. Use create or spec refine before starting the "
-                "assistant."
+                "No current implementation request. Use workflow create or "
+                "workflow refine before starting the assistant."
             )
         status = str(record.get("status") or "prepared")
         if status == "awaiting_review":
@@ -3646,9 +3744,9 @@ class Studio:
             )
             if not rerun and not manual_first_pass:
                 raise SystemExit(
-                    "The assistant has already returned and this task is awaiting "
-                    "human review. Use current, validate, show, and then "
-                    "'spec reconcile'; use 'assistant "
+                    "The assistant has already returned and this implementation is awaiting "
+                    "human review. Use current, workflow validate, workflow show, "
+                    "and then workflow accept; use 'workflow implement "
                     f"{assistant} --rerun' only to run it deliberately again."
                 )
             record = self._ensure_current_task_fresh(
@@ -3659,9 +3757,9 @@ class Studio:
             status = str(record.get("status") or "prepared")
         if status == "assistant_running":
             raise SystemExit(
-                "This task is already marked as running. Wait for the assistant "
+                "This implementation is already marked as running. Wait for the assistant "
                 "session to return; after an interrupted Studio process, prepare "
-                "or refine the task again before retrying."
+                "or refine the workflow again before retrying."
             )
         tool = "Claude Code" if assistant == "claude" else "Codex CLI"
         executable = shutil.which(assistant)
@@ -3674,7 +3772,7 @@ class Studio:
                 setup = "Install Codex CLI and run 'codex login'"
             raise SystemExit(
                 f"{tool} was not found. {setup} once; "
-                "the current task remains available at "
+                "the current implementation request remains available at "
                 f"{self.workspace.current_task_path}."
             )
         self._ensure_assistant_test_environment()
@@ -3718,13 +3816,13 @@ class Studio:
                 (
                     "Mode",
                     (
-                        "interactive task session"
+                        "interactive implementation session"
                         if interactive
-                        else "one-shot task; returns to Studio automatically"
+                        else "one-shot implementation; returns to Studio automatically"
                     ),
                     None,
                 ),
-                ("Task", relative_task, "success"),
+                ("Request", relative_task, "success"),
                 ("Project", self.workspace.root, None),
                 (
                     "MCP",
@@ -3845,7 +3943,7 @@ class Studio:
             )
             raise SystemExit(
                 f"{assistant.capitalize()} exited with status "
-                f"{completed.returncode}; the task remains at "
+                f"{completed.returncode}; the implementation request remains at "
                 f"{self.workspace.current_task_path}."
             )
         assistant_result = self._consume_assistant_result()
@@ -3886,7 +3984,7 @@ class Studio:
             )
         kind = str(record.get("kind") or "")
         specification_result = (
-            "changed since task preparation"
+            "changed since implementation preparation"
             if changed
             else (
                 "unchanged; reconciliation will refuse until it is integrated"
@@ -3929,15 +4027,15 @@ class Studio:
         task_state, task_state_kind = (
             self._task_state(request)
             if request
-            else ("none; use create or spec refine", "warning")
+            else ("none; use workflow create or workflow refine", "warning")
         )
         refinement_status = (
             (
-                "pending — awaiting human review; use spec pending"
+                "pending — awaiting human review; use workflow show pending"
                 if request
                 and request.get("kind") == "refine"
                 and request.get("status") == "awaiting_review"
-                else "pending — use spec pending or spec refine"
+                else "pending — use workflow show pending or workflow refine"
             )
             if pending is not None
             else "none"
@@ -3964,7 +4062,8 @@ class Studio:
                     (
                         f"ready — {self.workspace.specification_path.name}"
                         if specification is not None
-                        else "not written; use create or spec edit"
+                        else "not written; use workflow create or "
+                        "workflow edit spec"
                     ),
                     "success" if specification is not None else "warning",
                 ),
@@ -3974,7 +4073,7 @@ class Studio:
                     "warning" if pending is not None else None,
                 ),
                 (
-                    "Task",
+                    "Implementation",
                     (
                         f"{request['request_id']} ({request['kind']}) — "
                         f"{task_state}; .zippergen/current-task.md"
@@ -5701,7 +5800,7 @@ and verification results.
         else:
             raise WorkspaceError(
                 f"Cannot refresh unsupported task kind {kind!r}. "
-                "Use create or spec refine."
+                "Use workflow create or workflow refine."
             )
         prompt = (
             self.workspace.pending_refinement()
@@ -5719,7 +5818,7 @@ and verification results.
         )
         if announce:
             self._success(
-                "Task refreshed from the current specification context."
+                "Implementation request refreshed from the current specification context."
             )
         return refreshed
 
@@ -5739,9 +5838,9 @@ and verification results.
             existing = self.workspace.specification()
             if existing is not None and existing != prompt.strip():
                 raise SystemExit(
-                    "A canonical specification already exists. Use 'create' or "
-                    "'spec edit' to reopen it instead of replacing it from the "
-                    "command line."
+                    "A canonical specification already exists. Use "
+                    "'workflow create' or 'workflow edit spec' to reopen it "
+                    "instead of replacing it from the command line."
                 )
             self.workspace.save_specification(prompt)
         prompt_fingerprint = self.workspace.specification_fingerprint()
@@ -5760,9 +5859,13 @@ and verification results.
                     self.workspace.specification_path.name,
                     "success",
                 ),
-                ("Task", ".zippergen/current-task.md", "success"),
-                ("Next", "assistant codex · assistant claude", None),
-                ("Inspect", "task · task show · task history", None),
+                ("Implementation", "prepared", "success"),
+                (
+                    "Next",
+                    "workflow implement codex · workflow implement claude",
+                    None,
+                ),
+                ("Inspect", "workflow status · workflow history", None),
             ],
         )
 
@@ -5782,7 +5885,8 @@ and verification results.
         ensured = self.workspace.ensure_specification()
         if ensured["content"] is None:
             raise SystemExit(
-                "No workflow specification exists. Use 'create' or 'spec edit' first."
+                "No workflow specification exists. Use 'workflow create' or "
+                "'workflow edit spec' first."
             )
         pending = self.workspace.save_pending_refinement(prompt, append=append)
         self.workspace.requests_directory.mkdir(parents=True, exist_ok=True)
@@ -5826,8 +5930,12 @@ and verification results.
                 ),
                 ("Workflow", current, None),
                 ("Baseline", baseline, "success"),
-                ("Task", ".zippergen/current-task.md", "success"),
-                ("Next", "assistant codex · assistant claude", None),
-                ("Inspect", "task · task show · task history", None),
+                ("Implementation", "prepared", "success"),
+                (
+                    "Next",
+                    "workflow implement codex · workflow implement claude",
+                    None,
+                ),
+                ("Inspect", "workflow status · workflow history", None),
             ],
         )
