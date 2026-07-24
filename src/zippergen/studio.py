@@ -143,6 +143,7 @@ _STUDIO_COMMANDS = {
     "resume",
     "run",
     "runs",
+    "settings",
     "start",
     "status",
     "stop",
@@ -164,6 +165,7 @@ _COMMAND_COMPLETIONS = (
     ("restart", "restart a deployment"),
     ("stop", "stop a deployment"),
     ("current", "show workflow, model, run, and deployment context"),
+    ("settings", "inspect or configure global Studio preferences"),
     ("language", "inspect or configure natural-language commands"),
     ("ask", "interpret and execute an explicit natural-language request"),
     ("plan", "interpret natural language without executing it"),
@@ -177,8 +179,14 @@ _COMMAND_COMPLETIONS = (
 _SUBCOMMAND_COMPLETIONS = {
     "project": (
         ("init", "create the visible project manifest"),
+        ("rename", "change the logical project name"),
         ("show", "show visible project configuration"),
         ("reset", "back up and reset private project state"),
+    ),
+    "settings": (
+        ("show", "show global Studio preferences"),
+        ("set", "set a global Studio preference"),
+        ("reset", "reset one preference or all preferences"),
     ),
     "workflow": (
         ("create", "write the initial accepted specification"),
@@ -227,6 +235,7 @@ _SUBCOMMAND_COMPLETIONS = {
         ("list", "list saved model configurations"),
         ("configure", "create or reopen a model configuration"),
         ("edit", "edit a saved model configuration"),
+        ("rename", "rename a configuration and update every assignment"),
         ("remove", "remove an unused model configuration"),
         ("connect", "configure a provider connection"),
         ("disconnect", "remove a provider connection"),
@@ -277,7 +286,8 @@ def _is_explicit_studio_syntax(parts: list[str]) -> bool:
             return False
         return len(args) <= 2
     allowed: dict[str, set[str]] = {
-        "project": {"init", "show", "reset"},
+        "project": {"init", "rename", "show", "reset"},
+        "settings": {"show", "set", "reset"},
         "workflow": {
             "create",
             "refine",
@@ -302,6 +312,7 @@ def _is_explicit_studio_syntax(parts: list[str]) -> bool:
             "list",
             "configure",
             "edit",
+            "rename",
             "remove",
             "connect",
             "disconnect",
@@ -339,8 +350,16 @@ def _is_allowed_natural_plan_command(parts: list[str]) -> bool:
             len(args) == 1
             and lowered[0] == "show"
             or 1 <= len(args) <= 2
-            and lowered[0] == "init"
+            and lowered[0] in {"init", "rename"}
         )
+    if command == "settings":
+        if not args:
+            return True
+        if len(args) == 1:
+            return lowered[0] in {"show", "reset"}
+        if lowered[0] == "reset":
+            return len(args) == 2
+        return lowered[0] == "set" and len(args) >= 3
     if command == "workflow":
         if not args:
             return True
@@ -403,6 +422,7 @@ def _is_allowed_natural_plan_command(parts: list[str]) -> bool:
             }
         return len(args) == 3 and (
             lowered[0] == "assign"
+            or lowered[0] == "rename"
             or lowered[0] == "connect"
             and lowered[1] in {"local", "ollama"}
         )
@@ -550,13 +570,21 @@ _HELP = """Commands:
   NATURAL LANGUAGE                describe a Studio operation in ordinary text
   ask TEXT                        explicitly interpret and execute ordinary text
   plan TEXT                       interpret ordinary text without executing it
-  language                        show interpreter and private learning status
+  settings                        show global Studio preferences
+  settings set learning on|off    control learning for every local project
+  settings set interpreter MODE   choose auto, codex, claude, or off
+  settings set assistant TOOL     choose codex or claude
+  settings set editor COMMAND     choose the terminal editor
+  settings set output STYLE       choose banner or compact output framing
+  settings reset [NAME|all]       restore one or every global default
+  language                        show interpreter and project-local history
   language set auto|codex|claude|off
-                                  choose the repository-aware CLI fallback
-  language learning on|off        enable or disable private project learning
+                                  alias for global interpreter setting
+  language learning on|off        alias for global learning setting
   language history|learned        inspect interpretations and reusable examples
   language forget ID|all          remove learned private interpretations
   project init [NAME]            create the project manifest
+  project rename NAME            change its logical name, not its directory
   project show                   show visible project configuration
   project reset                  choose fresh design or state-only reset
   project reset fresh [--yes]    archive manifest, spec, legacy prompts, state
@@ -601,6 +629,7 @@ _HELP = """Commands:
   models default NAME            set the inherited default configuration
   models inherit LIFELINE        restore inheritance from the default
   models edit NAME               edit a saved configuration
+  models rename OLD NEW          rename it and update every assignment
   models remove NAME             remove an unused configuration
   models connect NAME [URL]      advanced: configure a provider connection
   models disconnect NAME         advanced: remove a provider connection
@@ -696,9 +725,17 @@ class Studio:
     def _emit_output_boundary(self, command: str) -> None:
         """Separate one command's interaction from its echoed input line."""
 
-        label = f" Output: {command} "
         self._emit()
-        self._emit(f"──{label}{'─' * max(2, 58 - len(label))}")
+        settings = self.workspace.global_settings()
+        if settings.get("output_style") == "compact":
+            label = f" ZipperGen Studio · {command} "
+            self._emit(f"──{label}{'─' * max(2, 58 - len(label))}")
+            return
+        content = f" ZipperGen Studio · {command} "
+        width = max(58, len(content))
+        self._emit(f"╭{'─' * width}╮")
+        self._emit(f"│{content:<{width}}│")
+        self._emit(f"╰{'─' * width}╯")
 
     @staticmethod
     def _output_boundary_label(parts: list[str]) -> str:
@@ -709,6 +746,7 @@ class Studio:
             "workflow",
             "models",
             "project",
+            "settings",
             "language",
             "editor",
             "edit",
@@ -723,7 +761,9 @@ class Studio:
 
     def welcome(self) -> None:
         self._emit("ZipperGen Studio")
-        self._emit(f"Project: {self.workspace.root}")
+        manifest = self.workspace.project_manifest()
+        self._emit(f"Project: {manifest['name']}")
+        self._emit(f"Root: {self.workspace.root}")
         current = self.workspace.current_workflow
         self._emit(f"Workflow: {current}" if current else "No workflow selected.")
         self._emit(
@@ -924,6 +964,46 @@ class Studio:
         args = words[1:]
         if not args and command in _SUBCOMMAND_COMPLETIONS:
             return list(_SUBCOMMAND_COMPLETIONS[command])
+        if command == "settings":
+            if not args:
+                return list(_SUBCOMMAND_COMPLETIONS["settings"])
+            action = args[0].lower()
+            rest = args[1:]
+            setting_names = [
+                ("learning", "natural-language learning policy"),
+                ("interpreter", "natural-language CLI fallback"),
+                ("assistant", "default workflow coding assistant"),
+                ("editor", "terminal editor command"),
+                ("output", "Studio output framing"),
+            ]
+            if action == "set":
+                if not rest:
+                    return setting_names
+                if len(rest) == 1:
+                    return {
+                        "learning": [
+                            ("on", "learn successful CLI interpretations"),
+                            ("off", "do not learn new interpretations"),
+                        ],
+                        "interpreter": [
+                            ("auto", "prefer Codex, then Claude"),
+                            ("codex", "use Codex CLI"),
+                            ("claude", "use Claude Code"),
+                            ("off", "disable CLI interpretation"),
+                        ],
+                        "assistant": [
+                            ("codex", "use Codex for workflow implementation"),
+                            ("claude", "use Claude Code for workflow implementation"),
+                        ],
+                        "editor": self._editor_completion_candidates(),
+                        "output": [
+                            ("banner", "connected three-line Studio banner"),
+                            ("compact", "single-line Studio boundary"),
+                        ],
+                    }.get(rest[0].lower(), [])
+            if action == "reset" and not rest:
+                return [("all", "restore every default"), *setting_names]
+            return []
         if command == "workflow":
             if not args:
                 return list(_SUBCOMMAND_COMPLETIONS["workflow"])
@@ -1022,8 +1102,14 @@ class Studio:
                         for name in self._completion_lifelines(llm_only=True)
                     ]
                 return self._completion_model_configurations()
-            if action in {"configure", "edit", "remove"} and len(args) == 1:
+            if action == "configure" and len(args) == 1:
                 return self._completion_model_configurations()
+            if action in {"edit", "rename", "remove"} and len(args) == 1:
+                return [
+                    candidate
+                    for candidate in self._completion_model_configurations()
+                    if candidate[0] != "mock"
+                ]
             if action in {"connect", "disconnect"} and len(args) == 1:
                 return [
                     (name, "model provider")
@@ -1298,6 +1384,8 @@ class Studio:
             if not args:
                 raise SystemExit("Use plan TEXT.")
             self.interpret_natural_language(" ".join(args), preview_only=True)
+        elif command == "settings":
+            self.configure_settings(args)
         elif command == "language":
             self.manage_language(args)
         elif command == "project":
@@ -1313,7 +1401,7 @@ class Studio:
         elif command == "models":
             self.configure_models(args)
         elif command == "run":
-            assistant_backend = None
+            assistant_backend = str(self._global_settings()["assistant"])
             run_args = list(args)
             if "--assistant" in run_args:
                 index = run_args.index("--assistant")
@@ -1371,6 +1459,160 @@ class Studio:
 
     def _language_store(self) -> NaturalLanguageStore:
         return NaturalLanguageStore(self.workspace.natural_language_path)
+
+    def _global_settings(self) -> dict[str, object]:
+        """Load global preferences, migrating old project preferences once."""
+
+        if self.workspace.global_settings_path.exists():
+            return self.workspace.global_settings()
+        settings = self.workspace.default_global_settings()
+        migrated = False
+        if self.workspace.natural_language_path.exists():
+            legacy_language = self._language_store().load()
+            for name in ("learning", "interpreter"):
+                if name in legacy_language:
+                    settings[name] = legacy_language[name]
+                    migrated = True
+        legacy_editor = self.workspace.load().get("editor_command")
+        if legacy_editor:
+            settings["editor_command"] = legacy_editor
+            migrated = True
+        if migrated:
+            return self.workspace.update_global_settings(**settings)
+        return settings
+
+    def configure_settings(self, args: list[str]) -> None:
+        """Inspect and edit owner-private preferences shared by all projects."""
+
+        settings = self._global_settings()
+        if not args or args == ["show"]:
+            editor = settings.get("editor_command")
+            self._emit_table(
+                "Global Studio settings",
+                [
+                    (
+                        "Learning",
+                        "on" if settings["learning"] else "off",
+                        "success" if settings["learning"] else "warning",
+                    ),
+                    ("Interpreter", settings["interpreter"], None),
+                    ("Assistant", settings["assistant"], None),
+                    (
+                        "Editor",
+                        shlex.join(self._parse_editor_command(editor))
+                        if editor
+                        else "automatic discovery",
+                        None,
+                    ),
+                    ("Output", settings["output_style"], None),
+                    ("Scope", "all local ZipperGen projects", "success"),
+                    ("Storage", self.workspace.global_settings_path, None),
+                    (
+                        "Project data",
+                        "learned interpretations and history remain project-local",
+                        None,
+                    ),
+                ],
+            )
+            return
+
+        action, *rest = args
+        action = action.casefold()
+        if action == "set" and len(rest) >= 2:
+            name = rest[0].casefold()
+            values = rest[1:]
+            changes: dict[str, object]
+            shown: str
+            if name == "learning" and len(values) == 1:
+                value = values[0].casefold()
+                if value not in {"on", "off"}:
+                    raise SystemExit("Use settings set learning on|off.")
+                changes = {"learning": value == "on"}
+                shown = value
+            elif name == "interpreter" and len(values) == 1:
+                value = values[0].casefold()
+                if value not in {"auto", "codex", "claude", "off"}:
+                    raise SystemExit(
+                        "Use settings set interpreter auto|codex|claude|off."
+                    )
+                if value in {"codex", "claude"}:
+                    self._language_backend(value, required=True)
+                changes = {"interpreter": value}
+                shown = value
+            elif name == "assistant" and len(values) == 1:
+                value = values[0].casefold()
+                if value not in {"codex", "claude"}:
+                    raise SystemExit(
+                        "Use settings set assistant codex|claude."
+                    )
+                executable = shutil.which(value)
+                if executable is None:
+                    raise SystemExit(
+                        f"Assistant executable was not found: {value}."
+                    )
+                changes = {"assistant": value}
+                shown = value
+            elif name == "editor":
+                command = self._parse_editor_command(values)
+                if shutil.which(command[0]) is None:
+                    raise SystemExit(
+                        f"Editor executable was not found: {command[0]}."
+                    )
+                changes = {"editor_command": command}
+                shown = shlex.join(command)
+            elif name == "output" and len(values) == 1:
+                value = values[0].casefold()
+                if value not in {"banner", "compact"}:
+                    raise SystemExit(
+                        "Use settings set output banner|compact."
+                    )
+                changes = {"output_style": value}
+                shown = value
+            else:
+                raise SystemExit(
+                    "Use settings set learning|interpreter|assistant|editor|output VALUE."
+                )
+            self.workspace.update_global_settings(**changes)
+            self._emit_table(
+                "Global setting updated",
+                [
+                    ("Setting", name, None),
+                    ("Value", shown, "success"),
+                    ("Scope", "all local ZipperGen projects", None),
+                    ("Next", "settings", None),
+                ],
+            )
+            return
+
+        if action == "reset" and len(rest) <= 1:
+            public_name = rest[0].casefold() if rest else "all"
+            mapping = {
+                "learning": "learning",
+                "interpreter": "interpreter",
+                "assistant": "assistant",
+                "editor": "editor_command",
+                "output": "output_style",
+            }
+            if public_name != "all" and public_name not in mapping:
+                raise SystemExit(
+                    "Use settings reset [learning|interpreter|assistant|editor|output|all]."
+                )
+            self.workspace.reset_global_settings(
+                None if public_name == "all" else mapping[public_name]
+            )
+            self._emit_table(
+                "Global settings reset",
+                [
+                    ("Setting", public_name, None),
+                    ("Status", "default restored", "success"),
+                    ("Next", "settings", None),
+                ],
+            )
+            return
+
+        raise SystemExit(
+            "Use settings, settings set NAME VALUE, or settings reset [NAME|all]."
+        )
 
     def _language_participants(self) -> tuple[tuple[str, ...], tuple[str, ...]]:
         try:
@@ -1556,6 +1798,7 @@ class Studio:
             "resume",
             "run",
             "runs",
+            "settings",
             "start",
             "status",
             "stop",
@@ -1594,7 +1837,13 @@ class Studio:
                 parts[3] = configuration_names.get(
                     parts[3].casefold(), parts[3]
                 )
-            elif action in {"check", "edit", "remove", "default"} and len(parts) >= 3:
+            elif action in {
+                "check",
+                "edit",
+                "rename",
+                "remove",
+                "default",
+            } and len(parts) >= 3:
                 parts[2] = configuration_names.get(
                     parts[2].casefold(), parts[2]
                 )
@@ -1605,6 +1854,10 @@ class Studio:
         command = parts[0].casefold()
         args = [value.casefold() for value in parts[1:]]
         if command in {"current", "runs", "status", "doctor", "logs"}:
+            return "read-only"
+        if command == "settings" and (
+            not args or args[0] == "show"
+        ):
             return "read-only"
         if command == "workflow":
             if not args or args[0] in {
@@ -1732,7 +1985,7 @@ class Studio:
             )
 
         store = self._language_store()
-        settings = store.load()
+        settings = self._global_settings()
         participants, active = self._language_participants()
         configurations = {
             name: configuration["spec"]
@@ -1877,7 +2130,11 @@ class Studio:
 
         learned = None
         if plan.source in {"codex", "claude"}:
-            learned = store.remember(request_text, plan)
+            learned = store.remember(
+                request_text,
+                plan,
+                enabled=bool(self._global_settings().get("learning", True)),
+            )
         store.record(request_text, plan, status="executed")
         self._success("Natural-language command plan completed.")
         if learned is not None:
@@ -1888,8 +2145,9 @@ class Studio:
 
     def manage_language(self, args: list[str]) -> None:
         store = self._language_store()
+        global_settings = self._global_settings()
         if not args or args == ["show"]:
-            state = store.load()
+            state = global_settings
             configured = str(state.get("interpreter") or "auto")
             selected = self._language_backend(configured, required=False)
             if configured == "off":
@@ -1923,7 +2181,8 @@ class Studio:
                     ),
                     ("Learned", len(learned), None),
                     ("History", len(history), None),
-                    ("Storage", store.path, None),
+                    ("Settings", self.workspace.global_settings_path, None),
+                    ("Project data", store.path, None),
                     (
                         "Privacy",
                         "owner-private; secret-looking requests are rejected",
@@ -1941,15 +2200,17 @@ class Studio:
                 raise SystemExit("Use language set auto|codex|claude|off.")
             if mode in {"codex", "claude"}:
                 self._language_backend(mode, required=True)
-            store.update_settings(interpreter=mode)
-            self._success(f"Natural-language CLI fallback: {mode}")
+            self.workspace.update_global_settings(interpreter=mode)
+            self._success(
+                f"Global natural-language CLI fallback: {mode}"
+            )
             return
         if action == "learning" and len(rest) == 1:
             value = rest[0].casefold()
             if value not in {"on", "off"}:
                 raise SystemExit("Use language learning on|off.")
-            store.update_settings(learning=value == "on")
-            self._success(f"Private natural-language learning: {value}")
+            self.workspace.update_global_settings(learning=value == "on")
+            self._success(f"Global natural-language learning: {value}")
             return
         if action == "history" and not rest:
             history = list(reversed(store.history()))
@@ -2589,10 +2850,10 @@ class Studio:
         if override is not None:
             candidates = [(self._parse_editor_command(override), "one-off")]
         else:
-            configured = self.workspace.load().get("editor_command")
+            configured = self._global_settings().get("editor_command")
             if configured:
                 candidates = [
-                    (self._parse_editor_command(configured), "project preference")
+                    (self._parse_editor_command(configured), "global preference")
                 ]
             else:
                 candidates = []
@@ -2610,7 +2871,7 @@ class Studio:
             executable = shutil.which(command[0])
             if executable is not None:
                 return [executable, *command[1:]], source
-            if source in {"one-off", "project preference"}:
+            if source in {"one-off", "global preference"}:
                 raise SystemExit(
                     f"Editor executable was not found: {command[0]}. "
                     "Use 'editor set COMMAND' or 'editor reset'."
@@ -2621,9 +2882,10 @@ class Studio:
         )
 
     def configure_editor(self, args: list[str]) -> None:
+        self._global_settings()
         if not args or args == ["show"]:
             command, source = self._effective_editor()
-            preference = self.workspace.load().get("editor_command")
+            preference = self._global_settings().get("editor_command")
             self._emit_table(
                 "Editor",
                 [
@@ -2645,12 +2907,16 @@ class Studio:
             executable = shutil.which(command[0])
             if executable is None:
                 raise SystemExit(f"Editor executable was not found: {command[0]}.")
-            self.workspace.update(editor_command=command)
-            self._success(f"Editor preference: {shlex.join(command)}")
+            self.workspace.update_global_settings(editor_command=command)
+            self._success(
+                f"Global editor preference: {shlex.join(command)}"
+            )
             return
         if action == "reset" and not rest:
-            self.workspace.update(editor_command=None)
-            self._success("Editor preference reset to automatic discovery.")
+            self.workspace.reset_global_settings("editor_command")
+            self._success(
+                "Global editor preference reset to automatic discovery."
+            )
             return
         raise SystemExit("Use editor, editor show, editor set COMMAND, or editor reset.")
 
@@ -2797,6 +3063,32 @@ class Studio:
                 ],
             )
             return
+        if args[0] == "rename":
+            if len(args) != 2:
+                raise SystemExit("Use project rename NAME.")
+            try:
+                result = self.workspace.rename_project(args[1])
+            except WorkspaceError as exc:
+                raise SystemExit(str(exc)) from exc
+            self._emit_table(
+                "Project renamed",
+                [
+                    ("From", result["old_name"], None),
+                    ("To", result["new_name"], "success"),
+                    ("Manifest", result["manifest"], None),
+                    (
+                        "Root",
+                        f"{result['root']} (unchanged)",
+                        "success",
+                    ),
+                    (
+                        "Scope",
+                        "logical project name only; workflows and deployments unchanged",
+                        None,
+                    ),
+                ],
+            )
+            return
         if args[0] == "reset":
             rest = args[1:]
             if not rest:
@@ -2835,8 +3127,9 @@ class Studio:
             return
         if args[0] != "init" or len(args) > 2:
             raise SystemExit(
-                "Use project show, project init [NAME], project reset, "
-                "project reset fresh [--yes], or project reset state [--yes]."
+                "Use project show, project init [NAME], project rename NAME, "
+                "project reset, project reset fresh [--yes], or "
+                "project reset state [--yes]."
             )
         existed = self.workspace.manifest_path.exists()
         manifest = self.workspace.initialize_project(
@@ -3855,7 +4148,11 @@ class Studio:
                 "[codex|claude] --rerun. Use workflow implement codex "
                 "--interactive only for an interactive session."
             )
-        assistant = values[0].lower() if values else "codex"
+        assistant = (
+            values[0].lower()
+            if values
+            else str(self._global_settings()["assistant"])
+        )
         if interactive and assistant != "codex":
             raise SystemExit(
                 "--interactive is supported only with workflow implement codex."
@@ -4170,6 +4467,7 @@ class Studio:
         from zippergen.serve import _validate_workflow
 
         state = self.workspace.load()
+        global_settings = self._global_settings()
         manifest = self.workspace.project_manifest()
         request = self._ensure_current_task_fresh(announce=False)
         specification = self.workspace.specification()
@@ -4246,9 +4544,11 @@ class Studio:
                     "Editor",
                     (
                         shlex.join(
-                            self._parse_editor_command(state["editor_command"])
+                            self._parse_editor_command(
+                                global_settings["editor_command"]
+                            )
                         )
-                        if state.get("editor_command")
+                        if global_settings.get("editor_command")
                         else "automatic; use editor show or editor set COMMAND"
                     ),
                     None,
@@ -4256,7 +4556,7 @@ class Studio:
             ],
         )
         language_store = self._language_store()
-        language_state = language_store.load()
+        language_state = global_settings
         configured_interpreter = str(
             language_state.get("interpreter") or "auto"
         )
@@ -4297,6 +4597,11 @@ class Studio:
                 ),
                 ("Learned", len(language_store.learned()), None),
                 ("History", len(language_store.history()), None),
+                (
+                    "Scope",
+                    "global policy; learned data is project-local",
+                    None,
+                ),
             ],
         )
         if state.get("current_workflow"):
@@ -5164,6 +5469,66 @@ class Studio:
             self._configure_model_configuration(args[1:], edit_only=True)
             return
 
+        if action == "rename":
+            if len(args) != 3:
+                raise SystemExit("Use models rename OLD_NAME NEW_NAME.")
+            old_name = self._model_configuration_name(args[1])
+            try:
+                result = self.workspace.rename_model_configuration(
+                    old_name,
+                    args[2],
+                )
+            except WorkspaceError as exc:
+                raise SystemExit(str(exc)) from exc
+            new_name = str(result["new_name"])
+            configuration = result.get("configuration")
+            spec = (
+                str(configuration.get("spec") or "unknown")
+                if isinstance(configuration, dict)
+                else "unknown"
+            )
+            rows: list[tuple[str, object, StatusKind | None]] = [
+                ("From", old_name, None),
+                ("To", new_name, "success"),
+                ("Model", spec, None),
+                (
+                    "Check",
+                    (
+                        str(configuration.get("check_status") or "not checked")
+                        if isinstance(configuration, dict)
+                        else "not checked"
+                    )
+                    + "; preserved",
+                    None,
+                ),
+            ]
+            references = result.get("references")
+            reference_count = 0
+            if isinstance(references, (tuple, list)):
+                for reference in references:
+                    if not isinstance(reference, dict):
+                        continue
+                    reference_count += 1
+                    locations: list[str] = []
+                    if reference.get("default"):
+                        locations.append("default")
+                    lifelines = reference.get("lifelines")
+                    if isinstance(lifelines, (tuple, list)):
+                        locations.extend(str(value) for value in lifelines)
+                    rows.append(
+                        (
+                            f"Reference {reference_count}",
+                            f"{reference.get('workflow')} — "
+                            + ", ".join(locations),
+                            "success",
+                        )
+                    )
+            if reference_count == 0:
+                rows.append(("References", "none assigned", None))
+            rows.append(("Next", "models", None))
+            self._emit_table("Model configuration renamed", rows)
+            return
+
         if action == "remove":
             if len(args) != 2:
                 raise SystemExit("Use models remove NAME.")
@@ -5207,7 +5572,7 @@ class Studio:
                 self._emit("Assignments")
                 self._emit("───────────")
                 self._warning(
-                    "No workflow is selected; use 'use' to select one.",
+                    "No workflow is selected; use 'workflow select' to select one.",
                     indent=2,
                 )
                 return
@@ -5279,8 +5644,8 @@ class Studio:
             raise SystemExit(
                 "Use models, models configure [NAME], models check [NAME|all], "
                 "models assign LIFELINE NAME, models default NAME, "
-                "models inherit LIFELINE, models edit NAME, or "
-                "models remove NAME."
+                "models inherit LIFELINE, models edit NAME, "
+                "models rename OLD_NAME NEW_NAME, or models remove NAME."
             )
 
         if changed_configuration is not None:

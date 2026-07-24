@@ -343,7 +343,8 @@ Expected beginning:
 
 \begin{lstlisting}[style=shell]
 ZipperGen Studio
-Project: /path/to/zippergen-tutorial
+Project: zippergen-tutorial
+Root: /path/to/zippergen-tutorial
 No workflow selected.
 Type a command or describe what you want in ordinary language;
 press Tab to complete; 'help' shows the exact commands.
@@ -365,6 +366,8 @@ and operating the resulting application stays direct:
 \texttt{status}, \texttt{logs}, \texttt{restart}, and \texttt{stop}. Thus a
 beginner can type \texttt{workflow}, \texttt{models}, or \texttt{current} to
 recover the next step instead of remembering several unrelated nouns.
+The small cross-cutting \texttt{settings} command covers global Studio
+preferences rather than application behavior.
 
 Press Tab at any point while entering a command. Studio completes commands and
 subcommands and, where relevant, offers the workflows, participants,
@@ -395,6 +398,9 @@ in private Studio state outside the project. Studio mirrors only the current
 generated task at \path{.zippergen/current-task.md}; Git ignores that file.
 Repeating \texttt{project init} is safe; it reports the existing manifest
 instead of overwriting it.
+Use \texttt{project rename "NEW NAME"} to change the logical name later. This
+edits only the versioned manifest: the directory, Git checkout, workflows,
+deployments, and private workspace identity remain unchanged.
 
 If you later need a reset, do not delete hidden directories or visible project
 files by hand. Plain \texttt{project reset} first asks which scope you mean:
@@ -406,6 +412,8 @@ choice additionally archives \path{zippergen.toml},
 \path{specification.md}, and legacy prompt material. Both keep workflow source,
 tests, Git history, the nested framework checkout, and deployments. Archives
 are owner-only below \path{ZIPPERGEN_HOME/resets}.
+Neither reset scope changes the global preferences shown by
+\texttt{settings}.
 
 This distinction explains the complete restart sequence. Choose the fresh
 design cycle, confirm it, then enter \texttt{project init} and \texttt{workflow
@@ -431,16 +439,20 @@ example:
 \begin{lstlisting}[style=shell]
 zippergen [reviewed_answer]> current
 
--- Output: current ----------------------------------------
++----------------------------------------------------------+
+| ZipperGen Studio : current                               |
++----------------------------------------------------------+
 Current
 -------
 \end{lstlisting}
 
-The real terminal uses a continuous rule character; the ASCII form above is
-print-friendly. The boundary repeats only the command family, never its prompt
-text, paths, model values, or secrets. It therefore remains short even for a
-long \texttt{workflow create} or \texttt{workflow refine} command. Blank input and
-\texttt{exit} produce no boundary.
+The real terminal uses connected curved Unicode corners, a Unicode vertical
+bar, and a middle dot; the connected ASCII box above is print-friendly. The
+banner repeats only the command family, never its prompt text, paths, model
+values, or secrets. It therefore remains short even for a long
+\texttt{workflow create} or \texttt{workflow refine} command. Blank input and
+\texttt{exit} produce no banner. Use \texttt{settings set output compact} only
+if a one-line boundary is preferable.
 \end{notebox}
 
 \subsubsection*{Step 1a: use commands or ordinary language}
@@ -480,31 +492,46 @@ deployment operations, and destructive changes require confirmation.
 Inspect the language layer at any time:
 
 \begin{lstlisting}[style=shell]
+settings
+settings set learning on
+settings set interpreter auto
+settings set assistant codex
+settings set editor micro
+settings set output banner
 language
 language set auto
 language set codex       # or: language set claude
-language learning on
 language history
 language learned
 language forget L001
 \end{lstlisting}
 
+\texttt{settings} contains owner-private preferences shared by every local
+ZipperGen project: learning policy, interpreter, default coding assistant,
+editor, and output style. It is stored below
+\path{$ZIPPERGEN_HOME/settings.json}. The learning switch is global, but
+learned interpretations and command history remain project-local so one
+project cannot silently teach commands to another.
+
 \texttt{auto} prefers Codex and then Claude when a repository-aware fallback
 is needed. It reuses the selected CLI's existing login; no separate ZipperGen
-provider key is needed. \texttt{language set off} retains deterministic and already learned
+provider key is needed. \texttt{language set off} is an alias for the global
+interpreter setting and retains deterministic and already learned
 interpretations without launching a CLI. After a successful CLI plan, Studio
 stores the accepted request, structured commands, and outcome in owner-private
 project state. It generalizes recognized values: an interpretation learned for
 \texttt{Writer} can later match the same wording for \texttt{Reviewer}.
 Nothing is added to the repository and \texttt{project reset state} archives
-this history with the other private state. Use \texttt{language learning off}
-to stop adding entries or \texttt{language forget ID|all} to remove them.
+this project's history with the other private state. Use
+\texttt{settings set learning off} (or its
+\texttt{language learning off} alias) to stop adding entries everywhere, or
+\texttt{language forget ID|all} to remove entries from the current project.
 
 Raw CLI output is not learned. Secret-looking requests are rejected before
 interpretation and are not stored; enter provider credentials through
 \texttt{models configure}, which uses Studio's private secret input.
 
-\subsubsection*{Step 1b: choose a terminal editor once}
+\subsubsection*{Step 1b: choose a global terminal editor once}
 
 Studio can open specification and workflow files without making you leave its command
 loop. First ask which editor it would use automatically:
@@ -517,7 +544,7 @@ The output separates the remembered preference, effective executable, and its
 source. With no preference, Studio checks the ordinary \texttt{\$VISUAL} and
 \texttt{\$EDITOR} settings, then looks for \texttt{micro}, \texttt{nano},
 \texttt{vim}, and \texttt{vi}, in that order. If \texttt{micro} is installed
-and you prefer it, remember that choice for this project:
+and you prefer it, remember that choice for all local projects:
 
 \begin{lstlisting}[style=shell]
 editor set micro
@@ -525,9 +552,11 @@ editor show
 \end{lstlisting}
 
 Use \texttt{editor set nano} instead if that is the installed editor you want.
-The choice is machine-specific Studio state, not a line in the workflow or a
-file committed to Git. It survives leaving Studio, reopening the terminal, and
-a computer crash. Enter \texttt{editor reset} to return to automatic discovery.
+This is an alias for the global \texttt{settings set editor nano}. The choice
+is machine-specific Studio state, not a line in the workflow or a file
+committed to Git. It survives leaving Studio, reopening the terminal, moving
+between projects, and a computer crash. Enter \texttt{editor reset} to return
+to automatic discovery.
 
 An editor briefly takes over the same terminal. Save the file and exit the
 editor to return to the unchanged Studio session. Studio executes the editor
@@ -594,7 +623,9 @@ preserves its paragraphs and lists, and wraps it in repository-aware
 instructions. It prints a compact table instead of repeating the long text:
 
 \begin{lstlisting}[style=shell]
--- Output: workflow create --------------------------------
++----------------------------------------------------------+
+| ZipperGen Studio : workflow create                       |
++----------------------------------------------------------+
 Creation
   Specification  [success] specification.md
   Implementation [success] prepared
@@ -672,7 +703,9 @@ workflow implement claude
 \end{lstlisting}
 
 Choose one of the two commands; do not run both for the same implementation
-request. Studio runs
+request. After \texttt{settings set assistant codex} or
+\texttt{settings set assistant claude}, bare \texttt{workflow implement} uses
+that global preference. Studio runs
 the selected local coding assistant once in the project root and tells it to
 read \path{.zippergen/current-task.md}. Just before launch, Studio applies
 the freshness check described above, so the file contains the current
@@ -858,7 +891,9 @@ that validation has not yet run.
 Enter \texttt{workflow show} and choose the semantic views:
 
 \begin{lstlisting}[style=shell]
--- Output: workflow show ----------------------------------
++----------------------------------------------------------+
+| ZipperGen Studio : workflow show                         |
++----------------------------------------------------------+
 1. Authored source
 2. Overview
 3. Protocol
@@ -1058,6 +1093,7 @@ models configure anthropic
 models check
 models assign Writer openai-gpt-4o-mini
 models assign Reviewer anthropic-claude-sonnet-4-6
+models rename openai-gpt-4o-mini drafting
 models
 \end{lstlisting}
 \end{minipage}
@@ -1090,8 +1126,12 @@ configuration whose last conclusive check found it unavailable must be fixed or
 checked successfully before assignment.
 Use Tab completion rather than retyping generated names. Editing one named
 configuration with \texttt{models edit NAME} updates every assignment that
-refers to it. \texttt{models remove NAME} refuses to remove a configuration
-that is still in use.
+refers to it. \texttt{models rename OLD NEW} changes only its reusable name:
+Studio preserves the provider, model, and recorded check result and updates
+every default and participant assignment in the project atomically. It does
+not reconnect to the provider or change runtime model selection.
+\texttt{models remove NAME} refuses to remove a configuration that is still
+in use.
 
 The advanced \texttt{models connect NAME [URL]} and
 \texttt{models disconnect NAME} commands manage provider connections directly.
@@ -1406,7 +1446,8 @@ of course be different on your machine:
 
 \begin{lstlisting}[style=shell]
 ZipperGen Studio
-Project: /path/to/zippergen-tutorial
+Project: zippergen-tutorial
+Root: /path/to/zippergen-tutorial
 Workflow: zippergen/examples/tutorial_review.py:tutorial_review
 Type 'help' for commands; 'workflow show' opens the inspection menu.
 zippergen [tutorial_review]>
@@ -1421,9 +1462,15 @@ important commands are:
 
 \begin{lstlisting}[style=shell]
 project show   # visible manifest and automatic specification path
+project rename "NEW NAME" # logical name only; root stays unchanged
+settings       # global learning, interpreter, assistant, editor, output
+settings set learning off # applies to every local project
+settings set assistant codex # bare workflow implement uses this
+settings set editor micro # global terminal editor preference
+settings set output banner # connected three-line command banner
 current        # specification, workflow, models, run, deployment
 editor show    # effective terminal editor and preference source
-editor set micro # remember an installed editor for this project
+editor set micro # alias for the global editor setting
 workflow       # workflow-development dashboard
 workflow create # create/reopen specification.md
 workflow refine # create/reopen the one pending refinement
@@ -1446,6 +1493,7 @@ models         # show connections, configurations, and assignments
 models configure [NAME] # guided provider and model setup
 models check [NAME] # verify saved configurations; assignments stay unchanged
 models assign LIFELINE NAME # route a participant to a configuration
+models rename OLD NEW # rename it and migrate all project assignments
 run            # fresh guided, durable development run
 resume         # continue the current incomplete managed run
 runs           # list this project's managed development runs
@@ -1626,6 +1674,7 @@ models configure anthropic
 models check
 models assign Writer openai-gpt-4o-mini
 models assign Reviewer anthropic-claude-sonnet-4-6
+models rename openai-gpt-4o-mini drafting
 models
 run
 \end{lstlisting}
@@ -3327,7 +3376,9 @@ $\square$ & \texttt{current}, \texttt{workflow list},
 \texttt{workflow show}
 views make specification/refinement state, workflow name, participants, validation, model
 routes, provider connections, and runtime context clear. & \\
-$\square$ & \texttt{editor set micro} remembers the installed project editor;
+$\square$ & \texttt{settings} reports global learning, interpreter, assistant,
+editor, and output preferences while language history remains project-local. & \\
+$\square$ & \texttt{editor set micro} remembers the installed global editor;
 \texttt{editor show}, \texttt{edit file}, and a one-off
 \texttt{--editor nano} behave as documented without MCP setup. & \\
 $\square$ & \texttt{workflow create} opens \path{specification.md} without asking
@@ -3401,9 +3452,14 @@ appears; do not prefix them with \texttt{zippergen}:
 
 \begin{lstlisting}[style=shell]
 project show
+project rename "Reviewed Answer Tutorial" # optional logical rename
+settings
+settings set learning on
+settings set assistant codex
+settings set editor micro
+settings set output banner
 current
 editor show
-editor set micro      # use nano if micro is not installed
 workflow create       # opens the automatic specification.md
 workflow show spec
 workflow edit spec

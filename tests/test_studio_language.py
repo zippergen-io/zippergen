@@ -121,6 +121,48 @@ def test_natural_model_assignment_is_canonical_and_reversible(tmp_path):
     assert any("Natural-language command plan completed" in line for line in output)
 
 
+def test_natural_model_configuration_rename_is_deterministic(tmp_path):
+    studio, workspace, output = _studio(tmp_path)
+    workspace.save_model_configuration(
+        "fast-review",
+        {
+            "provider": "local",
+            "model": "qwen3",
+            "spec": "local:qwen3",
+            "check_status": "available",
+        },
+    )
+
+    studio.execute("Rename model configuration fast-review to editorial")
+
+    assert "fast-review" not in workspace.model_configurations()
+    assert workspace.model_configurations()["editorial"]["spec"] == "local:qwen3"
+    assert any("models rename fast-review editorial" in line for line in output)
+    history = NaturalLanguageStore(workspace.natural_language_path).history()
+    assert history[-1]["source"] == "deterministic"
+
+
+def test_natural_project_rename_and_global_learning_are_deterministic(tmp_path):
+    studio, workspace, output = _studio(tmp_path)
+    studio.execute("project init Tutorial")
+
+    studio.execute("Rename the project to Reviewed Answer")
+    studio.execute("Turn learning off")
+
+    assert workspace.project_manifest()["name"] == "Reviewed Answer"
+    assert workspace.global_settings()["learning"] is False
+    assert any(
+        "project rename 'Reviewed Answer'" in line
+        for line in output
+    )
+    assert any("settings set learning off" in line for line in output)
+    history = NaturalLanguageStore(workspace.natural_language_path).history()
+    assert [record["source"] for record in history[-2:]] == [
+        "deterministic",
+        "deterministic",
+    ]
+
+
 def test_natural_provider_configuration_uses_the_models_surface(
     tmp_path,
 ):

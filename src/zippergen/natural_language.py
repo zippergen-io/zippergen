@@ -138,6 +138,64 @@ def deterministic_plan(
         return None
     configurations = dict(model_configurations or {})
 
+    project_rename_match = re.fullmatch(
+        r"(?:please\s+)?rename\s+(?:the\s+)?project\s+"
+        r"(?:to|as)\s+(.+?)\.?",
+        request.strip(),
+        flags=re.IGNORECASE,
+    )
+    if project_rename_match:
+        name = (
+            project_rename_match.group(1)
+            .strip()
+            .removesuffix(".")
+            .strip()
+            .strip("\"'")
+        )
+        if name:
+            return NaturalCommandPlan(
+                f"Rename the logical project to {name}.",
+                (shlex.join(["project", "rename", name]),),
+                "deterministic",
+            )
+
+    learning_match = re.fullmatch(
+        r"(?:please\s+)?(?:(?:turn|switch|set)\s+)?"
+        r"(?:natural[- ]language\s+)?learning\s+(on|off)",
+        request.strip(),
+        flags=re.IGNORECASE,
+    )
+    if learning_match:
+        value = learning_match.group(1).casefold()
+        return NaturalCommandPlan(
+            f"Turn global natural-language learning {value}.",
+            (f"settings set learning {value}",),
+            "deterministic",
+        )
+
+    rename_match = re.fullmatch(
+        r"(?:please\s+)?rename\s+(?:the\s+)?"
+        r"(?:(?:model\s+)?(?:configuration|config)\s+)?"
+        r"([A-Za-z0-9][A-Za-z0-9._-]{0,63})\s+"
+        r"(?:to|as)\s+([A-Za-z0-9][A-Za-z0-9._-]{0,63})",
+        request.strip(),
+        flags=re.IGNORECASE,
+    )
+    if rename_match:
+        names = {name.casefold(): name for name in configurations}
+        old_name = names.get(rename_match.group(1).casefold())
+        if old_name is not None:
+            new_name = rename_match.group(2)
+            return NaturalCommandPlan(
+                f"Rename model configuration {old_name} to {new_name}.",
+                (
+                    shlex.join(
+                        ["models", "rename", old_name, new_name]
+                    ),
+                ),
+                "deterministic",
+            )
+
     if re.search(r"\b(current|active)\s+task\b", text) or text in {
         "what is the task",
         "show the task",
@@ -414,6 +472,7 @@ COMMAND_CATALOG = """\
 Read-only:
 - current
 - project show
+- settings
 - workflow
 - workflow show spec | workflow show pending
 - workflow list | workflow files | workflow show source [PATH]
@@ -427,13 +486,20 @@ Read-only:
 
 Local configuration and development:
 - project init [NAME]
+- project rename NAME
+- settings set learning on|off
+- settings set interpreter auto|codex|claude|off
+- settings set assistant codex|claude
+- settings set editor COMMAND
+- settings set output banner|compact
+- settings reset [learning|interpreter|assistant|editor|output|all]
 - workflow create DESCRIPTION
 - workflow refine DESCRIPTION
 - workflow edit spec | workflow edit code
 - workflow select [NUMBER|NAME|PATH.py:WORKFLOW]
 - workflow accept | workflow discard
 - models configure [NAME]
-- models edit NAME | models remove NAME
+- models edit NAME | models rename OLD_NAME NEW_NAME | models remove NAME
 - models connect local [BASE_URL]
 - models connect openai|anthropic|mistral
 - models disconnect local|openai|anthropic|mistral
@@ -636,9 +702,16 @@ class NaturalLanguageStore:
         self,
         request: str,
         plan: NaturalCommandPlan,
+        *,
+        enabled: bool | None = None,
     ) -> dict[str, Any] | None:
         state = self.load()
-        if not bool(state.get("learning", True)) or looks_sensitive(request):
+        learning = (
+            bool(state.get("learning", True))
+            if enabled is None
+            else enabled
+        )
+        if not learning or looks_sensitive(request):
             return None
         learned = state.get("learned")
         if not isinstance(learned, list):

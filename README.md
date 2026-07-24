@@ -97,17 +97,22 @@ zippergen studio --project .
 ```
 
 Then enter `project init NAME` inside Studio. Subsequent sessions need only the
-short `zippergen` command from the parent project root.
+short `zippergen` command from the parent project root. `project rename
+"NEW NAME"` later changes only this logical, versioned name; the project
+directory, workflows, deployments, and private workspace identity stay put.
 
 ```text
 $ uv run zippergen
 ZipperGen Studio
-Project: /path/to/zippergen
+Project: zippergen
+Root: /path/to/zippergen
 No workflow selected.
 
 zippergen [no workflow]> workflow list
 
-── Output: workflow list ───────────────────────────────
+╭──────────────────────────────────────────────────────────╮
+│ ZipperGen Studio · workflow list                         │
+╰──────────────────────────────────────────────────────────╯
 Available workflows
   1  tutorial_review — examples/tutorial_review.py:tutorial_review
   ...
@@ -115,7 +120,9 @@ Available workflows
 zippergen [no workflow]> workflow select 1
 zippergen [tutorial_review]> workflow show
 
-── Output: workflow show ───────────────────────────────
+╭──────────────────────────────────────────────────────────╮
+│ ZipperGen Studio · workflow show                         │
+╰──────────────────────────────────────────────────────────╯
   1. Authored source
   2. Overview
   3. Protocol
@@ -135,11 +142,12 @@ remain in plain output, while ANSI color is enabled only on an interactive
 terminal. Redirected output, `NO_COLOR`, and the scriptable CLI's JSON modes
 remain color-free.
 
-Interactive commands also begin with a consistent output boundary such as
-`── Output: current ──`. The blank line and labelled rule separate the echoed
-command from its prompts, tables, warnings, or errors. Only the command family
-is shown; prompt text, paths, model specifications, and secret values are never
-repeated in the boundary. Empty input and `exit` produce no boundary.
+Interactive commands also begin with a connected three-line banner. The blank
+line and boxed `ZipperGen Studio · current` label separate the echoed command
+from its prompts, tables, warnings, or errors. Only the command family is
+shown; prompt text, paths, model specifications, and secret values are never
+repeated in the banner. Empty input and `exit` produce no banner. The optional
+`settings set output compact` switches to a one-line boundary.
 
 `current` is the concise project dashboard: project and manifest, canonical
 specification and pending-refinement state, workflow name, all participants,
@@ -175,6 +183,7 @@ Provider [local]: openai
 Model identifier [gpt-4o-mini]:
 zippergen [tutorial_review]> models check writer-fast
 zippergen [tutorial_review]> models assign Writer writer-fast
+zippergen [tutorial_review]> models rename writer-fast drafting
 zippergen [tutorial_review]> models configure anthropic
 zippergen [tutorial_review]> models check anthropic-claude-sonnet-4-6
 zippergen [tutorial_review]> models assign Reviewer anthropic-claude-sonnet-4-6
@@ -210,6 +219,10 @@ route saved configurations; they do not contact a provider. Assigning an
 unchecked configuration is allowed but clearly warned about; a configuration
 known to be unavailable must be fixed or checked successfully first. Local
 model identifiers are checked against the endpoint's live model list.
+`models rename OLD NEW` changes the reusable configuration name atomically:
+the provider, model, and recorded check result are preserved, and every default
+or participant assignment in the project is updated. It does not reconnect to
+the provider or change the model being used.
 `models connect local` calls the endpoint's OpenAI-compatible `/models` route
 with a short timeout and saves the URL only after a successful response. The
 saved status includes the check time and model count. After reconnecting an
@@ -250,22 +263,41 @@ read-only and clear reversible operations directly, and asks before execution
 or destructive operations. `plan TEXT` forces preview-only interpretation,
 while `ask TEXT` explicitly requests interpretation and execution.
 
-`language` shows the effective interpreter, learning mode, private history,
-and number of learned interpretations. `language set auto` prefers Codex and
-then Claude; `language set codex|claude|off` makes the choice explicit.
+`settings` shows preferences shared by every local ZipperGen project:
+learning policy, natural-language interpreter, default coding assistant,
+terminal editor, and output style. For example:
+
+```text
+settings set learning off
+settings set interpreter auto
+settings set assistant codex
+settings set editor micro
+settings set output banner
+```
+
+The owner-private settings file lives at
+`$ZIPPERGEN_HOME/settings.json`. Learning policy is global, while learned
+interpretations and command history remain project-local so commands inferred
+for one application do not silently carry into another.
+
+`language` shows the effective interpreter, global learning mode, private
+project history, and number of project-local learned interpretations.
+`language set auto` prefers Codex and then Claude;
+`language set codex|claude|off` makes the global choice explicit.
 The fallback reuses that CLI's existing login and does not require a separate
 ZipperGen model-provider key.
 Successful CLI interpretations are stored without raw CLI output in the
 owner-private project workspace and generalized over values such as
 participant names. `language history`, `language learned`, and `language
-forget ID|all` keep this behavior inspectable and reversible; `language
-learning off` disables new learned entries. Requests that look as though they
-contain a secret are neither sent nor stored and are redirected to Studio's
-private provider setup.
+forget ID|all` keep this behavior inspectable and reversible. `language
+learning off` is an alias for global `settings set learning off` and disables
+new learned entries in every project. Requests that look as though they contain
+a secret are neither sent nor stored and are redirected to Studio's private
+provider setup.
 
 To begin from natural language, let Studio maintain one readable, versioned
 `specification.md`. Studio owns the filename and opens it in a terminal editor.
-Choose a project-specific editor preference once:
+Choose a global editor preference once:
 
 ```text
 zippergen [no workflow]> editor set micro
@@ -273,7 +305,8 @@ zippergen [no workflow]> editor show
 zippergen [no workflow]> workflow create
 ```
 
-The remembered preference survives Studio restarts and computer crashes. A
+The remembered preference applies to every local project and survives Studio
+restarts and computer crashes. A
 one-off choice does not change it: use `--editor nano` on the `workflow create`
 command, or enter `workflow edit code --editor micro`. Without a preference,
 Studio tries `$VISUAL`, `$EDITOR`, then `micro`, `nano`, `vim`, and `vi`.
@@ -288,7 +321,9 @@ coding-assistant handoff:
 ```text
 zippergen [no workflow]> workflow create
 
-── Output: workflow create ─────────────────────────────
+╭──────────────────────────────────────────────────────────╮
+│ ZipperGen Studio · workflow create                       │
+╰──────────────────────────────────────────────────────────╯
 Creation
 ────────
   Specification  ✓ specification.md
@@ -364,7 +399,8 @@ an immediate working notice and periodic elapsed-time heartbeats, so silence
 never looks like a frozen Studio session; Control-C preserves the request and
 any project changes for inspection through `workflow status`. Use
 `workflow implement codex --interactive` only when an interactive Codex conversation is
-actually useful. Thus
+actually useful. Bare `workflow implement` uses the global assistant selected
+with `settings set assistant codex|claude`. Thus
 there is no separate prompt-copying step: the assistant receives the complete
 specification context through `.zippergen/current-task.md`. Studio does not call
 an assistant through a ZipperGen workflow provider and needs no ZipperGen API
@@ -487,7 +523,8 @@ override, not a required setup step.
 Every archive is owner-only and recoverable below `$ZIPPERGEN_HOME/resets/`.
 The unambiguous noninteractive forms are `project reset fresh --yes` and
 `project reset state --yes`; plain `project reset --yes` is intentionally not
-accepted. Neither reset mode stops or removes deployments.
+accepted. Neither reset mode stops or removes deployments or changes the
+global preferences shown by `settings`.
 
 ## Hello, ZipperGen
 

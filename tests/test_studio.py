@@ -104,6 +104,10 @@ def test_studio_completion_is_context_and_project_aware(tmp_path):
     assert _completions(studio, "models connect a") == ["anthropic"]
     assert _completions(studio, "models inh") == ["inherit"]
     assert _completions(studio, "models inherit W") == ["Writer"]
+    assert _completions(studio, "settings set l") == ["learning"]
+    assert _completions(studio, "settings set learning ") == ["on", "off"]
+    assert "assistant" in _completions(studio, "settings reset ")
+    assert _completions(studio, "project ren") == ["rename"]
     assert _completions(studio, "workflow create --file req") == [
         "requirements.md"
     ]
@@ -534,8 +538,12 @@ def test_studio_condensed_assistant_reports_progress_and_precise_boundary(
 
     studio.execute("workflow implement", show_boundary=True)
 
-    boundary = next(line for line in output if line.startswith("── Output:"))
-    assert boundary.startswith("── Output: workflow implement ")
+    boundary = next(
+        line
+        for line in output
+        if line.startswith("│ ZipperGen Studio · workflow implement ")
+    )
+    assert boundary.endswith("│")
     assert any(
         "Codex CLI is working" in line and "Control-C" in line
         for line in output
@@ -835,6 +843,7 @@ def test_studio_assistant_can_launch_claude_code_on_the_same_task(
 ):
     studio, workspace, output = _studio(tmp_path)
     studio.create_request("Create a review workflow.")
+    workspace.update_global_settings(assistant="claude")
     output.clear()
     calls: list[tuple[list[str], Path, bool]] = []
 
@@ -850,7 +859,7 @@ def test_studio_assistant_can_launch_claude_code_on_the_same_task(
 
     monkeypatch.setattr("zippergen.studio.subprocess.run", fake_run)
 
-    studio.execute("workflow implement claude")
+    studio.execute("workflow implement")
 
     assert calls[0][0][0:4] == [
         "/bin/claude",
@@ -1230,8 +1239,8 @@ def test_studio_remembers_shows_and_resets_editor_preference(
 
     studio.execute("editor set micro")
 
-    assert workspace.load()["editor_command"] == ["micro"]
-    assert output[-1] == "✓ Editor preference: micro"
+    assert workspace.global_settings()["editor_command"] == ["micro"]
+    assert output[-1] == "✓ Global editor preference: micro"
 
     output.clear()
     studio.execute("editor show")
@@ -1239,12 +1248,14 @@ def test_studio_remembers_shows_and_resets_editor_preference(
     assert output[0] == "Editor"
     assert any("Preference" in line and "micro" in line for line in output)
     assert any("Effective" in line and "/usr/bin/micro" in line for line in output)
-    assert any("Source" in line and "project preference" in line for line in output)
+    assert any("Source" in line and "global preference" in line for line in output)
 
     studio.execute("editor reset")
 
-    assert workspace.load()["editor_command"] is None
-    assert output[-1] == "✓ Editor preference reset to automatic discovery."
+    assert workspace.global_settings()["editor_command"] is None
+    assert output[-1] == (
+        "✓ Global editor preference reset to automatic discovery."
+    )
 
 
 def test_studio_edits_selected_workflow_with_preference_or_one_off_override(
@@ -1272,7 +1283,7 @@ def test_studio_edits_selected_workflow_with_preference_or_one_off_override(
         (["/usr/bin/nano", str(workspace.root / "workflow.py")], workspace.root, False),
         (["/opt/bin/micro", str(workspace.root / "workflow.py")], workspace.root, False),
     ]
-    assert any("project preference" in line for line in output)
+    assert any("global preference" in line for line in output)
     assert any("one-off" in line for line in output)
     assert output[-1] == "Next: workflow validate · workflow show · run"
 
@@ -1697,6 +1708,82 @@ def test_studio_retires_the_providers_command_with_targeted_guidance(tmp_path):
         studio.execute("providers set openai")
 
 
+def test_studio_project_rename_changes_only_the_logical_manifest_name(tmp_path):
+    studio, workspace, output = _studio(tmp_path)
+    studio.execute("project init Tutorial")
+    original_root = workspace.root
+    output.clear()
+
+    studio.execute('project rename "Reviewed Answer Tutorial"')
+
+    manifest = workspace.project_manifest()
+    assert manifest["name"] == "Reviewed Answer Tutorial"
+    assert workspace.root == original_root
+    assert manifest["specification_file"] == "specification.md"
+    assert output[0] == "Project renamed"
+    assert any("From" in line and "Tutorial" in line for line in output)
+    assert any(
+        "To" in line and "Reviewed Answer Tutorial" in line
+        for line in output
+    )
+    assert any("Root" in line and "unchanged" in line for line in output)
+
+
+def test_studio_settings_are_global_while_language_data_stays_project_local(
+    tmp_path,
+):
+    studio, workspace, output = _studio(tmp_path)
+
+    studio.execute("settings set learning off")
+    studio.execute("settings set output compact")
+
+    second_root = tmp_path / "second-project"
+    second_root.mkdir()
+    second_workspace = Workspace(second_root, home=workspace.home)
+    second_studio = Studio(
+        second_workspace,
+        input_func=lambda _prompt: "",
+        output_func=lambda _value: None,
+    )
+
+    assert second_workspace.global_settings()["learning"] is False
+    assert second_workspace.global_settings()["output_style"] == "compact"
+    assert second_studio._global_settings()["learning"] is False
+    assert workspace.natural_language_path != second_workspace.natural_language_path
+    assert workspace.global_settings_path == second_workspace.global_settings_path
+    assert workspace.global_settings_path.stat().st_mode & 0o077 == 0
+    assert any("all local ZipperGen projects" in line for line in output)
+
+    # A full reset writes explicit defaults, so stale pre-global project
+    # preferences cannot be migrated back on the next command.
+    workspace.update(editor_command=["nano"])
+    studio.execute("settings reset all")
+
+    assert studio._global_settings()["learning"] is True
+    assert studio._global_settings()["editor_command"] is None
+    assert studio._global_settings()["output_style"] == "banner"
+
+
+def test_studio_banner_is_connected_and_compact_style_is_configurable(tmp_path):
+    studio, workspace, output = _studio(tmp_path)
+
+    studio.execute("current", show_boundary=True)
+
+    assert output[0] == ""
+    assert output[1] == "╭" + "─" * 58 + "╮"
+    assert output[2].startswith("│ ZipperGen Studio · current ")
+    assert output[2].endswith("│")
+    assert len(output[1]) == len(output[2]) == len(output[3])
+    assert output[3] == "╰" + "─" * 58 + "╯"
+
+    workspace.update_global_settings(output_style="compact")
+    output.clear()
+    studio.execute("current", show_boundary=True)
+
+    assert output[1].startswith("── ZipperGen Studio · current ")
+    assert not any(line.startswith("╭") for line in output)
+
+
 def test_studio_status_marks_use_color_only_when_enabled(tmp_path):
     root = tmp_path / "project"
     root.mkdir()
@@ -1763,10 +1850,17 @@ def test_studio_interactive_commands_have_a_clear_output_boundary(tmp_path):
 
     assert studio.run() == 0
 
-    boundaries = [line for line in output if line.startswith("── Output:")]
+    boundaries = [
+        line
+        for line in output
+        if line.startswith("│ ZipperGen Studio · ")
+    ]
     assert len(boundaries) == 1
-    assert boundaries[0].startswith("── Output: current ")
-    assert output[output.index(boundaries[0]) - 1] == ""
+    assert boundaries[0].startswith("│ ZipperGen Studio · current ")
+    boundary_index = output.index(boundaries[0])
+    assert output[boundary_index - 1].startswith("╭")
+    assert output[boundary_index + 1].startswith("╰")
+    assert output[boundary_index - 2] == ""
     assert all("exit" not in line for line in boundaries)
 
 
@@ -1778,8 +1872,11 @@ def test_studio_boundaries_hide_arguments_and_skip_empty_or_exit(tmp_path):
         show_boundary=True,
     )
 
-    boundary = next(line for line in output if line.startswith("── Output:"))
-    assert boundary.startswith("── Output: workflow create ")
+    boundary = next(
+        line
+        for line in output
+        if line.startswith("│ ZipperGen Studio · workflow create ")
+    )
     assert "SECRET_SENTINEL" not in boundary
 
     output.clear()
@@ -1794,8 +1891,10 @@ def test_studio_parse_errors_receive_an_input_boundary(tmp_path):
     studio.execute('workflow create "unterminated', show_boundary=True)
 
     assert output[0] == ""
-    assert output[1].startswith("── Output: input ")
-    assert output[2].startswith("✗ Could not parse command:")
+    assert output[1].startswith("╭")
+    assert output[2].startswith("│ ZipperGen Studio · input ")
+    assert output[3].startswith("╰")
+    assert output[4].startswith("✗ Could not parse command:")
 
 
 def test_studio_project_and_prompt_commands_manage_visible_design_context(tmp_path):
@@ -2648,6 +2747,85 @@ def test_studio_models_configure_check_then_assign(
         for line in output
     )
     assert any("Writer" in line and "fast-review →" in line for line in output)
+
+
+def test_studio_models_rename_preserves_check_and_updates_all_assignments(
+    tmp_path,
+):
+    studio, workspace, output = _studio(tmp_path)
+    workspace.save_model_configuration(
+        "fast-review",
+        {
+            "provider": "mistral",
+            "model": "mistral-small-latest",
+            "spec": "mistral:mistral-small-latest",
+            "check_status": "available",
+            "check_detail": "model is available",
+            "checked_at": "2026-07-24T16:00:00+0200",
+        },
+    )
+    workspace.save_model_assignment_profile(
+        "workflow.py:sample",
+        default="fast-review",
+        lifelines={"Writer": "fast-review"},
+    )
+    workspace.save_model_assignment_profile(
+        "other.py:other",
+        default="mock",
+        lifelines={"Reviewer": "fast-review"},
+    )
+
+    studio.execute("models rename fast-review editorial")
+
+    configurations = workspace.model_configurations()
+    assert "fast-review" not in configurations
+    assert configurations["editorial"]["spec"] == (
+        "mistral:mistral-small-latest"
+    )
+    assert configurations["editorial"]["check_status"] == "available"
+    assert configurations["editorial"]["checked_at"] == (
+        "2026-07-24T16:00:00+0200"
+    )
+    profiles = workspace.load()["model_profiles"]
+    assert profiles["workflow.py:sample"]["default_configuration"] == "editorial"
+    assert profiles["workflow.py:sample"]["lifeline_configurations"] == {
+        "Writer": "editorial"
+    }
+    assert profiles["other.py:other"]["lifeline_configurations"] == {
+        "Reviewer": "editorial"
+    }
+    assert profiles["workflow.py:sample"]["default"] == (
+        "mistral:mistral-small-latest"
+    )
+    assert any(line == "Model configuration renamed" for line in output)
+    assert any("Check" in line and "available; preserved" in line for line in output)
+    assert any(
+        "workflow.py:sample" in line and "default, Writer" in line
+        for line in output
+    )
+    assert any(
+        "other.py:other" in line and "Reviewer" in line for line in output
+    )
+
+
+def test_studio_models_rename_rejects_mock_and_name_collisions(tmp_path):
+    studio, workspace, _output = _studio(tmp_path)
+    for name in ("first", "second"):
+        workspace.save_model_configuration(
+            name,
+            {
+                "provider": "local",
+                "model": name,
+                "spec": f"local:{name}",
+            },
+        )
+
+    with pytest.raises(SystemExit, match="built-in mock.*cannot be renamed"):
+        studio.execute("models rename mock replacement")
+    with pytest.raises(SystemExit, match="conflicts with existing"):
+        studio.execute("models rename first SECOND")
+
+    assert {"first", "second"}.issubset(workspace.model_configurations())
 
 
 def test_studio_model_configuration_guides_missing_provider_connection(

@@ -29,8 +29,10 @@ RUN_SCHEMA_VERSION = 1
 REQUEST_SCHEMA_VERSION = 1
 ASSISTANT_TASK_CONTRACT_VERSION = 3
 PROJECT_SCHEMA_VERSION = 1
+GLOBAL_SETTINGS_SCHEMA_VERSION = 1
 PROMPT_LEDGER_SCHEMA_VERSION = 1
 PROJECT_MANIFEST_NAME = "zippergen.toml"
+GLOBAL_SETTINGS_NAME = "settings.json"
 PROMPT_INDEX_NAME = "index.toml"
 PROJECT_TASK_DIRECTORY = ".zippergen"
 CURRENT_TASK_NAME = "current-task.md"
@@ -301,6 +303,12 @@ class Workspace:
         return self.directory / NATURAL_LANGUAGE_STATE_NAME
 
     @property
+    def global_settings_path(self) -> Path:
+        """Return the owner-private, machine-wide Studio settings path."""
+
+        return self.home / GLOBAL_SETTINGS_NAME
+
+    @property
     def current_task_path(self) -> Path:
         """Return the stable, project-local coding-assistant handoff path."""
 
@@ -394,6 +402,107 @@ class Workspace:
             "exists": True,
         }
 
+    @staticmethod
+    def default_global_settings() -> dict[str, object]:
+        """Return non-writing defaults for user-level Studio preferences."""
+
+        return {
+            "schema_version": GLOBAL_SETTINGS_SCHEMA_VERSION,
+            "learning": True,
+            "interpreter": "auto",
+            "assistant": "codex",
+            "editor_command": None,
+            "output_style": "banner",
+        }
+
+    @classmethod
+    def _validate_global_settings(
+        cls,
+        settings: dict[str, object],
+    ) -> dict[str, object]:
+        defaults = cls.default_global_settings()
+        defaults.update(settings)
+        if defaults.get("schema_version") != GLOBAL_SETTINGS_SCHEMA_VERSION:
+            raise WorkspaceError(
+                "Unsupported global settings schema: "
+                f"{defaults.get('schema_version')!r}"
+            )
+        if not isinstance(defaults.get("learning"), bool):
+            raise WorkspaceError("Global setting 'learning' must be true or false.")
+        if defaults.get("interpreter") not in {
+            "auto",
+            "codex",
+            "claude",
+            "off",
+        }:
+            raise WorkspaceError(
+                "Global setting 'interpreter' must be auto, codex, claude, or off."
+            )
+        if defaults.get("assistant") not in {"codex", "claude"}:
+            raise WorkspaceError(
+                "Global setting 'assistant' must be codex or claude."
+            )
+        editor = defaults.get("editor_command")
+        if editor is not None and (
+            not isinstance(editor, list)
+            or not editor
+            or not all(isinstance(value, str) and value for value in editor)
+        ):
+            raise WorkspaceError(
+                "Global setting 'editor_command' must be null or a command list."
+            )
+        if defaults.get("output_style") not in {"banner", "compact"}:
+            raise WorkspaceError(
+                "Global setting 'output_style' must be banner or compact."
+            )
+        return defaults
+
+    def global_settings(self) -> dict[str, object]:
+        """Load owner-private preferences shared by every local project."""
+
+        if not self.global_settings_path.exists():
+            return self.default_global_settings()
+        try:
+            settings = _read_json(self.global_settings_path)
+        except WorkspaceError:
+            raise
+        if settings.get("schema_version") != GLOBAL_SETTINGS_SCHEMA_VERSION:
+            raise WorkspaceError(
+                f"Unsupported global settings schema in "
+                f"{self.global_settings_path}: "
+                f"{settings.get('schema_version')!r}"
+            )
+        try:
+            return self._validate_global_settings(settings)
+        except WorkspaceError as exc:
+            raise WorkspaceError(
+                f"Invalid global settings {self.global_settings_path}: {exc}"
+            ) from exc
+
+    def update_global_settings(self, **changes: object) -> dict[str, object]:
+        """Update machine-wide Studio preferences in one owner-private write."""
+
+        settings = self.global_settings()
+        settings.update(changes)
+        candidate = self._validate_global_settings(dict(settings))
+        _atomic_write_json(self.global_settings_path, candidate)
+        self.home.chmod(0o700)
+        self.global_settings_path.chmod(0o600)
+        return candidate
+
+    def reset_global_settings(self, name: str | None = None) -> dict[str, object]:
+        """Reset one user-level preference, or all preferences, to defaults."""
+
+        defaults = self.default_global_settings()
+        if name is None:
+            _atomic_write_json(self.global_settings_path, defaults)
+            self.home.chmod(0o700)
+            self.global_settings_path.chmod(0o600)
+            return defaults
+        if name not in defaults or name == "schema_version":
+            raise WorkspaceError(f"Unknown global setting {name!r}.")
+        return self.update_global_settings(**{name: defaults[name]})
+
     def initialize_project(
         self,
         *,
@@ -453,6 +562,44 @@ class Workspace:
         _atomic_write_text(self.manifest_path, content)
         self._ensure_project_gitignore(framework_directory)
         return self.project_manifest()
+
+    def rename_project(self, name: str) -> dict[str, object]:
+        """Change only the logical, versioned project name."""
+
+        normalized = name.strip()
+        if not normalized:
+            raise WorkspaceError("Project name must not be empty.")
+        if not self.manifest_path.exists():
+            raise WorkspaceError(
+                "The project manifest has not been created. Use 'project init' first."
+            )
+        manifest = self.project_manifest()
+        old_name = str(manifest["name"])
+        if normalized == old_name:
+            raise WorkspaceError(f"Project is already named {normalized!r}.")
+        try:
+            content = self.manifest_path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            raise WorkspaceError(
+                f"Could not read project manifest {self.manifest_path}: {exc}"
+            ) from exc
+        updated, replacements = re.subn(
+            r"(?m)^name\s*=\s*.*$",
+            lambda _match: f"name = {_toml_string(normalized)}",
+            content,
+            count=1,
+        )
+        if replacements != 1:
+            raise WorkspaceError(
+                f"Project manifest has no editable name field: {self.manifest_path}"
+            )
+        _atomic_write_text(self.manifest_path, updated)
+        return {
+            "old_name": old_name,
+            "new_name": normalized,
+            "manifest": self.manifest_path,
+            "root": self.root,
+        }
 
     def _ensure_project_gitignore(self, framework_directory: str | None) -> None:
         if (self.root / ".git").exists():
@@ -1779,6 +1926,106 @@ class Workspace:
             ):
                 used.append(str(workflow_spec))
         return tuple(sorted(used))
+
+    def rename_model_configuration(
+        self,
+        old_name: str,
+        new_name: str,
+    ) -> dict[str, object]:
+        """Atomically rename a configuration and every assignment reference."""
+
+        if old_name == "mock":
+            raise WorkspaceError("The built-in mock configuration cannot be renamed.")
+        normalized = new_name.strip()
+        if (
+            normalized.casefold() == "mock"
+            or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", normalized)
+        ):
+            raise WorkspaceError(
+                "A model configuration name must start with a letter or digit, "
+                "contain only letters, digits, '.', '_' or '-', and must not "
+                "use the built-in name 'mock'."
+            )
+        if old_name == normalized:
+            raise WorkspaceError(
+                f"Model configuration is already named {normalized!r}."
+            )
+
+        state = self.load()
+        raw_configurations = state.get("model_configurations") or {}
+        if not isinstance(raw_configurations, dict):
+            raise WorkspaceError(
+                "Workspace model_configurations must be an object."
+            )
+        if old_name not in raw_configurations:
+            raise WorkspaceError(
+                f"Unknown model configuration {old_name!r}."
+            )
+        collision = next(
+            (
+                str(existing)
+                for existing in raw_configurations
+                if str(existing) != old_name
+                and str(existing).casefold() == normalized.casefold()
+            ),
+            None,
+        )
+        if collision is not None:
+            raise WorkspaceError(
+                f"Model configuration {normalized!r} conflicts with existing "
+                f"configuration {collision!r}."
+            )
+
+        configurations: dict[str, object] = {}
+        for name, values in raw_configurations.items():
+            configurations[
+                normalized if str(name) == old_name else str(name)
+            ] = values
+
+        raw_profiles = state.get("model_profiles") or {}
+        if not isinstance(raw_profiles, dict):
+            raise WorkspaceError("Workspace model_profiles must be an object.")
+        profiles: dict[str, object] = {}
+        references: list[dict[str, object]] = []
+        for workflow_spec, raw_profile in raw_profiles.items():
+            if not isinstance(raw_profile, dict):
+                profiles[str(workflow_spec)] = raw_profile
+                continue
+            profile = dict(raw_profile)
+            changed_default = profile.get("default_configuration") == old_name
+            if changed_default:
+                profile["default_configuration"] = normalized
+            raw_lifelines = profile.get("lifeline_configurations") or {}
+            changed_lifelines: list[str] = []
+            if isinstance(raw_lifelines, dict):
+                lifelines = {}
+                for lifeline, configuration in raw_lifelines.items():
+                    if configuration == old_name:
+                        lifelines[str(lifeline)] = normalized
+                        changed_lifelines.append(str(lifeline))
+                    else:
+                        lifelines[str(lifeline)] = configuration
+                profile["lifeline_configurations"] = lifelines
+            if changed_default or changed_lifelines:
+                references.append(
+                    {
+                        "workflow": str(workflow_spec),
+                        "default": changed_default,
+                        "lifelines": tuple(sorted(changed_lifelines)),
+                    }
+                )
+            profiles[str(workflow_spec)] = profile
+
+        self.update(
+            model_configurations=configurations,
+            model_profiles=profiles,
+        )
+        return {
+            "old_name": old_name,
+            "new_name": normalized,
+            "configuration": dict(raw_configurations[old_name]),
+            "references": tuple(references),
+        }
 
     def remove_model_configuration(self, name: str) -> None:
         """Remove one unused named model configuration."""
