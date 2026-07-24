@@ -617,8 +617,9 @@ Notice that the specification does not choose a Python filename or symbol,
 request tests and validation, or repeat the prohibition on deployment. Those
 are development mechanics supplied automatically by Studio's generated task.
 The specification contains only durable application intent. After generation,
-Studio discovers the resulting workflow so the user can select it with
-\texttt{workflow use} without knowing its source path in advance.
+Studio discovers the resulting workflow so the user can list and select it
+with \texttt{workflow list} and \texttt{workflow select} without knowing its
+source path in advance.
 
 The everyday specification commands are intentionally uniform:
 
@@ -741,8 +742,9 @@ Workflow implementation
   Verification [success] passed -- 5 checks
   Verification note    Validation, projections, diff, and focused tests passed.
   Context    [success] assistant result is preserved for review
-  Next                  workflow use / current / workflow validate /
-                        workflow show / workflow accept
+  Next                  workflow list / workflow select /
+                        workflow show source / workflow show protocol /
+                        workflow validate / workflow accept
 \end{lstlisting}
 
 The verification result is an explicit assistant report, not an independent
@@ -806,58 +808,65 @@ below. If generation is unavailable or fails, continue with Step~4 and select
 the shipped \texttt{tutorial\_review} workflow instead. The selector displays
 its internal source reference; the user does not have to type it.
 
-\subsubsection*{Step 4: select and validate the generated workflow}
+\subsubsection*{Step 4: discover, select, and inspect the generated source}
 
 Return to the Studio terminal and enter:
 
 \begin{lstlisting}[style=shell]
-workflow use
-current
-workflow validate
+workflow list
+workflow select
+workflow files
+workflow show source
 \end{lstlisting}
 
 Studio displays the discovered workflows. Select the newly generated
 reviewed-answer workflow by its number; there is no path or Python symbol to
 type. The selected entry may display an internal reference of the form
 \texttt{PATH.py:NAME}: the suffix names the Python workflow object, not a
-deployment. The three commands have deliberately different jobs:
+deployment. Inspect the authored Python before asking validation to judge it.
+The commands have deliberately different jobs:
 
 \begin{description}
-  \item[\texttt{workflow use}] discovers top-level workflow objects, loads the chosen
-        object, and remembers its \texttt{PATH.py:NAME} reference as the current
-        workflow for later Studio commands. It neither runs nor deploys it.
-  \item[\texttt{current}] rebuilds the project dashboard from the current files
-        and machine-specific Studio state. Once a workflow is selected, this
-        includes a fresh validation summary, all participants, an explicit
-        \texttt{LLM-active participants} subset derived from actual
-        \texttt{@llm} action sites, model routing, provider connections, the
-        managed run, and deployment. Thus the green
-        \texttt{Validation: valid} mark immediately after \texttt{workflow use} is
-        expected: \texttt{current} has checked the selected source; it is not
-        a success mark cached by \texttt{workflow use}.
-  \item[\texttt{workflow validate}] runs the validator explicitly and prints every
-        individual check, including the exact local projection checks. It does
-        not modify, execute, or deploy the workflow.
+  \item[\texttt{workflow list}] discovers top-level \texttt{@workflow} entry
+        points from project source and lists their \texttt{PATH.py:NAME}
+        references. This is source discovery, not validation.
+  \item[\texttt{workflow select}] loads the chosen entry point and remembers it
+        as the current workflow for later Studio commands. It neither validates,
+        accepts, runs, nor deploys it.
+  \item[\texttt{workflow files}] lists the entry module, statically imported
+        project-local Python modules, and declared resource files known to the
+        selected workflow.
+  \item[\texttt{workflow show source}] displays the authored entry module.
+        Use \texttt{workflow show source NUMBER} or a path printed by
+        \texttt{workflow files} to inspect another listed file.
 \end{description}
 
-\texttt{current} should show no run, no deployment, and default LLM
-\texttt{mock}. In the detailed \texttt{workflow validate} output, every successful check
-begins with a green check mark. A red cross identifies a failed check and is
-followed by its explanation.
+A workflow entry point need not occupy one file. It may import \texttt{@fragment}
+definitions, actions, connectors, or helpers from other modules. Conversely,
+one module may expose several top-level \texttt{@workflow} entry points.
+Studio lists entry points as choices; supporting files are inspection
+material, not additional workflows.
+
+If no workflow is selected, \texttt{workflow show}, \texttt{workflow files},
+\texttt{workflow edit code}, and \texttt{workflow validate} perform this
+selection step automatically. One discovered entry point is selected with an
+explicit notice; several open the numbered selector. In both cases Studio says
+that validation has not yet run.
 
 \subsubsection*{Step 5: inspect increasing degrees of detail}
 
-Enter \texttt{workflow show} and choose each of the first five views once:
+Enter \texttt{workflow show} and choose the semantic views:
 
 \begin{lstlisting}[style=shell]
 -- Output: workflow show ----------------------------------
-1. Overview
-2. Protocol
-3. Communications only
-4. Actions and prompts
-5. Complete workflow
-6. One participant
-7. Selected participants
+1. Authored source
+2. Overview
+3. Protocol
+4. Communications only
+5. Actions and prompts
+6. Complete workflow
+7. One participant
+8. Selected participants
 \end{lstlisting}
 
 Then use the direct forms:
@@ -869,6 +878,8 @@ workflow show full
 workflow show agent Writer
 workflow show agent Reviewer
 workflow show agents Writer Reviewer
+workflow validate
+current
 \end{lstlisting}
 
 All results are code. \texttt{workflow show communications} hides local actions
@@ -877,6 +888,15 @@ calls and prompts. \texttt{workflow show full} adds implementation and deploymen
 \texttt{workflow show agent Reviewer} is the exact projected local program.
 \texttt{workflow show agents Writer Reviewer} is a focused global view with hidden
 peers marked as boundaries; it is not a projection.
+
+Only the final \texttt{workflow validate} command makes a validity claim.
+Discovery answers which entry points exist, and selection answers which one is
+being discussed. Validation additionally checks the global protocol, input
+ownership, every local projection, action metadata, referenced resources, and
+deployment declarations. Every successful check begins with a green check
+mark; a red cross identifies a failure and is followed by its explanation.
+\texttt{current} then shows the complete project dashboard, including the
+fresh validation summary, model routing, run, and deployment state.
 
 Before running, confirm from these views who owns both inputs, who owns the
 retry decision, whether every revision returns to human review, whether an
@@ -1409,6 +1429,8 @@ workflow create # create/reopen specification.md
 workflow refine # create/reopen the one pending refinement
 workflow edit spec # edit the canonical specification
 workflow edit code # edit the selected Python source
+workflow files  # list entry module, local imports, and declared resources
+workflow show source # inspect the authored entry module
 workflow show spec # canonical accepted requirements
 workflow show pending # inspect the pending refinement
 workflow show  # choose a semantic code view
@@ -1418,7 +1440,8 @@ workflow validate # validate the workflow and projections
 workflow accept # accept a reviewed implementation
 workflow discard # reject and archive a pending refinement
 workflow history # specification and implementation history
-workflow use    # discover workflows and select one
+workflow list   # discover workflow entry points; does not validate
+workflow select # select one by number, name, or complete reference
 models         # show connections, configurations, and assignments
 models configure [NAME] # guided provider and model setup
 models check [NAME] # verify saved configurations; assignments stay unchanged
@@ -1440,13 +1463,14 @@ These are Studio commands entered after the
 Enter \texttt{workflow show}. Studio displays:
 
 \begin{lstlisting}[style=shell]
-1. Overview
-2. Protocol
-3. Communications only
-4. Actions and prompts
-5. Complete workflow
-6. One participant
-7. Selected participants
+1. Authored source
+2. Overview
+3. Protocol
+4. Communications only
+5. Actions and prompts
+6. Complete workflow
+7. One participant
+8. Selected participants
 \end{lstlisting}
 
 Choose a number. Every result is code derived from the semantic workflow; the
@@ -1565,8 +1589,9 @@ implementation request. Neither is a ZipperGen
 workflow model provider, and neither automates deployment. The assistant edits
 ordinary files in the checkout; ZipperGen then loads, validates, projects,
 renders, and runs the result. Integrations can consume the same generated
-request directly. After source creation, enter \texttt{workflow use} to
-discover and select the new workflow. The request is not a queued job: Studio
+request directly. After source creation, enter \texttt{workflow list} and
+\texttt{workflow select} to discover and select the new workflow. The request
+is not a queued job: Studio
 records the synchronous assistant return as \texttt{awaiting human review},
 and \texttt{workflow accept} closes the reviewed creation without deleting its
 history.
@@ -1708,7 +1733,8 @@ this table to understand why those sections contain more commands.
 \textbf{Need} & \textbf{Recommended Studio path} &
 \textbf{Detailed/scriptable path} \\
 \midrule
-Select workflow & \texttt{workflow use} selector; remembered per project & Supply
+Select workflow & \texttt{workflow list}, then \texttt{workflow select};
+remembered per project & Supply
 \path{path.py:workflow} to each command. \\
 Inspect & \texttt{workflow show} selector & \texttt{zippergen show} with
 \texttt{--detail}, \texttt{--communications}, or participant flags. \\
@@ -2684,7 +2710,7 @@ In Studio, select the workbench copy and open the one automatically named
 pending refinement:
 
 \begin{lstlisting}[style=shell]
-workflow use workbench/tutorial_review.py:tutorial_review
+workflow select workbench/tutorial_review.py:tutorial_review
 workflow refine
 \end{lstlisting}
 
@@ -3107,7 +3133,9 @@ zippergen
 models
 \end{lstlisting}
 
-If no workflow is selected, enter \texttt{workflow use} first.
+If no workflow is selected, enter \texttt{workflow list} and then
+\texttt{workflow select}. Inspection and validation commands also open this
+selector automatically.
 
 \subsection*{Studio says the specification is empty}
 
@@ -3294,7 +3322,8 @@ $\square$ & Studio opens the tutorial workflow without a
 $\square$ & \texttt{project show} reports the parent project, nested framework
 checkout, and automatic \path{specification.md} path; the visible files contain
 no private runtime state. & \\
-$\square$ & \texttt{current}, \texttt{workflow use}, and the selectable
+$\square$ & \texttt{current}, \texttt{workflow list},
+\texttt{workflow select}, and the selectable
 \texttt{workflow show}
 views make specification/refinement state, workflow name, participants, validation, model
 routes, provider connections, and runtime context clear. & \\
@@ -3382,7 +3411,10 @@ workflow path
 workflow status
 workflow implement codex # or: workflow implement claude
 # After the coding assistant creates source:
-workflow use          # select the discovered workflow by number
+workflow list         # show discovered entry points without validating
+workflow select       # select one by number
+workflow files        # list known implementation and resource files
+workflow show source  # inspect authored Python before validation
 workflow show
 workflow validate
 models default mock

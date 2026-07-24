@@ -105,23 +105,25 @@ ZipperGen Studio
 Project: /path/to/zippergen
 No workflow selected.
 
-zippergen [no workflow]> workflow use
+zippergen [no workflow]> workflow list
 
-── Output: workflow use ────────────────────────────────
-Workflows
-  1. examples/tutorial_review.py:tutorial_review
+── Output: workflow list ───────────────────────────────
+Available workflows
+  1  tutorial_review — examples/tutorial_review.py:tutorial_review
   ...
 
+zippergen [no workflow]> workflow select 1
 zippergen [tutorial_review]> workflow show
 
 ── Output: workflow show ───────────────────────────────
-  1. Overview
-  2. Protocol
-  3. Communications only
-  4. Actions and prompts
-  5. Complete workflow
-  6. One participant
-  7. Selected participants
+  1. Authored source
+  2. Overview
+  3. Protocol
+  4. Communications only
+  5. Actions and prompts
+  6. Complete workflow
+  7. One participant
+  8. Selected participants
 
 zippergen [tutorial_review]> run
 ```
@@ -387,7 +389,25 @@ blocks an accidental second execution while review is pending; use `workflow
 implement codex --rerun` or `workflow implement claude --rerun` only when
 another pass is intentional.
 
-After the assistant creates visible Python source, `workflow use` selects it.
+After the assistant creates visible Python source, `workflow list` shows every
+discovered top-level `@workflow` entry point without claiming that it is valid;
+`workflow select NUMBER|NAME` identifies the entry point to inspect.
+`workflow files` lists its entry module, statically imported project-local
+Python modules, and declared resources. `workflow show source` displays the
+authored entry module, while `workflow show source NUMBER|PATH` displays
+another listed file. A workflow may therefore span several source files, and a
+single file may expose several selectable entry points. Fragments, actions,
+helpers, prompts, and tests are implementation material rather than separate
+workflow choices.
+
+`workflow show`, `workflow show source`, `workflow files`, `workflow edit
+code`, and `workflow validate` open the selector automatically when no workflow
+is selected. If discovery finds exactly one entry point, Studio selects it for
+that operation and states explicitly that validation has not yet run.
+Discovery answers “what entry points exist?” and selection answers “which one
+are we discussing?” Only `workflow validate` checks the global protocol,
+ownership, projections, actions, referenced resources, and deployment
+metadata.
 For an existing workflow, `workflow refine` additionally saves a semantic
 baseline for a meaningful before/after diff. A reviewed refinement or initial
 creation closes through `workflow accept`; an unwanted refinement closes

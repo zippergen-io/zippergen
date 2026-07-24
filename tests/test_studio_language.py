@@ -79,6 +79,24 @@ def test_natural_show_phrase_wins_over_invalid_show_syntax(tmp_path):
     assert any("@workflow" in line for line in output)
 
 
+def test_natural_workflow_discovery_and_source_requests_are_deterministic(
+    tmp_path,
+):
+    studio, workspace, output = _studio(tmp_path)
+
+    studio.execute("Show me the available workflows")
+
+    assert any("workflow list" in line for line in output)
+    assert any("workflow.py:sample" in line for line in output)
+
+    output.clear()
+    studio.execute("Show me the authored Python source")
+
+    assert workspace.current_workflow == "workflow.py:sample"
+    assert any("workflow show source" in line for line in output)
+    assert any("Source: workflow.py" in line for line in output)
+
+
 def test_natural_prose_with_an_apostrophe_is_not_treated_as_broken_shell_syntax(
     tmp_path,
 ):

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import json
 import os
 import re
@@ -184,6 +185,9 @@ _SUBCOMMAND_COMPLETIONS = {
         ("refine", "create or reopen the pending refinement"),
         ("edit", "edit the specification or selected Python source"),
         ("show", "inspect specifications or code-first semantic views"),
+        ("list", "list discovered workflow entry points"),
+        ("select", "select a workflow entry point for inspection"),
+        ("files", "list files used by the selected workflow"),
         ("status", "show the current implementation lifecycle"),
         ("implement", "run Codex or Claude on the current implementation"),
         ("validate", "validate the selected workflow and projections"),
@@ -191,7 +195,6 @@ _SUBCOMMAND_COMPLETIONS = {
         ("discard", "archive an unwanted pending refinement"),
         ("history", "show specification and implementation history"),
         ("path", "print the automatic specification path"),
-        ("use", "select a discovered workflow"),
     ),
     "language": (
         ("show", "show interpreter, learning, and history status"),
@@ -267,8 +270,8 @@ def _is_explicit_studio_syntax(parts: list[str]) -> bool:
         if len(args) == 2:
             return args[0] == "--assistant"
         return len(args) == 3 and args[1] == "--assistant"
-    if command in {"use", "resume", "runs"}:
-        return command == "use" or not args
+    if command in {"resume", "runs"}:
+        return not args
     if command in {"status", "doctor", "logs", "start", "restart", "stop", "deploy"}:
         if args and args[0].casefold() in {"of", "please", "the"}:
             return False
@@ -280,6 +283,9 @@ def _is_explicit_studio_syntax(parts: list[str]) -> bool:
             "refine",
             "edit",
             "show",
+            "list",
+            "select",
+            "files",
             "status",
             "implement",
             "validate",
@@ -287,7 +293,6 @@ def _is_explicit_studio_syntax(parts: list[str]) -> bool:
             "discard",
             "history",
             "path",
-            "use",
             "prompts",
         },
         "editor": {"show", "set", "reset"},
@@ -341,6 +346,8 @@ def _is_allowed_natural_plan_command(parts: list[str]) -> bool:
             return True
         action = lowered[0]
         if action in {
+            "list",
+            "files",
             "status",
             "validate",
             "history",
@@ -356,7 +363,7 @@ def _is_allowed_natural_plan_command(parts: list[str]) -> bool:
                 value in {"implement", "codex", "claude", "--rerun", "--interactive"}
                 for value in lowered
             )
-        if action == "use":
+        if action == "select":
             return len(args) <= 2
         if action == "edit":
             return len(args) <= 3
@@ -367,13 +374,14 @@ def _is_allowed_natural_plan_command(parts: list[str]) -> bool:
                 return lowered[1] in {
                     "spec",
                     "pending",
+                    "source",
                     "overview",
                     "protocol",
                     "communications",
                     "actions",
                     "full",
                 }
-            if len(args) == 3 and lowered[1] == "agent":
+            if len(args) == 3 and lowered[1] in {"agent", "source"}:
                 return True
             return len(args) >= 3 and lowered[1] == "agents"
         return False
@@ -559,8 +567,13 @@ _HELP = """Commands:
   workflow refine [CHANGE]       create/reopen the one pending refinement
   workflow refine --file PATH    append a refinement from a file
   workflow edit [spec|code]      edit the specification or selected Python file
+  workflow list                  list discovered workflow entry points
+  workflow select [NUMBER|NAME|PATH.py:NAME]
+                                 select an entry point for inspection
+  workflow files                 list the selected workflow's known files
   workflow show                  choose a code-first semantic view
-  workflow show spec|pending     inspect accepted or pending requirements
+  workflow show spec|pending|source
+                                 inspect requirements or authored Python source
   workflow show overview|protocol|communications|actions|full
   workflow show agent [NAME]     exact local projection
   workflow show agents [NAME...] selected-participant focus view
@@ -576,7 +589,6 @@ _HELP = """Commands:
   workflow discard [--yes]       archive an unwanted pending refinement
   workflow history               show design and implementation history
   workflow path                  print the automatic specification path
-  workflow use [PATH.py:NAME]    select a workflow; no argument opens a selector
   editor [show|set CMD|reset]     inspect or remember the terminal editor
   edit file PATH                  edit another project file
   edit ... --editor CMD           choose an editor for this invocation only
@@ -922,8 +934,17 @@ class Studio:
                     return [
                         ("spec", "accepted workflow specification"),
                         ("pending", "pending refinement"),
+                        ("source", "authored Python source"),
                         *_SUBCOMMAND_COMPLETIONS["show"],
                     ]
+                if rest[0].lower() == "source" and len(rest) == 1:
+                    try:
+                        return [
+                            (path, role)
+                            for path, role in self._workflow_file_records()
+                        ]
+                    except (SystemExit, WorkspaceError, OSError, ValueError):
+                        return []
                 if rest[0].lower() in {"agent", "agents"}:
                     used = {value.lower() for value in rest[1:]}
                     return [
@@ -932,12 +953,19 @@ class Studio:
                         if name.lower() not in used
                     ]
                 return []
-            if action == "use":
+            if action == "select":
                 try:
                     workflows = self.workspace.discover_workflows()
                 except (WorkspaceError, OSError):
                     workflows = []
-                return [(value, "discovered workflow") for value in workflows]
+                values = [
+                    (str(index), value)
+                    for index, value in enumerate(workflows, start=1)
+                ]
+                values.extend(
+                    (value, "discovered workflow") for value in workflows
+                )
+                return values
             if action in {"create", "refine"}:
                 if "--file" in rest and rest[-1] == "--file":
                     return self._path_completion_candidates(fragment)
@@ -1144,6 +1172,19 @@ class Studio:
                 self.edit_file(["workflow", *options])
                 return
             raise SystemExit("Use workflow edit [spec|code] [--editor COMMAND].")
+        if action == "list":
+            if rest:
+                raise SystemExit("Use workflow list.")
+            self.list_workflows()
+            return
+        if action == "select":
+            self.select_workflow(rest)
+            return
+        if action == "files":
+            if rest:
+                raise SystemExit("Use workflow files.")
+            self.show_workflow_files()
+            return
         if action == "show":
             if rest and rest[0].casefold() == "spec":
                 if len(rest) != 1:
@@ -1193,15 +1234,12 @@ class Studio:
                 raise SystemExit("Use workflow path.")
             self.manage_spec(["path"])
             return
-        if action == "use":
-            self.use_workflow(rest)
-            return
         if action == "prompts":
             self.manage_prompts(rest)
             return
         raise SystemExit(
-            "Use workflow create, refine, edit, show, status, implement, "
-            "validate, accept, discard, history, path, or use."
+            "Use workflow create, refine, edit, list, select, files, show, "
+            "status, implement, validate, accept, discard, history, or path."
         )
 
     def execute(
@@ -1569,7 +1607,15 @@ class Studio:
         if command in {"current", "runs", "status", "doctor", "logs"}:
             return "read-only"
         if command == "workflow":
-            if not args or args[0] in {"show", "status", "validate", "history", "path"}:
+            if not args or args[0] in {
+                "show",
+                "list",
+                "files",
+                "status",
+                "validate",
+                "history",
+                "path",
+            }:
                 return "read-only"
             if args[0] in {"discard", "accept"}:
                 return "destructive"
@@ -2374,7 +2420,7 @@ class Studio:
         if action == "refine":
             if self.workspace.current_workflow is None:
                 raise SystemExit(
-                    "No workflow selected. Use 'workflow use' before preparing "
+                    "No workflow selected. Use 'workflow select' before preparing "
                     "a refinement."
                 )
             ensured = self.workspace.ensure_specification()
@@ -2653,11 +2699,7 @@ class Studio:
             editor_override = args[-1]
             args = args[:index]
         if not args or args == ["workflow"]:
-            current = self.workspace.current_workflow
-            if current is None:
-                raise SystemExit(
-                    "No workflow selected. Use 'workflow use' first."
-                )
+            current = self._ensure_workflow_selected("edit its source")
             module_ref = self.workspace.absolute_spec(current).partition(":")[0]
             target = Path(module_ref)
             if target.suffix != ".py" or not target.is_file():
@@ -2680,15 +2722,40 @@ class Studio:
         self._launch_editor(target, override=editor_override)
         self._emit(f"Next: {next_steps}")
 
-    def _current_context(self):
+    def _ensure_workflow_selected(self, purpose: str) -> str:
+        current = self.workspace.current_workflow
+        if current:
+            return current
+        candidates = self.workspace.discover_workflows()
+        if not candidates:
+            raise SystemExit(
+                "No workflow entry points were discovered. Use 'workflow list' "
+                "to confirm discovery, then inspect the generated Python files "
+                "for a top-level @workflow definition."
+            )
+        if len(candidates) == 1:
+            selected = candidates[0]
+            automatic = True
+        else:
+            selected = self._select(
+                f"Choose a workflow to {purpose}",
+                candidates,
+            )
+            automatic = False
+        assert isinstance(selected, str)
+        canonical, name = self._select_workflow_spec(selected)
+        message = (
+            f"Automatically selected {canonical} ({name}) to {purpose}"
+            if automatic
+            else f"Selected {canonical} ({name}) to {purpose}"
+        )
+        self._info(f"{message}; validation has not run.")
+        return canonical
+
+    def _current_context(self, *, purpose: str = "inspect it"):
         from zippergen.serve import load_workflow_spec
 
-        current = self.workspace.current_workflow
-        if not current:
-            raise SystemExit(
-                "No workflow selected. Use 'workflow use' or "
-                "'workflow create' first."
-            )
+        current = self._ensure_workflow_selected(purpose)
         workflow, module = load_workflow_spec(self.workspace.absolute_spec(current))
         return current, workflow, module
 
@@ -2876,7 +2943,7 @@ class Studio:
                     (
                         "project init · workflow create"
                         if fresh
-                        else "workflow use · workflow create · current"
+                        else "workflow list · workflow select · workflow create · current"
                     ),
                     None,
                 ),
@@ -2924,7 +2991,7 @@ class Studio:
                     (
                         "project init · workflow create"
                         if fresh and project_exists
-                        else "workflow use · workflow create · current"
+                        else "workflow list · workflow select · workflow create · current"
                         if project_exists
                         else "exit and recreate the project directory"
                     ),
@@ -3311,7 +3378,8 @@ class Studio:
                     else "codex"
                 )
                 review = (
-                    "workflow use · current · workflow validate · workflow show"
+                    "workflow list · workflow select · workflow show source · "
+                    "workflow show protocol · workflow validate"
                     if kind == "create"
                     else "current · workflow validate · workflow show"
                 )
@@ -3329,8 +3397,8 @@ class Studio:
                     "workflow accept"
                 )
             return (
-                "workflow use · current · workflow validate · workflow show · "
-                "workflow accept"
+                "workflow list · workflow select · workflow show source · "
+                "workflow show protocol · workflow validate · workflow accept"
             )
         if status == "assistant_running":
             return "wait for the assistant session to return"
@@ -4443,20 +4511,287 @@ class Studio:
             raise SystemExit(f"Selection must be between 1 and {len(choices)}.")
         return choices[index - 1]
 
-    def use_workflow(self, args: list[str]) -> None:
+    def list_workflows(self) -> None:
+        candidates = self.workspace.discover_workflows()
+        selected = self.workspace.current_workflow
+        if not candidates:
+            self._emit_table(
+                "Available workflows",
+                [
+                    (
+                        "Status",
+                        "none discovered; no validation was run",
+                        "warning",
+                    ),
+                    (
+                        "Next",
+                        "inspect generated Python for a top-level @workflow",
+                        None,
+                    ),
+                ],
+            )
+            return
+        rows: list[tuple[str, object, StatusKind | None]] = []
+        for index, spec in enumerate(candidates, start=1):
+            name = spec.rpartition(":")[2] or spec
+            state = " — selected" if spec == selected else ""
+            rows.append(
+                (
+                    str(index),
+                    f"{name} — {spec}{state}",
+                    "success" if spec == selected else None,
+                )
+            )
+        rows.extend(
+            [
+                ("Discovery", "source scan only; validation was not run", "info"),
+                ("Next", "workflow select NUMBER|NAME", None),
+            ]
+        )
+        self._emit_table("Available workflows", rows)
+
+    def _resolve_workflow_choice(
+        self,
+        value: str,
+        candidates: list[str],
+    ) -> str:
+        if value.isdecimal():
+            index = int(value)
+            if 1 <= index <= len(candidates):
+                return candidates[index - 1]
+            raise SystemExit(
+                f"Workflow number must be between 1 and {len(candidates)}."
+            )
+        canonical = self.workspace.canonical_spec(value, cwd=self.workspace.root)
+        if canonical in candidates:
+            return canonical
+        by_name = [
+            spec
+            for spec in candidates
+            if spec.rpartition(":")[2].casefold() == value.casefold()
+        ]
+        if len(by_name) == 1:
+            return by_name[0]
+        if len(by_name) > 1:
+            raise SystemExit(
+                f"Workflow name {value!r} is ambiguous. Use 'workflow list' "
+                "and select its number or complete PATH.py:NAME."
+            )
+        raise SystemExit(
+            f"Workflow was not discovered: {value}. Use 'workflow list' first."
+        )
+
+    def _select_workflow_spec(self, selected: str) -> tuple[str, str]:
         from zippergen.serve import load_workflow_spec
 
-        if len(args) > 1:
-            raise SystemExit("Use one workflow spec: use PATH.py:WORKFLOW")
-        selected = args[0] if args else self._select(
-            "Workflows", self.workspace.discover_workflows()
-        )
-        if not isinstance(selected, str):
-            raise SystemExit("Select one workflow.")
         canonical = self.workspace.canonical_spec(selected)
         workflow, _module = load_workflow_spec(self.workspace.absolute_spec(canonical))
         self.workspace.select_workflow(canonical, cwd=self.workspace.root)
-        self._success(f"Current workflow: {canonical} ({workflow.name})")
+        return canonical, workflow.name
+
+    def select_workflow(self, args: list[str]) -> None:
+        if len(args) > 1:
+            raise SystemExit(
+                "Use workflow select [NUMBER|NAME|PATH.py:WORKFLOW]."
+            )
+        candidates = self.workspace.discover_workflows()
+        if not candidates:
+            raise SystemExit(
+                "No workflow entry points were discovered. Inspect the "
+                "generated Python for a top-level @workflow definition."
+            )
+        if args:
+            selected = self._resolve_workflow_choice(args[0], candidates)
+        else:
+            selected = self._select("Select workflow", candidates)
+            assert isinstance(selected, str)
+        canonical, name = self._select_workflow_spec(selected)
+        self._emit_table(
+            "Workflow selected",
+            [
+                ("Workflow", name, None),
+                ("Entry point", canonical, None),
+                ("Load", "succeeded; entry point is available", "success"),
+                ("Purpose", "inspection, configuration, and execution", None),
+                ("Validation", "not run; use workflow validate", "warning"),
+                (
+                    "Next",
+                    "workflow show source · workflow show protocol · "
+                    "workflow validate",
+                    None,
+                ),
+            ],
+        )
+
+    def _resolve_local_module(
+        self,
+        base: Path,
+    ) -> list[Path]:
+        paths = [base.with_suffix(".py"), base / "__init__.py"]
+        return [path.resolve() for path in paths if path.is_file()]
+
+    def _local_python_dependencies(self, entry: Path) -> list[Path]:
+        root = self.workspace.root
+        discovered: list[Path] = []
+        queued = [entry.resolve()]
+        visited: set[Path] = set()
+        while queued:
+            path = queued.pop(0)
+            if path in visited or not path.is_relative_to(root):
+                continue
+            visited.add(path)
+            try:
+                tree = ast.parse(
+                    path.read_text(encoding="utf-8"),
+                    filename=str(path),
+                )
+            except (OSError, SyntaxError, UnicodeDecodeError):
+                continue
+            imports: list[Path] = []
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    for alias in node.names:
+                        imports.extend(
+                            self._resolve_local_module(
+                                root.joinpath(*alias.name.split("."))
+                            )
+                        )
+                elif isinstance(node, ast.ImportFrom):
+                    if node.level:
+                        module_base = path.parent
+                        for _ in range(max(0, node.level - 1)):
+                            module_base = module_base.parent
+                    else:
+                        module_base = root
+                    if node.module:
+                        module_base = module_base.joinpath(
+                            *node.module.split(".")
+                        )
+                    imports.extend(self._resolve_local_module(module_base))
+                    if node.module is None or module_base.is_dir():
+                        for alias in node.names:
+                            imports.extend(
+                                self._resolve_local_module(
+                                    module_base.joinpath(*alias.name.split("."))
+                                )
+                            )
+            for imported in imports:
+                if (
+                    imported != entry
+                    and imported.is_relative_to(root)
+                    and imported not in discovered
+                ):
+                    discovered.append(imported)
+                    queued.append(imported)
+        return discovered
+
+    def _workflow_file_records(self) -> list[tuple[str, str]]:
+        current, workflow, module = self._current_context(
+            purpose="inspect its files"
+        )
+        module_path = Path(
+            self.workspace.absolute_spec(current).partition(":")[0]
+        ).resolve()
+        records: list[tuple[Path, str]] = [(module_path, "entry point")]
+        records.extend(
+            (path, "local Python import")
+            for path in self._local_python_dependencies(module_path)
+        )
+        semantics = workflow_semantics(workflow, module)
+        deployment = semantics.get("deployment")
+        if isinstance(deployment, dict):
+            files = deployment.get("files")
+            if isinstance(files, list):
+                for value in files:
+                    candidate = (self.workspace.root / str(value)).resolve()
+                    if candidate.is_file() and candidate.is_relative_to(
+                        self.workspace.root
+                    ):
+                        records.append((candidate, "declared deployment file"))
+        definitions = semantics.get("action_definitions")
+        if isinstance(definitions, dict):
+            for definition in definitions.values():
+                if not isinstance(definition, dict):
+                    continue
+                value = definition.get("instructions_file")
+                if value:
+                    candidate = (self.workspace.root / str(value)).resolve()
+                    if candidate.is_file() and candidate.is_relative_to(
+                        self.workspace.root
+                    ):
+                        records.append((candidate, "assistant instructions"))
+        unique: list[tuple[str, str]] = []
+        seen: set[Path] = set()
+        for path, role in records:
+            if path in seen or not path.is_file():
+                continue
+            seen.add(path)
+            try:
+                display = path.relative_to(self.workspace.root).as_posix()
+            except ValueError:
+                continue
+            unique.append((display, role))
+        return unique
+
+    def show_workflow_files(self) -> None:
+        records = self._workflow_file_records()
+        rows: list[tuple[str, object, StatusKind | None]] = [
+            (
+                str(index),
+                f"{path} — {role}",
+                "success" if index == 1 else None,
+            )
+            for index, (path, role) in enumerate(records, start=1)
+        ]
+        rows.extend(
+            [
+                (
+                    "Scope",
+                    "entry point, statically imported local modules, and "
+                    "declared resources",
+                    "info",
+                ),
+                ("Next", "workflow show source [NUMBER|PATH]", None),
+            ]
+        )
+        self._emit_table(
+            "Workflow files",
+            rows,
+        )
+
+    def show_workflow_source(self, args: list[str]) -> None:
+        if len(args) > 1:
+            raise SystemExit("Use workflow show source [NUMBER|PATH].")
+        records = self._workflow_file_records()
+        if not records:
+            raise SystemExit("No source files were found for the selected workflow.")
+        if not args:
+            selected = records[0]
+        elif args[0].isdecimal():
+            index = int(args[0])
+            if index < 1 or index > len(records):
+                raise SystemExit(
+                    f"Source number must be between 1 and {len(records)}."
+                )
+            selected = records[index - 1]
+        else:
+            matches = [record for record in records if record[0] == args[0]]
+            if len(matches) != 1:
+                raise SystemExit(
+                    f"File is not part of the selected workflow: {args[0]}. "
+                    "Use 'workflow files' first."
+                )
+            selected = matches[0]
+        path, role = selected
+        target = self.workspace.root / path
+        try:
+            source = target.read_text(encoding="utf-8").rstrip()
+        except (OSError, UnicodeDecodeError) as exc:
+            raise SystemExit(f"Could not read workflow file {path}: {exc}") from exc
+        self._emit(f"Source: {path} ({role})")
+        self._emit("─" * min(72, len(path) + len(role) + 11))
+        self._emit(source)
+        self._emit()
 
     def _agent_names(self, workflow) -> list[str]:
         from zippergen.serve import _workflow_lifelines
@@ -4464,11 +4799,17 @@ class Studio:
         return [lifeline.name for lifeline in _workflow_lifelines(workflow)]
 
     def show_workflow(self, args: list[str]) -> None:
-        current, workflow, module = self._current_context()
         view = args[0].lower() if args else ""
         rest = args[1:]
+        if view == "source":
+            self.show_workflow_source(rest)
+            return
+        current, workflow, module = self._current_context(
+            purpose="inspect it"
+        )
         if not view:
             choices = [
+                "Authored source",
                 "Overview",
                 "Protocol",
                 "Communications only",
@@ -4479,6 +4820,9 @@ class Studio:
             ]
             view = str(self._select(f"Inspect {workflow.name}", choices)).lower()
 
+        if view in {"authored source"}:
+            self.show_workflow_source([])
+            return
         if view in {"overview"}:
             options = ViewOptions(detail="overview")
             remembered = "overview"
@@ -4520,7 +4864,9 @@ class Studio:
     def validate(self) -> None:
         from zippergen.serve import _validate_workflow
 
-        _current, workflow, module = self._current_context()
+        _current, workflow, module = self._current_context(
+            purpose="validate it"
+        )
         result = _validate_workflow(workflow, module)
         verdict = "valid" if result["valid"] else "invalid"
         summary = self._success if result["valid"] else self._error

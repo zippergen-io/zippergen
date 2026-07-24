@@ -93,7 +93,9 @@ def test_studio_completion_is_context_and_project_aware(tmp_path):
 
     assert _completions(studio, "wo") == ["workflow"]
     assert {"refine", "status"}.issubset(_completions(studio, "workflow "))
-    assert _completions(studio, "workflow use wor") == ["workflow.py:sample"]
+    assert _completions(studio, "workflow select wor") == [
+        "workflow.py:sample"
+    ]
     assert _completions(studio, "workflow show agent W") == ["Writer"]
     assert _completions(studio, "models assign W") == ["Writer"]
     assert "check" in _completions(studio, "models ch")
@@ -164,19 +166,79 @@ def test_studio_completion_never_breaks_input_on_invalid_private_state(tmp_path)
     assert _completions(studio, "status ") == []
 
 
-def test_studio_use_discovers_workflow_without_importing_for_selection(tmp_path):
+def test_studio_list_and_select_discover_workflow_entry_points(tmp_path):
     studio, workspace, output = _studio(tmp_path, responses=["1"])
 
-    studio.use_workflow([])
+    studio.list_workflows()
+
+    assert workspace.current_workflow is None
+    assert output[0] == "Available workflows"
+    assert any("workflow.py:sample" in line for line in output)
+    assert any("source scan only" in line for line in output)
+
+    workspace.update(current_workflow=None)
+    output.clear()
+    studio.select_workflow([])
 
     assert workspace.current_workflow == "workflow.py:sample"
-    assert output[0] == "Workflows"
-    assert "workflow.py:sample" in output[1]
-    assert output[-1].startswith("✓ Current workflow: workflow.py:sample")
+    assert "Workflow selected" in output
+    assert any("Validation" in line and "not run" in line for line in output)
+
+
+def test_studio_show_prompts_for_entry_point_when_several_are_discovered(
+    tmp_path,
+):
+    studio, workspace, output = _studio(tmp_path, responses=["2"])
+    (workspace.root / "alternate.py").write_text(
+        WORKFLOW_SOURCE.replace("def sample(", "def alternate("),
+        encoding="utf-8",
+    )
+
+    studio.execute("workflow show protocol")
+
+    assert output[0] == "Choose a workflow to inspect it"
+    assert workspace.current_workflow in {
+        "alternate.py:alternate",
+        "workflow.py:sample",
+    }
+    assert any("validation has not run" in line for line in output)
+    assert any("@workflow" in line for line in output)
+
+
+def test_studio_lists_local_workflow_files_and_shows_selected_source(tmp_path):
+    studio, workspace, output = _studio(tmp_path)
+    (workspace.root / "review_helpers.py").write_text(
+        'REVIEW_POLICY = "human approval required"\n',
+        encoding="utf-8",
+    )
+    workflow_path = workspace.root / "workflow.py"
+    workflow_path.write_text(
+        "import review_helpers\n\n" + workflow_path.read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+
+    studio.execute("workflow files")
+
+    assert workspace.current_workflow == "workflow.py:sample"
+    assert any(
+        "workflow.py" in line and "entry point" in line for line in output
+    )
+    assert any(
+        "review_helpers.py" in line and "local Python import" in line
+        for line in output
+    )
+    assert any("validation has not run" in line.lower() for line in output)
+    assert all("Workflow sample: valid" not in line for line in output)
+
+    output.clear()
+    studio.execute("workflow show source 2")
+
+    assert output[0].startswith("Source: review_helpers.py")
+    assert 'REVIEW_POLICY = "human approval required"' in output
 
 
 def test_studio_show_menu_renders_communication_code(tmp_path):
-    studio, workspace, output = _studio(tmp_path, responses=["3"])
+    studio, workspace, output = _studio(tmp_path, responses=["4"])
     workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
 
     studio.show_workflow([])
@@ -1681,7 +1743,7 @@ def test_studio_validation_marks_successful_checks(tmp_path):
     assert all(line.startswith("  ✓ ") for line in output[1:])
 
 
-def test_studio_interactive_errors_have_a_failure_mark(tmp_path):
+def test_studio_validate_automatically_selects_one_discovered_workflow(tmp_path):
     studio, _workspace, output = _studio(
         tmp_path,
         responses=["workflow validate", "exit"],
@@ -1689,10 +1751,8 @@ def test_studio_interactive_errors_have_a_failure_mark(tmp_path):
 
     assert studio.run() == 0
 
-    assert any(
-        line.startswith("✗ No workflow selected.")
-        for line in output
-    )
+    assert any("Automatically selected workflow.py:sample" in line for line in output)
+    assert any(line.startswith("✓ Workflow sample: valid") for line in output)
 
 
 def test_studio_interactive_commands_have_a_clear_output_boundary(tmp_path):

@@ -158,6 +158,20 @@ def deterministic_plan(
             "deterministic",
         )
 
+    if (
+        re.search(r"\blist\b.*\bworkflows?\b", text)
+        or re.search(
+            r"\b(show|display|what)\b.*\b"
+            r"(available|possible|discovered)\s+workflows?\b",
+            text,
+        )
+    ):
+        return NaturalCommandPlan(
+            "List discovered workflow entry points.",
+            ("workflow list",),
+            "deterministic",
+        )
+
     if re.search(r"\b(validate|validation|check)\b.*\bworkflow\b", text):
         return NaturalCommandPlan(
             "Validate the selected workflow.",
@@ -177,6 +191,12 @@ def deterministic_plan(
         )
 
     if re.search(r"\b(?:show|display|inspect|view)\b", text):
+        if re.search(r"\b(source|python|authored code|files?)\b", text):
+            return NaturalCommandPlan(
+                "Show the selected workflow's authored source.",
+                ("workflow show source",),
+                "deterministic",
+            )
         if re.search(r"\bcommunications?\b", text):
             return NaturalCommandPlan(
                 "Show workflow communications only.",
@@ -396,6 +416,7 @@ Read-only:
 - project show
 - workflow
 - workflow show spec | workflow show pending
+- workflow list | workflow files | workflow show source [PATH]
 - workflow show overview | workflow show protocol
 - workflow show communications | workflow show actions | workflow show full
 - workflow show agent PARTICIPANT | workflow show agents PARTICIPANT...
@@ -409,7 +430,7 @@ Local configuration and development:
 - workflow create DESCRIPTION
 - workflow refine DESCRIPTION
 - workflow edit spec | workflow edit code
-- workflow use [PATH.py:WORKFLOW]
+- workflow select [NUMBER|NAME|PATH.py:WORKFLOW]
 - workflow accept | workflow discard
 - models configure [NAME]
 - models edit NAME | models remove NAME
@@ -731,7 +752,7 @@ def _slot_positions(parts: list[str]) -> list[tuple[str, int]]:
     if (
         command == "workflow"
         and len(parts) == 3
-        and parts[1].casefold() == "use"
+        and parts[1].casefold() == "select"
     ):
         return [("workflow", 2)]
     if command in {"status", "doctor", "logs", "start", "restart", "stop"} and len(
