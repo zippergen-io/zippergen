@@ -529,7 +529,7 @@ this project's history with the other private state. Use
 
 Raw CLI output is not learned. Secret-looking requests are rejected before
 interpretation and are not stored; enter provider credentials through
-\texttt{models configure}, which uses Studio's private secret input.
+\texttt{models provider configure}, which uses Studio's private secret input.
 
 \subsubsection*{Step 1b: choose a global terminal editor once}
 
@@ -945,7 +945,7 @@ Enter:
 \begin{lstlisting}[style=shell]
 models default mock
 models
-models check mock
+models config check mock
 \end{lstlisting}
 
 Studio lists only lifelines containing \texttt{@llm} action sites, together
@@ -953,17 +953,19 @@ with their action names. Requester is absent because message passing and pure
 validation do not require a model. Expected shape:
 
 \begin{lstlisting}[style=shell]
-Model configuration
-Connections
-  mock: available; built in
-  local: not connected; ...
-Configurations
-  mock: mock; available -- built in
-Assignments
-  Workflow      reviewed_answer
-  Default       mock (mock)
-  Writer: mock (inherits default; actions: draft_reply, revise_reply)
-  Reviewer: mock (inherits default; actions: assess_draft)
+Provider connections
+  Provider     State              Details
+  mock         built in           ... available; built in
+  local        not configured     ...
+Model configurations
+  Name                   Provider    Model                        Status
+  mock                   mock        built in                     ... available
+Workflow assignments
+  Participant        Configuration          Effective model      Source
+  Writer             mock                   mock                 inherits default
+    LLM actions: draft_reply, revise_reply
+  Reviewer           mock                   mock                 inherits default
+    LLM actions: assess_draft
 \end{lstlisting}
 
 Generated action names may differ, but Writer and Reviewer should appear. The
@@ -1088,35 +1090,45 @@ it in the provider console and create a replacement before continuing.
 \begin{lstlisting}[style=shell]
 models
 models default mock
-models configure openai
-models configure anthropic
-models check
-models assign Writer openai-gpt-4o-mini
-models assign Reviewer anthropic-claude-sonnet-4-6
-models rename openai-gpt-4o-mini drafting
+models provider configure openai
+models config create drafting
+models config check drafting
+models assign Writer drafting
+models provider configure anthropic
+models config create careful-reviewer
+models config check careful-reviewer
+models assign Reviewer careful-reviewer
 models
 \end{lstlisting}
 \end{minipage}
 
-The normal model workflow is \emph{configure, check, assign}.
-\texttt{models configure PROVIDER} asks for a missing API key without echo,
-then asks for a model identifier. It creates a reusable, non-secret
-configuration name automatically---for example
-\texttt{openai-gpt-4o-mini}. You may instead enter
-\texttt{models configure writer-fast} and choose its provider and model when a
-short semantic name is useful. Plain \texttt{models} makes no remote request,
-never prints a secret, and displays three distinct sections: provider
-connections, model configurations, and workflow assignments.
+The model workflow has three deliberately separate layers:
+\emph{provider, configuration, assignment}. A provider connection contains an
+API key or local endpoint. A named configuration contains a provider and exact
+model identifier. An assignment maps an LLM-active participant to one of those
+names. Enter \texttt{models setup} for a guided pass through all three layers.
 
-\texttt{models check} checks every saved configuration;
-\texttt{models check NAME} checks one. It records \texttt{available},
+\texttt{models provider configure PROVIDER} asks for a missing API key without
+echo, or for the endpoint of a local provider. It saves and checks the
+connection. \texttt{models provider check PROVIDER} repeats that check later.
+\texttt{models config create NAME} then asks for one configured provider and
+one model identifier. It does not collect credentials: if the chosen provider
+is not configured, Studio stops and prints the exact provider command to run
+first. Plain \texttt{models} makes no remote request, never prints a secret,
+and displays provider connections, named configurations, and workflow
+assignments as separate tables.
+
+\texttt{models config check} checks every saved configuration;
+\texttt{models config check NAME} checks one. It records \texttt{available},
 \texttt{unverified}, or \texttt{unavailable}, but never changes which
 participant uses which model. A green result confirms that the provider
 accepted the configured key and exact model identifier at check time. A yellow
 result means connectivity prevented a conclusive answer. For a local
-OpenAI-compatible or Ollama endpoint, \texttt{models configure local} asks for
-the endpoint (normally \texttt{http://127.0.0.1:11434/v1}) and then a model.
-Local identifiers are checked against the live \texttt{/models} response.
+OpenAI-compatible or Ollama endpoint,
+\texttt{models provider configure local} asks for the endpoint (normally
+\texttt{http://127.0.0.1:11434/v1}). A later
+\texttt{models config create NAME} asks for the local model. Local identifiers
+are checked against the live \texttt{/models} response.
 
 \texttt{models assign LIFELINE NAME} and
 \texttt{models default NAME} only assign saved configurations; they do not
@@ -1125,28 +1137,30 @@ checked but allows the assignment so offline preparation remains possible. A
 configuration whose last conclusive check found it unavailable must be fixed or
 checked successfully before assignment.
 Use Tab completion rather than retyping generated names. Editing one named
-configuration with \texttt{models edit NAME} updates every assignment that
-refers to it. \texttt{models rename OLD NEW} changes only its reusable name:
-Studio preserves the provider, model, and recorded check result and updates
-every default and participant assignment in the project atomically. It does
-not reconnect to the provider or change runtime model selection.
-\texttt{models remove NAME} refuses to remove a configuration that is still
-in use.
+configuration with \texttt{models config edit NAME} updates every assignment
+that refers to it. \texttt{models config rename OLD NEW} changes only its
+reusable name: Studio preserves the provider, model, and recorded check result
+and updates every default and participant assignment in the project atomically.
+It does not reconnect to the provider or change runtime model selection.
+\texttt{models config remove NAME} refuses to remove a configuration that is
+still in use. \texttt{models provider remove NAME} removes a provider
+connection and its privately stored key.
 
-The advanced \texttt{models connect NAME [URL]} and
-\texttt{models disconnect NAME} commands manage provider connections directly.
-Most users do not need them because \texttt{models configure} collects a
-missing connection as part of the guided flow. The model identifiers above are
-examples; use models enabled for your provider accounts when necessary.
+One named configuration may be assigned to any number of participants. They
+share the provider/model settings, but not one stateful conversation, client
+lock, or execution slot. Their LLM actions remain independent and can run in
+parallel; the provider's own rate and concurrency limits still apply. The
+model identifiers above are examples; use models enabled for your provider
+accounts when necessary.
 
 \begin{figure}[htbp]
 \centering
 \begin{tikzpicture}[node distance=13mm and 18mm]
   \node[zgplain, text width=28mm] (default) {Default\\\texttt{mock}};
   \node[zgstage, text width=34mm, below left=of default] (writer)
-    {Writer actions\\\texttt{openai-gpt-...}\\\texttt{openai:...}};
+    {Writer actions\\\texttt{drafting}\\\texttt{openai:...}};
   \node[zgstage, text width=34mm, below right=of default] (reviewer)
-    {Reviewer actions\\\texttt{anthropic-claude-...}\\\texttt{anthropic:...}};
+    {Reviewer actions\\\texttt{careful-reviewer}\\\texttt{anthropic:...}};
   \node[zgplain, text width=31mm, below=of writer] (okey)
     {\texttt{OPENAI\_API\_KEY}\\private storage};
   \node[zgplain, text width=34mm, below=of reviewer] (akey)
@@ -1167,17 +1181,19 @@ The model dashboard and connection commands display lines such as:
 \begin{lstlisting}[style=shell]
 OPENAI_API_KEY:
 ANTHROPIC_API_KEY:
-Connected anthropic: connected; ANTHROPIC_API_KEY is in private Studio storage; not tested here
+anthropic    checked    ... last check succeeded; 8 models; checked <time>
 \end{lstlisting}
 
-The connected line begins with a green check mark; disconnected optional
-providers begin with a yellow warning sign. Paste each key only at the hidden
-Studio prompt---never into source, a shell command, an assistant prompt, or a
-Git-tracked \path{.env}. Development secrets are mode-0600 and absent from
-workspace, run, and request JSON. Existing environment values are used but not
-copied. Later development runs temporarily inject the selected connected
-providers and restore the process environment afterward. Use
-\texttt{models disconnect NAME} to remove a saved connection and private key.
+The provider command immediately attempts a model-list check. A successful
+line begins with a green check mark; a saved key whose check failed is clearly
+distinguished from an unconfigured optional provider. Paste each key only at
+the hidden Studio prompt---never into source, a shell command, an assistant
+prompt, or a Git-tracked \path{.env}. Development secrets are mode-0600 and
+absent from workspace, run, and request JSON. Existing environment values are
+used but not copied. Later development runs temporarily inject the selected
+connected providers and restore the process environment afterward. Use
+\texttt{models provider remove NAME} to remove a saved connection and private
+key.
 
 Use \texttt{models inherit Writer} to restore inheritance for one role, and
 \texttt{models default mock} to select the declared tutorial default. Named
@@ -1490,10 +1506,13 @@ workflow history # specification and implementation history
 workflow list   # discover workflow entry points; does not validate
 workflow select # select one by number, name, or complete reference
 models         # show connections, configurations, and assignments
-models configure [NAME] # guided provider and model setup
-models check [NAME] # verify saved configurations; assignments stay unchanged
+models setup   # guided provider, configuration, and assignment setup
+models provider configure NAME # configure an API key or local endpoint
+models provider check [NAME] # verify provider connectivity
+models config create [NAME] # name one provider/model pair
+models config check [NAME] # verify exact model availability
 models assign LIFELINE NAME # route a participant to a configuration
-models rename OLD NEW # rename it and migrate all project assignments
+models config rename OLD NEW # rename it and migrate all assignments
 run            # fresh guided, durable development run
 resume         # continue the current incomplete managed run
 runs           # list this project's managed development runs
@@ -1669,24 +1688,28 @@ revocation precautions. When ready, configure one model for Writer and another
 for Reviewer:
 
 \begin{lstlisting}[style=shell]
-models configure openai
-models configure anthropic
-models check
-models assign Writer openai-gpt-4o-mini
-models assign Reviewer anthropic-claude-sonnet-4-6
-models rename openai-gpt-4o-mini drafting
+models provider configure openai
+models config create drafting
+models config check drafting
+models assign Writer drafting
+models provider configure anthropic
+models config create careful-reviewer
+models config check careful-reviewer
+models assign Reviewer careful-reviewer
 models
 run
 \end{lstlisting}
 
-Studio creates the names automatically and remembers the assignments per
-workflow. During configuration it collects a missing connection, then asks for
+Studio remembers the named configurations and assignments per workflow.
+Provider setup collects each key first; configuration creation then asks for
 the exact model. Enter each requested key without echoing its value:
 
 \begin{lstlisting}[style=shell]
 OPENAI_API_KEY:
+Provider [openai]:
 Model identifier [gpt-4o-mini]:
 ANTHROPIC_API_KEY:
+Provider [anthropic]:
 Model identifier [claude-sonnet-4-6]:
 \end{lstlisting}
 
@@ -3215,7 +3238,8 @@ than assigning a model to an unrelated participant.
 \subsection*{A real model run reports an authentication or model error}
 
 Use \texttt{models} to inspect configurations and assignments, then use
-\texttt{models check NAME} for a fresh availability check.
+\texttt{models provider check NAME} for a fresh connection check and
+\texttt{models config check NAME} for exact model availability.
 Confirm that the account key belongs to that provider and that the named model
 is enabled for the account. Do not print the key while diagnosing. To continue
 the tutorial without network access or charges, enter
@@ -3398,8 +3422,9 @@ change; \texttt{workflow accept} requires prior integration, performs no hidden
 merge, archives the change, and clears the pending transaction only after
 confirmation. & \\
 $\square$ & \texttt{models} lists connections, reusable configurations, and
-only LLM-active lifeline assignments; \texttt{models check NAME} verifies a
-configuration without changing those assignments. & \\
+only LLM-active lifeline assignments;
+\texttt{models config check NAME} verifies a configuration without changing
+those assignments. & \\
 $\square$ & Studio \texttt{run} collects both inputs and presents rejection and
 approval in the same terminal. & \\
 $\square$ & Studio \texttt{resume} continues the same managed run after an
@@ -3475,7 +3500,7 @@ workflow show
 workflow validate
 models default mock
 models
-models check mock
+models config check mock
 run
 resume
 runs
@@ -3492,11 +3517,14 @@ Step~9's account, billing, and key-safety instructions, the optional paid-model
 commands are:
 
 \begin{lstlisting}[style=shell]
-models configure openai
-models configure anthropic
-models check
-models assign Writer openai-gpt-4o-mini
-models assign Reviewer anthropic-claude-sonnet-4-6
+models provider configure openai
+models config create drafting
+models config check drafting
+models assign Writer drafting
+models provider configure anthropic
+models config create careful-reviewer
+models config check careful-reviewer
+models assign Reviewer careful-reviewer
 models
 run
 models default mock

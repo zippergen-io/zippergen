@@ -171,63 +171,78 @@ supervisor's main thread, so `Ctrl-C` leaves the durable task pending, stops the
 role threads before Studio accepts another command, and allows an immediate
 `resume` without competing readers on stdin.
 
-Use `models` for a simple **configure → check → assign** flow. A named
-configuration combines a provider connection with one model identifier and can
-be reused by any LLM-active lifeline. Names are generated automatically unless
-you provide one:
+Use `models` for three explicit layers: **provider → configuration →
+assignment**. First configure an API key or local endpoint. Then create a
+reusable name for one provider/model pair. Finally assign that name to each
+LLM-active participant. `models setup` guides all three stages:
 
 ```text
 zippergen [tutorial_review]> models default mock
-zippergen [tutorial_review]> models configure writer-fast
-Provider [local]: openai
+zippergen [tutorial_review]> models provider configure openai
+OPENAI_API_KEY:
+zippergen [tutorial_review]> models config create writer-fast
+Provider [openai]:
 Model identifier [gpt-4o-mini]:
-zippergen [tutorial_review]> models check writer-fast
+zippergen [tutorial_review]> models config check writer-fast
 zippergen [tutorial_review]> models assign Writer writer-fast
-zippergen [tutorial_review]> models rename writer-fast drafting
-zippergen [tutorial_review]> models configure anthropic
-zippergen [tutorial_review]> models check anthropic-claude-sonnet-4-6
-zippergen [tutorial_review]> models assign Reviewer anthropic-claude-sonnet-4-6
+zippergen [tutorial_review]> models config rename writer-fast drafting
+zippergen [tutorial_review]> models provider configure anthropic
+zippergen [tutorial_review]> models config create careful-reviewer
+Provider [anthropic]:
+Model identifier [claude-sonnet-4-6]:
+zippergen [tutorial_review]> models config check careful-reviewer
+zippergen [tutorial_review]> models assign Reviewer careful-reviewer
 zippergen [tutorial_review]> models
 ```
 
-`models configure local` guides you through a local OpenAI-compatible endpoint
-and model. Provider-level connection commands remain available as an advanced
-surface:
+For a local OpenAI-compatible endpoint, configure the endpoint before naming a
+model configuration:
 
 ```text
 zippergen [tutorial_review]> models
-zippergen [tutorial_review]> models configure local
-zippergen [tutorial_review]> models check local-qwen2.5-7b
-zippergen [tutorial_review]> models assign Writer local-qwen2.5-7b
-zippergen [tutorial_review]> models connect local http://127.0.0.1:11434/v1
-zippergen [tutorial_review]> models disconnect local
+zippergen [tutorial_review]> models provider configure local http://127.0.0.1:11434/v1
+zippergen [tutorial_review]> models config create local-writer
+Provider [local]:
+Model identifier [qwen2.5:7b]:
+zippergen [tutorial_review]> models config check local-writer
+zippergen [tutorial_review]> models assign Writer local-writer
 ```
 
 API keys are entered without echo and remain in owner-only Studio secret
 storage. Local endpoint settings and non-secret routing are remembered, while
 `models` displays connections without ever displaying a key or contacting a
-remote API. For OpenAI, Anthropic, and Mistral, `connected` means only that
-the corresponding key is present; the line explicitly says `not tested here`.
-For a local endpoint, the command reports the last saved check result and its
-timestamp rather than presenting it as a new test.
-`models configure` privately collects a missing connection, asks for a model,
-and saves the resulting configuration as unchecked. `models check NAME`
+remote API. `models provider configure NAME` saves the connection and checks
+it; `models provider check [NAME]` repeats that connectivity/model-list check
+later. The dashboard always distinguishes merely configured providers from
+timestamped successful or failed checks.
+
+`models config create NAME` asks for a configured provider and exact model,
+then saves the resulting reusable configuration as unchecked. It never asks
+for an API key: if the provider is missing, Studio stops with the precise
+`models provider configure ...` command to run first. `models config check NAME`
 queries the provider and records `available`, `unverified`, or `unavailable`
-without changing any assignment. `models check` checks every saved
+without changing any assignment. `models config check` checks every saved
 configuration. `models assign LIFELINE NAME` and `models default NAME` only
 route saved configurations; they do not contact a provider. Assigning an
 unchecked configuration is allowed but clearly warned about; a configuration
 known to be unavailable must be fixed or checked successfully first. Local
 model identifiers are checked against the endpoint's live model list.
-`models rename OLD NEW` changes the reusable configuration name atomically:
+`models config rename OLD NEW` changes the reusable configuration name atomically:
 the provider, model, and recorded check result are preserved, and every default
 or participant assignment in the project is updated. It does not reconnect to
 the provider or change the model being used.
-`models connect local` calls the endpoint's OpenAI-compatible `/models` route
+`models provider configure local` calls the endpoint's OpenAI-compatible `/models` route
 with a short timeout and saves the URL only after a successful response. The
 saved status includes the check time and model count. After reconnecting an
-SSH tunnel or restarting the model server, use `models check NAME` on a local
-configuration for a fresh model-level check.
+SSH tunnel or restarting the model server, use
+`models provider check local`, followed by `models config check NAME`, for
+fresh connection- and model-level checks.
+
+The same named configuration can be assigned to several participants. This
+shares routing settings, not a conversational session, lock, or execution
+slot: each LLM action remains an independent call and different participants
+may call the provider in parallel. Provider rate limits and concurrency quotas
+still apply.
 
 `run openai:gpt-4o-mini` remains a one-run override of the default; explicit
 lifeline overrides remain in effect. If any selected provider needs a declared
@@ -465,9 +480,10 @@ zippergen [reviewed_answer]> workflow show spec
 zippergen [reviewed_answer]> workflow accept
 ```
 
-A model change has two forms. Use `models configure`, then `models check NAME`
-and `models assign Writer NAME` (or `models default NAME`) when only the
-remembered run/deployment routing changes; no assistant is needed. Use
+A model change has two forms. Use `models provider configure`, then
+`models config create/check` and `models assign Writer NAME` (or
+`models default NAME`) when only the remembered run/deployment routing
+changes; no assistant is needed. Use
 `workflow refine` followed by `workflow implement` when the choice belongs in
 versioned design intent or requires source, action prompts, deployment
 metadata, or tests to change. For example:

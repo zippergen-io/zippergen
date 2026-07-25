@@ -231,15 +231,10 @@ _SUBCOMMAND_COMPLETIONS = {
         ("agents", "selected-participant focus view"),
     ),
     "models": (
-        ("show", "show configurations, connections, and assignments"),
-        ("list", "list saved model configurations"),
-        ("configure", "create or reopen a model configuration"),
-        ("edit", "edit a saved model configuration"),
-        ("rename", "rename a configuration and update every assignment"),
-        ("remove", "remove an unused model configuration"),
-        ("connect", "configure a provider connection"),
-        ("disconnect", "remove a provider connection"),
-        ("check", "check model configurations without changing assignments"),
+        ("provider", "configure and check provider connections"),
+        ("config", "create and check reusable model configurations"),
+        ("assignments", "show participant-to-configuration assignments"),
+        ("setup", "guided provider, configuration, and assignment setup"),
         ("default", "set the inherited default configuration"),
         ("assign", "assign a configuration to one LLM-active participant"),
         ("inherit", "restore the default for one participant"),
@@ -308,15 +303,10 @@ def _is_explicit_studio_syntax(parts: list[str]) -> bool:
         "editor": {"show", "set", "reset"},
         "edit": {"file"},
         "models": {
-            "show",
-            "list",
-            "configure",
-            "edit",
-            "rename",
-            "remove",
-            "connect",
-            "disconnect",
-            "check",
+            "provider",
+            "config",
+            "assignments",
+            "setup",
             "default",
             "assign",
             "inherit",
@@ -407,25 +397,27 @@ def _is_allowed_natural_plan_command(parts: list[str]) -> bool:
     if command == "models":
         if not args:
             return True
-        if len(args) == 1:
-            return lowered[0] in {"show", "list", "check", "configure"}
-        if len(args) == 2:
-            return lowered[0] in {
-                "check",
-                "default",
-                "configure",
-                "edit",
-                "remove",
-                "connect",
-                "disconnect",
-                "inherit",
-            }
-        return len(args) == 3 and (
-            lowered[0] == "assign"
-            or lowered[0] == "rename"
-            or lowered[0] == "connect"
-            and lowered[1] in {"local", "ollama"}
-        )
+        if lowered[0] == "provider":
+            if len(args) == 1:
+                return True
+            if lowered[1] in {"list", "check"}:
+                return len(args) <= 3
+            if lowered[1] == "configure":
+                return 3 <= len(args) <= 4
+            return lowered[1] == "remove" and len(args) == 3
+        if lowered[0] == "config":
+            if len(args) == 1:
+                return True
+            if lowered[1] in {"list", "show", "check", "create"}:
+                return len(args) <= 3
+            if lowered[1] in {"edit", "remove"}:
+                return len(args) == 3
+            return lowered[1] == "rename" and len(args) == 4
+        if lowered[0] in {"assignments", "setup"}:
+            return len(args) == 1
+        if lowered[0] in {"default", "inherit"}:
+            return len(args) == 2
+        return lowered[0] == "assign" and len(args) == 3
     if command == "editor":
         return (
             len(args) == 1
@@ -621,18 +613,24 @@ _HELP = """Commands:
   edit file PATH                  edit another project file
   edit ... --editor CMD           choose an editor for this invocation only
   current                        show the complete project/workflow dashboard
-  models                         show configurations, connections, assignments
-  models configure [NAME]        create/reopen a guided model configuration
-  models list                    list all named model configurations
-  models check [NAME|all]        verify configurations without assigning them
+  models                         show providers, configurations, assignments
+  models setup                   guide all three setup stages
+  models provider list           list provider connections
+  models provider configure NAME [URL]
+                                 configure key or local endpoint
+  models provider check [NAME]   test one provider, or all providers
+  models provider remove NAME    remove a provider connection
+  models config list             list reusable model configurations
+  models config create [NAME]    create a named provider/model configuration
+  models config show [NAME]      inspect one configuration, or list all
+  models config check [NAME]     verify one configuration, or all
+  models config edit NAME        edit provider or model
+  models config rename OLD NEW   rename it and update every assignment
+  models config remove NAME      remove an unused configuration
+  models assignments             show participant configuration references
   models assign LIFELINE NAME    assign a checked or saved configuration
   models default NAME            set the inherited default configuration
   models inherit LIFELINE        restore inheritance from the default
-  models edit NAME               edit a saved configuration
-  models rename OLD NEW          rename it and update every assignment
-  models remove NAME             remove an unused configuration
-  models connect NAME [URL]      advanced: configure a provider connection
-  models disconnect NAME         advanced: remove a provider connection
   run [LLM] [--assistant TOOL]   start a run with optional one-run backends
   resume                         resume the current incomplete run
   runs                           list managed development runs
@@ -1093,6 +1091,56 @@ class Studio:
             if not args:
                 return list(_SUBCOMMAND_COMPLETIONS["models"])
             action = args[0].lower()
+            if action == "provider":
+                provider_actions = [
+                    ("list", "list provider connection status"),
+                    ("configure", "configure a key or local endpoint"),
+                    ("check", "test provider connectivity"),
+                    ("remove", "remove a provider connection"),
+                ]
+                if len(args) == 1:
+                    return provider_actions
+                if (
+                    args[1].lower() in {"configure", "check", "remove"}
+                    and len(args) == 2
+                ):
+                    values = [
+                        (name, "model provider")
+                        for name in _SUPPORTED_PROVIDERS
+                        if args[1].lower() != "remove" or name != "mock"
+                    ]
+                    if args[1].lower() == "check":
+                        values.insert(0, ("all", "all configured providers"))
+                    return values
+                return []
+            if action == "config":
+                config_actions = [
+                    ("list", "list reusable configurations"),
+                    ("create", "create a named provider/model configuration"),
+                    ("show", "inspect a saved configuration"),
+                    ("check", "verify exact model availability"),
+                    ("edit", "change provider or model"),
+                    ("rename", "rename and migrate assignments"),
+                    ("remove", "remove an unused configuration"),
+                ]
+                if len(args) == 1:
+                    return config_actions
+                subaction = args[1].lower()
+                if subaction in {"show", "check"} and len(args) == 2:
+                    return [
+                        ("all", "all saved model configurations"),
+                        *self._completion_model_configurations(),
+                    ]
+                if (
+                    subaction in {"edit", "rename", "remove"}
+                    and len(args) == 2
+                ):
+                    return [
+                        candidate
+                        for candidate in self._completion_model_configurations()
+                        if candidate[0] != "mock"
+                    ]
+                return []
             if action == "default":
                 return self._completion_model_configurations()
             if action == "assign":
@@ -1102,24 +1150,6 @@ class Studio:
                         for name in self._completion_lifelines(llm_only=True)
                     ]
                 return self._completion_model_configurations()
-            if action == "configure" and len(args) == 1:
-                return self._completion_model_configurations()
-            if action in {"edit", "rename", "remove"} and len(args) == 1:
-                return [
-                    candidate
-                    for candidate in self._completion_model_configurations()
-                    if candidate[0] != "mock"
-                ]
-            if action in {"connect", "disconnect"} and len(args) == 1:
-                return [
-                    (name, "model provider")
-                    for name in _SUPPORTED_PROVIDERS
-                    if name != "mock"
-                ]
-            if action == "check" and len(args) == 1:
-                return [
-                    ("all", "all saved model configurations"),
-                ] + self._completion_model_configurations()
             if action == "inherit" and len(args) == 1:
                 return [
                     (name, "LLM-active participant")
@@ -1355,7 +1385,8 @@ class Studio:
                 self._emit_output_boundary("models")
             raise SystemExit(
                 "`providers` is not a Studio command. Provider connections are "
-                "managed with `models connect NAME`; use `models` to inspect them."
+                "managed with `models provider configure NAME`; use `models` "
+                "to inspect them."
             )
         explicit = _is_explicit_studio_syntax(parts)
         if _allow_natural and not explicit:
@@ -1837,16 +1868,19 @@ class Studio:
                 parts[3] = configuration_names.get(
                     parts[3].casefold(), parts[3]
                 )
-            elif action in {
-                "check",
-                "edit",
-                "rename",
-                "remove",
-                "default",
-            } and len(parts) >= 3:
+            elif action == "default" and len(parts) >= 3:
                 parts[2] = configuration_names.get(
                     parts[2].casefold(), parts[2]
                 )
+            elif action == "config" and len(parts) >= 4:
+                subaction = parts[2].casefold()
+                if subaction in {"show", "check", "edit", "rename", "remove"}:
+                    parts[3] = configuration_names.get(
+                        parts[3].casefold(), parts[3]
+                    )
+            elif action == "provider" and len(parts) >= 4:
+                if parts[3].casefold() != "all":
+                    parts[3] = _canonical_provider(parts[3])
         return shlex.join(parts)
 
     def _natural_command_risk(self, command_line: str) -> CommandRisk:
@@ -1877,16 +1911,19 @@ class Studio:
             return "configuration"
         if command == "project" and args[:1] == ["show"]:
             return "read-only"
-        if command == "models" and (
-            not args or args[0] in {"show", "list", "check"}
-        ):
-            return "read-only"
+        if command == "models":
+            if not args or args[0] == "assignments":
+                return "read-only"
+            if args[0] in {"provider", "config"} and len(args) >= 2:
+                if args[1] in {"list", "show", "check"}:
+                    return "read-only"
         if command == "editor" and (not args or args[0] == "show"):
             return "read-only"
         if command == "project" and args[:1] == ["reset"]:
             return "destructive"
-        if command == "models" and args[:1] == ["remove"]:
-            return "destructive"
+        if command == "models" and len(args) >= 2:
+            if args[0] in {"provider", "config"} and args[1] == "remove":
+                return "destructive"
         if command in {
             "deploy",
             "restart",
@@ -1980,8 +2017,9 @@ class Studio:
         if looks_sensitive(request_text):
             raise SystemExit(
                 "The request appears to contain a secret value and was not sent "
-                "to an interpreter or stored. Use 'models configure' so "
-                "Studio can collect the key privately."
+                "to an interpreter or stored. Use "
+                "'models provider configure NAME' so Studio can collect the "
+                "key privately."
             )
 
         store = self._language_store()
@@ -5227,22 +5265,28 @@ class Studio:
 
     def _emit_model_configurations(self) -> None:
         configurations = self.workspace.model_configurations()
-        self._emit("Configurations")
-        self._emit("──────────────")
+        self._emit("Model configurations")
+        self._emit("────────────────────")
+        self._emit(
+            f"  {'Name':<22} {'Provider':<11} {'Model':<28} Status"
+        )
         for name, configuration in configurations.items():
             status = configuration.get("check_status", "not_checked")
-            detail = configuration.get("check_detail", "not checked")
-            checked_at = configuration.get("checked_at")
-            suffix = f"; checked {checked_at}" if checked_at else ""
-            self._status(
-                self._configuration_status_kind(configuration),
-                f"{name}: {configuration['spec']}; "
-                f"{status.replace('_', ' ')} — {detail}{suffix}",
-                indent=2,
+            provider = configuration.get("provider") or _canonical_provider(
+                configuration["spec"]
+            )
+            model = configuration.get("model") or (
+                "built in" if provider == "mock" else "default"
+            )
+            mark = self._status_mark(
+                self._configuration_status_kind(configuration)
+            )
+            self._emit(
+                f"  {name:<22} {provider:<11} {model:<28} "
+                f"{mark} {status.replace('_', ' ')}"
             )
         self._emit(
-            "Configure → check → assign. Names are generated automatically "
-            "unless you provide one."
+            "Next: models config create [NAME] · models config check [NAME]"
         )
 
     def _emit_model_assignments(
@@ -5257,27 +5301,34 @@ class Studio:
         default = str(assignments["default"])
         overrides = assignments.get("lifelines") or {}
         assert isinstance(overrides, dict)
-        self._emit("Assignments")
-        self._emit("───────────")
-        self._emit(f"  Workflow      {workflow.name}")
+        self._emit("Workflow assignments")
+        self._emit("────────────────────")
+        self._emit(f"  Workflow  {workflow.name}")
         self._emit(
-            f"  Default       {default} "
-            f"({configurations.get(default, {}).get('spec', 'missing')})"
+            f"  Default   {default} → "
+            f"{configurations.get(default, {}).get('spec', 'missing')}"
         )
         if not active:
-            self._emit("  Assignments   none — no LLM actions in this workflow")
+            self._emit("  No participants contain LLM actions.")
             return
+        self._emit()
+        self._emit(
+            f"  {'Participant':<18} {'Configuration':<22} "
+            f"{'Effective model':<32} Source"
+        )
         for lifeline, actions in active.items():
             explicit = overrides.get(lifeline)
             effective = str(explicit or default)
-            source = "override" if explicit else "inherits default"
+            source = "explicit" if explicit else "inherits default"
             spec = configurations.get(effective, {}).get("spec", "missing")
             self._emit(
-                f"  {lifeline:<13} {effective} → {spec} "
-                f"({source}; actions: "
-                + ", ".join(actions)
-                + ")"
+                f"  {lifeline:<18} {effective:<22} {spec:<32} {source}"
             )
+            self._emit(f"    LLM actions: {', '.join(actions)}")
+        self._emit(
+            "A configuration may be assigned to any number of participants; "
+            "calls remain independent and may run in parallel."
+        )
 
     def _model_configuration_name(self, requested: str) -> str:
         configurations = self.workspace.model_configurations()
@@ -5288,7 +5339,7 @@ class Studio:
             available = ", ".join(configurations) or "none"
             raise SystemExit(
                 f"Unknown model configuration {requested!r}. Available: "
-                f"{available}. Use 'models configure' to create one."
+                f"{available}. Use 'models config create' to create one."
             )
         return canonical
 
@@ -5297,10 +5348,11 @@ class Studio:
         args: list[str],
         *,
         edit_only: bool = False,
-    ) -> None:
+        provider_override: str | None = None,
+    ) -> str:
         if len(args) > 1:
-            command = "edit NAME" if edit_only else "configure [NAME]"
-            raise SystemExit(f"Use models {command}.")
+            command = "edit NAME" if edit_only else "create [NAME]"
+            raise SystemExit(f"Use models config {command}.")
         configurations = self.workspace.model_configurations()
         requested = args[0] if args else None
         existing_name = None
@@ -5311,27 +5363,29 @@ class Studio:
         if edit_only and existing_name is None:
             raise SystemExit(
                 f"Unknown model configuration {requested!r}. "
-                "Use 'models list' to see available names."
+                "Use 'models config list' to see available names."
             )
         if existing_name == "mock":
             raise SystemExit("The built-in mock configuration cannot be edited.")
+        if existing_name is not None and not edit_only:
+            raise SystemExit(
+                f"Model configuration {existing_name!r} already exists. "
+                f"Use 'models config edit {existing_name}'."
+            )
 
         existing = configurations.get(existing_name or "", {})
-        provider_hint = (
-            _canonical_provider(requested)
-            if requested and requested.casefold() in {
-                "local",
-                "ollama",
-                "openai",
-                "anthropic",
-                "claude",
-                "mistral",
-            }
-            else None
+        connected = [
+            provider
+            for provider in _SUPPORTED_PROVIDERS
+            if provider != "mock" and self._provider_is_connected(provider)
+        ]
+        default_provider = (
+            existing.get("provider")
+            or provider_override
+            or (connected[0] if connected else "mock")
         )
-        default_provider = existing.get("provider") or provider_hint or "local"
-        if provider_hint and not existing_name:
-            provider = provider_hint
+        if provider_override:
+            provider = _canonical_provider(provider_override)
         else:
             entered_provider = self.input(
                 f"Provider [{default_provider}]: "
@@ -5342,29 +5396,29 @@ class Studio:
                 "Provider must be mock, local/ollama, openai, "
                 "anthropic/claude, or mistral."
             )
-        if provider == "mock":
-            self._success("mock is built in and already configured.")
-            return
-        if not self._provider_is_connected(provider):
-            self._info(
-                f"{provider} needs a connection before its models can be checked."
+        if provider != "mock" and not self._provider_is_connected(provider):
+            raise SystemExit(
+                f"Provider {provider!r} is not configured. "
+                f"Next: models provider configure {provider}"
             )
-            self._connect_model_provider([provider])
-
-        _environment_name, fallback_model = _PROVIDER_DEFAULT_MODELS[provider]
-        default_model = (
-            existing.get("model")
-            if existing.get("provider") == provider
-            else None
-        ) or fallback_model
-        model = self.input(
-            f"Model identifier [{default_model}]: "
-        ).strip() or default_model
-        spec = _validate_model_spec(f"{provider}:{model}")
+        if provider == "mock":
+            model = ""
+            spec = "mock"
+        else:
+            _environment_name, fallback_model = _PROVIDER_DEFAULT_MODELS[provider]
+            default_model = (
+                existing.get("model")
+                if existing.get("provider") == provider
+                else None
+            ) or fallback_model
+            model = self.input(
+                f"Model identifier [{default_model}]: "
+            ).strip() or default_model
+            spec = _validate_model_spec(f"{provider}:{model}")
 
         if existing_name:
             name = existing_name
-        elif requested and provider_hint is None:
+        elif requested:
             name = requested
         else:
             name = self.workspace.automatic_model_configuration_name(spec)
@@ -5373,10 +5427,10 @@ class Studio:
                     f"Model configuration already exists: {name} ({spec})"
                 )
                 self._emit(
-                    f"Next: models check {name} · "
+                    f"Next: models config check {name} · "
                     f"models assign LIFELINE {name}"
                 )
-                return
+                return name
         try:
             self.workspace.save_model_configuration(
                 name,
@@ -5384,8 +5438,14 @@ class Studio:
                     "provider": provider,
                     "model": model,
                     "spec": spec,
-                    "check_status": "not_checked",
-                    "check_detail": "run 'models check' before assignment",
+                    "check_status": (
+                        "available" if provider == "mock" else "not_checked"
+                    ),
+                    "check_detail": (
+                        "built in"
+                        if provider == "mock"
+                        else "run 'models config check' before assignment"
+                    ),
                 },
             )
         except WorkspaceError as exc:
@@ -5393,8 +5453,10 @@ class Studio:
         verb = "Updated" if existing_name else "Created"
         self._success(f"{verb} model configuration: {name} ({spec})")
         self._emit(
-            f"Next: models check {name} · models assign LIFELINE {name}"
+            f"Next: models config check {name} · "
+            f"models assign LIFELINE {name}"
         )
+        return name
 
     def _check_model_configurations(self, target: str) -> None:
         configurations = self.workspace.model_configurations()
@@ -5456,146 +5518,303 @@ class Studio:
                 + ". Assignments were not changed."
             )
         self._emit()
-        self._success("Configuration checks complete; assignments unchanged.")
+        self._success(
+            "Model configuration checks complete; assignments unchanged."
+        )
+
+    def _show_model_configuration(self, requested: str) -> None:
+        name = self._model_configuration_name(requested)
+        configuration = self.workspace.model_configurations()[name]
+        usage = self.workspace.model_configuration_usage(name)
+        self._emit_table(
+            "Model configuration",
+            [
+                ("Name", name, None),
+                ("Provider", configuration.get("provider") or "unknown", None),
+                (
+                    "Model",
+                    configuration.get("model")
+                    or ("built in" if name == "mock" else "default"),
+                    None,
+                ),
+                ("Effective", configuration["spec"], None),
+                (
+                    "Check",
+                    configuration.get("check_status", "not checked"),
+                    self._configuration_status_kind(configuration),
+                ),
+                (
+                    "Check detail",
+                    configuration.get("check_detail", "not checked"),
+                    None,
+                ),
+                (
+                    "Assigned in",
+                    ", ".join(usage) if usage else "no workflows",
+                    None,
+                ),
+                (
+                    "Sharing",
+                    "may be assigned to several participants; calls stay independent",
+                    "success",
+                ),
+                ("Next", f"models config check {name}", None),
+            ],
+        )
+
+    def _rename_model_configuration(self, old: str, new: str) -> None:
+        old_name = self._model_configuration_name(old)
+        try:
+            result = self.workspace.rename_model_configuration(old_name, new)
+        except WorkspaceError as exc:
+            raise SystemExit(str(exc)) from exc
+        new_name = str(result["new_name"])
+        configuration = result.get("configuration")
+        spec = (
+            str(configuration.get("spec") or "unknown")
+            if isinstance(configuration, dict)
+            else "unknown"
+        )
+        rows: list[tuple[str, object, StatusKind | None]] = [
+            ("From", old_name, None),
+            ("To", new_name, "success"),
+            ("Model", spec, None),
+            (
+                "Check",
+                (
+                    str(configuration.get("check_status") or "not checked")
+                    if isinstance(configuration, dict)
+                    else "not checked"
+                )
+                + "; preserved",
+                None,
+            ),
+        ]
+        references = result.get("references")
+        reference_count = 0
+        if isinstance(references, (tuple, list)):
+            for reference in references:
+                if not isinstance(reference, dict):
+                    continue
+                reference_count += 1
+                locations: list[str] = []
+                if reference.get("default"):
+                    locations.append("default")
+                lifelines = reference.get("lifelines")
+                if isinstance(lifelines, (tuple, list)):
+                    locations.extend(str(value) for value in lifelines)
+                rows.append(
+                    (
+                        f"Reference {reference_count}",
+                        f"{reference.get('workflow')} — "
+                        + ", ".join(locations),
+                        "success",
+                    )
+                )
+        if reference_count == 0:
+            rows.append(("References", "none assigned", None))
+        rows.append(("Next", "models", None))
+        self._emit_table("Model configuration renamed", rows)
+
+    def _show_model_assignments(self) -> None:
+        if not self.workspace.current_workflow:
+            self._emit_table(
+                "Workflow assignments",
+                [
+                    (
+                        "Status",
+                        "no workflow selected",
+                        "warning",
+                    ),
+                    ("Next", "workflow list · workflow select", None),
+                ],
+            )
+            return
+        current, workflow, module = self._current_context()
+        assignments = self.workspace.model_assignment_profile(
+            current,
+            default=default_llm_spec(module),
+        )
+        self._emit_model_assignments(
+            workflow=workflow,
+            module=module,
+            assignments=assignments,
+        )
+
+    def _show_models_dashboard(self) -> None:
+        self._emit("Models")
+        self._emit("══════")
+        self._emit()
+        self._emit_model_connections()
+        self._emit()
+        self._emit_model_configurations()
+        self._emit()
+        self._show_model_assignments()
+        self._emit()
+        self._emit(
+            "Lifecycle: provider configure/check → config create/check → assign."
+        )
+        self._emit("Guided path: models setup")
+
+    def _guided_models_setup(self) -> None:
+        self._emit_table(
+            "Guided model setup",
+            [
+                ("1", "configure and check a provider", None),
+                ("2", "create and check a named configuration", None),
+                ("3", "assign configurations to LLM participants", None),
+            ],
+        )
+        provider = str(
+            self._select("Choose a provider", list(_SUPPORTED_PROVIDERS))
+        )
+        was_connected = self._provider_is_connected(provider)
+        if provider != "mock" and not was_connected:
+            self._connect_model_provider([provider])
+        if provider != "mock" and (provider != "local" or was_connected):
+            self._check_model_providers(provider)
+        entered_name = self.input(
+            "Configuration name (press Enter for an automatic name): "
+        ).strip()
+        configuration_name = self._configure_model_configuration(
+            [entered_name] if entered_name else [],
+            provider_override=provider,
+        )
+        self._check_model_configurations(configuration_name)
+
+        if not self.workspace.current_workflow:
+            self._emit_table(
+                "Setup ready for assignment",
+                [
+                    ("Configuration", configuration_name, "success"),
+                    ("Status", "no workflow selected", "warning"),
+                    (
+                        "Next",
+                        "workflow list · workflow select · models setup",
+                        None,
+                    ),
+                ],
+            )
+            return
+        current, workflow, module = self._current_context()
+        active = self._llm_action_lifelines(workflow, module)
+        assignments = self.workspace.model_assignment_profile(
+            current,
+            default=default_llm_spec(module),
+        )
+        default = str(assignments["default"])
+        overrides = dict(assignments.get("lifelines") or {})
+        choices = list(self.workspace.model_configurations())
+        for lifeline in active:
+            selected = self._select(
+                f"Configuration for {lifeline}",
+                choices,
+            )
+            overrides[lifeline] = str(selected)
+        saved = self.workspace.save_model_assignment_profile(
+            current,
+            default=default,
+            lifelines=overrides,
+        )
+        self._success(
+            f"Model setup complete for {workflow.name}; "
+            "configurations remain reusable and calls remain independent."
+        )
+        self._emit()
+        self._emit_model_assignments(
+            workflow=workflow,
+            module=module,
+            assignments=saved,
+        )
 
     def configure_models(self, args: list[str]) -> None:
         action = args[0].lower() if args else "show"
 
-        if action == "configure":
-            self._configure_model_configuration(args[1:])
+        if (action == "show" and len(args) == 1) or not args:
+            self._show_models_dashboard()
             return
 
-        if action == "edit":
-            self._configure_model_configuration(args[1:], edit_only=True)
+        if action == "setup" and len(args) == 1:
+            self._guided_models_setup()
             return
 
-        if action == "rename":
-            if len(args) != 3:
-                raise SystemExit("Use models rename OLD_NAME NEW_NAME.")
-            old_name = self._model_configuration_name(args[1])
-            try:
-                result = self.workspace.rename_model_configuration(
-                    old_name,
-                    args[2],
-                )
-            except WorkspaceError as exc:
-                raise SystemExit(str(exc)) from exc
-            new_name = str(result["new_name"])
-            configuration = result.get("configuration")
-            spec = (
-                str(configuration.get("spec") or "unknown")
-                if isinstance(configuration, dict)
-                else "unknown"
+        if action == "provider":
+            subaction = args[1].lower() if len(args) > 1 else "list"
+            rest = args[2:]
+            if subaction in {"list", "show"} and not rest:
+                self._emit_model_connections()
+                return
+            if subaction == "configure" and len(rest) in {1, 2}:
+                self._connect_model_provider(rest)
+                if _canonical_provider(rest[0]) not in {"mock", "local"}:
+                    self._check_model_providers(rest[0], strict=False)
+                self._emit()
+                self._emit_model_connections()
+                return
+            if subaction == "check" and len(rest) <= 1:
+                self._check_model_providers(rest[0] if rest else "all")
+                return
+            if subaction == "remove" and len(rest) == 1:
+                self._disconnect_model_provider(rest[0])
+                self._emit()
+                self._emit_model_connections()
+                return
+            raise SystemExit(
+                "Use models provider list, models provider configure NAME "
+                "[URL], models provider check [NAME|all], or "
+                "models provider remove NAME."
             )
-            rows: list[tuple[str, object, StatusKind | None]] = [
-                ("From", old_name, None),
-                ("To", new_name, "success"),
-                ("Model", spec, None),
-                (
-                    "Check",
-                    (
-                        str(configuration.get("check_status") or "not checked")
-                        if isinstance(configuration, dict)
-                        else "not checked"
-                    )
-                    + "; preserved",
-                    None,
-                ),
-            ]
-            references = result.get("references")
-            reference_count = 0
-            if isinstance(references, (tuple, list)):
-                for reference in references:
-                    if not isinstance(reference, dict):
-                        continue
-                    reference_count += 1
-                    locations: list[str] = []
-                    if reference.get("default"):
-                        locations.append("default")
-                    lifelines = reference.get("lifelines")
-                    if isinstance(lifelines, (tuple, list)):
-                        locations.extend(str(value) for value in lifelines)
-                    rows.append(
-                        (
-                            f"Reference {reference_count}",
-                            f"{reference.get('workflow')} — "
-                            + ", ".join(locations),
-                            "success",
-                        )
-                    )
-            if reference_count == 0:
-                rows.append(("References", "none assigned", None))
-            rows.append(("Next", "models", None))
-            self._emit_table("Model configuration renamed", rows)
-            return
 
-        if action == "remove":
-            if len(args) != 2:
-                raise SystemExit("Use models remove NAME.")
-            name = self._model_configuration_name(args[1])
-            try:
-                self.workspace.remove_model_configuration(name)
-            except WorkspaceError as exc:
-                raise SystemExit(str(exc)) from exc
-            self._success(f"Removed model configuration: {name}")
-            return
-
-        if action == "connect":
-            if len(args) not in {2, 3}:
-                raise SystemExit("Use models connect NAME [URL].")
-            self._connect_model_provider(args[1:])
-            self._emit()
-            self._emit_model_connections()
-            return
-
-        if action == "disconnect":
-            if len(args) != 2:
-                raise SystemExit("Use models disconnect NAME.")
-            self._disconnect_model_provider(args[1])
-            self._emit()
-            self._emit_model_connections()
-            return
-
-        if action in {"show", "list"}:
-            if len(args) > 1:
-                raise SystemExit("Use models, models show, or models list.")
-            if action == "list":
+        if action == "config":
+            subaction = args[1].lower() if len(args) > 1 else "list"
+            rest = args[2:]
+            if subaction in {"list"} and not rest:
                 self._emit_model_configurations()
                 return
-            self._emit("Model configuration")
-            self._emit("───────────────────")
-            self._emit_model_connections()
-            self._emit()
-            self._emit_model_configurations()
-            if not self.workspace.current_workflow:
-                self._emit()
-                self._emit("Assignments")
-                self._emit("───────────")
-                self._warning(
-                    "No workflow is selected; use 'workflow select' to select one.",
-                    indent=2,
-                )
+            if subaction == "show" and len(rest) <= 1:
+                if not rest or rest[0].casefold() == "all":
+                    self._emit_model_configurations()
+                else:
+                    self._show_model_configuration(rest[0])
                 return
-            current, workflow, module = self._current_context()
-            assignments = self.workspace.model_assignment_profile(
-                current,
-                default=default_llm_spec(module),
+            if subaction == "create" and len(rest) <= 1:
+                self._configure_model_configuration(rest)
+                return
+            if subaction == "edit" and len(rest) == 1:
+                self._configure_model_configuration(rest, edit_only=True)
+                return
+            if subaction == "check" and len(rest) <= 1:
+                self._check_model_configurations(rest[0] if rest else "all")
+                return
+            if subaction == "rename" and len(rest) == 2:
+                self._rename_model_configuration(rest[0], rest[1])
+                return
+            if subaction == "remove" and len(rest) == 1:
+                name = self._model_configuration_name(rest[0])
+                try:
+                    self.workspace.remove_model_configuration(name)
+                except WorkspaceError as exc:
+                    raise SystemExit(str(exc)) from exc
+                self._success(f"Removed model configuration: {name}")
+                return
+            raise SystemExit(
+                "Use models config list, models config create [NAME], "
+                "models config show [NAME], models config check [NAME|all], "
+                "models config edit NAME, models config rename OLD NEW, or "
+                "models config remove NAME."
             )
-            self._emit()
-            self._emit_model_assignments(
-                workflow=workflow,
-                module=module,
-                assignments=assignments,
-            )
+
+        if action == "assignments" and len(args) == 1:
+            self._show_model_assignments()
             return
 
-        if action == "check":
-            if len(args) > 2:
-                raise SystemExit("Use models check [NAME|all].")
-            self._check_model_configurations(
-                args[1] if len(args) == 2 else "all"
+        if action not in {"assign", "default", "inherit"}:
+            raise SystemExit(
+                "Use models, models setup, models provider ..., "
+                "models config ..., models assignments, "
+                "models assign LIFELINE NAME, models default NAME, or "
+                "models inherit LIFELINE."
             )
-            return
 
         current, workflow, module = self._current_context()
         assignments = self.workspace.model_assignment_profile(
@@ -5642,10 +5861,8 @@ class Studio:
             overrides.pop(lifeline, None)
         else:
             raise SystemExit(
-                "Use models, models configure [NAME], models check [NAME|all], "
-                "models assign LIFELINE NAME, models default NAME, "
-                "models inherit LIFELINE, models edit NAME, "
-                "models rename OLD_NAME NEW_NAME, or models remove NAME."
+                "Use models assign LIFELINE NAME, models default NAME, or "
+                "models inherit LIFELINE."
             )
 
         if changed_configuration is not None:
@@ -5656,14 +5873,14 @@ class Studio:
             if status == "unavailable":
                 raise SystemExit(
                     f"{changed_configuration} is unavailable. Run "
-                    f"'models check {changed_configuration}' again, or edit "
-                    "the configuration before assigning it."
+                    f"'models config check {changed_configuration}' again, "
+                    "or edit the configuration before assigning it."
                 )
             if status != "available":
                 self._warning(
                     f"{changed_configuration} is "
                     f"{status or 'not checked'}; "
-                    f"use 'models check {changed_configuration}'."
+                    f"use 'models config check {changed_configuration}'."
                 )
         saved = self.workspace.save_model_assignment_profile(
             current,
@@ -5824,7 +6041,8 @@ class Studio:
             return _ModelVerification(
                 "warning",
                 f"{label}: {message} because "
-                f"{provider} is not connected. Use 'models connect {provider}'.",
+                f"{provider} is not configured. Use "
+                f"'models provider configure {provider}'.",
             )
         available, detail = self._remote_model_available(provider, model, api_key)
         if available is False:
@@ -5849,6 +6067,184 @@ class Studio:
             f"{label}: {resolved} is available with the configured "
             f"{provider} API key.",
         )
+
+    def _api_models_collection_request(
+        self,
+        provider: str,
+        api_key: str,
+    ) -> request.Request:
+        if provider == "openai":
+            base_url = os.environ.get(
+                "OPENAI_BASE_URL",
+                "https://api.openai.com/v1",
+            )
+            models_url = self._local_models_url(base_url)
+            headers = {
+                "Accept": "application/json",
+                "Authorization": f"Bearer {api_key}",
+                "User-Agent": "ZipperGen-Studio/0.1",
+            }
+        elif provider == "anthropic":
+            models_url = "https://api.anthropic.com/v1/models"
+            headers = {
+                "Accept": "application/json",
+                "anthropic-version": "2023-06-01",
+                "x-api-key": api_key,
+                "User-Agent": "ZipperGen-Studio/0.1",
+            }
+        else:
+            assert provider == "mistral"
+            models_url = "https://api.mistral.ai/v1/models"
+            headers = {
+                "Accept": "application/json",
+                "Authorization": f"Bearer {api_key}",
+                "User-Agent": "ZipperGen-Studio/0.1",
+            }
+        return request.Request(models_url, headers=headers, method="GET")
+
+    def _check_api_provider(
+        self,
+        provider: str,
+        api_key: str,
+    ) -> _LocalProviderCheck:
+        req = self._api_models_collection_request(provider, api_key)
+        try:
+            with request.urlopen(req, timeout=3.0) as response:
+                raw = response.read(1_048_577)
+        except HTTPError as exc:
+            raw_detail = exc.read(512).decode("utf-8", errors="replace")
+            detail = (
+                self._local_check_error(raw_detail)
+                if raw_detail.strip()
+                else ""
+            )
+            suffix = f": {detail}" if detail else ""
+            raise _LocalProviderError(f"HTTP {exc.code}{suffix}") from exc
+        except URLError as exc:
+            raise _LocalProviderError(
+                self._local_check_error(exc.reason)
+            ) from exc
+        except (TimeoutError, OSError) as exc:
+            raise _LocalProviderError(self._local_check_error(exc)) from exc
+        if len(raw) > 1_048_576:
+            raise _LocalProviderError(
+                "the model-list response exceeded the 1 MiB safety limit"
+            )
+        try:
+            payload = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise _LocalProviderError(
+                "the model-list endpoint did not return valid UTF-8 JSON"
+            ) from exc
+        models = payload.get("data") if isinstance(payload, dict) else None
+        if not isinstance(models, list):
+            raise _LocalProviderError(
+                "the provider response did not contain a JSON 'data' list"
+            )
+        return _LocalProviderCheck(
+            checked_at=time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            model_count=len(models),
+            model_ids=tuple(
+                str(item["id"])
+                for item in models
+                if isinstance(item, dict)
+                and isinstance(item.get("id"), str)
+            ),
+        )
+
+    def _check_model_providers(
+        self,
+        target: str,
+        *,
+        strict: bool = True,
+    ) -> None:
+        canonical_target = _canonical_provider(target)
+        if target.casefold() == "all":
+            selected = list(_SUPPORTED_PROVIDERS)
+        elif canonical_target in _SUPPORTED_PROVIDERS:
+            selected = [canonical_target]
+        else:
+            raise SystemExit(
+                "Provider must be mock, local/ollama, openai, anthropic/claude, "
+                "or mistral."
+            )
+        self._emit("Provider checks")
+        self._emit("───────────────")
+        failures: list[str] = []
+        for provider in selected:
+            if provider == "mock":
+                self._success("mock: built in and available.", indent=2)
+                continue
+            if not self._provider_is_connected(provider):
+                message = (
+                    f"{provider}: not configured; use "
+                    f"'models provider configure {provider}'"
+                )
+                if len(selected) == 1:
+                    self._error(message, indent=2)
+                    failures.append(provider)
+                else:
+                    self._warning(message, indent=2)
+                continue
+            checked_at = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+            try:
+                if provider == "local":
+                    profile = self.workspace.provider_profiles().get("local", {})
+                    base_url = profile.get(
+                        "base_url",
+                        "http://127.0.0.1:11434/v1",
+                    )
+                    result = self._check_local_provider(base_url)
+                    self._save_local_provider_check(base_url, result)
+                else:
+                    api_key = self._provider_api_key(provider)
+                    assert api_key is not None
+                    result = self._check_api_provider(provider, api_key)
+                    profile = self.workspace.provider_profiles().get(provider, {})
+                    self.workspace.save_provider_profile(
+                        provider,
+                        {
+                            **profile,
+                            "kind": "api",
+                            "key_env": _PROVIDER_SECRETS[provider],
+                            "check_status": "reachable",
+                            "checked_at": result.checked_at,
+                            "model_count": str(result.model_count),
+                        },
+                    )
+            except _LocalProviderError as exc:
+                profile = self.workspace.provider_profiles().get(provider, {})
+                self.workspace.save_provider_profile(
+                    provider,
+                    {
+                        **profile,
+                        "check_status": "unreachable",
+                        "checked_at": checked_at,
+                        "check_error": str(exc)[:240],
+                    },
+                )
+                self._error(f"{provider}: {exc}", indent=2)
+                failures.append(provider)
+                continue
+            noun = "model" if result.model_count == 1 else "models"
+            self._success(
+                f"{provider}: connection accepted; "
+                f"{result.model_count} {noun} reported.",
+                indent=2,
+            )
+        if failures and strict:
+            raise SystemExit(
+                "Provider check failed for "
+                + ", ".join(failures)
+                + ". Saved credentials and endpoints were preserved."
+            )
+        self._emit()
+        if failures:
+            self._warning(
+                "Provider configuration was saved, but its check did not pass."
+            )
+        else:
+            self._success("Provider checks complete.")
 
     def _provider_configuration_status(
         self,
@@ -5889,37 +6285,72 @@ class Studio:
                 )
             return (
                 "warning",
-                f"not connected; use 'models configure local' for the guided setup",
+                "not configured; use 'models provider configure local'",
             )
         secret_name = _PROVIDER_SECRETS.get(canonical)
         if secret_name is None:
             return "error", "unsupported"
-        if os.environ.get(secret_name):
+        profile = profiles.get(canonical, {})
+        check_status = profile.get("check_status")
+        checked_at = profile.get("checked_at")
+        if check_status == "reachable" and checked_at:
+            count = profile.get("model_count", "0")
+            noun = "model" if count == "1" else "models"
             return (
                 "success",
-                f"connected; {secret_name} is in the environment; not tested here",
+                f"last check succeeded; {count} {noun}; checked {checked_at}",
+            )
+        if check_status == "unreachable" and checked_at:
+            detail = profile.get("check_error", "connection failed")
+            return (
+                "error",
+                f"last check failed; checked {checked_at}: {detail}",
+            )
+        if os.environ.get(secret_name):
+            return (
+                "warning",
+                f"configured; {secret_name} is in the environment; not tested",
             )
         if self.workspace.load_secrets().get(secret_name):
             return (
-                "success",
-                f"connected; {secret_name} is in private Studio storage; "
-                "not tested here",
+                "warning",
+                f"configured; {secret_name} is in private Studio storage; "
+                "not tested",
             )
-        return "warning", f"not connected; use 'models connect {canonical}'"
+        return (
+            "warning",
+            f"not configured; use 'models provider configure {canonical}'",
+        )
 
     def _provider_status(self, provider: str) -> str:
         return self._provider_configuration_status(provider)[1]
 
     def _emit_model_connections(self) -> None:
-        self._emit("Connections")
-        self._emit("───────────")
+        self._emit("Provider connections")
+        self._emit("────────────────────")
+        self._emit(f"  {'Provider':<12} {'State':<18} Details")
         for provider in _SUPPORTED_PROVIDERS:
             kind, status = self._provider_configuration_status(provider)
-            self._status(kind, f"{provider}: {status}", indent=2)
+            if provider == "mock":
+                state = "built in"
+            elif "not configured" in status:
+                state = "not configured"
+            elif "not tested" in status:
+                state = "configured"
+            elif kind == "success":
+                state = "checked"
+            elif kind == "error":
+                state = "check failed"
+            else:
+                state = "unverified"
+            self._emit(
+                f"  {provider:<12} {state:<18} "
+                f"{self._status_mark(kind)} {status}"
+            )
         self._emit("API-key values are never displayed or written to the project.")
         self._emit(
-            "Normal path: 'models configure' creates a model configuration; "
-            "'models check NAME' verifies it."
+            "Next: models provider configure NAME · "
+            "models provider check [NAME]"
         )
 
     def _local_models_url(self, base_url: str) -> str:
@@ -6022,7 +6453,7 @@ class Studio:
 
     def _connect_model_provider(self, args: list[str]) -> None:
         if not args:
-            raise SystemExit("Use models connect NAME [URL].")
+            raise SystemExit("Use models provider configure NAME [URL].")
         provider = _canonical_provider(args[0])
         if provider not in _SUPPORTED_PROVIDERS:
             raise SystemExit(
@@ -6036,7 +6467,9 @@ class Studio:
             return
         if provider == "local":
             if len(args) > 2:
-                raise SystemExit("Use models connect local [BASE_URL].")
+                raise SystemExit(
+                    "Use models provider configure local [BASE_URL]."
+                )
             existing = self.workspace.provider_profiles().get("local", {}).get(
                 "base_url"
             )
@@ -6072,7 +6505,7 @@ class Studio:
                 self._warning(message + "; install or load a model before running")
             return
         if len(args) != 1:
-            raise SystemExit(f"Use models connect {provider}.")
+            raise SystemExit(f"Use models provider configure {provider}.")
         secret_name = _PROVIDER_SECRETS[provider]
         secrets = self.workspace.load_secrets()
         from_environment = bool(os.environ.get(secret_name))
@@ -6094,13 +6527,15 @@ class Studio:
             provider,
             {"kind": "api", "key_env": secret_name},
         )
-        self._success(f"Connected {provider}: {self._provider_status(provider)}")
+        self._success(
+            f"Configured {provider}: API key is available for checking."
+        )
 
     def _disconnect_model_provider(self, name: str) -> None:
         provider = _canonical_provider(name)
         if provider not in _SUPPORTED_PROVIDERS or provider == "mock":
             raise SystemExit(
-                "Disconnect must name local, openai, anthropic, or mistral."
+                "Provider removal must name local, openai, anthropic, or mistral."
             )
         self.workspace.remove_provider_profile(provider)
         secret_name = _PROVIDER_SECRETS.get(provider)
@@ -6116,7 +6551,7 @@ class Studio:
             if removed_secret
             else ""
         )
-        self._success(f"Disconnected {provider}{detail}.")
+        self._success(f"Removed provider {provider}{detail}.")
         if secret_name and os.environ.get(secret_name):
             self._warning(
                 f"{secret_name} is still present in the current environment."

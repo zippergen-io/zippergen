@@ -137,7 +137,10 @@ def test_natural_model_configuration_rename_is_deterministic(tmp_path):
 
     assert "fast-review" not in workspace.model_configurations()
     assert workspace.model_configurations()["editorial"]["spec"] == "local:qwen3"
-    assert any("models rename fast-review editorial" in line for line in output)
+    assert any(
+        "models config rename fast-review editorial" in line
+        for line in output
+    )
     history = NaturalLanguageStore(workspace.natural_language_path).history()
     assert history[-1]["source"] == "deterministic"
 
@@ -165,11 +168,26 @@ def test_natural_project_rename_and_global_learning_are_deterministic(tmp_path):
 
 def test_natural_provider_configuration_uses_the_models_surface(
     tmp_path,
+    monkeypatch,
 ):
     studio, workspace, output = _studio(
         tmp_path,
-        responses=["claude-sonnet-4-6"],
         secret_responses=["private-anthropic-key"],
+    )
+
+    class ModelsResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        def read(self, limit=-1):
+            return b'{"data":[{"id":"claude-sonnet-4-6"}]}'
+
+    monkeypatch.setattr(
+        "zippergen.studio.request.urlopen",
+        lambda req, *, timeout: ModelsResponse(),
     )
 
     studio.execute("Configure Claude as a model provider")
@@ -177,10 +195,14 @@ def test_natural_provider_configuration_uses_the_models_surface(
     assert workspace.load_secrets()["ANTHROPIC_API_KEY"] == (
         "private-anthropic-key"
     )
-    assert workspace.model_configurations()[
-        "anthropic-claude-sonnet-4-6"
-    ]["spec"] == "anthropic:claude-sonnet-4-6"
-    assert any("models configure anthropic" in line for line in output)
+    assert workspace.provider_profiles()["anthropic"]["check_status"] == (
+        "reachable"
+    )
+    assert set(workspace.model_configurations()) == {"mock"}
+    assert any(
+        "models provider configure anthropic" in line
+        for line in output
+    )
     assert not any("providers set" in line for line in output)
 
 
@@ -320,7 +342,7 @@ def test_cli_fallback_can_return_a_validated_read_only_command_sequence(
     )
     payload = {
         "summary": "Show project state and model routing.",
-        "commands": ["current", "models show"],
+        "commands": ["current", "models"],
         "clarification": None,
     }
     monkeypatch.setattr(
@@ -333,10 +355,10 @@ def test_cli_fallback_can_return_a_validated_read_only_command_sequence(
     studio.execute("Give me one combined operational and model summary")
 
     history = NaturalLanguageStore(workspace.natural_language_path).history()
-    assert history[-1]["commands"] == ["current", "models show"]
+    assert history[-1]["commands"] == ["current", "models"]
     assert history[-1]["status"] == "executed"
     assert any("Executing 1/2: current" in line for line in output)
-    assert any("Executing 2/2: models show" in line for line in output)
+    assert any("Executing 2/2: models" in line for line in output)
 
 
 def test_cli_fallback_can_ask_for_a_missing_value(tmp_path, monkeypatch):

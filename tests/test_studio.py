@@ -35,6 +35,31 @@ def sample(value: str @ User) -> str:
     return result @ User
 """
 
+TWO_LLM_PARTICIPANT_SOURCE = """
+from zippergen import Lifeline, llm, workflow
+
+User = Lifeline("User")
+Writer = Lifeline("Writer")
+Reviewer = Lifeline("Reviewer")
+
+@llm(
+    system="Process the value.",
+    user="{value}",
+    parse="text",
+    outputs=(("result", str),),
+)
+def process(value: str) -> None: ...
+
+@workflow
+def sample(value: str @ User) -> str:
+    User(value) >> Writer(value)
+    Writer: draft = process(value)
+    Writer(draft) >> Reviewer(draft)
+    Reviewer: result = process(draft)
+    Reviewer(result) >> User(result)
+    return result @ User
+"""
+
 DEPLOYMENT_SOURCE = WORKFLOW_SOURCE + """
 
 from zippergen import DeploymentField, DeploymentSpec
@@ -98,10 +123,12 @@ def test_studio_completion_is_context_and_project_aware(tmp_path):
     ]
     assert _completions(studio, "workflow show agent W") == ["Writer"]
     assert _completions(studio, "models assign W") == ["Writer"]
-    assert "check" in _completions(studio, "models ch")
-    assert _completions(studio, "models check m") == ["mock"]
-    assert "all" in _completions(studio, "models check ")
-    assert _completions(studio, "models connect a") == ["anthropic"]
+    assert "check" in _completions(studio, "models config ch")
+    assert _completions(studio, "models config check m") == ["mock"]
+    assert "all" in _completions(studio, "models config check ")
+    assert _completions(
+        studio, "models provider configure a"
+    ) == ["anthropic"]
     assert _completions(studio, "models inh") == ["inherit"]
     assert _completions(studio, "models inherit W") == ["Writer"]
     assert _completions(studio, "settings set l") == ["learning"]
@@ -1689,9 +1716,9 @@ def test_studio_commands_are_discoverable(tmp_path):
     assert "workflow edit" in output[-1]
     assert "workflow refine" in output[-1]
     assert "workflow refine --file PATH" in output[-1]
-    assert "models connect NAME [URL]" in output[-1]
-    assert "models configure [NAME]" in output[-1]
-    assert "models check [NAME|all]" in output[-1]
+    assert "models provider configure NAME [URL]" in output[-1]
+    assert "models config create [NAME]" in output[-1]
+    assert "models config check [NAME]" in output[-1]
     assert "models assign LIFELINE NAME" in output[-1]
     assert "NATURAL LANGUAGE" in output[-1]
     assert "language history|learned" in output[-1]
@@ -1703,7 +1730,7 @@ def test_studio_retires_the_providers_command_with_targeted_guidance(tmp_path):
 
     with pytest.raises(
         SystemExit,
-        match=r"`providers` is not a Studio command.*models connect NAME",
+        match=r"`providers` is not a Studio command.*models provider configure NAME",
     ):
         studio.execute("providers set openai")
 
@@ -2364,8 +2391,10 @@ def test_studio_configures_api_and_local_providers_without_displaying_secrets(
 
     monkeypatch.setattr("zippergen.studio.request.urlopen", fake_urlopen)
 
-    studio.execute("models connect openai")
-    studio.execute("models connect local http://localhost:1234/v1")
+    studio.execute("models provider configure openai")
+    studio.execute(
+        "models provider configure local http://localhost:1234/v1"
+    )
     studio.execute("models")
 
     assert workspace.load_secrets() == {"OPENAI_API_KEY": "super-secret-key"}
@@ -2375,27 +2404,26 @@ def test_studio_configures_api_and_local_providers_without_displaying_secrets(
     assert workspace.provider_profiles()["local"]["check_status"] == "reachable"
     assert workspace.provider_profiles()["local"]["model_count"] == "2"
     assert requests == [
+        ("https://api.openai.com/v1/models", 3.0),
         ("http://localhost:1234/v1/models", 3.0),
     ]
     assert workspace.secrets_path.stat().st_mode & 0o077 == 0
     assert all("super-secret-key" not in line for line in output)
+    assert any("openai" in line and "last check succeeded" in line for line in output)
     assert any(
-        "openai: connected" in line and "not tested here" in line
+        "local" in line
+        and "http://localhost:1234/v1" in line
+        and "2 models" in line
         for line in output
     )
+    assert any(line == "Provider connections" for line in output)
     assert any(
-        "local: last check succeeded; endpoint http://localhost:1234/v1; "
-        "2 models; checked"
-        in line
-        for line in output
-    )
-    assert any(line == "Connections" for line in output)
-    assert any(
-        "models configure" in line and "models check NAME" in line
+        "models provider configure NAME" in line
+        and "models provider check" in line
         for line in output
     )
 
-    studio.execute("models disconnect openai")
+    studio.execute("models provider remove openai")
     assert "OPENAI_API_KEY" not in workspace.load_secrets()
     assert "openai" not in workspace.provider_profiles()
 
@@ -2420,7 +2448,9 @@ def test_studio_does_not_replace_local_endpoint_when_check_fails(
     monkeypatch.setattr("zippergen.studio.request.urlopen", fail_urlopen)
 
     with pytest.raises(SystemExit, match="connection was not saved"):
-        studio.execute("models connect local http://localhost:9999/v1")
+        studio.execute(
+            "models provider configure local http://localhost:9999/v1"
+        )
 
     assert workspace.provider_profiles()["local"] == original
 
@@ -2452,7 +2482,7 @@ def test_studio_records_failed_local_configuration_check(tmp_path, monkeypatch):
 
     monkeypatch.setattr("zippergen.studio.request.urlopen", fail_urlopen)
 
-    studio.execute("models check local-reviewer")
+    studio.execute("models config check local-reviewer")
 
     configuration = workspace.model_configurations()["local-reviewer"]
     assert configuration["check_status"] == "unverified"
@@ -2461,7 +2491,6 @@ def test_studio_records_failed_local_configuration_check(tmp_path, monkeypatch):
     studio.execute("models")
     assert any(
         "local-reviewer" in line and "unverified" in line
-        and "connection refused" in line
         for line in output
     )
 
@@ -2678,13 +2707,17 @@ def test_studio_models_displays_connections_and_llm_active_lifelines(tmp_path):
         "default": "mock",
         "lifelines": {"Writer": "openai:gpt-4o-mini"},
     }
-    assert any(line == "Connections" for line in output)
+    assert any(line == "Provider connections" for line in output)
     assert any(
         "Writer" in line
-        and "openai:gpt-4o-mini (override; actions: echo)" in line
+        and "openai:gpt-4o-mini" in line
+        and "explicit" in line
         for line in output
     )
-    assert any("openai: not connected" in line for line in output)
+    assert any(
+        "openai" in line and "not configured" in line
+        for line in output
+    )
 
 
 def test_studio_models_configure_check_then_assign(
@@ -2722,13 +2755,13 @@ def test_studio_models_configure_check_then_assign(
     )
     workspace.save_secrets({"MISTRAL_API_KEY": "private-mistral-key"})
 
-    studio.execute("models configure fast-review")
+    studio.execute("models config create fast-review")
     assert requests == []
     assert workspace.model_configurations()["fast-review"]["check_status"] == (
         "not_checked"
     )
 
-    studio.execute("models check fast-review")
+    studio.execute("models config check fast-review")
     studio.execute("models assign Writer fast-review")
 
     assert workspace.model_profile("workflow.py:sample")["lifelines"] == {
@@ -2746,7 +2779,11 @@ def test_studio_models_configure_check_then_assign(
         and "is available with the configured mistral API key" in line
         for line in output
     )
-    assert any("Writer" in line and "fast-review →" in line for line in output)
+    assert any(
+        "Writer" in line and "fast-review" in line
+        and "mistral:mistral-small-latest" in line
+        for line in output
+    )
 
 
 def test_studio_models_rename_preserves_check_and_updates_all_assignments(
@@ -2775,7 +2812,7 @@ def test_studio_models_rename_preserves_check_and_updates_all_assignments(
         lifelines={"Reviewer": "fast-review"},
     )
 
-    studio.execute("models rename fast-review editorial")
+    studio.execute("models config rename fast-review editorial")
 
     configurations = workspace.model_configurations()
     assert "fast-review" not in configurations
@@ -2821,9 +2858,9 @@ def test_studio_models_rename_rejects_mock_and_name_collisions(tmp_path):
         )
 
     with pytest.raises(SystemExit, match="built-in mock.*cannot be renamed"):
-        studio.execute("models rename mock replacement")
+        studio.execute("models config rename mock replacement")
     with pytest.raises(SystemExit, match="conflicts with existing"):
-        studio.execute("models rename first SECOND")
+        studio.execute("models config rename first SECOND")
 
     assert {"first", "second"}.issubset(workspace.model_configurations())
 
@@ -2834,20 +2871,35 @@ def test_studio_model_configuration_guides_missing_provider_connection(
 ):
     studio, workspace, output = _studio(
         tmp_path,
-        responses=["claude-sonnet-4-6"],
+        responses=["anthropic", "claude-sonnet-4-6"],
         secret_responses=["private-anthropic-key"],
     )
-    studio.execute("models configure anthropic")
+
+    class ModelsResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, traceback):
+            return False
+
+        def read(self, limit=-1):
+            return b'{"data":[{"id":"claude-sonnet-4-6"}]}'
+
+    monkeypatch.setattr(
+        "zippergen.studio.request.urlopen",
+        lambda req, *, timeout: ModelsResponse(),
+    )
+
+    studio.execute("models provider configure anthropic")
+    studio.execute("models config create anthropic-review")
 
     assert workspace.load_secrets()["ANTHROPIC_API_KEY"] == (
         "private-anthropic-key"
     )
-    configuration = workspace.model_configurations()[
-        "anthropic-claude-sonnet-4-6"
-    ]
+    configuration = workspace.model_configurations()["anthropic-review"]
     assert configuration["spec"] == "anthropic:claude-sonnet-4-6"
     assert configuration["check_status"] == "not_checked"
-    assert any("Connected anthropic" in line for line in output)
+    assert any("Configured anthropic" in line for line in output)
     assert all("private-anthropic-key" not in line for line in output)
 
 
@@ -2863,6 +2915,57 @@ def test_studio_model_assignment_requires_a_saved_configuration(
     assert workspace.model_profile("workflow.py:sample")["lifelines"] == {}
 
 
+def test_studio_model_configuration_requires_a_configured_provider(tmp_path):
+    studio, workspace, _output = _studio(
+        tmp_path,
+        responses=["anthropic"],
+    )
+
+    with pytest.raises(
+        SystemExit,
+        match=r"Provider 'anthropic' is not configured.*"
+        r"models provider configure anthropic",
+    ):
+        studio.execute("models config create editorial")
+
+    assert "editorial" not in workspace.model_configurations()
+    assert workspace.provider_profiles() == {}
+    assert workspace.load_secrets() == {}
+
+
+def test_studio_configuration_is_reusable_without_serializing_calls(tmp_path):
+    studio, workspace, output = _studio(tmp_path)
+    (workspace.root / "dual.py").write_text(TWO_LLM_PARTICIPANT_SOURCE)
+    workspace.select_workflow("dual.py:sample", cwd=workspace.root)
+    workspace.save_model_configuration(
+        "shared-local",
+        {
+            "provider": "local",
+            "model": "qwen3",
+            "spec": "local:qwen3",
+            "check_status": "available",
+        },
+    )
+
+    studio.execute("models assign Writer shared-local")
+    studio.execute("models assign Reviewer shared-local")
+
+    assignments = workspace.model_assignment_profile("dual.py:sample")
+    assert assignments["lifelines"] == {
+        "Reviewer": "shared-local",
+        "Writer": "shared-local",
+    }
+    assert sum(
+        "shared-local" in line and participant in line
+        for line in output
+        for participant in ("Writer", "Reviewer")
+    ) >= 2
+    assert any(
+        "calls remain independent and may run in parallel" in line
+        for line in output
+    )
+
+
 def test_studio_models_inherit_removes_a_participant_assignment(tmp_path):
     studio, workspace, output = _studio(tmp_path)
     workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
@@ -2876,7 +2979,7 @@ def test_studio_models_inherit_removes_a_participant_assignment(tmp_path):
 
     assert workspace.model_profile("workflow.py:sample")["lifelines"] == {}
     assert any(
-        "Writer" in line and "mock (inherits default" in line
+        "Writer" in line and "mock" in line and "inherits default" in line
         for line in output
     )
 
@@ -2927,7 +3030,7 @@ def test_studio_models_check_updates_configuration_not_assignments(
 
     monkeypatch.setattr("zippergen.studio.request.urlopen", fake_urlopen)
 
-    studio.execute("models check review-model")
+    studio.execute("models config check review-model")
 
     assert len(requests) == 1
     assert workspace.model_assignment_profile("workflow.py:sample") == before
@@ -2981,7 +3084,7 @@ def test_studio_models_check_records_an_unavailable_configuration(
         SystemExit,
         match="check failed for broken-reviewer.*Assignments were not changed",
     ):
-        studio.execute("models check broken-reviewer")
+        studio.execute("models config check broken-reviewer")
 
     assert workspace.model_assignment_profile("workflow.py:sample") == before
     configuration = workspace.model_configurations()["broken-reviewer"]
@@ -2999,7 +3102,7 @@ def test_studio_models_check_records_an_unavailable_configuration(
 def test_studio_models_check_accepts_a_case_insensitive_configuration(tmp_path):
     studio, _workspace, output = _studio(tmp_path)
 
-    studio.execute("models check MOCK")
+    studio.execute("models config check MOCK")
 
     assert any(
         line.startswith("  ✓ mock:") and "built in" in line
@@ -3015,9 +3118,9 @@ def test_studio_models_dashboard_does_not_change_routing(tmp_path):
     studio.execute("models")
 
     assert workspace.model_profile("workflow.py:sample") == before
-    assert any(line == "Connections" for line in output)
-    assert any(line == "Configurations" for line in output)
-    assert any(line == "Assignments" for line in output)
+    assert any(line == "Provider connections" for line in output)
+    assert any(line == "Model configurations" for line in output)
+    assert any(line == "Workflow assignments" for line in output)
 
 
 def test_studio_models_assignment_warns_when_configuration_is_unchecked(tmp_path):
@@ -3039,7 +3142,7 @@ def test_studio_models_assignment_warns_when_configuration_is_unchecked(tmp_path
     }
     assert any(
         "review-model is not_checked" in line
-        and "models check review-model" in line
+        and "models config check review-model" in line
         for line in output
     )
 
@@ -3091,7 +3194,7 @@ def test_studio_models_checks_local_configuration_identifiers(
         lambda req, *, timeout: ModelsResponse(),
     )
 
-    studio.execute("models check local-writer")
+    studio.execute("models config check local-writer")
 
     assert any(
         "local-writer:" in line
@@ -3100,7 +3203,7 @@ def test_studio_models_checks_local_configuration_identifiers(
     )
 
     with pytest.raises(SystemExit, match="check failed for missing-local"):
-        studio.execute("models check missing-local")
+        studio.execute("models config check missing-local")
     assert workspace.model_configurations()["missing-local"]["check_status"] == (
         "unavailable"
     )

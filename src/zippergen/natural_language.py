@@ -190,7 +190,7 @@ def deterministic_plan(
                 f"Rename model configuration {old_name} to {new_name}.",
                 (
                     shlex.join(
-                        ["models", "rename", old_name, new_name]
+                        ["models", "config", "rename", old_name, new_name]
                     ),
                 ),
                 "deterministic",
@@ -303,7 +303,7 @@ def deterministic_plan(
     if re.search(r"\b(show|display|list|what)\b.*\b(models?|routing)\b", text):
         return NaturalCommandPlan(
             "Show effective model routing.",
-            ("models show",),
+            ("models",),
             "deterministic",
         )
 
@@ -318,7 +318,7 @@ def deterministic_plan(
         )
         return NaturalCommandPlan(
             f"Check model configuration {target}.",
-            (shlex.join(["models", "check", target]),),
+            (shlex.join(["models", "config", "check", target]),),
             "deterministic",
         )
 
@@ -354,8 +354,8 @@ def deterministic_plan(
 
     if re.search(r"\b(show|display|list|what)\b.*\bproviders?\b", text):
         return NaturalCommandPlan(
-            "Show model-provider connections and routing.",
-            ("models show",),
+            "Show model-provider connections.",
+            ("models provider list",),
             "deterministic",
         )
 
@@ -367,8 +367,8 @@ def deterministic_plan(
             provider_match.group(1), provider_match.group(1)
         )
         return NaturalCommandPlan(
-            f"Configure a {provider} model.",
-            (shlex.join(["models", "configure", provider]),),
+            f"Configure the {provider} provider.",
+            (shlex.join(["models", "provider", "configure", provider]),),
             "deterministic",
         )
 
@@ -377,8 +377,8 @@ def deterministic_plan(
             provider_match.group(1), provider_match.group(1)
         )
         return NaturalCommandPlan(
-            f"Disconnect the {provider} model provider.",
-            (shlex.join(["models", "disconnect", provider]),),
+            f"Remove the {provider} model provider.",
+            (shlex.join(["models", "provider", "remove", provider]),),
             "deterministic",
         )
 
@@ -480,7 +480,10 @@ Read-only:
 - workflow show communications | workflow show actions | workflow show full
 - workflow show agent PARTICIPANT | workflow show agents PARTICIPANT...
 - workflow status | workflow validate | workflow history | workflow path
-- models | models show | models list | models check [NAME|all]
+- models
+- models provider list | models provider check [NAME|all]
+- models config list | models config show [NAME]
+- models config check [NAME|all] | models assignments
 - runs
 - status [DEPLOYMENT] | doctor [DEPLOYMENT] | logs [DEPLOYMENT]
 
@@ -498,11 +501,12 @@ Local configuration and development:
 - workflow edit spec | workflow edit code
 - workflow select [NUMBER|NAME|PATH.py:WORKFLOW]
 - workflow accept | workflow discard
-- models configure [NAME]
-- models edit NAME | models rename OLD_NAME NEW_NAME | models remove NAME
-- models connect local [BASE_URL]
-- models connect openai|anthropic|mistral
-- models disconnect local|openai|anthropic|mistral
+- models setup
+- models provider configure NAME [BASE_URL]
+- models provider remove local|openai|anthropic|mistral
+- models config create [NAME]
+- models config edit NAME | models config rename OLD_NAME NEW_NAME
+- models config remove NAME
 - models default CONFIGURATION
 - models assign PARTICIPANT CONFIGURATION
 - models inherit PARTICIPANT
