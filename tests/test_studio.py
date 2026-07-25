@@ -274,7 +274,7 @@ def test_studio_show_menu_renders_communication_code(tmp_path):
 
     studio.show_workflow([])
 
-    rendered = output[-1]
+    rendered = "\n".join(output)
     assert "User(value) >> Writer(value)" in rendered
     assert "Writer(result) >> User(result)" in rendered
     assert "echo(value)" not in rendered
@@ -287,8 +287,9 @@ def test_studio_show_agent_renders_exact_projection(tmp_path):
 
     studio.show_workflow(["agent", "Writer"])
 
-    assert "Generated local projection for Writer" in output[-1]
-    assert "value = recv('User')" in output[-1]
+    rendered = "\n".join(output)
+    assert "Generated local projection for Writer" in rendered
+    assert "value = recv('User')" in rendered
 
 
 def test_studio_create_saves_code_first_assistant_handoff(tmp_path):
@@ -713,10 +714,8 @@ def test_studio_assistant_does_not_hide_a_failed_check_behind_zero_exit(
     assert any(
         "Verification" in line and "failed" in line for line in output
     )
-    assert any(
-        "Next" in line and "workflow implement codex --rerun" in line
-        for line in output
-    )
+    assert "Next" in output
+    assert any("workflow implement codex --rerun" in line for line in output)
     assert "Failed or incomplete assistant checks" in output
     assert any(
         "uv run pytest" in line and "prompt_toolkit was unavailable" in line
@@ -1012,9 +1011,8 @@ def test_studio_completed_refinement_task_waits_for_review_without_refreshing(
     assert any(
         "Execution" in line and "nothing is scheduled" in line for line in output
     )
-    assert any(
-        "Next" in line and "workflow accept" in line for line in output
-    )
+    assert "Next" in output
+    assert any("workflow accept" in line for line in output)
     assert all("Implementation request refreshed" not in line for line in output)
 
     output.clear()
@@ -1038,9 +1036,8 @@ def test_studio_completed_refinement_task_waits_for_review_without_refreshing(
     assert any(
         "Status" in line and "awaiting human review" in line for line in output
     )
-    assert any(
-        "Next" in line and "workflow accept" in line for line in output
-    )
+    assert "Next" in output
+    assert any("workflow accept" in line for line in output)
 
     with pytest.raises(SystemExit, match="already returned.*awaiting human review"):
         studio.execute("workflow implement codex")
@@ -1234,7 +1231,8 @@ def test_studio_manual_spec_integration_is_reviewable_without_an_assistant(
     assert any(
         "Execution" in line and "assistant not run" in line for line in output
     )
-    assert any("Next" in line and "workflow accept" in line for line in output)
+    assert "Next" in output
+    assert any("workflow accept" in line for line in output)
 
 
 def test_studio_workflow_accept_keeps_history_and_accepts_refinements(tmp_path):
@@ -1312,7 +1310,8 @@ def test_studio_edits_selected_workflow_with_preference_or_one_off_override(
     ]
     assert any("global preference" in line for line in output)
     assert any("one-off" in line for line in output)
-    assert output[-1] == "Next: workflow validate · workflow show · run"
+    assert "Next" in output
+    assert "  workflow validate · workflow show · run" in output
 
 
 def test_studio_create_opens_automatic_specification_and_prepares_task(
@@ -1811,6 +1810,24 @@ def test_studio_banner_is_connected_and_compact_style_is_configurable(tmp_path):
     assert not any(line.startswith("╭") for line in output)
 
 
+def test_studio_structured_output_separates_titles_headers_rows_and_next(
+    tmp_path,
+):
+    studio, _workspace, output = _studio(tmp_path)
+
+    studio.execute("workflow", show_boundary=True)
+
+    title = output.index("Workflow development")
+    assert output[title + 1] == "─" * len("Workflow development")
+    assert output[title + 2].split() == ["Field", "Value"]
+    assert set(output[title + 3].replace(" ", "")) == {"─"}
+    assert output[title + 4].lstrip().startswith("Specification")
+
+    next_title = output.index("Next")
+    assert output[next_title + 1] == "─" * len("Next")
+    assert output[next_title + 2].strip() == "workflow create"
+
+
 def test_studio_status_marks_use_color_only_when_enabled(tmp_path):
     root = tmp_path / "project"
     root.mkdir()
@@ -1853,8 +1870,10 @@ def test_studio_validation_marks_successful_checks(tmp_path):
 
     studio.validate()
 
-    assert output[0] == "✓ Workflow sample: valid"
-    assert all(line.startswith("  ✓ ") for line in output[1:])
+    assert output[0] == "Workflow validation"
+    assert output[1] == "─" * len("Workflow validation")
+    assert output[2] == "✓ Workflow sample: valid"
+    assert all(line.startswith("  ✓ ") for line in output[3:])
 
 
 def test_studio_validate_automatically_selects_one_discovered_workflow(tmp_path):
@@ -2711,7 +2730,6 @@ def test_studio_models_displays_connections_and_llm_active_lifelines(tmp_path):
     assert any(
         "Writer" in line
         and "openai:gpt-4o-mini" in line
-        and "explicit" in line
         for line in output
     )
     assert any(
@@ -2964,6 +2982,23 @@ def test_studio_configuration_is_reusable_without_serializing_calls(tmp_path):
         "calls remain independent and may run in parallel" in line
         for line in output
     )
+    title = max(
+        index
+        for index, line in enumerate(output)
+        if line == "Model assignments"
+    )
+    assert output[title + 2].split() == [
+        "Participant",
+        "Configuration",
+        "Model",
+        "LLM",
+        "actions",
+    ]
+    assert set(output[title + 3].replace(" ", "")) == {"─"}
+    assert any(
+        line.startswith("✓ Assigned shared-local to Reviewer.")
+        for line in output
+    )
 
 
 def test_studio_models_inherit_removes_a_participant_assignment(tmp_path):
@@ -2979,7 +3014,7 @@ def test_studio_models_inherit_removes_a_participant_assignment(tmp_path):
 
     assert workspace.model_profile("workflow.py:sample")["lifelines"] == {}
     assert any(
-        "Writer" in line and "mock" in line and "inherits default" in line
+        "Writer" in line and "mock (default)" in line
         for line in output
     )
 
@@ -3120,7 +3155,7 @@ def test_studio_models_dashboard_does_not_change_routing(tmp_path):
     assert workspace.model_profile("workflow.py:sample") == before
     assert any(line == "Provider connections" for line in output)
     assert any(line == "Model configurations" for line in output)
-    assert any(line == "Workflow assignments" for line in output)
+    assert any(line == "Model assignments" for line in output)
 
 
 def test_studio_models_assignment_warns_when_configuration_is_unchecked(tmp_path):

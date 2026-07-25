@@ -149,6 +149,12 @@ shown; prompt text, paths, model specifications, and secret values are never
 repeated in the banner. Empty input and `exit` produce no banner. The optional
 `settings set output compact` switches to a one-line boundary.
 
+Inside that boundary, every structured result follows the same hierarchy:
+section title and rule, explicit column headings, a second rule separating
+those headings from actual rows, and a standalone `Next` section when guidance
+is useful. Status messages precede the data they describe. Project, workflow,
+model, language, run, and deployment output all use this shared rendering.
+
 `current` is the concise project dashboard: project and manifest, canonical
 specification and pending-refinement state, workflow name, all participants,
 the explicit subset containing `@llm` actions, human actions, external effects,

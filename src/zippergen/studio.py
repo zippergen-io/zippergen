@@ -693,20 +693,131 @@ class Studio:
             return f"\033[{_STATUS_COLORS[kind]}m{mark}\033[0m"
         return mark
 
+    def _emit_section_title(self, title: str, *, major: bool = False) -> None:
+        """Render the shared boundary between a section heading and its data."""
+
+        self._emit(title)
+        self._emit(("═" if major else "─") * len(title))
+
+    @staticmethod
+    def _visible_width(value: str) -> int:
+        return len(re.sub(r"\x1b\[[0-9;]*m", "", value))
+
+    def _pad_cell(self, value: object, width: int, *, right: bool = False) -> str:
+        text = str(value)
+        padding = " " * max(0, width - self._visible_width(text))
+        return padding + text if right else text + padding
+
+    def _emit_columns(
+        self,
+        title: str,
+        headers: tuple[str, ...],
+        rows: list[tuple[object, ...]],
+        *,
+        right_aligned: frozenset[int] = frozenset(),
+    ) -> None:
+        """Render a real column table whose header is distinct from its rows."""
+
+        if not headers:
+            raise ValueError("A column table requires at least one heading.")
+        if any(len(row) != len(headers) for row in rows):
+            raise ValueError("Every column-table row must match its headings.")
+        rendered = [tuple(str(value) for value in row) for row in rows]
+        widths: list[int] = []
+        for index, heading in enumerate(headers):
+            candidates = [self._visible_width(heading)]
+            candidates.extend(
+                self._visible_width(row[index]) for row in rendered
+            )
+            widths.append(max(candidates))
+        self._emit_section_title(title)
+        self._emit(
+            "  "
+            + "  ".join(
+                self._pad_cell(
+                    heading,
+                    (
+                        widths[index]
+                        if index < len(headers) - 1
+                        or index in right_aligned
+                        else self._visible_width(heading)
+                    ),
+                    right=index in right_aligned,
+                )
+                for index, heading in enumerate(headers)
+            )
+        )
+        self._emit(
+            "  "
+            + "  ".join("─" * width for width in widths)
+        )
+        for row in rendered:
+            self._emit(
+                "  "
+                + "  ".join(
+                    self._pad_cell(
+                        value,
+                        (
+                            widths[index]
+                            if index < len(headers) - 1
+                            or index in right_aligned
+                            else self._visible_width(value)
+                        ),
+                        right=index in right_aligned,
+                    )
+                    for index, value in enumerate(row)
+                )
+            )
+        self._emit()
+
+    def _emit_next(self, value: object) -> None:
+        self._emit_section_title("Next")
+        self._emit(f"  {value}")
+        self._emit()
+
     def _emit_table(
         self,
         title: str,
         rows: list[tuple[str, object, StatusKind | None]],
     ) -> None:
-        """Render a compact, grouped key/value table with a clear boundary."""
+        """Render key/value data with explicit headings and separate guidance."""
 
-        self._emit(title)
-        self._emit("─" * len(title))
-        width = max((len(label) for label, _value, _kind in rows), default=0)
-        for label, value, kind in rows:
+        content = [
+            row for row in rows if row[0].casefold() != "next"
+        ]
+        next_values = [
+            value for label, value, _kind in rows
+            if label.casefold() == "next"
+        ]
+        self._emit_section_title(title)
+        width = max(
+            len("Field"),
+            max((len(label) for label, _value, _kind in content), default=0),
+        )
+        value_width = max(
+            len("Value"),
+            max(
+                (
+                    self._visible_width(
+                        (f"{self._status_mark(kind)} " if kind else "")
+                        + str(value)
+                    )
+                    for _label, value, kind in content
+                ),
+                default=0,
+            ),
+        )
+        self._emit(
+            f"  {self._pad_cell('Field', width)}  "
+            "Value"
+        )
+        self._emit(f"  {'─' * width}  {'─' * value_width}")
+        for label, value, kind in content:
             prefix = f"{self._status_mark(kind)} " if kind else ""
             self._emit(f"  {label:<{width}}  {prefix}{value}")
         self._emit()
+        for value in next_values:
+            self._emit_next(value)
 
     def _success(self, message: str, *, indent: int = 0) -> None:
         self._status("success", message, indent=indent)
@@ -1994,11 +2105,15 @@ class Studio:
             )
         self._emit_table("Natural-language request", rows)
         if plan.commands:
-            self._emit("Command plan")
-            self._emit("────────────")
-            for index, command in enumerate(plan.commands, start=1):
-                self._emit(f"  {index}  {command}")
-            self._emit()
+            self._emit_columns(
+                "Command plan",
+                ("Step", "Command"),
+                [
+                    (index, command)
+                    for index, command in enumerate(plan.commands, start=1)
+                ],
+                right_aligned=frozenset({0}),
+            )
         if plan.clarification:
             self._emit_table(
                 "Clarification needed",
@@ -2258,8 +2373,7 @@ class Studio:
                     [("Status", "no interpreted requests yet", "warning")],
                 )
                 return
-            self._emit("Natural-language history")
-            self._emit("────────────────────────")
+            rows: list[tuple[object, ...]] = []
             for record in history[:25]:
                 status = str(record.get("status") or "unknown")
                 kind: StatusKind = (
@@ -2270,13 +2384,19 @@ class Studio:
                     else "error"
                 )
                 commands = record.get("commands") or []
-                self._emit(
-                    f"  {self._status_mark(kind)} {record.get('id')}  "
-                    f"{status}  {record.get('request')}"
+                rows.append(
+                    (
+                        record.get("id"),
+                        f"{self._status_mark(kind)} {status}",
+                        record.get("request"),
+                        " · ".join(map(str, commands)) if commands else "—",
+                    )
                 )
-                if commands:
-                    self._emit("      " + " · ".join(map(str, commands)))
-            self._emit()
+            self._emit_columns(
+                "Natural-language history",
+                ("ID", "Status", "Request", "Commands"),
+                rows,
+            )
             return
         if action == "learned" and not rest:
             learned = store.learned()
@@ -2292,19 +2412,21 @@ class Studio:
                     ],
                 )
                 return
-            self._emit("Learned interpretations")
-            self._emit("───────────────────────")
-            for record in learned:
-                self._emit(
-                    f"  {record.get('id')}  {record.get('request_template')}"
-                )
-                commands = record.get("commands") or []
-                self._emit("      " + " · ".join(map(str, commands)))
-                self._emit(
-                    f"      source: {record.get('source')}; "
-                    f"uses: {record.get('uses', 0)}"
-                )
-            self._emit()
+            self._emit_columns(
+                "Learned interpretations",
+                ("ID", "Request template", "Commands", "Source", "Uses"),
+                [
+                    (
+                        record.get("id"),
+                        record.get("request_template"),
+                        " · ".join(map(str, record.get("commands") or [])),
+                        record.get("source"),
+                        record.get("uses", 0),
+                    )
+                    for record in learned
+                ],
+                right_aligned=frozenset({4}),
+            )
             return
         if action == "forget" and len(rest) == 1:
             identifier = rest[0]
@@ -2572,8 +2694,7 @@ class Studio:
                 ),
             ],
         )
-        self._emit("Requirements")
-        self._emit("────────────")
+        self._emit_section_title("Requirements")
         self._emit(str(content))
         self._emit()
         if ensured["migrated"]:
@@ -2711,8 +2832,7 @@ class Studio:
                     ("Next", next_action, None),
                 ],
             )
-            self._emit("Requested change")
-            self._emit("────────────────")
+            self._emit_section_title("Requested change")
             self._emit(pending)
             self._emit()
             return
@@ -2838,16 +2958,18 @@ class Studio:
                     ],
                 )
                 return
-            self._emit("Specification refinement history")
-            self._emit("────────────────────────────────")
-            self._emit("  Status       Created                    Archived")
-            for record in records:
-                self._emit(
-                    f"  {str(record.get('status') or 'unknown'):<12} "
-                    f"{str(record.get('created_at') or '—'):<26} "
-                    f"{record.get('archived_at') or '—'}"
-                )
-            self._emit()
+            self._emit_columns(
+                "Specification refinement history",
+                ("Status", "Created", "Archived"),
+                [
+                    (
+                        record.get("status") or "unknown",
+                        record.get("created_at") or "—",
+                        record.get("archived_at") or "—",
+                    )
+                    for record in records
+                ],
+            )
             self._emit("Canonical specification history is versioned by Git.")
             return
         raise SystemExit(
@@ -3024,7 +3146,7 @@ class Studio:
                 "edit file PATH [--editor COMMAND]."
             )
         self._launch_editor(target, override=editor_override)
-        self._emit(f"Next: {next_steps}")
+        self._emit_next(next_steps)
 
     def _ensure_workflow_selected(self, purpose: str) -> str:
         current = self.workspace.current_workflow
@@ -3177,8 +3299,15 @@ class Studio:
         self._success(
             f"Project manifest {result}: {self.workspace.manifest_path}"
         )
-        self._emit(f"Project: {manifest['name']}")
-        self._emit(f"Specification: {self.workspace.specification_path}")
+        self._emit_table(
+            "Project initialized",
+            [
+                ("Name", manifest["name"], None),
+                ("Manifest", self.workspace.manifest_path, None),
+                ("Specification", self.workspace.specification_path, None),
+                ("Next", "workflow create · workflow list · current", None),
+            ],
+        )
 
     def reset_project(
         self,
@@ -3355,12 +3484,7 @@ class Studio:
                 ("Precedence", "later rows override only explicit conflicts", None),
             ],
         )
-        self._emit("Prompt ledger")
-        self._emit("─" * len("Prompt ledger"))
-        self._emit(
-            f"  {'#':>2}  {'ID':<5}  {'Kind':<10}  {'Status':<10}  "
-            f"{'Title':<48}  File"
-        )
+        ledger_rows: list[tuple[object, ...]] = []
         for position, record in enumerate(records, start=1):
             status = "active" if record["active"] else "archived"
             mark = self._status_mark(
@@ -3369,12 +3493,22 @@ class Studio:
             title = str(record["title"])
             if len(title) > 48:
                 title = title[:47] + "…"
-            self._emit(
-                f"  {position:>2}  {str(record['id']):<5}  "
-                f"{str(record['kind']):<10}  {mark} {status:<8}  "
-                f"{title:<48}  {record['file']}"
+            ledger_rows.append(
+                (
+                    position,
+                    record["id"],
+                    record["kind"],
+                    f"{mark} {status}",
+                    title,
+                    record["file"],
+                )
             )
-        self._emit()
+        self._emit_columns(
+            "Prompt ledger",
+            ("#", "ID", "Kind", "Status", "Title", "File"),
+            ledger_rows,
+            right_aligned=frozenset({0}),
+        )
 
     def manage_prompts(self, args: list[str]) -> None:
         if not args or args == ["list"]:
@@ -3418,8 +3552,7 @@ class Studio:
                     ("Replaces", record.get("replaces") or "none", None),
                 ],
             )
-            self._emit("Requirement")
-            self._emit("─" * len("Requirement"))
+            self._emit_section_title("Requirement")
             self._emit(str(record["content"]))
             self._emit()
             return
@@ -3817,22 +3950,23 @@ class Studio:
                     ],
                 )
                 return
-            self._emit("Implementation history")
-            self._emit("──────────────────────")
-            self._emit(
-                "  Request                  Kind        State              "
-                "Refreshes                 Created"
-            )
+            history_rows: list[tuple[object, ...]] = []
             for record in records:
-                state, _state_kind = self._task_state(record)
-                self._emit(
-                    f"  {str(record['request_id']):24} "
-                    f"{str(record['kind']):11} "
-                    f"{state:18} "
-                    f"{str(record.get('refreshes_request') or '—'):24}  "
-                    f"{record.get('created_at') or '—'}"
+                state, state_kind = self._task_state(record)
+                history_rows.append(
+                    (
+                        record["request_id"],
+                        record["kind"],
+                        f"{self._status_mark(state_kind)} {state}",
+                        record.get("refreshes_request") or "—",
+                        record.get("created_at") or "—",
+                    )
                 )
-            self._emit()
+            self._emit_columns(
+                "Implementation history",
+                ("Request", "Kind", "State", "Refreshes", "Created"),
+                history_rows,
+            )
             return
 
         record = self._ensure_current_task_fresh()
@@ -4076,8 +4210,7 @@ class Studio:
 
     def _emit_codex_output(self, output: _CodexOutput) -> None:
         if output.report:
-            self._emit("Assistant report")
-            self._emit("────────────────")
+            self._emit_section_title("Assistant report")
             self._emit(output.report)
             self._emit()
         for diagnostic in output.diagnostics[:3]:
@@ -4526,8 +4659,7 @@ class Studio:
             if pending is not None
             else "none"
         )
-        self._emit("Current")
-        self._emit("═══════")
+        self._emit_section_title("Current", major=True)
         self._emit()
         self._emit_table(
             "Project",
@@ -4830,9 +4962,15 @@ class Studio:
     def _select(self, heading: str, choices: list[str], *, allow_many: bool = False):
         if not choices:
             raise SystemExit("No choices are available.")
-        self._emit(heading)
-        for index, choice in enumerate(choices, 1):
-            self._emit(f"  {index}. {choice}")
+        self._emit_columns(
+            heading,
+            ("Choice", "Value"),
+            [
+                (index, choice)
+                for index, choice in enumerate(choices, 1)
+            ],
+            right_aligned=frozenset({0}),
+        )
         suffix = " (comma-separated)" if allow_many else ""
         raw = self.input(f"Select{suffix}: ").strip()
         if allow_many:
@@ -4874,24 +5012,35 @@ class Studio:
                 ],
             )
             return
-        rows: list[tuple[str, object, StatusKind | None]] = []
+        rows: list[tuple[object, ...]] = []
         for index, spec in enumerate(candidates, start=1):
             name = spec.rpartition(":")[2] or spec
-            state = " — selected" if spec == selected else ""
             rows.append(
                 (
-                    str(index),
-                    f"{name} — {spec}{state}",
-                    "success" if spec == selected else None,
+                    index,
+                    name,
+                    spec,
+                    (
+                        f"{self._status_mark('success')} selected"
+                        if spec == selected
+                        else "available"
+                    ),
                 )
             )
-        rows.extend(
-            [
-                ("Discovery", "source scan only; validation was not run", "info"),
-                ("Next", "workflow select NUMBER|NAME", None),
-            ]
+        self._emit_columns(
+            "Available workflows",
+            ("#", "Workflow", "Entry point", "Status"),
+            rows,
+            right_aligned=frozenset({0}),
         )
-        self._emit_table("Available workflows", rows)
+        self._emit_table(
+            "Discovery",
+            [
+                ("Method", "source scan only", "info"),
+                ("Validation", "not run", "warning"),
+                ("Next", "workflow select NUMBER|NAME", None),
+            ],
+        )
 
     def _resolve_workflow_choice(
         self,
@@ -5078,15 +5227,22 @@ class Studio:
 
     def show_workflow_files(self) -> None:
         records = self._workflow_file_records()
-        rows: list[tuple[str, object, StatusKind | None]] = [
+        rows: list[tuple[object, ...]] = [
             (
-                str(index),
-                f"{path} — {role}",
-                "success" if index == 1 else None,
+                index,
+                path,
+                role,
             )
             for index, (path, role) in enumerate(records, start=1)
         ]
-        rows.extend(
+        self._emit_columns(
+            "Workflow files",
+            ("#", "File", "Role"),
+            rows,
+            right_aligned=frozenset({0}),
+        )
+        self._emit_table(
+            "File discovery",
             [
                 (
                     "Scope",
@@ -5095,11 +5251,7 @@ class Studio:
                     "info",
                 ),
                 ("Next", "workflow show source [NUMBER|PATH]", None),
-            ]
-        )
-        self._emit_table(
-            "Workflow files",
-            rows,
+            ],
         )
 
     def show_workflow_source(self, args: list[str]) -> None:
@@ -5131,8 +5283,7 @@ class Studio:
             source = target.read_text(encoding="utf-8").rstrip()
         except (OSError, UnicodeDecodeError) as exc:
             raise SystemExit(f"Could not read workflow file {path}: {exc}") from exc
-        self._emit(f"Source: {path} ({role})")
-        self._emit("─" * min(72, len(path) + len(role) + 11))
+        self._emit_section_title(f"Source: {path} ({role})")
         self._emit(source)
         self._emit()
 
@@ -5202,7 +5353,11 @@ class Studio:
         except ValueError as exc:
             raise SystemExit(str(exc)) from exc
         self.workspace.update(current_workflow=current, last_view=remembered)
+        self._emit_section_title(
+            f"Workflow view · {workflow.name} · {remembered}"
+        )
         self._emit(data["code"])
+        self._emit()
 
     def validate(self) -> None:
         from zippergen.serve import _validate_workflow
@@ -5213,6 +5368,7 @@ class Studio:
         result = _validate_workflow(workflow, module)
         verdict = "valid" if result["valid"] else "invalid"
         summary = self._success if result["valid"] else self._error
+        self._emit_section_title("Workflow validation")
         summary(f"Workflow {workflow.name}: {verdict}")
         for check in result["checks"]:  # type: ignore[index]
             status = str(check["status"]).lower()
@@ -5263,13 +5419,9 @@ class Studio:
             return "error"
         return "warning"
 
-    def _emit_model_configurations(self) -> None:
+    def _emit_model_configurations(self, *, include_next: bool = True) -> None:
         configurations = self.workspace.model_configurations()
-        self._emit("Model configurations")
-        self._emit("────────────────────")
-        self._emit(
-            f"  {'Name':<22} {'Provider':<11} {'Model':<28} Status"
-        )
+        rows: list[tuple[object, ...]] = []
         for name, configuration in configurations.items():
             status = configuration.get("check_status", "not_checked")
             provider = configuration.get("provider") or _canonical_provider(
@@ -5281,13 +5433,23 @@ class Studio:
             mark = self._status_mark(
                 self._configuration_status_kind(configuration)
             )
-            self._emit(
-                f"  {name:<22} {provider:<11} {model:<28} "
-                f"{mark} {status.replace('_', ' ')}"
+            rows.append(
+                (
+                    name,
+                    provider,
+                    model,
+                    f"{mark} {status.replace('_', ' ')}",
+                )
             )
-        self._emit(
-            "Next: models config create [NAME] · models config check [NAME]"
+        self._emit_columns(
+            "Model configurations",
+            ("Name", "Provider", "Model", "Status"),
+            rows,
         )
+        if include_next:
+            self._emit_next(
+                "models config create [NAME] · models config check [NAME]"
+            )
 
     def _emit_model_assignments(
         self,
@@ -5301,34 +5463,48 @@ class Studio:
         default = str(assignments["default"])
         overrides = assignments.get("lifelines") or {}
         assert isinstance(overrides, dict)
-        self._emit("Workflow assignments")
-        self._emit("────────────────────")
-        self._emit(f"  Workflow  {workflow.name}")
-        self._emit(
-            f"  Default   {default} → "
-            f"{configurations.get(default, {}).get('spec', 'missing')}"
-        )
         if not active:
-            self._emit("  No participants contain LLM actions.")
+            self._emit_table(
+                "Model assignments",
+                [
+                    ("Workflow", workflow.name, None),
+                    ("Default", default, None),
+                    (
+                        "Status",
+                        "no participants contain LLM actions",
+                        "warning",
+                    ),
+                ],
+            )
             return
-        self._emit()
-        self._emit(
-            f"  {'Participant':<18} {'Configuration':<22} "
-            f"{'Effective model':<32} Source"
-        )
+        rows: list[tuple[object, ...]] = []
         for lifeline, actions in active.items():
             explicit = overrides.get(lifeline)
             effective = str(explicit or default)
-            source = "explicit" if explicit else "inherits default"
             spec = configurations.get(effective, {}).get("spec", "missing")
-            self._emit(
-                f"  {lifeline:<18} {effective:<22} {spec:<32} {source}"
+            configuration = (
+                effective if explicit else f"{effective} (default)"
             )
-            self._emit(f"    LLM actions: {', '.join(actions)}")
-        self._emit(
-            "A configuration may be assigned to any number of participants; "
-            "calls remain independent and may run in parallel."
+            rows.append(
+                (
+                    lifeline,
+                    configuration,
+                    spec,
+                    ", ".join(actions),
+                )
+            )
+        self._emit_columns(
+            "Model assignments",
+            ("Participant", "Configuration", "Model", "LLM actions"),
+            rows,
         )
+        self._emit_section_title("Execution")
+        self._info(
+            "Configurations can be shared; calls remain independent and may "
+            "run in parallel.",
+            indent=2,
+        )
+        self._emit()
 
     def _model_configuration_name(self, requested: str) -> str:
         configurations = self.workspace.model_configurations()
@@ -5426,8 +5602,8 @@ class Studio:
                 self._success(
                     f"Model configuration already exists: {name} ({spec})"
                 )
-                self._emit(
-                    f"Next: models config check {name} · "
+                self._emit_next(
+                    f"models config check {name} · "
                     f"models assign LIFELINE {name}"
                 )
                 return name
@@ -5452,8 +5628,8 @@ class Studio:
             raise SystemExit(str(exc)) from exc
         verb = "Updated" if existing_name else "Created"
         self._success(f"{verb} model configuration: {name} ({spec})")
-        self._emit(
-            f"Next: models config check {name} · "
+        self._emit_next(
+            f"models config check {name} · "
             f"models assign LIFELINE {name}"
         )
         return name
@@ -5464,8 +5640,7 @@ class Studio:
             selected = list(configurations)
         else:
             selected = [self._model_configuration_name(target)]
-        self._emit("Configuration checks")
-        self._emit("────────────────────")
+        self._emit_section_title("Configuration checks")
         failures: list[str] = []
         for name in selected:
             configuration = configurations[name]
@@ -5642,19 +5817,22 @@ class Studio:
         )
 
     def _show_models_dashboard(self) -> None:
-        self._emit("Models")
-        self._emit("══════")
+        self._emit_section_title("Models", major=True)
         self._emit()
-        self._emit_model_connections()
-        self._emit()
-        self._emit_model_configurations()
-        self._emit()
+        self._emit_model_connections(include_next=False)
+        self._emit_model_configurations(include_next=False)
         self._show_model_assignments()
-        self._emit()
-        self._emit(
-            "Lifecycle: provider configure/check → config create/check → assign."
+        self._emit_table(
+            "Model workflow",
+            [
+                (
+                    "Lifecycle",
+                    "provider configure/check → config create/check → assign",
+                    None,
+                ),
+                ("Next", "models setup", None),
+            ],
         )
-        self._emit("Guided path: models setup")
 
     def _guided_models_setup(self) -> None:
         self._emit_table(
@@ -5825,10 +6003,12 @@ class Studio:
         overrides = dict(assignments.get("lifelines") or {})
         active = self._llm_action_lifelines(workflow, module)
         changed_configuration: str | None = None
+        result_message: str
 
         if action == "default" and len(args) == 2:
             default = self._model_configuration_name(args[1])
             changed_configuration = default
+            result_message = f"Set the default configuration to {default}."
         elif action == "assign" and len(args) == 3:
             entered_lifeline, entered_configuration = args[1:]
             lifeline = {
@@ -5846,6 +6026,7 @@ class Studio:
             )
             overrides[lifeline] = configuration
             changed_configuration = configuration
+            result_message = f"Assigned {configuration} to {lifeline}."
         elif action == "inherit" and len(args) == 2:
             entered_lifeline = args[1]
             lifeline = {
@@ -5859,6 +6040,9 @@ class Studio:
                     f"{available}."
                 )
             overrides.pop(lifeline, None)
+            result_message = (
+                f"{lifeline} now inherits the default configuration {default}."
+            )
         else:
             raise SystemExit(
                 "Use models assign LIFELINE NAME, models default NAME, or "
@@ -5887,7 +6071,7 @@ class Studio:
             default=default,
             lifelines=overrides,
         )
-        self._success(f"Saved model assignments for {workflow.name}.")
+        self._success(result_message)
         self._emit()
         self._emit_model_assignments(
             workflow=workflow,
@@ -6168,8 +6352,7 @@ class Studio:
                 "Provider must be mock, local/ollama, openai, anthropic/claude, "
                 "or mistral."
             )
-        self._emit("Provider checks")
-        self._emit("───────────────")
+        self._emit_section_title("Provider checks")
         failures: list[str] = []
         for provider in selected:
             if provider == "mock":
@@ -6325,10 +6508,8 @@ class Studio:
     def _provider_status(self, provider: str) -> str:
         return self._provider_configuration_status(provider)[1]
 
-    def _emit_model_connections(self) -> None:
-        self._emit("Provider connections")
-        self._emit("────────────────────")
-        self._emit(f"  {'Provider':<12} {'State':<18} Details")
+    def _emit_model_connections(self, *, include_next: bool = True) -> None:
+        rows: list[tuple[object, ...]] = []
         for provider in _SUPPORTED_PROVIDERS:
             kind, status = self._provider_configuration_status(provider)
             if provider == "mock":
@@ -6343,15 +6524,25 @@ class Studio:
                 state = "check failed"
             else:
                 state = "unverified"
-            self._emit(
-                f"  {provider:<12} {state:<18} "
-                f"{self._status_mark(kind)} {status}"
+            rows.append(
+                (
+                    provider,
+                    state,
+                    f"{self._status_mark(kind)} {status}",
+                )
             )
-        self._emit("API-key values are never displayed or written to the project.")
-        self._emit(
-            "Next: models provider configure NAME · "
-            "models provider check [NAME]"
+        self._emit_columns(
+            "Provider connections",
+            ("Provider", "State", "Details"),
+            rows,
         )
+        self._emit_section_title("Secrets")
+        self._emit("API-key values are never displayed or written to the project.")
+        self._emit()
+        if include_next:
+            self._emit_next(
+                "models provider configure NAME · models provider check [NAME]"
+            )
 
     def _local_models_url(self, base_url: str) -> str:
         parsed = urlsplit(base_url.strip())
@@ -6560,15 +6751,25 @@ class Studio:
     def show_runs(self) -> None:
         runs = self.workspace.list_runs()
         if not runs:
-            self._emit("No managed development runs.")
+            self._emit_table(
+                "Development runs",
+                [("Status", "none", "warning")],
+            )
             return
         current = self.workspace.current_run_id
-        for record in runs:
-            marker = "*" if record["run_id"] == current else " "
-            self._emit(
-                f"{marker} {record['run_id']}  {record['status']}  "
-                f"{record['workflow_spec']}"
-            )
+        self._emit_columns(
+            "Development runs",
+            ("Current", "Run", "Status", "Workflow"),
+            [
+                (
+                    "●" if record["run_id"] == current else "",
+                    record["run_id"],
+                    record["status"],
+                    record["workflow_spec"],
+                )
+                for record in runs
+            ],
+        )
 
     def _run_project_cli(self, arguments: list[str]) -> int:
         from zippergen.serve import main
@@ -6714,7 +6915,10 @@ class Studio:
             if names
             else spec.name or _deployment_name_from_workflow(target, workflow)
         )
-        self._emit(f"Guided deployment: {name}")
+        self._emit_table(
+            "Guided deployment",
+            [("Deployment", name, None)],
+        )
         arguments = ["deploy", target]
         if names:
             arguments.extend(["--name", name])

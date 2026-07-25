@@ -453,6 +453,14 @@ values, or secrets. It therefore remains short even for a long
 \texttt{workflow create} or \texttt{workflow refine} command. Blank input and
 \texttt{exit} produce no banner. Use \texttt{settings set output compact} only
 if a one-line boundary is preferable.
+
+Inside the banner, Studio uses the same hierarchy for every command: a section
+title and rule, explicit column headings, another rule separating those
+headings from the actual rows, and a standalone \texttt{Next} section when
+guidance is useful. Success, warning, or failure appears before the data it
+describes. Thus \texttt{project}, \texttt{workflow}, \texttt{models},
+\texttt{language}, run, and deployment results do not require the reader to
+learn different output layouts.
 \end{notebox}
 
 \subsubsection*{Step 1a: use commands or ordinary language}
@@ -954,18 +962,32 @@ validation do not require a model. Expected shape:
 
 \begin{lstlisting}[style=shell]
 Provider connections
+--------------------
   Provider     State              Details
+  --------     -----              -------
   mock         built in           ... available; built in
   local        not configured     ...
+
+Secrets
+-------
+API-key values are never displayed or written to the project.
+
 Model configurations
+--------------------
   Name                   Provider    Model                        Status
+  ----                   --------    -----                        ------
   mock                   mock        built in                     ... available
-Workflow assignments
-  Participant        Configuration          Effective model      Source
-  Writer             mock                   mock                 inherits default
-    LLM actions: draft_reply, revise_reply
-  Reviewer           mock                   mock                 inherits default
-    LLM actions: assess_draft
+
+Model assignments
+-----------------
+  Participant  Configuration   Model  LLM actions
+  -----------  -------------   -----  -----------
+  Writer       mock (default)  mock   draft_reply, revise_reply
+  Reviewer     mock (default)  mock   assess_draft
+
+Execution
+---------
+  ... Configurations can be shared; calls remain independent and may run in parallel.
 \end{lstlisting}
 
 Generated action names may differ, but Writer and Reviewer should appear. The
