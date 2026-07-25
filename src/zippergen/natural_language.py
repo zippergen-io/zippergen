@@ -237,6 +237,16 @@ def deterministic_plan(
             "deterministic",
         )
 
+    if re.search(
+        r"\b(review|inspect and accept)\b.*\b(workflow|implementation)\b",
+        text,
+    ):
+        return NaturalCommandPlan(
+            "Open the guided workflow review.",
+            ("workflow review",),
+            "deterministic",
+        )
+
     if re.fullmatch(
         r"(?:please\s+)?(?:run|start)(?:\s+the|\s+this|\s+current)?"
         r"\s+workflow",
@@ -479,7 +489,8 @@ Read-only:
 - workflow show overview | workflow show protocol
 - workflow show communications | workflow show actions | workflow show full
 - workflow show agent PARTICIPANT | workflow show agents PARTICIPANT...
-- workflow status | workflow validate | workflow history | workflow path
+- workflow status | workflow review | workflow validate
+- workflow history | workflow path
 - models
 - models provider list | models provider check [NAME|all]
 - models config list | models config show [NAME]

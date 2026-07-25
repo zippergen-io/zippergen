@@ -118,6 +118,7 @@ def test_studio_completion_is_context_and_project_aware(tmp_path):
 
     assert _completions(studio, "wo") == ["workflow"]
     assert {"refine", "status"}.issubset(_completions(studio, "workflow "))
+    assert _completions(studio, "workflow rev") == ["review"]
     assert _completions(studio, "workflow select wor") == [
         "workflow.py:sample"
     ]
@@ -154,7 +155,7 @@ def test_studio_explains_a_single_completion_match(tmp_path):
     assert studio.completion_explanation("resu") == (
         " Tab: resume — resume the current incomplete run "
     )
-    assert studio.completion_explanation("workflow r") == (
+    assert studio.completion_explanation("workflow ref") == (
         " Tab: refine — create or reopen the pending refinement "
     )
     assert studio.completion_explanation("") == ""
@@ -717,18 +718,80 @@ def test_studio_assistant_does_not_hide_a_failed_check_behind_zero_exit(
     assert "Next" in output
     assert any("workflow implement codex --rerun" in line for line in output)
     assert "Failed or incomplete assistant checks" in output
+    assert any("Command" in line and "uv run pytest" in line for line in output)
     assert any(
-        "uv run pytest" in line and "prompt_toolkit was unavailable" in line
+        "Result" in line and "prompt_toolkit was unavailable" in line
         for line in output
     )
 
     output.clear()
     studio.execute("workflow status")
     assert "Assistant verification checks" in output
+    assert any("Command" in line and "uv run pytest" in line for line in output)
     assert any(
-        "uv run pytest" in line and "prompt_toolkit was unavailable" in line
+        "Result" in line and "prompt_toolkit was unavailable" in line
         for line in output
     )
+
+
+def test_studio_verification_checks_are_wrapped_records_with_problem_priority(
+    tmp_path,
+    monkeypatch,
+):
+    studio, workspace, output = _studio(tmp_path)
+    monkeypatch.setattr(studio, "_output_columns", lambda: 72)
+    studio.create_request("Create a review workflow.")
+    record = workspace.current_request()
+    assert record is not None
+    long_command = (
+        "UV_CACHE_DIR=/private/tmp/zippergen-uv-cache uv run --offline "
+        "--no-sync --project zippergen zippergen validate "
+        "workflows/reviewed_answer.py:reviewed_answer "
+        + "very-long-option-" * 8
+    )
+    workspace.update_request(
+        str(record["request_id"]),
+        status="awaiting_review",
+        assistant="Codex",
+        assistant_verification="failed",
+        assistant_verification_checks=[
+            {
+                "command": "uv run pytest tests",
+                "status": "passed",
+                "detail": "All focused tests passed.",
+            },
+            {
+                "command": long_command,
+                "status": "failed",
+                "detail": (
+                    "Validation found a deliberately long diagnostic that "
+                    "must wrap without extending the terminal divider."
+                ),
+            },
+            {
+                "command": "uv run zippergen show --agent Writer",
+                "status": "not_run",
+                "detail": "Skipped after validation failed.",
+            },
+        ],
+    )
+    output.clear()
+
+    studio.execute("workflow status")
+
+    title = output.index("Assistant verification checks")
+    checks = output[title:]
+    assert "3 checks · 1 passed · 1 failed · 1 not run" in checks
+    assert max(len(line) for line in checks) <= 72
+    assert not any("Field" in line and "Value" in line for line in checks)
+    failed = next(index for index, line in enumerate(checks) if "2. failed" in line)
+    not_run = next(
+        index for index, line in enumerate(checks) if "3. not run" in line
+    )
+    passed = next(index for index, line in enumerate(checks) if "1. passed" in line)
+    assert failed < not_run < passed
+    assert any(line.lstrip().startswith("Command") for line in checks)
+    assert any(line.lstrip().startswith("Result") for line in checks)
 
 
 def test_studio_task_explains_nested_framework_test_environment(tmp_path):
@@ -1012,7 +1075,7 @@ def test_studio_completed_refinement_task_waits_for_review_without_refreshing(
         "Execution" in line and "nothing is scheduled" in line for line in output
     )
     assert "Next" in output
-    assert any("workflow accept" in line for line in output)
+    assert any("workflow review" in line for line in output)
     assert all("Implementation request refreshed" not in line for line in output)
 
     output.clear()
@@ -1023,7 +1086,7 @@ def test_studio_completed_refinement_task_waits_for_review_without_refreshing(
         for line in output
     )
     assert any(
-        "Task next" in line and "workflow accept" in line for line in output
+        "Task next" in line and "workflow review" in line for line in output
     )
     assert any(
         "Refinement" in line and "awaiting human review" in line
@@ -1037,7 +1100,7 @@ def test_studio_completed_refinement_task_waits_for_review_without_refreshing(
         "Status" in line and "awaiting human review" in line for line in output
     )
     assert "Next" in output
-    assert any("workflow accept" in line for line in output)
+    assert any("workflow review" in line for line in output)
 
     with pytest.raises(SystemExit, match="already returned.*awaiting human review"):
         studio.execute("workflow implement codex")
@@ -1232,7 +1295,62 @@ def test_studio_manual_spec_integration_is_reviewable_without_an_assistant(
         "Execution" in line and "assistant not run" in line for line in output
     )
     assert "Next" in output
-    assert any("workflow accept" in line for line in output)
+    assert any("workflow review" in line for line in output)
+
+
+def test_studio_workflow_review_guides_requirements_and_can_be_resumed(
+    tmp_path,
+):
+    studio, workspace, output = _studio(tmp_path, responses=["1", "7"])
+    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    workspace.save_specification("Echo the request through Writer.")
+    studio.refine_request("Require human approval before returning.")
+    workspace.save_specification(
+        "Echo the request through Writer and require human approval "
+        "before returning."
+    )
+
+    studio.execute("workflow review")
+
+    assert workspace.current_request() is not None
+    assert workspace.pending_refinement() is not None
+    assert "Workflow review" in output
+    assert "Review actions" in output
+    assert any("Require human approval before returning." in line for line in output)
+    assert any(
+        "Echo the request through Writer and require human approval" in line
+        for line in output
+    )
+    assert any("Review remains open" in line for line in output)
+
+
+def test_studio_workflow_review_can_accept_the_reviewed_refinement(tmp_path):
+    studio, workspace, output = _studio(tmp_path, responses=["6", "y"])
+    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    workspace.save_specification("Echo the request through Writer.")
+    studio.refine_request("Require human approval before returning.")
+    workspace.save_specification(
+        "Echo the request through Writer and require human approval "
+        "before returning."
+    )
+
+    studio.execute("workflow review")
+
+    assert workspace.current_request() is None
+    assert workspace.pending_refinement() is None
+    assert any(line == "Specification refinement" for line in output)
+    assert any(
+        "Implementation" in line and "accepted" in line
+        for line in output
+    )
+
+
+def test_studio_workflow_review_requires_a_returned_implementation(tmp_path):
+    studio, _workspace, _output = _studio(tmp_path)
+    studio.create_request("Create a review workflow.")
+
+    with pytest.raises(SystemExit, match="not awaiting human review"):
+        studio.execute("workflow review")
 
 
 def test_studio_workflow_accept_keeps_history_and_accepts_refinements(tmp_path):
@@ -1708,6 +1826,7 @@ def test_studio_commands_are_discoverable(tmp_path):
     assert "project reset state [--yes]" in output[-1]
     assert "workflow history" in output[-1]
     assert "workflow status" in output[-1]
+    assert "workflow review" in output[-1]
     assert "assistant" in output[-1]
     assert "editor [show|set CMD|reset]" in output[-1]
     assert "edit file PATH" in output[-1]

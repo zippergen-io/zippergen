@@ -783,10 +783,27 @@ Workflow implementation
   Verification [success] passed -- 5 checks
   Verification note    Validation, projections, diff, and focused tests passed.
   Context    [success] assistant result is preserved for review
-  Next                  workflow list / workflow select /
-                        workflow show source / workflow show protocol /
-                        workflow validate / workflow accept
+  Next                  workflow review
 \end{lstlisting}
+
+The checks below that summary are records rather than unbounded table values:
+
+\begin{lstlisting}[style=shell]
+Assistant verification checks
+-----------------------------
+5 checks / 5 passed / 0 failed / 0 not run
+
+[success] 1. passed
+  Command  uv run --offline --project zippergen zippergen validate
+           workflows/reviewed_answer.py:reviewed_answer
+  Result   Validated the global workflow and every local projection.
+\end{lstlisting}
+
+Studio preserves the complete command and result but wraps them with hanging
+indentation. Verification records are capped at 108 columns and use a narrower
+interactive terminal width when necessary. A single long check therefore
+cannot create a screen-wide separator. When verification failed, failed and
+unexecuted records are shown before successful checks.
 
 The verification result is an explicit assistant report, not an independent
 proof and not permission to deploy. If it is \texttt{failed} or
@@ -797,10 +814,12 @@ failed or unexecuted checks; the complete reported check list remains
 available through \texttt{workflow status}. Human review of the visible code and semantic
 views remains mandatory.
 
-For this initial creation, use \texttt{workflow accept} after the generated
-workflow has passed the review below. The command accepts the implementation
-while retaining timestamped private history. Refinements use the same
-acceptance command; \texttt{workflow discard} records rejection of a pending
+For this initial creation, enter \texttt{workflow review}. Its ordered menu
+offers the requirements, authored source, semantic workflow views, validation,
+a development run, and final acceptance. Each operation remains explicit and
+returns to the menu. Leaving the menu preserves the open review; accepting
+closes it while retaining timestamped private history. Refinements use the
+same review command; \texttt{workflow discard} records rejection of a pending
 refinement.
 
 If Studio says that \texttt{codex} is missing, the prepared task remains safe.
@@ -1060,18 +1079,20 @@ No export must be repeated. The workflow, model routing, run record, and
 development secrets live below \path{$HOME/.zippergen/workspaces} by default.
 A shell export disappears with its shell; Studio's workspace record does not.
 
-The initial workflow has now been generated, inspected, validated, run,
-and recovery-tested. Accept that development result explicitly:
+The initial workflow has now been generated and is ready for guided human
+review. Enter:
 
 \begin{lstlisting}[style=shell]
-workflow status
-workflow accept
+workflow review
 \end{lstlisting}
 
 \texttt{workflow status} should say \texttt{awaiting human review} and show
-\texttt{workflow accept} in its \texttt{Next} row. Confirm when Studio
-asks. This does not remove the specification, workflow, tests, run, or private
-implementation history; it only records that this implementation is no longer open.
+\texttt{workflow review} in its \texttt{Next} section. Work through the ordered
+menu and choose \texttt{Accept reviewed implementation} only after inspection,
+validation, and the development run are satisfactory. Confirm when Studio
+asks. Acceptance does not remove the specification, workflow, tests, run, or
+private implementation history; it only records that this implementation is
+no longer open.
 \texttt{current} will then show no current workflow implementation. The optional
 model-routing step below and later deployment do not require an open assistant
 request.
@@ -1305,22 +1326,18 @@ workflow refine       # create or reopen the one pending change
 workflow show pending # optional: inspect it without editing
 workflow status       # optional: inspect the implementation lifecycle
 workflow implement codex # or: workflow implement claude
-current
-workflow validate
-workflow show communications
-workflow show agent Writer # choose every participant changed by the refinement
-run
-workflow show spec    # verify the assistant integrated the requirement
-workflow accept       # confirm, archive, and clear the pending change
+workflow review       # inspect, validate, run, and explicitly accept
 \end{lstlisting}
 
 The refinement must come before the assistant call. Before the first assistant
 launch, editing either input document refreshes the prepared task
 automatically. After the assistant returns, \texttt{workflow status} reports
 \texttt{awaiting human review}; it does not reinterpret the expected edits as
-a new task. Its \texttt{Next} row names the review commands above. Nothing is
-scheduled, and a second assistant launch requires an explicit
-\texttt{--rerun}.
+a new task. Its \texttt{Next} section names \texttt{workflow review}. That
+guided loop shows the pending change and integrated specification, source and
+semantic views, validation, run, and acceptance choices in order. Each direct
+command remains available for experienced users. Nothing is scheduled, and a
+second assistant launch requires an explicit \texttt{--rerun}.
 
 \texttt{workflow accept} is an acceptance and cleanup operation, not a merge
 engine. The coherent fusion happens either manually with \texttt{workflow edit
@@ -1521,6 +1538,7 @@ workflow show pending # inspect the pending refinement
 workflow show  # choose a semantic code view
 workflow status # prepared, running, review, failed/interrupted
 workflow implement codex # or: workflow implement claude
+workflow review # guided inspect, validate, run, and acceptance loop
 workflow validate # validate the workflow and projections
 workflow accept # accept a reviewed implementation
 workflow discard # reject and archive a pending refinement
@@ -1682,8 +1700,8 @@ request directly. After source creation, enter \texttt{workflow list} and
 \texttt{workflow select} to discover and select the new workflow. The request
 is not a queued job: Studio
 records the synchronous assistant return as \texttt{awaiting human review},
-and \texttt{workflow accept} closes the reviewed creation without deleting its
-history.
+then \texttt{workflow review} guides inspection, validation, running, and the
+explicit \texttt{workflow accept} step without deleting its history.
 \end{notebox}
 
 For an existing selected workflow, open or reopen the one pending change:
@@ -3434,8 +3452,11 @@ $\square$ & \texttt{workflow implement codex} launches Codex in the project root
 copied path or MCP setup; the assistant creates visible source plus a focused
 test at the requested paths. & \\
 $\square$ & After the assistant returns, \texttt{workflow status} reports
-\texttt{awaiting human review}, states that nothing is scheduled, and lists
-review commands instead of suggesting another assistant run. & \\
+\texttt{awaiting human review}, states that nothing is scheduled, and names
+\texttt{workflow review} instead of suggesting another assistant run. & \\
+$\square$ & \texttt{workflow review} keeps an ordered menu open for
+requirements, source, semantic views, validation, running, and explicit
+acceptance; leaving it preserves the open review. & \\
 $\square$ & \texttt{workflow refine} creates or reopens exactly one automatically
 named pending refinement; repeated edits do not
 create a pile of prompt files. & \\
@@ -3529,8 +3550,7 @@ runs
 workflow refine       # creates or reopens one pending change
 workflow show pending
 workflow implement codex # or: workflow implement claude
-workflow show spec    # verify the change was integrated
-workflow accept       # human-confirm and clear the pending change
+workflow review       # inspect, validate, run, and explicitly accept
 workflow history
 \end{lstlisting}
 

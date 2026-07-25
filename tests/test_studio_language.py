@@ -97,6 +97,26 @@ def test_natural_workflow_discovery_and_source_requests_are_deterministic(
     assert any("Source: workflow.py" in line for line in output)
 
 
+def test_natural_workflow_review_request_opens_the_guided_review(tmp_path):
+    studio, workspace, output = _studio(tmp_path, responses=["7"])
+    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    workspace.save_specification("Echo the request through Writer.")
+    studio.refine_request("Require human approval before returning.")
+    workspace.save_specification(
+        "Echo the request through Writer and require human approval "
+        "before returning."
+    )
+
+    studio.execute("Review the current workflow implementation")
+
+    assert any("workflow review" in line for line in output)
+    assert "Workflow review" in output
+    assert any("Review remains open" in line for line in output)
+    history = NaturalLanguageStore(workspace.natural_language_path).history()
+    assert history[-1]["source"] == "deterministic"
+    assert history[-1]["commands"] == ["workflow review"]
+
+
 def test_natural_prose_with_an_apostrophe_is_not_treated_as_broken_shell_syntax(
     tmp_path,
 ):

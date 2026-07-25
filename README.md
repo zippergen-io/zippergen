@@ -67,7 +67,7 @@ The public command surface follows three themes:
 
 This keeps related steps together. For example, the complete design loop is
 discoverable below `workflow`, from `workflow create` through `workflow
-implement`, `workflow validate`, and `workflow accept`.
+implement`, the guided `workflow review`, and `workflow accept`.
 
 For workflow development, the application project may be separate from the
 framework checkout. This is especially useful while developing ZipperGen from
@@ -446,6 +446,13 @@ blocks an accidental second execution while review is pending; use `workflow
 implement codex --rerun` or `workflow implement claude --rerun` only when
 another pass is intentional.
 
+`workflow status` renders assistant checks as bounded-width records rather
+than one enormous table row. It shows aggregate passed/failed/not-run counts,
+then a status line plus separately wrapped `Command` and `Result` fields for
+each check. The complete command is preserved. Failed and unexecuted checks
+come first when verification did not pass. Verification records are capped at
+108 columns while respecting narrower interactive terminals.
+
 After the assistant creates visible Python source, `workflow list` shows every
 discovered top-level `@workflow` entry point without claiming that it is valid;
 `workflow select NUMBER|NAME` identifies the entry point to inspect.
@@ -478,13 +485,15 @@ zippergen [reviewed_answer]> workflow refine
 zippergen [reviewed_answer]> workflow show pending
 zippergen [reviewed_answer]> workflow status       # optional summary
 zippergen [reviewed_answer]> workflow implement claude  # or: codex
-zippergen [reviewed_answer]> current
-zippergen [reviewed_answer]> workflow validate
-zippergen [reviewed_answer]> workflow show communications
-zippergen [reviewed_answer]> run
-zippergen [reviewed_answer]> workflow show spec
-zippergen [reviewed_answer]> workflow accept
+zippergen [reviewed_answer]> workflow review
 ```
+
+`workflow review` keeps an ordered menu open for reviewing the pending change
+and integrated specification, inspecting authored source and semantic views,
+validating, running, and finally accepting the implementation. Every action
+remains explicit, and leaving the menu preserves the open review. The
+individual `workflow show ...`, `workflow validate`, `run`, and `workflow
+accept` commands remain available directly.
 
 A model change has two forms. Use `models provider configure`, then
 `models config create/check` and `models assign Writer NAME` (or

@@ -12,6 +12,7 @@ import subprocess
 import sys
 import threading
 import time
+import textwrap
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -54,6 +55,9 @@ StatusKind = Literal["success", "warning", "error", "info"]
 CommandRisk = Literal["read-only", "configuration", "execution", "destructive"]
 AssistantVerification = Literal["passed", "failed", "incomplete"]
 _ASSISTANT_HEARTBEAT_SECONDS = 10.0
+_DEFAULT_OUTPUT_COLUMNS = 100
+_MAX_OUTPUT_COLUMNS = 108
+_MIN_OUTPUT_COLUMNS = 60
 
 
 @dataclass(frozen=True)
@@ -198,6 +202,7 @@ _SUBCOMMAND_COMPLETIONS = {
         ("files", "list files used by the selected workflow"),
         ("status", "show the current implementation lifecycle"),
         ("implement", "run Codex or Claude on the current implementation"),
+        ("review", "guide inspection, validation, running, and acceptance"),
         ("validate", "validate the selected workflow and projections"),
         ("accept", "accept the reviewed workflow implementation"),
         ("discard", "archive an unwanted pending refinement"),
@@ -293,6 +298,7 @@ def _is_explicit_studio_syntax(parts: list[str]) -> bool:
             "files",
             "status",
             "implement",
+            "review",
             "validate",
             "accept",
             "discard",
@@ -358,6 +364,7 @@ def _is_allowed_natural_plan_command(parts: list[str]) -> bool:
             "list",
             "files",
             "status",
+            "review",
             "validate",
             "history",
             "path",
@@ -604,6 +611,7 @@ _HELP = """Commands:
                                  deliberately rerun an implementation in review
   workflow implement codex --interactive
                                  open an interactive Codex implementation
+  workflow review                guide inspection, validation, run, acceptance
   workflow validate              validate the workflow and every projection
   workflow accept [--yes]        accept the reviewed workflow implementation
   workflow discard [--yes]       archive an unwanted pending refinement
@@ -702,6 +710,47 @@ class Studio:
     @staticmethod
     def _visible_width(value: str) -> int:
         return len(re.sub(r"\x1b\[[0-9;]*m", "", value))
+
+    def _output_columns(self) -> int:
+        if (
+            self.output is print
+            and bool(getattr(sys.stdout, "isatty", lambda: False)())
+        ):
+            columns = shutil.get_terminal_size(
+                fallback=(_DEFAULT_OUTPUT_COLUMNS, 24)
+            ).columns
+        else:
+            columns = _DEFAULT_OUTPUT_COLUMNS
+        return max(_MIN_OUTPUT_COLUMNS, min(_MAX_OUTPUT_COLUMNS, columns))
+
+    @staticmethod
+    def _wrapped_lines(value: object, width: int) -> list[str]:
+        lines: list[str] = []
+        for source_line in str(value).splitlines() or [""]:
+            lines.extend(
+                textwrap.wrap(
+                    source_line,
+                    width=max(1, width),
+                    break_long_words=True,
+                    break_on_hyphens=False,
+                    replace_whitespace=False,
+                    drop_whitespace=True,
+                )
+                or [""]
+            )
+        return lines
+
+    def _emit_wrapped_field(self, label: str, value: object) -> None:
+        label_width = 7
+        prefix = f"  {label:<{label_width}}  "
+        continuation = " " * self._visible_width(prefix)
+        lines = self._wrapped_lines(
+            value,
+            self._output_columns() - self._visible_width(prefix),
+        )
+        self._emit(prefix + lines[0])
+        for line in lines[1:]:
+            self._emit(continuation + line)
 
     def _pad_cell(self, value: object, width: int, *, right: bool = False) -> str:
         text = str(value)
@@ -807,6 +856,11 @@ class Studio:
                 default=0,
             ),
         )
+        available_value_width = max(
+            len("Value"),
+            self._output_columns() - width - 4,
+        )
+        value_width = min(value_width, available_value_width)
         self._emit(
             f"  {self._pad_cell('Field', width)}  "
             "Value"
@@ -1375,6 +1429,87 @@ class Studio:
             ],
         )
 
+    def review_workflow(self) -> None:
+        """Guide the complete human-review loop without hiding any step."""
+
+        record = self._ensure_current_task_fresh(announce=False)
+        if record is None:
+            raise SystemExit(
+                "No implementation is awaiting review. Use workflow create or "
+                "workflow refine, then workflow implement."
+            )
+        record = self._normalize_task_lifecycle(record)
+        status = str(record.get("status") or "prepared")
+        if status != "awaiting_review":
+            _state, _kind = self._task_state(record)
+            raise SystemExit(
+                f"The current implementation is {_state}, not awaiting human "
+                f"review. Next: {self._task_next(record)}"
+            )
+        verification, verification_kind = self._task_verification(record)
+        pending = self.workspace.pending_refinement() is not None
+        self._emit_table(
+            "Workflow review",
+            [
+                ("Status", "awaiting human review", "warning"),
+                ("Request", record["request_id"], None),
+                ("Kind", record["kind"], None),
+                (
+                    "Workflow",
+                    record.get("workflow_spec")
+                    or self.workspace.current_workflow
+                    or "select during inspection",
+                    None,
+                ),
+                ("Verification", verification, verification_kind),
+                (
+                    "Requirements",
+                    (
+                        "pending refinement plus integrated specification"
+                        if pending
+                        else "integrated specification"
+                    ),
+                    None,
+                ),
+            ],
+        )
+
+        while True:
+            actions = [
+                "Review requirements",
+                "Inspect authored source",
+                "Inspect a semantic workflow view",
+                "Validate workflow",
+                "Run workflow",
+                "Accept reviewed implementation",
+                "Finish review for now",
+            ]
+            selected = self._select("Review actions", actions)
+            assert isinstance(selected, str)
+            if selected == "Review requirements":
+                if self.workspace.pending_refinement() is not None:
+                    self.manage_spec(["pending"])
+                self.manage_spec(["show"])
+            elif selected == "Inspect authored source":
+                self.show_workflow_source([])
+            elif selected == "Inspect a semantic workflow view":
+                self.show_workflow([])
+            elif selected == "Validate workflow":
+                self.validate()
+            elif selected == "Run workflow":
+                self.execute("run", _allow_natural=False)
+            elif selected == "Accept reviewed implementation":
+                before = self.workspace.current_request()
+                self.manage_workflow(["accept"])
+                after = self.workspace.current_request()
+                if before is not None and after is None:
+                    return
+            else:
+                self._info(
+                    "Review remains open; use 'workflow review' to continue."
+                )
+                return
+
     def manage_workflow(self, args: list[str]) -> None:
         """Present specification, implementation, and inspection as one lifecycle."""
 
@@ -1433,6 +1568,11 @@ class Studio:
         if action == "implement":
             self.run_assistant(rest)
             return
+        if action == "review":
+            if rest:
+                raise SystemExit("Use workflow review.")
+            self.review_workflow()
+            return
         if action == "validate":
             if rest:
                 raise SystemExit("Use workflow validate.")
@@ -1466,7 +1606,8 @@ class Studio:
             return
         raise SystemExit(
             "Use workflow create, refine, edit, list, select, files, show, "
-            "status, implement, validate, accept, discard, history, or path."
+            "status, implement, review, validate, accept, discard, history, "
+            "or path."
         )
 
     def execute(
@@ -2010,6 +2151,7 @@ class Studio:
                 "list",
                 "files",
                 "status",
+                "review",
                 "validate",
                 "history",
                 "path",
@@ -3800,35 +3942,57 @@ class Studio:
         checks = record.get("assistant_verification_checks")
         if not isinstance(checks, list) or not checks:
             return
-        rows: list[tuple[str, object, StatusKind | None]] = []
         kinds: dict[str, StatusKind] = {
             "passed": "success",
             "failed": "error",
             "not_run": "warning",
         }
+        items: list[tuple[int, str, str, str]] = []
         for index, value in enumerate(checks, start=1):
             if not isinstance(value, dict):
                 continue
             status = str(value.get("status") or "not_run")
-            if problems_only and status == "passed":
-                continue
             command = str(value.get("command") or "unspecified command")
-            detail = str(value.get("detail") or "")
-            outcome = command if not detail else f"{command} — {detail}"
-            rows.append(
-                (
-                    f"{index}. {status}",
-                    outcome,
-                    kinds.get(status, "warning"),
-                )
+            detail = str(value.get("detail") or "No result detail reported.")
+            items.append((index, status, command, detail))
+        selected = [
+            item
+            for item in items
+            if not problems_only or item[1] != "passed"
+        ]
+        if not selected:
+            return
+        if str(record.get("assistant_verification") or "") != "passed":
+            priority = {"failed": 0, "not_run": 1, "passed": 2}
+            selected.sort(
+                key=lambda item: (priority.get(item[1], 1), item[0])
             )
-        if rows:
-            title = (
-                "Failed or incomplete assistant checks"
-                if problems_only
-                else "Assistant verification checks"
+
+        counts = {"passed": 0, "failed": 0, "not_run": 0}
+        for _index, status, _command, _detail in items:
+            if status in counts:
+                counts[status] += 1
+        total = len(items)
+        title = (
+            "Failed or incomplete assistant checks"
+            if problems_only
+            else "Assistant verification checks"
+        )
+        self._emit_section_title(title)
+        self._emit(
+            f"{total} check{'s' if total != 1 else ''} · "
+            f"{counts['passed']} passed · {counts['failed']} failed · "
+            f"{counts['not_run']} not run"
+        )
+        self._emit()
+        for index, status, command, detail in selected:
+            self._status(
+                kinds.get(status, "warning"),
+                f"{index}. {status.replace('_', ' ')}",
             )
-            self._emit_table(title, rows)
+            self._emit_wrapped_field("Command", command)
+            self._emit_wrapped_field("Result", detail)
+            self._emit()
 
     def _task_next(self, record: dict[str, object]) -> str:
         status = str(record.get("status") or "prepared")
@@ -3841,14 +4005,8 @@ class Studio:
                     if str(record.get("assistant")).lower().startswith("claude")
                     else "codex"
                 )
-                review = (
-                    "workflow list · workflow select · workflow show source · "
-                    "workflow show protocol · workflow validate"
-                    if kind == "create"
-                    else "current · workflow validate · workflow show"
-                )
                 return (
-                    f"{review} · workflow implement {backend} --rerun"
+                    f"workflow review · workflow implement {backend} --rerun"
                 )
             if kind == "refine":
                 if record.get("specification_context_changed") is False:
@@ -3856,14 +4014,8 @@ class Studio:
                         "workflow edit spec · workflow implement codex --rerun · "
                         "workflow implement claude --rerun"
                     )
-                return (
-                    "current · workflow validate · workflow show · run · "
-                    "workflow accept"
-                )
-            return (
-                "workflow list · workflow select · workflow show source · "
-                "workflow show protocol · workflow validate · workflow accept"
-            )
+                return "workflow review"
+            return "workflow review"
         if status == "assistant_running":
             return "wait for the assistant session to return"
         if status in {"assistant_failed", "assistant_interrupted"}:
@@ -4342,8 +4494,8 @@ class Studio:
             if not rerun and not manual_first_pass:
                 raise SystemExit(
                     "The assistant has already returned and this implementation is awaiting "
-                    "human review. Use current, workflow validate, workflow show, "
-                    "and then workflow accept; use 'workflow implement "
+                    "human review. Use 'workflow review' for the guided review "
+                    "and acceptance loop; use 'workflow implement "
                     f"{assistant} --rerun' only to run it deliberately again."
                 )
             record = self._ensure_current_task_fresh(
