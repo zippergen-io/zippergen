@@ -151,6 +151,7 @@ _STUDIO_COMMANDS = {
     "start",
     "status",
     "stop",
+    "studio",
     "workflow",
 }
 
@@ -169,6 +170,7 @@ _COMMAND_COMPLETIONS = (
     ("restart", "restart a deployment"),
     ("stop", "stop a deployment"),
     ("current", "show workflow, model, run, and deployment context"),
+    ("studio", "operate the Studio process itself"),
     ("settings", "inspect or configure global Studio preferences"),
     ("language", "inspect or configure natural-language commands"),
     ("ask", "interpret and execute an explicit natural-language request"),
@@ -181,6 +183,9 @@ _COMMAND_COMPLETIONS = (
 )
 
 _SUBCOMMAND_COMPLETIONS = {
+    "studio": (
+        ("restart", "replace this process and reload installed source"),
+    ),
     "project": (
         ("init", "create the visible project manifest"),
         ("rename", "change the logical project name"),
@@ -287,6 +292,7 @@ def _is_explicit_studio_syntax(parts: list[str]) -> bool:
         return len(args) <= 2
     allowed: dict[str, set[str]] = {
         "project": {"init", "rename", "show", "reset"},
+        "studio": {"restart"},
         "settings": {"show", "set", "reset"},
         "workflow": {
             "create",
@@ -401,6 +407,8 @@ def _is_allowed_natural_plan_command(parts: list[str]) -> bool:
                 return True
             return len(args) >= 3 and lowered[1] == "agents"
         return False
+    if command == "studio":
+        return len(args) == 1 and lowered[0] == "restart"
     if command == "models":
         if not args:
             return True
@@ -621,6 +629,7 @@ _HELP = """Commands:
   edit file PATH                  edit another project file
   edit ... --editor CMD           choose an editor for this invocation only
   current                        show the complete project/workflow dashboard
+  studio restart                 restart this process and reload installed code
   models                         show providers, configurations, assignments
   models setup                   guide all three setup stages
   models provider list           list provider connections
@@ -913,6 +922,7 @@ class Studio:
             "language",
             "editor",
             "edit",
+            "studio",
         }:
             return f"{command} {parts[1].casefold()}"
         return command
@@ -1610,6 +1620,56 @@ class Studio:
             "or path."
         )
 
+    def _studio_restart_command(self) -> tuple[str, list[str]]:
+        argv = list(sys.argv)
+        if not argv or not argv[0].strip():
+            raise SystemExit(
+                "Studio cannot determine its original launcher. Exit and run "
+                "'zippergen' again from the project root."
+            )
+        launcher = argv[0]
+        resolved: str | None = None
+        if "/" not in launcher and os.sep not in launcher:
+            resolved = shutil.which(launcher)
+        if resolved is not None:
+            return resolved, [resolved, *argv[1:]]
+
+        candidate = Path(launcher).expanduser()
+        if not candidate.is_absolute():
+            candidate = (Path.cwd() / candidate).resolve()
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            executable = str(candidate)
+            return executable, [executable, *argv[1:]]
+        if candidate.is_file() and candidate.suffix == ".py":
+            return sys.executable, [sys.executable, str(candidate), *argv[1:]]
+        raise SystemExit(
+            f"Studio cannot restart because its launcher is unavailable: "
+            f"{launcher!r}. Exit and run 'zippergen' again."
+        )
+
+    def restart_studio(self) -> None:
+        """Replace this process so updated installed source is imported cleanly."""
+
+        executable, arguments = self._studio_restart_command()
+        self._emit_table(
+            "Studio restart",
+            [
+                ("Project", self.workspace.root, None),
+                ("Launcher", executable, None),
+                ("State", "saved project context will be reloaded", "success"),
+            ],
+        )
+        self._success("Restarting ZipperGen Studio.")
+        try:
+            sys.stdout.flush()
+            sys.stderr.flush()
+            os.execv(executable, arguments)
+        except OSError as exc:
+            raise SystemExit(
+                f"Studio restart failed: {exc}. The current Studio process "
+                "is still running."
+            ) from exc
+
     def execute(
         self,
         line: str,
@@ -1681,6 +1741,10 @@ class Studio:
             self.edit_file(args)
         elif command == "current":
             self.show_current()
+        elif command == "studio":
+            if args != ["restart"]:
+                raise SystemExit("Use studio restart.")
+            self.restart_studio()
         elif command == "models":
             self.configure_models(args)
         elif command == "run":
@@ -2085,6 +2149,7 @@ class Studio:
             "start",
             "status",
             "stop",
+            "studio",
             "workflow",
         }
         if top not in allowed:
@@ -2174,6 +2239,8 @@ class Studio:
             return "read-only"
         if command == "project" and args[:1] == ["reset"]:
             return "destructive"
+        if command == "studio":
+            return "execution"
         if command == "models" and len(args) >= 2:
             if args[0] in {"provider", "config"} and args[1] == "remove":
                 return "destructive"

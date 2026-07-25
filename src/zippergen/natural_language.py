@@ -426,6 +426,16 @@ def deterministic_plan(
             ("runs",),
             "deterministic",
         )
+
+    if re.search(
+        r"\b(?:restart|reload)\b.*\b(?:zippergen\s+)?studio\b",
+        text,
+    ):
+        return NaturalCommandPlan(
+            "Restart the current ZipperGen Studio process.",
+            ("studio restart",),
+            "deterministic",
+        )
     return None
 
 
@@ -501,6 +511,7 @@ Read-only:
 Local configuration and development:
 - project init [NAME]
 - project rename NAME
+- studio restart
 - settings set learning on|off
 - settings set interpreter auto|codex|claude|off
 - settings set assistant codex|claude

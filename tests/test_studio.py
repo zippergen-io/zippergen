@@ -136,6 +136,8 @@ def test_studio_completion_is_context_and_project_aware(tmp_path):
     assert _completions(studio, "settings set learning ") == ["on", "off"]
     assert "assistant" in _completions(studio, "settings reset ")
     assert _completions(studio, "project ren") == ["rename"]
+    assert _completions(studio, "stu") == ["studio"]
+    assert _completions(studio, "studio res") == ["restart"]
     assert _completions(studio, "workflow create --file req") == [
         "requirements.md"
     ]
@@ -158,7 +160,87 @@ def test_studio_explains_a_single_completion_match(tmp_path):
     assert studio.completion_explanation("workflow ref") == (
         " Tab: refine — create or reopen the pending refinement "
     )
+    assert studio.completion_explanation("studio res") == (
+        " Tab: restart — replace this process and reload installed source "
+    )
     assert studio.completion_explanation("") == ""
+
+
+def test_studio_restart_replaces_the_original_process(tmp_path, monkeypatch):
+    studio, workspace, output = _studio(tmp_path)
+    launcher = tmp_path / "bin" / "zippergen"
+    launcher.parent.mkdir()
+    launcher.write_text("#!/bin/sh\n")
+    launcher.chmod(0o755)
+    calls: list[tuple[str, list[str]]] = []
+
+    monkeypatch.setattr(
+        "zippergen.studio.sys.argv",
+        [str(launcher), "studio", "--project", str(workspace.root)],
+    )
+    monkeypatch.setattr(
+        "zippergen.studio.os.execv",
+        lambda executable, arguments: calls.append(
+            (executable, list(arguments))
+        ),
+    )
+
+    studio.execute("studio restart")
+
+    assert calls == [
+        (
+            str(launcher),
+            [str(launcher), "studio", "--project", str(workspace.root)],
+        )
+    ]
+    assert "Studio restart" in output
+    assert any(
+        "saved project context will be reloaded" in line for line in output
+    )
+    assert any("Restarting ZipperGen Studio" in line for line in output)
+
+
+def test_studio_restart_resolves_a_path_launcher(tmp_path, monkeypatch):
+    studio, _workspace, _output = _studio(tmp_path)
+    calls: list[tuple[str, list[str]]] = []
+
+    monkeypatch.setattr("zippergen.studio.sys.argv", ["zippergen"])
+    monkeypatch.setattr(
+        "zippergen.studio.shutil.which",
+        lambda command: "/tools/zippergen" if command == "zippergen" else None,
+    )
+    monkeypatch.setattr(
+        "zippergen.studio.os.execv",
+        lambda executable, arguments: calls.append(
+            (executable, list(arguments))
+        ),
+    )
+
+    studio.execute("studio restart")
+
+    assert calls == [
+        ("/tools/zippergen", ["/tools/zippergen"]),
+    ]
+
+
+def test_studio_restart_failure_keeps_the_current_session(
+    tmp_path,
+    monkeypatch,
+):
+    studio, _workspace, _output = _studio(tmp_path)
+    launcher = tmp_path / "zippergen"
+    launcher.write_text("#!/bin/sh\n")
+    launcher.chmod(0o755)
+
+    monkeypatch.setattr("zippergen.studio.sys.argv", [str(launcher)])
+
+    def fail_exec(_executable, _arguments):
+        raise OSError("permission denied")
+
+    monkeypatch.setattr("zippergen.studio.os.execv", fail_exec)
+
+    with pytest.raises(SystemExit, match="current Studio process is still running"):
+        studio.execute("studio restart")
 
 
 def test_studio_run_uses_prompt_toolkit_session_when_interactive(tmp_path):

@@ -369,6 +369,17 @@ recover the next step instead of remembering several unrelated nouns.
 The small cross-cutting \texttt{settings} command covers global Studio
 preferences rather than application behavior.
 
+There is one deliberately explicit process command:
+\texttt{studio restart}. After pulling changes to the editable ZipperGen
+checkout in another terminal, enter it to replace the running Studio process
+and import the updated source. The replacement keeps the current directory and
+reloads the project context saved on disk; it does not open a nested Studio.
+It does not run \texttt{git pull}, install packages, or synchronize the Python
+environment. If dependency metadata changed, leave Studio, run
+\texttt{uv sync} or reinstall the editable tool, and then start
+\texttt{zippergen} again. Do not confuse this with plain
+\texttt{restart [NAME]}, which restarts a deployment.
+
 Press Tab at any point while entering a command. Studio completes commands and
 subcommands and, where relevant, offers the workflows, participants,
 LLM-active participants, providers, remembered deployment, and project files
@@ -472,6 +483,7 @@ not have to be memorized. At the Studio prompt, try:
 What is the current state?
 Show me the whole protocol.
 Assign the mock model to Writer.
+Please restart ZipperGen Studio.
 \end{lstlisting}
 
 The first request becomes \texttt{current}; after a workflow is selected, the
@@ -481,6 +493,10 @@ second becomes \texttt{workflow show protocol}, and the third becomes
 result, so natural language never hides which operation was chosen. Common
 requests use a deterministic interpreter and therefore need no model, network,
 or API key.
+
+The last example becomes \texttt{studio restart}. Because it replaces a
+running process, Studio displays the plan and asks for confirmation. Exact
+\texttt{studio restart} is the shorter direct form.
 
 When a request depends on repository details and no built-in interpretation
 matches, Studio may run the already authenticated Codex or Claude Code CLI

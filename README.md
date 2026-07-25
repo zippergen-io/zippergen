@@ -69,6 +69,15 @@ This keeps related steps together. For example, the complete design loop is
 discoverable below `workflow`, from `workflow create` through `workflow
 implement`, the guided `workflow review`, and `workflow accept`.
 
+After updating an editable ZipperGen checkout in another terminal, enter
+`studio restart` to replace the current Studio process and import the updated
+source. It preserves the working directory and reloads the project context
+saved on disk; it does not start a nested Studio. This command does not run
+`git pull`, install dependencies, or synchronize the environment. If the
+update changes dependencies, leave Studio, run `uv sync` (or reinstall the
+tool), and start `zippergen` again. Plain `restart [NAME]` remains the command
+for restarting a deployment.
+
 For workflow development, the application project may be separate from the
 framework checkout. This is especially useful while developing ZipperGen from
 source:

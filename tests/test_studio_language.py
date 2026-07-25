@@ -186,6 +186,34 @@ def test_natural_project_rename_and_global_learning_are_deterministic(tmp_path):
     ]
 
 
+def test_natural_studio_restart_is_deterministic_and_confirmed(
+    tmp_path,
+    monkeypatch,
+):
+    studio, workspace, output = _studio(tmp_path, responses=["y"])
+    launcher = tmp_path / "zippergen"
+    launcher.write_text("#!/bin/sh\n")
+    launcher.chmod(0o755)
+    calls: list[tuple[str, list[str]]] = []
+
+    monkeypatch.setattr("zippergen.studio.sys.argv", [str(launcher)])
+    monkeypatch.setattr(
+        "zippergen.studio.os.execv",
+        lambda executable, arguments: calls.append(
+            (executable, list(arguments))
+        ),
+    )
+
+    studio.execute("Please restart ZipperGen Studio")
+
+    assert calls == [(str(launcher), [str(launcher)])]
+    assert any("studio restart" in line for line in output)
+    history = NaturalLanguageStore(workspace.natural_language_path).history()
+    assert history[-1]["source"] == "deterministic"
+    assert history[-1]["commands"] == ["studio restart"]
+    assert history[-1]["status"] == "executed"
+
+
 def test_natural_provider_configuration_uses_the_models_surface(
     tmp_path,
     monkeypatch,
