@@ -12,7 +12,6 @@ import subprocess
 import sys
 import threading
 import time
-import textwrap
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -37,8 +36,18 @@ from zippergen.natural_language import (
     interpreter_prompt,
     looks_sensitive,
     parse_cli_plan,
+    requirement_proposal,
 )
+from zippergen.rendering import StatusKind, TerminalRenderer
 from zippergen.semantic import semantic_snapshot, workflow_semantics
+from zippergen.studio_commands import (
+    CommandRisk,
+    command_spec,
+    concise_help,
+    full_help,
+    subcommand_completions,
+    top_level_completions,
+)
 from zippergen.view import ViewOptions, workflow_view_data
 from zippergen.workspace import (
     ASSISTANT_TASK_CONTRACT_VERSION,
@@ -51,13 +60,8 @@ from zippergen.workspace import (
 InputFunc = Callable[[str], str]
 OutputFunc = Callable[[str], object]
 SecretInputFunc = Callable[[str], str]
-StatusKind = Literal["success", "warning", "error", "info"]
-CommandRisk = Literal["read-only", "configuration", "execution", "destructive"]
 AssistantVerification = Literal["passed", "failed", "incomplete"]
 _ASSISTANT_HEARTBEAT_SECONDS = 10.0
-_DEFAULT_OUTPUT_COLUMNS = 100
-_MAX_OUTPUT_COLUMNS = 108
-_MIN_OUTPUT_COLUMNS = 60
 
 
 @dataclass(frozen=True)
@@ -115,122 +119,22 @@ _PROVIDER_DEFAULT_MODELS = {
     "mistral": ("MISTRAL_MODEL", "mistral-small-latest"),
 }
 _SUPPORTED_PROVIDERS = ("mock", "local", "openai", "anthropic", "mistral")
-_STATUS_MARKS = {
-    "success": "✓",
-    "warning": "⚠",
-    "error": "✗",
-    "info": "•",
-}
-_STATUS_COLORS = {
-    "success": "32",
-    "warning": "33",
-    "error": "31",
-    "info": "36",
-}
-_STUDIO_COMMANDS = {
-    "?",
-    "ask",
-    "current",
-    "deploy",
-    "doctor",
-    "edit",
-    "editor",
-    "exit",
-    "help",
-    "logs",
-    "models",
-    "language",
-    "plan",
-    "project",
-    "quit",
-    "restart",
-    "resume",
-    "run",
-    "runs",
-    "settings",
-    "start",
-    "status",
-    "stop",
-    "studio",
-    "workflow",
-}
-
-_COMMAND_COMPLETIONS = (
-    ("project", "initialize, inspect, or reset the project"),
-    ("workflow", "design, implement, inspect, and validate the workflow"),
-    ("models", "configure, check, and assign reusable models"),
-    ("run", "start a managed development run"),
-    ("resume", "resume the current incomplete run"),
-    ("runs", "list managed development runs"),
-    ("deploy", "prepare or start a named deployment"),
-    ("status", "show deployment status"),
-    ("doctor", "check deployment readiness"),
-    ("logs", "show deployment logs"),
-    ("start", "start a deployment"),
-    ("restart", "restart a deployment"),
-    ("stop", "stop a deployment"),
-    ("current", "show workflow, model, run, and deployment context"),
-    ("studio", "operate the Studio process itself"),
-    ("settings", "inspect or configure global Studio preferences"),
-    ("language", "inspect or configure natural-language commands"),
-    ("ask", "interpret and execute an explicit natural-language request"),
-    ("plan", "interpret natural language without executing it"),
-    ("editor", "inspect or configure the terminal editor"),
-    ("edit", "edit another project file"),
-    ("help", "show all Studio commands"),
-    ("exit", "leave Studio"),
-    ("quit", "alias for exit"),
-)
+_COMMAND_COMPLETIONS = top_level_completions()
 
 _SUBCOMMAND_COMPLETIONS = {
-    "studio": (
-        ("restart", "replace this process and reload installed source"),
-    ),
-    "project": (
-        ("init", "create the visible project manifest"),
-        ("rename", "change the logical project name"),
-        ("show", "show visible project configuration"),
-        ("reset", "back up and reset private project state"),
-    ),
-    "settings": (
-        ("show", "show global Studio preferences"),
-        ("set", "set a global Studio preference"),
-        ("reset", "reset one preference or all preferences"),
-    ),
-    "workflow": (
-        ("create", "write the initial accepted specification"),
-        ("refine", "create or reopen the pending refinement"),
-        ("edit", "edit the specification or selected Python source"),
-        ("show", "inspect specifications or code-first semantic views"),
-        ("list", "list discovered workflow entry points"),
-        ("select", "select a workflow entry point for inspection"),
-        ("files", "list files used by the selected workflow"),
-        ("status", "show the current implementation lifecycle"),
-        ("implement", "run Codex or Claude on the current implementation"),
-        ("review", "guide inspection, validation, running, and acceptance"),
-        ("validate", "validate the selected workflow and projections"),
-        ("accept", "accept the reviewed workflow implementation"),
-        ("discard", "archive an unwanted pending refinement"),
-        ("history", "show specification and implementation history"),
-        ("path", "print the automatic specification path"),
-    ),
-    "language": (
-        ("show", "show interpreter, learning, and history status"),
-        ("set", "choose auto, Codex, Claude, or no CLI fallback"),
-        ("learning", "turn private project learning on or off"),
-        ("history", "show interpreted requests and outcomes"),
-        ("learned", "show reusable private interpretations"),
-        ("forget", "forget one learned interpretation or all"),
-    ),
-    "editor": (
-        ("show", "show the effective editor"),
-        ("set", "remember a project editor"),
-        ("reset", "restore automatic editor discovery"),
-    ),
-    "edit": (
-        ("workflow", "edit the selected workflow source"),
-        ("file", "edit a project file"),
-    ),
+    parent: subcommand_completions(parent)
+    for parent in (
+        "studio",
+        "project",
+        "settings",
+        "workflow",
+        "language",
+        "editor",
+        "edit",
+        "models",
+    )
+}
+_SUBCOMMAND_COMPLETIONS.update({
     "show": (
         ("overview", "compact workflow summary"),
         ("protocol", "global protocol code"),
@@ -240,16 +144,7 @@ _SUBCOMMAND_COMPLETIONS = {
         ("agent", "one exact local projection"),
         ("agents", "selected-participant focus view"),
     ),
-    "models": (
-        ("provider", "configure and check provider connections"),
-        ("config", "create and check reusable model configurations"),
-        ("assignments", "show participant-to-configuration assignments"),
-        ("setup", "guided provider, configuration, and assignment setup"),
-        ("default", "set the inherited default configuration"),
-        ("assign", "assign a configuration to one LLM-active participant"),
-        ("inherit", "restore the default for one participant"),
-    ),
-}
+})
 
 _MODEL_COMPLETIONS = (
     ("mock", "deterministic built-in model"),
@@ -267,10 +162,12 @@ def _is_explicit_studio_syntax(parts: list[str]) -> bool:
         return False
     command = parts[0].casefold()
     args = parts[1:]
-    if command not in _STUDIO_COMMANDS:
+    if command_spec([command]) is None:
         return False
-    if command in {"exit", "quit", "help", "?", "current"}:
+    if command in {"exit", "quit", "?", "current"}:
         return not args
+    if command == "help":
+        return not args or args == ["all"]
     if command in {
         "ask",
         "plan",
@@ -290,50 +187,12 @@ def _is_explicit_studio_syntax(parts: list[str]) -> bool:
         if args and args[0].casefold() in {"of", "please", "the"}:
             return False
         return len(args) <= 2
-    allowed: dict[str, set[str]] = {
-        "project": {"init", "rename", "show", "reset"},
-        "studio": {"restart"},
-        "settings": {"show", "set", "reset"},
-        "workflow": {
-            "create",
-            "refine",
-            "edit",
-            "show",
-            "list",
-            "select",
-            "files",
-            "status",
-            "implement",
-            "review",
-            "validate",
-            "accept",
-            "discard",
-            "history",
-            "path",
-            "prompts",
-        },
-        "editor": {"show", "set", "reset"},
-        "edit": {"file"},
-        "models": {
-            "provider",
-            "config",
-            "assignments",
-            "setup",
-            "default",
-            "assign",
-            "inherit",
-        },
-        "language": {
-            "show",
-            "set",
-            "learning",
-            "history",
-            "learned",
-            "forget",
-        },
-    }
-    if command in allowed:
-        return not args or args[0].casefold() in allowed[command]
+    if command in _SUBCOMMAND_COMPLETIONS:
+        allowed = {
+            name.casefold()
+            for name, _description in _SUBCOMMAND_COMPLETIONS[command]
+        }
+        return not args or args[0].casefold() in allowed
     return True
 
 
@@ -345,14 +204,21 @@ def _is_allowed_natural_plan_command(parts: list[str]) -> bool:
     command = parts[0].casefold()
     args = parts[1:]
     lowered = [value.casefold() for value in args]
+    declared = command_spec(parts)
+    if declared is None or not declared.natural:
+        return False
+    if command == "help":
+        return not args
     if command in {"current", "resume", "runs"}:
         return not args
     if command == "project":
         return (
             len(args) == 1
-            and lowered[0] == "show"
+            and lowered[0] in {"show", "reset"}
             or 1 <= len(args) <= 2
             and lowered[0] in {"init", "rename"}
+            or len(args) == 2
+            and lowered == ["reset", "fresh"]
         )
     if command == "settings":
         if not args:
@@ -408,7 +274,7 @@ def _is_allowed_natural_plan_command(parts: list[str]) -> bool:
             return len(args) >= 3 and lowered[1] == "agents"
         return False
     if command == "studio":
-        return len(args) == 1 and lowered[0] == "restart"
+        return len(args) == 1 and lowered[0] in {"doctor", "restart"}
     if command == "models":
         if not args:
             return True
@@ -573,92 +439,6 @@ def _validate_model_spec(value: str) -> str:
     return f"{canonical}:{model.strip()}" if separator else canonical
 
 
-_HELP = """Commands:
-  NATURAL LANGUAGE                describe a Studio operation in ordinary text
-  ask TEXT                        explicitly interpret and execute ordinary text
-  plan TEXT                       interpret ordinary text without executing it
-  settings                        show global Studio preferences
-  settings set learning on|off    control learning for every local project
-  settings set interpreter MODE   choose auto, codex, claude, or off
-  settings set assistant TOOL     choose codex or claude
-  settings set editor COMMAND     choose the terminal editor
-  settings set output STYLE       choose banner or compact output framing
-  settings reset [NAME|all]       restore one or every global default
-  language                        show interpreter and project-local history
-  language set auto|codex|claude|off
-                                  alias for global interpreter setting
-  language learning on|off        alias for global learning setting
-  language history|learned        inspect interpretations and reusable examples
-  language forget ID|all          remove learned private interpretations
-  project init [NAME]            create the project manifest
-  project rename NAME            change its logical name, not its directory
-  project show                   show visible project configuration
-  project reset                  choose fresh design or state-only reset
-  project reset fresh [--yes]    archive manifest, spec, legacy prompts, state
-  project reset state [--yes]    reset private state; keep all project files
-  workflow                       show the design and implementation dashboard
-  workflow create [DESCRIPTION]  write the initial accepted specification
-  workflow create --file PATH    import the initial specification
-  workflow refine [CHANGE]       create/reopen the one pending refinement
-  workflow refine --file PATH    append a refinement from a file
-  workflow edit [spec|code]      edit the specification or selected Python file
-  workflow list                  list discovered workflow entry points
-  workflow select [NUMBER|NAME|PATH.py:NAME]
-                                 select an entry point for inspection
-  workflow files                 list the selected workflow's known files
-  workflow show                  choose a code-first semantic view
-  workflow show spec|pending|source
-                                 inspect requirements or authored Python source
-  workflow show overview|protocol|communications|actions|full
-  workflow show agent [NAME]     exact local projection
-  workflow show agents [NAME...] selected-participant focus view
-  workflow status                show the current implementation lifecycle
-  workflow implement [codex|claude]
-                                 run an assistant and return to Studio
-  workflow implement TOOL --rerun
-                                 deliberately rerun an implementation in review
-  workflow implement codex --interactive
-                                 open an interactive Codex implementation
-  workflow review                guide inspection, validation, run, acceptance
-  workflow validate              validate the workflow and every projection
-  workflow accept [--yes]        accept the reviewed workflow implementation
-  workflow discard [--yes]       archive an unwanted pending refinement
-  workflow history               show design and implementation history
-  workflow path                  print the automatic specification path
-  editor [show|set CMD|reset]     inspect or remember the terminal editor
-  edit file PATH                  edit another project file
-  edit ... --editor CMD           choose an editor for this invocation only
-  current                        show the complete project/workflow dashboard
-  studio restart                 restart this process and reload installed code
-  models                         show providers, configurations, assignments
-  models setup                   guide all three setup stages
-  models provider list           list provider connections
-  models provider configure NAME [URL]
-                                 configure key or local endpoint
-  models provider check [NAME]   test one provider, or all providers
-  models provider remove NAME    remove a provider connection
-  models config list             list reusable model configurations
-  models config create [NAME]    create a named provider/model configuration
-  models config show [NAME]      inspect one configuration, or list all
-  models config check [NAME]     verify one configuration, or all
-  models config edit NAME        edit provider or model
-  models config rename OLD NEW   rename it and update every assignment
-  models config remove NAME      remove an unused configuration
-  models assignments             show participant configuration references
-  models assign LIFELINE NAME    assign a checked or saved configuration
-  models default NAME            set the inherited default configuration
-  models inherit LIFELINE        restore inheritance from the default
-  run [LLM] [--assistant TOOL]   start a run with optional one-run backends
-  resume                         resume the current incomplete run
-  runs                           list managed development runs
-  deploy [NAME] [--no-start]     configure deployment; optionally defer startup
-  status|doctor|logs [NAME]      inspect the remembered named deployment
-  start|restart|stop [NAME]      operate the remembered named deployment
-  help | ?                       show this help
-  exit | quit                    leave Studio
-"""
-
-
 class Studio:
     def __init__(
         self,
@@ -679,14 +459,12 @@ class Studio:
             and bool(getattr(sys.stdout, "isatty", lambda: False)())
         )
         self._prompt_session: PromptSession[str] | None = None
-        self.color = (
-            output_func is print
-            and bool(getattr(sys.stdout, "isatty", lambda: False)())
-            and "NO_COLOR" not in os.environ
-            and os.environ.get("TERM") != "dumb"
-            if color is None
-            else color
+        self._renderer = TerminalRenderer(
+            output_func,
+            color=color,
+            columns=lambda: self._output_columns(),
         )
+        self.color = self._renderer.color
         if secret_input_func is None:
             import getpass
 
@@ -694,77 +472,37 @@ class Studio:
         self.secret_input = secret_input_func
 
     def _emit(self, value: object = "") -> None:
-        self.output(str(value))
+        self._renderer.emit(value)
 
     def _status(self, kind: StatusKind, message: str, *, indent: int = 0) -> None:
         """Emit one consistent, terminal-safe human status line."""
 
-        mark = _STATUS_MARKS[kind]
-        if self.color:
-            mark = f"\033[{_STATUS_COLORS[kind]}m{mark}\033[0m"
-        self._emit(f"{' ' * indent}{mark} {message}")
+        self._renderer.status(kind, message, indent=indent)
 
     def _status_mark(self, kind: StatusKind) -> str:
-        mark = _STATUS_MARKS[kind]
-        if self.color:
-            return f"\033[{_STATUS_COLORS[kind]}m{mark}\033[0m"
-        return mark
+        return self._renderer.status_mark(kind)
 
     def _emit_section_title(self, title: str, *, major: bool = False) -> None:
         """Render the shared boundary between a section heading and its data."""
 
-        self._emit(title)
-        self._emit(("═" if major else "─") * len(title))
+        self._renderer.section(title, major=major)
 
     @staticmethod
     def _visible_width(value: str) -> int:
-        return len(re.sub(r"\x1b\[[0-9;]*m", "", value))
+        return TerminalRenderer.visible_width(value)
 
     def _output_columns(self) -> int:
-        if (
-            self.output is print
-            and bool(getattr(sys.stdout, "isatty", lambda: False)())
-        ):
-            columns = shutil.get_terminal_size(
-                fallback=(_DEFAULT_OUTPUT_COLUMNS, 24)
-            ).columns
-        else:
-            columns = _DEFAULT_OUTPUT_COLUMNS
-        return max(_MIN_OUTPUT_COLUMNS, min(_MAX_OUTPUT_COLUMNS, columns))
+        return self._renderer.detected_output_columns()
 
     @staticmethod
     def _wrapped_lines(value: object, width: int) -> list[str]:
-        lines: list[str] = []
-        for source_line in str(value).splitlines() or [""]:
-            lines.extend(
-                textwrap.wrap(
-                    source_line,
-                    width=max(1, width),
-                    break_long_words=True,
-                    break_on_hyphens=False,
-                    replace_whitespace=False,
-                    drop_whitespace=True,
-                )
-                or [""]
-            )
-        return lines
+        return TerminalRenderer.wrapped_lines(value, width)
 
     def _emit_wrapped_field(self, label: str, value: object) -> None:
-        label_width = 7
-        prefix = f"  {label:<{label_width}}  "
-        continuation = " " * self._visible_width(prefix)
-        lines = self._wrapped_lines(
-            value,
-            self._output_columns() - self._visible_width(prefix),
-        )
-        self._emit(prefix + lines[0])
-        for line in lines[1:]:
-            self._emit(continuation + line)
+        self._renderer.wrapped_field(label, value)
 
     def _pad_cell(self, value: object, width: int, *, right: bool = False) -> str:
-        text = str(value)
-        padding = " " * max(0, width - self._visible_width(text))
-        return padding + text if right else text + padding
+        return self._renderer.pad_cell(value, width, right=right)
 
     def _emit_columns(
         self,
@@ -776,62 +514,15 @@ class Studio:
     ) -> None:
         """Render a real column table whose header is distinct from its rows."""
 
-        if not headers:
-            raise ValueError("A column table requires at least one heading.")
-        if any(len(row) != len(headers) for row in rows):
-            raise ValueError("Every column-table row must match its headings.")
-        rendered = [tuple(str(value) for value in row) for row in rows]
-        widths: list[int] = []
-        for index, heading in enumerate(headers):
-            candidates = [self._visible_width(heading)]
-            candidates.extend(
-                self._visible_width(row[index]) for row in rendered
-            )
-            widths.append(max(candidates))
-        self._emit_section_title(title)
-        self._emit(
-            "  "
-            + "  ".join(
-                self._pad_cell(
-                    heading,
-                    (
-                        widths[index]
-                        if index < len(headers) - 1
-                        or index in right_aligned
-                        else self._visible_width(heading)
-                    ),
-                    right=index in right_aligned,
-                )
-                for index, heading in enumerate(headers)
-            )
+        self._renderer.columns(
+            title,
+            headers,
+            rows,
+            right_aligned=right_aligned,
         )
-        self._emit(
-            "  "
-            + "  ".join("─" * width for width in widths)
-        )
-        for row in rendered:
-            self._emit(
-                "  "
-                + "  ".join(
-                    self._pad_cell(
-                        value,
-                        (
-                            widths[index]
-                            if index < len(headers) - 1
-                            or index in right_aligned
-                            else self._visible_width(value)
-                        ),
-                        right=index in right_aligned,
-                    )
-                    for index, value in enumerate(row)
-                )
-            )
-        self._emit()
 
     def _emit_next(self, value: object) -> None:
-        self._emit_section_title("Next")
-        self._emit(f"  {value}")
-        self._emit()
+        self._renderer.next(value)
 
     def _emit_table(
         self,
@@ -840,47 +531,7 @@ class Studio:
     ) -> None:
         """Render key/value data with explicit headings and separate guidance."""
 
-        content = [
-            row for row in rows if row[0].casefold() != "next"
-        ]
-        next_values = [
-            value for label, value, _kind in rows
-            if label.casefold() == "next"
-        ]
-        self._emit_section_title(title)
-        width = max(
-            len("Field"),
-            max((len(label) for label, _value, _kind in content), default=0),
-        )
-        value_width = max(
-            len("Value"),
-            max(
-                (
-                    self._visible_width(
-                        (f"{self._status_mark(kind)} " if kind else "")
-                        + str(value)
-                    )
-                    for _label, value, kind in content
-                ),
-                default=0,
-            ),
-        )
-        available_value_width = max(
-            len("Value"),
-            self._output_columns() - width - 4,
-        )
-        value_width = min(value_width, available_value_width)
-        self._emit(
-            f"  {self._pad_cell('Field', width)}  "
-            "Value"
-        )
-        self._emit(f"  {'─' * width}  {'─' * value_width}")
-        for label, value, kind in content:
-            prefix = f"{self._status_mark(kind)} " if kind else ""
-            self._emit(f"  {label:<{width}}  {prefix}{value}")
-        self._emit()
-        for value in next_values:
-            self._emit_next(value)
+        self._renderer.table(title, rows)
 
     def _success(self, message: str, *, indent: int = 0) -> None:
         self._status("success", message, indent=indent)
@@ -941,8 +592,43 @@ class Studio:
         self._emit(f"Workflow: {current}" if current else "No workflow selected.")
         self._emit(
             "Type a command or describe what you want in ordinary language; "
-            "press Tab to complete; 'help' shows the exact commands."
+            "press Tab to complete; 'help' shows the short path."
         )
+        assistant, assistant_kind = self._coding_assistant_readiness()
+        self._status(assistant_kind, f"Assistant: {assistant}")
+        self._emit(f"Next: {self._welcome_next_action()}")
+
+    def _coding_assistant_readiness(self) -> tuple[str, StatusKind]:
+        configured = str(self._global_settings().get("assistant") or "codex")
+        if shutil.which(configured):
+            label = "Codex CLI" if configured == "codex" else "Claude Code"
+            return f"{label} found", "success"
+        alternative = "claude" if configured == "codex" else "codex"
+        if shutil.which(alternative):
+            label = "Claude Code" if alternative == "claude" else "Codex CLI"
+            return (
+                f"{configured} not found; {label} is available; use "
+                f"settings set assistant {alternative}",
+                "warning",
+            )
+        return (
+            "no Codex or Claude CLI found; specifications and deterministic "
+            "inspection still work",
+            "warning",
+        )
+
+    def _welcome_next_action(self) -> str:
+        manifest = self.workspace.project_manifest()
+        if not manifest["exists"]:
+            return "project init"
+        if self.workspace.specification() is None:
+            return "workflow create"
+        record = self._ensure_current_task_fresh(announce=False)
+        if record is not None:
+            return self._task_next(self._normalize_task_lifecycle(record))
+        if self.workspace.current_workflow is None:
+            return "workflow list"
+        return "workflow show · run"
 
     def _new_prompt_session(self) -> PromptSession[str]:
         self.workspace.directory.mkdir(parents=True, exist_ok=True)
@@ -1611,13 +1297,66 @@ class Studio:
                 raise SystemExit("Use workflow path.")
             self.manage_spec(["path"])
             return
-        if action == "prompts":
-            self.manage_prompts(rest)
-            return
         raise SystemExit(
             "Use workflow create, refine, edit, list, select, files, show, "
             "status, implement, review, validate, accept, discard, history, "
             "or path."
+        )
+
+    def studio_doctor(self) -> None:
+        """Report local development readiness without contacting providers."""
+
+        manifest = self.workspace.project_manifest()
+        try:
+            editor, editor_source = self._effective_editor()
+            editor_status = f"{shlex.join(editor)} — {editor_source}"
+            editor_kind: StatusKind = "success"
+        except SystemExit as exc:
+            editor_status = str(exc)
+            editor_kind = "error"
+        assistant, assistant_kind = self._coding_assistant_readiness()
+        interpreter = self._language_backend(
+            str(self._global_settings().get("interpreter") or "auto"),
+            required=False,
+        )
+        self._emit_table(
+            "Studio readiness",
+            [
+                (
+                    "Project",
+                    (
+                        f"manifest present — {self.workspace.manifest_path.name}"
+                        if manifest["exists"]
+                        else "manifest not created; use project init"
+                    ),
+                    "success" if manifest["exists"] else "warning",
+                ),
+                (
+                    "Editor",
+                    editor_status,
+                    editor_kind,
+                ),
+                ("Assistant", assistant, assistant_kind),
+                (
+                    "Interpreter",
+                    (
+                        (
+                            "Codex CLI"
+                            if interpreter[0] == "codex"
+                            else "Claude Code"
+                        )
+                        if interpreter
+                        else "deterministic commands only; no CLI fallback found"
+                    ),
+                    "success" if interpreter else "warning",
+                ),
+                (
+                    "Model setup",
+                    "optional until a non-mock run; inspect with models",
+                    "success",
+                ),
+                ("Next", self._welcome_next_action(), None),
+            ],
         )
 
     def _studio_restart_command(self) -> tuple[str, list[str]]:
@@ -1670,6 +1409,39 @@ class Studio:
                 "is still running."
             ) from exc
 
+    def _is_explicit_command(self, parts: list[str]) -> bool:
+        """Resolve ambiguous short verbs against known project objects."""
+
+        if not _is_explicit_studio_syntax(parts):
+            return False
+        command = parts[0].casefold()
+        args = parts[1:]
+        if command == "run" and len(args) == 1:
+            entered = args[0]
+            configurations = {
+                name.casefold()
+                for name in self.workspace.model_configurations()
+            }
+            if entered.casefold() in configurations:
+                return True
+            try:
+                _validate_model_spec(entered)
+            except SystemExit:
+                return False
+            return True
+        if (
+            command in {"status", "doctor", "logs", "start", "restart", "stop"}
+            and args
+        ):
+            name = args[0]
+            remembered = self.workspace.load().get("last_deployment")
+            if remembered and str(remembered).casefold() == name.casefold():
+                return True
+            from zippergen.serve import _deployment_profile_path
+
+            return _deployment_profile_path(name).exists()
+        return True
+
     def execute(
         self,
         line: str,
@@ -1681,7 +1453,7 @@ class Studio:
             parts = shlex.split(line)
         except ValueError as exc:
             rough_parts = line.strip().split()
-            if _allow_natural and not _is_explicit_studio_syntax(rough_parts):
+            if _allow_natural and not self._is_explicit_command(rough_parts):
                 if show_boundary:
                     self._emit_output_boundary("language")
                 self.interpret_natural_language(line)
@@ -1700,7 +1472,20 @@ class Studio:
                 "managed with `models provider configure NAME`; use `models` "
                 "to inspect them."
             )
-        explicit = _is_explicit_studio_syntax(parts)
+        if (
+            len(parts) >= 2
+            and parts[0].casefold() == "workflow"
+            and parts[1].casefold() == "prompts"
+        ):
+            if show_boundary:
+                self._emit_output_boundary("workflow")
+            raise SystemExit(
+                "`workflow prompts` was retired. Studio now maintains one "
+                "canonical specification and at most one pending refinement. "
+                "Use workflow show spec, workflow show pending, workflow "
+                "create, or workflow refine."
+            )
+        explicit = self._is_explicit_command(parts)
         if _allow_natural and not explicit:
             if show_boundary:
                 self._emit_output_boundary("language")
@@ -1718,7 +1503,9 @@ class Studio:
         if show_boundary:
             self._emit_output_boundary(self._output_boundary_label(parts))
         if command in {"help", "?"}:
-            self._emit(_HELP.rstrip())
+            if args not in ([], ["all"]):
+                raise SystemExit("Use help or help all.")
+            self._emit(full_help() if args == ["all"] else concise_help())
         elif command == "ask":
             if not args:
                 raise SystemExit("Use ask TEXT.")
@@ -1742,9 +1529,12 @@ class Studio:
         elif command == "current":
             self.show_current()
         elif command == "studio":
-            if args != ["restart"]:
-                raise SystemExit("Use studio restart.")
-            self.restart_studio()
+            if args == ["doctor"]:
+                self.studio_doctor()
+            elif args == ["restart"]:
+                self.restart_studio()
+            else:
+                raise SystemExit("Use studio doctor or studio restart.")
         elif command == "models":
             self.configure_models(args)
         elif command == "run":
@@ -1780,6 +1570,7 @@ class Studio:
                 interactive=True,
                 input_func=self.input,
                 output_func=self.output,
+                renderer=self._renderer,
             )
         elif command == "resume":
             if args:
@@ -1790,6 +1581,7 @@ class Studio:
                 interactive=True,
                 input_func=self.input,
                 output_func=self.output,
+                renderer=self._renderer,
             )
         elif command == "runs":
             self.show_runs()
@@ -2132,30 +1924,6 @@ class Studio:
                 f"{command_line}"
             )
         top = parts[0].casefold()
-        allowed = {
-            "current",
-            "deploy",
-            "doctor",
-            "edit",
-            "editor",
-            "logs",
-            "models",
-            "project",
-            "restart",
-            "resume",
-            "run",
-            "runs",
-            "settings",
-            "start",
-            "status",
-            "stop",
-            "studio",
-            "workflow",
-        }
-        if top not in allowed:
-            raise SystemExit(
-                f"The interpreter may not invoke the Studio command {parts[0]!r}."
-            )
 
         participants, _active = self._language_participants()
         canonical = {name.casefold(): name for name in participants}
@@ -2202,58 +1970,21 @@ class Studio:
 
     def _natural_command_risk(self, command_line: str) -> CommandRisk:
         parts = shlex.split(command_line)
-        command = parts[0].casefold()
-        args = [value.casefold() for value in parts[1:]]
-        if command in {"current", "runs", "status", "doctor", "logs"}:
-            return "read-only"
-        if command == "settings" and (
-            not args or args[0] == "show"
+        declared = command_spec(parts)
+        if declared is None:
+            raise SystemExit(
+                f"Cannot classify unsupported Studio command: {command_line}"
+            )
+        lowered = [value.casefold() for value in parts]
+        if (
+            lowered[:2] in (["models", "provider"], ["models", "config"])
+            and len(lowered) >= 3
         ):
-            return "read-only"
-        if command == "workflow":
-            if not args or args[0] in {
-                "show",
-                "list",
-                "files",
-                "status",
-                "review",
-                "validate",
-                "history",
-                "path",
-            }:
+            if lowered[2] in {"list", "show", "check"}:
                 return "read-only"
-            if args[0] in {"discard", "accept"}:
+            if lowered[2] == "remove":
                 return "destructive"
-            if args[0] == "implement":
-                return "execution"
-            return "configuration"
-        if command == "project" and args[:1] == ["show"]:
-            return "read-only"
-        if command == "models":
-            if not args or args[0] == "assignments":
-                return "read-only"
-            if args[0] in {"provider", "config"} and len(args) >= 2:
-                if args[1] in {"list", "show", "check"}:
-                    return "read-only"
-        if command == "editor" and (not args or args[0] == "show"):
-            return "read-only"
-        if command == "project" and args[:1] == ["reset"]:
-            return "destructive"
-        if command == "studio":
-            return "execution"
-        if command == "models" and len(args) >= 2:
-            if args[0] in {"provider", "config"} and args[1] == "remove":
-                return "destructive"
-        if command in {
-            "deploy",
-            "restart",
-            "resume",
-            "run",
-            "start",
-            "stop",
-        }:
-            return "execution"
-        return "configuration"
+        return declared.risk
 
     def _natural_preview_requested(self, request_text: str) -> bool:
         text = " ".join(request_text.strip().casefold().split())
@@ -2271,7 +2002,13 @@ class Studio:
         parts = shlex.split(command_line)
         lowered = [value.casefold() for value in parts]
         if (
-            tuple(lowered[:2]) in {("spec", "discard"), ("task", "close")}
+            tuple(lowered[:2])
+            in {("workflow", "discard"), ("workflow", "accept")}
+            and "--yes" not in lowered
+        ):
+            parts.append("--yes")
+        if (
+            tuple(lowered[:3]) == ("project", "reset", "fresh")
             and "--yes" not in lowered
         ):
             parts.append("--yes")
@@ -2363,6 +2100,11 @@ class Studio:
         if plan is None:
             plan = store.match(request_text)
         if plan is None:
+            plan = requirement_proposal(
+                request_text,
+                has_specification=self.workspace.specification() is not None,
+            )
+        if plan is None:
             try:
                 plan = self._interpret_with_cli(
                     request_text,
@@ -2415,6 +2157,7 @@ class Studio:
             plan.source,
             clarification=plan.clarification,
             learned_id=plan.learned_id,
+            requires_confirmation=plan.requires_confirmation,
         )
         if plan.clarification:
             self._emit_natural_plan(
@@ -2450,9 +2193,14 @@ class Studio:
             return
 
         confirmed = False
-        if risk in {"execution", "destructive"}:
+        if risk in {"execution", "destructive"} or plan.requires_confirmation:
+            confirmation_kind = (
+                "workflow-requirement proposal"
+                if plan.requires_confirmation
+                else f"{risk} plan"
+            )
             if not self._confirm_action(
-                f"Execute this {risk} plan? [y/n]: ",
+                f"Execute this {confirmation_kind}? [y/n]: ",
                 cancel_message=(
                     "Natural-language plan cancelled; nothing was executed."
                 ),
@@ -2837,6 +2585,20 @@ class Studio:
             ensured = self.workspace.ensure_specification()
             target = self.workspace.specification_path
             self._prepare_specification_editor(target)
+            editor, source = self._effective_editor(editor_override)
+            self._emit_table(
+                "Workflow specification",
+                [
+                    ("File", target.relative_to(self.workspace.root), None),
+                    ("Editor", shlex.join(editor), "success"),
+                    ("Selection", source, None),
+                    (
+                        "Return",
+                        "save and exit the editor to continue in Studio",
+                        None,
+                    ),
+                ],
+            )
             self._launch_editor(target, override=editor_override)
             prompt = self._finish_specification_editor(target)
             self.create_request(prompt, specification_already_saved=True)
@@ -3667,218 +3429,6 @@ class Studio:
                     None,
                 ),
             ],
-        )
-
-    def _emit_prompt_list(self) -> None:
-        records = self.workspace.list_prompts()
-        if not records:
-            self._emit_table(
-                "Prompts",
-                [
-                    (
-                        "Status",
-                        "none; use workflow create or workflow refine",
-                        "warning",
-                    )
-                ],
-            )
-            return
-        active = sum(bool(record["active"]) for record in records)
-        self._emit_table(
-            "Prompt summary",
-            [
-                ("Active", active, "success"),
-                ("Archived", len(records) - active, None),
-                ("Total", len(records), None),
-                ("Precedence", "later rows override only explicit conflicts", None),
-            ],
-        )
-        ledger_rows: list[tuple[object, ...]] = []
-        for position, record in enumerate(records, start=1):
-            status = "active" if record["active"] else "archived"
-            mark = self._status_mark(
-                "success" if record["active"] else "warning"
-            )
-            title = str(record["title"])
-            if len(title) > 48:
-                title = title[:47] + "…"
-            ledger_rows.append(
-                (
-                    position,
-                    record["id"],
-                    record["kind"],
-                    f"{mark} {status}",
-                    title,
-                    record["file"],
-                )
-            )
-        self._emit_columns(
-            "Prompt ledger",
-            ("#", "ID", "Kind", "Status", "Title", "File"),
-            ledger_rows,
-            right_aligned=frozenset({0}),
-        )
-
-    def manage_prompts(self, args: list[str]) -> None:
-        if not args or args == ["list"]:
-            self._emit_prompt_list()
-            return
-        action, *rest = args
-        action = action.lower()
-        if (
-            action
-            not in {"show", "inspect", "path", "context"}
-            and self.workspace.specification() is not None
-        ):
-            raise SystemExit(
-                "This project now uses the canonical specification. Legacy "
-                "prompts remain inspectable, but cannot be changed. Use "
-                "'workflow edit spec' for the accepted specification or "
-                "'workflow refine' for a pending change."
-            )
-        if action in {"show", "inspect"} and len(rest) == 1:
-            record = self.workspace.prompt(rest[0])
-            position = next(
-                index
-                for index, candidate in enumerate(
-                    self.workspace.list_prompts(),
-                    start=1,
-                )
-                if candidate["id"] == record["id"]
-            )
-            self._emit_table(
-                f"Prompt {record['id']}",
-                [
-                    ("Position", position, None),
-                    ("Kind", record["kind"], None),
-                    (
-                        "Status",
-                        "active" if record["active"] else "archived",
-                        "success" if record["active"] else "warning",
-                    ),
-                    ("Title", record["title"], None),
-                    ("File", record["file"], None),
-                    ("Replaces", record.get("replaces") or "none", None),
-                ],
-            )
-            self._emit_section_title("Requirement")
-            self._emit(str(record["content"]))
-            self._emit()
-            return
-        if action == "path" and len(rest) == 1:
-            record = self.workspace.prompt(rest[0])
-            self._emit(self.workspace.root / str(record["file"]))
-            return
-        if action == "context" and not rest:
-            self._emit(self.workspace.prompt_context())
-            return
-        if action == "add":
-            prompt_input = self._request_prompt(rest, command="prompts add")
-            prompt = prompt_input.content
-            if not prompt:
-                prompt = self.input("Describe the requirement: ").strip()
-            if not prompt:
-                raise SystemExit("The prompt must not be empty.")
-            kind = "refinement"
-            if (
-                not self.workspace.list_prompts()
-                and self.workspace.current_workflow is None
-            ):
-                kind = "initial"
-            record = self.workspace.add_prompt(
-                kind=kind,
-                content=prompt,
-                source_path=prompt_input.source_path,
-                workflow_spec=self.workspace.current_workflow,
-            )
-            self._finish_prompt_input(prompt_input)
-            status = "Registered" if record["created"] else "Already registered"
-            self._success(
-                f"{status}: {record['id']} [{record['kind']}] {record['file']}"
-            )
-            return
-        if action == "edit" and len(rest) in {1, 3}:
-            if len(rest) == 3 and rest[1] == "--editor":
-                editor_override = rest[2]
-            elif len(rest) == 1:
-                editor_override = None
-            else:
-                raise SystemExit("Use prompts edit ID [--editor COMMAND].")
-            original = self.workspace.prompt(rest[0])
-            draft = self._new_prompt_draft(
-                f"edit-{original['id']}",
-                content=str(original["content"]),
-            )
-            self._launch_editor(draft, override=editor_override)
-            content = self._read_prompt_file(draft)
-            record = self.workspace.update_prompt_content(
-                str(original["id"]),
-                content=content,
-            )
-            self._finish_prompt_input(_PromptInput(content, draft_path=draft))
-            self._emit_table(
-                "Prompt updated",
-                [
-                    ("ID", record["id"], "success"),
-                    ("Kind", record["kind"], None),
-                    ("Title", record["title"], None),
-                    ("File", record["file"], None),
-                    ("Next", f"prompts show {record['id']}", None),
-                ],
-            )
-            return
-        if action in {
-            "enable",
-            "restore",
-            "disable",
-            "remove",
-            "archive",
-        } and len(rest) == 1:
-            active = action in {"enable", "restore"}
-            record = self.workspace.set_prompt_active(rest[0], active=active)
-            verb = "Restored" if active else "Archived"
-            self._success(f"{verb}: {record['id']} — {record['title']}")
-            return
-        if action == "move" and len(rest) == 3:
-            self.workspace.move_prompt(
-                rest[0],
-                relation=rest[1].lower(),
-                other_id=rest[2],
-            )
-            self._success(
-                f"Moved {rest[0].upper()} {rest[1]} {rest[2].upper()}."
-            )
-            self._emit_prompt_list()
-            return
-        if action == "replace" and len(rest) >= 1:
-            original = self.workspace.prompt(rest[0])
-            prompt_input = self._request_prompt(
-                rest[1:],
-                command=f"prompts replace {rest[0]}",
-                draft_content=str(original["content"]),
-            )
-            prompt = prompt_input.content
-            if not prompt:
-                prompt = self.input("Describe the replacement requirement: ").strip()
-            if not prompt:
-                raise SystemExit("The replacement prompt must not be empty.")
-            record = self.workspace.replace_prompt(
-                rest[0],
-                content=prompt,
-                source_path=prompt_input.source_path,
-            )
-            self._finish_prompt_input(prompt_input)
-            self._success(
-                f"Replaced {rest[0].upper()} with {record['id']}: "
-                f"{record['file']}"
-            )
-            return
-        raise SystemExit(
-            "Use prompts; prompts show|inspect|path|edit ID; prompts add "
-            "[--file PATH|--edit [PATH]|PROMPT]; prompts context; prompts "
-            "archive|restore ID; prompts replace ID "
-            "[--file PATH|--edit [PATH]|PROMPT]; or prompts move ID "
-            "before|after ID."
         )
 
     def _normalize_task_lifecycle(

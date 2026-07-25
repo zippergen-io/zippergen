@@ -347,14 +347,18 @@ Project: zippergen-tutorial
 Root: /path/to/zippergen-tutorial
 No workflow selected.
 Type a command or describe what you want in ordinary language;
-press Tab to complete; 'help' shows the exact commands.
+press Tab to complete; 'help' shows the short path.
+✓ Assistant: Codex CLI found
+Next: project init
 zippergen [no workflow]>
 \end{lstlisting}
 
 Everything after the last line is a Studio command. Do not prefix Studio
-commands with \texttt{zippergen}. Enter \texttt{help} now; it is the
-built-in reminder for creation, selection, inspection, model routing,
-execution, refinement, deployment, and operation.
+commands with \texttt{zippergen}. Enter \texttt{help} now; it shows the small
+creation-to-deployment path. Enter \texttt{help all} only when the complete
+exact reference is useful. The assistant line may instead be a warning when
+neither supported CLI is installed; specification, deterministic inspection,
+mock execution, and the rest of Studio remain available.
 
 The command vocabulary has three memorable themes. Everything that changes or
 explains the application design lives below \texttt{workflow}: creation,
@@ -369,7 +373,13 @@ recover the next step instead of remembering several unrelated nouns.
 The small cross-cutting \texttt{settings} command covers global Studio
 preferences rather than application behavior.
 
-There is one deliberately explicit process command:
+The \texttt{studio doctor} command checks the local development front door:
+manifest, editor, coding assistant, and natural-language interpreter. It does
+not contact OpenAI, Anthropic, Mistral, or a local model endpoint. Codex and
+Claude are optional external programs with their own installation and login;
+they are deliberately not Python dependencies of ZipperGen.
+
+The other deliberately explicit process command is
 \texttt{studio restart}. After pulling changes to the editable ZipperGen
 checkout in another terminal, enter it to replace the running Studio process
 and import the updated source. The replacement keeps the current directory and
@@ -472,6 +482,10 @@ guidance is useful. Success, warning, or failure appears before the data it
 describes. Thus \texttt{project}, \texttt{workflow}, \texttt{models},
 \texttt{language}, run, and deployment results do not require the reader to
 learn different output layouts.
+Long fields and table rows wrap to the terminal width, so a path, verification
+command, or assistant explanation no longer extends far beyond its heading.
+The managed \texttt{run} and \texttt{resume} commands use this same renderer;
+they do not switch to a second set of bare runtime messages.
 \end{notebox}
 
 \subsubsection*{Step 1a: use commands or ordinary language}
@@ -493,6 +507,17 @@ second becomes \texttt{workflow show protocol}, and the third becomes
 result, so natural language never hides which operation was chosen. Common
 requests use a deterministic interpreter and therefore need no model, network,
 or API key.
+
+If prose clearly describes an application but does not match an operational
+command, Studio offers the safest useful interpretation. Before
+\path{specification.md} exists it proposes \texttt{workflow create}; afterward
+it proposes \texttt{workflow refine}. It shows the exact proposal and asks
+before storing anything. Prose without both a design signal and an authoring
+intent still goes to the configured read-only interpreter, so a sentence about
+status or deployment cannot silently become a requirement. Short phrases are
+also contextual: \texttt{run it} means the selected workflow,
+\texttt{stop it} means the remembered deployment, and \texttt{start over}
+proposes the recoverable fresh-design reset.
 
 The last example becomes \texttt{studio restart}. Because it replaces a
 running process, Studio displays the plan and asks for confirmation. Exact
@@ -588,6 +613,10 @@ program directly; it does not invoke an LLM, shell script, workflow provider,
 or MCP server. A one-time choice can be supplied without changing the saved
 preference:
 
+Immediately before the editor starts, Studio prints the automatic project
+file, the effective editor and where that choice came from, and the instruction
+to save and exit to return. This is orientation, not another question.
+
 \begin{lstlisting}[style=shell]
 workflow edit code --editor nano
 workflow create --editor micro
@@ -662,7 +691,15 @@ canonical document is always \path{specification.md}; it is ordinary project
 source and should be reviewed and committed with the Python workflow. The
 generated, non-secret handoff is always
 \path{.zippergen/current-task.md}; Studio also keeps timestamped private task
-history outside Git. The implementation request asks the assistant to identify participants,
+history outside Git.
+
+Projects created by an older Studio may still contain an ordered prompt
+ledger. On first specification access, Studio combines its active entries into
+\path{specification.md} and preserves the old files as migration history. The
+former \texttt{workflow prompts} command is deliberately unavailable: all new
+work uses one accepted specification and at most one pending refinement.
+
+The implementation request asks the assistant to identify participants,
 ownership, messages, action kinds, decisions, loops, deployment needs, safety
 assumptions, and acceptance examples before editing. It also requires tests,
 validation, semantic views, and all exact local projections. No workflow file

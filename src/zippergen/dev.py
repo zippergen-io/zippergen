@@ -5,8 +5,8 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-from contextlib import contextmanager
 from collections.abc import Callable
+from contextlib import contextmanager
 from types import ModuleType
 from typing import Any
 
@@ -17,10 +17,10 @@ from zippergen.models import (
     normalize_llm_overrides,
     selected_llm_specs,
 )
+from zippergen.rendering import TerminalRenderer
 from zippergen.semantic import semantic_snapshot
 from zippergen.syntax import Workflow
-from zippergen.workspace import Workspace, WorkspaceError
-
+from zippergen.workspace import Workspace
 
 InputFunc = Callable[[str], str]
 OutputFunc = Callable[[str], object]
@@ -93,6 +93,7 @@ def collect_development_environment(
     input_func: InputFunc,
     secret_input_func: InputFunc,
     output_func: OutputFunc,
+    renderer: TerminalRenderer | None = None,
 ) -> dict[str, str]:
     """Resolve declared environment fields, privately persisting secrets."""
 
@@ -155,9 +156,13 @@ def collect_development_environment(
         ):
             saved_secrets[field.target_name] = str(value)
             secrets_changed = True
-            output_func(
+            message = (
                 f"Saved {field.target_name} in private development secret storage."
             )
+            if renderer is None:
+                output_func(message)
+            else:
+                renderer.status("success", message)
     if secrets_changed:
         workspace.save_secrets(saved_secrets)
     return environment
@@ -344,6 +349,7 @@ def run_dev(
     input_func: InputFunc = input,
     secret_input_func: InputFunc | None = None,
     output_func: OutputFunc = print,
+    renderer: TerminalRenderer | None = None,
 ) -> dict[str, Any]:
     """Create or resume one managed durable development run."""
 
@@ -391,7 +397,10 @@ def run_dev(
         )
         run_options = dict(record.get("options") or {})
         run_services = record.get("services")
-        output_func(f"Resuming run {selected_run_id}")
+        if renderer is None:
+            output_func(f"Resuming run {selected_run_id}")
+        else:
+            renderer.status("info", f"Resuming run {selected_run_id}.")
     else:
         selected = workflow_spec or workspace.current_workflow
         if not selected:
@@ -400,7 +409,13 @@ def run_dev(
             )
         stored_spec = workspace.select_workflow(selected)
         workflow, module = _load_and_validate(workspace, stored_spec)
-        output_func(f"Workflow {workflow.name}: valid")
+        if renderer is None:
+            output_func(f"Workflow {workflow.name}: valid")
+        else:
+            renderer.status(
+                "success",
+                f"Workflow {workflow.name} validated.",
+            )
         inputs = collect_workflow_inputs(
             workflow,
             module,
@@ -426,7 +441,8 @@ def run_dev(
             services=run_services,
         )
         selected_run_id = str(record["run_id"])
-        output_func(f"Run {selected_run_id}")
+        if renderer is None:
+            output_func(f"Run {selected_run_id}")
 
     environment = collect_development_environment(
         module,
@@ -440,6 +456,7 @@ def run_dev(
         input_func=input_func,
         secret_input_func=secret_input_func,
         output_func=output_func,
+        renderer=renderer,
     )
     provider_environment = workspace.development_provider_environment(
         selected_llm_specs(selected_llm, selected_llms)
@@ -453,6 +470,17 @@ def run_dev(
         current_run=selected_run_id,
     )
     workspace.update_run(selected_run_id, status="running", error=None)
+    if renderer is not None:
+        renderer.table(
+            "Development run",
+            [
+                ("Status", "running", "success"),
+                ("Workflow", stored_spec, None),
+                ("Run", selected_run_id, None),
+                ("Store", store_path, None),
+                ("Model", selected_llm, None),
+            ],
+        )
 
     terminal_backend = make_cli_human_backend(
         input_func=input_func,
@@ -520,6 +548,18 @@ def run_dev(
         result=result,
         error=None,
     )
-    output_func(f"Result: {result}")
-    output_func("Next: show another view, start a new run, or prepare deployment.")
+    if renderer is None:
+        output_func(f"Result: {result}")
+        output_func("Next: show another view, start a new run, or prepare deployment.")
+    else:
+        renderer.table(
+            "Run completed",
+            [
+                ("Status", "done", "success"),
+                ("Run", selected_run_id, None),
+                ("Result", result, None),
+                ("Store", store_path, None),
+                ("Next", "workflow show · run · deploy", None),
+            ],
+        )
     return updated

@@ -1460,7 +1460,7 @@ def _dev_command(args) -> int:
 
 def _studio_command(args) -> int:
     from zippergen.studio import Studio
-    from zippergen.workspace import Workspace
+    from zippergen.workspace import Workspace, WorkspaceError
 
     workspace = Workspace(args.project)
     if args.workflow:
@@ -1471,8 +1471,15 @@ def _studio_command(args) -> int:
     if args.command:
         studio.welcome()
         for command in args.command:
-            if not studio.execute(command, show_boundary=True):
-                break
+            try:
+                if not studio.execute(command, show_boundary=True):
+                    break
+            except KeyboardInterrupt:
+                studio._warning("Command interrupted.")
+                return 130
+            except (SystemExit, WorkspaceError, ValueError) as exc:
+                studio._error(str(exc))
+                return 1
         return 0
     return studio.run()
 

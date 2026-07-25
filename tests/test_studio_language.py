@@ -69,6 +69,86 @@ def test_natural_current_request_executes_without_a_model(tmp_path):
     assert history[-1]["status"] == "executed"
 
 
+def test_unmatched_design_prose_is_offered_as_initial_specification(tmp_path):
+    studio, workspace, output = _studio(tmp_path, responses=["y"])
+    request = (
+        "Make a workflow where Writer drafts an answer and Reviewer approves it"
+    )
+
+    studio.execute(request)
+
+    assert workspace.specification() == request
+    current = workspace.current_request()
+    assert current is not None
+    assert current["kind"] == "create"
+    assert any(
+        "Treat this prose as the initial specification" in line
+        for line in output
+    )
+    assert any("workflow create" in line for line in output)
+
+
+def test_unmatched_design_prose_is_offered_as_one_pending_refinement(tmp_path):
+    studio, workspace, _output = _studio(tmp_path, responses=["y"])
+    workspace.save_specification("Writer drafts an answer.")
+    request = "Add a Reviewer participant that must approve every answer"
+
+    studio.execute(request)
+
+    assert workspace.pending_refinement() == request
+    current = workspace.current_request()
+    assert current is not None
+    assert current["kind"] == "refine"
+
+
+def test_short_start_over_phrase_is_not_a_deployment_name(tmp_path):
+    studio, workspace, output = _studio(tmp_path, responses=["y"])
+    workspace.initialize_project(name="Tutorial")
+    workspace.save_specification("Create a review workflow.")
+
+    studio.execute("start over")
+
+    assert workspace.specification() is None
+    assert not workspace.manifest_path.exists()
+    assert any("project reset fresh" in line for line in output)
+
+
+def test_confirmed_natural_discard_does_not_confirm_twice(
+    tmp_path,
+    monkeypatch,
+):
+    prompts: list[str] = []
+    studio, workspace, _output = _studio(tmp_path)
+    studio.input = lambda prompt: prompts.append(prompt) or "y"
+    workspace.save_specification("Create a review workflow.")
+    studio.refine_request("Add a Reviewer.")
+    monkeypatch.setattr(
+        studio,
+        "_interpret_with_cli",
+        lambda request_text, *, configured: NaturalCommandPlan(
+            "Discard the pending refinement.",
+            ("workflow discard",),
+            "codex",
+        ),
+    )
+
+    studio.execute("Remove the pending amendment")
+
+    assert workspace.pending_refinement() is None
+    assert prompts == ["Execute this destructive plan? [y/n]: "]
+
+
+def test_help_me_get_started_is_local_and_deterministic(tmp_path):
+    studio, workspace, output = _studio(tmp_path)
+
+    studio.execute("help me get started")
+
+    assert any("Show the short Studio path" in line for line in output)
+    assert any("Getting started:" in line for line in output)
+    history = NaturalLanguageStore(workspace.natural_language_path).history()
+    assert history[-1]["source"] == "deterministic"
+
+
 def test_natural_show_phrase_wins_over_invalid_show_syntax(tmp_path):
     studio, workspace, output = _studio(tmp_path)
     workspace.select_workflow("workflow.py:sample", cwd=workspace.root)

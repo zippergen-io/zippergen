@@ -5,9 +5,9 @@ from pathlib import Path
 import pytest
 
 from zippergen.dev import run_dev
+from zippergen.rendering import TerminalRenderer
 from zippergen.store import open_store
 from zippergen.workspace import Workspace
-
 
 TUTORIAL_SPEC = "examples/tutorial_review.py:tutorial_review"
 
@@ -133,6 +133,28 @@ def test_dev_collects_multiple_inputs_and_reviews_inline(tmp_path):
     ).fetchone()[0] == 2
     assert any(line.startswith("Workflow tutorial_review: valid") for line in output)
     assert output[-2] == "Result: [revise_reply:draft]"
+
+
+def test_dev_uses_shared_renderer_when_invoked_by_studio(tmp_path):
+    workspace = Workspace(_repository_root(), home=tmp_path / "home")
+    responses = iter(["Explain durable execution.", "1", "y"])
+    output: list[str] = []
+    renderer = TerminalRenderer(output.append, color=False)
+
+    record = run_dev(
+        workspace,
+        workflow_spec=TUTORIAL_SPEC,
+        input_func=lambda prompt: next(responses),
+        output_func=output.append,
+        renderer=renderer,
+    )
+
+    assert record["status"] == "done"
+    assert "Development run" in output
+    assert "Run completed" in output
+    assert any("✓ Workflow tutorial_review validated" in line for line in output)
+    assert any("✓ done" in line for line in output)
+    assert not any(line.startswith("Workflow tutorial_review:") for line in output)
 
 
 def test_dev_records_and_uses_assistant_backend(tmp_path, monkeypatch):

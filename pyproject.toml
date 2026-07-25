@@ -48,3 +48,6 @@ include = ["zippergen*", "zipperchat*"]
 
 [tool.setuptools.package-data]
 zipperchat = ["assets/*"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]

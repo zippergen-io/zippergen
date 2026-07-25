@@ -10,7 +10,7 @@ from prompt_toolkit.completion import CompleteEvent
 from prompt_toolkit.document import Document
 
 from zippergen.studio import Studio, StudioCompleter
-from zippergen.workspace import Workspace, WorkspaceError
+from zippergen.workspace import Workspace
 
 
 WORKFLOW_SOURCE = """
@@ -164,6 +164,30 @@ def test_studio_explains_a_single_completion_match(tmp_path):
         " Tab: restart — replace this process and reload installed source "
     )
     assert studio.completion_explanation("") == ""
+
+
+def test_welcome_and_studio_doctor_show_readiness_and_next_action(
+    tmp_path,
+    monkeypatch,
+):
+    studio, workspace, output = _studio(tmp_path)
+    monkeypatch.setattr(
+        "zippergen.studio.shutil.which",
+        lambda name: f"/tools/{name}" if name in {"codex", "micro"} else None,
+    )
+
+    studio.welcome()
+
+    assert any("✓ Assistant: Codex CLI found" in line for line in output)
+    assert output[-1] == "Next: project init"
+
+    output.clear()
+    workspace.initialize_project(name="Tutorial")
+    studio.execute("studio doctor")
+
+    assert "Studio readiness" in output
+    assert any("Codex CLI found" in line for line in output)
+    assert any("workflow create" in line for line in output)
 
 
 def test_studio_restart_replaces_the_original_process(tmp_path, monkeypatch):
@@ -549,11 +573,9 @@ def test_studio_task_show_refreshes_stale_specification_context_once(tmp_path):
     studio.execute("workflow history")
 
     assert any("Refreshes" in line for line in output)
-    assert any(
-        str(refreshed["request_id"]) in line
-        and str(original["request_id"]) in line
-        for line in output
-    )
+    compact = "".join(line.strip() for line in output)
+    assert str(refreshed["request_id"]) in compact
+    assert str(original["request_id"]) in compact
 
 
 def test_studio_refreshes_a_pre_verification_contract_task_before_launch(
@@ -1555,6 +1577,10 @@ def test_studio_create_opens_automatic_specification_and_prepares_task(
     assert workspace.current_task_path.exists()
     assert any("Editor closed" in line for line in output)
     assert any("specification.md" in line for line in output)
+    rendered = "\n".join(output)
+    assert "Workflow specification" in rendered
+    assert "/usr/bin/micro" in rendered
+    assert "save and exit the editor to continue in Studio" in rendered
 
 
 def test_studio_create_keeps_guide_when_no_requirements_are_written(
@@ -1659,124 +1685,6 @@ def test_studio_spec_refine_reopens_one_pending_file(tmp_path, monkeypatch):
     assert list(workspace.requests_directory.glob("*-semantic-before.json")) == (
         first_baselines
     )
-
-
-def test_studio_prompt_replacement_can_be_composed_in_editor(
-    tmp_path, monkeypatch
-):
-    studio, workspace, _output = _studio(tmp_path)
-    studio.execute("workflow prompts add Keep retries bounded")
-    monkeypatch.setattr(
-        "zippergen.studio.shutil.which",
-        lambda name: "/usr/bin/micro" if name == "micro" else None,
-    )
-
-    def fake_run(arguments, *, cwd, check):
-        Path(arguments[-1]).write_text("Use exactly three retries.\n")
-        return subprocess.CompletedProcess(arguments, 0)
-
-    monkeypatch.setattr("zippergen.studio.subprocess.run", fake_run)
-
-    studio.execute(
-        "workflow prompts replace P001 --edit prompts/retry_replacement.md "
-        "--editor micro"
-    )
-
-    records = workspace.list_prompts()
-    assert records[0]["active"] is False
-    assert records[1]["replaces"] == "P001"
-    assert records[1]["content"] == "Use exactly three retries."
-    assert records[1]["file"] == "prompts/retry_replacement.md"
-
-
-def test_studio_path_free_prompt_replacement_derives_name_and_preserves_history(
-    tmp_path, monkeypatch
-):
-    studio, workspace, _output = _studio(tmp_path)
-    studio.execute("workflow prompts add Keep retries bounded")
-    monkeypatch.setattr(
-        "zippergen.studio.shutil.which",
-        lambda name: "/usr/bin/micro" if name == "micro" else None,
-    )
-
-    def fake_run(arguments, *, cwd, check):
-        draft = Path(arguments[-1])
-        assert draft.read_text() == "Keep retries bounded\n"
-        draft.write_text(
-            "# Retry exactly three times\n\nThen return an explicit failure.\n"
-        )
-        return subprocess.CompletedProcess(arguments, 0)
-
-    monkeypatch.setattr("zippergen.studio.subprocess.run", fake_run)
-
-    studio.execute("workflow prompts replace P001 --edit --editor micro")
-
-    records = workspace.list_prompts()
-    assert records[0]["active"] is False
-    assert records[1]["id"] == "P002"
-    assert records[1]["kind"] == "initial"
-    assert records[1]["replaces"] == "P001"
-    assert records[1]["file"] == "prompts/002-retry-exactly-three-times.md"
-    assert list((workspace.root / ".zippergen" / "prompt-drafts").iterdir()) == []
-
-
-def test_studio_edits_prompt_by_id_without_changing_identity(tmp_path, monkeypatch):
-    studio, workspace, output = _studio(tmp_path)
-    studio.execute("workflow prompts add # Original title\nOriginal requirement")
-    original = workspace.prompt("P001")
-    monkeypatch.setattr(
-        "zippergen.studio.shutil.which",
-        lambda name: "/usr/bin/micro" if name == "micro" else None,
-    )
-
-    def fake_run(arguments, *, cwd, check):
-        draft = Path(arguments[-1])
-        assert ".zippergen/prompt-drafts" in str(draft)
-        assert "Original requirement" in draft.read_text()
-        draft.write_text("# Clearer title\n\nCorrected wording.\n")
-        return subprocess.CompletedProcess(arguments, 0)
-
-    monkeypatch.setattr("zippergen.studio.subprocess.run", fake_run)
-    output.clear()
-
-    studio.execute("workflow prompts edit P001 --editor micro")
-
-    records = workspace.list_prompts()
-    assert len(records) == 1
-    assert records[0]["id"] == "P001"
-    assert records[0]["kind"] == "initial"
-    assert records[0]["file"] == original["file"]
-    assert records[0]["title"] == "Clearer title"
-    assert records[0]["content"] == "# Clearer title\n\nCorrected wording."
-    assert "Prompt updated" in output
-    assert list((workspace.root / ".zippergen" / "prompt-drafts").iterdir()) == []
-
-
-def test_studio_invalid_prompt_edit_leaves_registered_content_untouched(
-    tmp_path, monkeypatch
-):
-    studio, workspace, _output = _studio(tmp_path)
-    studio.execute("workflow prompts add Original requirement")
-    monkeypatch.setattr(
-        "zippergen.studio.shutil.which",
-        lambda name: "/usr/bin/micro" if name == "micro" else None,
-    )
-
-    def fake_run(arguments, *, cwd, check):
-        Path(arguments[-1]).write_text("")
-        return subprocess.CompletedProcess(arguments, 0)
-
-    monkeypatch.setattr("zippergen.studio.subprocess.run", fake_run)
-
-    try:
-        studio.execute("workflow prompts edit P001 --editor micro")
-    except SystemExit as exc:
-        assert "Prompt file is empty" in str(exc)
-    else:
-        raise AssertionError("an empty edit should be rejected")
-
-    assert workspace.prompt("P001")["content"] == "Original requirement"
-    assert len(list((workspace.root / ".zippergen" / "prompt-drafts").iterdir())) == 1
 
 
 def test_studio_failed_create_editor_preserves_canonical_draft(
@@ -1902,26 +1810,30 @@ def test_studio_commands_are_discoverable(tmp_path):
     studio, _workspace, output = _studio(tmp_path)
 
     assert studio.execute("help") is True
+    assert "workflow create" in output[-1]
+    assert "help all" in output[-1]
+
+    output.clear()
+    assert studio.execute("help all") is True
     assert "workflow show" in output[-1]
     assert "project init [NAME]" in output[-1]
-    assert "project reset fresh [--yes]" in output[-1]
-    assert "project reset state [--yes]" in output[-1]
+    assert "project reset [fresh|state] [--yes]" in output[-1]
     assert "workflow history" in output[-1]
     assert "workflow status" in output[-1]
     assert "workflow review" in output[-1]
-    assert "assistant" in output[-1]
-    assert "editor [show|set CMD|reset]" in output[-1]
+    assert "workflow implement" in output[-1]
+    assert "editor set COMMAND" in output[-1]
     assert "edit file PATH" in output[-1]
-    assert "workflow create --file PATH" in output[-1]
+    assert "workflow create" in output[-1]
     assert "workflow edit" in output[-1]
     assert "workflow refine" in output[-1]
-    assert "workflow refine --file PATH" in output[-1]
-    assert "models provider configure NAME [URL]" in output[-1]
-    assert "models config create [NAME]" in output[-1]
-    assert "models config check [NAME]" in output[-1]
+    assert "models provider" in output[-1]
+    assert "models config" in output[-1]
+    assert "models config list|create|show|check" in output[-1]
     assert "models assign LIFELINE NAME" in output[-1]
     assert "NATURAL LANGUAGE" in output[-1]
-    assert "language history|learned" in output[-1]
+    assert "language history" in output[-1]
+    assert "language learned" in output[-1]
     assert studio.execute("exit") is False
 
 
@@ -1953,7 +1865,9 @@ def test_studio_project_rename_changes_only_the_logical_manifest_name(tmp_path):
         "To" in line and "Reviewed Answer Tutorial" in line
         for line in output
     )
-    assert any("Root" in line and "unchanged" in line for line in output)
+    rendered = "\n".join(output)
+    assert "Root" in rendered
+    assert "unchanged" in rendered
 
 
 def test_studio_settings_are_global_while_language_data_stays_project_local(
@@ -2144,26 +2058,6 @@ def test_studio_parse_errors_receive_an_input_boundary(tmp_path):
     assert output[4].startswith("✗ Could not parse command:")
 
 
-def test_studio_project_and_prompt_commands_manage_visible_design_context(tmp_path):
-    studio, workspace, output = _studio(tmp_path)
-
-    studio.execute("project init Tutorial")
-    studio.execute("workflow prompts add First requirement")
-    studio.execute("workflow prompts add Second requirement")
-    studio.execute("workflow prompts move P002 before P001")
-    studio.execute("workflow prompts remove P001")
-    studio.execute("workflow prompts context")
-
-    assert workspace.project_manifest()["name"] == "Tutorial"
-    assert workspace.manifest_path.exists()
-    records = workspace.list_prompts()
-    assert [record["id"] for record in records] == ["P002", "P001"]
-    assert records[0]["active"] is True
-    assert records[1]["active"] is False
-    assert "Second requirement" in output[-1]
-    assert "First requirement" not in output[-1]
-
-
 def test_studio_project_reset_can_be_cancelled_without_changes(tmp_path):
     studio, workspace, output = _studio(tmp_path, responses=["n"])
     workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
@@ -2219,7 +2113,8 @@ def test_studio_project_reset_state_backs_up_only_private_context(tmp_path):
     assert (backups[0] / "project-local" / "current-task.md").exists()
     assert any(line == "Project reset" for line in output)
     assert any("✓ complete" in line for line in output)
-    assert any("✓ " + str(backups[0]) in line for line in output)
+    compact = "".join(line.strip() for line in output)
+    assert str(backups[0]) in compact
     assert studio._prompt() == "zippergen [no workflow]> "
 
 
@@ -2311,7 +2206,9 @@ def test_studio_project_reset_handles_a_missing_project_directory(tmp_path):
     studio.execute("project reset state --yes")
 
     assert workspace.current_workflow is None
-    assert any(str(root) in line and "missing" in line for line in output)
+    compact = "".join(line.strip() for line in output)
+    assert str(root) in compact
+    assert "missing" in compact
     assert any(
         "exit and recreate the project directory" in line for line in output
     )
@@ -2426,78 +2323,22 @@ def test_studio_spec_show_migrates_legacy_prompt_ledger_once(tmp_path):
     )
 
 
-def test_studio_legacy_prompt_ledger_is_read_only_after_migration(tmp_path):
+def test_studio_legacy_prompt_ledger_is_migrated_but_has_no_command_surface(
+    tmp_path,
+):
     studio, workspace, output = _studio(tmp_path)
     workspace.add_prompt(kind="initial", content="Create a reviewer.")
     studio.execute("workflow show spec")
 
-    try:
+    with pytest.raises(SystemExit, match="was retired"):
         studio.execute(
             "workflow prompts add This must not become hidden design intent"
         )
-    except SystemExit as exc:
-        assert "canonical specification" in str(exc)
-        assert "workflow refine" in str(exc)
-    else:
-        raise AssertionError("a migrated legacy ledger must be read-only")
 
     assert len(workspace.list_prompts()) == 1
     output.clear()
-    studio.execute("workflow prompts inspect P001")
+    studio.execute("workflow show spec")
     assert "Create a reviewer." in output
-
-
-def test_studio_prompt_table_inspection_path_archive_and_restore(tmp_path):
-    studio, workspace, output = _studio(tmp_path)
-    studio.execute("workflow prompts add Foundation: keep source visible")
-    studio.execute("workflow prompts add Add bounded retries")
-
-    records = workspace.list_prompts()
-    assert [record["kind"] for record in records] == ["initial", "refinement"]
-
-    output.clear()
-    studio.execute("workflow prompts")
-    assert output[0] == "Prompt summary"
-    assert "Prompt ledger" in output
-    assert any(
-        "ID" in line and "Kind" in line and "Status" in line and "Title" in line
-        for line in output
-    )
-    assert any("P001" in line and "initial" in line for line in output)
-    assert any("P002" in line and "refinement" in line for line in output)
-
-    output.clear()
-    studio.execute("workflow prompts inspect P002")
-    assert output[0] == "Prompt P002"
-    assert "Requirement" in output
-    assert any("Position" in line and "2" in line for line in output)
-
-    output.clear()
-    studio.execute("workflow prompts path P002")
-    assert output == [str(workspace.root / str(records[1]["file"]))]
-
-    studio.execute("workflow prompts archive P002")
-    assert workspace.prompt("P002")["active"] is False
-    assert "Add bounded retries" not in workspace.prompt_context()
-
-    studio.execute("workflow prompts restore P002")
-    assert workspace.prompt("P002")["active"] is True
-    assert "Add bounded retries" in workspace.prompt_context()
-
-
-def test_studio_replacement_preserves_prompt_history(tmp_path):
-    studio, workspace, output = _studio(tmp_path)
-
-    studio.execute("workflow prompts add Keep retries bounded")
-    studio.execute("workflow prompts replace P001 Use exactly three retries")
-    studio.execute("workflow prompts")
-
-    records = workspace.list_prompts()
-    assert [record["id"] for record in records] == ["P001", "P002"]
-    assert records[0]["active"] is False
-    assert records[1]["replaces"] == "P001"
-    assert any("P001" in line and "archived" in line for line in output)
-    assert any("P002" in line and "active" in line for line in output)
 
 
 def test_studio_handoff_contains_canonical_spec_and_pending_refinement(tmp_path):
@@ -2896,6 +2737,7 @@ def test_studio_run_accepts_an_llm_override(tmp_path, monkeypatch):
     studio.execute("run openai:gpt-4o-mini")
 
     assert calls[0]["llm"] == "openai:gpt-4o-mini"
+    assert calls[0]["renderer"] is studio._renderer
 
 
 def test_studio_run_accepts_an_assistant_action_backend(tmp_path, monkeypatch):

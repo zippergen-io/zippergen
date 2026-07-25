@@ -331,6 +331,33 @@ def test_studio_commands_remember_workflow_and_render_code(
     assert len(workspace_states) == 1
 
 
+def test_studio_command_mode_renders_errors_and_fails_fast(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(tmp_path / "zg-home"))
+
+    rc = main(
+        [
+            "studio",
+            "--project",
+            str(tmp_path),
+            "--command",
+            "workflow validate",
+            "--command",
+            "project init MustNotRun",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "✗ " in captured.out
+    assert "workflow" in captured.out.casefold()
+    assert not (tmp_path / "zippergen.toml").exists()
+    assert captured.err == ""
+
+
 def test_dev_command_creates_a_managed_durable_run(tmp_path, monkeypatch, capsys):
     workflow_path = tmp_path / "dev_workflow.py"
     workflow_path.write_text(WORKFLOW_SOURCE)

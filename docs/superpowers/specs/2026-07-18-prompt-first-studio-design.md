@@ -3,6 +3,14 @@
 **Date:** 2026-07-18
 **Status:** Design/inspection layer implemented; execution slice retained
 
+> Historical design record. The product vocabulary and first-run interaction
+> evolved after this proposal: current Studio uses the `workflow ...` command
+> family, one canonical `specification.md` plus at most one pending refinement,
+> and an editor-first creation flow. The former ordered prompt ledger and the
+> inline `create` transcript below are retained to explain the design history,
+> not as current command documentation. See the README and
+> `docs/workflow-development-deployment-guide.tex` for the current interface.
+
 ## Product promise
 
 A new user should be able to describe a workflow, inspect the generated Python

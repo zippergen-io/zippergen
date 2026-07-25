@@ -19,6 +19,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Literal
 
+from zippergen.studio_commands import natural_command_catalog
 
 NATURAL_LANGUAGE_SCHEMA_VERSION = 1
 InterpretationSource = Literal["deterministic", "learned", "codex", "claude"]
@@ -33,6 +34,7 @@ class NaturalCommandPlan:
     source: InterpretationSource
     clarification: str | None = None
     learned_id: str | None = None
+    requires_confirmation: bool = False
 
 
 def normalize_request(value: str) -> str:
@@ -55,6 +57,44 @@ def looks_sensitive(value: str) -> bool:
     """Return whether prose appears to contain a secret value."""
 
     return any(pattern.search(value) for pattern in _SECRET_PATTERNS)
+
+
+def requirement_proposal(
+    request: str,
+    *,
+    has_specification: bool,
+) -> NaturalCommandPlan | None:
+    """Offer unmatched design prose as explicit project intent."""
+
+    text = normalize_request(request)
+    words = text.split()
+    if len(words) < 4:
+        return None
+    if re.match(
+        r"^(?:how|what|where|when|why|show|inspect|check|status|help)\b",
+        text,
+    ):
+        return None
+    design_signal = re.search(
+        r"\b(?:workflow|application|agent|participant|lifeline|writer|reviewer|"
+        r"approval|approver|requester|model|llm|retry|connector)\b",
+        text,
+    )
+    intent_signal = re.search(
+        r"\b(?:create|build|make|design|add|change|modify|require|should|must|"
+        r"i want|i need)\b",
+        text,
+    )
+    if not design_signal or not intent_signal:
+        return None
+    action = "refine" if has_specification else "create"
+    noun = "refinement" if has_specification else "initial specification"
+    return NaturalCommandPlan(
+        f"Treat this prose as the {noun}.",
+        (shlex.join(["workflow", action, request.strip()]),),
+        "deterministic",
+        requires_confirmation=True,
+    )
 
 
 def _canonical_name(value: str, names: tuple[str, ...]) -> str | None:
@@ -137,6 +177,39 @@ def deterministic_plan(
     if not text:
         return None
     configurations = dict(model_configurations or {})
+
+    if text in {
+        "help me get started",
+        "help me start",
+        "how do i get started",
+        "what should i do",
+    }:
+        return NaturalCommandPlan(
+            "Show the short Studio path.",
+            ("help",),
+            "deterministic",
+        )
+
+    if text in {"start over", "start the project over", "reset everything"}:
+        return NaturalCommandPlan(
+            "Archive the current design cycle and start fresh.",
+            ("project reset fresh",),
+            "deterministic",
+        )
+
+    if text in {"run it", "run this", "run the current workflow"}:
+        return NaturalCommandPlan(
+            "Run the selected workflow.",
+            ("run",),
+            "deterministic",
+        )
+
+    if text in {"stop it", "stop the deployment", "stop this deployment"}:
+        return NaturalCommandPlan(
+            "Stop the remembered deployment.",
+            ("stop",),
+            "deterministic",
+        )
 
     project_rename_match = re.fullmatch(
         r"(?:please\s+)?rename\s+(?:the\s+)?project\s+"
@@ -488,63 +561,7 @@ def parse_cli_plan(value: str, *, source: Literal["codex", "claude"]) -> Natural
     )
 
 
-COMMAND_CATALOG = """\
-Read-only:
-- current
-- project show
-- settings
-- workflow
-- workflow show spec | workflow show pending
-- workflow list | workflow files | workflow show source [PATH]
-- workflow show overview | workflow show protocol
-- workflow show communications | workflow show actions | workflow show full
-- workflow show agent PARTICIPANT | workflow show agents PARTICIPANT...
-- workflow status | workflow review | workflow validate
-- workflow history | workflow path
-- models
-- models provider list | models provider check [NAME|all]
-- models config list | models config show [NAME]
-- models config check [NAME|all] | models assignments
-- runs
-- status [DEPLOYMENT] | doctor [DEPLOYMENT] | logs [DEPLOYMENT]
-
-Local configuration and development:
-- project init [NAME]
-- project rename NAME
-- studio restart
-- settings set learning on|off
-- settings set interpreter auto|codex|claude|off
-- settings set assistant codex|claude
-- settings set editor COMMAND
-- settings set output banner|compact
-- settings reset [learning|interpreter|assistant|editor|output|all]
-- workflow create DESCRIPTION
-- workflow refine DESCRIPTION
-- workflow edit spec | workflow edit code
-- workflow select [NUMBER|NAME|PATH.py:WORKFLOW]
-- workflow accept | workflow discard
-- models setup
-- models provider configure NAME [BASE_URL]
-- models provider remove local|openai|anthropic|mistral
-- models config create [NAME]
-- models config edit NAME | models config rename OLD_NAME NEW_NAME
-- models config remove NAME
-- models default CONFIGURATION
-- models assign PARTICIPANT CONFIGURATION
-- models inherit PARTICIPANT
-- editor show | editor set COMMAND | editor reset
-- edit file PATH
-
-Execution and deployment:
-- run [MODEL] [--assistant codex|claude]
-- resume
-- workflow implement [codex|claude]
-- deploy [NAME] [--no-start]
-- start [NAME] | restart [NAME] | stop [NAME]
-
-Never produce exit, quit, arbitrary shell commands, chained shell syntax, secret
-values, or a command not present in this catalogue.
-"""
+COMMAND_CATALOG = natural_command_catalog()
 
 
 def interpreter_prompt(

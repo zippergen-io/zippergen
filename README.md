@@ -68,6 +68,9 @@ The public command surface follows three themes:
 This keeps related steps together. For example, the complete design loop is
 discoverable below `workflow`, from `workflow create` through `workflow
 implement`, the guided `workflow review`, and `workflow accept`.
+Plain `help` shows that short path and the three themes; `help all` prints the
+complete exact reference. Command metadata is declared once and reused for
+help, completion, natural-language permissions, and risk classification.
 
 After updating an editable ZipperGen checkout in another terminal, enter
 `studio restart` to replace the current Studio process and import the updated
@@ -77,6 +80,13 @@ saved on disk; it does not start a nested Studio. This command does not run
 update changes dependencies, leave Studio, run `uv sync` (or reinstall the
 tool), and start `zippergen` again. Plain `restart [NAME]` remains the command
 for restarting a deployment.
+
+`studio doctor` checks the local development front door without contacting a
+model provider: project manifest, terminal editor, configured coding
+assistant, and natural-language interpreter fallback. The welcome banner
+reports coding-assistant availability and one lifecycle-aware `Next` command.
+Codex and Claude remain optional external tools with their own installation
+and authentication; they are not Python package dependencies.
 
 For workflow development, the application project may be separate from the
 framework checkout. This is especially useful while developing ZipperGen from
@@ -163,6 +173,9 @@ section title and rule, explicit column headings, a second rule separating
 those headings from actual rows, and a standalone `Next` section when guidance
 is useful. Status messages precede the data they describe. Project, workflow,
 model, language, run, and deployment output all use this shared rendering.
+Long values and multi-column rows wrap within the terminal width rather than
+extending beyond their rules. Managed `run` and `resume` output uses the same
+renderer instead of printing a separate set of bare status strings.
 
 `current` is the concise project dashboard: project and manifest, canonical
 specification and pending-refinement state, workflow name, all participants,
@@ -293,6 +306,18 @@ read-only and clear reversible operations directly, and asks before execution
 or destructive operations. `plan TEXT` forces preview-only interpretation,
 while `ask TEXT` explicitly requests interpretation and execution.
 
+Unmatched prose that clearly describes an application is handled specially.
+Before a specification exists, Studio offers to treat it as `workflow create`;
+afterward, it offers `workflow refine`. The exact proposed command is displayed
+and requires confirmation. Other unmatched prose still uses the configured
+read-only CLI fallback, so an operational sentence is never silently added to
+the specification.
+
+Ambiguous short phrases are interpreted in context: `run it` means the selected
+workflow, `stop it` means the remembered deployment, and `start over` proposes
+a recoverable fresh-design reset. Explicit deployment verbs with a name are
+recognized as commands only when that deployment exists or is remembered.
+
 `settings` shows preferences shared by every local ZipperGen project:
 learning policy, natural-language interpreter, default coding assistant,
 terminal editor, and output style. For example:
@@ -344,6 +369,14 @@ Studio tries `$VISUAL`, `$EDITOR`, then `micro`, `nano`, `vim`, and `vi`.
 directly in the existing terminal; this uses neither an LLM nor MCP. Commands
 with arguments must be quoted for one-off use, for example
 `--editor "code --wait"`.
+
+Before handing the terminal to the editor, Studio prints the automatic file,
+effective editor, and the instruction to save and exit in order to return.
+
+Older ordered prompt ledgers are read only for one-time migration into
+`specification.md`. The former `workflow prompts` command has been removed;
+new projects have one canonical specification and at most one pending
+refinement.
 
 After saving the specification and leaving the editor, Studio prepares the
 coding-assistant handoff:
