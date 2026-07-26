@@ -1,0 +1,481 @@
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage{amssymb}
+\usepackage[margin=24mm]{geometry}
+\usepackage{xcolor}
+\usepackage{microtype}
+\DisableLigatures{encoding=T1,family=tt*}
+\usepackage{enumitem}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{listings}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning}
+\usepackage{fancyhdr}
+\usepackage{hyperref}
+
+\definecolor{ZipperInk}{HTML}{17212B}
+\definecolor{ZipperBlue}{HTML}{176B87}
+\definecolor{ZipperLight}{HTML}{EEF6F8}
+\definecolor{CodeBackground}{HTML}{F5F7F8}
+\definecolor{CodeComment}{HTML}{58715D}
+\definecolor{CodeKeyword}{HTML}{7A3E9D}
+\definecolor{WarningBorder}{HTML}{B7791F}
+\definecolor{ZipperGreen}{HTML}{2F855A}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=ZipperBlue,
+  urlcolor=ZipperBlue,
+  citecolor=ZipperBlue,
+  pdftitle={Your First ZipperGen Workflow},
+  pdfauthor={The ZipperGen Authors}
+}
+
+\pagestyle{fancy}
+\fancyhf{}
+\lhead{Your first ZipperGen workflow}
+\rhead{Prompt to prepared deployment}
+\cfoot{\thepage}
+\setlength{\headheight}{14pt}
+
+\setlist[itemize]{topsep=4pt,itemsep=2pt}
+\setlist[enumerate]{topsep=4pt,itemsep=3pt}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{6pt}
+
+\lstset{
+  basicstyle=\ttfamily\small,
+  backgroundcolor=\color{CodeBackground},
+  frame=single,
+  rulecolor=\color{black!18},
+  breaklines=true,
+  breakatwhitespace=false,
+  columns=fullflexible,
+  keepspaces=true,
+  showstringspaces=false,
+  upquote=true,
+  keywordstyle=\color{CodeKeyword}\bfseries,
+  commentstyle=\color{CodeComment},
+  stringstyle=\color{ZipperBlue},
+  numbers=none
+}
+
+\lstdefinestyle{shell}{
+  language=bash,
+  numbers=none
+}
+
+\tikzset{
+  zgstage/.style={
+    draw=ZipperBlue,
+    fill=ZipperLight,
+    very thick,
+    rounded corners=2.5pt,
+    align=center,
+    minimum height=12mm,
+    inner sep=4pt,
+    font=\small
+  },
+  zgflow/.style={-{Latex[length=2.2mm,width=1.5mm]}, thick, draw=ZipperBlue}
+}
+
+\newenvironment{notebox}[1]
+{\begin{center}\begin{minipage}{0.94\linewidth}
+ \color{ZipperInk}\hrule\vspace{5pt}\textbf{#1}\par\smallskip}
+{\vspace{5pt}\hrule\end{minipage}\end{center}}
+
+\newenvironment{warningbox}[1]
+{\begin{center}\begin{minipage}{0.94\linewidth}
+ \color{WarningBorder}\hrule\vspace{5pt}
+ \color{ZipperInk}\textbf{#1}\par\smallskip}
+{\vspace{5pt}\color{WarningBorder}\hrule\end{minipage}\end{center}}
+
+\title{\color{ZipperInk}\Huge\textbf{Your First ZipperGen Workflow}\\[5pt]
+\Large A short path from a prompt to a prepared deployment}
+\author{The ZipperGen Authors}
+\date{Tutorial edition: 26 July 2026}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+This tutorial builds one small multi-participant application from beginning to
+end. You will describe it in ordinary language, ask a coding assistant to
+produce visible Python, inspect and validate the resulting protocol, run it
+with a free mock model, interrupt and resume it, review it, and prepare a named
+deployment. Optional configuration and complete command explanations are kept
+in the companion manual so that the first successful cycle stays short.
+\end{abstract}
+
+\begin{notebox}{What you need}
+Use macOS or Linux, a terminal, Git, and the \texttt{uv} Python tool. Codex or
+Claude Code is needed for prompt-to-code generation. If neither is installed,
+the repository contains a complete fallback workflow so that inspection,
+durable execution, and deployment can still be tried without an API key.
+\end{notebox}
+
+\section*{What you are about to build}
+
+The example accepts a request, lets a Writer draft an answer, asks a Reviewer
+to assess every draft, and leaves the final decision to a human. A rejected
+draft returns to the Writer while a bounded retry budget remains. An
+unapproved draft must never be returned.
+
+This is a protocol, not merely a list of agents. One global Python workflow
+states who owns each value, who communicates with whom, and who owns each
+decision. ZipperGen projects that global workflow into an exact local program
+for every participant. Validation checks the global protocol and all of those
+projections before execution.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=6mm]
+  \node[zgstage, text width=21mm] (spec) {Human-readable\\specification};
+  \node[zgstage, text width=21mm, right=of spec] (code) {Visible Python\\protocol};
+  \node[zgstage, text width=21mm, right=of code] (check) {Inspect and\\validate};
+  \node[zgstage, text width=21mm, right=of check] (run) {Durable run\\and resume};
+  \node[zgstage, text width=21mm, right=of run] (deploy) {Named\\deployment};
+  \draw[zgflow] (spec) -- (code);
+  \draw[zgflow] (code) -- (check);
+  \draw[zgflow] (check) -- (run);
+  \draw[zgflow] (run) -- (deploy);
+\end{tikzpicture}
+\caption{The first-workflow path. A coding assistant may propose the Python,
+but inspection, validation, human review, and deployment remain explicit.}
+\end{figure}
+
+\begin{notebox}{The safety boundary}
+A coding-assistant process returning does not mean that its requested checks
+passed. Studio records those facts separately. Generated code is always
+reviewed before it is accepted, run, or deployed; opaque model output is never
+treated as an automatically deployed workflow.
+\end{notebox}
+
+\section{Create the project and install ZipperGen}
+
+The tutorial project is the outer directory. The ZipperGen framework checkout
+lives below it:
+
+\begin{lstlisting}[style=shell]
+mkdir -p "$HOME/Projects"
+cd "$HOME/Projects"
+mkdir zippergen-tutorial
+cd "$HOME/Projects/zippergen-tutorial"
+git init
+git clone https://github.com/zippergen-io/zippergen.git zippergen
+uv python install 3.12
+uv sync --project zippergen --python 3.12
+uv tool install --force --editable ./zippergen
+\end{lstlisting}
+
+This layout gives the application its own Git history and lets a
+repository-aware assistant work from the application root. The editable tool
+still uses the nested framework checkout. If \texttt{uv} is not installed,
+follow \url{https://docs.astral.sh/uv/getting-started/installation/}, restart
+the terminal if requested, and repeat the commands beginning with
+\texttt{uv python install}.
+
+\section{Open Studio and initialize the project}
+
+Remain in the outer project directory:
+
+\begin{lstlisting}[style=shell]
+cd "$HOME/Projects/zippergen-tutorial"
+zippergen
+\end{lstlisting}
+
+The beginning reports the project root, whether Codex or Claude is available,
+and one suggested next command. At the Studio prompt, enter:
+
+\begin{lstlisting}[style=shell]
+project init zippergen-tutorial
+\end{lstlisting}
+
+Studio creates \path{zippergen.toml} and safe Git ignores. It stores
+machine-specific runs and secrets outside the repository, so this tutorial
+does not require a \texttt{ZIPPERGEN\_HOME} export or a hand-written SQLite
+path.
+
+From now on, commands such as \texttt{workflow create}, \texttt{run}, and
+\texttt{deploy} are Studio commands. Do not prefix them with
+\texttt{zippergen}. Press Tab for completion or enter \texttt{help} if the next
+step is forgotten.
+
+\section{Write the workflow specification}
+
+Enter:
+
+\begin{lstlisting}[style=shell]
+workflow create
+\end{lstlisting}
+
+Studio creates the fixed file \path{specification.md} and opens it in an
+automatically discovered terminal editor. You do not choose a prompt filename.
+Replace the short writing guide with the following specification, save, and
+exit the editor:
+
+\begin{lstlisting}
+# Reviewed Answer
+
+Produce a helpful answer to a request, subject to automated review and explicit
+human approval.
+
+## Participants and behavior
+
+- Requester initially owns `request` and `max_retries`.
+- Writer uses an LLM to draft and revise an answer.
+- Reviewer uses a separate LLM to assess every draft.
+- After the automated assessment, a human approves or rejects the draft.
+- A rejection sends the draft back to Writer while retries remain.
+- Never return an unapproved draft. Return an explicit failure after retry
+  exhaustion.
+
+## Inputs and operation
+
+- The application accepts a `request` input, defaulting to
+  `Explain why the sky is blue in two sentences.`
+- It accepts an integer `max_retries` input, defaulting to `2`.
+- Use the deterministic mock model by default.
+- A deployment may instead use OpenAI or Anthropic. Request the corresponding
+  API key only when that provider is selected.
+\end{lstlisting}
+
+The durable design intent now lives in one ordinary, versionable file.
+Development mechanics such as filenames, tests, validation commands, and the
+prohibition on automatic deployment are added by Studio to the generated
+assistant task; they do not have to be copied into the specification.
+
+\section{Produce visible Python}
+
+The Studio welcome message says whether a supported assistant is available.
+Choose exactly one:
+
+\begin{lstlisting}[style=shell]
+workflow implement codex
+# Or:
+workflow implement claude
+\end{lstlisting}
+
+Studio passes the current specification and repository rules automatically.
+The assistant works synchronously in the project, reports its verification
+checks, and returns to the same Studio prompt. No request path has to be copied
+and there is no background assistant job.
+
+After it returns, enter:
+
+\begin{lstlisting}[style=shell]
+workflow status
+\end{lstlisting}
+
+The expected state is \emph{awaiting human review}. Verification is reported
+separately as passed, failed, or incomplete. Do not accept a result with
+unresolved failures.
+
+\begin{notebox}{If no coding assistant is installed}
+The prompt-to-code step necessarily needs a repository-aware coding assistant,
+but the rest of ZipperGen does not. Leave Studio with \texttt{exit}, then
+select the repository's known workflow directly:
+\begin{lstlisting}[style=shell]
+cd "$HOME/Projects/zippergen-tutorial"
+zippergen studio zippergen/examples/tutorial_review.py:tutorial_review
+\end{lstlisting}
+Continue with Section~5. The prompt-generated workflow and the shipped example
+have similar review-and-retry behavior. Skip the implementation-acceptance
+instruction in Section~8 because the shipped source is not an open assistant
+result.
+\end{notebox}
+
+\section{Discover, select, and inspect the workflow}
+
+For assistant-generated source, enter:
+
+\begin{lstlisting}[style=shell]
+workflow list
+workflow select
+\end{lstlisting}
+
+Studio lists top-level \texttt{@workflow} entry points. Select the new
+reviewed-answer workflow by number. A displayed reference such as
+\texttt{workflows/reviewed\_answer.py:reviewed\_answer} means
+\emph{Python file: workflow object}; it is not a deployment name.
+
+Now inspect the authored source and the semantic protocol:
+
+\begin{lstlisting}[style=shell]
+workflow files
+workflow show source
+workflow show protocol
+workflow show communications
+workflow show agent Writer
+workflow show agent Reviewer
+workflow show full
+\end{lstlisting}
+
+\texttt{workflow files} reveals supporting modules and declared resources.
+The protocol view shows the global behavior; communications hides local
+actions; an agent view is that participant's exact projection; the full view
+includes actions, prompts, and deployment metadata.
+
+Check five things before continuing:
+
+\begin{enumerate}
+  \item Requester initially owns both inputs.
+  \item Writer and Reviewer communicate explicitly.
+  \item The participant that knows the retry condition owns that decision.
+  \item Every revised draft returns to review and human approval.
+  \item No unapproved draft can reach Requester.
+\end{enumerate}
+
+\section{Validate and use the mock model}
+
+Inspection answers what the code says. Validation additionally checks the
+global protocol, ownership, action metadata, deployment declarations, and
+every generated projection:
+
+\begin{lstlisting}[style=shell]
+workflow validate
+models default mock
+models assignments
+\end{lstlisting}
+
+A green validation result means the deterministic checks passed; it is not a
+claim that the prompts are useful or the application intent is correct. The
+built-in mock model needs no account, network connection, or API key.
+\texttt{models assignments} should list Writer and Reviewer because they
+contain LLM actions.
+
+\section{Run, interrupt, and resume}
+
+Enter:
+
+\begin{lstlisting}[style=shell]
+run
+\end{lstlisting}
+
+Studio validates the selected workflow and asks for its declared inputs. Press
+Enter to accept the default request, enter \texttt{3} for
+\texttt{max\_retries}, reject the first draft with \texttt{n}, and approve the
+revision with \texttt{y}. Mock output such as
+\texttt{[draft\_reply:draft]} is expected; the important result is the visible
+coordination and second review.
+
+Run it once more. At the human approval question press Control-C. Studio should
+return to its prompt and record the managed run as interrupted. Enter:
+
+\begin{lstlisting}[style=shell]
+current
+resume
+\end{lstlisting}
+
+The same pending decision reappears. Studio reuses the recorded inputs, model
+routing, and unique SQLite store. To prove that this is not merely in-memory
+state, interrupt again, leave Studio, open a new terminal, and run:
+
+\begin{lstlisting}[style=shell]
+cd "$HOME/Projects/zippergen-tutorial"
+zippergen
+current
+resume
+\end{lstlisting}
+
+No export or store path needs to be reconstructed after the terminal closes or
+the computer restarts.
+
+\section{Review and accept assistant-generated work}
+
+If a coding assistant created the workflow, enter:
+
+\begin{lstlisting}[style=shell]
+workflow review
+\end{lstlisting}
+
+The guided review offers the specification, source, semantic views,
+validation, a development run, and final acceptance. Choose
+\emph{Accept reviewed implementation} only after the visible code and checks
+are satisfactory. Acceptance records the human decision; it does not delete
+the specification, source, tests, run history, or private assistant history.
+
+In an ordinary terminal, inspect the versioned result:
+
+\begin{lstlisting}[style=shell]
+cd "$HOME/Projects/zippergen-tutorial"
+git status --short
+git diff --check
+git diff
+\end{lstlisting}
+
+Do not commit secrets. A commit is a useful local recovery point, but pushing
+is a separate decision and is not required for local deployment.
+
+\section{Prepare a named deployment}
+
+Return to Studio. Keep the mock model selected and prepare the deployment
+without starting a background service:
+
+\begin{lstlisting}[style=shell]
+models default mock
+deploy reviewed-answer-tutorial --no-start
+doctor
+status
+\end{lstlisting}
+
+\texttt{deploy} validates the workflow, collects declared inputs, snapshots
+the deployment files, creates its managed Python environment, and remembers
+the deployment name. The \texttt{--no-start} flag deliberately leaves the
+service stopped. \texttt{doctor} checks readiness; \texttt{status} explains
+the current operational state. Warnings about a missing first-run log or store
+and an uninstalled service are expected before the first start; a red failure
+must be investigated.
+
+\begin{warningbox}{Starting is an operational action}
+Continue only on your own development machine, with the mock model, when
+starting a user service is intentional. A real provider can cost money and a
+workflow effect can change an external system.
+\end{warningbox}
+
+When the readiness checks are acceptable:
+
+\begin{lstlisting}[style=shell]
+start
+status
+logs
+stop
+\end{lstlisting}
+
+The finite workflow should reach a waiting human task. \texttt{stop} prevents
+the tutorial service from being supervised indefinitely; it preserves the
+deployment profile, bundle, log, and durable store. If no supported macOS or
+Linux user service manager is available, the prepared deployment is still
+valid. Stop at the reported error and use the manual's foreground-deployment
+section later.
+
+\section{What you have established}
+
+You have now completed the essential ZipperGen cycle:
+
+\begin{itemize}
+  \item durable intent in \path{specification.md};
+  \item visible Python proposed by an assistant, or known shipped source;
+  \item global and participant-level inspection;
+  \item deterministic validation of every projection;
+  \item a free mock execution with explicit human authority;
+  \item interruption and recovery from the same SQLite history;
+  \item explicit human review of generated work; and
+  \item a named, diagnosed deployment prepared before service startup.
+\end{itemize}
+
+The companion
+\path{docs/workflow-development-deployment-guide.tex} is the complete manual.
+Use it next for real provider connections and reusable model configurations,
+refinement, semantic diffs, external approval adapters, secrets, foreground
+deployment, logs, restart, recovery, troubleshooting, and the complete command
+sheet. Build this tutorial alone with \texttt{make docs-first-workflow}, or
+both documents with \texttt{make docs}; \path{docs/README.md} lists the TeX
+requirements.
+
+\end{document}

@@ -1,11 +1,15 @@
-DOC_NAME := workflow-development-deployment-guide
 DOC_DIR := docs
 DOC_BUILD_DIR := $(DOC_DIR)/_build
-DOC_SOURCE := $(DOC_NAME).tex
+FIRST_WORKFLOW_DOC := first-workflow
+MANUAL_DOC := workflow-development-deployment-guide
+DOC_NAMES := $(FIRST_WORKFLOW_DOC) $(MANUAL_DOC)
+DOC_SOURCES := $(addprefix $(DOC_DIR)/,$(addsuffix .tex,$(DOC_NAMES)))
 
-.PHONY: docs docs-check
+.PHONY: docs docs-check docs-first-workflow docs-manual
 
-docs: docs-check
+docs: docs-first-workflow docs-manual
+
+docs-first-workflow: docs-check
 	@mkdir -p "$(DOC_BUILD_DIR)"
 	@cd "$(DOC_DIR)" && latexmk \
 		-pdf \
@@ -13,8 +17,19 @@ docs: docs-check
 		-halt-on-error \
 		-file-line-error \
 		-outdir=_build \
-		"$(DOC_SOURCE)"
-	@printf 'Built %s/%s.pdf\n' "$(DOC_BUILD_DIR)" "$(DOC_NAME)"
+		"$(FIRST_WORKFLOW_DOC).tex"
+	@printf 'Built %s/%s.pdf\n' "$(DOC_BUILD_DIR)" "$(FIRST_WORKFLOW_DOC)"
+
+docs-manual: docs-check
+	@mkdir -p "$(DOC_BUILD_DIR)"
+	@cd "$(DOC_DIR)" && latexmk \
+		-pdf \
+		-interaction=nonstopmode \
+		-halt-on-error \
+		-file-line-error \
+		-outdir=_build \
+		"$(MANUAL_DOC).tex"
+	@printf 'Built %s/%s.pdf\n' "$(DOC_BUILD_DIR)" "$(MANUAL_DOC)"
 
 docs-check:
 	@command -v latexmk >/dev/null 2>&1 || { \
@@ -39,11 +54,12 @@ docs-check:
 			exit 1; \
 		}; \
 	done
-	@test -f "$(DOC_DIR)/$(DOC_SOURCE)" || { \
-		printf 'Error: document source is missing: %s/%s\n' \
-			"$(DOC_DIR)" "$(DOC_SOURCE)"; \
-		exit 1; \
-	}
+	@for source in $(DOC_SOURCES); do \
+		test -f "$$source" || { \
+			printf 'Error: document source is missing: %s\n' "$$source"; \
+			exit 1; \
+		}; \
+	done
 	@test -f "examples/tutorial_review.py" || { \
 		printf '%s\n' \
 			'Error: imported tutorial source is missing: examples/tutorial_review.py'; \

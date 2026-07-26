@@ -33,6 +33,14 @@ Clicking a human action opens a detail view with the full context and a form to 
 
 ## Quick start
 
+New to ZipperGen? Follow
+**[Your First ZipperGen Workflow](docs/first-workflow.tex)** for the short,
+self-contained path from a new project and natural-language specification to
+inspection, durable mock execution, recovery, and a prepared deployment. Use
+the **[Development and Deployment Manual](docs/workflow-development-deployment-guide.tex)**
+for concepts, complete configuration, command reference, operations, and
+troubleshooting.
+
 ```bash
 git clone https://github.com/zippergen-io/zippergen.git
 cd zippergen
@@ -926,13 +934,15 @@ SQLite mode a completed result is journaled and replayed without launching the
 assistant again. The requested file operation should still be restart-safe:
 the process could fail after files change but before the result is recorded.
 
-For a complete beginner-oriented walkthrough—from installation and a mock
-workflow through prompt-driven refinement, semantic diff, durable approval,
-guided deployment, and supervised operation—see
-[`docs/workflow-development-deployment-guide.tex`](docs/workflow-development-deployment-guide.tex).
-The repository contains all of its source dependencies. Build it from the Git
-root with `make docs`; see [`docs/README.md`](docs/README.md) for the TeX
-requirements and troubleshooting.
+The short
+[`docs/first-workflow.tex`](docs/first-workflow.tex) tutorial owns the first
+successful prompt-to-deployment sequence. The comprehensive
+[`docs/workflow-development-deployment-guide.tex`](docs/workflow-development-deployment-guide.tex)
+manual covers refinement, semantic diff, durable approval, model configuration,
+guided deployment, supervised operation, and troubleshooting in depth. The
+repository contains all source dependencies. Build both from the Git root with
+`make docs`; see [`docs/README.md`](docs/README.md) for individual targets, TeX
+requirements, and troubleshooting.
 
 ## Local Deployment
 

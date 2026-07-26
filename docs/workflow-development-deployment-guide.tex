@@ -35,14 +35,14 @@
   linkcolor=ZipperBlue,
   urlcolor=ZipperBlue,
   citecolor=ZipperBlue,
-  pdftitle={ZipperGen Workflow Development and Deployment},
+  pdftitle={ZipperGen Workflow Development and Deployment Manual},
   pdfauthor={The ZipperGen Authors}
 }
 
 \pagestyle{fancy}
 \fancyhf{}
-\lhead{ZipperGen development and deployment}
-\rhead{Beginner's end-to-end guide}
+\lhead{ZipperGen manual}
+\rhead{Development and deployment}
 \cfoot{\thepage}
 \setlength{\headheight}{14pt}
 
@@ -135,28 +135,32 @@
  \color{ZipperInk}\textbf{#1}\par\smallskip}
 {\vspace{5pt}\color{WarningBorder}\hrule\end{minipage}\end{center}}
 
-\title{\color{ZipperInk}\Huge\textbf{ZipperGen Workflow Development and Deployment}\\[5pt]
-\Large A complete prompt-to-production guide for beginning users}
+\title{\color{ZipperInk}\Huge\textbf{ZipperGen Workflow Development and Deployment Manual}\\[5pt]
+\Large Concepts, commands, configuration, runtime, and operations}
 \author{The ZipperGen Authors}
-\date{Guide edition: 22 July 2026}
+\date{Manual edition: 26 July 2026}
 
 \begin{document}
 
 \maketitle
 
 \begin{abstract}
-This guide walks through one complete ZipperGen development cycle. It begins
-with ZipperGen Studio, the recommended one-terminal path for selecting,
-maintaining one canonical specification, inspecting project/workflow state, assigning
-models and providers, running, resuming, refining, and deploying a workflow
-without managing environment exports, SQLite filenames, or human-task
-identifiers.
-The remainder then explains every underlying command and artifact in detail:
-installation, code views, durable approval, coding-assistant refinement,
-semantic comparison, named deployment, logs, diagnosis, restart, and stop. It
-is written for readers who can use a terminal and editor but do not need to be
-experienced Python or operations engineers.
+This manual is the comprehensive reference for developing and operating
+ZipperGen applications. It explains the Studio lifecycle, global workflows and
+local projections, specifications and coding-assistant handoffs, model
+configuration, semantic inspection, durable execution, human approval,
+deployment, supervision, recovery, troubleshooting, and the corresponding
+scriptable commands. It is written for readers who can use a terminal and
+editor but do not need to be experienced Python or operations engineers.
 \end{abstract}
+
+\begin{notebox}{Looking for the shortest path?}
+The companion \path{docs/first-workflow.tex} is the self-contained first-hour
+tutorial. It goes directly from a new directory to a specified, inspected,
+mock-run, resumed, and prepared deployment. Start there when building a first
+workflow; return to this manual when a step needs more explanation or when
+configuring real models and production operations.
+\end{notebox}
 
 \begin{notebox}{The main promise}
 The workflow is always ordinary Python code. A coding assistant may create or
@@ -171,7 +175,7 @@ opaque model output as an automatically deployed workflow.
 \tableofcontents
 \newpage
 
-\section{Start here: the ZipperGen Studio path}
+\section{The ZipperGen Studio lifecycle}
 \label{sec:studio}
 
 ZipperGen Studio is the recommended way to experience the development cycle.
@@ -180,8 +184,9 @@ terminal. It does not replace the operating-system shell, Git, the editor, or
 the visible Python workflow. Instead, it remembers the project context and
 turns the most common operations into short, discoverable commands.
 
-This opening section is self-contained: it creates a user-owned workflow
-project and clones the ZipperGen framework below it. The project root contains
+This section records the complete Studio lifecycle, including optional
+configuration and migration details. The shorter companion tutorial deliberately
+omits those branches. Here, the project root contains
 the canonical specification, generated workflows, tests, and its own Git history; the nested
 \path{zippergen} directory contains the framework checkout. Readers who already
 have both may skip only that first subsection. Section~\ref{sec:install} later
@@ -240,7 +245,7 @@ top-level commands. You do not run \texttt{models} here: \texttt{models} is a
 short command entered later inside Studio.
 
 \begin{notebox}{If your existing tutorial checkout is flat}
-An older version of this guide cloned ZipperGen directly into
+An older version of this manual cloned ZipperGen directly into
 \path{zippergen-tutorial}. In that layout the project root itself contains
 \path{AGENTS.md}, \path{pyproject.toml}, and \path{src}, and
 there is no nested \path{zippergen} directory. Do not add a
@@ -488,158 +493,18 @@ The managed \texttt{run} and \texttt{resume} commands use this same renderer;
 they do not switch to a second set of bare runtime messages.
 \end{notebox}
 
-\subsubsection*{Step 1a: use commands or ordinary language}
-
-Studio's exact commands remain the durable, scriptable interface, but they do
-not have to be memorized. At the Studio prompt, try:
-
-\begin{lstlisting}[style=shell]
-What is the current state?
-Show me the whole protocol.
-Assign the mock model to Writer.
-Please restart ZipperGen Studio.
-\end{lstlisting}
-
-The first request becomes \texttt{current}; after a workflow is selected, the
-second becomes \texttt{workflow show protocol}, and the third becomes
-\texttt{models assign Writer mock}. Studio prints a
-\emph{Natural-language request} table and the exact command plan before any
-result, so natural language never hides which operation was chosen. Common
-requests use a deterministic interpreter and therefore need no model, network,
-or API key.
-
-If unmatched declarative or imperative prose might describe an application,
-Studio offers the safest useful interpretation without requiring framework
-words such as ``workflow'', ``agent'', or ``participant''. Before
-\path{specification.md} exists it proposes \texttt{workflow create}; afterward
-it proposes \texttt{workflow refine}. It shows the exact proposal and asks
-before storing anything. Questions and recognizable operational or
-troubleshooting requests remain on the command path. At the prompt, enter
-\texttt{command} instead of \texttt{y} to interpret the same sentence as a
-Studio operation without changing the specification. Explicit
-\texttt{ask TEXT} and \texttt{plan TEXT} also bypass the requirement offer.
-
-Short phrases are contextual: \texttt{run it} means the selected workflow and
-\texttt{stop it} means the remembered deployment. Plain \texttt{start over}
-asks whether the user means a new run, a discarded refinement, a Studio
-restart, or a fresh project design. The unambiguous \texttt{reset everything}
-proposes the recoverable fresh-design reset.
-
-The last example becomes \texttt{studio restart}. Because it replaces a
-running process, Studio displays the plan and asks for confirmation. Exact
-\texttt{studio restart} is the shorter direct form.
-
-When a request depends on repository details and no built-in interpretation
-matches, Studio may run the already authenticated Codex or Claude Code CLI
-once. The CLI receives non-secret project context and read-only repository
-access. It may inspect workflow code, \path{specification.md}, and other
-project Markdown, but it can return only a structured plan made from documented
-Studio commands. Studio validates that plan and performs the operations
-itself; model text is never executed as shell code.
-
-The execution rule is intentionally visible. Read-only requests and clear,
-reversible configuration changes run directly. Starting or stopping execution,
-deployment operations, and destructive changes require confirmation.
-\texttt{plan TEXT} always shows an interpretation without executing it;
-\texttt{ask TEXT} explicitly interprets and executes prose. A question such as
-\texttt{How do I show the protocol?} is also treated as preview-only.
-
-Inspect the language layer at any time:
-
-\begin{lstlisting}[style=shell]
-settings
-settings set learning on
-settings set interpreter auto
-settings set assistant codex
-settings set editor micro
-settings set output banner
-language
-language set auto
-language set codex       # or: language set claude
-language history
-language learned
-language forget L001
-\end{lstlisting}
-
-\texttt{settings} contains owner-private preferences shared by every local
-ZipperGen project: learning policy, interpreter, default coding assistant,
-editor, and output style. It is stored below
-\path{$ZIPPERGEN_HOME/settings.json}. The learning switch is global, but
-learned interpretations and command history remain project-local so one
-project cannot silently teach commands to another.
-
-\texttt{auto} prefers Codex and then Claude when a repository-aware fallback
-is needed. It reuses the selected CLI's existing login; no separate ZipperGen
-provider key is needed. \texttt{language set off} is an alias for the global
-interpreter setting and retains deterministic and already learned
-interpretations without launching a CLI. After a successful CLI plan, Studio
-stores the accepted request, structured commands, and outcome in owner-private
-project state. It generalizes recognized values: an interpretation learned for
-\texttt{Writer} can later match the same wording for \texttt{Reviewer}.
-Nothing is added to the repository and \texttt{project reset state} archives
-this project's history with the other private state. Use
-\texttt{settings set learning off} (or its
-\texttt{language learning off} alias) to stop adding entries everywhere, or
-\texttt{language forget ID|all} to remove entries from the current project.
-
-Raw CLI output is not learned. Secret-looking requests are rejected before
-interpretation and are not stored; enter provider credentials through
-\texttt{models provider configure}, which uses Studio's private secret input.
-
-\subsubsection*{Step 1b: choose a global terminal editor once}
-
-Studio can open specification and workflow files without making you leave its command
-loop. First ask which editor it would use automatically:
-
-\begin{lstlisting}[style=shell]
-editor show
-\end{lstlisting}
-
-The output separates the remembered preference, effective executable, and its
-source. With no preference, Studio checks the ordinary \texttt{\$VISUAL} and
-\texttt{\$EDITOR} settings, then looks for \texttt{micro}, \texttt{nano},
-\texttt{vim}, and \texttt{vi}, in that order. If \texttt{micro} is installed
-and you prefer it, remember that choice for all local projects:
-
-\begin{lstlisting}[style=shell]
-editor set micro
-editor show
-\end{lstlisting}
-
-Use \texttt{editor set nano} instead if that is the installed editor you want.
-This is an alias for the global \texttt{settings set editor nano}. The choice
-is machine-specific Studio state, not a line in the workflow or a file
-committed to Git. It survives leaving Studio, reopening the terminal, moving
-between projects, and a computer crash. Enter \texttt{editor reset} to return
-to automatic discovery.
-
-An editor briefly takes over the same terminal. Save the file and exit the
-editor to return to the unchanged Studio session. Studio executes the editor
-program directly; it does not invoke an LLM, shell script, workflow provider,
-or MCP server. A one-time choice can be supplied without changing the saved
-preference:
-
-Immediately before the editor starts, Studio prints one table containing the
-automatic project file, the effective editor and where that choice came from,
-and the instruction to save and exit to return. This is orientation, not
-another question or a duplicate editor summary.
-
-\begin{lstlisting}[style=shell]
-workflow edit code --editor nano
-workflow create --editor micro
-\end{lstlisting}
-
-For an editor that needs arguments, quote the whole one-time command, for
-example \texttt{--editor "code --wait"}. Studio accepts edited files only
-inside the project root, and it does not continue when the editor reports
-failure. These checks keep ``edit this file'' scoped to the current project.
+Studio accepts exact commands as well as ordinary-language requests, and it
+discovers a usable terminal editor automatically. Neither feature needs
+configuration before the first specification. The language, learning,
+settings, and editor controls are collected later in
+Section~\ref{sec:studio-preferences}; continue directly to the creative step.
 
 \subsubsection*{Step 2: write the canonical specification}
 
 Long requirements do not belong in a single-line terminal question, and the
 user should not have to invent or remember a prompt filename. Enter
 \texttt{workflow create}. Studio creates the fixed project file
-\path{specification.md}, opens it in the editor selected in Step~1b, and
+\path{specification.md}, opens it in the automatically discovered editor, and
 waits. On the first creation it contains a short comment explaining what a
 specification should cover and which development mechanics to omit. Write
 below that comment or replace it with the complete text below. Studio removes
@@ -1564,7 +1429,10 @@ ZipperGen Studio
 Project: zippergen-tutorial
 Root: /path/to/zippergen-tutorial
 Workflow: zippergen/examples/tutorial_review.py:tutorial_review
-Type 'help' for commands; 'workflow show' opens the inspection menu.
+Type a command or describe what you want in ordinary language;
+press Tab to complete; 'help' shows the short path.
+✓ Assistant: Codex CLI found
+Next: workflow show
 zippergen [tutorial_review]>
 \end{lstlisting}
 
@@ -1831,6 +1699,128 @@ state. Answering \texttt{n} preserves the option to enter a distinct deployment
 credential. A later deployment with the same name keeps its already-saved
 deployment key without asking for it again.
 
+\subsection{Studio language, settings, and editor reference}
+\label{sec:studio-preferences}
+
+These controls are useful after the first workflow succeeds, but none is a
+prerequisite for writing its specification. Studio's exact commands remain the
+durable, scriptable interface; ordinary language is a discoverability layer
+that always exposes the resulting command plan.
+
+\subsubsection{Commands and ordinary language}
+
+At the Studio prompt, requests such as the following use the deterministic
+interpreter and need no model, network, or API key:
+
+\begin{lstlisting}[style=shell]
+What is the current state?
+Show me the whole protocol.
+Assign the mock model to Writer.
+Please restart ZipperGen Studio.
+\end{lstlisting}
+
+They become \texttt{current}, \texttt{workflow show protocol},
+\texttt{models assign Writer mock}, and \texttt{studio restart}. Studio prints
+the exact plan before its result. Starting or stopping execution, deployment
+operations, and destructive changes require confirmation. Use
+\texttt{plan TEXT} to preview an interpretation without executing it and
+\texttt{ask TEXT} to request interpretation and execution explicitly.
+
+If unmatched declarative or imperative prose might describe the application,
+Studio offers to treat it as a workflow requirement. Before
+\path{specification.md} exists it proposes \texttt{workflow create}; afterward
+it proposes \texttt{workflow refine}. The offer does not depend on framework
+words such as ``workflow'' or ``participant''. Enter \texttt{y} to store the
+requirement, \texttt{n} to cancel, or \texttt{command} to interpret the same
+sentence as an operation without changing the specification. Questions and
+recognizable operational or troubleshooting requests remain on the command
+path. Explicit \texttt{ask TEXT} and \texttt{plan TEXT} bypass the requirement
+offer.
+
+Short phrases use project context: \texttt{run it} means the selected workflow
+and \texttt{stop it} means the remembered deployment. Ambiguous
+\texttt{start over} asks whether the intention is a new run, discarded
+refinement, Studio restart, or fresh project design. The unambiguous
+\texttt{reset everything} proposes the recoverable fresh-design reset.
+
+When repository details are required and no built-in or learned
+interpretation matches, Studio may run an already authenticated Codex or
+Claude Code CLI once. It receives non-secret, read-only project context and
+may return only a structured plan made from documented Studio commands.
+Studio validates and executes the plan itself; model text is never run as
+shell code.
+
+\subsubsection{Global settings and project-local learning}
+
+Inspect and change the language layer with:
+
+\begin{lstlisting}[style=shell]
+settings
+settings set learning on
+settings set interpreter auto
+settings set assistant codex
+settings set editor micro
+settings set output banner
+language
+language set auto
+language set codex       # or: language set claude
+language history
+language learned
+language forget L001
+\end{lstlisting}
+
+\texttt{settings} contains owner-private preferences shared by every local
+ZipperGen project: learning policy, interpreter, default coding assistant,
+editor, and output style. It is stored below
+\path{$ZIPPERGEN_HOME/settings.json}. Learning policy is global, but learned
+interpretations and command history are project-local, so one project cannot
+silently teach another.
+
+\texttt{auto} prefers Codex and then Claude for a repository-aware fallback
+and reuses the CLI's own login; no ZipperGen model-provider key is involved.
+\texttt{language set off} retains deterministic and already learned
+interpretations without launching a CLI. After a successful CLI plan, Studio
+stores the accepted request, structured commands, and outcome in owner-private
+project state and can generalize recognized values such as participant names.
+Use \texttt{settings set learning off} to stop adding entries globally, or
+\texttt{language forget ID|all} to remove entries from the current project.
+
+Raw CLI output is not learned. Secret-looking requests are rejected before
+interpretation and are not stored. Provider credentials belong in the private
+prompt opened by \texttt{models provider configure}.
+
+\subsubsection{Automatic and explicit terminal editors}
+
+Studio checks an explicit preference, then \texttt{\$VISUAL} and
+\texttt{\$EDITOR}, then installed \texttt{micro}, \texttt{nano},
+\texttt{vim}, and \texttt{vi}. Inspect the result or save a global preference:
+
+\begin{lstlisting}[style=shell]
+editor show
+editor set micro
+editor show
+editor reset
+\end{lstlisting}
+
+\texttt{editor set nano} is equally valid and aliases
+\texttt{settings set editor nano}. The choice is machine-specific Studio
+state, not workflow source, and survives terminal closure and reboot.
+\texttt{editor reset} restores automatic discovery.
+
+An editor temporarily takes over the same terminal. Save and exit to return to
+the unchanged Studio session. Studio launches the executable directly; it
+does not invoke an LLM, shell script, provider, or MCP server. Override the
+editor for one operation without changing the saved preference:
+
+\begin{lstlisting}[style=shell]
+workflow edit code --editor nano
+workflow create --editor micro
+\end{lstlisting}
+
+For a command with arguments, quote the complete value, for example
+\texttt{--editor "code --wait"}. Studio accepts edited files only inside the
+project root and stops when the editor reports failure.
+
 \subsection{Move explicitly from development to deployment}
 
 Deployment may install packages, run declared setup such as OAuth, create a
@@ -1924,13 +1914,13 @@ explicit options, profiles, and service-manager operations. \\
 \bottomrule
 \end{tabularx}
 
-The short path should be enough to make the workflow compelling. The detailed
-path that follows makes it auditable and automatable.
+The Studio lifecycle should be enough to make the workflow concrete. The
+detailed path that follows makes it auditable and automatable.
 
 \section{What the reference chapters explain}
 \label{sec:reference-chapters}
 
-The opening Studio track is the recommended practical cycle. The remaining
+The preceding Studio track is the recommended practical cycle. The remaining
 chapters unpack its machinery so that commands can be audited, automated, and
 debugged. They explain how to perform all of the following explicitly:
 
@@ -2015,7 +2005,7 @@ external-adapter examples deliberately use two terminals:
 \end{itemize}
 
 For those later examples, both terminals must be in the project root and
-must set the same \path{ZIPPERGEN_HOME} value when the guide asks for it. This
+must set the same \path{ZIPPERGEN_HOME} value when the manual asks for it. This
 does not apply to the opening Studio path.
 
 \subsection{Optional transparent CLI workspace}
@@ -2593,7 +2583,7 @@ The separate \texttt{--communications} filter keeps messages, decisions, and
 the return value but omits local action calls. It can be combined with a detail
 level when useful. Because \texttt{protocol} is the default,
 \texttt{--communications} alone is shorthand for
-\texttt{--detail protocol --communications}; this guide spells out the full
+\texttt{--detail protocol --communications}; this manual spells out the full
 form where the view is introduced.
 
 \subsection{One participant or a selected group}
@@ -3273,7 +3263,7 @@ still fails, follow the PATH instructions printed by the official installer.
 
 \subsection*{\texttt{studio} is reported as an invalid top-level command}
 
-The nested framework checkout or editable tool is older than this guide, or
+The nested framework checkout or editable tool is older than this manual, or
 the terminal is in another project. From the tutorial project root, inspect
 before updating:
 
@@ -3767,13 +3757,14 @@ The repository contains every document source dependency. From the nested
 ZipperGen Git root, with a TeX Live or MacTeX distribution installed, run:
 
 \begin{lstlisting}[style=shell]
-make docs
+make docs-manual
 \end{lstlisting}
 
 The PDF is then:
 \path{zippergen/docs/_build/workflow-development-deployment-guide.pdf}. TeX auxiliary
 files and the generated PDF live under the ignored \path{docs/_build}
-directory; the maintained source is the \texttt{.tex} file. Run
+directory; the maintained source is the \texttt{.tex} file. Use
+\texttt{make docs} to build both this manual and the companion tutorial. Run
 \texttt{make docs-check} for an installation check without compiling. Detailed
 requirements and the equivalent direct \texttt{latexmk} command are in
 \path{docs/README.md}.

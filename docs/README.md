@@ -1,9 +1,12 @@
-# Building the ZipperGen guide
+# Building the ZipperGen documentation
 
-The repository contains every source file used by the guide:
+The documentation is deliberately split by reader and purpose:
 
-- `docs/workflow-development-deployment-guide.tex`
-- `examples/tutorial_review.py`, imported as the complete tutorial source
+- `docs/first-workflow.tex` — the short, linear first-workflow tutorial;
+- `docs/workflow-development-deployment-guide.tex` — the comprehensive
+  development and deployment manual;
+- `examples/tutorial_review.py` — complete fallback source imported by the
+  manual.
 
 A TeX distribution is the only external requirement. On macOS, use MacTeX; on
 Linux, use a TeX Live installation that includes `latexmk`, TikZ/PGF,
@@ -18,10 +21,18 @@ make docs
 The command first checks the compiler and required packages. It then creates:
 
 ```text
+docs/_build/first-workflow.pdf
 docs/_build/workflow-development-deployment-guide.pdf
 ```
 
 All auxiliary files stay under the ignored `docs/_build/` directory.
+
+Build only one document with:
+
+```bash
+make docs-first-workflow
+make docs-manual
+```
 
 To check the installation without compiling the document:
 
@@ -29,11 +40,14 @@ To check the installation without compiling the document:
 make docs-check
 ```
 
-The direct equivalent, useful when configuring a TeX editor, is:
+The direct equivalents, useful when configuring a TeX editor, are:
 
 ```bash
 cd docs
 mkdir -p _build
+latexmk -pdf -interaction=nonstopmode -halt-on-error \
+  -file-line-error -outdir=_build \
+  first-workflow.tex
 latexmk -pdf -interaction=nonstopmode -halt-on-error \
   -file-line-error -outdir=_build \
   workflow-development-deployment-guide.tex
