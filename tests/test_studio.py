@@ -323,6 +323,33 @@ def test_studio_list_and_select_discover_workflow_entry_points(tmp_path):
     assert any("Validation" in line and "not run" in line for line in output)
 
 
+def test_studio_numbered_workflow_menus_name_the_requested_selection(tmp_path):
+    studio, workspace, _output = _studio(tmp_path)
+    (workspace.root / "alternate.py").write_text(
+        WORKFLOW_SOURCE.replace("def sample(", "def alternate("),
+        encoding="utf-8",
+    )
+    answers = iter(["2", "1", "2", "1,2"])
+    prompts: list[str] = []
+
+    def answer(prompt: str) -> str:
+        prompts.append(prompt)
+        return next(answers)
+
+    studio.input = answer
+    studio.execute("workflow select")
+    studio.execute("workflow show")
+    studio.execute("workflow show agent")
+    studio.execute("workflow show agents")
+
+    assert prompts == [
+        "Select workflow [1-2]: ",
+        "Select workflow view [1-8]: ",
+        "Select participant [1-2]: ",
+        "Select participants [1-2, comma-separated]: ",
+    ]
+
+
 def test_studio_show_prompts_for_entry_point_when_several_are_discovered(
     tmp_path,
 ):
@@ -2847,6 +2874,57 @@ def test_studio_models_configure_check_then_assign(
         and "mistral:mistral-small-latest" in line
         for line in output
     )
+
+
+def test_studio_guided_model_setup_labels_progress_and_each_selection(tmp_path):
+    studio, workspace, output = _studio(tmp_path)
+    (workspace.root / "dual.py").write_text(TWO_LLM_PARTICIPANT_SOURCE)
+    workspace.select_workflow("dual.py:sample", cwd=workspace.root)
+    answers = iter(["1", "", "1", "1"])
+    prompts: list[str] = []
+
+    def answer(prompt: str) -> str:
+        prompts.append(prompt)
+        return next(answers)
+
+    studio.input = answer
+    studio.execute("models setup")
+
+    assert prompts == [
+        "Select provider [1-5]: ",
+        "Configuration name (press Enter for an automatic name): ",
+        "Select configuration for Writer [1-1]: ",
+        "Select configuration for Reviewer [1-1]: ",
+    ]
+    assert any(
+        "Current" in line
+        and "Step 1 of 3" in line
+        and "configure and check a provider" in line
+        for line in output
+    )
+    assert any(
+        "Current" in line
+        and "Step 2 of 3" in line
+        and "create and check a named configuration" in line
+        for line in output
+    )
+    assert any(
+        "Current" in line
+        and "Step 3 of 3" in line
+        and "assign configurations to LLM participants" in line
+        for line in output
+    )
+    assert not any(
+        line.strip().startswith("1") and "configure and check" in line
+        for line in output
+    )
+    assert workspace.model_assignment_profile(
+        "dual.py:sample",
+        default="mock",
+    )["lifelines"] == {
+        "Writer": "mock",
+        "Reviewer": "mock",
+    }
 
 
 def test_studio_models_rename_preserves_check_and_updates_all_assignments(

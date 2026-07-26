@@ -1180,7 +1180,11 @@ class Studio:
                 "Accept reviewed implementation",
                 "Finish review for now",
             ]
-            selected = self._select("Review actions", actions)
+            selected = self._select(
+                "Review actions",
+                actions,
+                prompt="Select review action",
+            )
             assert isinstance(selected, str)
             if selected == "Review requirements":
                 if self.workspace.pending_refinement() is not None:
@@ -3167,6 +3171,7 @@ class Studio:
             selected = self._select(
                 f"Choose a workflow to {purpose}",
                 candidates,
+                prompt="Select workflow",
             )
             automatic = False
         assert isinstance(selected, str)
@@ -3262,6 +3267,7 @@ class Studio:
                         "source, tests, and Git",
                         "Cancel — change nothing",
                     ],
+                    prompt="Select reset scope",
                 )
                 choice = str(selected)
                 if choice.startswith("Cancel"):
@@ -4758,7 +4764,14 @@ class Studio:
         )
         self._emit_table("Runtime", runtime_rows)
 
-    def _select(self, heading: str, choices: list[str], *, allow_many: bool = False):
+    def _select(
+        self,
+        heading: str,
+        choices: list[str],
+        *,
+        prompt: str,
+        allow_many: bool = False,
+    ):
         if not choices:
             raise SystemExit("No choices are available.")
         self._emit_columns(
@@ -4770,8 +4783,10 @@ class Studio:
             ],
             right_aligned=frozenset({0}),
         )
-        suffix = " (comma-separated)" if allow_many else ""
-        raw = self.input(f"Select{suffix}: ").strip()
+        range_hint = f"1-{len(choices)}"
+        if allow_many:
+            range_hint += ", comma-separated"
+        raw = self.input(f"{prompt} [{range_hint}]: ").strip()
         if allow_many:
             values = []
             for item in raw.split(","):
@@ -4894,7 +4909,11 @@ class Studio:
         if args:
             selected = self._resolve_workflow_choice(args[0], candidates)
         else:
-            selected = self._select("Select workflow", candidates)
+            selected = self._select(
+                "Available workflows",
+                candidates,
+                prompt="Select workflow",
+            )
             assert isinstance(selected, str)
         canonical, name = self._select_workflow_spec(selected)
         self._emit_table(
@@ -5105,7 +5124,13 @@ class Studio:
                 "Authored source",
                 *(item.label for item in WORKFLOW_VIEWS),
             ]
-            view = str(self._select(f"Inspect {workflow.name}", choices)).lower()
+            view = str(
+                self._select(
+                    f"Inspect {workflow.name}",
+                    choices,
+                    prompt="Select workflow view",
+                )
+            ).lower()
 
         if view in {"authored source"}:
             self.show_workflow_source([])
@@ -5116,7 +5141,15 @@ class Studio:
             raise SystemExit(f"View must be {available}.")
         if selected_view.participants == "one":
             names = self._agent_names(workflow)
-            agent = rest[0] if rest else self._select("Participants", names)
+            agent = (
+                rest[0]
+                if rest
+                else self._select(
+                    "Participants",
+                    names,
+                    prompt="Select participant",
+                )
+            )
             options = ViewOptions(
                 detail=selected_view.detail,
                 communications_only=selected_view.communications_only,
@@ -5125,7 +5158,12 @@ class Studio:
             remembered = f"{selected_view.command} {agent}"
         elif selected_view.participants == "many":
             names = self._agent_names(workflow)
-            selected = rest or self._select("Participants", names, allow_many=True)
+            selected = rest or self._select(
+                "Participants",
+                names,
+                prompt="Select participants",
+                allow_many=True,
+            )
             assert isinstance(selected, list)
             options = ViewOptions(
                 detail=selected_view.detail,
@@ -5625,23 +5663,57 @@ class Studio:
             ],
         )
 
+    def _emit_guided_model_step(
+        self,
+        step: int,
+        action: str,
+        *,
+        context: tuple[str, object, StatusKind | None] | None = None,
+    ) -> None:
+        actions = (
+            "configure and check a provider",
+            "create and check a named configuration",
+            "assign configurations to LLM participants",
+        )
+        rows: list[tuple[str, object, StatusKind | None]] = [
+            ("Current", f"Step {step} of 3 — {action}", "info"),
+        ]
+        if context is not None:
+            rows.append(context)
+        if step < len(actions):
+            rows.append(
+                (
+                    "Next",
+                    f"Step {step + 1} of 3 — {actions[step]}",
+                    None,
+                )
+            )
+        if step == 1:
+            rows.append(("Then", f"Step 3 of 3 — {actions[2]}", None))
+        self._emit_table("Guided model setup", rows)
+
     def _guided_models_setup(self) -> None:
-        self._emit_table(
-            "Guided model setup",
-            [
-                ("1", "configure and check a provider", None),
-                ("2", "create and check a named configuration", None),
-                ("3", "assign configurations to LLM participants", None),
-            ],
+        self._emit_guided_model_step(
+            1,
+            "configure and check a provider",
         )
         provider = str(
-            self._select("Choose a provider", list(_SUPPORTED_PROVIDERS))
+            self._select(
+                "Available providers",
+                list(_SUPPORTED_PROVIDERS),
+                prompt="Select provider",
+            )
         )
         was_connected = self._provider_is_connected(provider)
         if provider != "mock" and not was_connected:
             self._connect_model_provider([provider])
         if provider != "mock" and (provider != "local" or was_connected):
             self._check_model_providers(provider)
+        self._emit_guided_model_step(
+            2,
+            "create and check a named configuration",
+            context=("Provider", provider, "success"),
+        )
         entered_name = self.input(
             "Configuration name (press Enter for an automatic name): "
         ).strip()
@@ -5650,10 +5722,15 @@ class Studio:
             provider_override=provider,
         )
         self._check_model_configurations(configuration_name)
+        self._emit_guided_model_step(
+            3,
+            "assign configurations to LLM participants",
+            context=("Configuration", configuration_name, "success"),
+        )
 
         if not self.workspace.current_workflow:
             self._emit_table(
-                "Setup ready for assignment",
+                "Assignment paused",
                 [
                     ("Configuration", configuration_name, "success"),
                     ("Status", "no workflow selected", "warning"),
@@ -5676,8 +5753,9 @@ class Studio:
         choices = list(self.workspace.model_configurations())
         for lifeline in active:
             selected = self._select(
-                f"Configuration for {lifeline}",
+                f"Available configurations for {lifeline}",
                 choices,
+                prompt=f"Select configuration for {lifeline}",
             )
             overrides[lifeline] = str(selected)
         saved = self.workspace.save_model_assignment_profile(
