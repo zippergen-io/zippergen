@@ -306,7 +306,7 @@ def test_natural_workflow_discovery_and_source_requests_are_deterministic(
 
 
 def test_natural_workflow_review_request_opens_the_guided_review(tmp_path):
-    studio, workspace, output = _studio(tmp_path, responses=["7"])
+    studio, workspace, output = _studio(tmp_path, responses=["6"])
     workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
     workspace.save_specification("Echo the request through Writer.")
     studio.refine_request("Require human approval before returning.")

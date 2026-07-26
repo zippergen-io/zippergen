@@ -488,8 +488,12 @@ guidance is useful. Success, warning, or failure appears before the data it
 describes. Thus \texttt{project}, \texttt{workflow}, \texttt{models},
 \texttt{language}, run, and deployment results do not require the reader to
 learn different output layouts.
-Long fields and table rows wrap to the terminal width, so a path, verification
+Long fields and table rows wrap to the terminal width, so a path, assistant-check
 command, or assistant explanation no longer extends far beyond its heading.
+Wide multi-column data lists may use more terminal width than prose
+key/value tables. Identifier and timestamp cells remain one line and shorten
+with an ellipsis instead of being split into uncopyable fragments; the
+corresponding \texttt{show} or \texttt{path} command exposes the exact value.
 The managed \texttt{run} and \texttt{resume} commands use this same renderer;
 they do not switch to a second set of bare runtime messages.
 \end{notebox}
@@ -593,8 +597,15 @@ workflow show spec    # read the canonical requirements
 workflow edit spec    # reopen the same specification.md
 workflow path         # print its absolute path only when another tool needs it
 workflow status       # inspect the implementation lifecycle
+workflow status --details # add task IDs, refresh links, and record paths
 workflow history      # list specification and implementation history
 \end{lstlisting}
+
+The ordinary status and \texttt{current} dashboards intentionally hide
+generated task filenames, request IDs, and semantic-baseline paths. Those are
+auditable plumbing rather than concepts required for daily work.
+\texttt{workflow status --details} and \texttt{workflow history} expose them
+when diagnosis or traceability requires them.
 
 An empty specification is rejected. Never put an API key or other secret in
 it. For a genuinely short experiment, \texttt{workflow create DESCRIPTION}
@@ -646,7 +657,7 @@ the freshness check described above, so the file contains the current
 canonical specification. There is no task path or prompt file to copy. The
 assistant autonomously inspects and edits the application project within its
 configured permission boundary, runs checks, writes a small structured
-verification handoff, exits, and returns control to the same ZipperGen Studio
+assistant-check handoff, exits, and returns control to the same ZipperGen Studio
 session. The handoff distinguishes the assistant process returning from the
 requested checks actually passing. Use
 \texttt{workflow implement codex --interactive} only when a conversation or interactive
@@ -686,7 +697,7 @@ is prepared and
 \texttt{Execution: not started; nothing is scheduled}. A normal return
 changes the same request to \texttt{awaiting human review} and replaces the
 assistant suggestion with the concrete review path. Separately,
-\texttt{Verification} is \texttt{passed}, \texttt{failed}, or
+\texttt{Assistant checks} are \texttt{passed}, \texttt{failed}, or
 \texttt{incomplete}, with a concise note and the number of checks the
 assistant reported. The \texttt{workflow status} output lists each reported command and
 its outcome underneath the summary. A missing, malformed, or internally
@@ -698,7 +709,7 @@ stops while the assistant is running, the orphaned state is recovered as
 \texttt{workflow implement codex --rerun} or
 \texttt{workflow implement claude --rerun} only when a second pass is intentional.
 Studio refreshes an older unexecuted task automatically before launch so that
-it also receives this verification contract.
+it also receives this assistant-check contract.
 
 \begin{lstlisting}[style=shell]
 workflow status
@@ -706,8 +717,8 @@ Workflow implementation
   Status     [warning] awaiting human review
   Assistant            Codex -- returned ...
   Execution            assistant session ended; nothing is scheduled
-  Verification [success] passed -- 5 checks
-  Verification note    Validation, projections, diff, and focused tests passed.
+  Assistant checks [success] passed -- 5 checks
+  Check summary              Validation, projections, diff, and focused tests passed.
   Context    [success] assistant result is preserved for review
   Next                  workflow review
 \end{lstlisting}
@@ -715,8 +726,8 @@ Workflow implementation
 The checks below that summary are records rather than unbounded table values:
 
 \begin{lstlisting}[style=shell]
-Assistant verification checks
------------------------------
+Assistant checks
+----------------
 5 checks / 5 passed / 0 failed / 0 not run
 
 [success] 1. passed
@@ -726,12 +737,12 @@ Assistant verification checks
 \end{lstlisting}
 
 Studio preserves the complete command and result but wraps them with hanging
-indentation. Verification records are capped at 108 columns and use a narrower
+indentation. Assistant-check records are capped at 108 columns and use a narrower
 interactive terminal width when necessary. A single long check therefore
-cannot create a screen-wide separator. When verification failed, failed and
+cannot create a screen-wide separator. When assistant checks failed, failed and
 unexecuted records are shown before successful checks.
 
-The verification result is an explicit assistant report, not an independent
+The assistant-check result is an explicit assistant report, not an independent
 proof and not permission to deploy. If it is \texttt{failed} or
 \texttt{incomplete}, Studio shows that state prominently and proposes
 inspection, validation, and an intentional assistant rerun instead of implying
@@ -739,6 +750,14 @@ that the change is ready. Immediately below the review table it prints only
 failed or unexecuted checks; the complete reported check list remains
 available through \texttt{workflow status}. Human review of the visible code and semantic
 views remains mandatory.
+
+The internal handoff retains a field named \texttt{verification} for its
+versioned JSON contract, but Studio deliberately does not use that as the
+human-facing concept. There are three distinct authorities: assistant checks
+reported by the coding tool, ZipperGen validation of the current workflow, and
+human approval recorded by \texttt{workflow accept}. \texttt{workflow review}
+is the guided process containing them; \texttt{workflow diff} is an inspection
+view rather than another approval state.
 
 For this initial creation, enter \texttt{workflow review}. Its ordered menu
 offers the requirements, authored source, semantic workflow views, validation,
@@ -916,6 +935,14 @@ preserves a private, content-hashed source snapshot and Git provenance; it
 still performs no run, deployment, or restart.
 \end{notebox}
 
+Studio makes the review presentation proportional without weakening that
+boundary. A workflow with declared human actions, external effects, assistant
+actions, or deployment metadata receives an \emph{elevated} review scope with
+the detailed inspection menu. A workflow without those declarations receives
+a more compact \emph{standard} menu. Neither scope accepts automatically:
+model calls can transmit data, and prompt changes can materially change
+behavior even when no \texttt{@effect} is present.
+
 Before running, confirm from these views who owns both inputs, who owns the
 retry decision, whether every revision returns to human review, whether an
 unapproved draft can reach Requester, and whether both model prompts are
@@ -1020,6 +1047,10 @@ enter \texttt{store use NUMBER} once; \texttt{store show},
 selects the sole pending task automatically or opens a numbered selector when
 there are several. A run or deployment normally creates its store automatically;
 \texttt{store create NAME} is an advanced convenience, not a prerequisite.
+The ownership column deliberately says \texttt{run} instead of
+repeating the long run identifier already used as the store name. Exact owner
+IDs and paths remain available through \texttt{store show} and
+\texttt{store path}.
 
 \texttt{store rename OLD NEW} updates stopped run/deployment references.
 \texttt{store delete NAME} moves the SQLite file and its WAL companions to
@@ -1314,6 +1345,21 @@ workflow diff         # compare both intent and workflow semantics
 workflow review       # inspect, validate, run, and explicitly accept
 \end{lstlisting}
 
+The common assisted lane can be shortened without removing a boundary:
+
+\begin{lstlisting}[style=shell]
+workflow refine "Describe the change" --implement
+# Or continue directly into the guided human review:
+workflow refine "Describe the change" --implement --review
+\end{lstlisting}
+
+Bare \texttt{--implement} uses the assistant selected in global settings.
+\texttt{workflow implement codex --review} and
+\texttt{workflow implement claude --review} provide the same second shortcut
+for an already-prepared task. These forms merely sequence refinement,
+implementation, and review. They never infer acceptance, and the review still
+requires an explicit human decision.
+
 The assistant is optional for a refinement. The equivalent manual lane is:
 
 \begin{lstlisting}[style=shell]
@@ -1507,7 +1553,11 @@ deployment stop
 \end{lstlisting}
 
 \texttt{deployment start} is the first command here that changes
-service-manager state.
+service-manager state. It reruns readiness checks immediately before doing so;
+\texttt{deployment restart} applies the same gate. A failed credential,
+workflow import, bundle, package, or workflow-specific doctor check blocks the
+operation before launchd/systemd is touched. Warnings remain informative and
+do not block startup. \texttt{deployment stop} is never subject to this gate.
 The process may need a few seconds to reach its first action; repeat
 \texttt{deployment show} once if necessary. The run/store rows should report
 \texttt{waiting} once durable human approval is pending. The deployment store
@@ -1596,7 +1646,9 @@ workflow show pending # inspect the pending refinement
 workflow show  # choose a semantic code view
 workflow diff  # compare intent and semantics with the review baseline
 workflow status # prepared, running, review, failed/interrupted
+workflow status --details # include task IDs and internal record paths
 workflow implement codex # or: workflow implement claude
+workflow implement codex --review # enter guided review on return
 workflow review # guided inspect, validate, run, and acceptance loop
 workflow validate # technical check; does not record human approval
 workflow accept # record human approval and close reviewed work
@@ -3047,7 +3099,7 @@ workflow implement
 \end{lstlisting}
 
 The generated task supplies the nested skill, canonical specification, pending
-change, target, semantic baseline, verification, and explicit no-deployment
+change, target, semantic baseline, assistant-check contract, and explicit no-deployment
 boundary. Studio starts Codex in the tutorial root with that fixed task.
 
 \subsection{Independently verify the assistant's work}

@@ -114,7 +114,8 @@ COMMANDS: tuple[CommandSpec, ...] = (
     ),
     CommandSpec(
         ("workflow", "refine"),
-        "workflow refine [CHANGE|--file PATH|--edit]",
+        "workflow refine [CHANGE|--file PATH|--edit] "
+        "[--implement [--review]]",
         "create or reopen the pending refinement",
         "configuration",
     ),
@@ -158,13 +159,13 @@ COMMANDS: tuple[CommandSpec, ...] = (
     ),
     CommandSpec(
         ("workflow", "status"),
-        "workflow status",
+        "workflow status [--details]",
         "show implementation status and next step",
         "read-only",
     ),
     CommandSpec(
         ("workflow", "implement"),
-        "workflow implement [codex|claude]",
+        "workflow implement [codex|claude] [--review]",
         "run a coding assistant and return to Studio",
         "execution",
         primary=True,

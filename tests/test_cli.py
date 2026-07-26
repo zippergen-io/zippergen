@@ -3,6 +3,8 @@ import plistlib
 import subprocess
 from pathlib import Path
 
+import pytest
+
 from zippergen.serve import _launchd_service_status, main
 from zippergen.store import (
     ensure_human_task,
@@ -528,6 +530,47 @@ def test_start_deployment_dry_run_prints_launchd_commands(tmp_path, monkeypatch,
         ).read_bytes()
     )
     assert launchd["KeepAlive"] == {"SuccessfulExit": False}
+
+
+@pytest.mark.parametrize("action", ["start", "restart"])
+def test_start_and_restart_refuse_a_deployment_that_fails_readiness(
+    action,
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    workflow_path = tmp_path / "deploy_workflow.py"
+    workflow_path.write_text(WORKFLOW_SOURCE)
+    zippergen_home = tmp_path / "zg-home"
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(zippergen_home))
+    monkeypatch.setenv("ZIPPERGEN_SERVICE_MANAGER", "systemd")
+    main(
+        [
+            "deploy-local",
+            f"{workflow_path}:hello",
+            "--name",
+            "hello-openai",
+            "--llm",
+            "openai:gpt-4o-mini",
+        ]
+    )
+    capsys.readouterr()
+    monkeypatch.setattr(
+        "zippergen.serve._run_systemctl",
+        lambda *args, **kwargs: pytest.fail(
+            "the service manager must not run after a failed readiness check"
+        ),
+    )
+
+    rc = main([action, "hello-openai"])
+
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "1 failure(s)" in captured.out
+    assert "model credential OPENAI_API_KEY" in captured.out
+    assert f"was not {action}ed because readiness checks found failures" in (
+        captured.out
+    )
 
 
 def test_launchd_status_distinguishes_a_loaded_crash_loop(monkeypatch):

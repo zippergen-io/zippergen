@@ -251,7 +251,15 @@ def _is_allowed_natural_plan_command(parts: list[str]) -> bool:
             return True
         if action == "implement":
             return all(
-                value in {"implement", "codex", "claude", "--rerun", "--interactive"}
+                value
+                in {
+                    "implement",
+                    "codex",
+                    "claude",
+                    "--rerun",
+                    "--interactive",
+                    "--review",
+                }
                 for value in lowered
             )
         if action == "select":
@@ -527,7 +535,11 @@ class Studio:
         return TerminalRenderer.visible_width(value)
 
     def _output_columns(self) -> int:
-        return self._renderer.detected_output_columns()
+        if self.output is print and bool(
+            getattr(sys.stdout, "isatty", lambda: False)()
+        ):
+            return shutil.get_terminal_size(fallback=(100, 24)).columns
+        return 100
 
     @staticmethod
     def _wrapped_lines(value: object, width: int) -> list[str]:
@@ -948,9 +960,28 @@ class Studio:
                 if "--editor" in rest and rest[-1] == "--editor":
                     return self._editor_completion_candidates()
                 if not rest:
-                    return [
+                    choices = [
                         ("--file", "import text from an existing file"),
                         ("--editor", "choose an editor for this invocation"),
+                    ]
+                    if action == "refine":
+                        choices.append(
+                            (
+                                "--implement",
+                                "save the refinement and start the default assistant",
+                            )
+                        )
+                    return choices
+                if (
+                    action == "refine"
+                    and "--implement" in rest
+                    and "--review" not in rest
+                ):
+                    return [
+                        (
+                            "--review",
+                            "enter guided human review when the assistant returns",
+                        )
                     ]
                 return []
             if action == "edit":
@@ -967,6 +998,10 @@ class Studio:
                     return [
                         ("codex", "implement with Codex"),
                         ("claude", "implement with Claude Code"),
+                        (
+                            "--review",
+                            "enter guided human review when the assistant returns",
+                        ),
                     ]
                 if rest[0].lower() == "codex":
                     values = []
@@ -978,10 +1013,36 @@ class Studio:
                         values.append(
                             ("--interactive", "open an interactive Codex session")
                         )
+                    if "--review" not in rest:
+                        values.append(
+                            (
+                                "--review",
+                                "enter guided human review on return",
+                            )
+                        )
                     return values
-                if rest[0].lower() == "claude" and "--rerun" not in rest:
-                    return [("--rerun", "deliberately rerun reviewed work")]
+                if rest[0].lower() == "claude":
+                    values = []
+                    if "--rerun" not in rest:
+                        values.append(
+                            ("--rerun", "deliberately rerun reviewed work")
+                        )
+                    if "--review" not in rest:
+                        values.append(
+                            (
+                                "--review",
+                                "enter guided human review on return",
+                            )
+                        )
+                    return values
                 return []
+            if action == "status":
+                return [
+                    (
+                        "--details",
+                        "include task IDs, refresh links, and internal record path",
+                    )
+                ]
             if action in {"accept", "discard"}:
                 return [("--yes", "confirm without another prompt")]
             return []
@@ -1839,6 +1900,43 @@ class Studio:
             ],
         )
 
+    @staticmethod
+    def _review_scope(workflow, module) -> tuple[str, StatusKind, bool]:
+        """Describe review depth without weakening explicit acceptance."""
+
+        model = workflow_semantics(workflow, module)
+        raw_sites = model.get("action_sites")
+        sites = raw_sites if isinstance(raw_sites, list) else []
+        elevated_kinds = {
+            str(site.get("kind"))
+            for site in sites
+            if isinstance(site, dict)
+            and site.get("kind") in {"human", "effect", "assistant"}
+        }
+        reasons = [
+            label
+            for kind, label in (
+                ("human", "human actions"),
+                ("effect", "external effects"),
+                ("assistant", "assistant actions"),
+            )
+            if kind in elevated_kinds
+        ]
+        if getattr(module, "zippergen_deployment", None) is not None:
+            reasons.append("deployment declaration")
+        if reasons:
+            return (
+                "elevated — " + ", ".join(reasons),
+                "warning",
+                True,
+            )
+        return (
+            "standard — no declared human, effect, assistant, or deployment "
+            "boundary; LLM and prompt behavior still require explicit approval",
+            "info",
+            False,
+        )
+
     def review_workflow(self) -> None:
         """Guide the complete human-review loop without hiding any step."""
 
@@ -1858,11 +1956,15 @@ class Studio:
             )
         verification, verification_kind = self._task_verification(record)
         pending = self.workspace.pending_refinement() is not None
+        _current, selected_workflow, selected_module = self._current_context()
+        review_scope, review_scope_kind, elevated = self._review_scope(
+            selected_workflow,
+            selected_module,
+        )
         self._emit_table(
             "Workflow review",
             [
                 ("Status", "awaiting human review", "warning"),
-                ("Request", record["request_id"], None),
                 ("Kind", record["kind"], None),
                 (
                     "Workflow",
@@ -1871,7 +1973,8 @@ class Studio:
                     or "select during inspection",
                     None,
                 ),
-                ("Verification", verification, verification_kind),
+                ("Assistant checks", verification, verification_kind),
+                ("Review scope", review_scope, review_scope_kind),
                 (
                     "Decision boundary",
                     "validate checks the current code; accept records your "
@@ -1896,15 +1999,26 @@ class Studio:
         self.show_review_changes()
 
         while True:
-            actions = [
-                "Review specification and semantic changes",
-                "Inspect authored source",
-                "Inspect a semantic workflow view",
-                "Validate workflow",
-                "Run workflow",
-                "Accept reviewed implementation",
-                "Finish review for now",
-            ]
+            actions = (
+                [
+                    "Review specification and semantic changes",
+                    "Inspect authored source",
+                    "Inspect a semantic workflow view",
+                    "Validate workflow",
+                    "Run workflow",
+                    "Accept reviewed implementation",
+                    "Finish review for now",
+                ]
+                if elevated
+                else [
+                    "Review specification and semantic changes",
+                    "Validate workflow",
+                    "Run workflow",
+                    "Accept reviewed implementation",
+                    "More inspection",
+                    "Finish review for now",
+                ]
+            )
             selected = self._select(
                 "Review actions",
                 actions,
@@ -1920,6 +2034,16 @@ class Studio:
                 self.show_workflow_source([])
             elif selected == "Inspect a semantic workflow view":
                 self.show_workflow([])
+            elif selected == "More inspection":
+                inspection = self._select(
+                    "Additional inspection",
+                    ["Inspect authored source", "Inspect a semantic workflow view"],
+                    prompt="Select inspection",
+                )
+                if inspection == "Inspect authored source":
+                    self.show_workflow_source([])
+                else:
+                    self.show_workflow([])
             elif selected == "Validate workflow":
                 self.validate()
             elif selected == "Run workflow":
@@ -1956,7 +2080,25 @@ class Studio:
             self.create_from_command(rest)
             return
         if action == "refine":
-            self.manage_spec(["refine", *rest])
+            implement = "--implement" in rest
+            review = "--review" in rest
+            if (
+                rest.count("--implement") > 1
+                or rest.count("--review") > 1
+                or (review and not implement)
+            ):
+                raise SystemExit(
+                    "Use workflow refine [CHANGE|--file PATH|--edit] "
+                    "[--implement [--review]]."
+                )
+            refinement_args = [
+                value
+                for value in rest
+                if value not in {"--implement", "--review"}
+            ]
+            self.manage_spec(["refine", *refinement_args])
+            if implement:
+                self.run_assistant(["--review"] if review else [])
             return
         if action == "edit":
             target = rest[0].casefold() if rest and not rest[0].startswith("-") else "spec"
@@ -2000,9 +2142,9 @@ class Studio:
             self.show_review_changes()
             return
         if action == "status":
-            if rest:
-                raise SystemExit("Use workflow status.")
-            self.manage_task([])
+            if rest not in ([], ["--details"]):
+                raise SystemExit("Use workflow status [--details].")
+            self.manage_task(["details"] if rest else [])
             return
         if action == "implement":
             self.run_assistant(rest)
@@ -3598,11 +3740,15 @@ class Studio:
                 [
                     ("Status", pending_status, pending_kind),
                     *(
-                        [("Verification", *self._task_verification(task_record))]
+                        [
+                            (
+                                "Assistant checks",
+                                *self._task_verification(task_record),
+                            )
+                        ]
                         if task_record
                         else []
                     ),
-                    ("File", ".zippergen/pending-refinement.md", None),
                     ("Edit", "workflow refine", None),
                     ("Next", next_action, None),
                 ],
@@ -4444,7 +4590,7 @@ class Studio:
         title = (
             "Failed or incomplete assistant checks"
             if problems_only
-            else "Assistant verification checks"
+            else "Assistant checks"
         )
         self._emit_section_title(title)
         self._emit(
@@ -4554,17 +4700,19 @@ class Studio:
 
     def manage_task(self, args: list[str]) -> None:
         if len(args) > 2 or (
-            args and args[0].lower() not in {"show", "path", "history", "close"}
+            args
+            and args[0].lower()
+            not in {"show", "path", "history", "close", "details"}
         ):
             raise SystemExit(
-                "Use workflow status, workflow history, or "
+                "Use workflow status [--details], workflow history, or "
                 "workflow accept [--yes]."
             )
         action = args[0].lower() if args else "summary"
         rest = args[1:]
         if action != "close" and rest:
             raise SystemExit(
-                "Use workflow status, workflow history, or "
+                "Use workflow status [--details], workflow history, or "
                 "workflow accept [--yes]."
             )
         if action == "history":
@@ -4640,12 +4788,11 @@ class Studio:
             accepted = self._record_accepted_review(
                 str(record["request_id"])
             )
-            closed = self.workspace.clear_current_task()
+            self.workspace.clear_current_task()
             self._emit_table(
                 "Workflow implementation accepted",
                 [
                     ("Status", "closed", "success"),
-                    ("Request", closed["request_id"], None),
                     (
                         "Accepted baseline",
                         f"recorded at {accepted['accepted_at']}",
@@ -4687,15 +4834,14 @@ class Studio:
             [
                 ("Status", state, state_kind),
                 ("Kind", record["kind"], None),
-                ("Request", record["request_id"], None),
                 ("Workflow", record.get("workflow_spec") or "new workflow", None),
                 ("Assistant", self._task_assistant(record), None),
                 ("Execution", self._task_execution(record), None),
-                ("Verification", *self._task_verification(record)),
+                ("Assistant checks", *self._task_verification(record)),
                 *(
                     [
                         (
-                            "Verification note",
+                            "Check summary",
                             self._task_verification_summary(record),
                             None,
                         )
@@ -4703,10 +4849,21 @@ class Studio:
                     if self._task_verification_summary(record)
                     else []
                 ),
-                ("Refreshes", record.get("refreshes_request") or "—", None),
                 ("Context", context, context_kind),
                 ("Accepted review", accepted_state, accepted_kind),
-                ("Record", ".zippergen/current-task.md", None),
+                *(
+                    [
+                        ("Request", record["request_id"], None),
+                        (
+                            "Refreshes",
+                            record.get("refreshes_request") or "—",
+                            None,
+                        ),
+                        ("Record", ".zippergen/current-task.md", None),
+                    ]
+                    if action == "details"
+                    else []
+                ),
                 ("Next", self._task_next(record), None),
             ],
         )
@@ -4719,7 +4876,7 @@ class Studio:
         if not path.exists() and not path.is_symlink():
             return _AssistantResult(
                 "incomplete",
-                "The assistant returned without writing its required verification record.",
+                "The assistant returned without writing its required check report.",
                 error="assistant result file was not written",
             )
         try:
@@ -4735,7 +4892,8 @@ class Studio:
             declared = value.get("verification")
             if declared not in {"passed", "failed", "incomplete"}:
                 raise ValueError(
-                    "verification must be passed, failed, or incomplete"
+                    "assistant result field 'verification' must be passed, "
+                    "failed, or incomplete"
                 )
             raw_summary = value.get("summary")
             if not isinstance(raw_summary, str) or not raw_summary.strip():
@@ -4790,7 +4948,7 @@ class Studio:
                 verification = "incomplete"
                 summary = (
                     f"{summary} Studio requires at least one reported check "
-                    "before verification can be marked passed."
+                    "before assistant checks can be marked passed."
                 )[:1000]
             return _AssistantResult(
                 verification,
@@ -4801,7 +4959,7 @@ class Studio:
             detail = str(exc)
             return _AssistantResult(
                 "incomplete",
-                f"Studio could not accept the assistant verification record: {detail}.",
+                f"Studio could not accept the assistant check report: {detail}.",
                 error=detail[:1000],
             )
         finally:
@@ -4876,7 +5034,7 @@ class Studio:
         if len(output.diagnostics) > 3:
             self._warning(
                 f"Codex emitted {len(output.diagnostics) - 3} additional "
-                "diagnostic lines; the assistant verification record is "
+                "diagnostic lines; the assistant check report is "
                 "authoritative for reported checks."
             )
 
@@ -4963,19 +5121,23 @@ class Studio:
     def run_assistant(self, args: list[str]) -> None:
         rerun = "--rerun" in args
         interactive = "--interactive" in args
+        review_after = "--review" in args
         values = [
             value
             for value in args
-            if value not in {"--rerun", "--interactive"}
+            if value not in {"--rerun", "--interactive", "--review"}
         ]
         if len(values) > 1 or any(
             value.lower() not in {"codex", "claude"} for value in values
-        ) or args.count("--rerun") > 1 or args.count("--interactive") > 1:
+        ) or any(
+            args.count(option) > 1
+            for option in ("--rerun", "--interactive", "--review")
+        ):
             raise SystemExit(
                 "Use workflow implement, workflow implement codex, "
                 "workflow implement claude, or workflow implement "
-                "[codex|claude] --rerun. Use workflow implement codex "
-                "--interactive only for an interactive session."
+                "[codex|claude] [--rerun] [--review]. Use workflow implement "
+                "codex --interactive only for an interactive session."
             )
         assistant = (
             values[0].lower()
@@ -5027,15 +5189,15 @@ class Studio:
                 setup = "Install Codex CLI and run 'codex login'"
             raise SystemExit(
                 f"{tool} was not found. {setup} once; "
-                "the current implementation request remains available at "
-                f"{self.workspace.current_task_path}."
+                "the current implementation request remains available; use "
+                "'workflow status --details' to inspect its internal record."
             )
         self._ensure_assistant_test_environment()
         try:
             self.workspace.assistant_result_path.unlink(missing_ok=True)
         except OSError as exc:
             raise SystemExit(
-                "Could not clear the previous assistant verification handoff at "
+                "Could not clear the previous assistant-result handoff at "
                 f"{self.workspace.assistant_result_path}: {exc}"
             ) from exc
         started_at = time.strftime("%Y-%m-%dT%H:%M:%S%z")
@@ -5077,7 +5239,7 @@ class Studio:
                     ),
                     None,
                 ),
-                ("Request", relative_task, "success"),
+                ("Implementation task", "prepared", "success"),
                 ("Project", self.workspace.root, None),
                 (
                     "MCP",
@@ -5097,7 +5259,7 @@ class Studio:
         )
         instruction = (
             f"Read and execute {relative_task}. Follow the repository instructions, "
-            "keep all generated code visible, run the requested verification, and "
+            "keep all generated code visible, run the requested checks, and "
             "do not deploy. Before exiting, write the required structured result "
             "to .zippergen/assistant-result.json."
         )
@@ -5219,8 +5381,8 @@ class Studio:
             )
             raise SystemExit(
                 f"{assistant.capitalize()} exited with status "
-                f"{completed.returncode}; the implementation request remains at "
-                f"{self.workspace.current_task_path}."
+                f"{completed.returncode}; the implementation request remains "
+                "available through 'workflow status'."
             )
         assistant_result = self._consume_assistant_result()
         result_fingerprint = self.workspace.specification_fingerprint()
@@ -5247,15 +5409,15 @@ class Studio:
             "returned to Studio."
         )
         if assistant_result.verification == "passed":
-            self._success("Assistant reported that verification passed.")
+            self._success("Assistant checks passed.")
         elif assistant_result.verification == "failed":
             self._error(
-                "Assistant reported verification failures; do not accept the "
+                "Assistant checks failed; do not accept the "
                 "change until they are resolved."
             )
         else:
             self._warning(
-                "Assistant verification is incomplete; a normal assistant exit "
+                "Assistant checks are incomplete; a normal assistant exit "
                 "does not mean the checks passed."
             )
         kind = str(record.get("kind") or "")
@@ -5284,13 +5446,27 @@ class Studio:
                     else "not applicable",
                     "warning" if kind == "refine" else None,
                 ),
-                ("Verification", *self._task_verification(record)),
-                ("Verification note", assistant_result.summary, None),
+                ("Assistant checks", *self._task_verification(record)),
+                ("Check summary", assistant_result.summary, None),
                 ("Next", self._task_next(record), None),
             ],
         )
         if assistant_result.verification != "passed":
             self._emit_task_verification_checks(record, problems_only=True)
+        if review_after:
+            self.review_workflow()
+        elif (
+            self._prompt_toolkit_enabled
+            and assistant_result.verification == "passed"
+            and self._confirm_action(
+                "Open the guided workflow review now? [Y/n]: ",
+                cancel_message=(
+                    "Review remains open; use 'workflow review' when ready."
+                ),
+                default=True,
+            )
+        ):
+            self.review_workflow()
 
     def show_current(self) -> None:
         from zippergen.serve import _validate_workflow
@@ -5351,8 +5527,7 @@ class Studio:
                 (
                     "Implementation task",
                     (
-                        f"{request['request_id']} ({request['kind']}) — "
-                        f"{task_state}; .zippergen/current-task.md"
+                        f"{request['kind']} — {task_state}"
                         if request
                         else task_state
                     ),
@@ -5364,7 +5539,12 @@ class Studio:
                     else []
                 ),
                 *(
-                    [("Task verification", *self._task_verification(request))]
+                    [
+                        (
+                            "Assistant checks",
+                            *self._task_verification(request),
+                        )
+                    ]
                     if request
                     else []
                 ),
@@ -7625,12 +7805,26 @@ class Studio:
                 "missing": "⚠ missing",
                 "invalid": "✗ invalid",
             }.get(record.state, record.state)
+            if record.deployment_names:
+                owner = (
+                    "deployment"
+                    if len(record.deployment_names) == 1
+                    else f"deployment ×{len(record.deployment_names)}"
+                )
+            elif record.run_ids:
+                owner = (
+                    "run"
+                    if len(record.run_ids) == 1
+                    else f"run ×{len(record.run_ids)}"
+                )
+            else:
+                owner = "standalone"
             rows.append(
                 (
                     index,
                     "●" if str(record.path) == selected else "",
                     record.name,
-                    ", ".join(record.owners),
+                    owner,
                     state_mark,
                     record.pending_tasks or "—",
                     self._store_size(record.size) if record.exists else "—",
@@ -8727,7 +8921,7 @@ changes framework source. Pytest is a declared framework development
 dependency installed by the tutorial's initial `uv sync`. Do not use
 `--with pytest`, install packages, or request network access during the
 assistant run.
-If pytest is missing, report verification as incomplete and tell the user to
+If pytest is missing, report the assistant checks as incomplete and tell the user to
 run `uv sync --project {quoted}` once in an ordinary terminal."""
 
     def _assistant_completion_instructions(self) -> str:
@@ -8757,7 +8951,7 @@ check fails. Report `incomplete` when a requested check could not be run or
 when the available environment did not test the intended scope. Claim
 `passed` only when every requested validation, semantic inspection/diff, and
 relevant test completed successfully. A coding-assistant session returning
-normally does not turn a failed command into a successful verification."""
+normally does not turn a failed command into successful assistant checks."""
 
     def _task_refresh_instruction(self, refreshes_request: str | None) -> str:
         if refreshes_request is None:
@@ -8808,7 +9002,7 @@ bundle self-contained by including the workflow source and any required
 project assets. Run validation, show the communication-only and full code
 views, and inspect every new participant's exact local projection. Do not
 deploy or start a service. Report generated files, assumptions, and
-verification results.
+assistant-check results.
 
 ## Required completion record
 
@@ -8863,7 +9057,7 @@ Validate the result, show communication-only and full code views,
 inspect every changed participant's exact local projection, and compare the
 result with the baseline using `zippergen diff`. Do not deploy or start a
 service. Report assumptions, intended semantic changes, preserved behavior,
-and verification results.
+and assistant-check results.
 
 ## Required completion record
 
@@ -9071,14 +9265,13 @@ and verification results.
                 (
                     "Pending",
                     (
-                        "created — .zippergen/pending-refinement.md"
+                        "created"
                         if pending["created"]
-                        else "updated — .zippergen/pending-refinement.md"
+                        else "updated"
                     ),
                     "success",
                 ),
                 ("Workflow", current, None),
-                ("Baseline", baseline, "success"),
                 ("Implementation", "prepared", "success"),
                 (
                     "Assistant path",

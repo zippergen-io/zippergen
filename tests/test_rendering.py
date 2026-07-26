@@ -118,3 +118,42 @@ def test_column_renderer_wraps_colored_statuses_by_visible_width():
     assert len(status_lines) == 1
     assert status in status_lines[0]
     assert all(renderer.visible_width(line) <= 60 for line in output)
+
+
+def test_column_renderer_truncates_identifiers_and_dates_without_splitting():
+    output: list[str] = []
+    renderer = TerminalRenderer(
+        output.append,
+        color=False,
+        columns=lambda: 60,
+    )
+
+    renderer.columns(
+        "Durable stores",
+        ("Store", "Used by", "State", "Updated"),
+        [
+            (
+                "tutorial_review-20260726-100626-683804000",
+                "development run",
+                "✓ done",
+                "2026-07-26 10:06",
+            )
+        ],
+    )
+
+    data = [line for line in output if "tutorial_" in line]
+    assert len(data) == 1
+    assert "…" in data[0]
+    assert not any(line.strip() == "6 10:06" for line in output)
+    assert all(renderer.visible_width(line) <= 60 for line in output)
+
+
+def test_column_renderer_uses_more_width_for_data_than_prose_tables():
+    renderer = TerminalRenderer(
+        lambda _value: None,
+        color=False,
+        columns=lambda: 160,
+    )
+
+    assert renderer.output_columns() == 108
+    assert renderer.data_output_columns() == 160

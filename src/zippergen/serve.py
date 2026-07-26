@@ -623,6 +623,22 @@ def _run_launchctl(
 def _deployment_lifecycle_command(args, action: str) -> int:
     profile = _load_deployment_profile(args.name)
     name = str(profile["name"])
+    if (
+        action in {"start", "restart"}
+        and not args.dry_run
+        and not getattr(args, "skip_readiness", False)
+    ):
+        checks = _doctor_checks(name, include_systemd=False)
+        failures = [
+            check for check in checks if check.get("status") == "fail"
+        ]
+        if failures:
+            _print_doctor_summary(name, checks)
+            print(
+                f"Deployment {name} was not {action}ed because readiness "
+                "checks found failures."
+            )
+            return 1
     manager = _service_manager()
     if manager == "systemd":
         unit = _systemd_unit_name(name)
@@ -2653,7 +2669,12 @@ def _finalize_guided_deployment(
             return 1
 
     if not args.no_start:
-        lifecycle_args = argparse.Namespace(name=name, enable=True, dry_run=False)
+        lifecycle_args = argparse.Namespace(
+            name=name,
+            enable=True,
+            dry_run=False,
+            skip_readiness=True,
+        )
         _deployment_lifecycle_command(lifecycle_args, "start")
 
     print(f"Deployment: {name}")
@@ -2727,7 +2748,12 @@ def _configure_deployment_command(args) -> int:
         profile, spec, _workflow, values, secrets, args
     )
     if rc == 0 and args.restart and args.no_start:
-        lifecycle_args = argparse.Namespace(name=args.name, enable=False, dry_run=False)
+        lifecycle_args = argparse.Namespace(
+            name=args.name,
+            enable=False,
+            dry_run=False,
+            skip_readiness=True,
+        )
         return _deployment_lifecycle_command(lifecycle_args, "restart")
     return rc
 

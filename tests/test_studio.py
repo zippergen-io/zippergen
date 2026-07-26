@@ -514,7 +514,8 @@ def test_studio_refine_saves_semantic_baseline_and_handoff(tmp_path):
         "Add a human review before returning the result."
     )
     assert output[0] == "Refinement"
-    assert any("✓ created — .zippergen/pending-refinement.md" in line for line in output)
+    assert any("Pending" in line and "✓ created" in line for line in output)
+    assert all(".zippergen/pending-refinement.md" not in line for line in output)
     assert any("✓ prepared" in line for line in output)
     assert any(
         "Manual path" in line
@@ -556,6 +557,10 @@ def test_studio_workflow_commands_expose_one_implementation_and_private_history(
 
     studio.execute("workflow status")
     assert output[0] == "Workflow implementation task"
+    assert all(".zippergen/current-task.md" not in line for line in output)
+
+    output.clear()
+    studio.execute("workflow status --details")
     assert any(".zippergen/current-task.md" in line for line in output)
     assert any("assistant" in line for line in output)
 
@@ -611,8 +616,9 @@ def test_studio_task_show_refreshes_stale_specification_context_once(tmp_path):
 
     assert any("Refreshes" in line for line in output)
     compact = "".join(line.strip() for line in output)
-    assert str(refreshed["request_id"]) in compact
-    assert str(original["request_id"]) in compact
+    assert str(refreshed["request_id"])[:16] in compact
+    assert "…" in compact
+    assert str(original["request_id"])[:16] in compact
 
 
 def test_studio_refreshes_a_pre_verification_contract_task_before_launch(
@@ -678,9 +684,7 @@ def test_studio_assistant_launches_codex_in_project_on_the_stable_task(
     )
     assert any("MCP" in line and "not required" in line for line in output)
     assert any("Codex session returned to Studio" in line for line in output)
-    assert any(
-        "verification is incomplete" in line.lower() for line in output
-    )
+    assert any("assistant checks are incomplete" in line.lower() for line in output)
     assert any(
         "Status" in line and "awaiting human review" in line for line in output
     )
@@ -796,22 +800,65 @@ def test_studio_assistant_records_passed_verification_separately_from_exit(
     assert all("supports_reasoning_summaries" not in line for line in output)
     assert any("Assistant report" in line for line in output)
     assert any("Updated the workflow" in line for line in output)
-    assert any("verification passed" in line.lower() for line in output)
+    assert any("assistant checks passed" in line.lower() for line in output)
     assert any(
-        "Verification" in line and "passed" in line and "2 checks" in line
+        "Assistant checks" in line and "passed" in line and "2 checks" in line
         for line in output
     )
 
     output.clear()
     studio.execute("workflow status")
     assert any(
-        "Verification" in line and "passed" in line and "2 checks" in line
+        "Assistant checks" in line and "passed" in line and "2 checks" in line
         for line in output
     )
     assert any(
-        "Verification note" in line and "focused application tests passed" in line
+        "Check summary" in line and "focused application tests passed" in line
         for line in output
     )
+
+
+def test_studio_implement_can_enter_guided_review_on_return(
+    tmp_path,
+    monkeypatch,
+):
+    studio, workspace, _output = _studio(tmp_path)
+    studio.create_request("Create a review workflow.")
+    monkeypatch.setattr(
+        "zippergen.studio.shutil.which",
+        lambda _name: "/bin/codex",
+    )
+
+    def fake_run(arguments, *, cwd, check, **kwargs):
+        workspace.assistant_result_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "verification": "passed",
+                    "summary": "Focused checks passed.",
+                    "checks": [
+                        {
+                            "command": "uv run zippergen validate workflow.py:sample",
+                            "status": "passed",
+                            "detail": "Workflow is valid.",
+                        }
+                    ],
+                }
+            )
+        )
+        return subprocess.CompletedProcess(arguments, 0, stdout="", stderr="")
+
+    monkeypatch.setattr("zippergen.studio.subprocess.run", fake_run)
+    review_calls: list[bool] = []
+    monkeypatch.setattr(
+        studio,
+        "review_workflow",
+        lambda: review_calls.append(True),
+    )
+
+    studio.execute("workflow implement --review")
+
+    assert review_calls == [True]
 
 
 def test_studio_assistant_does_not_hide_a_failed_check_behind_zero_exit(
@@ -850,11 +897,9 @@ def test_studio_assistant_does_not_hide_a_failed_check_behind_zero_exit(
     assert request["status"] == "awaiting_review"
     assert request["assistant_exit_code"] == 0
     assert request["assistant_verification"] == "failed"
+    assert any("assistant checks failed" in line.lower() for line in output)
     assert any(
-        "verification failures" in line.lower() for line in output
-    )
-    assert any(
-        "Verification" in line and "failed" in line for line in output
+        "Assistant checks" in line and "failed" in line for line in output
     )
     assert "Next" in output
     assert any("workflow implement codex --rerun" in line for line in output)
@@ -867,7 +912,7 @@ def test_studio_assistant_does_not_hide_a_failed_check_behind_zero_exit(
 
     output.clear()
     studio.execute("workflow status")
-    assert "Assistant verification checks" in output
+    assert "Assistant checks" in output
     assert any("Command" in line and "uv run pytest" in line for line in output)
     assert any(
         "Result" in line and "prompt_toolkit was unavailable" in line
@@ -920,7 +965,7 @@ def test_studio_verification_checks_are_wrapped_records_with_problem_priority(
 
     studio.execute("workflow status")
 
-    title = output.index("Assistant verification checks")
+    title = output.index("Assistant checks")
     checks = output[title:]
     assert "3 checks · 1 passed · 1 failed · 1 not run" in checks
     assert max(len(line) for line in checks) <= 72
@@ -1442,7 +1487,7 @@ def test_studio_manual_spec_integration_is_reviewable_without_an_assistant(
 def test_studio_workflow_review_guides_requirements_and_can_be_resumed(
     tmp_path,
 ):
-    studio, workspace, output = _studio(tmp_path, responses=["1", "7"])
+    studio, workspace, output = _studio(tmp_path, responses=["1", "6"])
     workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
     workspace.save_specification("Echo the request through Writer.")
     studio.refine_request("Require human approval before returning.")
@@ -1468,7 +1513,7 @@ def test_studio_workflow_review_guides_requirements_and_can_be_resumed(
 
 
 def test_studio_workflow_review_can_accept_the_reviewed_refinement(tmp_path):
-    studio, workspace, output = _studio(tmp_path, responses=["6", "y"])
+    studio, workspace, output = _studio(tmp_path, responses=["4", "y"])
     workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
     workspace.save_specification("Echo the request through Writer.")
     studio.refine_request("Require human approval before returning.")
@@ -1797,6 +1842,49 @@ def test_studio_spec_refine_reopens_one_pending_file(tmp_path, monkeypatch):
     assert list(workspace.requests_directory.glob("*-semantic-before.json")) == (
         first_baselines
     )
+
+
+def test_studio_refine_can_start_implementation_without_a_second_command(
+    tmp_path,
+    monkeypatch,
+):
+    studio, workspace, _output = _studio(tmp_path)
+    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    workspace.save_specification("Echo the input through Writer.")
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        studio,
+        "run_assistant",
+        lambda arguments: calls.append(arguments),
+    )
+
+    studio.execute(
+        "workflow refine Increase the retry budget --implement"
+    )
+
+    assert workspace.pending_refinement() == "Increase the retry budget"
+    assert calls == [[]]
+
+
+def test_studio_refine_can_chain_implementation_into_guided_review(
+    tmp_path,
+    monkeypatch,
+):
+    studio, workspace, _output = _studio(tmp_path)
+    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    workspace.save_specification("Echo the input through Writer.")
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        studio,
+        "run_assistant",
+        lambda arguments: calls.append(arguments),
+    )
+
+    studio.execute(
+        "workflow refine Increase the retry budget --implement --review"
+    )
+
+    assert calls == [["--review"]]
 
 
 def test_studio_failed_create_editor_preserves_canonical_draft(
@@ -2888,7 +2976,7 @@ def test_studio_store_list_includes_an_expected_missing_deployment_store(
 
     assert any(
         "reviewed-answer" in line
-        and "deployment reviewed-answer" in line
+        and "deployment" in line
         and "missing" in line
         for line in output
     )

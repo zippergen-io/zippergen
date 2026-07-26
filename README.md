@@ -470,6 +470,9 @@ file is an implementation detail passed automatically to the selected coding
 assistant; users do not need to find or copy its path. A later `workflow
 create` or `workflow refine` deliberately replaces the current implementation
 request; `specification.md` remains the durable design record.
+Ordinary `workflow status` therefore shows lifecycle state, assistant checks,
+and the next action without task IDs or internal paths. Use `workflow status
+--details` or `workflow history` only when those audit details are useful.
 
 The task cannot silently lag behind that record. Studio fingerprints the
 canonical specification and pending refinement. While an implementation is
@@ -503,6 +506,13 @@ configured tools. MCP is optional, not part of the ZipperGen handoff. Another
 repository-aware coding assistant can consume the generated implementation
 request through an integration.
 
+For the frequent refinement path, `workflow refine "CHANGE" --implement`
+saves the pending change and starts the configured assistant immediately.
+Add `--review` to enter guided human review when the assistant returns, or use
+`workflow implement [codex|claude] --review` after preparing a task separately.
+These are sequencing shortcuts only: neither command validates on behalf of
+ZipperGen nor accepts the result.
+
 Assistant commands execute immediately and synchronously; Studio has no hidden
 task queue or scheduled assistant job. Before launch, `workflow status`
 reports a prepared implementation and `Execution: not started; nothing is
@@ -519,8 +529,10 @@ another pass is intentional.
 than one enormous table row. It shows aggregate passed/failed/not-run counts,
 then a status line plus separately wrapped `Command` and `Result` fields for
 each check. The complete command is preserved. Failed and unexecuted checks
-come first when verification did not pass. Verification records are capped at
-108 columns while respecting narrower interactive terminals.
+come first when assistant checks did not pass. These records are capped at
+108 columns while respecting narrower interactive terminals. “Assistant
+checks” is deliberately distinct from `workflow validate`: the former is an
+assistant-supplied report, the latter is ZipperGen checking the current code.
 
 After the assistant creates visible Python source, `workflow list` shows every
 discovered top-level `@workflow` entry point without claiming that it is valid;
@@ -1021,6 +1033,10 @@ SQLite store. A loaded service whose process repeatedly exits is reported as
 unhealthy rather than merely “active.”
 Generated launchd/systemd services restart after failure, not after a
 successful finite workflow completion.
+Both `deployment start` and `deployment restart` rerun readiness checks before
+changing service-manager state. Failed credential, import, bundle, or workflow
+checks stop the operation instead of creating a crash loop; warnings do not
+block it.
 Studio condenses the deployer's detailed doctor transcript into one readiness
 summary and then renders the unified deployment view; `deployment doctor`
 remains available for every individual check.
@@ -1061,6 +1077,10 @@ store delete reviewed-answer
 Stores are normally created automatically by `run` or `deploy`; `store create
 NAME` is for the uncommon standalone case. Renaming is blocked while a
 referencing deployment is active and updates run/deployment references.
+The list uses short ownership labels such as `run`; exact run IDs
+and paths remain available through `store show` and `store path`. Identifier
+and timestamp cells use a one-line ellipsis instead of breaking into
+uncopyable fragments, while wide data tables can use more terminal width.
 Deletion is project-scoped with `store delete all`, refuses active deployment stores, and
 moves SQLite data to recoverable private trash below
 `$ZIPPERGEN_HOME/trash/stores/`.

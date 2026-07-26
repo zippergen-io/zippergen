@@ -27,11 +27,39 @@ _STATUS_COLORS: dict[StatusKind, str] = {
 }
 _DEFAULT_OUTPUT_COLUMNS = 100
 _MAX_OUTPUT_COLUMNS = 108
+_MAX_DATA_OUTPUT_COLUMNS = 180
 _MIN_OUTPUT_COLUMNS = 60
 _ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
 _STATUS_MARK_RE = re.compile(r"^[✓⚠✗•]\s+")
 _STATUS_COLUMN_HEADINGS = frozenset({"status", "state"})
-_IDENTIFIER_COLUMN_HEADINGS = frozenset({"id", "request", "refreshes", "run"})
+_IDENTIFIER_COLUMN_HEADINGS = frozenset(
+    {
+        "id",
+        "request",
+        "refreshes",
+        "run",
+        "store",
+        "deployment",
+        "workflow",
+        "participant",
+        "configuration",
+        "name",
+        "path",
+        "file",
+    }
+)
+_ATOMIC_COLUMN_HEADINGS = frozenset(
+    {
+        "#",
+        "choice",
+        "current",
+        "created",
+        "updated",
+        "tasks",
+        "size",
+        "used by",
+    }
+)
 _MAX_ATOMIC_STATUS_WIDTH = 24
 
 
@@ -81,6 +109,24 @@ class TerminalRenderer:
         else:
             columns = _DEFAULT_OUTPUT_COLUMNS
         return max(_MIN_OUTPUT_COLUMNS, min(_MAX_OUTPUT_COLUMNS, columns))
+
+    def data_output_columns(self) -> int:
+        """Use more of a wide terminal for multi-column data."""
+
+        if self._columns is not None:
+            columns = self._columns()
+        elif self.output is print and bool(
+            getattr(sys.stdout, "isatty", lambda: False)()
+        ):
+            columns = shutil.get_terminal_size(
+                fallback=(_DEFAULT_OUTPUT_COLUMNS, 24)
+            ).columns
+        else:
+            columns = _DEFAULT_OUTPUT_COLUMNS
+        return max(
+            _MIN_OUTPUT_COLUMNS,
+            min(_MAX_DATA_OUTPUT_COLUMNS, columns),
+        )
 
     @staticmethod
     def wrapped_lines(value: object, width: int) -> list[str]:
@@ -172,6 +218,17 @@ class TerminalRenderer:
         padding = " " * max(0, width - self.visible_width(text))
         return padding + text if right else text + padding
 
+    @classmethod
+    def truncated_cell(cls, value: object, width: int) -> str:
+        """Keep an identifier-like value copyable as one bounded cell."""
+
+        text = _ANSI_ESCAPE_RE.sub("", str(value))
+        if cls.visible_width(text) <= width:
+            return text
+        if width <= 1:
+            return "…"[:width]
+        return text[: width - 1] + "…"
+
     def columns(
         self,
         title: str,
@@ -190,7 +247,7 @@ class TerminalRenderer:
             candidates = [self.visible_width(heading)]
             candidates.extend(self.visible_width(row[index]) for row in rendered)
             natural_widths.append(max(candidates))
-        available = self.output_columns() - 2 - 2 * (len(headers) - 1)
+        available = self.data_output_columns() - 2 - 2 * (len(headers) - 1)
         widths = list(natural_widths)
         if sum(widths) > available:
             minimums: list[int] = []
@@ -239,17 +296,27 @@ class TerminalRenderer:
                 selected = max(
                     candidates,
                     key=lambda index: (
-                        contains_spaces[index],
-                        not identifier_columns[index],
+                        identifier_columns[index],
+                        not contains_spaces[index],
                         widths[index] - minimums[index],
                     ),
                 )
                 widths[selected] -= 1
         self.section(title)
+        bounded_columns = {
+            index
+            for index, heading in enumerate(headers)
+            if heading.strip().casefold()
+            in (_IDENTIFIER_COLUMN_HEADINGS | _ATOMIC_COLUMN_HEADINGS)
+        }
 
         def emit_row(values: tuple[str, ...]) -> None:
             wrapped = [
-                self.wrapped_lines(value, widths[index])
+                (
+                    [self.truncated_cell(value, widths[index])]
+                    if index in bounded_columns
+                    else self.wrapped_lines(value, widths[index])
+                )
                 for index, value in enumerate(values)
             ]
             height = max(len(lines) for lines in wrapped)

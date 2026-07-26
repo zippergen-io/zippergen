@@ -262,9 +262,12 @@ workflow implement claude
 \end{lstlisting}
 
 Studio passes the current specification and repository rules automatically.
-The assistant works synchronously in the project, reports its verification
-checks, and returns to the same Studio prompt. No request path has to be copied
-and there is no background assistant job.
+The assistant works synchronously in the project, reports its own checks, and
+returns to the same Studio prompt. No request path has to be copied and there
+is no background assistant job. On later changes, the shortcut
+\texttt{workflow refine "CHANGE" --implement} saves the refinement and starts
+the configured assistant; adding \texttt{--review} enters guided review on
+return. These options sequence existing steps and never accept a result.
 
 After it returns, enter:
 
@@ -272,9 +275,10 @@ After it returns, enter:
 workflow status
 \end{lstlisting}
 
-The expected state is \emph{awaiting human review}. Verification is reported
-separately as passed, failed, or incomplete. Do not accept a result with
-unresolved failures.
+The expected state is \emph{awaiting human review}. \emph{Assistant checks}
+are reported separately as passed, failed, or incomplete. This is evidence
+reported by the assistant, whereas \texttt{workflow validate} is ZipperGen
+checking the current code. Do not accept a result with unresolved failures.
 
 \begin{notebox}{If no coding assistant is installed}
 The prompt-to-code step necessarily needs a repository-aware coding assistant,
@@ -360,6 +364,12 @@ specification and workflow semantics that you reviewed, then closes the
 implementation task. It does not validate, merge, or repair anything. A
 workflow may therefore be valid but not yet accepted. Studio displays the two
 states separately.
+
+\texttt{workflow review} is the guided process containing inspection,
+validation, running, and the explicit acceptance decision. Its presentation is
+more compact when no human, effect, assistant, or deployment boundary is
+declared, but acceptance is never inferred or automatic: LLM calls and prompt
+changes can still be consequential.
 
 If an existing workflow has no open implementation task---for example after
 upgrading a project accepted by an older Studio---the workflow still exists.
@@ -500,6 +510,9 @@ Studio also copies its configured OpenAI-compatible endpoint into the
 deployment profile automatically.
 Studio shows a concise readiness summary during \texttt{deploy};
 \texttt{deployment doctor} expands every individual check when needed.
+Explicit \texttt{deployment start} and \texttt{deployment restart} repeat
+readiness checks before changing service-manager state. Failures block the
+operation instead of creating a restart loop; warnings do not.
 
 If the working tree changed after acceptance, Studio first shows the exact
 specification and semantic differences. Choose the accepted snapshot or return
