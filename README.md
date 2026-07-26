@@ -440,7 +440,9 @@ the pending change, and the selected workflow.
 
 The assistant must integrate the change coherently into `specification.md`
 alongside code and tests, while leaving the pending document for human review.
-This can also be done manually with `workflow edit spec`. `workflow accept`
+The same change can be integrated without an assistant: use `workflow edit
+code`, update the durable intent with `workflow edit spec`, and enter
+`workflow review`. `workflow accept`
 does not perform a merge: after inspection it verifies that the canonical
 specification changed, asks whether to accept that existing integration,
 archives the pending text privately, and clears it. `workflow refine CHANGE`
@@ -529,11 +531,48 @@ Discovery answers “what entry points exist?” and selection answers “which 
 are we discussing?” Only `workflow validate` checks the global protocol,
 ownership, projections, actions, referenced resources, and deployment
 metadata.
-For an existing workflow, `workflow refine` additionally saves a semantic
-baseline for a meaningful before/after diff. A reviewed refinement or initial
-creation closes through `workflow accept`; an unwanted refinement closes
-through `workflow discard`. Private implementation history remains available
-through `workflow history`.
+For an existing workflow, `workflow refine` saves both the exact specification
+and a semantic workflow snapshot from before the change. `workflow diff`
+compares the current specification and behavior with those baselines, and
+`workflow review` shows both comparisons automatically.
+
+`workflow validate` and `workflow accept` deliberately answer different
+questions:
+
+| Command | Question answered | What it records or changes |
+| --- | --- | --- |
+| `workflow validate` | Is the current Python workflow structurally valid, including every local projection and declared resource? | A technical result for the code being checked; it records no human approval and clears nothing. |
+| `workflow accept` | Have I reviewed and approved this specification, workflow semantics, and visible source? | A human-accepted intent/semantic baseline plus an immutable, content-hashed source snapshot and Git provenance; it closes the current implementation and, for a refinement, archives and clears the pending change. It does not merge files, validate, run, or deploy. |
+
+Thus a workflow can be valid but not accepted, or accepted and later drift
+because its specification or code was edited. `current`, `workflow status`,
+`workflow validate`, and `run` report that accepted-review state.
+They describe semantic drift conservatively; they do not guess whether the
+specification or the code is the side that should change. Use `workflow diff`
+and normal Git review to decide.
+
+Studio deployment gives that state operational force:
+
+1. A manual, imported, or legacy workflow with no acceptance record produces a
+   warning and may proceed after technical validation.
+2. A workflow matching its acceptance deploys the immutable accepted source
+   snapshot, not the mutable working tree.
+3. A workflow whose specification or semantics diverged stops and shows the
+   exact accepted/current differences. Choose the accepted version, return to
+   review, cancel, or explicitly deploy the current candidate with
+   `--unreviewed --reason TEXT`. A successful override and its reason are
+   recorded privately.
+
+A generated implementation that is still awaiting its first human review is
+blocked rather than treated as an ordinary never-accepted legacy workflow.
+An existing running service remains structurally isolated: it executes its own
+timestamped deployment bundle and cannot observe later working-tree edits.
+
+A reviewed refinement or initial creation closes through `workflow accept`;
+an unwanted refinement closes through `workflow discard`. Discarding archives
+the request but does not revert working-tree edits: inspect `git diff` and
+restore unwanted files deliberately. Private implementation history remains
+available through `workflow history`.
 
 Every later source/design change uses the same visible loop:
 
@@ -542,15 +581,17 @@ zippergen [reviewed_answer]> workflow refine
 zippergen [reviewed_answer]> workflow show pending
 zippergen [reviewed_answer]> workflow status       # optional summary
 zippergen [reviewed_answer]> workflow implement claude  # or: codex
+zippergen [reviewed_answer]> workflow diff
 zippergen [reviewed_answer]> workflow review
 ```
 
-`workflow review` keeps an ordered menu open for reviewing the pending change
-and integrated specification, inspecting authored source and semantic views,
+`workflow review` first shows the pending request, an exact before/after
+specification diff, and a semantic before/after workflow diff. It then keeps an
+ordered menu open for inspecting authored source and semantic views,
 validating, running, and finally accepting the implementation. Every action
 remains explicit, and leaving the menu preserves the open review. The
-individual `workflow show ...`, `workflow validate`, `run`, and `workflow
-accept` commands remain available directly.
+individual `workflow diff`, `workflow show ...`, `workflow validate`, `run`,
+and `workflow accept` commands remain available directly.
 
 A model change has two forms. Use `models provider configure`, then
 `models config create/check` and `models assign Writer NAME` (or
@@ -838,7 +879,7 @@ This keeps generated workflows as ordinary reviewable code instead of hiding
 them behind a separate visual builder or opaque generation service.
 
 Studio exposes this handoff as `workflow create` and `workflow refine`.
-Multiline accepted requirements remain in one normal, versioned specification:
+Multiline canonical requirements remain in one normal, versioned specification:
 
 ```text
 zippergen [no workflow]> workflow create
@@ -960,8 +1001,12 @@ prepare it without starting a service. Inspect it with `doctor`, then use
 When a workflow declares deployment requirements, ZipperGen asks for its
 settings and secrets, creates a managed Python environment, installs declared
 packages, runs one-time setup such as OAuth, checks readiness, snapshots the
-workflow files, and starts a user service. It uses launchd on macOS and systemd
-on Linux.
+workflow files, and starts a user service. Managed environments are built in a
+temporary sibling directory and replace the old environment only after
+creation and installation succeed. ZipperGen prefers `uv`, which avoids the
+standard-library `ensurepip` bootstrap; a failed build leaves the previous
+environment untouched and reports a concise recovery message. ZipperGen uses
+launchd on macOS and systemd on Linux.
 
 Normal configuration is stored in the deployment profile. Secrets are kept in
 a separate mode-0600 file and loaded before the workflow module is imported;

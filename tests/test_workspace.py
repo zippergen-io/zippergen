@@ -538,10 +538,16 @@ def test_workspace_manages_one_canonical_spec_and_one_pending_refinement(tmp_pat
     assert workspace.load()["pending_specification_fingerprint"] == (
         accepted_fingerprint
     )
+    assert workspace.load()["pending_specification_baseline"] == (
+        "# Reviewed answer\n\nRequire human approval."
+    )
     assert workspace.specification_fingerprint() != accepted_fingerprint
 
     workspace.save_pending_refinement("bounded", append=True)
     assert workspace.pending_refinement().endswith("\n\nbounded")
+    workspace.save_specification(
+        "# Reviewed answer\n\nRequire human approval and bounded retries."
+    )
 
     archived = workspace.archive_pending_refinement(status="reconciled")
 
@@ -549,6 +555,12 @@ def test_workspace_manages_one_canonical_spec_and_one_pending_refinement(tmp_pat
     assert workspace.pending_refinement() is None
     assert Path(archived["history_path"]).read_text().startswith(
         "Add bounded retries."
+    )
+    assert Path(archived["specification_before_path"]).read_text().strip() == (
+        "# Reviewed answer\n\nRequire human approval."
+    )
+    assert Path(archived["specification_after_path"]).read_text().strip() == (
+        "# Reviewed answer\n\nRequire human approval and bounded retries."
     )
     assert workspace.list_spec_history()[0]["status"] == "reconciled"
 

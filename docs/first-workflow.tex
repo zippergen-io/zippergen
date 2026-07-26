@@ -349,6 +349,19 @@ built-in mock model needs no account, network connection, or API key.
 \texttt{models assignments} should list Writer and Reviewer because they
 contain LLM actions.
 
+\begin{notebox}{Validation is not acceptance}
+\texttt{workflow validate} is a repeatable technical check of the Python
+workflow as it exists now: it checks structure, ownership, declarations, and
+every local projection. It neither approves the requirements nor closes the
+current implementation.
+
+\texttt{workflow accept} is the later human decision: it records the exact
+specification and workflow semantics that you reviewed, then closes the
+implementation task. It does not validate, merge, or repair anything. A
+workflow may therefore be valid but not yet accepted. Studio displays the two
+states separately.
+\end{notebox}
+
 \section{Run, interrupt, and resume}
 
 Enter:
@@ -395,10 +408,28 @@ workflow review
 \end{lstlisting}
 
 The guided review offers the specification, source, semantic views,
-validation, a development run, and final acceptance. Choose
+validation, a development run, and final acceptance. Before the menu, Studio
+shows the exact specification changes and the semantic workflow changes
+relative to the pre-change baseline. The same comparison is available directly
+with:
+
+\begin{lstlisting}[style=shell]
+workflow diff
+\end{lstlisting}
+
+Choose
 \emph{Accept reviewed implementation} only after the visible code and checks
 are satisfactory. Acceptance records the human decision; it does not delete
 the specification, source, tests, run history, or private assistant history.
+It also preserves a private, content-hashed snapshot of the accepted workflow
+files and records the Git commit and reviewed-file dirty state when Git is
+available. It does not run or deploy anything.
+If the specification or workflow semantics later change, \texttt{current},
+\texttt{workflow status}, \texttt{workflow validate}, \texttt{run}, and
+\texttt{deploy} report that the current files no longer match that accepted
+baseline. Development runs may still exercise the candidate. Deployment stops
+and offers the immutable accepted version, return to review, an audited
+unreviewed override, or cancellation.
 
 In an ordinary terminal, inspect the versioned result:
 
@@ -424,13 +455,22 @@ doctor
 status
 \end{lstlisting}
 
-\texttt{deploy} validates the workflow, collects declared inputs, snapshots
-the deployment files, creates its managed Python environment, and remembers
-the deployment name. The \texttt{--no-start} flag deliberately leaves the
+\texttt{deploy} uses the immutable accepted source snapshot by default,
+validates it again, collects declared inputs, creates a separate timestamped
+deployment bundle and managed Python environment, and remembers the deployment
+name. The \texttt{--no-start} flag deliberately leaves the
 service stopped. \texttt{doctor} checks readiness; \texttt{status} explains
 the current operational state. Warnings about a missing first-run log or store
 and an uninstalled service are expected before the first start; a red failure
 must be investigated.
+
+If the working tree changed after acceptance, Studio first shows the exact
+specification and semantic differences. Choose the accepted snapshot or return
+to \texttt{workflow review}. The exceptional
+\texttt{deploy NAME --unreviewed --reason "TEXT"} form deploys the current
+candidate and records the reason; it is not the normal tutorial path. A
+running service continues to use its own bundle and cannot see later
+working-tree edits.
 
 \begin{warningbox}{Starting is an operational action}
 Continue only on your own development machine, with the mock model, when

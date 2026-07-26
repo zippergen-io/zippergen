@@ -569,7 +569,7 @@ Projects created by an older Studio may still contain an ordered prompt
 ledger. On first specification access, Studio combines its active entries into
 \path{specification.md} and preserves the old files as migration history. The
 former \texttt{workflow prompts} command is deliberately unavailable: all new
-work uses one accepted specification and at most one pending refinement.
+work uses one canonical specification and at most one pending refinement.
 
 The implementation request asks the assistant to identify participants,
 ownership, messages, action kinds, decisions, loops, deployment needs, safety
@@ -588,7 +588,7 @@ source path in advance.
 The everyday specification commands are intentionally uniform:
 
 \begin{lstlisting}[style=shell]
-workflow show spec    # read the accepted requirements
+workflow show spec    # read the canonical requirements
 workflow edit spec    # reopen the same specification.md
 workflow path         # print its absolute path only when another tool needs it
 workflow status       # inspect the implementation lifecycle
@@ -884,6 +884,26 @@ deployment declarations. Every successful check begins with a green check
 mark; a red cross identifies a failure and is followed by its explanation.
 \texttt{current} then shows the complete project dashboard, including the
 fresh validation summary, model routing, run, and deployment state.
+
+\begin{notebox}{Do not confuse validation with acceptance}
+\texttt{workflow validate} asks a technical question about the current code:
+is this global workflow structurally valid, and can every participant be
+projected consistently? It can be run repeatedly. It records no human approval
+and does not close a task.
+
+\texttt{workflow accept} asks a governance question: have you inspected and
+approved this specification and these workflow semantics? It records that
+exact accepted pair as a private baseline and closes the current
+implementation. For a refinement it also archives and clears the pending
+request. Acceptance performs no merge and does not replace validation.
+
+Consequently, ``valid'' does not mean ``accepted.'' An accepted workflow can
+also drift later when its specification or source changes. Studio reports the
+accepted-review state separately in \texttt{current}, \texttt{workflow
+status}, \texttt{workflow validate}, and \texttt{run}. Acceptance additionally
+preserves a private, content-hashed source snapshot and Git provenance; it
+still performs no run, deployment, or restart.
+\end{notebox}
 
 Before running, confirm from these views who owns both inputs, who owns the
 retry decision, whether every revision returns to human review, whether an
@@ -1232,10 +1252,11 @@ Appending here never appends a chronological note to
 
 This step is useful because creation and later modification must follow the
 same safe cycle; it is not required merely to deploy the initially generated
-workflow. Studio saves one semantic pre-edit baseline and creates a task
-containing the accepted \path{specification.md}, the pending refinement, the
-selected workflow, and that baseline. Enter \texttt{workflow status} if you
-want to inspect its lifecycle, then \texttt{workflow implement} as in Step~3.
+workflow. Studio saves one semantic pre-edit baseline and the exact pre-edit
+specification. It creates a task containing the
+canonical \path{specification.md}, the pending refinement, the selected
+workflow, and those baselines. Enter \texttt{workflow status} if you want to
+inspect its lifecycle, then \texttt{workflow implement} as in Step~3.
 The assistant is explicitly
 required to integrate the change coherently into \path{specification.md},
 rather than turning that document into a chronological journal; it updates
@@ -1251,18 +1272,36 @@ workflow refine       # create or reopen the one pending change
 workflow show pending # optional: inspect it without editing
 workflow status       # optional: inspect the implementation lifecycle
 workflow implement codex # or: workflow implement claude
+workflow diff         # compare both intent and workflow semantics
 workflow review       # inspect, validate, run, and explicitly accept
 \end{lstlisting}
+
+The assistant is optional for a refinement. The equivalent manual lane is:
+
+\begin{lstlisting}[style=shell]
+workflow refine
+workflow edit code
+workflow edit spec
+workflow diff
+workflow review
+\end{lstlisting}
+
+The code and specification edits are both deliberate. Editing only the Python
+may leave the durable intent inconsistent with the implementation; editing
+only the specification may leave the behavior behind. Studio detects changes
+relative to the last accepted baseline but does not guess which artifact is
+correct.
 
 The refinement must come before the assistant call. Before the first assistant
 launch, editing either input document refreshes the prepared task
 automatically. After the assistant returns, \texttt{workflow status} reports
 \texttt{awaiting human review}; it does not reinterpret the expected edits as
 a new task. Its \texttt{Next} section names \texttt{workflow review}. That
-guided loop shows the pending change and integrated specification, source and
-semantic views, validation, run, and acceptance choices in order. Each direct
-command remains available for experienced users. Nothing is scheduled, and a
-second assistant launch requires an explicit \texttt{--rerun}.
+guided loop first shows an exact unified diff of the specification and a
+semantic before/after workflow diff. It then offers source and semantic views,
+validation, run, and acceptance choices in order. Each direct command remains
+available for experienced users. Nothing is scheduled, and a second assistant
+launch requires an explicit \texttt{--rerun}.
 
 \texttt{workflow accept} is an acceptance and cleanup operation, not a merge
 engine. The coherent fusion happens either manually with \texttt{workflow edit
@@ -1275,8 +1314,15 @@ notes.
 canonical specification has not changed since refinement began; this catches
 an assistant that changed code but forgot the durable requirements. It asks
 for human confirmation, accepts the already-integrated canonical document,
-moves the pending text into recoverable private history, and closes the
-implementation. Use \texttt{workflow discard} for an unwanted change and
+moves the pending text and both before/after specifications into recoverable
+private history, records the accepted intent and semantic baseline, and closes
+the implementation. It also snapshots every workflow file listed by
+\texttt{workflow files}, preserving project-relative paths, content hashes,
+and available Git commit/dirty-state provenance. Use \texttt{workflow discard}
+for an unwanted change.
+Discard archives the request but deliberately does not revert source or
+specification edits in the working tree; inspect \texttt{git diff} and restore
+unwanted edits explicitly. Use
 \texttt{workflow history} to list accepted and discarded refinements together
 with implementation history. Accepted specification history remains visible
 in Git.
@@ -1325,14 +1371,40 @@ required for local deployment.
 \subsubsection*{Step 12: deploy and operate the reviewed workflow}
 
 First prepare the named deployment without starting a background service. This
-command snapshots the declared source, creates a deployment-specific Python
-environment, writes service definitions, and runs readiness checks. It changes
-files below ZipperGen's private home but deliberately defers service-manager
-state. On the tutorial machine, enter in Studio:
+command deploys the immutable accepted source snapshot by default, creates a
+separate deployment bundle and deployment-specific Python environment, writes
+service definitions, and runs readiness checks. It changes files below
+ZipperGen's private home but deliberately defers service-manager state. On the
+tutorial machine, enter in Studio:
 
 \begin{lstlisting}[style=shell]
 deploy reviewed-answer-tutorial --no-start
 \end{lstlisting}
+
+The deployment review gate has three deliberately different outcomes:
+
+\begin{enumerate}
+  \item A manual, imported, or legacy workflow with no Studio acceptance warns
+        and may proceed after technical validation. A generated implementation
+        explicitly awaiting its first review is blocked.
+  \item An unchanged accepted workflow proceeds with its immutable accepted
+        source snapshot.
+  \item A workflow whose specification or semantics diverged stops and shows
+        exact accepted/current diffs. Studio offers the accepted snapshot,
+        return to review, an audited current-candidate override, or
+        cancellation.
+\end{enumerate}
+
+The exceptional noninteractive override is
+\texttt{deploy NAME --unreviewed --reason "TEXT"}. Its reason is retained in
+private Studio history. Prefer \texttt{workflow review} and
+\texttt{workflow accept}; use an override only when consciously deploying
+something other than the reviewed version. A previously running deployment is
+not reading the working tree: it continues to execute its own timestamped
+bundle until an explicit deployment or restart changes its operational state.
+This review gate belongs to Studio. The lower-level operating-system command
+\texttt{zippergen deploy PATH:WORKFLOW} remains an explicit expert interface
+and does not consult Studio's private acceptance record.
 
 Studio carries the current default and per-lifeline routes into the deployment
 profile. If the current model profile selects a real provider and its key was
@@ -1461,15 +1533,16 @@ workflow edit spec # edit the canonical specification
 workflow edit code # edit the selected Python source
 workflow files  # list entry module, local imports, and declared resources
 workflow show source # inspect the authored entry module
-workflow show spec # canonical accepted requirements
+workflow show spec # canonical requirements
 workflow show pending # inspect the pending refinement
 workflow show  # choose a semantic code view
+workflow diff  # compare intent and semantics with the review baseline
 workflow status # prepared, running, review, failed/interrupted
 workflow implement codex # or: workflow implement claude
 workflow review # guided inspect, validate, run, and acceptance loop
-workflow validate # validate the workflow and projections
-workflow accept # accept a reviewed implementation
-workflow discard # reject and archive a pending refinement
+workflow validate # technical check; does not record human approval
+workflow accept # record human approval and close reviewed work
+workflow discard # archive rejection; does not revert working-tree files
 workflow history # specification and implementation history
 workflow list   # discover workflow entry points; does not validate
 workflow select # select one by number, name, or complete reference
@@ -3054,10 +3127,19 @@ user-unit template. \\
 \path{environments/tutorial-review/} & Managed Python environment. \\
 \path{apps/tutorial-review/<timestamp>/} & Timestamped source bundle for this
 deployment revision. \\
+\path{workspaces/<project>/accepted/<workflow>/<timestamp>/} & Immutable,
+content-hashed source snapshot created by \texttt{workflow accept}. \\
 \path{runs/tutorial-review.sqlite} & Durable execution store. \\
 \path{logs/tutorial-review.log} & Supervised-service standard output/error. \\
 \bottomrule
 \end{longtable}
+
+Managed environments are disposable build products, unlike accepted source
+and run stores. ZipperGen builds each replacement in a temporary sibling
+directory, prefers \texttt{uv} so that no \texttt{ensurepip} bootstrap is
+needed, installs dependencies there, and replaces the named environment only
+after success. A failed build leaves the previous environment unchanged and
+removes only its incomplete temporary directory.
 
 \section{Run the named deployment in the foreground}
 
@@ -3255,6 +3337,23 @@ profile. Use the guided secret prompt or a securely managed environment.
 \end{warningbox}
 
 \section{Troubleshooting}
+
+\subsection*{Managed environment creation aborts in \texttt{ensurepip}}
+
+Older deployments created the environment directly with Python's
+\texttt{venv.EnvBuilder(with\_pip=True)}. Some uv-managed Python builds can
+abort inside the bundled \texttt{ensurepip} process, leaving a partially
+created \path{environments/NAME} and a raw
+\texttt{CalledProcessError}/\texttt{SIGABRT} traceback.
+
+Update the editable ZipperGen installation, confirm \texttt{uv --version}, and
+repeat the same Studio \texttt{deploy} command. Current ZipperGen creates a
+fresh temporary environment with \texttt{uv}, installs into it, and atomically
+replaces the old or partial directory only after success. Do not manually
+delete the deployment profile, accepted source snapshot, bundle, secrets, or
+run store. If creation still fails, Studio reports whether failure occurred
+during environment creation or dependency installation and confirms that the
+previous environment was retained.
 
 \subsection*{\texttt{uv: command not found}}
 
@@ -3506,14 +3605,20 @@ $\square$ & After the assistant returns, \texttt{workflow status} reports
 \texttt{workflow review} instead of suggesting another assistant run. & \\
 $\square$ & \texttt{workflow review} keeps an ordered menu open for
 requirements, source, semantic views, validation, running, and explicit
-acceptance; leaving it preserves the open review. & \\
+acceptance; before the menu, it shows both the exact specification diff and
+the semantic workflow diff. Leaving it preserves the open review. & \\
 $\square$ & \texttt{workflow refine} creates or reopens exactly one automatically
 named pending refinement; repeated edits do not
 create a pile of prompt files. & \\
 $\square$ & The assistant receives the canonical specification plus pending
 change; \texttt{workflow accept} requires prior integration, performs no hidden
-merge, archives the change, and clears the pending transaction only after
-confirmation. & \\
+merge, records the human-accepted intent/semantic baseline, archives the
+change, and clears the pending transaction only after confirmation.
+\texttt{workflow validate} remains a separate technical result; acceptance
+also creates a content-checked private source snapshot. & \\
+$\square$ & An unchanged accepted workflow deploys its immutable snapshot; a
+divergent workflow shows exact diffs and requires accepted-version selection,
+return to review, cancellation, or a reasoned audited override. & \\
 $\square$ & \texttt{models} lists connections, reusable configurations, and
 only LLM-active lifeline assignments;
 \texttt{models config check NAME} verifies a configuration without changing
@@ -3536,6 +3641,9 @@ $\square$ & A pre-edit semantic snapshot is created outside the source tree. & \
 $\square$ & The assistant changes only the requested protocol behavior. & \\
 $\square$ & Semantic diff matches the intended change; tests and type checks pass. & \\
 $\square$ & Guided deploy creates a bundle, environment, profile, and doctor report. & \\
+$\square$ & A simulated environment-build failure retains the previous
+environment and reports a concise creation/install phase instead of a raw
+\texttt{ensurepip} traceback. & \\
 $\square$ & Named foreground deployment reaches a durable task and result. & \\
 $\square$ & Optional supervised restart preserves the pending task. & \\
 $\square$ & Logs, status, trace, doctor, restart, and stop commands are understood. & \\
@@ -3600,6 +3708,7 @@ runs
 workflow refine       # creates or reopens one pending change
 workflow show pending
 workflow implement codex # or: workflow implement claude
+workflow diff         # specification and semantic before/after
 workflow review       # inspect, validate, run, and explicitly accept
 workflow history
 \end{lstlisting}

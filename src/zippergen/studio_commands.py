@@ -150,6 +150,13 @@ COMMANDS: tuple[CommandSpec, ...] = (
         primary=True,
     ),
     CommandSpec(
+        ("workflow", "diff"),
+        "workflow diff",
+        "compare current intent and semantics with the review baseline",
+        "read-only",
+        primary=True,
+    ),
+    CommandSpec(
         ("workflow", "status"),
         "workflow status",
         "show implementation status and next step",
@@ -171,19 +178,19 @@ COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec(
         ("workflow", "validate"),
         "workflow validate",
-        "validate the workflow and every projection",
+        "check structural validity and every projection; does not accept",
         "read-only",
     ),
     CommandSpec(
         ("workflow", "accept"),
         "workflow accept [--yes]",
-        "accept the reviewed implementation",
+        "record human approval and the accepted intent/semantic baseline",
         "destructive",
     ),
     CommandSpec(
         ("workflow", "discard"),
         "workflow discard [--yes]",
-        "discard a pending refinement",
+        "archive a rejected refinement; does not revert files",
         "destructive",
     ),
     CommandSpec(
@@ -259,8 +266,8 @@ COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec(("runs",), "runs", "list managed development runs", "read-only"),
     CommandSpec(
         ("deploy",),
-        "deploy [NAME] [--no-start]",
-        "prepare or start a named deployment",
+        "deploy [NAME] [--no-start] [--accepted|--unreviewed --reason TEXT]",
+        "deploy accepted source by default with a review gate",
         "execution",
         primary=True,
     ),

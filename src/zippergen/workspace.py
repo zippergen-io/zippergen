@@ -17,6 +17,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import tempfile
 import time
 import tomllib
@@ -45,11 +46,12 @@ SPECIFICATION_GUIDE = """<!-- zippergen:specification-guide
 Write the durable application requirements below this comment, then save and
 close the editor. Studio removes this guide automatically.
 
-Useful subjects include:
-- purpose and successful outcome;
-- participants and responsibilities;
-- inputs, decisions, retries, and failure behavior;
-- models, external services, credentials, and operational constraints.
+A stable structure helps later refinements preserve every requirement:
+# Application name
+## Purpose and successful outcome
+## Participants and responsibilities
+## Inputs, decisions, retries, and failure behavior
+## Models, external services, credentials, and operational constraints
 
 Do not choose Python filenames or add instructions about tests, validation,
 deployment commands, or coding assistants. Studio supplies those mechanics.
@@ -736,6 +738,7 @@ class Workspace:
                 pending_specification_fingerprint=self.specification_fingerprint(
                     include_pending=False
                 ),
+                pending_specification_baseline=self.specification(),
                 pending_refinement_created_at=_timestamp(),
                 pending_semantic_baseline=None,
             )
@@ -829,6 +832,27 @@ class Workspace:
             path = self.spec_history_directory / f"{base}-{suffix}.md"
             suffix += 1
         _atomic_write_text(path, content.rstrip() + "\n")
+        state = self.load()
+        specification_before = state.get("pending_specification_baseline")
+        specification_after = self.specification()
+        before_path: Path | None = None
+        after_path: Path | None = None
+        if isinstance(specification_before, str):
+            before_path = path.with_name(
+                path.stem + "-specification-before.md"
+            )
+            _atomic_write_text(
+                before_path,
+                specification_before.rstrip() + "\n",
+            )
+        if specification_after is not None:
+            after_path = path.with_name(
+                path.stem + "-specification-after.md"
+            )
+            _atomic_write_text(
+                after_path,
+                specification_after.rstrip() + "\n",
+            )
         _atomic_write_json(
             path.with_suffix(".json"),
             {
@@ -837,9 +861,14 @@ class Workspace:
                 "created_at": self.load().get("pending_refinement_created_at"),
                 "archived_at": _timestamp(),
                 "content_file": str(path),
+                "specification_before_file": (
+                    str(before_path) if before_path is not None else None
+                ),
+                "specification_after_file": (
+                    str(after_path) if after_path is not None else None
+                ),
             },
         )
-        state = self.load()
         current_request = state.get("current_request")
         if current_request:
             try:
@@ -862,12 +891,201 @@ class Workspace:
             pass
         self.update(
             pending_specification_fingerprint=None,
+            pending_specification_baseline=None,
             pending_refinement_created_at=None,
             pending_semantic_baseline=None,
             current_request=None,
             task_cleared=True,
         )
-        return {"status": status, "content": content, "history_path": path}
+        return {
+            "status": status,
+            "content": content,
+            "history_path": path,
+            "specification_before_path": before_path,
+            "specification_after_path": after_path,
+        }
+
+    def accepted_review(self, workflow_spec: str) -> dict[str, object] | None:
+        """Return the last human-accepted intent and semantic baseline."""
+
+        reviews = self.load().get("accepted_reviews") or {}
+        if not isinstance(reviews, dict):
+            return None
+        value = reviews.get(self.canonical_spec(workflow_spec, cwd=self.root))
+        return dict(value) if isinstance(value, dict) else None
+
+    @property
+    def accepted_sources_directory(self) -> Path:
+        return self.directory / "accepted"
+
+    def capture_accepted_source(
+        self,
+        workflow_spec: str,
+        *,
+        files: list[tuple[str, str]],
+        specification: str,
+        git_provenance: dict[str, object],
+    ) -> dict[str, object]:
+        """Create an immutable, content-addressed copy of reviewed source."""
+
+        canonical = self.canonical_spec(workflow_spec, cwd=self.root)
+        module_ref, separator, workflow_name = canonical.partition(":")
+        entry = Path(module_ref)
+        if entry.is_absolute() or ".." in entry.parts:
+            raise WorkspaceError(
+                "Accepted source requires a workflow entry point inside the "
+                "project root."
+            )
+        source_records: list[dict[str, object]] = []
+        source_paths: list[tuple[Path, Path, str]] = []
+        seen: set[Path] = set()
+        for relative_text, role in files:
+            relative = Path(relative_text)
+            source = (self.root / relative).resolve()
+            if (
+                relative.is_absolute()
+                or ".." in relative.parts
+                or not source.is_file()
+                or not source.is_relative_to(self.root)
+            ):
+                raise WorkspaceError(
+                    f"Cannot capture workflow file outside the project: "
+                    f"{relative_text}"
+                )
+            if source in seen:
+                continue
+            seen.add(source)
+            digest = hashlib.sha256(source.read_bytes()).hexdigest()
+            source_records.append(
+                {
+                    "path": relative.as_posix(),
+                    "role": role,
+                    "sha256": digest,
+                }
+            )
+            source_paths.append((source, relative, role))
+        if entry.as_posix() not in {
+            str(record["path"]) for record in source_records
+        }:
+            raise WorkspaceError(
+                f"Accepted workflow entry point was not captured: {entry}"
+            )
+
+        workflow_key = hashlib.sha256(canonical.encode()).hexdigest()[:12]
+        parent = self.accepted_sources_directory / workflow_key
+        parent.mkdir(parents=True, exist_ok=True)
+        version = (
+            f"{_identifier_timestamp()}-"
+            f"{time.time_ns() % 1_000_000_000:09d}"
+        )
+        final = parent / version
+        temporary = Path(
+            tempfile.mkdtemp(prefix=f".{version}-", dir=parent)
+        )
+        preserved_specification = specification.rstrip() + "\n"
+        try:
+            for source, relative, _role in source_paths:
+                target = temporary / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source, target)
+            _atomic_write_text(
+                temporary / SPECIFICATION_FILE_NAME,
+                preserved_specification,
+            )
+            manifest = {
+                "schema_version": 1,
+                "accepted_at": _timestamp(),
+                "project_root": str(self.root),
+                "workflow_spec": canonical,
+                "accepted_workflow_spec": (
+                    entry.as_posix()
+                    + (f":{workflow_name}" if separator else "")
+                ),
+                "specification_sha256": hashlib.sha256(
+                    preserved_specification.encode("utf-8")
+                ).hexdigest(),
+                "files": source_records,
+                "git": git_provenance,
+            }
+            _atomic_write_json(
+                temporary / ".zippergen-accepted.json",
+                manifest,
+            )
+            os.replace(temporary, final)
+        except BaseException:
+            shutil.rmtree(temporary, ignore_errors=True)
+            raise
+        return {
+            "root": str(final),
+            "workflow_spec": manifest["accepted_workflow_spec"],
+            "manifest": str(final / ".zippergen-accepted.json"),
+            "files": source_records,
+            "git": git_provenance,
+        }
+
+    def record_accepted_review(
+        self,
+        workflow_spec: str,
+        *,
+        specification: str,
+        specification_fingerprint: str,
+        semantic_snapshot: dict[str, object],
+        request_id: str | None,
+        accepted_source: dict[str, object],
+    ) -> dict[str, object]:
+        """Persist the exact intent and semantics approved by a human."""
+
+        canonical = self.canonical_spec(workflow_spec, cwd=self.root)
+        state = self.load()
+        reviews = dict(state.get("accepted_reviews") or {})
+        semantic_encoded = json.dumps(
+            semantic_snapshot,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+            default=str,
+        )
+        record: dict[str, object] = {
+            "workflow_spec": canonical,
+            "accepted_at": _timestamp(),
+            "request_id": request_id,
+            "specification": specification,
+            "specification_fingerprint": specification_fingerprint,
+            "semantic_snapshot": semantic_snapshot,
+            "semantic_fingerprint": hashlib.sha256(
+                semantic_encoded.encode("utf-8")
+            ).hexdigest(),
+            "accepted_source": accepted_source,
+        }
+        reviews[canonical] = record
+        self.update(accepted_reviews=reviews)
+        return record
+
+    def record_deployment_review_override(
+        self,
+        *,
+        deployment: str,
+        workflow_spec: str,
+        reason: str,
+        accepted_at: str | None,
+    ) -> dict[str, object]:
+        """Record an explicit decision to deploy a divergent candidate."""
+
+        state = self.load()
+        history = list(state.get("deployment_review_overrides") or [])
+        record: dict[str, object] = {
+            "recorded_at": _timestamp(),
+            "deployment": deployment,
+            "workflow_spec": self.canonical_spec(
+                workflow_spec,
+                cwd=self.root,
+            ),
+            "accepted_at": accepted_at,
+            "reason": reason,
+        }
+        history.append(record)
+        self.update(deployment_review_overrides=history[-100:])
+        return record
 
     def list_spec_history(self) -> list[dict[str, object]]:
         """Return reconciled/discarded refinements, newest first."""
@@ -1261,8 +1479,11 @@ class Workspace:
             "current_request": None,
             "task_cleared": False,
             "pending_specification_fingerprint": None,
+            "pending_specification_baseline": None,
             "pending_refinement_created_at": None,
             "pending_semantic_baseline": None,
+            "accepted_reviews": {},
+            "deployment_review_overrides": [],
             "editor_command": None,
             "model_profiles": {},
             "model_configurations": {},
@@ -1533,8 +1754,11 @@ class Workspace:
         state.setdefault("current_request", None)
         state.setdefault("task_cleared", False)
         state.setdefault("pending_specification_fingerprint", None)
+        state.setdefault("pending_specification_baseline", None)
         state.setdefault("pending_refinement_created_at", None)
         state.setdefault("pending_semantic_baseline", None)
+        state.setdefault("accepted_reviews", {})
+        state.setdefault("deployment_review_overrides", [])
         state.setdefault("editor_command", None)
         state.setdefault("model_profiles", {})
         state.setdefault("model_configurations", {})

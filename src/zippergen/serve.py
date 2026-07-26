@@ -56,6 +56,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import venv
 from collections.abc import Mapping
@@ -1965,6 +1966,56 @@ def _bundle_deployment(
     bundle_root.mkdir(parents=True, exist_ok=False)
 
     sources = [module_path.resolve()]
+    accepted_manifest = source_cwd / ".zippergen-accepted.json"
+    if accepted_manifest.is_file():
+        try:
+            accepted_value = json.loads(
+                accepted_manifest.read_text(encoding="utf-8")
+            )
+            accepted_files = accepted_value.get("files")
+            if not isinstance(accepted_files, list):
+                raise ValueError("files must be a JSON array")
+            for value in accepted_files:
+                if not isinstance(value, dict):
+                    raise ValueError("each file must be a JSON object")
+                relative = Path(str(value.get("path") or ""))
+                path = (source_cwd / relative).resolve()
+                expected = str(value.get("sha256") or "")
+                if (
+                    not relative.parts
+                    or relative.is_absolute()
+                    or ".." in relative.parts
+                    or not path.is_file()
+                    or not path.is_relative_to(source_cwd)
+                    or hashlib.sha256(path.read_bytes()).hexdigest() != expected
+                ):
+                    raise ValueError(
+                        f"content check failed for {relative}"
+                    )
+                if path not in sources:
+                    sources.append(path)
+            accepted_specification = source_cwd / "specification.md"
+            if accepted_specification.is_file():
+                specification_hash = hashlib.sha256(
+                    accepted_specification.read_bytes()
+                ).hexdigest()
+                if specification_hash != str(
+                    accepted_value.get("specification_sha256") or ""
+                ):
+                    raise ValueError(
+                        "content check failed for specification.md"
+                    )
+                sources.append(accepted_specification)
+            sources.append(accepted_manifest)
+        except (
+            OSError,
+            UnicodeDecodeError,
+            json.JSONDecodeError,
+            ValueError,
+        ) as exc:
+            raise SystemExit(
+                f"Accepted source snapshot is invalid: {exc}"
+            ) from exc
     for declared in spec.files:
         path = Path(declared).expanduser()
         if not path.is_absolute():
@@ -2029,17 +2080,108 @@ def _prepare_deployment_environment(
 
     name = str(profile["name"])
     environment_dir = _deployment_environment_dir(name)
-    python = _deployment_python_path(environment_dir)
-    if not python.exists():
-        print(f"Creating managed Python environment for {name}...")
-        venv.EnvBuilder(with_pip=True).create(environment_dir)
-
-    install = [str(python), "-m", "pip", "install", _zippergen_install_requirement(), *requirements]
-    print("Installing deployment dependencies...")
+    environment_dir.parent.mkdir(parents=True, exist_ok=True)
+    build_dir = Path(
+        tempfile.mkdtemp(
+            prefix=f".{_slug(name)}-building-",
+            dir=environment_dir.parent,
+        )
+    )
+    build_python = _deployment_python_path(build_dir)
+    uv = shutil.which("uv")
+    phase = "creating the environment"
+    print(f"Creating managed Python environment for {name}...")
     try:
+        if uv is not None:
+            subprocess.run(
+                [
+                    uv,
+                    "venv",
+                    "--python",
+                    sys.executable,
+                    str(build_dir),
+                ],
+                check=True,
+            )
+            install = [
+                uv,
+                "pip",
+                "install",
+                "--python",
+                str(build_python),
+                _zippergen_install_requirement(),
+                *requirements,
+            ]
+        else:
+            venv.EnvBuilder(with_pip=True).create(build_dir)
+            install = [
+                str(build_python),
+                "-m",
+                "pip",
+                "install",
+                _zippergen_install_requirement(),
+                *requirements,
+            ]
+        phase = "installing deployment dependencies"
+        print("Installing deployment dependencies...")
         subprocess.run(install, check=True)
     except subprocess.CalledProcessError as exc:
-        raise SystemExit(f"Dependency installation failed with exit code {exc.returncode}.") from exc
+        shutil.rmtree(build_dir, ignore_errors=True)
+        outcome = (
+            f"signal {-exc.returncode}"
+            if exc.returncode < 0
+            else f"exit code {exc.returncode}"
+        )
+        guidance = (
+            " ZipperGen found uv and used it instead of ensurepip."
+            if uv is not None
+            else " Install uv and retry to avoid the standard-library "
+            "ensurepip bootstrap."
+        )
+        raise SystemExit(
+            f"Managed environment failed while {phase} ({outcome})."
+            f"{guidance} The previous deployment environment, if any, was "
+            "left unchanged."
+        ) from None
+    except (OSError, subprocess.SubprocessError) as exc:
+        shutil.rmtree(build_dir, ignore_errors=True)
+        raise SystemExit(
+            f"Managed environment failed while {phase}: {exc}. The previous "
+            "deployment environment, if any, was left unchanged."
+        ) from None
+    except KeyboardInterrupt:
+        shutil.rmtree(build_dir, ignore_errors=True)
+        raise
+    except Exception as exc:
+        shutil.rmtree(build_dir, ignore_errors=True)
+        raise SystemExit(
+            f"Managed environment failed while {phase}: {exc}. The previous "
+            "deployment environment, if any, was left unchanged."
+        ) from None
+
+    replaced: Path | None = None
+    try:
+        if environment_dir.exists() or environment_dir.is_symlink():
+            replaced = environment_dir.with_name(
+                f".{environment_dir.name}-replaced-"
+                f"{time.strftime('%Y%m%d-%H%M%S')}-"
+                f"{time.time_ns() % 1_000_000_000:09d}"
+            )
+            os.replace(environment_dir, replaced)
+        os.replace(build_dir, environment_dir)
+    except OSError as exc:
+        if replaced is not None and replaced.exists():
+            os.replace(replaced, environment_dir)
+        shutil.rmtree(build_dir, ignore_errors=True)
+        raise SystemExit(
+            f"Managed environment was built but could not replace "
+            f"{environment_dir}: {exc}. The previous environment was "
+            "restored."
+        ) from None
+    if replaced is not None:
+        shutil.rmtree(replaced, ignore_errors=True)
+
+    python = _deployment_python_path(environment_dir)
     profile["python"] = str(python)
     profile["environment_dir"] = str(environment_dir)
 
@@ -2236,7 +2378,15 @@ def _deploy_command(args) -> int:
         spec = deployment_spec_from_module(module)
         name = _slug(args.name or spec.name or _deployment_name_from_workflow(args.target, workflow))
         if _deployment_profile_path(name).exists():
-            profile, workflow, module, spec = _deployment_context(name, source=True)
+            profile = _load_deployment_profile(name)
+            # An explicit workflow target is a redeployment request. Preserve
+            # the named deployment's operational configuration, but bundle
+            # and validate the newly supplied source rather than silently
+            # falling back to the previous bundle.
+            profile["source_workflow"] = args.target
+            profile["source_cwd"] = str(Path.cwd())
+            profile["workflow"] = args.target
+            profile["cwd"] = str(Path.cwd())
         else:
             profile = {
                 "schema_version": 2,

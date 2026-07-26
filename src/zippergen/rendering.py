@@ -28,6 +28,11 @@ _STATUS_COLORS: dict[StatusKind, str] = {
 _DEFAULT_OUTPUT_COLUMNS = 100
 _MAX_OUTPUT_COLUMNS = 108
 _MIN_OUTPUT_COLUMNS = 60
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*m")
+_STATUS_MARK_RE = re.compile(r"^[✓⚠✗•]\s+")
+_STATUS_COLUMN_HEADINGS = frozenset({"status", "state"})
+_IDENTIFIER_COLUMN_HEADINGS = frozenset({"id", "request", "refreshes", "run"})
+_MAX_ATOMIC_STATUS_WIDTH = 24
 
 
 class TerminalRenderer:
@@ -56,7 +61,7 @@ class TerminalRenderer:
 
     @staticmethod
     def visible_width(value: str) -> int:
-        return len(re.sub(r"\x1b\[[0-9;]*m", "", value))
+        return len(_ANSI_ESCAPE_RE.sub("", value))
 
     def output_columns(self) -> int:
         if self._columns is not None:
@@ -79,8 +84,10 @@ class TerminalRenderer:
 
     @staticmethod
     def wrapped_lines(value: object, width: int) -> list[str]:
+        raw_value = str(value)
+        plain_value = _ANSI_ESCAPE_RE.sub("", raw_value)
         lines: list[str] = []
-        for source_line in str(value).splitlines() or [""]:
+        for source_line in plain_value.splitlines() or [""]:
             lines.extend(
                 textwrap.wrap(
                     source_line,
@@ -92,7 +99,31 @@ class TerminalRenderer:
                 )
                 or [""]
             )
+        colored_mark = re.match(
+            r"(?P<value>(?:\x1b\[[0-9;]*m)*[✓⚠✗•]"
+            r"(?:\x1b\[[0-9;]*m)*)",
+            raw_value,
+        )
+        if colored_mark is not None and lines and lines[0]:
+            lines[0] = colored_mark.group("value") + lines[0][1:]
         return lines
+
+    @classmethod
+    def _status_atom_width(cls, value: str) -> int:
+        """Return the short status phrase that should never wrap."""
+
+        plain = _ANSI_ESCAPE_RE.sub("", value).strip()
+        if _STATUS_MARK_RE.match(plain) is None:
+            return 0
+        phrase = re.split(r";| — ", plain, maxsplit=1)[0].rstrip()
+        if cls.visible_width(phrase) <= _MAX_ATOMIC_STATUS_WIDTH:
+            return cls.visible_width(phrase)
+        leading_word = re.match(r"^[✓⚠✗•]\s+\S+", plain)
+        return (
+            cls.visible_width(leading_word.group(0))
+            if leading_word is not None
+            else 0
+        )
 
     def status_mark(self, kind: StatusKind) -> str:
         mark = STATUS_MARKS[kind]
@@ -162,13 +193,40 @@ class TerminalRenderer:
         available = self.output_columns() - 2 - 2 * (len(headers) - 1)
         widths = list(natural_widths)
         if sum(widths) > available:
-            minimums = [
-                min(width, max(5, min(self.visible_width(headers[index]), 12)))
-                for index, width in enumerate(natural_widths)
-            ]
+            minimums: list[int] = []
+            for index, width in enumerate(natural_widths):
+                minimum = max(
+                    5,
+                    min(self.visible_width(headers[index]), 12),
+                    max(
+                        (
+                            self._status_atom_width(row[index])
+                            for row in rendered
+                        ),
+                        default=0,
+                    ),
+                )
+                if headers[index].strip().casefold() in _STATUS_COLUMN_HEADINGS:
+                    minimum = max(
+                        minimum,
+                        max(
+                            (
+                                self.visible_width(row[index])
+                                for row in rendered
+                                if self.visible_width(row[index])
+                                <= _MAX_ATOMIC_STATUS_WIDTH
+                            ),
+                            default=0,
+                        ),
+                    )
+                minimums.append(min(width, minimum))
             contains_spaces = [
                 any(" " in row[index] for row in rendered)
                 for index in range(len(headers))
+            ]
+            identifier_columns = [
+                heading.strip().casefold() in _IDENTIFIER_COLUMN_HEADINGS
+                for heading in headers
             ]
             while sum(widths) > available:
                 candidates = [
@@ -182,6 +240,7 @@ class TerminalRenderer:
                     candidates,
                     key=lambda index: (
                         contains_spaces[index],
+                        not identifier_columns[index],
                         widths[index] - minimums[index],
                     ),
                 )
