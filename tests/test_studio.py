@@ -3014,6 +3014,7 @@ def test_studio_deployment_show_separates_service_run_and_store(
     monkeypatch,
 ):
     studio, workspace, output = _studio(tmp_path)
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(workspace.home))
     deployments = workspace.home / "deployments"
     deployments.mkdir(parents=True)
     bundle = workspace.home / "apps" / "reviewed-answer" / "version"
