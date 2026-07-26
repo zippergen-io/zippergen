@@ -207,11 +207,12 @@ slice. Future Gmail, Google Sheets, Telegram, email, and human-channel adapters
 will bind to declared lifeline capabilities without conflating the lifeline's
 authority with credentials or transport configuration.
 
-`run` validates first, guides you through every workflow input, creates a
-unique durable SQLite run automatically, and presents human decisions in the
-same terminal. There are no store paths, task IDs, or environment exports to
-manage. If the terminal closes during an incomplete run, return to the project
-and enter `resume`. Use `current` to see the remembered workflow, run, and
+Before collecting inputs, `run` validates and freshly checks exactly the model
+configurations used by LLM-active participants. It then creates a unique
+durable SQLite run automatically and presents human decisions in the same
+terminal. There are no store paths, task IDs, or environment exports to manage.
+If the terminal closes during an incomplete run, return to the project and
+enter `resume`. Use `current` to see the remembered workflow, run, and
 deployment context. Terminal human actions are always presented by the
 supervisor's main thread, so `Ctrl-C` leaves the durable task pending, stops the
 role threads before Studio accepts another command, and allows an immediate
@@ -238,7 +239,8 @@ Provider [anthropic]:
 Model identifier [claude-sonnet-4-6]:
 zippergen [tutorial_review]> models config check careful-reviewer
 zippergen [tutorial_review]> models assign Reviewer careful-reviewer
-zippergen [tutorial_review]> models
+zippergen [tutorial_review]> models assignments
+zippergen [tutorial_review]> models assignments check
 ```
 
 For a local OpenAI-compatible endpoint, configure the endpoint before naming a
@@ -273,6 +275,11 @@ route saved configurations; they do not contact a provider. Assigning an
 unchecked configuration is allowed but clearly warned about; a configuration
 known to be unavailable must be fixed or checked successfully first. Local
 model identifiers are checked against the endpoint's live model list.
+`models assignments` shows each effective participant route and its cached
+last-check state without making a network request. `models assignments check`
+checks only configurations used by the selected workflow and checks a shared
+configuration once. `run` performs the same targeted check again before
+execution.
 `models config rename OLD NEW` changes the reusable configuration name atomically:
 the provider, model, and recorded check result are preserved, and every default
 or participant assignment in the project is updated. It does not reconnect to

@@ -351,7 +351,10 @@ A green validation result means the deterministic checks passed; it is not a
 claim that the prompts are useful or the application intent is correct. The
 built-in mock model needs no account, network connection, or API key.
 \texttt{models assignments} should list Writer and Reviewer because they
-contain LLM actions.
+contain LLM actions. Its \emph{Last check} column is cached: displaying the
+table never contacts a provider. Enter \texttt{models assignments check} when
+you want a fresh check of precisely the configurations used by this workflow.
+If both participants share a configuration, Studio checks it only once.
 
 \begin{notebox}{Validation is not acceptance}
 \texttt{workflow validate} is a repeatable technical check of the Python

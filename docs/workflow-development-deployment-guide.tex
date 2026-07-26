@@ -982,10 +982,10 @@ Model configurations
 
 Model assignments
 -----------------
-  Participant  Configuration   Model  LLM actions
-  -----------  -------------   -----  -----------
-  Writer       mock (default)  mock   draft_reply, revise_reply
-  Reviewer     mock (default)  mock   assess_draft
+  Participant  Configuration   Model  LLM actions                 Last check
+  -----------  -------------   -----  --------------------------  ----------
+  Writer       mock (default)  mock   draft_reply, revise_reply   ... built in
+  Reviewer     mock (default)  mock   assess_draft                ... built in
 
 Execution
 ---------
@@ -995,7 +995,10 @@ Execution
 Generated action names may differ, but Writer and Reviewer should appear. The
 non-secret assignments are stored per workflow and survive a reboot. The
 built-in \texttt{mock} configuration needs no provider connection and is
-already checked.
+already checked. Plain \texttt{models assignments} uses saved check state and
+performs no network request. Enter \texttt{models assignments check} to check
+only the effective configurations shown in this table; shared configurations
+are checked once.
 
 \subsubsection*{Step 7: make a durable mock run in one terminal}
 
@@ -1189,7 +1192,13 @@ assignments as separate tables.
 \texttt{unverified}, or \texttt{unavailable}, but never changes which
 participant uses which model. A green result confirms that the provider
 accepted the configured key and exact model identifier at check time. A yellow
-result means connectivity prevented a conclusive answer. For a local
+result means connectivity prevented a conclusive answer.
+\texttt{models assignments} displays each effective participant route together
+with its cached last-check state and never contacts a provider.
+\texttt{models assignments check} performs a fresh, targeted check of only
+those effective configurations, deduplicating configurations shared by
+several participants. \texttt{run} repeats that targeted check as a mandatory
+preflight. For a local
 OpenAI-compatible or Ollama endpoint,
 \texttt{models provider configure local} asks for the endpoint (normally
 \texttt{http://127.0.0.1:11434/v1}). A later
@@ -1671,6 +1680,8 @@ models provider configure NAME # configure an API key or local endpoint
 models provider check [NAME] # verify provider connectivity
 models config create [NAME] # name one provider/model pair
 models config check [NAME] # verify exact model availability
+models assignments # show routes and cached last-check state
+models assignments check # check only configurations used here
 models assign LIFELINE NAME # route a participant to a configuration
 models config rename OLD NEW # rename it and migrate all assignments
 run            # fresh guided, durable development run

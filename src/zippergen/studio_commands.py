@@ -233,7 +233,13 @@ COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec(
         ("models", "assignments"),
         "models assignments",
-        "show participant configuration references",
+        "show participant routes and their last check",
+        "read-only",
+    ),
+    CommandSpec(
+        ("models", "assignments", "check"),
+        "models assignments check",
+        "check configurations used by the selected workflow",
         "read-only",
     ),
     CommandSpec(

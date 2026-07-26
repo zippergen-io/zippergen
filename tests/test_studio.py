@@ -128,6 +128,7 @@ def test_studio_completion_is_context_and_project_aware(tmp_path):
     assert "check" in _completions(studio, "models config ch")
     assert _completions(studio, "models config check m") == ["mock"]
     assert "all" in _completions(studio, "models config check ")
+    assert _completions(studio, "models assignments ") == ["check"]
     assert _completions(
         studio, "models provider configure a"
     ) == ["anthropic"]
@@ -3812,11 +3813,77 @@ def test_studio_configuration_is_reusable_without_serializing_calls(tmp_path):
         "Model",
         "LLM",
         "actions",
+        "Last",
+        "check",
     ]
     assert set(output[title + 3].replace(" ", "")) == {"─"}
     assert any(
         line.startswith("✓ Assigned shared-local to Reviewer.")
         for line in output
+    )
+
+
+def test_studio_assignment_listing_is_cached_and_check_is_targeted(
+    tmp_path,
+    monkeypatch,
+):
+    studio, workspace, output = _studio(tmp_path)
+    (workspace.root / "dual.py").write_text(TWO_LLM_PARTICIPANT_SOURCE)
+    workspace.select_workflow("dual.py:sample", cwd=workspace.root)
+    workspace.save_model_configuration(
+        "shared-local",
+        {
+            "provider": "local",
+            "model": "qwen3",
+            "spec": "local:qwen3",
+            "check_status": "not_checked",
+        },
+    )
+    workspace.save_model_configuration(
+        "unused-mistral",
+        {
+            "provider": "mistral",
+            "model": "mistral-small-latest",
+            "spec": "mistral:mistral-small-latest",
+            "check_status": "not_checked",
+        },
+    )
+    workspace.save_model_assignment_profile(
+        "dual.py:sample",
+        default="mock",
+        lifelines={
+            "Writer": "shared-local",
+            "Reviewer": "shared-local",
+        },
+    )
+    checks: list[tuple[str, str]] = []
+
+    def verify(label, spec, *, for_save=False):
+        checks.append((label, spec))
+        return SimpleNamespace(
+            kind="success",
+            message=f"{label}: {spec} is available.",
+        )
+
+    monkeypatch.setattr(studio, "_verify_model_spec", verify)
+
+    studio.execute("models assignments")
+
+    assert checks == []
+    assert any("Last check" in line for line in output)
+    assert any("never" in line for line in output)
+
+    output.clear()
+    studio.execute("models assignments check")
+
+    assert checks == [("shared-local", "local:qwen3")]
+    assert any(line == "Assignment checks" for line in output)
+    assert any("All assigned models are reachable" in line for line in output)
+    assert workspace.model_configurations()["shared-local"]["check_status"] == (
+        "available"
+    )
+    assert workspace.model_configurations()["unused-mistral"]["check_status"] == (
+        "not_checked"
     )
 
 

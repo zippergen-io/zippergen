@@ -312,7 +312,11 @@ def _is_allowed_natural_plan_command(parts: list[str]) -> bool:
             if lowered[1] in {"edit", "remove"}:
                 return len(args) == 3
             return lowered[1] == "rename" and len(args) == 4
-        if lowered[0] in {"assignments", "setup"}:
+        if lowered[0] == "assignments":
+            return len(args) == 1 or (
+                len(args) == 2 and lowered[1] == "check"
+            )
+        if lowered[0] == "setup":
             return len(args) == 1
         if lowered[0] in {"default", "inherit"}:
             return len(args) == 2
@@ -1100,6 +1104,13 @@ class Studio:
                         if candidate[0] != "mock"
                     ]
                 return []
+            if action == "assignments" and len(args) == 1:
+                return [
+                    (
+                        "check",
+                        "check models used by the selected workflow",
+                    )
+                ]
             if action == "default":
                 return self._completion_model_configurations()
             if action == "assign":
@@ -2478,11 +2489,12 @@ class Studio:
                 if run_args
                 else str(default_model) if default_model else None
             )
-            self._preflight_run_models(
+            self._check_workflow_models(
                 current,
                 workflow,
                 module,
                 default_override=run_args[0] if run_args else None,
+                for_run=True,
             )
             try:
                 run_dev(
@@ -6363,20 +6375,22 @@ class Studio:
             default=default_llm_spec(module),
         )
 
-    def _preflight_run_models(
+    def _check_workflow_models(
         self,
         current: str,
         workflow,
         module,
         *,
         default_override: str | None = None,
+        for_run: bool = False,
     ) -> None:
-        """Check exactly the named model configurations used by this run."""
+        """Check exactly the configurations used by LLM-active participants."""
 
         active = self._llm_action_lifelines(workflow, module)
+        title = "Run model checks" if for_run else "Assignment checks"
         if not active:
             self._emit_table(
-                "Run model checks",
+                title,
                 [("Status", "not needed; no LLM actions", "success")],
             )
             return
@@ -6471,7 +6485,7 @@ class Studio:
             status = f"{self._status_mark(kind)} {status_text}"
             rows.append((participant, configuration_name, spec, status))
         self._emit_columns(
-            "Run model checks",
+            title,
             ("Participant", "Configuration", "Model", "Status"),
             rows,
         )
@@ -6484,12 +6498,22 @@ class Studio:
                 if failures[0] == "run override"
                 else f"run 'models config check {failures[0]}'"
             )
+            if not for_run:
+                raise SystemExit(
+                    f"Assignment check failed because {unique} could not be "
+                    "verified. Restore the connection or configuration, then "
+                    f"{next_step} or use 'models assignments check' again."
+                )
             raise SystemExit(
                 f"Run stopped before collecting inputs because {unique} "
                 "could not be verified. Restore the connection or configuration, "
                 f"then {next_step} or try 'run' again."
             )
-        self._success("All models used by this run are reachable.")
+        self._success(
+            "All models used by this run are reachable."
+            if for_run
+            else "All assigned models are reachable."
+        )
         self._emit()
 
     def _configuration_status_kind(
@@ -6502,6 +6526,33 @@ class Studio:
         if status == "unavailable":
             return "error"
         return "warning"
+
+    def _assignment_check_summary(
+        self,
+        configuration: dict[str, str] | None,
+    ) -> str:
+        """Render compact cached check state without implying a live request."""
+
+        if configuration is None:
+            return f"{self._status_mark('error')} missing"
+        provider = configuration.get("provider") or _canonical_provider(
+            configuration.get("spec", "")
+        )
+        if provider == "mock":
+            return f"{self._status_mark('success')} built in"
+        status = configuration.get("check_status", "not_checked")
+        kind = self._configuration_status_kind(configuration)
+        if status == "not_checked":
+            return f"{self._status_mark(kind)} never"
+        checked_at = str(configuration.get("checked_at") or "").strip()
+        when = "unknown"
+        if len(checked_at) >= 16 and checked_at[10] == "T":
+            when = (
+                checked_at[11:16]
+                if checked_at[:10] == time.strftime("%Y-%m-%d")
+                else checked_at[:10]
+            )
+        return f"{self._status_mark(kind)} {when}"
 
     def _emit_model_configurations(self, *, include_next: bool = True) -> None:
         configurations = self.workspace.model_configurations()
@@ -6575,11 +6626,20 @@ class Studio:
                     configuration,
                     spec,
                     ", ".join(actions),
+                    self._assignment_check_summary(
+                        configurations.get(effective)
+                    ),
                 )
             )
         self._emit_columns(
             "Model assignments",
-            ("Participant", "Configuration", "Model", "LLM actions"),
+            (
+                "Participant",
+                "Configuration",
+                "Model",
+                "LLM actions",
+                "Last check",
+            ),
             rows,
         )
         self._emit_section_title("Execution")
@@ -6589,6 +6649,7 @@ class Studio:
             indent=2,
         )
         self._emit()
+        self._emit_next("models assignments check")
 
     def _model_configuration_name(self, requested: str) -> str:
         configurations = self.workspace.model_configurations()
@@ -7106,9 +7167,17 @@ class Studio:
                 "models config remove NAME."
             )
 
-        if action == "assignments" and len(args) == 1:
-            self._show_model_assignments()
-            return
+        if action == "assignments":
+            if len(args) == 1:
+                self._show_model_assignments()
+                return
+            if len(args) == 2 and args[1].casefold() == "check":
+                current, workflow, module = self._current_context()
+                self._check_workflow_models(current, workflow, module)
+                return
+            raise SystemExit(
+                "Use models assignments or models assignments check."
+            )
 
         if action not in {"assign", "default", "inherit"}:
             raise SystemExit(
