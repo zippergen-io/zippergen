@@ -265,20 +265,152 @@ COMMANDS: tuple[CommandSpec, ...] = (
     ),
     CommandSpec(("runs",), "runs", "list managed development runs", "read-only"),
     CommandSpec(
+        ("store",),
+        "store",
+        "list durable execution stores",
+        "read-only",
+    ),
+    CommandSpec(
+        ("store", "list"),
+        "store list",
+        "list run, deployment, and standalone stores",
+        "read-only",
+    ),
+    CommandSpec(
+        ("store", "show"),
+        "store show [NUMBER|NAME]",
+        "inspect durable state and ownership",
+        "read-only",
+    ),
+    CommandSpec(
+        ("store", "use"),
+        "store use NUMBER|NAME",
+        "select the store used by short store commands",
+        "configuration",
+    ),
+    CommandSpec(
+        ("store", "path"),
+        "store path [NUMBER|NAME]",
+        "print the exact SQLite path",
+        "read-only",
+    ),
+    CommandSpec(
+        ("store", "tasks"),
+        "store tasks [NUMBER|NAME]",
+        "show pending human tasks",
+        "read-only",
+    ),
+    CommandSpec(
+        ("store", "approve"),
+        "store approve [TASK_ID] [yes|no|VALUE]",
+        "complete a pending human task in the selected store",
+        "execution",
+    ),
+    CommandSpec(
+        ("store", "trace"),
+        "store trace [NUMBER|NAME]",
+        "show recent durable events",
+        "read-only",
+    ),
+    CommandSpec(
+        ("store", "create"),
+        "store create NAME",
+        "create an empty standalone store",
+        "configuration",
+    ),
+    CommandSpec(
+        ("store", "rename"),
+        "store rename NUMBER|NAME NEW_NAME",
+        "rename a stopped store and update its references",
+        "configuration",
+    ),
+    CommandSpec(
+        ("store", "delete"),
+        "store delete NUMBER|NAME|all [--yes]",
+        "archive store data recoverably",
+        "destructive",
+    ),
+    CommandSpec(
         ("deploy",),
         "deploy [NAME] [--no-start] [--accepted|--unreviewed --reason TEXT]",
         "deploy accepted source by default with a review gate",
         "execution",
         primary=True,
     ),
-    CommandSpec(("status",), "status [NAME]", "show deployment status", "read-only"),
     CommandSpec(
-        ("doctor",), "doctor [NAME]", "check deployment readiness", "read-only"
+        ("deployment",),
+        "deployment",
+        "show bundle, service, run, and store health",
+        "read-only",
     ),
-    CommandSpec(("logs",), "logs [NAME]", "show deployment logs", "read-only"),
-    CommandSpec(("start",), "start [NAME]", "start a deployment", "execution"),
-    CommandSpec(("restart",), "restart [NAME]", "restart a deployment", "execution"),
-    CommandSpec(("stop",), "stop [NAME]", "stop a deployment", "execution"),
+    CommandSpec(
+        ("deployment", "list"),
+        "deployment list",
+        "list deployment profiles",
+        "read-only",
+    ),
+    CommandSpec(
+        ("deployment", "show"),
+        "deployment show [NAME]",
+        "show bundle, service, run, and store health",
+        "read-only",
+    ),
+    CommandSpec(
+        ("deployment", "doctor"),
+        "deployment doctor [NAME]",
+        "run detailed deployment readiness checks",
+        "read-only",
+    ),
+    CommandSpec(
+        ("deployment", "logs"),
+        "deployment logs [NAME]",
+        "show deployment logs",
+        "read-only",
+    ),
+    CommandSpec(
+        ("deployment", "start"),
+        "deployment start [NAME]",
+        "start a deployment",
+        "execution",
+    ),
+    CommandSpec(
+        ("deployment", "restart"),
+        "deployment restart [NAME]",
+        "restart a deployment",
+        "execution",
+    ),
+    CommandSpec(
+        ("deployment", "stop"),
+        "deployment stop [NAME]",
+        "stop a deployment",
+        "execution",
+    ),
+    CommandSpec(
+        ("status",), "status [NAME]", "show deployment status", "read-only", hidden=True
+    ),
+    CommandSpec(
+        ("doctor",),
+        "doctor [NAME]",
+        "check deployment readiness",
+        "read-only",
+        hidden=True,
+    ),
+    CommandSpec(
+        ("logs",), "logs [NAME]", "show deployment logs", "read-only", hidden=True
+    ),
+    CommandSpec(
+        ("start",), "start [NAME]", "start a deployment", "execution", hidden=True
+    ),
+    CommandSpec(
+        ("restart",),
+        "restart [NAME]",
+        "restart a deployment",
+        "execution",
+        hidden=True,
+    ),
+    CommandSpec(
+        ("stop",), "stop [NAME]", "stop a deployment", "execution", hidden=True
+    ),
     CommandSpec(("current",), "current", "show complete project context", "read-only"),
     CommandSpec(
         ("studio",),
@@ -490,10 +622,15 @@ def concise_help() -> str:
   5. run
   6. deploy
 
-Three main areas:
+Four main areas:
   workflow    specify, implement, inspect, and validate
   models      configure, check, and assign models
-  run/deploy  execute and operate the application
+  deployment  operate installed applications
+  store       inspect durable state, tasks, and traces
+
+Start actions:
+  run         start a managed development run
+  deploy      create or update an installed deployment
 
 Useful now:
   current          show context and the next action

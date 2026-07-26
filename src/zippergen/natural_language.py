@@ -232,7 +232,7 @@ def deterministic_plan(
     if text in {"stop it", "stop the deployment", "stop this deployment"}:
         return NaturalCommandPlan(
             "Stop the remembered deployment.",
-            ("stop",),
+            ("deployment stop",),
             "deterministic",
         )
 
@@ -507,14 +507,35 @@ def deterministic_plan(
     if re.search(r"\b(show|display|get)\b.*\b(?:deployment\s+)?logs?\b", text):
         return NaturalCommandPlan(
             "Show deployment logs.",
-            ("logs",),
+            ("deployment logs",),
             "deterministic",
         )
 
     if re.search(r"\b(deployment|service)\s+(state|status)\b", text):
         return NaturalCommandPlan(
             "Show deployment status.",
-            ("status",),
+            ("deployment show",),
+            "deterministic",
+        )
+
+    if re.search(r"\b(show|display|list)\b.*\bhuman\s+tasks?\b", text):
+        return NaturalCommandPlan(
+            "Show pending tasks in the selected store.",
+            ("store tasks",),
+            "deterministic",
+        )
+
+    if re.search(r"\b(show|display|inspect)\b.*\b(?:store\s+)?trace\b", text):
+        return NaturalCommandPlan(
+            "Show recent events in the selected store.",
+            ("store trace",),
+            "deterministic",
+        )
+
+    if re.search(r"\b(list|show)\b.*\bstores?\b", text):
+        return NaturalCommandPlan(
+            "List durable execution stores.",
+            ("store list",),
             "deterministic",
         )
 
@@ -896,9 +917,14 @@ def _slot_positions(parts: list[str]) -> list[tuple[str, int]]:
         and parts[1].casefold() == "select"
     ):
         return [("workflow", 2)]
-    if command in {"status", "doctor", "logs", "start", "restart", "stop"} and len(
-        parts
-    ) == 2:
+    if (
+        command == "deployment"
+        and len(parts) == 3
+        and parts[1].casefold()
+        in {"show", "doctor", "logs", "start", "restart", "stop"}
+    ):
+        return [("deployment", 2)]
+    if command in {"status", "doctor", "logs", "start", "restart", "stop"} and len(parts) == 2:
         return [("deployment", 1)]
     return []
 

@@ -407,6 +407,28 @@ resume
 No export or store path needs to be reconstructed after the terminal closes or
 the computer restarts.
 
+\subsection*{Inspect the durable store without copying its path}
+
+Studio remembers the SQLite store behind the run. Enter:
+
+\begin{lstlisting}[style=shell]
+store list
+store show
+store tasks
+store approve
+store trace
+\end{lstlisting}
+
+\texttt{store list} distinguishes development-run, deployment, standalone,
+missing, waiting, and completed stores. \texttt{store use NUMBER} selects one
+when several exist; the short \texttt{show}, \texttt{tasks}, and
+\texttt{approve}, and \texttt{trace} forms then use that selection. With one
+pending task, bare \texttt{store approve} selects it and asks for the human
+response; with several, Studio opens a numbered selector. Stores are normally created by
+\texttt{run} or \texttt{deploy}; beginners do not need
+\texttt{store create}. Deletion is recoverable and refuses stores used by an
+active deployment.
+
 \section{Review and accept assistant-generated work}
 
 If a coding assistant created the workflow, enter:
@@ -459,18 +481,25 @@ without starting a background service:
 \begin{lstlisting}[style=shell]
 models default mock
 deploy reviewed-answer-tutorial --no-start
-doctor
-status
+deployment doctor
+deployment show
 \end{lstlisting}
 
 \texttt{deploy} uses the immutable accepted source snapshot by default,
 validates it again, collects declared inputs, creates a separate timestamped
 deployment bundle and managed Python environment, and remembers the deployment
 name. The \texttt{--no-start} flag deliberately leaves the
-service stopped. \texttt{doctor} checks readiness; \texttt{status} explains
-the current operational state. Warnings about a missing first-run log or store
-and an uninstalled service are expected before the first start; a red failure
-must be investigated.
+service stopped. \texttt{deployment doctor} runs detailed readiness checks.
+\texttt{deployment show} separates the immutable bundle, supervised service,
+workflow run, and SQLite store. Warnings about a missing first-run log or
+store and an uninstalled service are expected before the first start; a red
+failure must be investigated. A selected API model whose private provider key
+was not copied into deployment storage is now a blocking failure, not a
+service that is allowed to enter a restart loop. If a local model is selected,
+Studio also copies its configured OpenAI-compatible endpoint into the
+deployment profile automatically.
+Studio shows a concise readiness summary during \texttt{deploy};
+\texttt{deployment doctor} expands every individual check when needed.
 
 If the working tree changed after acceptance, Studio first shows the exact
 specification and semantic differences. Choose the accepted snapshot or return
@@ -489,18 +518,23 @@ workflow effect can change an external system.
 When the readiness checks are acceptable:
 
 \begin{lstlisting}[style=shell]
-start
-status
-logs
-stop
+deployment start
+deployment show
+store tasks
+store approve
+deployment logs
+deployment stop
 \end{lstlisting}
 
-The finite workflow should reach a waiting human task. \texttt{stop} prevents
-the tutorial service from being supervised indefinitely; it preserves the
-deployment profile, bundle, log, and durable store. If no supported macOS or
-Linux user service manager is available, the prepared deployment is still
-valid. Stop at the reported error and use the manual's foreground-deployment
-section later.
+The finite workflow should reach a waiting human task. The deployment store
+is selected automatically, so \texttt{store tasks} needs no path.
+\texttt{deployment stop} prevents the tutorial service from being supervised
+indefinitely; it preserves the deployment profile, bundle, log, and durable
+store. If no supported macOS or Linux user service manager is available, the
+prepared deployment is still valid. Stop at the reported error and use the
+manual's foreground-deployment section later.
+The generated service retries failures but does not restart a finite workflow
+after it completes successfully.
 
 \section{What you have established}
 

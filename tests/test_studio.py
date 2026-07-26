@@ -138,6 +138,10 @@ def test_studio_completion_is_context_and_project_aware(tmp_path):
     assert _completions(studio, "project ren") == ["rename"]
     assert _completions(studio, "stu") == ["studio"]
     assert _completions(studio, "studio res") == ["restart"]
+    assert _completions(studio, "sto") == ["store"]
+    assert "show" in _completions(studio, "store ")
+    assert _completions(studio, "depl") == ["deploy", "deployment"]
+    assert "show" in _completions(studio, "deployment ")
     assert _completions(studio, "workflow create --file req") == [
         "requirements.md"
     ]
@@ -2772,6 +2776,194 @@ def test_studio_records_failed_local_configuration_check(tmp_path, monkeypatch):
     )
 
 
+def test_studio_manages_a_store_without_manual_paths(tmp_path):
+    studio, workspace, output = _studio(tmp_path)
+
+    studio.execute("store create scratch")
+    original = Path(str(workspace.load()["current_store"]))
+    assert original.exists()
+    assert original.name == "scratch.sqlite"
+
+    output.clear()
+    studio.execute("store list")
+    assert any("scratch" in line and "empty" in line for line in output)
+
+    studio.execute("store rename scratch reviewed-state")
+    renamed = Path(str(workspace.load()["current_store"]))
+    assert renamed.name == "reviewed-state.sqlite"
+    assert renamed.exists()
+    assert not original.exists()
+
+    studio.execute("store delete reviewed-state --yes")
+    assert not renamed.exists()
+    archived = list((workspace.home / "trash" / "stores").rglob("*.sqlite"))
+    assert len(archived) == 1
+    assert archived[0].name == "reviewed-state.sqlite"
+    assert any("data remains recoverable" in line for line in output)
+
+
+def test_studio_guides_approval_in_the_selected_store(tmp_path):
+    studio, workspace, output = _studio(tmp_path, responses=["y"])
+    studio.execute("store create approvals")
+    store_path = Path(str(workspace.load()["current_store"]))
+    from zippergen.store import ensure_human_task, load_human_task, open_store
+
+    connection = open_store(str(store_path))
+    ensure_human_task(
+        connection,
+        task_id="review-1",
+        role="HumanApprover",
+        locator=[0],
+        action="approve_answer",
+        input_hash=None,
+        inputs={"draft": "candidate"},
+        spec={
+            "kind": "confirm",
+            "output": "approved",
+            "output_type": "bool",
+        },
+    )
+    connection.close()
+
+    studio.execute("store approve")
+
+    connection = open_store(str(store_path))
+    task = load_human_task(connection, "review-1")
+    connection.close()
+    assert task is not None
+    assert task["status"] == "done"
+    assert task["result"] == {"approved": True}
+    assert any("Completed human task review-1" in line for line in output)
+
+
+def test_studio_store_trace_renders_the_persisted_event(tmp_path):
+    studio, workspace, output = _studio(tmp_path)
+    studio.execute("store create traced")
+    store_path = Path(str(workspace.load()["current_store"]))
+    from zippergen.store import open_store, record_trace_event
+
+    connection = open_store(str(store_path))
+    record_trace_event(
+        connection,
+        "Writer",
+        {
+            "type": "send",
+            "from": "Writer",
+            "to": "Reviewer",
+            "channel": "draft",
+            "values": ["candidate"],
+        },
+    )
+    connection.close()
+
+    output.clear()
+    studio.execute("store trace")
+
+    assert any(
+        "Writer send Writer->Reviewer draft" in line for line in output
+    )
+
+
+def test_studio_store_list_includes_an_expected_missing_deployment_store(
+    tmp_path,
+):
+    studio, workspace, output = _studio(tmp_path)
+    deployments = workspace.home / "deployments"
+    deployments.mkdir(parents=True)
+    store = workspace.home / "runs" / "reviewed-answer.sqlite"
+    (deployments / "reviewed-answer.json").write_text(
+        json.dumps(
+            {
+                "name": "reviewed-answer",
+                "project_root": str(workspace.root),
+                "workflow": "workflow.py:sample",
+                "cwd": str(workspace.root),
+                "store": str(store),
+                "log": str(workspace.home / "logs" / "reviewed-answer.log"),
+            }
+        )
+    )
+
+    studio.execute("store list")
+
+    assert any(
+        "reviewed-answer" in line
+        and "deployment reviewed-answer" in line
+        and "missing" in line
+        for line in output
+    )
+
+
+def test_studio_store_and_deployment_lists_hide_another_projects_state(
+    tmp_path,
+):
+    studio, workspace, output = _studio(tmp_path)
+    deployments = workspace.home / "deployments"
+    deployments.mkdir(parents=True)
+    other_store = workspace.home / "runs" / "other.sqlite"
+    (deployments / "other.json").write_text(
+        json.dumps(
+            {
+                "name": "other",
+                "project_root": str(tmp_path / "another-project"),
+                "workflow": "workflow.py:other",
+                "cwd": str(tmp_path / "another-project"),
+                "store": str(other_store),
+                "log": str(workspace.home / "logs" / "other.log"),
+            }
+        )
+    )
+
+    studio.execute("store list")
+    studio.execute("deployment list")
+
+    assert all("other.sqlite" not in line for line in output)
+    assert all("workflow.py:other" not in line for line in output)
+
+
+def test_studio_deployment_show_separates_service_run_and_store(
+    tmp_path,
+    monkeypatch,
+):
+    studio, workspace, output = _studio(tmp_path)
+    deployments = workspace.home / "deployments"
+    deployments.mkdir(parents=True)
+    bundle = workspace.home / "apps" / "reviewed-answer" / "version"
+    bundle.mkdir(parents=True)
+    log = workspace.home / "logs" / "reviewed-answer.log"
+    log.parent.mkdir(parents=True)
+    log.write_text("RuntimeError: MISTRAL_API_KEY is not set.\n")
+    profile = {
+        "name": "reviewed-answer",
+        "project_root": str(workspace.root),
+        "workflow": "workflow.py:sample",
+        "cwd": str(bundle),
+        "bundle": str(bundle),
+        "store": str(workspace.home / "runs" / "reviewed-answer.sqlite"),
+        "log": str(log),
+        "llm": "mock",
+        "llms": {"Reviewer": "mistral:mistral-small-latest"},
+    }
+    (deployments / "reviewed-answer.json").write_text(json.dumps(profile))
+    monkeypatch.setattr(
+        "zippergen.serve._deployment_service_status",
+        lambda _name: {
+            "state": "restarting",
+            "detail": "loaded but not running; last exit code 1",
+        },
+    )
+    monkeypatch.setattr("zippergen.serve._doctor_checks", lambda *a, **k: [])
+
+    studio.execute("deployment show reviewed-answer")
+
+    assert any(line == "Deployment state" for line in output)
+    assert any("Bundle" in line and "installed" in line for line in output)
+    assert any("Service" in line and "last exit code 1" in line for line in output)
+    assert any("Run" in line and "never reached durable execution" in line for line in output)
+    assert any("Store" in line and "missing" in line for line in output)
+    assert any("Cause" in line and "MISTRAL_API_KEY is not set" in line for line in output)
+
+
 def test_studio_deploys_current_workflow_and_remembers_name(tmp_path, monkeypatch):
     studio, workspace, output = _studio(tmp_path)
     workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
@@ -2789,6 +2981,9 @@ def test_studio_deploys_current_workflow_and_remembers_name(tmp_path, monkeypatc
         str(workspace.root / "workflow.py") + ":sample",
         "--name",
         "sample-test",
+        "--project-root",
+        str(workspace.root),
+        "--concise",
         "--llm",
         "mock",
     ]]
@@ -2965,6 +3160,9 @@ def test_studio_can_prepare_deployment_without_starting_it(tmp_path, monkeypatch
         str(workspace.root / "workflow.py") + ":sample",
         "--name",
         "sample-test",
+        "--project-root",
+        str(workspace.root),
+        "--concise",
         "--no-start",
         "--llm",
         "mock",
@@ -3004,6 +3202,66 @@ def test_studio_offers_private_provider_key_reuse_for_first_deployment(
         line.startswith("✓ Reusing 1 configured credential") for line in output
     )
     assert all("development-secret" not in line for line in output)
+
+
+def test_studio_reuses_a_selected_provider_key_without_a_declared_field(
+    tmp_path,
+    monkeypatch,
+):
+    studio, workspace, output = _studio(tmp_path, responses=[""])
+    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    workspace.save_model_profile(
+        "workflow.py:sample",
+        default="mock",
+        lifelines={"Writer": "mistral:mistral-small-latest"},
+    )
+    workspace.save_secrets({"MISTRAL_API_KEY": "private-mistral-key"})
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        "zippergen.serve.main",
+        lambda arguments: calls.append(arguments) or 0,
+    )
+
+    studio.deploy_workflow(["sample-mistral", "--no-start"])
+
+    secret_index = calls[0].index("--provider-secret")
+    assert calls[0][secret_index + 1] == (
+        "MISTRAL_API_KEY=private-mistral-key"
+    )
+    assert "--set" not in calls[0]
+    assert all("private-mistral-key" not in line for line in output)
+
+
+def test_studio_carries_the_configured_local_endpoint_into_deployment(
+    tmp_path,
+    monkeypatch,
+):
+    studio, workspace, _output = _studio(tmp_path)
+    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    workspace.save_provider_profile(
+        "local",
+        {
+            "kind": "local",
+            "base_url": "http://127.0.0.1:11434/v1",
+        },
+    )
+    workspace.save_model_profile(
+        "workflow.py:sample",
+        default="mock",
+        lifelines={"Writer": "local:qwen2.5:7b"},
+    )
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        "zippergen.serve.main",
+        lambda arguments: calls.append(arguments) or 0,
+    )
+
+    studio.deploy_workflow(["sample-local", "--no-start"])
+
+    environment_index = calls[0].index("--provider-env")
+    assert calls[0][environment_index + 1] == (
+        "OLLAMA_BASE_URL=http://127.0.0.1:11434/v1"
+    )
 
 
 def test_studio_can_decline_provider_key_reuse_for_deployment(

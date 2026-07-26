@@ -1,7 +1,9 @@
 import json
+import plistlib
+import subprocess
 from pathlib import Path
 
-from zippergen.serve import main
+from zippergen.serve import _launchd_service_status, main
 from zippergen.store import (
     ensure_human_task,
     load_human_task,
@@ -485,6 +487,13 @@ def test_start_deployment_dry_run_prints_systemd_commands(tmp_path, monkeypatch,
     assert "systemctl --user daemon-reload" in captured.out
     assert "systemctl --user enable zippergen-hello-prod.service" in captured.out
     assert "systemctl --user start zippergen-hello-prod.service" in captured.out
+    service = (
+        zippergen_home
+        / "deployments"
+        / "zippergen-hello-prod.service"
+    ).read_text()
+    assert "Restart=on-failure" in service
+    assert "Restart=always" not in service
 
 
 def test_start_deployment_dry_run_prints_launchd_commands(tmp_path, monkeypatch, capsys):
@@ -511,6 +520,151 @@ def test_start_deployment_dry_run_prints_launchd_commands(tmp_path, monkeypatch,
     assert "io.zippergen.hello-prod.plist" in captured.out
     assert "launchctl bootout" in captured.out
     assert "launchctl bootstrap" in captured.out
+    launchd = plistlib.loads(
+        (
+            zippergen_home
+            / "deployments"
+            / "io.zippergen.hello-prod.plist"
+        ).read_bytes()
+    )
+    assert launchd["KeepAlive"] == {"SuccessfulExit": False}
+
+
+def test_launchd_status_distinguishes_a_loaded_crash_loop(monkeypatch):
+    monkeypatch.setattr(
+        "zippergen.serve.subprocess.run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args[0],
+            0,
+            stdout=(
+                "state = spawn scheduled\n"
+                "active count = 0\n"
+                "runs = 9\n"
+                "last exit code = 1\n"
+                "\t\tstate = active\n"
+                "\t\tactive count = 1\n"
+            ),
+            stderr="",
+        ),
+    )
+
+    status = _launchd_service_status("reviewed-answer")
+
+    assert status["state"] == "restarting"
+    assert status["healthy"] is False
+    assert status["runs"] == 9
+    assert status["last_exit_code"] == 1
+
+
+def test_guided_deploy_persists_an_implicit_model_provider_secret(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    workflow_path = tmp_path / "deploy_workflow.py"
+    workflow_path.write_text(WORKFLOW_SOURCE)
+    zippergen_home = tmp_path / "zg-home"
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(zippergen_home))
+
+    rc = main(
+        [
+            "deploy",
+            f"{workflow_path}:hello",
+            "--name",
+            "hello-mistral",
+            "--llm",
+            "mistral:mistral-small-latest",
+            "--provider-secret",
+            "MISTRAL_API_KEY=private-key",
+            "--yes",
+            "--no-install",
+            "--no-setup",
+            "--no-doctor",
+            "--no-start",
+        ]
+    )
+
+    assert rc == 0
+    capsys.readouterr()
+    secrets = json.loads(
+        (
+            zippergen_home
+            / "deployments"
+            / "hello-mistral.secrets.json"
+        ).read_text()
+    )
+    assert secrets == {"MISTRAL_API_KEY": "private-key"}
+
+
+def test_guided_deploy_persists_a_local_provider_endpoint(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    workflow_path = tmp_path / "deploy_workflow.py"
+    workflow_path.write_text(WORKFLOW_SOURCE)
+    zippergen_home = tmp_path / "zg-home"
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(zippergen_home))
+
+    rc = main(
+        [
+            "deploy",
+            f"{workflow_path}:hello",
+            "--name",
+            "hello-local",
+            "--llm",
+            "local:qwen2.5:7b",
+            "--provider-env",
+            "OLLAMA_BASE_URL=http://127.0.0.1:11434/v1",
+            "--yes",
+            "--no-install",
+            "--no-setup",
+            "--no-doctor",
+            "--no-start",
+        ]
+    )
+
+    assert rc == 0
+    capsys.readouterr()
+    profile = json.loads(
+        (
+            zippergen_home / "deployments" / "hello-local.json"
+        ).read_text()
+    )
+    assert profile["environment"] == {
+        "OLLAMA_BASE_URL": "http://127.0.0.1:11434/v1"
+    }
+
+
+def test_guided_deploy_blocks_a_missing_selected_model_credential(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    workflow_path = tmp_path / "deploy_workflow.py"
+    workflow_path.write_text(WORKFLOW_SOURCE)
+    zippergen_home = tmp_path / "zg-home"
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(zippergen_home))
+
+    rc = main(
+        [
+            "deploy",
+            f"{workflow_path}:hello",
+            "--name",
+            "hello-mistral",
+            "--llm",
+            "mistral:mistral-small-latest",
+            "--yes",
+            "--no-install",
+            "--no-setup",
+            "--no-start",
+        ]
+    )
+
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "FAIL model credential MISTRAL_API_KEY" in captured.out
+    assert "configured but not started" in captured.out
 
 
 def test_guided_deploy_persists_config_and_private_secrets(tmp_path, monkeypatch, capsys):

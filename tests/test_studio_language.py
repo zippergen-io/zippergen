@@ -7,6 +7,7 @@ import pytest
 from zippergen.natural_language import (
     NaturalCommandPlan,
     NaturalLanguageStore,
+    deterministic_plan,
     generalize_interpretation,
     parse_cli_plan,
     requirement_proposal,
@@ -69,6 +70,27 @@ def test_natural_current_request_executes_without_a_model(tmp_path):
     ).history()
     assert history[-1]["source"] == "deterministic"
     assert history[-1]["status"] == "executed"
+
+
+@pytest.mark.parametrize(
+    ("phrase", "command"),
+    [
+        ("Show me all stores", "store list"),
+        ("Show pending human tasks", "store tasks"),
+        ("Show the store trace", "store trace"),
+        ("What is the deployment status?", "deployment show"),
+        ("Show the deployment logs", "deployment logs"),
+        ("Stop the deployment", "deployment stop"),
+    ],
+)
+def test_natural_operational_requests_use_the_namespaced_surface(
+    phrase,
+    command,
+):
+    plan = deterministic_plan(phrase)
+
+    assert plan is not None
+    assert plan.commands == (command,)
 
 
 def test_unmatched_design_prose_is_offered_as_initial_specification(tmp_path):

@@ -1474,6 +1474,7 @@ class Workspace:
             "project_root": str(self.root),
             "current_workflow": None,
             "current_run": None,
+            "current_store": None,
             "last_deployment": None,
             "last_view": "protocol",
             "current_request": None,
@@ -1528,6 +1529,7 @@ class Workspace:
         return {
             "current_workflow": state.get("current_workflow"),
             "current_run": state.get("current_run"),
+            "current_store": state.get("current_store"),
             "last_deployment": state.get("last_deployment"),
             "runs": len(list(self.runs_directory.glob("*.json"))),
             "requests": len(list(self.requests_directory.glob("*.json"))),
@@ -1752,6 +1754,7 @@ class Workspace:
         # This field was added additively so existing workspaces keep working
         # without a schema migration.
         state.setdefault("current_request", None)
+        state.setdefault("current_store", None)
         state.setdefault("task_cleared", False)
         state.setdefault("pending_specification_fingerprint", None)
         state.setdefault("pending_specification_baseline", None)
@@ -2328,8 +2331,12 @@ class Workspace:
         environment: dict[str, str] = {}
         for provider in selected:
             secret_name = secret_names.get(provider)
-            if secret_name and secrets.get(secret_name):
-                environment[secret_name] = secrets[secret_name]
+            if secret_name:
+                secret_value = secrets.get(secret_name) or os.environ.get(
+                    secret_name
+                )
+                if secret_value:
+                    environment[secret_name] = secret_value
             if provider == "local":
                 base_url = profiles.get("local", {}).get("base_url")
                 if base_url:
@@ -2390,6 +2397,7 @@ class Workspace:
         self.update(
             current_workflow=record["workflow_spec"],
             current_run=run_id,
+            current_store=str(store),
         )
         return record
 

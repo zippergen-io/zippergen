@@ -67,16 +67,24 @@ Up/down arrows navigate private per-project command history; a faint
 history suggestion can be accepted with the right arrow. Piped commands and
 programmatic callers retain the ordinary non-interactive input path.
 
-The public command surface follows three themes:
+The public command surface follows four visible namespaces:
 
 - `workflow` — specify, implement, inspect, and validate the application;
 - `models` — configure, check, and assign model configurations;
-- direct operational commands such as `run`, `deploy`, `status`, and `logs`.
+- `deployment` — distinguish the installed bundle, supervised service, durable
+  run, and store;
+- `store` — select and inspect durable state, human tasks, and traces without
+  copying SQLite paths.
+
+The short verbs `run` and `deploy` begin the two operational paths. Legacy
+top-level `status`, `doctor`, `logs`, `start`, `restart`, and `stop` forms
+remain accepted, but help and completion present the clearer `deployment
+show`, `deployment doctor`, and related forms.
 
 This keeps related steps together. For example, the complete design loop is
 discoverable below `workflow`, from `workflow create` through `workflow
 implement`, the guided `workflow review`, and `workflow accept`.
-Plain `help` shows that short path and the three themes; `help all` prints the
+Plain `help` shows that short path and these areas; `help all` prints the
 complete exact reference. Command metadata is declared once and reused for
 help, completion, natural-language permissions, and risk classification.
 Workflow-view names, labels, aliases, rendering options, and completion
@@ -88,8 +96,8 @@ source. It preserves the working directory and reloads the project context
 saved on disk; it does not start a nested Studio. This command does not run
 `git pull`, install dependencies, or synchronize the environment. If the
 update changes dependencies, leave Studio, run `uv sync` (or reinstall the
-tool), and start `zippergen` again. Plain `restart [NAME]` remains the command
-for restarting a deployment.
+tool), and start `zippergen` again. `deployment restart [NAME]` restarts an
+installed deployment.
 
 `studio doctor` checks the local development front door without contacting a
 model provider: project manifest, terminal editor, configured coding
@@ -295,7 +303,9 @@ variable name and asks whether to reuse it. Press Enter to accept the default.
 The value is copied directly between private stores, is never displayed, and
 becomes scoped to that named deployment. Answer `n` to enter a different
 deployment credential. Later deployments with the same name retain their
-existing deployment key without prompting again.
+existing deployment key without prompting again. A configured local-provider
+endpoint is likewise copied into the deployment profile automatically, so an
+Ollama tunnel or remote endpoint does not silently revert to the default URL.
 
 Studio accepts ordinary language as well as exact commands. Exact syntax keeps
 priority, while prose that is not valid command syntax enters a constrained
@@ -1003,9 +1013,17 @@ zippergen deploy examples/call_intake.py:call_intake
 ```
 
 Inside Studio, select the workflow once and enter `deploy NAME --no-start` to
-prepare it without starting a service. Inspect it with `doctor`, then use
-`start` when authorized. Subsequent `status`, `logs`, `doctor`, `restart`, and
-`stop` commands use the remembered deployment name.
+prepare it without starting a service. Inspect it with `deployment show` and
+`deployment doctor`, then use `deployment start` when authorized. Subsequent
+deployment commands use the remembered name. `deployment show` reports four
+separate layers: immutable bundle, supervised process, workflow run, and
+SQLite store. A loaded service whose process repeatedly exits is reported as
+unhealthy rather than merely “active.”
+Generated launchd/systemd services restart after failure, not after a
+successful finite workflow completion.
+Studio condenses the deployer's detailed doctor transcript into one readiness
+summary and then renders the unified deployment view; `deployment doctor`
+remains available for every individual check.
 
 When a workflow declares deployment requirements, ZipperGen asks for its
 settings and secrets, creates a managed Python environment, installs declared
@@ -1019,7 +1037,33 @@ launchd on macOS and systemd on Linux.
 
 Normal configuration is stored in the deployment profile. Secrets are kept in
 a separate mode-0600 file and loaded before the workflow module is imported;
-they do not appear in the profile or generated service definition.
+they do not appear in the profile or generated service definition. Studio
+copies the privately configured credential required by every selected model
+provider into that deployment-scoped file, even when the workflow did not
+declare a provider-specific key field. Readiness checks refuse to start when a
+selected OpenAI, Anthropic, or Mistral model lacks its key. For a selected
+local model, Studio also carries the configured OpenAI-compatible endpoint
+into the deployment profile.
+
+Studio treats durable stores as first-class operational objects:
+
+```text
+store list
+store show reviewed-answer
+store use reviewed-answer
+store tasks
+store approve
+store trace
+store rename reviewed-answer reviewed-answer-archive
+store delete reviewed-answer
+```
+
+Stores are normally created automatically by `run` or `deploy`; `store create
+NAME` is for the uncommon standalone case. Renaming is blocked while a
+referencing deployment is active and updates run/deployment references.
+Deletion is project-scoped with `store delete all`, refuses active deployment stores, and
+moves SQLite data to recoverable private trash below
+`$ZIPPERGEN_HOME/trash/stores/`.
 
 Day-to-day operation uses the deployment name:
 

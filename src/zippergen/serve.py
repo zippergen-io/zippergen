@@ -509,7 +509,7 @@ def _write_deployment_artifacts(profile: dict[str, object]) -> None:
         "Type=simple\n"
         f"WorkingDirectory={profile['cwd']}\n"
         f"ExecStart={script_path}\n"
-        "Restart=always\n"
+        "Restart=on-failure\n"
         "RestartSec=10\n"
         f"StandardOutput=append:{profile['log']}\n"
         f"StandardError=append:{profile['log']}\n\n"
@@ -521,7 +521,7 @@ def _write_deployment_artifacts(profile: dict[str, object]) -> None:
         "ProgramArguments": [str(script_path)],
         "WorkingDirectory": str(profile["cwd"]),
         "RunAtLoad": True,
-        "KeepAlive": True,
+        "KeepAlive": {"SuccessfulExit": False},
         "ThrottleInterval": 10,
         "StandardOutPath": str(profile["log"]),
         "StandardErrorPath": str(profile["log"]),
@@ -693,6 +693,26 @@ def _doctor_check(status: str, name: str, detail: str, **extra: object) -> dict[
     return {"status": status, "name": name, "detail": detail, **extra}
 
 
+_MODEL_PROVIDER_SECRETS = {
+    "openai": "OPENAI_API_KEY",
+    "anthropic": "ANTHROPIC_API_KEY",
+    "mistral": "MISTRAL_API_KEY",
+}
+
+
+def _model_provider(value: object) -> str:
+    provider = str(value or "mock").partition(":")[0].strip().lower()
+    return {"claude": "anthropic", "ollama": "local"}.get(provider, provider)
+
+
+def _required_model_provider_secrets(profile: dict[str, object]) -> set[str]:
+    return {
+        secret
+        for model in selected_llm_specs(profile.get("llm"), profile.get("llms"))
+        if (secret := _MODEL_PROVIDER_SECRETS.get(_model_provider(model)))
+    }
+
+
 def _path_parent_check(label: str, path: Path) -> dict[str, object]:
     parent = path.expanduser().parent
     if not parent.exists():
@@ -736,7 +756,92 @@ def _systemd_active_check(name: str) -> dict[str, object]:
     return _doctor_check("warn", "systemd active", f"{unit} is not active: {state}", state=state)
 
 
-def _launchd_active_check(name: str) -> dict[str, object]:
+def _systemd_service_status(name: str) -> dict[str, object]:
+    unit = _systemd_unit_name(name)
+    try:
+        result = subprocess.run(
+            _systemctl_command(
+                "show",
+                unit,
+                "--property=LoadState,ActiveState,SubState,ExecMainStatus,NRestarts",
+            ),
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except FileNotFoundError:
+        return {
+            "manager": "systemd",
+            "service": unit,
+            "state": "unknown",
+            "healthy": False,
+            "detail": "systemctl was not found",
+        }
+    except subprocess.TimeoutExpired:
+        return {
+            "manager": "systemd",
+            "service": unit,
+            "state": "unknown",
+            "healthy": False,
+            "detail": "systemctl timed out",
+        }
+    values = {}
+    for raw in (result.stdout or "").splitlines():
+        key, separator, value = raw.partition("=")
+        if separator:
+            values[key] = value
+    active = values.get("ActiveState", "")
+    sub = values.get("SubState", "")
+    try:
+        exit_code = int(values.get("ExecMainStatus", "0"))
+    except ValueError:
+        exit_code = None
+    try:
+        restarts = int(values.get("NRestarts", "0"))
+    except ValueError:
+        restarts = 0
+    if result.returncode == 0 and active == "active" and sub == "running":
+        state = "running"
+        healthy = True
+        detail = f"{unit} is running"
+    elif active == "activating" or restarts and exit_code not in {None, 0}:
+        state = "restarting"
+        healthy = False
+        detail = (
+            f"{unit} is not healthy; {active or 'unknown'}/{sub or 'unknown'}, "
+            f"last exit code {exit_code}, {restarts} restart(s)"
+        )
+    elif (
+        result.returncode == 0
+        and active == "inactive"
+        and exit_code == 0
+    ):
+        state = "completed"
+        healthy = True
+        detail = f"{unit} completed successfully"
+    elif values.get("LoadState") == "not-found":
+        state = "not-loaded"
+        healthy = False
+        detail = f"{unit} is not installed"
+    else:
+        state = "loaded" if result.returncode == 0 else "not-loaded"
+        healthy = False
+        detail = f"{unit} is {active or sub or 'not active'}"
+    return {
+        "manager": "systemd",
+        "service": unit,
+        "state": state,
+        "healthy": healthy,
+        "detail": detail,
+        "last_exit_code": exit_code,
+        "restarts": restarts,
+        "active_state": active,
+        "sub_state": sub,
+    }
+
+
+def _launchd_service_status(name: str) -> dict[str, object]:
     service = f"{_launchctl_domain()}/{_launchd_label(name)}"
     try:
         result = subprocess.run(
@@ -747,13 +852,125 @@ def _launchd_active_check(name: str) -> dict[str, object]:
             timeout=5,
         )
     except FileNotFoundError:
-        return _doctor_check("warn", "launchd active", "launchctl was not found")
+        return {
+            "manager": "launchd",
+            "service": service,
+            "state": "unknown",
+            "healthy": False,
+            "detail": "launchctl was not found",
+        }
     except subprocess.TimeoutExpired:
-        return _doctor_check("warn", "launchd active", "launchctl timed out")
-    if result.returncode == 0:
-        return _doctor_check("ok", "launchd active", f"{service} is loaded")
-    detail = (result.stderr or result.stdout or "not loaded").strip().splitlines()[0]
-    return _doctor_check("warn", "launchd active", f"{service} is not loaded: {detail}")
+        return {
+            "manager": "launchd",
+            "service": service,
+            "state": "unknown",
+            "healthy": False,
+            "detail": "launchctl timed out",
+        }
+    if result.returncode != 0:
+        detail = (
+            result.stderr or result.stdout or "not loaded"
+        ).strip().splitlines()[0]
+        return {
+            "manager": "launchd",
+            "service": service,
+            "state": "not-loaded",
+            "healthy": False,
+            "detail": f"{service} is not loaded: {detail}",
+        }
+
+    output = result.stdout or ""
+    values: dict[str, str] = {}
+    for raw in output.splitlines():
+        if "=" not in raw:
+            continue
+        key, value = raw.strip().split("=", 1)
+        # `launchctl print` contains nested coalition blocks with repeated
+        # `state` and `active count` keys. The service-level values appear
+        # first and must not be overwritten by those nested records.
+        values.setdefault(key.strip(), value.strip())
+    state = values.get("state", "loaded")
+    try:
+        active_count = int(values.get("active count", "0"))
+    except ValueError:
+        active_count = 0
+    try:
+        runs = int(values.get("runs", "0"))
+    except ValueError:
+        runs = 0
+    try:
+        last_exit = int(values["last exit code"])
+    except (KeyError, ValueError):
+        last_exit = None
+
+    if state == "running" or active_count > 0:
+        health = "running"
+        healthy = True
+        detail = f"{service} is running"
+    elif last_exit not in {None, 0}:
+        health = "restarting"
+        healthy = False
+        detail = (
+            f"{service} is loaded but not running; last exit code "
+            f"{last_exit} after {runs} launch(es)"
+        )
+    elif last_exit == 0 and runs > 0:
+        health = "completed"
+        healthy = True
+        detail = f"{service} completed successfully"
+    else:
+        health = "loaded"
+        healthy = False
+        detail = f"{service} is loaded but has no active process"
+    return {
+        "manager": "launchd",
+        "service": service,
+        "state": health,
+        "healthy": healthy,
+        "detail": detail,
+        "active_count": active_count,
+        "runs": runs,
+        "last_exit_code": last_exit,
+        "raw_state": state,
+    }
+
+
+def _launchd_active_check(name: str) -> dict[str, object]:
+    status = _launchd_service_status(name)
+    if status["state"] in {"running", "completed"}:
+        kind = "ok"
+    elif status["state"] == "restarting":
+        kind = "fail"
+    else:
+        kind = "warn"
+    return _doctor_check(
+        kind,
+        "launchd process",
+        str(status["detail"]),
+        **{
+            key: value
+            for key, value in status.items()
+            if key not in {"detail"}
+        },
+    )
+
+
+def _deployment_service_status(name: str) -> dict[str, object]:
+    """Describe the supervised process, not merely service installation."""
+
+    try:
+        manager = _service_manager()
+    except SystemExit as exc:
+        return {
+            "manager": "unsupported",
+            "service": name,
+            "state": "unknown",
+            "healthy": False,
+            "detail": str(exc),
+        }
+    if manager == "launchd":
+        return _launchd_service_status(name)
+    return _systemd_service_status(name)
 
 
 def _call_doctor_hook(
@@ -988,6 +1205,28 @@ def _doctor_checks(name: str, *, include_systemd: bool = True) -> list[dict[str,
                 "required secret is not configured",
             ))
 
+    declared_secret_names = {
+        field.target_name for field in deployment_spec.fields if field.secret
+    }
+    for secret_name in sorted(_required_model_provider_secrets(profile)):
+        if environment.get(secret_name):
+            if secret_name not in declared_secret_names:
+                checks.append(
+                    _doctor_check(
+                        "ok",
+                        f"model credential {secret_name}",
+                        "configured in private deployment storage",
+                    )
+                )
+        else:
+            checks.append(
+                _doctor_check(
+                    "fail",
+                    f"model credential {secret_name}",
+                    "required by a selected model but not configured",
+                )
+            )
+
     if python_path.exists():
         for package in deployment_spec.packages:
             if not package.import_name:
@@ -1049,6 +1288,23 @@ def _print_doctor(name: str, checks: list[dict[str, object]]) -> None:
         for status in ("ok", "warn", "fail")
     }
     print(f"Summary: {counts['ok']} ok, {counts['warn']} warn, {counts['fail']} fail")
+
+
+def _print_doctor_summary(
+    name: str,
+    checks: list[dict[str, object]],
+) -> None:
+    counts = {
+        status: sum(1 for check in checks if check.get("status") == status)
+        for status in ("ok", "warn", "fail")
+    }
+    print(
+        f"Readiness {name}: {counts['ok']} ok, "
+        f"{counts['warn']} warning(s), {counts['fail']} failure(s)"
+    )
+    for check in checks:
+        if check.get("status") == "fail":
+            print(f"FAIL {check.get('name')}: {check.get('detail')}")
 
 
 def _doctor_command(args) -> int:
@@ -2290,6 +2546,27 @@ def _apply_deploy_arguments(
         profile["ui"] = args.ui
     if args.show_decisions is not None:
         profile["show_decisions"] = args.show_decisions
+    project_root = getattr(args, "project_root", None)
+    if project_root:
+        profile["project_root"] = str(Path(project_root).expanduser().resolve())
+    provider_environment = _parse_inputs(getattr(args, "provider_env", []))
+    unsupported_provider_environment = sorted(
+        set(provider_environment) - {"OLLAMA_BASE_URL"}
+    )
+    if unsupported_provider_environment:
+        raise SystemExit(
+            "Unsupported model-provider environment setting: "
+            + ", ".join(unsupported_provider_environment)
+        )
+    environment_values = _profile_mapping(profile, "environment")
+    environment_values.update(
+        {
+            name: str(value)
+            for name, value in provider_environment.items()
+            if value is not None and str(value)
+        }
+    )
+    profile["environment"] = environment_values
 
     input_arguments = _parse_input_json(args.input_json)
     input_arguments.update(_parse_inputs(args.input))
@@ -2313,12 +2590,28 @@ def _apply_deploy_arguments(
             overrides.setdefault(field.name, input_arguments[field.target_name])
 
     interactive = not args.yes and sys.stdin.isatty()
-    return _collect_deployment_fields(
+    values, secrets = _collect_deployment_fields(
         spec,
         profile,
         overrides=overrides,
         interactive=interactive,
     )
+    provider_secrets = _parse_inputs(getattr(args, "provider_secret", []))
+    unsupported = sorted(
+        set(provider_secrets) - set(_MODEL_PROVIDER_SECRETS.values())
+    )
+    if unsupported:
+        raise SystemExit(
+            "Unsupported model-provider secret: " + ", ".join(unsupported)
+        )
+    secrets.update(
+        {
+            name: str(value)
+            for name, value in provider_secrets.items()
+            if value is not None and str(value)
+        }
+    )
+    return values, secrets
 
 
 def _finalize_guided_deployment(
@@ -2351,7 +2644,10 @@ def _finalize_guided_deployment(
 
     if not args.no_doctor:
         checks = _doctor_checks(name, include_systemd=False)
-        _print_doctor(name, checks)
+        if getattr(args, "concise", False):
+            _print_doctor_summary(name, checks)
+        else:
+            _print_doctor(name, checks)
         if any(check.get("status") == "fail" for check in checks):
             print(f"Deployment {name} was configured but not started because doctor found failures.")
             return 1
@@ -2361,9 +2657,10 @@ def _finalize_guided_deployment(
         _deployment_lifecycle_command(lifecycle_args, "start")
 
     print(f"Deployment: {name}")
-    print(f"Status: zippergen status {name}")
-    print(f"Logs: zippergen logs {name} --follow")
-    print(f"Restart: zippergen restart {name}")
+    if not getattr(args, "concise", False):
+        print(f"Status: zippergen status {name}")
+        print(f"Logs: zippergen logs {name} --follow")
+        print(f"Restart: zippergen restart {name}")
     return 0
 
 
@@ -2729,6 +3026,22 @@ def _add_guided_deployment_arguments(
     parser.add_argument("--input-json", help="Workflow inputs as a JSON object.")
     parser.add_argument("--option", action="append", default=[], metavar="name=value", help="Workflow setup option.")
     parser.add_argument("--set", action="append", default=[], metavar="field=value", help="Declared deployment field value.")
+    parser.add_argument(
+        "--provider-secret",
+        action="append",
+        default=[],
+        metavar="ENV=value",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument("--project-root", help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--provider-env",
+        action="append",
+        default=[],
+        metavar="ENV=value",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument("--concise", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--services", choices=("fake", "live"), help="Workflow service mode.")
     parser.add_argument("--timeout", type=float, help="Workflow timeout; defaults to 0 (no deadline).")
     parser.add_argument("--ui", action="store_true", default=None, help="Start legacy ZipperChat visualization.")
