@@ -42,11 +42,14 @@ from zippergen.rendering import StatusKind, TerminalRenderer
 from zippergen.semantic import semantic_snapshot, workflow_semantics
 from zippergen.studio_commands import (
     CommandRisk,
+    WORKFLOW_VIEWS,
     command_spec,
     concise_help,
     full_help,
     subcommand_completions,
     top_level_completions,
+    workflow_view_completions,
+    workflow_view_spec,
 )
 from zippergen.view import ViewOptions, workflow_view_data
 from zippergen.workspace import (
@@ -134,17 +137,7 @@ _SUBCOMMAND_COMPLETIONS = {
         "models",
     )
 }
-_SUBCOMMAND_COMPLETIONS.update({
-    "show": (
-        ("overview", "compact workflow summary"),
-        ("protocol", "global protocol code"),
-        ("communications", "communications only"),
-        ("actions", "actions and prompts"),
-        ("full", "complete workflow code"),
-        ("agent", "one exact local projection"),
-        ("agents", "selected-participant focus view"),
-    ),
-})
+_SUBCOMMAND_COMPLETIONS.update({"show": workflow_view_completions()})
 
 _MODEL_COMPLETIONS = (
     ("mock", "deterministic built-in model"),
@@ -263,15 +256,22 @@ def _is_allowed_natural_plan_command(parts: list[str]) -> bool:
                     "spec",
                     "pending",
                     "source",
-                    "overview",
-                    "protocol",
-                    "communications",
-                    "actions",
-                    "full",
+                    *(view.command for view in WORKFLOW_VIEWS),
                 }
-            if len(args) == 3 and lowered[1] in {"agent", "source"}:
-                return True
-            return len(args) >= 3 and lowered[1] == "agents"
+            if len(args) == 3:
+                if lowered[1] == "source":
+                    return True
+                one_view = workflow_view_spec(lowered[1])
+                return (
+                    one_view is not None
+                    and one_view.participants == "one"
+                )
+            view = workflow_view_spec(lowered[1])
+            return (
+                len(args) >= 3
+                and view is not None
+                and view.participants == "many"
+            )
         return False
     if command == "studio":
         return len(args) == 1 and lowered[0] in {"doctor", "restart"}
@@ -1509,11 +1509,18 @@ class Studio:
         elif command == "ask":
             if not args:
                 raise SystemExit("Use ask TEXT.")
-            self.interpret_natural_language(" ".join(args))
+            self.interpret_natural_language(
+                " ".join(args),
+                _allow_requirement_proposal=False,
+            )
         elif command == "plan":
             if not args:
                 raise SystemExit("Use plan TEXT.")
-            self.interpret_natural_language(" ".join(args), preview_only=True)
+            self.interpret_natural_language(
+                " ".join(args),
+                preview_only=True,
+                _allow_requirement_proposal=False,
+            )
         elif command == "settings":
             self.configure_settings(args)
         elif command == "language":
@@ -2071,6 +2078,7 @@ class Studio:
         request_text: str,
         *,
         preview_only: bool = False,
+        _allow_requirement_proposal: bool = True,
     ) -> None:
         request_text = request_text.strip()
         if not request_text:
@@ -2099,7 +2107,7 @@ class Studio:
         )
         if plan is None:
             plan = store.match(request_text)
-        if plan is None:
+        if plan is None and _allow_requirement_proposal:
             plan = requirement_proposal(
                 request_text,
                 has_specification=self.workspace.specification() is not None,
@@ -2193,14 +2201,43 @@ class Studio:
             return
 
         confirmed = False
-        if risk in {"execution", "destructive"} or plan.requires_confirmation:
-            confirmation_kind = (
-                "workflow-requirement proposal"
-                if plan.requires_confirmation
-                else f"{risk} plan"
-            )
+        if plan.requires_confirmation:
+            while True:
+                choice = self.input(
+                    "Treat this as a workflow requirement? "
+                    "[y/n/command]: "
+                ).strip().casefold()
+                if choice in {"y", "yes"}:
+                    confirmed = True
+                    break
+                if choice in {"c", "command"}:
+                    store.record(
+                        request_text,
+                        plan,
+                        status="redirected",
+                        detail="user requested Studio-command interpretation",
+                    )
+                    self._info(
+                        "No specification was changed; interpreting the same "
+                        "text as a Studio operation."
+                    )
+                    self.interpret_natural_language(
+                        request_text,
+                        preview_only=preview_only,
+                        _allow_requirement_proposal=False,
+                    )
+                    return
+                if choice in {"n", "no", "x", "cancel", ""}:
+                    self._warning(
+                        "Natural-language request cancelled; no specification "
+                        "or command was changed."
+                    )
+                    store.record(request_text, plan, status="cancelled")
+                    return
+                self._warning("Enter 'y', 'n', or 'command'.")
+        elif risk in {"execution", "destructive"}:
             if not self._confirm_action(
-                f"Execute this {confirmation_kind}? [y/n]: ",
+                f"Execute this {risk} plan? [y/n]: ",
                 cancel_message=(
                     "Natural-language plan cancelled; nothing was executed."
                 ),
@@ -2585,21 +2622,12 @@ class Studio:
             ensured = self.workspace.ensure_specification()
             target = self.workspace.specification_path
             self._prepare_specification_editor(target)
-            editor, source = self._effective_editor(editor_override)
-            self._emit_table(
-                "Workflow specification",
-                [
-                    ("File", target.relative_to(self.workspace.root), None),
-                    ("Editor", shlex.join(editor), "success"),
-                    ("Selection", source, None),
-                    (
-                        "Return",
-                        "save and exit the editor to continue in Studio",
-                        None,
-                    ),
-                ],
+            self._launch_editor(
+                target,
+                override=editor_override,
+                title="Workflow specification",
+                return_hint="save and exit the editor to continue in Studio",
             )
-            self._launch_editor(target, override=editor_override)
             prompt = self._finish_specification_editor(target)
             self.create_request(prompt, specification_already_saved=True)
             if ensured["migrated"]:
@@ -3056,20 +3084,22 @@ class Studio:
         target: Path,
         *,
         override: str | None = None,
+        title: str = "Editor",
+        return_hint: str | None = None,
     ) -> None:
         command, source = self._effective_editor(override)
         try:
             displayed = target.relative_to(self.workspace.root)
         except ValueError:
             displayed = target
-        self._emit_table(
-            "Editor",
-            [
-                ("Command", shlex.join(command), None),
-                ("Source", source, None),
-                ("File", displayed, None),
-            ],
-        )
+        rows: list[tuple[str, object, StatusKind | None]] = [
+            ("File", displayed, None),
+            ("Command", shlex.join(command), "success"),
+            ("Source", source, None),
+        ]
+        if return_hint is not None:
+            rows.append(("Return", return_hint, None))
+        self._emit_table(title, rows)
         try:
             completed = subprocess.run(
                 [*command, str(target)],
@@ -5073,50 +5103,42 @@ class Studio:
         if not view:
             choices = [
                 "Authored source",
-                "Overview",
-                "Protocol",
-                "Communications only",
-                "Actions and prompts",
-                "Complete workflow",
-                "One participant",
-                "Selected participants",
+                *(item.label for item in WORKFLOW_VIEWS),
             ]
             view = str(self._select(f"Inspect {workflow.name}", choices)).lower()
 
         if view in {"authored source"}:
             self.show_workflow_source([])
             return
-        if view in {"overview"}:
-            options = ViewOptions(detail="overview")
-            remembered = "overview"
-        elif view in {"protocol"}:
-            options = ViewOptions(detail="protocol")
-            remembered = "protocol"
-        elif view in {"communications", "communication", "communications only"}:
-            options = ViewOptions(detail="protocol", communications_only=True)
-            remembered = "communications"
-        elif view in {"actions", "actions and prompts"}:
-            options = ViewOptions(detail="actions")
-            remembered = "actions"
-        elif view in {"full", "complete", "complete workflow"}:
-            options = ViewOptions(detail="full")
-            remembered = "full"
-        elif view in {"agent", "one participant"}:
+        selected_view = workflow_view_spec(view)
+        if selected_view is None:
+            available = ", ".join(item.command for item in WORKFLOW_VIEWS)
+            raise SystemExit(f"View must be {available}.")
+        if selected_view.participants == "one":
             names = self._agent_names(workflow)
             agent = rest[0] if rest else self._select("Participants", names)
-            options = ViewOptions(agent=str(agent))
-            remembered = f"agent {agent}"
-        elif view in {"agents", "selected participants"}:
+            options = ViewOptions(
+                detail=selected_view.detail,
+                communications_only=selected_view.communications_only,
+                agent=str(agent),
+            )
+            remembered = f"{selected_view.command} {agent}"
+        elif selected_view.participants == "many":
             names = self._agent_names(workflow)
             selected = rest or self._select("Participants", names, allow_many=True)
             assert isinstance(selected, list)
-            options = ViewOptions(agents=tuple(selected))
-            remembered = "agents " + " ".join(selected)
-        else:
-            raise SystemExit(
-                "View must be overview, protocol, communications, actions, full, "
-                "agent, or agents."
+            options = ViewOptions(
+                detail=selected_view.detail,
+                communications_only=selected_view.communications_only,
+                agents=tuple(selected),
             )
+            remembered = selected_view.command + " " + " ".join(selected)
+        else:
+            options = ViewOptions(
+                detail=selected_view.detail,
+                communications_only=selected_view.communications_only,
+            )
+            remembered = selected_view.command
         try:
             data = workflow_view_data(workflow, module, options=options)
         except ValueError as exc:

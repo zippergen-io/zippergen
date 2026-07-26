@@ -1,4 +1,5 @@
 import json
+import shlex
 import subprocess
 
 import pytest
@@ -8,6 +9,7 @@ from zippergen.natural_language import (
     NaturalLanguageStore,
     generalize_interpretation,
     parse_cli_plan,
+    requirement_proposal,
 )
 from zippergen.studio import Studio
 from zippergen.workspace import Workspace
@@ -101,12 +103,116 @@ def test_unmatched_design_prose_is_offered_as_one_pending_refinement(tmp_path):
     assert current["kind"] == "refine"
 
 
-def test_short_start_over_phrase_is_not_a_deployment_name(tmp_path):
-    studio, workspace, output = _studio(tmp_path, responses=["y"])
+@pytest.mark.parametrize(
+    "sentence",
+    [
+        "A writer drafts a reply and a reviewer may request up to three revisions.",
+        "Draft an answer, then a reviewer approves or rejects it.",
+        "Two agents debate a topic until they reach consensus.",
+        "Summarize incoming support emails and route urgent ones to a human.",
+        "A researcher gathers sources, a critic checks them, a human signs off.",
+        "Build a workflow where a writer drafts and a reviewer approves.",
+        "I want an agent that triages GitHub issues with human approval.",
+        "The reviewer should be able to reject a draft twice.",
+        "Classify each invoice, then ask an accountant to confirm the total.",
+        "Translate a document and have a native speaker verify the result.",
+    ],
+)
+def test_realistic_declarative_requirements_are_offered_without_framework_words(
+    sentence,
+):
+    plan = requirement_proposal(sentence, has_specification=False)
+
+    assert plan is not None
+    assert plan.requires_confirmation is True
+    assert plan.commands == (
+        f"workflow create {shlex.quote(sentence)}",
+    )
+
+
+@pytest.mark.parametrize(
+    "sentence",
+    [
+        "How do I inspect the complete workflow?",
+        "Can Studio check whether my local model is connected?",
+        "A reviewer approves every draft?",
+        "The deployment failed after the latest restart.",
+        "Codex is installed but Studio cannot find it.",
+        "The local provider connection timed out again.",
+    ],
+)
+def test_questions_and_operational_failures_are_not_specification_proposals(
+    sentence,
+):
+    assert requirement_proposal(sentence, has_specification=True) is None
+
+
+def test_rejected_requirement_can_be_interpreted_as_a_command(
+    tmp_path,
+    monkeypatch,
+):
+    studio, workspace, output = _studio(tmp_path, responses=["command"])
+    monkeypatch.setattr(
+        studio,
+        "_interpret_with_cli",
+        lambda request_text, *, configured: NaturalCommandPlan(
+            "Show current project state.",
+            ("current",),
+            "codex",
+        ),
+    )
+
+    studio.execute("Summarize incoming support emails for a human operator")
+
+    assert workspace.specification() is None
+    assert any("No specification was changed" in line for line in output)
+    assert "Current" in output
+    history = NaturalLanguageStore(workspace.natural_language_path).history()
+    assert [entry["status"] for entry in history[-2:]] == [
+        "redirected",
+        "executed",
+    ]
+
+
+def test_explicit_ask_bypasses_the_requirement_offer(tmp_path, monkeypatch):
+    studio, workspace, output = _studio(tmp_path)
+    monkeypatch.setattr(
+        studio,
+        "_interpret_with_cli",
+        lambda request_text, *, configured: NaturalCommandPlan(
+            "Show current project state.",
+            ("current",),
+            "claude",
+        ),
+    )
+
+    studio.execute("ask Summarize incoming support emails for a human operator")
+
+    assert workspace.specification() is None
+    assert "Current" in output
+
+
+def test_short_start_over_phrase_requests_clarification(tmp_path):
+    studio, workspace, output = _studio(tmp_path)
     workspace.initialize_project(name="Tutorial")
     workspace.save_specification("Create a review workflow.")
 
     studio.execute("start over")
+
+    assert workspace.specification() == "Create a review workflow."
+    assert workspace.manifest_path.exists()
+    assert "Clarification needed" in output
+    assert any("project reset fresh" in line for line in output)
+
+
+def test_explicit_reset_everything_still_proposes_recoverable_fresh_reset(
+    tmp_path,
+):
+    studio, workspace, output = _studio(tmp_path, responses=["y"])
+    workspace.initialize_project(name="Tutorial")
+    workspace.save_specification("Create a review workflow.")
+
+    studio.execute("reset everything")
 
     assert workspace.specification() is None
     assert not workspace.manifest_path.exists()

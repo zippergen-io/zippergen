@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 CommandRisk = Literal["read-only", "configuration", "execution", "destructive"]
+ParticipantScope = Literal["none", "one", "many"]
 
 
 @dataclass(frozen=True)
@@ -17,6 +18,83 @@ class CommandSpec:
     natural: bool = True
     primary: bool = False
     hidden: bool = False
+
+
+@dataclass(frozen=True)
+class WorkflowViewSpec:
+    command: str
+    label: str
+    description: str
+    detail: str = "protocol"
+    aliases: tuple[str, ...] = ()
+    communications_only: bool = False
+    participants: ParticipantScope = "none"
+
+
+WORKFLOW_VIEWS: tuple[WorkflowViewSpec, ...] = (
+    WorkflowViewSpec(
+        "overview",
+        "Overview",
+        "compact workflow summary",
+        detail="overview",
+    ),
+    WorkflowViewSpec(
+        "protocol",
+        "Protocol",
+        "global protocol code",
+    ),
+    WorkflowViewSpec(
+        "communications",
+        "Communications only",
+        "communications only",
+        aliases=("communication", "communications only"),
+        communications_only=True,
+    ),
+    WorkflowViewSpec(
+        "actions",
+        "Actions and prompts",
+        "actions and prompts",
+        detail="actions",
+        aliases=("actions and prompts",),
+    ),
+    WorkflowViewSpec(
+        "full",
+        "Complete workflow",
+        "complete workflow code",
+        detail="full",
+        aliases=("complete", "complete workflow"),
+    ),
+    WorkflowViewSpec(
+        "agent",
+        "One participant",
+        "one exact local projection",
+        aliases=("one participant",),
+        participants="one",
+    ),
+    WorkflowViewSpec(
+        "agents",
+        "Selected participants",
+        "selected-participant focus view",
+        aliases=("selected participants",),
+        participants="many",
+    ),
+)
+
+
+def workflow_view_spec(value: str) -> WorkflowViewSpec | None:
+    normalized = value.strip().casefold()
+    return next(
+        (
+            view
+            for view in WORKFLOW_VIEWS
+            if normalized == view.command or normalized in view.aliases
+        ),
+        None,
+    )
+
+
+def workflow_view_completions() -> tuple[tuple[str, str], ...]:
+    return tuple((view.command, view.description) for view in WORKFLOW_VIEWS)
 
 
 COMMANDS: tuple[CommandSpec, ...] = (

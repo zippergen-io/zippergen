@@ -508,15 +508,21 @@ result, so natural language never hides which operation was chosen. Common
 requests use a deterministic interpreter and therefore need no model, network,
 or API key.
 
-If prose clearly describes an application but does not match an operational
-command, Studio offers the safest useful interpretation. Before
+If unmatched declarative or imperative prose might describe an application,
+Studio offers the safest useful interpretation without requiring framework
+words such as ``workflow'', ``agent'', or ``participant''. Before
 \path{specification.md} exists it proposes \texttt{workflow create}; afterward
 it proposes \texttt{workflow refine}. It shows the exact proposal and asks
-before storing anything. Prose without both a design signal and an authoring
-intent still goes to the configured read-only interpreter, so a sentence about
-status or deployment cannot silently become a requirement. Short phrases are
-also contextual: \texttt{run it} means the selected workflow,
-\texttt{stop it} means the remembered deployment, and \texttt{start over}
+before storing anything. Questions and recognizable operational or
+troubleshooting requests remain on the command path. At the prompt, enter
+\texttt{command} instead of \texttt{y} to interpret the same sentence as a
+Studio operation without changing the specification. Explicit
+\texttt{ask TEXT} and \texttt{plan TEXT} also bypass the requirement offer.
+
+Short phrases are contextual: \texttt{run it} means the selected workflow and
+\texttt{stop it} means the remembered deployment. Plain \texttt{start over}
+asks whether the user means a new run, a discarded refinement, a Studio
+restart, or a fresh project design. The unambiguous \texttt{reset everything}
 proposes the recoverable fresh-design reset.
 
 The last example becomes \texttt{studio restart}. Because it replaces a
@@ -613,9 +619,10 @@ program directly; it does not invoke an LLM, shell script, workflow provider,
 or MCP server. A one-time choice can be supplied without changing the saved
 preference:
 
-Immediately before the editor starts, Studio prints the automatic project
-file, the effective editor and where that choice came from, and the instruction
-to save and exit to return. This is orientation, not another question.
+Immediately before the editor starts, Studio prints one table containing the
+automatic project file, the effective editor and where that choice came from,
+and the instruction to save and exit to return. This is orientation, not
+another question or a duplicate editor summary.
 
 \begin{lstlisting}[style=shell]
 workflow edit code --editor nano

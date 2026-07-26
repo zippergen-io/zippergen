@@ -66,26 +66,39 @@ def requirement_proposal(
 ) -> NaturalCommandPlan | None:
     """Offer unmatched design prose as explicit project intent."""
 
-    text = normalize_request(request)
+    raw = request.strip()
+    text = normalize_request(raw)
     words = text.split()
     if len(words) < 4:
         return None
-    if re.match(
-        r"^(?:how|what|where|when|why|show|inspect|check|status|help)\b",
+    if raw.endswith("?") or re.match(
+        r"^(?:how|what|where|when|why|who|which|show|inspect|check|status|"
+        r"help|can|could|would|will|do|does|did|is|are|am|was|were|"
+        r"should|tell|give|list|display|explain)\b",
         text,
     ):
         return None
-    design_signal = re.search(
-        r"\b(?:workflow|application|agent|participant|lifeline|writer|reviewer|"
-        r"approval|approver|requester|model|llm|retry|connector)\b",
+    if re.match(
+        r"^(?:select|choose|validate|run|resume|deploy|start|stop|restart|"
+        r"shut down|configure|assign|rename|reset|remove|discard|clean up|"
+        r"resolve)\b",
         text,
-    )
-    intent_signal = re.search(
-        r"\b(?:create|build|make|design|add|change|modify|require|should|must|"
-        r"i want|i need)\b",
+    ) and re.search(
+        r"\b(?:workflow|project|deployment|deployed|service|run|model|provider|"
+        r"configuration|editor|studio|pending|refinement|amendment|everything|"
+        r"question)\b",
         text,
-    )
-    if not design_signal or not intent_signal:
+    ):
+        return None
+    if re.search(
+        r"\b(?:error|failed|failing|broken|not working|timed out|timeout|"
+        r"crashed|cannot|can't|won't)\b",
+        text,
+    ) and re.search(
+        r"\b(?:zippergen|studio|codex|claude|deployment|command|installation|"
+        r"connection|endpoint|provider|editor|terminal)\b",
+        text,
+    ):
         return None
     action = "refine" if has_specification else "create"
     noun = "refinement" if has_specification else "initial specification"
@@ -190,7 +203,19 @@ def deterministic_plan(
             "deterministic",
         )
 
-    if text in {"start over", "start the project over", "reset everything"}:
+    if text == "start over":
+        return NaturalCommandPlan(
+            "The requested reset scope is ambiguous.",
+            (),
+            "deterministic",
+            clarification=(
+                "Do you mean start a new workflow run, discard the pending "
+                "refinement, restart Studio, or archive the complete project "
+                "design with 'project reset fresh'?"
+            ),
+        )
+
+    if text in {"start the project over", "reset everything"}:
         return NaturalCommandPlan(
             "Archive the current design cycle and start fresh.",
             ("project reset fresh",),

@@ -1581,6 +1581,8 @@ def test_studio_create_opens_automatic_specification_and_prepares_task(
     assert "Workflow specification" in rendered
     assert "/usr/bin/micro" in rendered
     assert "save and exit the editor to continue in Studio" in rendered
+    assert output.count("Workflow specification") == 1
+    assert "Editor" not in output
 
 
 def test_studio_create_keeps_guide_when_no_requirements_are_written(

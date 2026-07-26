@@ -71,6 +71,8 @@ implement`, the guided `workflow review`, and `workflow accept`.
 Plain `help` shows that short path and the three themes; `help all` prints the
 complete exact reference. Command metadata is declared once and reused for
 help, completion, natural-language permissions, and risk classification.
+Workflow-view names, labels, aliases, rendering options, and completion
+descriptions likewise come from one view registry.
 
 After updating an editable ZipperGen checkout in another terminal, enter
 `studio restart` to replace the current Studio process and import the updated
@@ -306,16 +308,21 @@ read-only and clear reversible operations directly, and asks before execution
 or destructive operations. `plan TEXT` forces preview-only interpretation,
 while `ask TEXT` explicitly requests interpretation and execution.
 
-Unmatched prose that clearly describes an application is handled specially.
-Before a specification exists, Studio offers to treat it as `workflow create`;
-afterward, it offers `workflow refine`. The exact proposed command is displayed
-and requires confirmation. Other unmatched prose still uses the configured
-read-only CLI fallback, so an operational sentence is never silently added to
-the specification.
+Unmatched declarative or imperative prose is handled as a possible application
+requirement without requiring words such as “workflow”, “agent”, or
+“participant”. Before a specification exists, Studio offers to treat it as
+`workflow create`; afterward, it offers `workflow refine`. Questions and
+recognizable operational or troubleshooting requests stay on the command path.
+The exact proposed command is displayed and requires confirmation. At the
+prompt, enter `command` instead of `y` to interpret the same text as a Studio
+operation without changing the specification. Explicit `ask TEXT` and
+`plan TEXT` also bypass the requirement offer.
 
 Ambiguous short phrases are interpreted in context: `run it` means the selected
-workflow, `stop it` means the remembered deployment, and `start over` proposes
-a recoverable fresh-design reset. Explicit deployment verbs with a name are
+workflow and `stop it` means the remembered deployment. Plain `start over`
+asks whether the user means a new run, discarded refinement, Studio restart,
+or fresh project design; the explicit phrase `reset everything` proposes the
+recoverable fresh-design reset. Explicit deployment verbs with a name are
 recognized as commands only when that deployment exists or is remembered.
 
 `settings` shows preferences shared by every local ZipperGen project:

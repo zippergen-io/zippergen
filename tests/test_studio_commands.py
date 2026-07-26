@@ -1,10 +1,13 @@
 from zippergen.studio_commands import (
     COMMANDS,
+    WORKFLOW_VIEWS,
     command_spec,
     full_help,
     natural_command_catalog,
     subcommand_completions,
     top_level_completions,
+    workflow_view_completions,
+    workflow_view_spec,
 )
 
 
@@ -33,3 +36,18 @@ def test_command_registry_owns_risk_and_natural_language_catalog():
     assert "workflow discard" in catalog
     assert "studio doctor" in catalog
     assert "\n- exit" not in catalog
+
+
+def test_workflow_view_registry_owns_commands_labels_aliases_and_completion():
+    assert [name for name, _description in workflow_view_completions()] == [
+        view.command for view in WORKFLOW_VIEWS
+    ]
+    communications = workflow_view_spec("communications only")
+    complete = workflow_view_spec("Complete workflow")
+    one = workflow_view_spec("one participant")
+    many = workflow_view_spec("selected participants")
+    assert communications is not None and communications.command == "communications"
+    assert complete is not None and complete.command == "full"
+    assert one is not None and one.participants == "one"
+    assert many is not None and many.participants == "many"
+    assert workflow_view_spec("not-a-view") is None
