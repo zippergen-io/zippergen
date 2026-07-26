@@ -2893,7 +2893,9 @@ def test_studio_manages_a_store_without_manual_paths(tmp_path):
 
 
 def test_studio_guides_approval_in_the_selected_store(tmp_path):
-    studio, workspace, output = _studio(tmp_path, responses=["y"])
+    studio, workspace, output = _studio(tmp_path)
+    prompts: list[str] = []
+    studio.input = lambda prompt: prompts.append(prompt) or "y"
     studio.execute("store create approvals")
     store_path = Path(str(workspace.load()["current_store"]))
     from zippergen.store import ensure_human_task, load_human_task, open_store
@@ -2911,10 +2913,21 @@ def test_studio_guides_approval_in_the_selected_store(tmp_path):
             "kind": "confirm",
             "output": "approved",
             "output_type": "bool",
+            "submit_label": "Approve",
+            "cancel_label": "Revise",
+            "rendered": {
+                "instruction": "Approve this draft?",
+                "context": (
+                    "Draft:\nCandidate answer\n\n"
+                    "Automated reviewer notes:\nMissing citation."
+                ),
+                "prefill": None,
+            },
         },
     )
     connection.close()
 
+    studio.execute("store tasks")
     studio.execute("store approve")
 
     connection = open_store(str(store_path))
@@ -2923,6 +2936,20 @@ def test_studio_guides_approval_in_the_selected_store(tmp_path):
     assert task is not None
     assert task["status"] == "done"
     assert task["result"] == {"approved": True}
+    assert sum(line == "Human decision" for line in output) == 2
+    assert sum("Approve this draft?" in line for line in output) == 2
+    assert sum("Candidate answer" in line for line in output) == 2
+    assert sum("Missing citation." in line for line in output) == 2
+    assert prompts == ["Decision — Approve or Revise? [y/n]: "]
+    context_index = max(
+        index for index, line in enumerate(output) if "Missing citation." in line
+    )
+    completed_index = next(
+        index
+        for index, line in enumerate(output)
+        if "Completed human task review-1" in line
+    )
+    assert context_index < completed_index
     assert any("Completed human task review-1" in line for line in output)
 
 
@@ -3045,14 +3072,136 @@ def test_studio_deployment_show_separates_service_run_and_store(
     )
     monkeypatch.setattr("zippergen.serve._doctor_checks", lambda *a, **k: [])
 
+    studio.execute("deployment")
+
+    assert any(line == "Deployments" for line in output)
+    assert any("reviewed-answer" in line for line in output)
+    output.clear()
     studio.execute("deployment show reviewed-answer")
 
     assert any(line == "Deployment state" for line in output)
     assert any("Bundle" in line and "installed" in line for line in output)
     assert any("Service" in line and "last exit code 1" in line for line in output)
     assert any("Run" in line and "never reached durable execution" in line for line in output)
-    assert any("Store" in line and "missing" in line for line in output)
+    assert any("Store" in line and "not created yet" in line for line in output)
     assert any("Cause" in line and "MISTRAL_API_KEY is not set" in line for line in output)
+
+
+def test_studio_operates_human_tasks_through_the_deployment(
+    tmp_path,
+    monkeypatch,
+):
+    studio, workspace, output = _studio(tmp_path)
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(workspace.home))
+    deployments = workspace.home / "deployments"
+    deployments.mkdir(parents=True)
+    bundle = workspace.home / "apps" / "reviewed-answer" / "version"
+    bundle.mkdir(parents=True)
+    (bundle / "dual.py").write_text(TWO_LLM_PARTICIPANT_SOURCE)
+    store = workspace.home / "runs" / "reviewed-answer.sqlite"
+    store.parent.mkdir(parents=True)
+    log = workspace.home / "logs" / "reviewed-answer.log"
+    profile = {
+        "name": "reviewed-answer",
+        "project_root": str(workspace.root),
+        "workflow": "dual.py:sample",
+        "cwd": str(bundle),
+        "bundle": str(bundle),
+        "store": str(store),
+        "log": str(log),
+        "llm": "mock",
+        "llms": {
+            "Writer": "local:qwen2.5:7b",
+            "Reviewer": "mistral:mistral-small-latest",
+        },
+    }
+    (deployments / "reviewed-answer.json").write_text(json.dumps(profile))
+
+    from zippergen.store import ensure_human_task, load_human_task, open_store
+
+    connection = open_store(str(store))
+    ensure_human_task(
+        connection,
+        task_id="review-1",
+        role="HumanApprover",
+        locator=[0],
+        action="approve_answer",
+        input_hash=None,
+        inputs={
+            "draft": "Candidate answer",
+            "concerns": "Missing citation.",
+        },
+        spec={
+            "kind": "confirm",
+            "output": "approved",
+            "output_type": "bool",
+            "submit_label": "Approve",
+            "cancel_label": "Revise",
+            "rendered": {
+                "instruction": "Approve this draft?",
+                "context": (
+                    "Draft:\nCandidate answer\n\n"
+                    "Automated reviewer notes:\nMissing citation."
+                ),
+                "prefill": None,
+            },
+        },
+    )
+    connection.close()
+    monkeypatch.setattr(
+        "zippergen.serve._deployment_service_status",
+        lambda _name: {
+            "state": "running",
+            "detail": "service is running",
+        },
+    )
+    monkeypatch.setattr("zippergen.serve._doctor_checks", lambda *a, **k: [])
+
+    studio.execute("deployment show reviewed-answer")
+
+    assert any(
+        "Store" in line and "exists" in line and "pending" in line
+        for line in output
+    )
+    models = next(line for line in output if "Models" in line)
+    assert "Writer=local:qwen2.5:7b" in models
+    assert "Reviewer=mistral:mistral-small-latest" in models
+    assert "mock" not in models
+    assert any("deployment tasks" in line for line in output)
+    assert _completions(studio, "deployment tasks r") == [
+        "reviewed-answer"
+    ]
+
+    output.clear()
+    studio.execute("current")
+    assert any(
+        "Deployment store" in line and "reviewed-answer" in line
+        for line in output
+    )
+
+    output.clear()
+    studio.execute("deployment tasks reviewed-answer")
+
+    assert any("Candidate answer" in line for line in output)
+    assert any("Missing citation." in line for line in output)
+    assert any("deployment approve reviewed-answer" in line for line in output)
+    assert workspace.load()["last_deployment"] == "reviewed-answer"
+    assert workspace.load()["current_store"] == str(store)
+
+    prompts: list[str] = []
+    studio.input = lambda prompt: prompts.append(prompt) or "y"
+    output.clear()
+    studio.execute("deployment approve reviewed-answer")
+
+    connection = open_store(str(store))
+    task = load_human_task(connection, "review-1")
+    connection.close()
+    assert task is not None
+    assert task["status"] == "done"
+    assert task["result"] == {"approved": True}
+    assert prompts == ["Decision — Approve or Revise? [y/n]: "]
+    assert any("Candidate answer" in line for line in output)
+    assert list((workspace.home / "runs").glob("*.sqlite")) == [store]
 
 
 def test_studio_deploys_current_workflow_and_remembers_name(tmp_path, monkeypatch):

@@ -444,11 +444,14 @@ store trace
 missing, waiting, and completed stores. \texttt{store use NUMBER} selects one
 when several exist; the short \texttt{show}, \texttt{tasks}, and
 \texttt{approve}, and \texttt{trace} forms then use that selection. With one
-pending task, bare \texttt{store approve} selects it and asks for the human
-response; with several, Studio opens a numbered selector. Stores are normally created by
-\texttt{run} or \texttt{deploy}; beginners do not need
-\texttt{store create}. Deletion is recoverable and refuses stores used by an
-active deployment.
+pending task, bare \texttt{store approve} selects it automatically; with
+several, Studio opens a numbered selector. Before accepting any answer, Studio
+shows the stored instruction and complete rendered context---for this example,
+the draft and automated reviewer notes---together with the meaning of yes and
+no. \texttt{store tasks} shows the same evidence while listing pending
+decisions. Stores are normally created by \texttt{run} or \texttt{deploy};
+beginners do not need \texttt{store create}. Deletion is recoverable and
+refuses stores used by an active deployment.
 
 \section{Review and accept assistant-generated work}
 
@@ -544,14 +547,19 @@ When the readiness checks are acceptable:
 \begin{lstlisting}[style=shell]
 deployment start
 deployment show
-store tasks
-store approve
+deployment tasks
+deployment approve
 deployment logs
 deployment stop
 \end{lstlisting}
 
-The finite workflow should reach a waiting human task. The deployment store
-is selected automatically, so \texttt{store tasks} needs no path.
+The finite workflow should reach a waiting human task. Each named deployment
+owns one stable logical store, so normal operation never requires selecting or
+copying a store. \texttt{deployment tasks} displays the proposed draft,
+reviewer notes, instruction, and decision labels.
+\texttt{deployment approve} repeats that evidence immediately before asking
+for the decision; an unseen draft is never presented for blind approval.
+\texttt{store} remains available for development runs and advanced recovery.
 \texttt{deployment stop} prevents the tutorial service from being supervised
 indefinitely; it preserves the deployment profile, bundle, log, and durable
 store. If no supported macOS or Linux user service manager is available, the

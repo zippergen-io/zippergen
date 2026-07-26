@@ -1057,8 +1057,13 @@ enter \texttt{store use NUMBER} once; \texttt{store show},
 \texttt{store tasks}, \texttt{store approve}, \texttt{store trace}, and
 \texttt{store path} then use that selection. Bare \texttt{store approve}
 selects the sole pending task automatically or opens a numbered selector when
-there are several. A run or deployment normally creates its store automatically;
-\texttt{store create NAME} is an advanced convenience, not a prerequisite.
+there are several. \texttt{store tasks} renders each task's instruction and
+decision context, and \texttt{store approve} repeats the complete context
+immediately before collecting a response. For the reviewed-answer workflow,
+that context contains the proposed draft and automated reviewer notes, so the
+human never approves an opaque identifier. A run or deployment normally
+creates its store automatically; \texttt{store create NAME} is an advanced
+convenience, not a prerequisite.
 The ownership column deliberately says \texttt{run} instead of
 repeating the long run identifier already used as the store name. Exact owner
 IDs and paths remain available through \texttt{store show} and
@@ -1562,8 +1567,8 @@ enter these one at a time:
 \begin{lstlisting}[style=shell]
 deployment start
 deployment show
-store tasks
-store approve
+deployment tasks
+deployment approve
 deployment logs
 deployment restart
 deployment show
@@ -1578,15 +1583,20 @@ operation before launchd/systemd is touched. Warnings remain informative and
 do not block startup. \texttt{deployment stop} is never subject to this gate.
 The process may need a few seconds to reach its first action; repeat
 \texttt{deployment show} once if necessary. The run/store rows should report
-\texttt{waiting} once durable human approval is pending. The deployment store
-is selected automatically, so \texttt{store tasks} needs no copied path.
+\texttt{waiting} once durable human approval is pending. Each deployment name
+owns one stable logical store, so normal deployment operation requires no
+store selection or copied path. \texttt{deployment tasks} shows the full
+stored instruction, draft, reviewer notes, and decision labels;
+\texttt{deployment approve} repeats them immediately before accepting yes or
+no. The generic \texttt{store} namespace remains available for development
+runs and advanced inspection, migration, and recovery.
 \texttt{deployment logs} shows the service output and returns;
 \texttt{deployment restart} deliberately proves that the same
 pending task survives a process restart. Then \texttt{deployment stop} prevents this
 finite tutorial workflow from being supervised indefinitely. Later chapters
-show foreground execution, task tokens, and notification adapters for actually
-answering the out-of-process approval. Stopping does not delete the profile,
-bundle, log, secrets, or store.
+show task tokens and notification adapters for delivering the same approval
+context through Telegram or another out-of-process channel. Stopping does not
+delete the profile, bundle, log, secrets, or store.
 The generated launchd/systemd service retries failures but does not relaunch a
 finite workflow after successful completion.
 
@@ -1695,7 +1705,10 @@ store approve  # select and answer a pending task
 store trace    # recent events in the selected store
 project reset  # choose fresh design, state-only reset, or cancel
 deploy         # explicitly enter guided named deployment
-deployment     # bundle, service, run, and store health
+deployment     # list named deployments
+deployment show [NAME] # bundle, service, run, and stable store
+deployment tasks [NAME] # pending decisions with complete context
+deployment approve [NAME] # review and answer a pending decision
 deployment doctor # detailed readiness checks
 deployment logs # recent service output
 deployment start # start the remembered installed service
@@ -2073,7 +2086,7 @@ intentional and authorized, enter:
 \begin{lstlisting}[style=shell]
 deployment start
 deployment show
-store tasks
+deployment tasks
 deployment logs
 deployment restart
 deployment show
@@ -2129,6 +2142,7 @@ Specification change & \texttt{workflow create} or
 \texttt{workflow refine} & Manually request a snapshot, assistant edit,
 validation, views, projections, and semantic diff. \\
 Deploy/operate & \texttt{deploy}, then \texttt{deployment show},
+\texttt{deployment tasks}, \texttt{deployment approve},
 \texttt{deployment logs}, \texttt{deployment restart},
 \texttt{deployment stop} & Named deployment commands,
 explicit options, profiles, and service-manager operations. \\
@@ -3898,7 +3912,7 @@ deployment doctor
 deployment show
 deployment start
 deployment show
-store tasks
+deployment tasks
 deployment logs
 deployment restart
 deployment show

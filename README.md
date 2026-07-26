@@ -1038,6 +1038,12 @@ deployment commands use the remembered name. `deployment show` reports four
 separate layers: immutable bundle, supervised process, workflow run, and
 SQLite store. A loaded service whose process repeatedly exits is reported as
 unhealthy rather than merely “active.”
+Bare `deployment` lists the project’s named deployments. Each deployment name
+owns one stable logical store, so pending decisions are handled directly with
+`deployment tasks [NAME]` and `deployment approve [NAME]`; normal deployment
+operation does not require `store use` or a SQLite path. The generic `store`
+namespace remains available for isolated development runs and advanced
+inspection, archival, migration, and recovery.
 Generated launchd/systemd services restart after failure, not after a
 successful finite workflow completion.
 Both `deployment start` and `deployment restart` rerun readiness checks before
@@ -1084,6 +1090,10 @@ store delete reviewed-answer
 Stores are normally created automatically by `run` or `deploy`; `store create
 NAME` is for the uncommon standalone case. Renaming is blocked while a
 referencing deployment is active and updates run/deployment references.
+`store tasks` renders the instruction and complete decision context persisted
+with every pending human task. `store approve` repeats that evidence
+immediately before collecting the response, so a human never has to approve an
+opaque task identifier.
 The list uses short ownership labels such as `run`; exact run IDs
 and paths remain available through `store show` and `store path`. Identifier
 and timestamp cells use a one-line ellipsis instead of breaking into

@@ -347,7 +347,7 @@ COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec(
         ("deployment",),
         "deployment",
-        "show bundle, service, run, and store health",
+        "list named deployed applications",
         "read-only",
     ),
     CommandSpec(
@@ -373,6 +373,18 @@ COMMANDS: tuple[CommandSpec, ...] = (
         "deployment logs [NAME]",
         "show deployment logs",
         "read-only",
+    ),
+    CommandSpec(
+        ("deployment", "tasks"),
+        "deployment tasks [NAME]",
+        "show pending decisions and their complete context",
+        "read-only",
+    ),
+    CommandSpec(
+        ("deployment", "approve"),
+        "deployment approve [NAME]",
+        "review and answer a pending deployment decision",
+        "execution",
     ),
     CommandSpec(
         ("deployment", "start"),
@@ -629,11 +641,10 @@ def concise_help() -> str:
   5. run
   6. deploy
 
-Four main areas:
+Three main areas:
   workflow    specify, implement, inspect, and validate
   models      configure, check, and assign models
-  deployment  operate installed applications
-  store       inspect durable state, tasks, and traces
+  deployment  operate installed applications and their durable state
 
 Start actions:
   run         start a managed development run
@@ -642,6 +653,7 @@ Start actions:
 Useful now:
   current          show context and the next action
   studio doctor    check editor and assistant readiness
+  store             advanced development-state and recovery tools
   help all         show every exact command
   exit             leave Studio
 

@@ -343,7 +343,17 @@ def _is_allowed_natural_plan_command(parts: list[str]) -> bool:
             return True
         return (
             lowered[0]
-            in {"list", "show", "doctor", "logs", "start", "restart", "stop"}
+            in {
+                "list",
+                "show",
+                "doctor",
+                "logs",
+                "tasks",
+                "approve",
+                "start",
+                "restart",
+                "stop",
+            }
             and len(args) <= 2
         )
     if command == "editor":
@@ -1157,7 +1167,16 @@ class Studio:
                 return list(_SUBCOMMAND_COMPLETIONS["deployment"])
             if (
                 args[0].lower()
-                in {"show", "doctor", "logs", "start", "restart", "stop"}
+                in {
+                    "show",
+                    "doctor",
+                    "logs",
+                    "tasks",
+                    "approve",
+                    "start",
+                    "restart",
+                    "stop",
+                }
                 and len(args) == 1
             ):
                 return self._deployment_completion_candidates()
@@ -5828,23 +5847,39 @@ class Studio:
                     ),
                 ]
             )
+        deployment = state.get("last_deployment")
+        deployment_store: str | None = None
+        if deployment:
+            try:
+                from zippergen.serve import _load_deployment_profile
+
+                deployment_profile = _load_deployment_profile(str(deployment))
+                deployment_store = str(deployment_profile.get("store") or "")
+            except (SystemExit, OSError, ValueError):
+                deployment_store = None
         current_store = state.get("current_store")
         if current_store:
+            store_label = (
+                "Deployment store"
+                if deployment_store
+                and Path(deployment_store).expanduser()
+                == Path(str(current_store)).expanduser()
+                else "Selected store"
+            )
             try:
                 record = self._store_record(str(current_store))
             except SystemExit:
                 runtime_rows.append(
-                    ("Selected store", f"missing — {current_store}", "warning")
+                    (store_label, f"missing — {current_store}", "warning")
                 )
             else:
                 runtime_rows.append(
                     (
-                        "Selected store",
+                        store_label,
                         f"{record.name} ({record.state}) — {record.path}",
                         "warning" if record.state == "missing" else None,
                     )
                 )
-        deployment = state.get("last_deployment")
         if deployment:
             from zippergen.serve import _deployment_service_status
 
@@ -8099,6 +8134,215 @@ class Studio:
             ],
         )
 
+    def _emit_human_task_detail(self, task: dict[str, object]) -> None:
+        """Render the evidence and expected response before a human decision."""
+
+        raw_spec = task.get("spec")
+        spec = raw_spec if isinstance(raw_spec, dict) else {}
+        raw_rendered = spec.get("rendered")
+        rendered = raw_rendered if isinstance(raw_rendered, dict) else {}
+        output_type = str(spec.get("output_type") or "str")
+        submit_label = str(spec.get("submit_label") or "Approve")
+        cancel_label = str(spec.get("cancel_label") or "Reject")
+        decision = (
+            f"{submit_label} (yes) / {cancel_label} (no)"
+            if output_type == "bool"
+            else f"provide {spec.get('output') or 'a response'} ({output_type})"
+        )
+        self._emit_table(
+            "Human decision",
+            [
+                ("Task", task.get("task_id") or "unknown", None),
+                ("Participant", task.get("role") or "unknown", None),
+                ("Action", task.get("action") or "unknown", None),
+                ("Decision", decision, "warning"),
+            ],
+        )
+
+        content_found = False
+        for title, key in (
+            ("Instruction", "instruction"),
+            ("Context", "context"),
+            ("Suggested response", "prefill"),
+        ):
+            value = rendered.get(key)
+            if value is None or str(value).strip() == "":
+                continue
+            content_found = True
+            self._emit_section_title(title)
+            for line in self._wrapped_lines(
+                value,
+                max(1, self._renderer.output_columns() - 2),
+            ):
+                self._emit(f"  {line}")
+            self._emit()
+
+        if not content_found:
+            inputs = task.get("inputs")
+            if isinstance(inputs, dict) and inputs:
+                self._emit_section_title("Inputs")
+                rendered_inputs = json.dumps(
+                    inputs,
+                    indent=2,
+                    sort_keys=True,
+                    default=str,
+                )
+                for line in rendered_inputs.splitlines():
+                    self._emit(f"  {line}")
+                self._emit()
+            else:
+                self._warning(
+                    "This task contains no rendered instruction, context, or inputs."
+                )
+                self._emit()
+
+    def _show_pending_tasks(
+        self,
+        record,
+        *,
+        deployment_name: str | None = None,
+    ) -> None:
+        if not record.exists:
+            raise SystemExit(f"Store does not exist yet: {record.path}")
+        from zippergen.serve import _load_human_tasks
+
+        tasks = cast(
+            list[dict[str, object]],
+            _load_human_tasks(str(record.path), status="pending"),
+        )
+        if not tasks:
+            self._emit_table(
+                "Pending human tasks",
+                [
+                    ("Store", record.name, None),
+                    ("Status", "none", "success"),
+                ],
+            )
+            return
+        self._emit_columns(
+            "Pending human tasks",
+            ("Task", "Participant", "Action", "Updated"),
+            [
+                (
+                    task["task_id"],
+                    task["role"],
+                    task["action"],
+                    self._store_updated(float(str(task["updated_at"]))),
+                )
+                for task in tasks
+            ],
+        )
+        for task in tasks:
+            self._emit_human_task_detail(task)
+        self._emit_next(
+            f"deployment approve {deployment_name}"
+            if deployment_name
+            else "store approve TASK_ID"
+        )
+
+    def _approve_pending_task(
+        self,
+        record,
+        args: list[str],
+        *,
+        deployment_name: str | None = None,
+    ) -> None:
+        if len(args) > 2:
+            raise SystemExit(
+                "Use store approve [TASK_ID] [yes|no|VALUE]."
+            )
+        if not record.exists:
+            raise SystemExit(f"Store does not exist yet: {record.path}")
+        from zippergen.store import load_human_task, open_store
+        from zippergen.serve import _store_status
+
+        pending = _store_status(str(record.path)).get(
+            "pending_human_tasks"
+        )
+        pending_ids = [
+            str(item.get("task_id"))
+            for item in pending
+            if isinstance(item, dict) and item.get("task_id")
+        ] if isinstance(pending, list) else []
+        if not args:
+            if not pending_ids:
+                raise SystemExit(
+                    f"No pending human tasks exist in {record.name}."
+                )
+            task_id = (
+                pending_ids[0]
+                if len(pending_ids) == 1
+                else str(
+                    self._select(
+                        "Pending human tasks",
+                        pending_ids,
+                        prompt="Select a task",
+                    )
+                )
+            )
+            supplied_value = ""
+        else:
+            task_id = args[0]
+            supplied_value = args[1] if len(args) == 2 else ""
+        connection = open_store(str(record.path))
+        try:
+            task = load_human_task(connection, task_id)
+        finally:
+            connection.close()
+        if task is None or task.get("status") != "pending":
+            raise SystemExit(
+                f"Pending human task not found: {task_id}. "
+                "Use 'deployment tasks' or 'store tasks'."
+            )
+        self._emit_human_task_detail(cast(dict[str, object], task))
+        spec = task.get("spec") or {}
+        output_type = (
+            str(spec.get("output_type") or "str")
+            if isinstance(spec, dict)
+            else "str"
+        )
+        value = supplied_value
+        if not value:
+            if output_type == "bool":
+                submit_label = str(spec.get("submit_label") or "Approve")
+                cancel_label = str(spec.get("cancel_label") or "Reject")
+                value = self.input(
+                    f"Decision — {submit_label} or {cancel_label}? [y/n]: "
+                ).strip()
+            else:
+                value = self.input(
+                    f"Response for {task['role']}.{task['action']}: "
+                ).strip()
+        lowered = value.casefold()
+        arguments = [
+            "approve",
+            "--store",
+            str(record.path),
+            "--task",
+            str(task["task_id"]),
+        ]
+        if output_type == "bool":
+            if lowered in {"y", "yes", "true", "approve", "approved"}:
+                arguments.append("--yes")
+            elif lowered in {"n", "no", "false", "reject", "rejected"}:
+                arguments.append("--no")
+            else:
+                raise SystemExit("Enter yes or no for this human decision.")
+        else:
+            if not value:
+                raise SystemExit("A response value is required.")
+            arguments.extend(["--value", value])
+        rc = self._run_project_cli(arguments)
+        if rc != 0:
+            raise SystemExit(
+                f"Could not complete human task {task['task_id']}."
+            )
+        self._success(f"Completed human task {task['task_id']}.")
+        self._show_pending_tasks(
+            record,
+            deployment_name=deployment_name,
+        )
+
     def manage_stores(self, args: list[str]) -> None:
         from zippergen.studio_stores import (
             active_store_deployments,
@@ -8145,133 +8389,11 @@ class Studio:
             if len(rest) > 1:
                 raise SystemExit("Use store tasks [NUMBER|NAME].")
             record = self._store_record(rest[0] if rest else None)
-            if not record.exists:
-                raise SystemExit(f"Store does not exist yet: {record.path}")
-            from zippergen.serve import _store_status
-
-            status = _store_status(str(record.path))
-            raw_tasks = status.get("pending_human_tasks")
-            tasks = (
-                cast(list[dict[str, object]], raw_tasks)
-                if isinstance(raw_tasks, list)
-                else []
-            )
-            if not tasks:
-                self._emit_table(
-                    "Pending human tasks",
-                    [
-                        ("Store", record.name, None),
-                        ("Status", "none", "success"),
-                    ],
-                )
-                return
-            self._emit_columns(
-                "Pending human tasks",
-                ("Task", "Participant", "Action", "Updated"),
-                [
-                    (
-                        task["task_id"],
-                        task["role"],
-                        task["action"],
-                        self._store_updated(float(str(task["updated_at"]))),
-                    )
-                    for task in tasks
-                ],
-            )
-            self._emit_next(
-                "store approve TASK_ID"
-            )
+            self._show_pending_tasks(record)
             return
         if action == "approve":
-            if len(rest) > 2:
-                raise SystemExit(
-                    "Use store approve [TASK_ID] [yes|no|VALUE]."
-                )
             record = self._store_record()
-            if not record.exists:
-                raise SystemExit(f"Store does not exist yet: {record.path}")
-            from zippergen.store import load_human_task, open_store
-
-            from zippergen.serve import _store_status
-
-            pending = _store_status(str(record.path)).get(
-                "pending_human_tasks"
-            )
-            pending_ids = [
-                str(item.get("task_id"))
-                for item in pending
-                if isinstance(item, dict) and item.get("task_id")
-            ] if isinstance(pending, list) else []
-            if not rest:
-                if not pending_ids:
-                    raise SystemExit(
-                        "No pending human tasks exist in the selected store."
-                    )
-                task_id = (
-                    pending_ids[0]
-                    if len(pending_ids) == 1
-                    else str(
-                        self._select(
-                            "Pending human tasks",
-                            pending_ids,
-                            prompt="Select a task",
-                        )
-                    )
-                )
-                supplied_value = ""
-            else:
-                task_id = rest[0]
-                supplied_value = rest[1] if len(rest) == 2 else ""
-            connection = open_store(str(record.path))
-            try:
-                task = load_human_task(connection, task_id)
-            finally:
-                connection.close()
-            if task is None or task.get("status") != "pending":
-                raise SystemExit(
-                    f"Pending human task not found: {task_id}. "
-                    "Use 'store tasks'."
-                )
-            spec = task.get("spec") or {}
-            output_type = (
-                str(spec.get("output_type") or "str")
-                if isinstance(spec, dict)
-                else "str"
-            )
-            value = supplied_value
-            if not value:
-                if output_type == "bool":
-                    value = self.input(
-                        f"Approve {task['role']}.{task['action']}? [y/n]: "
-                    ).strip()
-                else:
-                    value = self.input(
-                        f"Response for {task['role']}.{task['action']}: "
-                    ).strip()
-            lowered = value.casefold()
-            arguments = [
-                "approve",
-                "--store",
-                str(record.path),
-                "--task",
-                str(task["task_id"]),
-            ]
-            if output_type == "bool":
-                if lowered in {"y", "yes", "true", "approve", "approved"}:
-                    arguments.append("--yes")
-                elif lowered in {"n", "no", "false", "reject", "rejected"}:
-                    arguments.append("--no")
-                else:
-                    raise SystemExit("Enter yes or no for this human decision.")
-            else:
-                if not value:
-                    raise SystemExit("A response value is required.")
-                arguments.extend(["--value", value])
-            rc = self._run_project_cli(arguments)
-            if rc != 0:
-                raise SystemExit(f"Could not complete human task {task['task_id']}.")
-            self._success(f"Completed human task {task['task_id']}.")
-            self.manage_stores(["tasks"])
+            self._approve_pending_task(record, rest)
             return
         if action == "trace":
             if len(rest) > 1:
@@ -8869,6 +8991,22 @@ class Studio:
             "'deployment show NAME'."
         )
 
+    def _deployment_store_record(self, name: str):
+        from zippergen.serve import _load_deployment_profile
+
+        profile = _load_deployment_profile(name)
+        store = profile.get("store")
+        if not store:
+            raise SystemExit(
+                f"Deployment {name} has no durable store configured."
+            )
+        record = self._store_record(str(store))
+        self.workspace.update(
+            last_deployment=name,
+            current_store=str(record.path),
+        )
+        return record
+
     def show_deployments(self) -> None:
         from zippergen.serve import _deployment_service_status, _store_status
         from zippergen.studio_stores import deployment_profiles
@@ -8889,12 +9027,18 @@ class Studio:
             name = str(profile["name"])
             service = _deployment_service_status(name)
             store = _store_status(str(profile["store"]))
+            pending = store.get("pending_human_tasks")
+            pending_count = len(pending) if isinstance(pending, list) else 0
+            store_state = str(store["state"])
+            if pending_count:
+                noun = "task" if pending_count == 1 else "tasks"
+                store_state += f" · {pending_count} {noun}"
             rows.append(
                 (
                     "●" if name == remembered else "",
                     name,
                     service["state"],
-                    store["state"],
+                    store_state,
                     profile.get("workflow") or "—",
                 )
             )
@@ -8903,7 +9047,9 @@ class Studio:
             ("Current", "Deployment", "Service", "Store", "Workflow"),
             rows,
         )
-        self._emit_next("deployment show NAME · deployment logs NAME")
+        self._emit_next(
+            "deployment show NAME · deployment tasks NAME · deployment logs NAME"
+        )
 
     @staticmethod
     def _deployment_log_cause(profile: dict[str, object]) -> str | None:
@@ -8931,6 +9077,41 @@ class Studio:
             ):
                 return stripped[:300]
         return None
+
+    def _deployment_model_routes(self, profile: dict[str, object]) -> str:
+        """Describe effective LLM-active routes, omitting unused fallbacks."""
+
+        default = str(profile.get("llm") or "mock")
+        overrides = normalize_llm_overrides(profile.get("llms"))
+        workflow_ref = str(profile.get("workflow") or "")
+        cwd = Path(str(profile.get("cwd") or profile.get("bundle") or ""))
+        try:
+            from zippergen.serve import load_workflow_spec
+
+            module_ref, separator, workflow_name = workflow_ref.partition(":")
+            module_path = Path(module_ref).expanduser()
+            if not module_path.is_absolute():
+                module_path = cwd / module_path
+            target = str(module_path)
+            if separator:
+                target += f":{workflow_name}"
+            workflow, module = load_workflow_spec(target)
+            active = self._llm_action_lifelines(workflow, module)
+            if not active:
+                return "none; no LLM actions"
+            return " · ".join(
+                f"{participant}={overrides.get(participant, default)}"
+                for participant in active
+            )
+        except (Exception, SystemExit):
+            routes = [
+                f"{participant}={model}"
+                for participant, model in sorted(overrides.items())
+            ]
+            if routes:
+                routes.append(f"default fallback={default}")
+                return " · ".join(routes)
+            return f"default={default}"
 
     def show_deployment(self, args: list[str]) -> None:
         if len(args) > 1:
@@ -8981,15 +9162,21 @@ class Studio:
             "empty": "store initialized; no events",
             "invalid": "store cannot be read",
         }.get(str(store["state"]), str(store["summary"]))
-        selected_models = [
-            str(profile.get("llm") or "mock"),
-            *[
-                f"{participant}={model}"
-                for participant, model in sorted(
-                    normalize_llm_overrides(profile.get("llms")).items()
-                )
-            ],
-        ]
+        pending = store.get("pending_human_tasks")
+        pending_count = len(pending) if isinstance(pending, list) else 0
+        if store["state"] == "missing":
+            store_description = f"not created yet — {profile['store']}"
+        elif pending_count:
+            noun = "task" if pending_count == 1 else "tasks"
+            store_description = (
+                f"exists — {pending_count} pending human {noun} — "
+                f"{profile['store']}"
+            )
+        else:
+            store_description = (
+                f"exists — {store['state']} — {profile['store']}"
+            )
+        selected_models = self._deployment_model_routes(profile)
         missing_provider = next(
             (
                 provider
@@ -9010,7 +9197,7 @@ class Studio:
                 else "deployment logs"
             )
             if service["state"] == "restarting"
-            else "store tasks"
+            else "deployment tasks"
             if store["state"] == "waiting"
             else "deployment logs"
             if failures
@@ -9029,10 +9216,10 @@ class Studio:
                 ("Run", run_state, store_kind),
                 (
                     "Store",
-                    f"{store['state']} — {profile['store']}",
+                    store_description,
                     store_kind,
                 ),
-                ("Models", " · ".join(selected_models), None),
+                ("Models", selected_models, None),
                 (
                     "Cause",
                     cause or "no immediate failure detected",
@@ -9050,7 +9237,7 @@ class Studio:
 
     def manage_deployments(self, args: list[str]) -> None:
         if not args:
-            self.show_deployment([])
+            self.show_deployments()
             return
         action, *rest = args
         action = action.casefold()
@@ -9062,11 +9249,28 @@ class Studio:
         if action == "show":
             self.show_deployment(rest)
             return
+        if action in {"tasks", "approve"}:
+            if len(rest) > 1:
+                raise SystemExit(
+                    f"Use deployment {action} or deployment {action} NAME."
+                )
+            name = self._deployment_name(rest[0] if rest else None)
+            record = self._deployment_store_record(name)
+            if action == "tasks":
+                self._show_pending_tasks(record, deployment_name=name)
+            else:
+                self._approve_pending_task(
+                    record,
+                    [],
+                    deployment_name=name,
+                )
+            return
         if action in {"doctor", "logs", "start", "restart", "stop"}:
             self.deployment_action(action, rest)
             return
         raise SystemExit(
-            "Use deployment list, show, doctor, logs, start, restart, or stop."
+            "Use deployment list, show, doctor, logs, tasks, approve, start, "
+            "restart, or stop."
         )
 
     def deployment_action(self, action: str, args: list[str]) -> None:
