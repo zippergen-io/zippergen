@@ -360,6 +360,14 @@ specification and workflow semantics that you reviewed, then closes the
 implementation task. It does not validate, merge, or repair anything. A
 workflow may therefore be valid but not yet accepted. Studio displays the two
 states separately.
+
+If an existing workflow has no open implementation task---for example after
+upgrading a project accepted by an older Studio---the workflow still exists.
+\texttt{current} says \emph{Implementation task: none} while continuing to
+show the selected workflow. In that state, \texttt{workflow accept} offers a
+one-time baseline acceptance directly. It records the reviewed specification,
+semantics, and source snapshot without inventing a refinement and without
+running or deploying anything.
 \end{notebox}
 
 \section{Run, interrupt, and resume}

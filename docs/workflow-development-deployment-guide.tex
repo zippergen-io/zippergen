@@ -897,6 +897,16 @@ exact accepted pair as a private baseline and closes the current
 implementation. For a refinement it also archives and clears the pending
 request. Acceptance performs no merge and does not replace validation.
 
+The dashboard field is deliberately named \emph{Implementation task}.
+\emph{None} there means no create/refine handoff is open; it does not mean the
+selected Python workflow is missing. When a hand-written, imported, or older
+already-completed project has a selected workflow and canonical specification
+but no task, \texttt{workflow accept} offers direct baseline acceptance. It
+shows technical validity separately, displays divergence from any older
+baseline, captures source-file drift, and records the current reviewed
+snapshot without creating a dummy refinement. Repeating the command with no
+changes reports that the baseline already matches.
+
 Consequently, ``valid'' does not mean ``accepted.'' An accepted workflow can
 also drift later when its specification or source changes. Studio reports the
 accepted-review state separately in \texttt{current}, \texttt{workflow

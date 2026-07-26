@@ -542,7 +542,16 @@ questions:
 | Command | Question answered | What it records or changes |
 | --- | --- | --- |
 | `workflow validate` | Is the current Python workflow structurally valid, including every local projection and declared resource? | A technical result for the code being checked; it records no human approval and clears nothing. |
-| `workflow accept` | Have I reviewed and approved this specification, workflow semantics, and visible source? | A human-accepted intent/semantic baseline plus an immutable, content-hashed source snapshot and Git provenance; it closes the current implementation and, for a refinement, archives and clears the pending change. It does not merge files, validate, run, or deploy. |
+| `workflow accept` | Have I reviewed and approved this specification, workflow semantics, and visible source? | A human-accepted intent/semantic baseline plus an immutable, content-hashed source snapshot and Git provenance; it closes the current implementation task when one exists and, for a refinement, archives and clears the pending change. It does not merge files, validate, run, or deploy. |
+
+An implementation task and a workflow are not the same thing. `current` labels
+the former explicitly as `Implementation task`. After a task was already
+closed—or when adopting a hand-written, imported, or pre-acceptance-version
+workflow—`workflow accept` offers to record the selected workflow as the
+reviewed baseline directly. It shows the selected entry point, technical
+validation result, specification/semantic changes when an older baseline
+exists, and source-file drift. It does not require a dummy refinement and does
+not create or close a task. Repeating it when nothing changed is idempotent.
 
 Thus a workflow can be valid but not accepted, or accepted and later drift
 because its specification or code was edited. `current`, `workflow status`,

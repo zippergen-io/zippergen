@@ -1149,7 +1149,7 @@ class Studio:
                     self.workspace.current_workflow or "none",
                     None if self.workspace.current_workflow else "warning",
                 ),
-                ("Implementation", state, state_kind),
+                ("Implementation task", state, state_kind),
                 ("Accepted review", review_state, review_kind),
                 ("Next", next_action, None),
             ],
@@ -1549,6 +1549,185 @@ class Studio:
             rows.append(git_row)
         return rows
 
+    def _accepted_source_drift(
+        self,
+        accepted: dict[str, object],
+        current_files: list[tuple[str, str]],
+    ) -> list[str]:
+        source = accepted.get("accepted_source")
+        if not isinstance(source, dict):
+            return ["accepted source snapshot unavailable"]
+        raw_files = source.get("files")
+        if not isinstance(raw_files, list):
+            return ["accepted source manifest unavailable"]
+        accepted_hashes = {
+            str(value.get("path")): str(value.get("sha256"))
+            for value in raw_files
+            if isinstance(value, dict)
+            and value.get("path")
+            and value.get("sha256")
+        }
+        current_hashes: dict[str, str] = {}
+        for relative, _role in current_files:
+            path = (self.workspace.root / relative).resolve()
+            if path.is_file() and path.is_relative_to(self.workspace.root):
+                current_hashes[relative] = hashlib.sha256(
+                    path.read_bytes()
+                ).hexdigest()
+        changes = [
+            f"added {path}"
+            for path in sorted(current_hashes.keys() - accepted_hashes.keys())
+        ]
+        changes.extend(
+            f"removed {path}"
+            for path in sorted(accepted_hashes.keys() - current_hashes.keys())
+        )
+        changes.extend(
+            f"modified {path}"
+            for path in sorted(current_hashes.keys() & accepted_hashes.keys())
+            if current_hashes[path] != accepted_hashes[path]
+        )
+        return changes
+
+    def accept_selected_workflow_baseline(self, *, yes: bool) -> None:
+        """Accept an existing selected workflow without inventing a task."""
+
+        from zippergen.serve import _validate_workflow
+
+        current, workflow, module = self._current_context(
+            purpose="accept it as the reviewed baseline"
+        )
+        specification = self.workspace.specification()
+        if specification is None:
+            raise SystemExit(
+                "A canonical specification is required. Use 'workflow edit "
+                "spec', then review and accept the selected workflow."
+            )
+        validation = _validate_workflow(workflow, module)
+        comparison, changed, accepted_before = (
+            self._accepted_review_comparison(current, workflow, module)
+        )
+        current_files = self._workflow_file_records()
+        source_drift = (
+            self._accepted_source_drift(accepted_before, current_files)
+            if accepted_before is not None
+            else []
+        )
+        if (
+            comparison == "match"
+            and accepted_before is not None
+            and not source_drift
+        ):
+            self._emit_table(
+                "Workflow baseline already accepted",
+                [
+                    ("Workflow", current, "success"),
+                    (
+                        "Accepted",
+                        accepted_before.get("accepted_at") or "recorded",
+                        "success",
+                    ),
+                    (
+                        "Technical validation",
+                        "valid" if validation["valid"] else "invalid",
+                        "success" if validation["valid"] else "error",
+                    ),
+                    (
+                        "Meaning",
+                        "current specification, semantics, and reviewed source "
+                        "already match the accepted baseline",
+                        "info",
+                    ),
+                    *self._accepted_source_rows(accepted_before),
+                    ("Next", "current · deploy --no-start", None),
+                ],
+            )
+            return
+
+        if comparison == "diverged" and accepted_before is not None:
+            self._show_accepted_divergence(
+                accepted_before,
+                workflow,
+                module,
+            )
+        state = (
+            "replace the earlier accepted baseline"
+            if accepted_before is not None
+            else "create the first accepted baseline"
+        )
+        self._emit_table(
+            "Existing workflow acceptance",
+            [
+                ("Workflow", current, "success"),
+                ("Specification", "specification.md", "success"),
+                (
+                    "Technical validation",
+                    "valid" if validation["valid"] else "invalid",
+                    "success" if validation["valid"] else "error",
+                ),
+                (
+                    "Intent/semantics",
+                    (
+                        ", ".join(changed) + " changed"
+                        if changed
+                        else "no earlier accepted comparison"
+                        if comparison == "never"
+                        else "match the earlier accepted baseline"
+                    ),
+                    "warning" if changed else None,
+                ),
+                (
+                    "Source files",
+                    (
+                        "; ".join(source_drift)
+                        if source_drift
+                        else f"{len(current_files)} reviewed files"
+                    ),
+                    "warning" if source_drift else None,
+                ),
+                ("Action", state, "warning" if accepted_before else "info"),
+                (
+                    "Boundary",
+                    "accept records human approval and a private source "
+                    "snapshot; it does not validate, run, deploy, or restart",
+                    "info",
+                ),
+            ],
+        )
+        if not yes and not self._confirm_action(
+            "Accept the selected workflow as the reviewed baseline? [y/n]: ",
+            cancel_message=(
+                "Workflow baseline acceptance cancelled; nothing was changed."
+            ),
+        ):
+            return
+        accepted = self._record_accepted_review(None)
+        self._emit_table(
+            "Workflow baseline accepted",
+            [
+                ("Status", "human approval recorded", "success"),
+                ("Workflow", current, None),
+                (
+                    "Accepted baseline",
+                    f"recorded at {accepted['accepted_at']}",
+                    "success",
+                ),
+                (
+                    "Technical validation",
+                    "valid" if validation["valid"] else "invalid",
+                    "success" if validation["valid"] else "error",
+                ),
+                *self._accepted_source_rows(accepted),
+                (
+                    "Meaning",
+                    "no implementation task was created or closed; nothing "
+                    "was run or deployed",
+                    "info",
+                ),
+                ("Next", "current · deploy --no-start", None),
+            ],
+        )
+
     def review_workflow(self) -> None:
         """Guide the complete human-review loop without hiding any step."""
 
@@ -1735,12 +1914,15 @@ class Studio:
                     self.show_review_changes()
                 self.manage_spec(["reconcile", *rest])
             else:
-                if (
-                    show_accept_comparison
-                    and self.workspace.current_request() is not None
-                ):
-                    self.show_review_changes()
-                self.manage_task(["close", *rest])
+                request = self.workspace.current_request()
+                if request is None:
+                    self.accept_selected_workflow_baseline(
+                        yes=rest == ["--yes"]
+                    )
+                else:
+                    if show_accept_comparison:
+                        self.show_review_changes()
+                    self.manage_task(["close", *rest])
             return
         if action == "discard":
             self.manage_spec(["discard", *rest])
@@ -4301,11 +4483,12 @@ class Studio:
         if record is None:
             if action in {"show", "path", "close"}:
                 raise SystemExit(
-                    "No current implementation. Use workflow create or "
-                    "workflow refine to prepare one."
+                    "No current implementation task is open. A selected "
+                    "workflow may still exist; use 'current' to inspect it or "
+                    "'workflow accept' to record a reviewed baseline."
                 )
             self._emit_table(
-                "Workflow implementation",
+                "Workflow implementation task",
                 [
                     (
                         "Status",
@@ -4379,7 +4562,7 @@ class Studio:
                 module,
             )
         self._emit_table(
-            "Workflow implementation",
+            "Workflow implementation task",
             [
                 ("Status", state, state_kind),
                 ("Kind", record["kind"], None),
@@ -5045,7 +5228,7 @@ class Studio:
                     "warning" if pending is not None else None,
                 ),
                 (
-                    "Implementation",
+                    "Implementation task",
                     (
                         f"{request['request_id']} ({request['kind']}) — "
                         f"{task_state}; .zippergen/current-task.md"

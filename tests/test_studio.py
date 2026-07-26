@@ -551,7 +551,7 @@ def test_studio_workflow_commands_expose_one_implementation_and_private_history(
     output.clear()
 
     studio.execute("workflow status")
-    assert output[0] == "Workflow implementation"
+    assert output[0] == "Workflow implementation task"
     assert any(".zippergen/current-task.md" in line for line in output)
     assert any("assistant" in line for line in output)
 
@@ -1509,6 +1509,76 @@ def test_studio_workflow_accept_keeps_history_and_accepts_refinements(tmp_path):
     studio.refine_request("Require human approval.")
     with pytest.raises(SystemExit, match="workflow accept.*workflow discard"):
         studio.manage_task(["close", "--yes"])
+
+
+def test_studio_accepts_an_existing_selected_workflow_without_a_task(tmp_path):
+    studio, workspace, output = _studio(tmp_path, responses=["y"])
+    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    workspace.save_specification("Echo the request through Writer.")
+
+    studio.execute("workflow accept")
+
+    accepted = workspace.accepted_review("workflow.py:sample")
+    assert accepted is not None
+    assert accepted["request_id"] is None
+    assert workspace.current_request() is None
+    assert "Existing workflow acceptance" in output
+    assert "Workflow baseline accepted" in output
+    assert any(
+        "nothing was run or deployed" in line for line in output
+    )
+
+
+def test_studio_repeated_baseline_accept_is_idempotent(tmp_path):
+    studio, workspace, output = _studio(tmp_path)
+    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    workspace.save_specification("Echo the request through Writer.")
+    studio.execute("workflow accept --yes")
+    first = workspace.accepted_review("workflow.py:sample")
+    assert first is not None
+    first_source = first["accepted_source"]
+    assert isinstance(first_source, dict)
+    first_root = first_source["root"]
+    output.clear()
+
+    studio.execute("workflow accept")
+
+    second = workspace.accepted_review("workflow.py:sample")
+    assert second is not None
+    second_source = second["accepted_source"]
+    assert isinstance(second_source, dict)
+    assert second_source["root"] == first_root
+    assert output[0] == "Workflow baseline already accepted"
+
+
+def test_studio_can_reaccept_source_only_drift_without_a_dummy_refinement(
+    tmp_path,
+):
+    studio, workspace, output = _studio(tmp_path)
+    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    workspace.save_specification("Echo the request through Writer.")
+    studio.execute("workflow accept --yes")
+    first = workspace.accepted_review("workflow.py:sample")
+    assert first is not None
+    first_source = first["accepted_source"]
+    assert isinstance(first_source, dict)
+    first_root = first_source["root"]
+    source = workspace.root / "workflow.py"
+    source.write_text(source.read_text() + "\n# Reviewed documentation note.\n")
+    output.clear()
+
+    studio.execute("workflow accept --yes")
+
+    second = workspace.accepted_review("workflow.py:sample")
+    assert second is not None
+    second_source = second["accepted_source"]
+    assert isinstance(second_source, dict)
+    assert second_source["root"] != first_root
+    assert any(
+        "Source files" in line and "modified workflow.py" in line
+        for line in output
+    )
+    assert "Workflow baseline accepted" in output
 
 
 def test_studio_remembers_shows_and_resets_editor_preference(
@@ -2525,6 +2595,7 @@ def test_studio_current_is_a_complete_project_dashboard(tmp_path):
     assert any("Name" in line and "project" in line for line in output)
     assert any("Specification" in line and "ready" in line for line in output)
     assert any("Refinement" in line and "none" in line for line in output)
+    assert any("Implementation task" in line for line in output)
     assert any("Editor" in line and "automatic" in line for line in output)
     assert any("Selected" in line and "workflow.py:sample" in line for line in output)
     assert any("Name" in line and "sample" in line for line in output)
