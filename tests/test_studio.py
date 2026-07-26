@@ -3,6 +3,7 @@ import subprocess
 import time
 from io import BytesIO, StringIO
 from pathlib import Path
+from types import SimpleNamespace
 from urllib.error import HTTPError, URLError
 
 import pytest
@@ -3446,6 +3447,14 @@ def test_studio_run_accepts_an_llm_override(tmp_path, monkeypatch):
     studio, _workspace, _output = _studio(tmp_path)
     calls = []
     monkeypatch.setattr(
+        studio,
+        "_verify_model_spec",
+        lambda label, spec, for_save=False: SimpleNamespace(
+            kind="success",
+            message=f"{label}: {spec} is available.",
+        ),
+    )
+    monkeypatch.setattr(
         "zippergen.studio.run_dev",
         lambda workspace, **kwargs: calls.append(kwargs),
     )
@@ -4070,6 +4079,14 @@ def test_studio_model_profile_is_used_for_run_and_deploy(tmp_path, monkeypatch):
         lambda workspace, **kwargs: run_calls.append(kwargs),
     )
     monkeypatch.setattr(
+        studio,
+        "_verify_model_spec",
+        lambda label, spec, for_save=False: SimpleNamespace(
+            kind="success",
+            message=f"{label}: {spec} is available.",
+        ),
+    )
+    monkeypatch.setattr(
         "zippergen.serve.main",
         lambda arguments: cli_calls.append(arguments) or 0,
     )
@@ -4085,8 +4102,139 @@ def test_studio_model_profile_is_used_for_run_and_deploy(tmp_path, monkeypatch):
         "--llm",
         "mock",
         "--llm-for",
-        "Writer=claude:claude-sonnet-4-6",
+        "Writer=anthropic:claude-sonnet-4-6",
     ]
+
+
+def test_studio_run_checks_only_models_used_by_llm_participants(
+    tmp_path,
+    monkeypatch,
+):
+    studio, workspace, output = _studio(tmp_path)
+    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    workspace.save_model_configuration(
+        "local-writer",
+        {
+            "provider": "local",
+            "model": "qwen2.5:7b",
+            "spec": "local:qwen2.5:7b",
+            "check_status": "not_checked",
+        },
+    )
+    workspace.save_model_assignment_profile(
+        "workflow.py:sample",
+        default="mock",
+        lifelines={"Writer": "local-writer"},
+    )
+    checks: list[tuple[str, str]] = []
+    run_calls: list[dict[str, object]] = []
+
+    def verify(label, spec, *, for_save=False):
+        checks.append((label, spec))
+        return SimpleNamespace(
+            kind="success",
+            message=f"{label}: {spec} is available.",
+        )
+
+    monkeypatch.setattr(studio, "_verify_model_spec", verify)
+    monkeypatch.setattr(
+        "zippergen.studio.run_dev",
+        lambda workspace, **kwargs: run_calls.append(kwargs),
+    )
+
+    studio.execute("run")
+
+    assert checks == [("local-writer", "local:qwen2.5:7b")]
+    assert len(run_calls) == 1
+    assert any(line == "Run model checks" for line in output)
+    assert any(
+        "Writer" in line
+        and "local-writer" in line
+        and "local:qwen2.5:7b" in line
+        for line in output
+    )
+    assert not any(
+        line.strip().startswith("Writer") and "mock" in line
+        for line in output
+    )
+
+
+def test_studio_run_stops_before_inputs_when_a_used_model_is_unreachable(
+    tmp_path,
+    monkeypatch,
+):
+    studio, workspace, output = _studio(tmp_path)
+    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    workspace.save_provider_profile(
+        "local",
+        {
+            "kind": "local",
+            "base_url": "http://localhost:11434/v1",
+        },
+    )
+    workspace.save_model_configuration(
+        "local-writer",
+        {
+            "provider": "local",
+            "model": "qwen2.5:7b",
+            "spec": "local:qwen2.5:7b",
+            "check_status": "available",
+        },
+    )
+    workspace.save_model_assignment_profile(
+        "workflow.py:sample",
+        default="mock",
+        lifelines={"Writer": "local-writer"},
+    )
+    run_calls: list[dict[str, object]] = []
+
+    monkeypatch.setattr(
+        "zippergen.studio.request.urlopen",
+        lambda req, *, timeout: (_ for _ in ()).throw(
+            URLError("connection refused")
+        ),
+    )
+    monkeypatch.setattr(
+        "zippergen.studio.run_dev",
+        lambda workspace, **kwargs: run_calls.append(kwargs),
+    )
+
+    with pytest.raises(
+        SystemExit,
+        match="Run stopped before collecting inputs.*local-writer",
+    ):
+        studio.execute("run")
+
+    assert run_calls == []
+    assert any(line == "Run model checks" for line in output)
+    assert any("local-writer" in line and "not verified" in line for line in output)
+    assert any("connection refused" in line for line in output)
+    assert workspace.model_configurations()["local-writer"]["check_status"] == (
+        "unverified"
+    )
+
+
+def test_studio_run_reports_runtime_provider_failure_without_a_traceback(
+    tmp_path,
+    monkeypatch,
+):
+    studio, workspace, _output = _studio(tmp_path)
+    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    monkeypatch.setattr(
+        "zippergen.studio.run_dev",
+        lambda workspace, **kwargs: (_ for _ in ()).throw(
+            RuntimeError(
+                "Lifeline 'Writer' raised: Could not reach API: "
+                "connection refused"
+            )
+        ),
+    )
+
+    with pytest.raises(
+        SystemExit,
+        match=r"Run failed: Lifeline 'Writer'.*store was preserved.*resume",
+    ):
+        studio.execute("run")
 
 
 def test_studio_models_rejects_lifelines_without_llm_actions(tmp_path):

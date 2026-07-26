@@ -18,7 +18,7 @@ from zippergen.models import (
     selected_llm_specs,
 )
 from zippergen.rendering import TerminalRenderer
-from zippergen.semantic import semantic_snapshot
+from zippergen.semantic import semantic_snapshot, workflow_semantics
 from zippergen.syntax import Workflow
 from zippergen.workspace import Workspace
 
@@ -36,6 +36,27 @@ def semantic_fingerprint(workflow: Workflow, module: ModuleType) -> str:
         default=str,
     )
     return hashlib.sha256(payload.encode()).hexdigest()
+
+
+def active_llm_routes(
+    workflow: Workflow,
+    module: ModuleType,
+    default_spec: str,
+    overrides: dict[str, str] | None = None,
+) -> dict[str, str]:
+    """Return effective routes only for participants that invoke an LLM."""
+
+    routes = effective_llm_routes(workflow, default_spec, overrides)
+    active: list[str] = []
+    sites = workflow_semantics(workflow, module).get("action_sites") or []
+    if isinstance(sites, list):
+        for site in sites:
+            if not isinstance(site, dict) or site.get("kind") != "llm":
+                continue
+            name = str(site.get("lifeline"))
+            if name in routes and name not in active:
+                active.append(name)
+    return {name: routes[name] for name in active}
 
 
 def _deployment_input_fields(module: ModuleType) -> dict[str, DeploymentField]:
@@ -471,15 +492,28 @@ def run_dev(
     )
     workspace.update_run(selected_run_id, status="running", error=None)
     if renderer is not None:
+        run_rows: list[tuple[str, object, str | None]] = [
+            ("Status", "running", "success"),
+            ("Workflow", stored_spec, None),
+            ("Run", selected_run_id, None),
+            ("Store", store_path, None),
+        ]
+        routes = active_llm_routes(
+            workflow,
+            module,
+            selected_llm,
+            selected_llms,
+        )
+        if routes:
+            run_rows.extend(
+                (f"Model · {participant}", spec, None)
+                for participant, spec in routes.items()
+            )
+        else:
+            run_rows.append(("Models", "none; no LLM actions", None))
         renderer.table(
             "Development run",
-            [
-                ("Status", "running", "success"),
-                ("Workflow", stored_spec, None),
-                ("Run", selected_run_id, None),
-                ("Store", store_path, None),
-                ("Model", selected_llm, None),
-            ],
+            run_rows,
         )
 
     terminal_backend = make_cli_human_backend(

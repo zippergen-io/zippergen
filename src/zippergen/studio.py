@@ -2473,20 +2473,33 @@ class Studio:
             )
             profile = self._run_model_profile()
             default_model = profile.get("default")
-            run_dev(
-                self.workspace,
-                llm=(
-                    run_args[0]
-                    if run_args
-                    else str(default_model) if default_model else None
-                ),
-                llms=normalize_llm_overrides(profile.get("lifelines")),
-                assistant=assistant_backend,
-                interactive=True,
-                input_func=self.input,
-                output_func=self.output,
-                renderer=self._renderer,
+            selected_default = (
+                run_args[0]
+                if run_args
+                else str(default_model) if default_model else None
             )
+            self._preflight_run_models(
+                current,
+                workflow,
+                module,
+                default_override=run_args[0] if run_args else None,
+            )
+            try:
+                run_dev(
+                    self.workspace,
+                    llm=selected_default,
+                    llms=normalize_llm_overrides(profile.get("lifelines")),
+                    assistant=assistant_backend,
+                    interactive=True,
+                    input_func=self.input,
+                    output_func=self.output,
+                    renderer=self._renderer,
+                )
+            except RuntimeError as exc:
+                raise SystemExit(
+                    f"Run failed: {exc}. The durable store was preserved; "
+                    "restore the failed dependency, then use 'resume'."
+                ) from exc
         elif command == "resume":
             if args:
                 raise SystemExit("Studio 'resume' takes no arguments.")
@@ -6349,6 +6362,135 @@ class Studio:
             current,
             default=default_llm_spec(module),
         )
+
+    def _preflight_run_models(
+        self,
+        current: str,
+        workflow,
+        module,
+        *,
+        default_override: str | None = None,
+    ) -> None:
+        """Check exactly the named model configurations used by this run."""
+
+        active = self._llm_action_lifelines(workflow, module)
+        if not active:
+            self._emit_table(
+                "Run model checks",
+                [("Status", "not needed; no LLM actions", "success")],
+            )
+            return
+
+        assignments = self.workspace.model_assignment_profile(
+            current,
+            default=default_llm_spec(module),
+        )
+        configurations = self.workspace.model_configurations()
+        default_name = str(assignments["default"])
+        overrides = assignments.get("lifelines") or {}
+        assert isinstance(overrides, dict)
+
+        routes: list[tuple[str, str, str]] = []
+        for participant in active:
+            if participant in overrides:
+                configuration_name = str(overrides[participant])
+                configuration = configurations.get(configuration_name)
+                if configuration is None:
+                    raise SystemExit(
+                        f"Model configuration {configuration_name!r}, assigned "
+                        f"to {participant}, no longer exists."
+                    )
+                spec = str(configuration["spec"])
+            elif default_override is not None:
+                configuration_name = "run override"
+                spec = default_override
+            else:
+                configuration_name = default_name
+                configuration = configurations.get(configuration_name)
+                if configuration is None:
+                    raise SystemExit(
+                        f"Default model configuration {configuration_name!r} "
+                        "no longer exists."
+                    )
+                spec = str(configuration["spec"])
+            routes.append((participant, configuration_name, spec))
+
+        checks: dict[tuple[str, str], _ModelVerification] = {}
+        failures: list[str] = []
+        details: list[str] = []
+        checked_at = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+        for _participant, configuration_name, spec in routes:
+            key = (configuration_name, spec)
+            if key in checks:
+                continue
+            configuration = configurations.get(configuration_name)
+            try:
+                verification = self._verify_model_spec(
+                    configuration_name,
+                    spec,
+                    for_save=False,
+                )
+            except SystemExit as exc:
+                verification = _ModelVerification(
+                    "error",
+                    str(exc),
+                )
+            checks[key] = verification
+            if configuration is not None and configuration_name != "mock":
+                status = (
+                    "available"
+                    if verification.kind == "success"
+                    else "unavailable"
+                    if verification.kind == "error"
+                    else "unverified"
+                )
+                self.workspace.save_model_configuration(
+                    configuration_name,
+                    {
+                        **configuration,
+                        "check_status": status,
+                        "check_detail": verification.message[:240],
+                        "checked_at": checked_at,
+                    },
+                )
+            if verification.kind != "success":
+                failures.append(configuration_name)
+                details.append(verification.message)
+
+        rows: list[tuple[object, ...]] = []
+        for participant, configuration_name, spec in routes:
+            verification = checks[(configuration_name, spec)]
+            kind: StatusKind = (
+                "success" if verification.kind == "success" else "error"
+            )
+            status_text = {
+                "success": "available",
+                "error": "unavailable",
+                "warning": "not verified",
+            }[verification.kind]
+            status = f"{self._status_mark(kind)} {status_text}"
+            rows.append((participant, configuration_name, spec, status))
+        self._emit_columns(
+            "Run model checks",
+            ("Participant", "Configuration", "Model", "Status"),
+            rows,
+        )
+        if failures:
+            for detail in dict.fromkeys(details):
+                self._error(detail, indent=2)
+            unique = ", ".join(dict.fromkeys(failures))
+            next_step = (
+                "check the run override or run without it"
+                if failures[0] == "run override"
+                else f"run 'models config check {failures[0]}'"
+            )
+            raise SystemExit(
+                f"Run stopped before collecting inputs because {unique} "
+                "could not be verified. Restore the connection or configuration, "
+                f"then {next_step} or try 'run' again."
+            )
+        self._success("All models used by this run are reachable.")
+        self._emit()
 
     def _configuration_status_kind(
         self,

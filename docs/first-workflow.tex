@@ -388,6 +388,14 @@ Enter:
 run
 \end{lstlisting}
 
+Before asking for inputs, Studio checks the model configuration used by each
+participant containing an LLM action. It checks a shared configuration only
+once, stops before creating a run if an endpoint or model cannot be verified,
+and reports the configuration that needs attention. An unused default such as
+\texttt{mock} is neither checked nor presented as the run's model. The
+development-run summary instead lists the effective route for Writer and
+Reviewer separately.
+
 Studio validates the selected workflow and asks for its declared inputs. Press
 Enter to accept the default request, enter \texttt{3} for
 \texttt{max\_retries}, reject the first draft with \texttt{n}, and approve the

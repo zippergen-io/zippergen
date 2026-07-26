@@ -999,10 +999,19 @@ already checked.
 
 \subsubsection*{Step 7: make a durable mock run in one terminal}
 
-Enter \texttt{run}. Studio validates and asks for each workflow input:
+Enter \texttt{run}. Before asking for inputs, Studio checks every model
+configuration that is actually used by an LLM-active participant and performs
+technical workflow validation. A shared configuration is checked once. If a
+provider is unreachable or the configured model is absent, Studio stops before
+it creates the run and points to the relevant
+\texttt{models config check} command. The run summary shows one effective
+model route per LLM-active participant rather than only showing the default
+fallback.
 
 \begin{lstlisting}[style=shell]
 zippergen [reviewed_answer]> run
+Run model checks
+...
 Workflow reviewed_answer: valid
 Request to answer (str) ["Explain why the sky is blue in two sentences."]:
 Maximum revisions after the initial draft is rejected (int) [2]: 3

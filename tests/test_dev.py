@@ -154,6 +154,8 @@ def test_dev_uses_shared_renderer_when_invoked_by_studio(tmp_path):
     assert "Run completed" in output
     assert any("✓ Workflow tutorial_review validated" in line for line in output)
     assert any("✓ done" in line for line in output)
+    assert any("Model · Writer" in line for line in output)
+    assert not any(line.strip().startswith("Model  mock") for line in output)
     assert not any(line.startswith("Workflow tutorial_review:") for line in output)
 
 
