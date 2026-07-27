@@ -298,6 +298,7 @@ class AssistantAction:
     instructions_path: str | None = field(default=None, repr=False, compare=False)
     instructions_sha256: str = ""
     backend: str | None = None
+    access: str = "write"
     workspace: str | None = None
     timeout: float | None = None
     visible: bool = True

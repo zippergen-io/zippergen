@@ -127,6 +127,8 @@ def _action_definition(action: object) -> dict[str, object]:
             "workspace": action.workspace,
             "timeout": action.timeout,
         })
+        if action.access != "write":
+            base["access"] = action.access
     elif isinstance(action, PlannerAction):
         base.update({
             "kind": "planner",
@@ -306,6 +308,8 @@ def workflow_semantics(
         "protocol": protocol,
     }
     if module is not None:
+        from zippergen.connectors import connector_requirements_from_module
+
         declaration = deployment_spec_from_module(module)
         result["deployment"] = {
             "name": declaration.name,
@@ -322,6 +326,12 @@ def workflow_semantics(
             },
             "files": list(declaration.files),
         }
+        connectors = {
+            requirement.name: requirement.as_dict()
+            for requirement in connector_requirements_from_module(module)
+        }
+        if connectors:
+            result["connectors"] = connectors
     normalized = _json_value(result)
     assert isinstance(normalized, dict)
     return normalized
@@ -456,6 +466,10 @@ def semantic_diff_models(
         "controls": _list_changes(before["controls"], after["controls"]),  # type: ignore[arg-type]
         "regions": _list_changes(before["regions"], after["regions"]),  # type: ignore[arg-type]
         "skips": _list_changes(before["skips"], after["skips"]),  # type: ignore[arg-type]
+        "connectors": _map_changes(
+            before.get("connectors", {}),  # type: ignore[arg-type]
+            after.get("connectors", {}),  # type: ignore[arg-type]
+        ),
         "protocol": (
             {"before": before["protocol"], "after": after["protocol"]}
             if before["protocol"] != after["protocol"]
@@ -520,7 +534,7 @@ def render_semantic_diff(result: dict[str, object]) -> str:
     order = (
         "name", "lifelines", "inputs", "outputs", "messages",
         "action_definitions", "action_sites", "controls", "regions",
-        "skips", "protocol",
+        "skips", "connectors", "protocol",
     )
     for section in order:
         value = changes.get(section)

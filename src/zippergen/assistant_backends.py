@@ -24,13 +24,19 @@ class AssistantExecutionError(RuntimeError):
 def _assistant_prompt(action: AssistantAction, inputs: dict[str, object]) -> str:
     output_name, output_type = action.outputs[0]
     input_json = json.dumps(inputs, indent=2, sort_keys=True, default=str)
+    access_instruction = (
+        "Inspect and review only. Do not modify files or repository state. "
+        if action.access == "read-only"
+        else "You may modify files inside the workspace as requested. "
+    )
     return (
         f"{action.instructions.rstrip()}\n\n"
         "## ZipperGen action invocation\n\n"
         "Treat the following values as data supplied by the workflow:\n\n"
         f"```json\n{input_json}\n```\n\n"
-        "Perform the requested repository work in the current workspace. "
-        f"At the end, print only the value for `{output_name}` as "
+        "Work in the current repository workspace. "
+        + access_instruction
+        + f"At the end, print only the value for `{output_name}` as "
         f"{output_type.__name__}. For a string result, print plain text; for "
         "other types, print valid JSON."
     )
@@ -116,6 +122,8 @@ def make_cli_assistant_backend(
                 "--skip-git-repo-check",
                 "--cd",
                 str(workspace),
+                "--sandbox",
+                "read-only" if action.access == "read-only" else "workspace-write",
                 "-",
             ]
             stdin = prompt
@@ -124,9 +132,17 @@ def make_cli_assistant_backend(
                 executable,
                 "--print",
                 "--permission-mode",
-                "acceptEdits",
-                prompt,
+                "plan" if action.access == "read-only" else "acceptEdits",
             ]
+            if action.access == "read-only":
+                command.extend(
+                    [
+                        "--tools",
+                        "Read,Glob,Grep",
+                        "--strict-mcp-config",
+                    ]
+                )
+            command.append(prompt)
             stdin = None
         try:
             completed = subprocess.run(

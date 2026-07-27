@@ -82,6 +82,21 @@ zippergen_deployment = DeploymentSpec(
 )
 """
 
+CONNECTOR_SOURCE = WORKFLOW_SOURCE + """
+
+from zippergen import ConnectorRequirement
+
+zippergen_connectors = (
+    ConnectorRequirement(
+        name="human-approval",
+        kind="telegram",
+        participant="Writer",
+        capabilities=("notify", "approve"),
+        required=True,
+    ),
+)
+"""
+
 
 def _studio(tmp_path, responses=(), secret_responses=()):
     root = tmp_path / "project"
@@ -2725,6 +2740,128 @@ def test_studio_current_is_explicit_before_a_workflow_exists(tmp_path):
     assert any("Validation" in line and "⚠ not available" in line for line in output)
     assert any("Assignments" in line and "none" in line for line in output)
     assert any("Providers" in line and "none" in line for line in output)
+
+
+def test_studio_configures_checks_and_binds_a_telegram_connector(
+    tmp_path,
+    monkeypatch,
+):
+    studio, workspace, output = _studio(
+        tmp_path,
+        responses=["123456"],
+        secret_responses=["private-bot-token"],
+    )
+    (workspace.root / "workflow.py").write_text(CONNECTOR_SOURCE)
+    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+
+    def fake_request(_client, method, **params):
+        if method == "getMe":
+            return {"ok": True, "result": {"username": "zippergen_test"}}
+        assert method == "getChat"
+        assert params["chat_id"] == "123456"
+        return {"ok": True, "result": {"id": 123456}}
+
+    monkeypatch.setattr(
+        "zippergen.telegram_notify.TelegramBotClient.request",
+        fake_request,
+    )
+
+    studio.execute(
+        "deployment connectors setup telegram review-telegram"
+    )
+    studio.execute(
+        "deployment connectors bind human-approval review-telegram"
+    )
+
+    configuration = workspace.connector_configurations()["review-telegram"]
+    assert configuration["kind"] == "telegram"
+    assert configuration["check_status"] == "available"
+    assert workspace.connector_secret(
+        "review-telegram", "bot_token"
+    ) == "private-bot-token"
+    assert workspace.connector_binding_profile(
+        "workflow.py:sample"
+    ) == {"human-approval": "review-telegram"}
+    assert all("private-bot-token" not in line for line in output)
+    assert _completions(
+        studio, "deployment connectors bind human-approval "
+    ) == ["review-telegram"]
+
+    current, _workflow, module = studio._current_context()
+    arguments = studio._deployment_connector_arguments(
+        workflow_spec=current,
+        module=module,
+    )
+    snapshot = json.loads(
+        arguments[arguments.index("--connectors-json") + 1]
+    )
+    binding = snapshot["human-approval"]
+    assert binding["configuration"] == "review-telegram"
+    assert binding["chat_id"] == "123456"
+    assert binding["token_env"].startswith("ZIPPERGEN_CONNECTOR_")
+    secret_argument = arguments[arguments.index("--connector-secret") + 1]
+    assert secret_argument.endswith("=private-bot-token")
+
+
+def test_studio_notifies_the_stable_deployment_store_through_telegram(
+    tmp_path,
+    monkeypatch,
+):
+    studio, workspace, output = _studio(tmp_path)
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(workspace.home))
+    deployments = workspace.home / "deployments"
+    deployments.mkdir(parents=True)
+    store = workspace.home / "runs" / "reviewed.sqlite"
+    store.parent.mkdir(parents=True)
+    from zippergen.store import open_store
+
+    connection = open_store(str(store))
+    connection.close()
+    secrets_path = deployments / "reviewed.secrets.json"
+    secrets_path.write_text(
+        json.dumps({"ZIPPERGEN_CONNECTOR_REVIEW_TOKEN": "secret"})
+    )
+    profile = {
+        "name": "reviewed",
+        "project_root": str(workspace.root),
+        "workflow": "workflow.py:sample",
+        "cwd": str(workspace.root),
+        "store": str(store),
+        "log": str(workspace.home / "logs" / "reviewed.log"),
+        "secrets_file": str(secrets_path),
+        "connectors": {
+            "human-approval": {
+                "kind": "telegram",
+                "configuration": "review",
+                "chat_id": "123456",
+                "channel": "telegram",
+                "token_env": "ZIPPERGEN_CONNECTOR_REVIEW_TOKEN",
+            }
+        },
+    }
+    (deployments / "reviewed.json").write_text(json.dumps(profile))
+    observed: dict[str, object] = {}
+
+    def fake_send(notifier, **_kwargs):
+        observed["store"] = notifier.store_path
+        observed["chat_id"] = notifier.chat_id
+        return 1
+
+    monkeypatch.setattr(
+        "zippergen.telegram_notify.TelegramNotifier.send_pending_once",
+        fake_send,
+    )
+    monkeypatch.setattr(
+        "zippergen.telegram_notify.TelegramNotifier.poll_updates_once",
+        lambda _notifier, **_kwargs: 2,
+    )
+
+    studio.execute("deployment notify reviewed")
+
+    assert observed == {"store": str(store), "chat_id": "123456"}
+    assert any("Telegram approval connector" in line for line in output)
+    assert any("1 pending decision" in line for line in output)
+    assert any("2 response" in line for line in output)
 
 
 def test_studio_configures_api_and_local_providers_without_displaying_secrets(

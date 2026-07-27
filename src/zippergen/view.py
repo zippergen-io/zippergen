@@ -243,6 +243,7 @@ def _render_action(action: object, *, full: bool) -> list[str]:
             arguments = [f"instructions_file={action.instructions_file!r}"]
         if action.backend is not None:
             arguments.append(f"backend={action.backend!r}")
+        arguments.append(f"access={action.access!r}")
         if action.workspace is not None:
             arguments.append(f"workspace={action.workspace!r}")
         if action.timeout is not None:
@@ -522,10 +523,23 @@ def _overview(workflow: Workflow, module: ModuleType | None) -> str:
         "# actions: " + (", ".join(f"{_action_kind(action)}:{action.name}" for action in actions) or "(none)"),  # type: ignore[attr-defined]
     ]
     if module is not None:
+        from zippergen.connectors import connector_requirements_from_module
+
         spec = deployment_spec_from_module(module)
         lines.append(
             f"# deployment: {len(spec.fields)} fields, {len(spec.packages)} packages, "
             f"{len(spec.setup)} setup steps"
+        )
+        connectors = connector_requirements_from_module(module)
+        lines.append(
+            "# connectors: "
+            + (
+                ", ".join(
+                    f"{item.name}:{item.kind}@{item.participant}"
+                    for item in connectors
+                )
+                or "(none)"
+            )
         )
     lines.extend(["", "@workflow", _workflow_signature(workflow), "    ..."])
     return "\n".join(lines)
@@ -575,7 +589,13 @@ def workflow_view_data(
         "code": code,
     }
     if module is not None:
+        from zippergen.connectors import connector_requirements_from_module
+
         data["deployment"] = deployment_spec_from_module(module).as_dict()
+        data["connectors"] = [
+            item.as_dict()
+            for item in connector_requirements_from_module(module)
+        ]
     return data
 
 
@@ -653,6 +673,20 @@ def render_workflow(
         lines.extend(output_lines)
 
     if options.detail == "full" and module is not None:
+        from zippergen.connectors import connector_requirements_from_module
+
+        connectors = connector_requirements_from_module(module)
+        if connectors:
+            lines.extend([
+                "",
+                "# Connector requirements (logical; credentials are private)",
+                "zippergen_connectors = "
+                + pprint.pformat(
+                    tuple(item.as_dict() for item in connectors),
+                    sort_dicts=False,
+                    width=100,
+                ),
+            ])
         declaration = deployment_spec_from_module(module)
         if declaration.fields or declaration.packages or declaration.setup or declaration.files:
             lines.extend([

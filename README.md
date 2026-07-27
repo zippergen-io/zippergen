@@ -974,6 +974,7 @@ Maintainer = Lifeline("Maintainer")
 
 @assistant(
     instructions_file="prompts/update_release_notes.md",
+    access="write",
     workspace=".",
 )
 def update_release_notes(change: str) -> str: ...
@@ -1008,10 +1009,62 @@ Inside Studio, the corresponding command is
 `run --assistant codex` (or `run MODEL_SPEC --assistant claude`); the selection
 is stored with the durable run so `resume` uses the same backend.
 
+Assistant access is part of the reviewed workflow semantics. Declare
+`access="write"` for an implementation action and `access="read-only"` for a
+review action. ZipperGen maps this to Codex's `read-only`/`workspace-write`
+sandbox and Claude Code's `plan`/`acceptEdits` permission modes. The complete
+[Codex–Claude review-loop example](examples/codex_claude_review.py) keeps
+Claude read-only, lets Codex critically evaluate every review, requires
+approval before success, and returns an explicit failure after a bounded number
+of rounds.
+
 Assistant actions are external effects with their own semantic action kind. In
 SQLite mode a completed result is journaled and replayed without launching the
 assistant again. The requested file operation should still be restart-safe:
 the process could fail after files change but before the result is recorded.
+
+### Connector requirements and deployment bindings
+
+Workflows declare logical external capabilities without credentials:
+
+```python
+from zippergen import ConnectorRequirement
+
+zippergen_connectors = (
+    ConnectorRequirement(
+        name="human-approval",
+        kind="telegram",
+        participant="Reviewer",
+        capabilities=("notify", "approve"),
+        required=False,
+    ),
+)
+```
+
+Studio keeps named connector configurations and secrets in owner-private
+project state, then binds a logical requirement to a configuration:
+
+```text
+deployment connectors
+deployment connectors setup telegram
+deployment connectors check telegram-approvals
+deployment connectors bind human-approval telegram-approvals
+```
+
+The binding—not the token—is visible in workflow and deployment summaries.
+Guided deployment snapshots the binding and copies the token into the private
+deployment secret file. `deployment doctor`, `deployment start`, and
+`deployment restart` verify the configured Telegram bot and chat. Pending
+durable decisions can then be synchronized without a store path:
+
+```text
+deployment notify
+deployment tasks
+```
+
+`deployment notify` performs one synchronization pass: it sends unseen
+decisions and collects available replies. Run it again to collect a later
+reply. A supervised notification adapter is the next operational extension.
 
 The short
 [`docs/first-workflow.tex`](docs/first-workflow.tex) tutorial owns the first

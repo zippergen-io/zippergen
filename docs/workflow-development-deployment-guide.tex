@@ -532,10 +532,14 @@ human approval.
 - Requester initially owns `request` and `max_retries`.
 - Writer uses an LLM to draft and revise an answer.
 - Reviewer uses a separate LLM to assess every draft.
-- After the automated assessment, a human approves or rejects the draft.
+- HumanApprover owns the decision to approve or reject a draft after the
+  automated assessment.
 - A rejection sends the draft back to Writer while retries remain.
 - Never return an unapproved draft. Return an explicit failure after retry
   exhaustion.
+- Declare an optional logical Telegram connector named `human-approval` for
+  HumanApprover, with notification and approval capabilities. Terminal
+  approval must remain available when it is unbound.
 
 ## Inputs and operation
 
@@ -1709,6 +1713,10 @@ deployment     # list named deployments
 deployment show [NAME] # bundle, service, run, and stable store
 deployment tasks [NAME] # pending decisions with complete context
 deployment approve [NAME] # review and answer a pending decision
+deployment connectors # logical requirements, private configs, and bindings
+deployment connectors setup telegram [NAME] # configure and check a bot/chat
+deployment connectors bind REQUIREMENT CONFIGURATION
+deployment notify [NAME] # one Telegram send/receive synchronization pass
 deployment doctor # detailed readiness checks
 deployment logs # recent service output
 deployment start # start the remembered installed service
@@ -2429,6 +2437,7 @@ Maintainer = Lifeline("Maintainer")
 
 @assistant(
     instructions_file="prompts/update_release_notes.md",
+    access="write",
     workspace=".",
 )
 def update_release_notes(change: str) -> str: ...
@@ -2464,6 +2473,63 @@ A Studio run uses \texttt{run --assistant codex}; that selection is recorded so
 launching the assistant again.
 Nevertheless, make the requested file operation safe to resume: a crash can
 occur after files change but before the action result is recorded.
+
+Access is part of the action's reviewed semantics. Use
+\texttt{access="write"} for an implementation action and
+\texttt{access="read-only"} for a reviewer. ZipperGen maps the policy to the
+selected CLI's non-interactive sandbox or permission mode; a prompt that merely
+asks a reviewer not to edit is not the security boundary. The shipped
+\path{examples/codex_claude_review.py} workflow demonstrates a bounded
+Codex--Claude loop: Codex owns every repository change, Claude reviews
+read-only after each candidate, success requires Claude approval, and Codex
+produces the final read-only assessment.
+
+\subsection{Logical connectors and private deployment bindings}
+
+A workflow declares the external capability it needs without naming a local
+account or embedding a credential:
+
+\begin{lstlisting}[language=Python]
+from zippergen import ConnectorRequirement
+
+zippergen_connectors = (
+    ConnectorRequirement(
+        name="human-approval",
+        kind="telegram",
+        participant="Reviewer",
+        capabilities=("notify", "approve"),
+        required=False,
+    ),
+)
+\end{lstlisting}
+
+The declaration appears in full workflow views and semantic snapshots.
+Studio separately owns named machine-private configurations and binds them to
+the logical requirement:
+
+\begin{lstlisting}[style=shell]
+deployment connectors
+deployment connectors setup telegram
+deployment connectors check telegram-approvals
+deployment connectors bind human-approval telegram-approvals
+\end{lstlisting}
+
+Setup asks for the Telegram chat id and bot token, stores the token outside the
+repository, and checks both the bot identity and target chat. Guided deployment
+copies only a binding description into the ordinary profile and places the
+token in the owner-private deployment secret file. Start and restart rerun the
+live readiness check.
+
+\begin{lstlisting}[style=shell]
+deployment notify
+deployment tasks
+\end{lstlisting}
+
+\texttt{deployment notify} performs one synchronization pass against the
+deployment's unique store: unseen tasks are sent and available Telegram replies
+are consumed. Run it again to collect a reply that arrived later. Direct
+terminal approval remains available and an unbound optional connector never
+blocks the workflow.
 
 \section{Reference: prerequisites and installation details}
 \label{sec:install}

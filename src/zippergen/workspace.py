@@ -1489,6 +1489,8 @@ class Workspace:
             "model_profiles": {},
             "model_configurations": {},
             "providers": {},
+            "connector_configurations": {},
+            "connector_bindings": {},
             "updated_at": _timestamp(),
         }
 
@@ -1539,6 +1541,9 @@ class Workspace:
                 state.get("model_configurations") or {}
             ),
             "provider_profiles": len(state.get("providers") or {}),
+            "connector_configurations": len(
+                state.get("connector_configurations") or {}
+            ),
             "language_history": language_history,
             "language_learned": language_learned,
             "workspace_exists": self.directory.exists(),
@@ -1766,6 +1771,8 @@ class Workspace:
         state.setdefault("model_profiles", {})
         state.setdefault("model_configurations", {})
         state.setdefault("providers", {})
+        state.setdefault("connector_configurations", {})
+        state.setdefault("connector_bindings", {})
         return state
 
     def update(self, **changes: object) -> dict[str, Any]:
@@ -2449,6 +2456,145 @@ class Workspace:
             ),
             reverse=True,
         )
+
+    def connector_configurations(self) -> dict[str, dict[str, str]]:
+        """Return named, non-secret connector configurations."""
+
+        raw = self.load().get("connector_configurations") or {}
+        if not isinstance(raw, dict):
+            raise WorkspaceError(
+                "Workspace connector_configurations must be an object."
+            )
+        configurations: dict[str, dict[str, str]] = {}
+        for name, value in raw.items():
+            if not isinstance(value, dict):
+                raise WorkspaceError(
+                    f"Connector configuration {name!r} must be an object."
+                )
+            configurations[str(name)] = {
+                str(key): str(item)
+                for key, item in value.items()
+                if item is not None
+            }
+        return configurations
+
+    def save_connector_configuration(
+        self,
+        name: str,
+        values: dict[str, str],
+    ) -> dict[str, str]:
+        """Create or replace one owner-private connector configuration."""
+
+        normalized = name.strip()
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", normalized):
+            raise WorkspaceError(
+                "A connector configuration name must start with a letter or "
+                "digit and contain only letters, digits, '.', '_' or '-'."
+            )
+        kind = str(values.get("kind") or "").strip()
+        if not kind:
+            raise WorkspaceError("A connector configuration requires a kind.")
+        configurations = self.connector_configurations()
+        conflicting = next(
+            (
+                existing
+                for existing in configurations
+                if existing.casefold() == normalized.casefold()
+                and existing != normalized
+            ),
+            None,
+        )
+        if conflicting:
+            raise WorkspaceError(
+                f"Connector configuration {normalized!r} differs only by "
+                f"case from existing configuration {conflicting!r}."
+            )
+        configuration = {
+            str(key): str(value)
+            for key, value in values.items()
+            if value is not None
+        }
+        configurations[normalized] = configuration
+        self.update(connector_configurations=configurations)
+        return configuration
+
+    def connector_binding_profile(
+        self,
+        workflow_spec: str,
+    ) -> dict[str, str]:
+        """Return requirement-to-configuration bindings for one workflow."""
+
+        canonical = self.canonical_spec(workflow_spec, cwd=self.root)
+        raw = self.load().get("connector_bindings") or {}
+        if not isinstance(raw, dict):
+            raise WorkspaceError(
+                "Workspace connector_bindings must be an object."
+            )
+        profile = raw.get(canonical) or {}
+        if not isinstance(profile, dict):
+            raise WorkspaceError(
+                f"Connector bindings for {canonical!r} must be an object."
+            )
+        return {str(name): str(value) for name, value in profile.items()}
+
+    def bind_connector(
+        self,
+        workflow_spec: str,
+        requirement: str,
+        configuration: str,
+    ) -> dict[str, str]:
+        """Bind one logical workflow requirement to a named configuration."""
+
+        configurations = self.connector_configurations()
+        if configuration not in configurations:
+            raise WorkspaceError(
+                f"Connector configuration does not exist: {configuration}."
+            )
+        canonical = self.canonical_spec(workflow_spec, cwd=self.root)
+        state = self.load()
+        raw = state.get("connector_bindings") or {}
+        if not isinstance(raw, dict):
+            raise WorkspaceError(
+                "Workspace connector_bindings must be an object."
+            )
+        profiles = {
+            str(name): dict(value)
+            for name, value in raw.items()
+            if isinstance(value, dict)
+        }
+        profile = {
+            str(name): str(value)
+            for name, value in profiles.get(canonical, {}).items()
+        }
+        profile[str(requirement)] = configuration
+        profiles[canonical] = profile
+        self.update(connector_bindings=profiles)
+        return profile
+
+    @staticmethod
+    def connector_secret_name(configuration: str, field: str) -> str:
+        """Return an internal private-store key; never an environment name."""
+
+        return f"connector:{configuration}:{field}"
+
+    def connector_secret(
+        self,
+        configuration: str,
+        field: str,
+    ) -> str | None:
+        return self.load_secrets().get(
+            self.connector_secret_name(configuration, field)
+        )
+
+    def save_connector_secret(
+        self,
+        configuration: str,
+        field: str,
+        value: str,
+    ) -> None:
+        secrets = self.load_secrets()
+        secrets[self.connector_secret_name(configuration, field)] = value
+        self.save_secrets(secrets)
 
     def load_secrets(self) -> dict[str, str]:
         """Load private development secrets without copying them into state."""

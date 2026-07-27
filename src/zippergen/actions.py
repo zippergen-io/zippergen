@@ -296,6 +296,7 @@ def assistant(
     instructions: str | None = None,
     instructions_file: str | None = None,
     backend: str | None = None,
+    access: str = "write",
     workspace: str | None = None,
     timeout: float | None = None,
     visible: bool = True,
@@ -310,6 +311,9 @@ def assistant(
     ``backend`` may request ``"codex"`` or ``"claude"`` for this action.  When
     omitted, the runtime default selected with
     ``workflow.configure(assistant="...")`` or ``ZIPPERGEN_ASSISTANT`` is used.
+    ``access`` is ``"read-only"`` or ``"write"`` and is enforced through the
+    selected CLI's non-interactive permission mode.  Use read-only for review
+    and analysis actions that must not modify the workspace.
     ``workspace`` is a static path, relative to the configured project root.
     The decorated function's typed parameters become explicit dynamic inputs;
     its return annotation declares the single typed result.
@@ -322,6 +326,11 @@ def assistant(
     if backend is not None and backend not in {"codex", "claude"}:
         raise ValueError(
             f"@assistant backend must be 'codex' or 'claude', got {backend!r}."
+        )
+    if access not in {"read-only", "write"}:
+        raise ValueError(
+            "@assistant access must be 'read-only' or 'write', "
+            f"got {access!r}."
         )
     if timeout is not None and timeout <= 0:
         raise ValueError("@assistant timeout must be greater than zero.")
@@ -354,6 +363,7 @@ def assistant(
             instructions_path=str(path) if path is not None else None,
             instructions_sha256=hashlib.sha256(text.encode("utf-8")).hexdigest(),
             backend=backend,
+            access=access,
             workspace=workspace,
             timeout=timeout,
             visible=visible,

@@ -71,6 +71,7 @@ from zippergen.deployment import (
     DeploymentSpec,
     deployment_spec_from_module,
 )
+from zippergen.connectors import connector_requirements_from_module
 from zippergen.models import (
     effective_llm_routes,
     normalize_llm_overrides,
@@ -1023,7 +1024,12 @@ def _call_doctor_hook(
     return checks
 
 
-def _doctor_checks(name: str, *, include_systemd: bool = True) -> list[dict[str, object]]:
+def _doctor_checks(
+    name: str,
+    *,
+    include_systemd: bool = True,
+    live_connectors: bool = True,
+) -> list[dict[str, object]]:
     profile_path = _deployment_profile_path(name)
     checks: list[dict[str, object]] = []
     profile = _load_deployment_profile(name)
@@ -1197,6 +1203,95 @@ def _doctor_checks(name: str, *, include_systemd: bool = True) -> list[dict[str,
                 ))
 
     environment = _deployment_environment(profile)
+    connector_bindings = profile.get("connectors") or {}
+    if not isinstance(connector_bindings, dict):
+        checks.append(_doctor_check(
+            "fail",
+            "connector bindings",
+            "deployment connector bindings must be an object",
+        ))
+        connector_bindings = {}
+    if module is not None:
+        try:
+            connector_requirements = connector_requirements_from_module(module)
+        except (TypeError, ValueError) as exc:
+            checks.append(_doctor_check(
+                "fail",
+                "connector requirements",
+                str(exc),
+            ))
+            connector_requirements = ()
+        for requirement in connector_requirements:
+            raw_binding = connector_bindings.get(requirement.name)
+            if raw_binding is None:
+                checks.append(_doctor_check(
+                    "fail" if requirement.required else "warn",
+                    f"connector {requirement.name}",
+                    "required binding is missing"
+                    if requirement.required
+                    else "optional binding is not configured",
+                ))
+                continue
+            if not isinstance(raw_binding, dict):
+                checks.append(_doctor_check(
+                    "fail",
+                    f"connector {requirement.name}",
+                    "binding must be an object",
+                ))
+                continue
+            kind = str(raw_binding.get("kind") or "")
+            if kind != requirement.kind:
+                checks.append(_doctor_check(
+                    "fail",
+                    f"connector {requirement.name}",
+                    f"requires {requirement.kind}; deployment has {kind or 'none'}",
+                ))
+                continue
+            if kind == "telegram":
+                token_env = str(raw_binding.get("token_env") or "")
+                token = environment.get(token_env)
+                chat_id = str(raw_binding.get("chat_id") or "")
+                if not token or not chat_id:
+                    checks.append(_doctor_check(
+                        "fail",
+                        f"connector {requirement.name}",
+                        "Telegram token or chat id is missing",
+                    ))
+                    continue
+                if not live_connectors:
+                    checks.append(_doctor_check(
+                        "ok",
+                        f"connector {requirement.name}",
+                        (
+                            f"Telegram chat {chat_id} is configured; live "
+                            "availability was not checked"
+                        ),
+                    ))
+                    continue
+                try:
+                    from zippergen.telegram_notify import TelegramBotClient
+
+                    client = TelegramBotClient(token, timeout=5)
+                    client.request("getMe")
+                    client.request("getChat", chat_id=chat_id)
+                except Exception as exc:
+                    checks.append(_doctor_check(
+                        "fail",
+                        f"connector {requirement.name}",
+                        f"Telegram is unavailable: {exc}",
+                    ))
+                else:
+                    checks.append(_doctor_check(
+                        "ok",
+                        f"connector {requirement.name}",
+                        f"Telegram chat {chat_id} is reachable",
+                    ))
+            else:
+                checks.append(_doctor_check(
+                    "warn",
+                    f"connector {requirement.name}",
+                    f"{kind} is bound but has no live readiness adapter yet",
+                ))
     declared_values = {
         field.name: _profile_field_value(profile, field, environment)
         for field in deployment_spec.fields
@@ -1846,8 +1941,45 @@ def _validate_workflow(workflow: Workflow, module: ModuleType) -> dict[str, obje
             ),
         })
 
+    try:
+        connector_requirements = connector_requirements_from_module(module)
+    except (TypeError, ValueError) as exc:
+        checks.append({
+            "status": "fail",
+            "name": "connector requirements",
+            "detail": str(exc),
+        })
+    else:
+        participants = {item.name for item in lifelines}
+        for requirement in connector_requirements:
+            if requirement.participant not in participants:
+                checks.append({
+                    "status": "fail",
+                    "name": f"connector {requirement.name}",
+                    "detail": (
+                        f"participant {requirement.participant!r} does not "
+                        "exist in the workflow"
+                    ),
+                })
+            else:
+                checks.append({
+                    "status": "ok",
+                    "name": f"connector {requirement.name}",
+                    "detail": (
+                        f"{requirement.kind}; {requirement.access}; participant "
+                        f"{requirement.participant}"
+                    ),
+                })
+
     assistant_actions = _assistant_actions(workflow)
     for action in assistant_actions:
+        checks.append({
+            "status": "ok",
+            "name": f"assistant access {action.name}",
+            "detail": (
+                f"{action.access}; enforced by the selected CLI permission mode"
+            ),
+        })
         if action.instructions_path is None:
             checks.append({
                 "status": "ok",
@@ -2583,6 +2715,17 @@ def _apply_deploy_arguments(
         }
     )
     profile["environment"] = environment_values
+    connectors_json = getattr(args, "connectors_json", None)
+    if connectors_json is not None:
+        try:
+            connector_bindings = json.loads(connectors_json)
+        except json.JSONDecodeError as exc:
+            raise SystemExit(
+                f"Connector bindings are not valid JSON: {exc}"
+            ) from exc
+        if not isinstance(connector_bindings, dict):
+            raise SystemExit("Connector bindings must be a JSON object.")
+        profile["connectors"] = connector_bindings
 
     input_arguments = _parse_input_json(args.input_json)
     input_arguments.update(_parse_inputs(args.input))
@@ -2624,6 +2767,26 @@ def _apply_deploy_arguments(
         {
             name: str(value)
             for name, value in provider_secrets.items()
+            if value is not None and str(value)
+        }
+    )
+    connector_secrets = _parse_inputs(
+        getattr(args, "connector_secret", [])
+    )
+    unsupported_connector_secrets = sorted(
+        name
+        for name in connector_secrets
+        if not name.startswith("ZIPPERGEN_CONNECTOR_")
+    )
+    if unsupported_connector_secrets:
+        raise SystemExit(
+            "Unsupported connector secret: "
+            + ", ".join(unsupported_connector_secrets)
+        )
+    secrets.update(
+        {
+            name: str(value)
+            for name, value in connector_secrets.items()
             if value is not None and str(value)
         }
     )
@@ -3060,6 +3223,14 @@ def _add_guided_deployment_arguments(
         help=argparse.SUPPRESS,
     )
     parser.add_argument("--project-root", help=argparse.SUPPRESS)
+    parser.add_argument("--connectors-json", help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--connector-secret",
+        action="append",
+        default=[],
+        metavar="ENV=value",
+        help=argparse.SUPPRESS,
+    )
     parser.add_argument(
         "--provider-env",
         action="append",

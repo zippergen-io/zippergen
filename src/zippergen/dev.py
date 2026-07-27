@@ -17,7 +17,7 @@ from zippergen.models import (
     normalize_llm_overrides,
     selected_llm_specs,
 )
-from zippergen.rendering import TerminalRenderer
+from zippergen.rendering import StatusKind, TerminalRenderer
 from zippergen.semantic import semantic_snapshot, workflow_semantics
 from zippergen.syntax import Workflow
 from zippergen.workspace import Workspace
@@ -492,7 +492,7 @@ def run_dev(
     )
     workspace.update_run(selected_run_id, status="running", error=None)
     if renderer is not None:
-        run_rows: list[tuple[str, object, str | None]] = [
+        run_rows: list[tuple[str, object, StatusKind | None]] = [
             ("Status", "running", "success"),
             ("Workflow", stored_spec, None),
             ("Run", selected_run_id, None),

@@ -230,10 +230,14 @@ human approval.
 - Requester initially owns `request` and `max_retries`.
 - Writer uses an LLM to draft and revise an answer.
 - Reviewer uses a separate LLM to assess every draft.
-- After the automated assessment, a human approves or rejects the draft.
+- HumanApprover owns the decision to approve or reject a draft after the
+  automated assessment.
 - A rejection sends the draft back to Writer while retries remain.
 - Never return an unapproved draft. Return an explicit failure after retry
   exhaustion.
+- Declare an optional logical Telegram connector named `human-approval` for
+  HumanApprover, with notification and approval capabilities. Terminal
+  approval must remain available when it is unbound.
 
 ## Inputs and operation
 
@@ -560,6 +564,24 @@ reviewer notes, instruction, and decision labels.
 \texttt{deployment approve} repeats that evidence immediately before asking
 for the decision; an unseen draft is never presented for blind approval.
 \texttt{store} remains available for development runs and advanced recovery.
+
+The tutorial workflow also declares an optional logical Telegram approval
+connector. It is not required for the first run. To deliver the same durable
+decision to a private Telegram chat, configure and bind it before the next
+deployment:
+
+\begin{lstlisting}[style=shell]
+deployment connectors setup telegram
+deployment connectors bind human-approval telegram-approvals
+deploy
+deployment notify
+\end{lstlisting}
+
+The bot token is stored privately and is never written to the workflow or
+ordinary deployment profile. \texttt{deployment notify} sends pending
+decisions and collects replies in one pass; run it again after replying in
+Telegram. \texttt{deployment tasks} always shows the same underlying decision
+and remains the local inspection path.
 \texttt{deployment stop} prevents the tutorial service from being supervised
 indefinitely; it preserves the deployment profile, bundle, log, and durable
 store. If no supported macOS or Linux user service manager is available, the

@@ -83,6 +83,7 @@ from zippergen import assistant
 
 @assistant(
     instructions_file="prompts/update_release_notes.md",
+    access="write",
     workspace=".",
 )
 def update_release_notes(change: str) -> str: ...
@@ -96,11 +97,36 @@ instructions. Select the runtime CLI with `workflow.configure(assistant="codex")
 `zippergen run ... --assistant codex`, `ZIPPERGEN_ASSISTANT=codex`, or a static
 `backend="codex"`/`backend="claude"` on the action. Prefer runtime selection
 when the same workflow must run in different environments.
+Declare `access="read-only"` for analysis and review actions and
+`access="write"` for actions that may change the repository. ZipperGen maps
+this policy to the selected CLI's non-interactive sandbox or permission mode;
+do not rely on prompt wording alone to make a reviewer read-only.
 
 An assistant action is journaled like other external actions in durable mode:
 a recorded result is replayed without launching the assistant again. The
 requested repository operation should nevertheless be restart-safe because a
 process can fail after the CLI changes files but before its result is recorded.
+
+Logical connectors are module-level, credential-free requirements:
+
+```python
+from zippergen import ConnectorRequirement
+
+zippergen_connectors = (
+    ConnectorRequirement(
+        name="human-approval",
+        kind="telegram",
+        participant="Reviewer",
+        capabilities=("notify", "approve"),
+        required=False,
+    ),
+)
+```
+
+Use connector declarations when deployment must bind an external account or
+channel independently of workflow source. Studio stores named configurations
+and secrets privately, while semantic snapshots and full views retain the
+logical kind, participant, access, and capabilities.
 
 ## Owned control flow
 

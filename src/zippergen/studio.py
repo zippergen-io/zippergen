@@ -341,6 +341,8 @@ def _is_allowed_natural_plan_command(parts: list[str]) -> bool:
     if command == "deployment":
         if not args:
             return True
+        if lowered[0] == "connectors":
+            return len(args) <= 5
         return (
             lowered[0]
             in {
@@ -350,6 +352,7 @@ def _is_allowed_natural_plan_command(parts: list[str]) -> bool:
                 "logs",
                 "tasks",
                 "approve",
+                "notify",
                 "start",
                 "restart",
                 "stop",
@@ -1165,6 +1168,44 @@ class Studio:
         if command == "deployment":
             if not args:
                 return list(_SUBCOMMAND_COMPLETIONS["deployment"])
+            if args[0].lower() == "connectors":
+                if len(args) == 1:
+                    return [
+                        ("setup", "configure a connector privately"),
+                        ("check", "check connector availability"),
+                        ("bind", "bind a workflow requirement"),
+                    ]
+                if len(args) == 2 and args[1].lower() == "setup":
+                    return [("telegram", "Telegram human approvals")]
+                if len(args) == 2 and args[1].lower() == "check":
+                    return [
+                        ("all", "all connector configurations"),
+                        *[
+                            (name, value.get("kind", "connector"))
+                            for name, value in
+                            self.workspace.connector_configurations().items()
+                        ],
+                    ]
+                if len(args) == 2 and args[1].lower() == "bind":
+                    try:
+                        _current, _workflow, module = self._current_context()
+                        from zippergen.connectors import (
+                            connector_requirements_from_module,
+                        )
+
+                        return [
+                            (item.name, f"{item.kind} requirement")
+                            for item in connector_requirements_from_module(module)
+                        ]
+                    except SystemExit:
+                        return []
+                if len(args) == 3 and args[1].lower() == "bind":
+                    return [
+                        (name, value.get("kind", "connector"))
+                        for name, value in
+                        self.workspace.connector_configurations().items()
+                    ]
+                return []
             if (
                 args[0].lower()
                 in {
@@ -1173,6 +1214,7 @@ class Studio:
                     "logs",
                     "tasks",
                     "approve",
+                    "notify",
                     "start",
                     "restart",
                     "stop",
@@ -5679,11 +5721,40 @@ class Studio:
                 for site in action_sites
                 if isinstance(site, dict) and site.get("kind") == "effect"
             ]
-            assistant_actions = [
-                f"{site.get('lifeline')}.{site.get('action')}"
-                for site in action_sites
-                if isinstance(site, dict) and site.get("kind") == "assistant"
-            ]
+            raw_definitions = model.get("action_definitions")
+            action_definitions = (
+                raw_definitions if isinstance(raw_definitions, dict) else {}
+            )
+            assistant_actions = []
+            for site in action_sites:
+                if not isinstance(site, dict) or site.get("kind") != "assistant":
+                    continue
+                action_name = str(site.get("action") or "")
+                raw_definition = action_definitions.get(action_name)
+                definition = (
+                    raw_definition
+                    if isinstance(raw_definition, dict)
+                    else {}
+                )
+                assistant_actions.append(
+                    f"{site.get('lifeline')}.{action_name} "
+                    f"({definition.get('backend') or 'runtime'}; "
+                    f"{definition.get('access') or 'write'})"
+                )
+            from zippergen.connectors import connector_requirements_from_module
+
+            connector_requirements = connector_requirements_from_module(module)
+            connector_bindings = self.workspace.connector_binding_profile(
+                str(state["current_workflow"])
+            )
+            connector_summary = (
+                "none"
+                if not connector_requirements
+                else " · ".join(
+                    f"{item.name}={connector_bindings.get(item.name, 'not bound')}"
+                    for item in connector_requirements
+                )
+            )
             active_models = self._llm_action_lifelines(workflow, module)
             llm_participants = list(active_models)
             validation = _validate_workflow(workflow, module)
@@ -5735,7 +5806,19 @@ class Studio:
                         ),
                         None,
                     ),
-                    ("Connectors", "none", None),
+                    (
+                        "Connectors",
+                        connector_summary,
+                        (
+                            "warning"
+                            if any(
+                                item.required
+                                and item.name not in connector_bindings
+                                for item in connector_requirements
+                            )
+                            else None
+                        ),
+                    ),
                     (
                         "Validation",
                         "valid" if validation["valid"] else "invalid",
@@ -8655,6 +8738,95 @@ class Studio:
         )
         return arguments
 
+    def _deployment_connector_arguments(
+        self,
+        *,
+        workflow_spec: str,
+        module,
+    ) -> list[str]:
+        """Validate bindings and serialize connector references for deployment."""
+
+        from zippergen.connectors import connector_requirements_from_module
+        from zippergen.serve import _slug
+
+        requirements = connector_requirements_from_module(module)
+        if not requirements:
+            return []
+        bindings = self.workspace.connector_binding_profile(workflow_spec)
+        configurations = self.workspace.connector_configurations()
+        missing = [
+            item.name
+            for item in requirements
+            if item.required and item.name not in bindings
+        ]
+        if missing:
+            raise SystemExit(
+                "Required connector bindings are missing: "
+                + ", ".join(missing)
+                + ". Use deployment connectors."
+            )
+
+        snapshot: dict[str, dict[str, object]] = {}
+        arguments: list[str] = []
+        for requirement in requirements:
+            configuration_name = bindings.get(requirement.name)
+            if configuration_name is None:
+                continue
+            configuration = configurations.get(configuration_name)
+            if configuration is None:
+                raise SystemExit(
+                    f"Connector binding {requirement.name} references missing "
+                    f"configuration {configuration_name}."
+                )
+            if configuration.get("kind") != requirement.kind:
+                raise SystemExit(
+                    f"Connector binding {requirement.name} requires "
+                    f"{requirement.kind}, but {configuration_name} is "
+                    f"{configuration.get('kind')}."
+                )
+            if configuration.get("check_status") != "available":
+                raise SystemExit(
+                    f"Connector {configuration_name} has not passed its latest "
+                    "check. Use deployment connectors check "
+                    f"{configuration_name}."
+                )
+            record: dict[str, object] = {
+                **requirement.as_dict(),
+                "configuration": configuration_name,
+                "channel": configuration.get("channel") or requirement.name,
+            }
+            if requirement.kind == "telegram":
+                token = self.workspace.connector_secret(
+                    configuration_name,
+                    "bot_token",
+                )
+                if not token:
+                    raise SystemExit(
+                        f"Telegram token is missing for {configuration_name}."
+                    )
+                token_env = (
+                    "ZIPPERGEN_CONNECTOR_"
+                    + _slug(configuration_name).replace("-", "_").upper()
+                    + "_TOKEN"
+                )
+                record.update(
+                    {
+                        "chat_id": configuration.get("chat_id"),
+                        "token_env": token_env,
+                    }
+                )
+                arguments.extend(
+                    ["--connector-secret", f"{token_env}={token}"]
+                )
+            snapshot[requirement.name] = record
+        arguments.extend(
+            [
+                "--connectors-json",
+                json.dumps(snapshot, sort_keys=True),
+            ]
+        )
+        return arguments
+
     def deploy_workflow(self, args: list[str]) -> None:
         from zippergen.deployment import deployment_spec_from_module
         from zippergen.serve import (
@@ -8925,6 +9097,12 @@ class Studio:
                 model_specs=tuple(selected_specs),
             )
         )
+        arguments.extend(
+            self._deployment_connector_arguments(
+                workflow_spec=current,
+                module=deployment_module,
+            )
+        )
         rc = self._run_project_cli(arguments, cwd=deployment_cwd)
         if rc != 0:
             raise SystemExit(f"Deployment {name} did not complete successfully.")
@@ -8963,6 +9141,268 @@ class Studio:
             and deployed_profile.get("store")
         ):
             self.show_deployment([name])
+
+    def _connector_requirements(self):
+        from zippergen.connectors import connector_requirements_from_module
+
+        current, _workflow, module = self._current_context()
+        return current, connector_requirements_from_module(module)
+
+    def _emit_connectors(self) -> None:
+        configurations = self.workspace.connector_configurations()
+        if configurations:
+            self._emit_columns(
+                "Connector configurations",
+                ("Configuration", "Kind", "Resource", "Last check"),
+                [
+                    (
+                        name,
+                        value.get("kind") or "—",
+                        value.get("chat_id")
+                        or value.get("resource")
+                        or "—",
+                        (
+                            f"{value.get('check_status', 'not checked')} — "
+                            f"{value.get('check_detail', '')}"
+                        ).rstrip(" —"),
+                    )
+                    for name, value in configurations.items()
+                ],
+            )
+        else:
+            self._emit_table(
+                "Connector configurations",
+                [
+                    ("Status", "none", "warning"),
+                    (
+                        "Next",
+                        "deployment connectors setup telegram",
+                        None,
+                    ),
+                ],
+            )
+
+        try:
+            current, requirements = self._connector_requirements()
+        except SystemExit:
+            self._emit_table(
+                "Workflow connector bindings",
+                [
+                    ("Workflow", "none selected", "warning"),
+                    ("Requirements", "not available", None),
+                ],
+            )
+            return
+        bindings = self.workspace.connector_binding_profile(current)
+        if not requirements:
+            self._emit_table(
+                "Workflow connector bindings",
+                [
+                    ("Workflow", current, None),
+                    ("Requirements", "none declared", None),
+                ],
+            )
+            return
+        self._emit_columns(
+            "Workflow connector bindings",
+            ("Requirement", "Participant", "Kind", "Access", "Configuration"),
+            [
+                (
+                    item.name,
+                    item.participant,
+                    item.kind,
+                    item.access,
+                    bindings.get(item.name, "not bound"),
+                )
+                for item in requirements
+            ],
+        )
+        missing = [
+            item.name
+            for item in requirements
+            if item.required and item.name not in bindings
+        ]
+        if missing:
+            self._warning(
+                "Required connector bindings are missing: "
+                + ", ".join(missing)
+                + "."
+            )
+            self._emit_next(
+                f"deployment connectors bind {missing[0]} CONFIGURATION"
+            )
+
+    def _check_connector_configuration(self, name: str) -> bool:
+        configurations = self.workspace.connector_configurations()
+        configuration = configurations.get(name)
+        if configuration is None:
+            raise SystemExit(
+                f"Connector configuration does not exist: {name}."
+            )
+        kind = str(configuration.get("kind") or "")
+        if kind != "telegram":
+            raise SystemExit(
+                f"Live checks are not implemented for connector kind {kind!r}."
+            )
+        token = self.workspace.connector_secret(name, "bot_token")
+        chat_id = str(configuration.get("chat_id") or "")
+        status = "failed"
+        detail = ""
+        try:
+            if not token:
+                raise ValueError("bot token is missing")
+            if not chat_id:
+                raise ValueError("chat id is missing")
+            from zippergen.telegram_notify import TelegramBotClient
+
+            client = TelegramBotClient(token, timeout=10)
+            identity = client.request("getMe").get("result") or {}
+            client.request("getChat", chat_id=chat_id)
+            username = (
+                f"@{identity.get('username')}"
+                if isinstance(identity, dict) and identity.get("username")
+                else "bot"
+            )
+            status = "available"
+            detail = f"{username}; chat {chat_id} reachable"
+        except Exception as exc:
+            detail = str(exc)
+        checked = {
+            **configuration,
+            "check_status": status,
+            "check_detail": detail,
+            "checked_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        }
+        self.workspace.save_connector_configuration(name, checked)
+        if status == "available":
+            self._success(f"Connector {name}: {detail}.")
+            return True
+        self._error(f"Connector {name}: {detail}.")
+        return False
+
+    def manage_connectors(self, args: list[str]) -> None:
+        if not args or args == ["list"]:
+            self._emit_connectors()
+            return
+        action, *rest = args
+        action = action.casefold()
+        if action == "setup":
+            if len(rest) > 2 or not rest:
+                raise SystemExit(
+                    "Use deployment connectors setup telegram [NAME]."
+                )
+            kind = rest[0].casefold()
+            if kind != "telegram":
+                raise SystemExit(
+                    "Telegram is the first supported connector. Use "
+                    "deployment connectors setup telegram [NAME]."
+                )
+            name = rest[1] if len(rest) == 2 else "telegram-approvals"
+            existing = self.workspace.connector_configurations().get(name, {})
+            current_chat = str(existing.get("chat_id") or "")
+            chat_prompt = (
+                f"Telegram chat id [{current_chat}]: "
+                if current_chat
+                else "Telegram chat id: "
+            )
+            chat_id = self.input(chat_prompt).strip() or current_chat
+            if not chat_id:
+                raise SystemExit("Telegram chat id must not be empty.")
+            current_token = self.workspace.connector_secret(name, "bot_token")
+            token_prompt = (
+                "Telegram bot token [press Enter to keep stored token]: "
+                if current_token
+                else "Telegram bot token: "
+            )
+            token = self.secret_input(token_prompt).strip() or current_token
+            if not token:
+                raise SystemExit("Telegram bot token must not be empty.")
+            self.workspace.save_connector_secret(name, "bot_token", token)
+            self.workspace.save_connector_configuration(
+                name,
+                {
+                    "kind": "telegram",
+                    "chat_id": chat_id,
+                    "channel": str(existing.get("channel") or "telegram"),
+                    "check_status": "not checked",
+                    "check_detail": "configuration changed",
+                },
+            )
+            self._success(
+                f"Saved connector configuration {name}; token is private."
+            )
+            self._check_connector_configuration(name)
+            self._emit_connectors()
+            return
+        if action == "check":
+            if len(rest) > 1:
+                raise SystemExit(
+                    "Use deployment connectors check [NAME|all]."
+                )
+            target = rest[0] if rest else "all"
+            names = list(self.workspace.connector_configurations())
+            if target != "all":
+                names = [target]
+            if not names:
+                raise SystemExit(
+                    "No connector configurations exist. Use deployment "
+                    "connectors setup telegram."
+                )
+            failed = [
+                name
+                for name in names
+                if not self._check_connector_configuration(name)
+            ]
+            if failed:
+                raise SystemExit(
+                    "Connector checks failed: " + ", ".join(failed) + "."
+                )
+            return
+        if action == "bind":
+            if len(rest) != 2:
+                raise SystemExit(
+                    "Use deployment connectors bind REQUIREMENT CONFIGURATION."
+                )
+            requirement_name, configuration_name = rest
+            current, requirements = self._connector_requirements()
+            requirement = next(
+                (
+                    item
+                    for item in requirements
+                    if item.name.casefold() == requirement_name.casefold()
+                ),
+                None,
+            )
+            if requirement is None:
+                raise SystemExit(
+                    f"Workflow connector requirement does not exist: "
+                    f"{requirement_name}."
+                )
+            configurations = self.workspace.connector_configurations()
+            configuration = configurations.get(configuration_name)
+            if configuration is None:
+                raise SystemExit(
+                    f"Connector configuration does not exist: "
+                    f"{configuration_name}."
+                )
+            if configuration.get("kind") != requirement.kind:
+                raise SystemExit(
+                    f"{requirement.name} requires {requirement.kind}, but "
+                    f"{configuration_name} is {configuration.get('kind')}."
+                )
+            self.workspace.bind_connector(
+                current,
+                requirement.name,
+                configuration_name,
+            )
+            self._success(
+                f"Bound {requirement.name} to {configuration_name}."
+            )
+            self._emit_connectors()
+            return
+        raise SystemExit(
+            "Use deployment connectors, setup, check, or bind."
+        )
 
     def _deployment_name(self, selector: str | None = None) -> str:
         from zippergen.studio_stores import deployment_profiles
@@ -9113,6 +9553,21 @@ class Studio:
                 return " · ".join(routes)
             return f"default={default}"
 
+    @staticmethod
+    def _deployment_connector_routes(profile: dict[str, object]) -> str:
+        raw = profile.get("connectors") or {}
+        if not isinstance(raw, dict) or not raw:
+            return "none"
+        routes = []
+        for requirement, value in sorted(raw.items()):
+            if not isinstance(value, dict):
+                routes.append(f"{requirement}=invalid")
+                continue
+            routes.append(
+                f"{requirement}={value.get('configuration') or value.get('kind') or 'unknown'}"
+            )
+        return " · ".join(routes)
+
     def show_deployment(self, args: list[str]) -> None:
         if len(args) > 1:
             raise SystemExit("Use deployment show [NAME].")
@@ -9129,7 +9584,11 @@ class Studio:
         service = _deployment_service_status(name)
         store = _store_status(str(profile["store"]))
         bundle = Path(str(profile.get("bundle") or profile.get("cwd") or ""))
-        checks = _doctor_checks(name, include_systemd=False)
+        checks = _doctor_checks(
+            name,
+            include_systemd=False,
+            live_connectors=False,
+        )
         failures = [
             check for check in checks if check.get("status") == "fail"
         ]
@@ -9177,6 +9636,7 @@ class Studio:
                 f"exists — {store['state']} — {profile['store']}"
             )
         selected_models = self._deployment_model_routes(profile)
+        selected_connectors = self._deployment_connector_routes(profile)
         missing_provider = next(
             (
                 provider
@@ -9220,6 +9680,7 @@ class Studio:
                     store_kind,
                 ),
                 ("Models", selected_models, None),
+                ("Connectors", selected_connectors, None),
                 (
                     "Cause",
                     cause or "no immediate failure detected",
@@ -9235,6 +9696,94 @@ class Studio:
             current_store=str(profile["store"]),
         )
 
+    def _notify_deployment(self, args: list[str]) -> None:
+        if len(args) > 1:
+            raise SystemExit("Use deployment notify [NAME].")
+        name = self._deployment_name(args[0] if args else None)
+        from zippergen.serve import (
+            _load_deployment_profile,
+            _load_deployment_secrets,
+        )
+        from zippergen.telegram_notify import TelegramBotClient, TelegramNotifier
+
+        profile = _load_deployment_profile(name)
+        raw = profile.get("connectors") or {}
+        bindings = raw if isinstance(raw, dict) else {}
+        telegram = [
+            (str(requirement), value)
+            for requirement, value in bindings.items()
+            if isinstance(value, dict) and value.get("kind") == "telegram"
+        ]
+        if not telegram:
+            raise SystemExit(
+                f"Deployment {name} has no Telegram connector. Configure and "
+                "bind one before deploying."
+            )
+        if len(telegram) == 1:
+            requirement, binding = telegram[0]
+        else:
+            selected_label = cast(
+                str,
+                self._select(
+                    "Telegram connectors",
+                    [
+                        f"{item[0]} — "
+                        f"{item[1].get('configuration') or 'Telegram'}"
+                        for item in telegram
+                    ],
+                    prompt="Select a connector",
+                ),
+            )
+            selected_requirement = selected_label.partition(" — ")[0]
+            requirement, binding = next(
+                item for item in telegram if item[0] == selected_requirement
+            )
+        secrets = _load_deployment_secrets(profile)
+        token_env = str(binding.get("token_env") or "")
+        token = secrets.get(token_env)
+        chat_id = str(binding.get("chat_id") or "")
+        store = Path(str(profile.get("store") or "")).expanduser()
+        if not token or not chat_id:
+            raise SystemExit(
+                f"Telegram connector {requirement} is missing its private token "
+                "or chat id."
+            )
+        if not store.is_file():
+            raise SystemExit(
+                f"Deployment store does not exist yet: {store}."
+            )
+        notifier = TelegramNotifier(
+            store_path=str(store),
+            client=TelegramBotClient(token),
+            chat_id=chat_id,
+            channel=str(binding.get("channel") or requirement),
+        )
+        try:
+            sent = notifier.send_pending_once()
+            processed = notifier.poll_updates_once(timeout=0)
+        except Exception as exc:
+            raise SystemExit(
+                f"Telegram connector {requirement} failed: {exc}"
+            ) from exc
+        self._emit_table(
+            "Telegram approval connector",
+            [
+                ("Deployment", name, None),
+                ("Binding", requirement, None),
+                ("Sent", f"{sent} pending decision(s)", "success"),
+                ("Received", f"{processed} response(s)", "success"),
+                (
+                    "Operation",
+                    "one synchronization pass; run this command again to "
+                    "collect later replies",
+                    "info",
+                ),
+            ],
+        )
+        self._emit_next(
+            f"deployment notify {name} · deployment tasks {name}"
+        )
+
     def manage_deployments(self, args: list[str]) -> None:
         if not args:
             self.show_deployments()
@@ -9248,6 +9797,12 @@ class Studio:
             return
         if action == "show":
             self.show_deployment(rest)
+            return
+        if action == "connectors":
+            self.manage_connectors(rest)
+            return
+        if action == "notify":
+            self._notify_deployment(rest)
             return
         if action in {"tasks", "approve"}:
             if len(rest) > 1:
@@ -9269,8 +9824,8 @@ class Studio:
             self.deployment_action(action, rest)
             return
         raise SystemExit(
-            "Use deployment list, show, doctor, logs, tasks, approve, start, "
-            "restart, or stop."
+            "Use deployment list, show, doctor, logs, tasks, approve, "
+            "connectors, notify, start, restart, or stop."
         )
 
     def deployment_action(self, action: str, args: list[str]) -> None:

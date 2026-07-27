@@ -387,6 +387,18 @@ COMMANDS: tuple[CommandSpec, ...] = (
         "execution",
     ),
     CommandSpec(
+        ("deployment", "connectors"),
+        "deployment connectors [setup|check|bind] ...",
+        "configure external deployment connections",
+        "configuration",
+    ),
+    CommandSpec(
+        ("deployment", "notify"),
+        "deployment notify [NAME]",
+        "send pending decisions and receive connector replies",
+        "execution",
+    ),
+    CommandSpec(
         ("deployment", "start"),
         "deployment start [NAME]",
         "start a deployment",
