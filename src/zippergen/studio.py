@@ -9684,7 +9684,7 @@ class Studio:
             if service["state"] == "restarting"
             else "warning"
         )
-        store_kind: StatusKind = (
+        run_kind: StatusKind = (
             "success"
             if store["state"] == "done"
             else "error"
@@ -9693,27 +9693,46 @@ class Studio:
             if store["state"] in {"missing", "waiting"}
             else "info"
         )
+        store_kind: StatusKind = (
+            "error"
+            if store["state"] == "invalid"
+            else "warning"
+            if store["state"] == "missing"
+            else "success"
+        )
         run_state = {
-            "missing": "never reached durable execution",
+            "missing": "deployment store is missing",
             "waiting": "waiting for human action",
             "done": "completed result recorded",
             "active": "events recorded; no result yet",
-            "empty": "store initialized; no events",
+            "empty": (
+                "starting, no durable events recorded yet"
+                if service["state"] == "running"
+                else "service is restarting before durable execution"
+                if service["state"] == "restarting"
+                else "service completed without durable events"
+                if service["state"] == "completed"
+                else "not started, no durable events recorded"
+            ),
             "invalid": "store cannot be read",
         }.get(str(store["state"]), str(store["summary"]))
         pending = store.get("pending_human_tasks")
         pending_count = len(pending) if isinstance(pending, list) else 0
         if store["state"] == "missing":
-            store_description = f"not created yet — {profile['store']}"
+            store_description = f"missing — {profile['store']}"
         elif pending_count:
             noun = "task" if pending_count == 1 else "tasks"
             store_description = (
-                f"exists — {pending_count} pending human {noun} — "
+                f"ready — {pending_count} pending human {noun} — "
                 f"{profile['store']}"
+            )
+        elif store["state"] == "empty":
+            store_description = (
+                f"ready — no run data yet — {profile['store']}"
             )
         else:
             store_description = (
-                f"exists — {store['state']} — {profile['store']}"
+                f"ready — {store['state']} — {profile['store']}"
             )
         selected_models = self._deployment_model_routes(profile)
         selected_connectors = self._deployment_connector_routes(profile)
@@ -9753,7 +9772,7 @@ class Studio:
                     "success" if bundle.is_dir() else "error",
                 ),
                 ("Service", service["detail"], service_kind),
-                ("Run", run_state, store_kind),
+                ("Run", run_state, run_kind),
                 (
                     "Store",
                     store_description,

@@ -540,13 +540,15 @@ deploy show
 
 \texttt{deploy} uses the immutable accepted source snapshot by default,
 validates it again, collects declared inputs, creates a separate timestamped
-deployment bundle and managed Python environment, and remembers the deployment
-name. The \texttt{--no-start} flag deliberately leaves the
+deployment bundle and managed Python environment, initializes the
+deployment's stable SQLite store, and remembers the deployment name. The
+\texttt{--no-start} flag deliberately leaves the
 service stopped. \texttt{deploy doctor} runs detailed readiness checks.
 \texttt{deploy show} separates the immutable bundle, supervised service,
-workflow run, and SQLite store. Warnings about a missing first-run log or
-store and an uninstalled service are expected before the first start; a red
-failure must be investigated. A selected API model whose private provider key
+workflow run, and SQLite store. Before the first start, the run is
+\texttt{not started} and the store is \texttt{ready} with no run data.
+A missing first-run log and an uninstalled service are expected warnings; a
+red failure must be investigated. A selected API model whose private provider key
 was not copied into deployment storage is now a blocking failure, not a
 service that is allowed to enter a restart loop. If a local model is selected,
 Studio also copies its configured OpenAI-compatible endpoint into the
@@ -587,7 +589,9 @@ deploy stop
 
 The finite workflow should reach a waiting human task. Each named deployment
 owns one stable logical store, so normal operation never requires selecting or
-copying a store. Bare \texttt{deploy inspect} uses the remembered
+copying a store. Immediately after \texttt{deploy start}, the run may briefly
+say \texttt{starting, no durable events recorded yet}. The store remains
+\texttt{ready} throughout. Bare \texttt{deploy inspect} uses the remembered
 deployment name; with one argument that is not a deployment name, Studio
 treats it as the participant to focus. It reads the durable positions from the
 deployment store, so no debugger connection is required.

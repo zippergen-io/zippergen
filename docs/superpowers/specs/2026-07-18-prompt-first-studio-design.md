@@ -522,6 +522,11 @@ name, so the operational subcommands need no argument afterward. They run from t
 discovered project root and retain the same behavior as their scriptable CLI
 equivalents.
 
+Preparing a named deployment also initializes its one stable SQLite store.
+This is true with `--no-start`. Redeploy, start, and restart preserve that
+store. Studio reports the store and run independently, so an empty ready store
+does not imply that execution has started.
+
 `deploy stop` preserves the deployment. `deploy remove` treats the named
 deployment as one owned operational unit. The default form unregisters its
 service and archives its profile, private secrets, generated launch files,

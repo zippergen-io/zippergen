@@ -325,7 +325,9 @@ Every new development run gets its own managed durable state. Users work with
 the run and do not need to manage SQLite files.
 
 A named deployment owns one stable logical store and an immutable source
-bundle:
+bundle. The store is initialized when the deployment is prepared, even when
+`--no-start` is used. Redeploying, starting, and restarting keep the same
+store:
 
 ```text
 deploy review-demo --no-start

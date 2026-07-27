@@ -450,6 +450,10 @@ def test_deploy_local_creates_profile_and_runs_by_name(tmp_path, monkeypatch, ca
     assert script_path.exists()
     assert f"ZIPPERGEN_HOME={zippergen_home}" in script_path.read_text()
     assert service_path.exists()
+    assert store_path.exists()
+    connection = open_store(str(store_path))
+    assert connection.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 0
+    connection.close()
 
     rc = main(["run-deployment", "hello-prod"])
     captured = capsys.readouterr()
@@ -751,6 +755,11 @@ def test_guided_deploy_persists_config_and_private_secrets(tmp_path, monkeypatch
     assert secrets_path.stat().st_mode & 0o077 == 0
     assert (zippergen_home / "deployments" / "io.zippergen.guided-prod.plist").exists()
     assert Path(profile["bundle"]).exists()
+    store_path = Path(profile["store"])
+    assert store_path.exists()
+    connection = open_store(str(store_path))
+    assert connection.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 0
+    connection.close()
 
     workflow_path.unlink()
     rc = main(["run-deployment", "guided-prod"])
@@ -788,6 +797,13 @@ def test_explicit_redeploy_replaces_the_named_deployment_source(
         (zippergen_home / "deployments" / "hello-redeploy.json").read_text()
     )
     first_bundle = Path(first_profile["bundle"])
+    store_path = Path(first_profile["store"])
+    connection = open_store(str(store_path))
+    connection.execute(
+        "INSERT INTO adapter_state(key, value, updated_at) VALUES (?, ?, ?)",
+        ("preserved", b"yes", 1.0),
+    )
+    connection.close()
 
     workflow_path.write_text(
         WORKFLOW_SOURCE.replace('return topic + "!"', 'return topic + "?"')
@@ -800,6 +816,12 @@ def test_explicit_redeploy_replaces_the_named_deployment_source(
     second_bundle = Path(second_profile["bundle"])
 
     assert second_bundle != first_bundle
+    connection = open_store(str(store_path))
+    assert connection.execute(
+        "SELECT value FROM adapter_state WHERE key = ?",
+        ("preserved",),
+    ).fetchone() == (b"yes",)
+    connection.close()
     bundled_workflow = str(second_profile["workflow"]).partition(":")[0]
     assert 'return topic + "?"' in (
         second_bundle / bundled_workflow
@@ -971,7 +993,8 @@ def test_doctor_reports_deployment_checks(tmp_path, monkeypatch, capsys):
     assert checks["workflow import"]["status"] == "ok"
     assert checks["run script"]["status"] == "ok"
     assert checks["systemd template"]["status"] == "ok"
-    assert checks["sqlite store"]["status"] == "warn"
+    assert checks["sqlite store"]["status"] == "ok"
+    assert "initialized but empty" in checks["sqlite store"]["detail"]
 
 
 def test_doctor_returns_failure_for_broken_profile(tmp_path, monkeypatch, capsys):

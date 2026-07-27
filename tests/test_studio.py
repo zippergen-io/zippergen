@@ -3434,9 +3434,58 @@ def test_studio_deployment_show_separates_service_run_and_store(
     assert any(line == "Deployment state" for line in output)
     assert any("Bundle" in line and "installed" in line for line in output)
     assert any("Service" in line and "last exit code 1" in line for line in output)
-    assert any("Run" in line and "never reached durable execution" in line for line in output)
-    assert any("Store" in line and "not created yet" in line for line in output)
+    assert any("Run" in line and "deployment store is missing" in line for line in output)
+    assert any("Store" in line and "missing" in line for line in output)
     assert any("Cause" in line and "MISTRAL_API_KEY is not set" in line for line in output)
+
+
+def test_studio_deployment_show_separates_ready_store_from_starting_run(
+    tmp_path,
+    monkeypatch,
+):
+    studio, workspace, output = _studio(tmp_path)
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(workspace.home))
+    deployments = workspace.home / "deployments"
+    deployments.mkdir(parents=True)
+    bundle = workspace.home / "apps" / "reviewed-answer" / "version"
+    bundle.mkdir(parents=True)
+    store = workspace.home / "runs" / "reviewed-answer.sqlite"
+    store.parent.mkdir(parents=True)
+    from zippergen.store import open_store
+
+    connection = open_store(str(store))
+    connection.close()
+    profile = {
+        "name": "reviewed-answer",
+        "project_root": str(workspace.root),
+        "workflow": "workflow.py:sample",
+        "cwd": str(bundle),
+        "bundle": str(bundle),
+        "store": str(store),
+        "log": str(workspace.home / "logs" / "reviewed-answer.log"),
+        "llm": "mock",
+        "llms": {},
+    }
+    (deployments / "reviewed-answer.json").write_text(json.dumps(profile))
+    monkeypatch.setattr(
+        "zippergen.serve._deployment_service_status",
+        lambda _name: {
+            "state": "running",
+            "detail": "service is running",
+        },
+    )
+    monkeypatch.setattr("zippergen.serve._doctor_checks", lambda *a, **k: [])
+
+    studio.execute("deploy show reviewed-answer")
+
+    assert any(
+        "Run" in line and "starting, no durable events recorded yet" in line
+        for line in output
+    )
+    assert any(
+        "Store" in line and "ready" in line and "no run data yet" in line
+        for line in output
+    )
 
 
 def test_studio_operates_human_tasks_through_the_deployment(
@@ -3552,7 +3601,7 @@ def test_studio_operates_human_tasks_through_the_deployment(
     studio.execute("deploy show reviewed-answer")
 
     assert any(
-        "Store" in line and "exists" in line and "pending" in line
+        "Store" in line and "ready" in line and "pending" in line
         for line in output
     )
     models = next(line for line in output if "Models" in line)

@@ -527,6 +527,24 @@ def _write_deployment_artifacts(profile: dict[str, object]) -> None:
     launchd_path.write_bytes(plistlib.dumps(launchd, sort_keys=True))
 
 
+def _initialize_deployment_store(profile: dict[str, object]) -> bool:
+    """Allocate one valid durable store for a deployment if it has none."""
+
+    path = Path(str(profile["store"])).expanduser()
+    if path.exists():
+        return False
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        connection = open_store(str(path))
+    except Exception as exc:
+        raise SystemExit(
+            f"Could not initialize deployment store {path}: "
+            f"{type(exc).__name__}: {exc}"
+        ) from exc
+    connection.close()
+    return True
+
+
 def _install_systemd_unit(profile: dict[str, object], *, dry_run: bool = False) -> Path:
     name = str(profile["name"])
     _write_deployment_artifacts(profile)
@@ -620,6 +638,8 @@ def _run_launchctl(
 def _deployment_lifecycle_command(args, action: str) -> int:
     profile = _load_deployment_profile(args.name)
     name = str(profile["name"])
+    if action in {"start", "restart"} and not args.dry_run:
+        _initialize_deployment_store(profile)
     if (
         action in {"start", "restart"}
         and not args.dry_run
@@ -2856,6 +2876,7 @@ def _finalize_guided_deployment(
     # Persist enough state to resume configuration even if dependency install
     # or an interactive OAuth step fails.
     _write_deployment_artifacts(profile)
+    _initialize_deployment_store(profile)
     _prepare_deployment_environment(profile, spec, skip_install=args.no_install)
     _write_deployment_artifacts(profile)
     _run_deployment_setup(profile, spec, values, skip_setup=args.no_setup)
@@ -2994,6 +3015,7 @@ def _deploy_local_command(args) -> int:
         "python": sys.executable,
     }
     _write_deployment_artifacts(profile)
+    _initialize_deployment_store(profile)
 
     if args.json:
         print(json.dumps({

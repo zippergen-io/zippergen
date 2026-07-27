@@ -1726,10 +1726,11 @@ deploy show
 the immutable bundle, the supervised operating-system process, the workflow
 run, and its SQLite store. Studio condenses the deployer's checks into one
 readiness summary; \texttt{deploy doctor} is the explicit expanded view.
-Doctor should contain no failures; before first
-execution, a missing store/log and an uninstalled service are expected
-warnings. If the checks are acceptable and service startup is authorized,
-enter these one at a time:
+Doctor should contain no failures. Deployment preparation initializes the
+stable store, even with \texttt{--no-start}. Before first execution, that
+store is ready and empty, while a missing log and an uninstalled service are
+expected warnings. If the checks are acceptable and service startup is
+authorized, enter these one at a time:
 
 \begin{lstlisting}[style=shell]
 deploy start
@@ -1752,9 +1753,11 @@ operation before launchd/systemd is touched. Warnings remain informative and
 do not block startup. \texttt{deploy stop} is never subject to this gate.
 The process may need a few seconds to reach its first action; repeat
 \texttt{deploy show} once if necessary. The run/store rows should report
-\texttt{waiting} once durable human approval is pending. Each deployment name
-owns one stable logical store, so normal deployment operation requires no
-store selection or copied path.
+\texttt{waiting} once durable human approval is pending. Immediately after
+\texttt{deploy start}, the run may briefly report
+\texttt{starting, no durable events recorded yet}. The separate store row
+remains ready. Each deployment name owns one stable logical store, so normal
+deployment operation requires no store selection or copied path.
 \texttt{deploy inspect} reads per-participant positions from that store
 and projects the workflow from the immutable deployment bundle, so later
 working-tree edits cannot change what is displayed. With no name it uses the
@@ -2259,9 +2262,10 @@ deploy doctor
 deploy show
 \end{lstlisting}
 
-Warnings about a missing first-run store or log and an uninstalled service are
-expected at this point; a doctor failure is not. Only when service startup is
-intentional and authorized, enter:
+The deployment store is already initialized and should be reported as ready
+with no run data. Warnings about a missing first-run log and an uninstalled
+service are expected at this point; a doctor failure is not. Only when service
+startup is intentional and authorized, enter:
 
 \begin{lstlisting}[style=shell]
 deploy start
@@ -3832,9 +3836,10 @@ available in the logged-in graphical user session. Use
 
 \subsection*{Doctor shows warnings}
 
-Warnings about a missing store/log before first execution or an uninstalled
-service before \texttt{start} are expected. A \texttt{FAIL} result blocks safe
-startup and should be corrected.
+Before first execution, the deployment store should already be ready and
+empty. A missing log or an uninstalled service before \texttt{start} is an
+expected warning. A \texttt{FAIL} result blocks safe startup and should be
+corrected.
 
 \subsection*{A changed input does not create a new finite run}
 
