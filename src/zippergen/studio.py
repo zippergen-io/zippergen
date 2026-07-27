@@ -203,6 +203,8 @@ def _is_explicit_studio_syntax(parts: list[str]) -> bool:
             return len(args) <= 5
         if action == "inspect":
             return len(args) <= 3
+        if action == "remove":
+            return len(args) <= 4
         if action in {
             "list",
             "show",
@@ -356,6 +358,18 @@ def _is_allowed_natural_plan_command(parts: list[str]) -> bool:
             return len(args) <= 5
         if lowered[0] == "inspect":
             return len(args) <= 3
+        if lowered[0] == "remove":
+            return (
+                (
+                    len(args) == 2
+                    and not args[1].startswith("-")
+                )
+                or (
+                    len(args) == 3
+                    and not args[1].startswith("-")
+                    and lowered[2] == "--purge"
+                )
+            )
         if (
             lowered[0]
             in {
@@ -683,6 +697,7 @@ class Studio:
                 "start",
                 "restart",
                 "stop",
+                "remove",
             }
         ):
             return f"deploy {parts[1].casefold()}"
@@ -1292,6 +1307,17 @@ class Studio:
                     (name, "workflow participant")
                     for name in self._completion_lifelines()
                 ]
+            if args[0].lower() == "remove":
+                if len(args) == 1:
+                    return self._deployment_completion_candidates()
+                if len(args) == 2:
+                    return [
+                        ("--purge", "permanently delete instead of archiving"),
+                        ("--yes", "confirm recoverable removal"),
+                    ]
+                if len(args) == 3 and args[2].lower() == "--purge":
+                    return [("--yes", "confirm permanent deletion")]
+                return []
             return []
         if command == "run":
             action = args[0].lower()
@@ -2714,6 +2740,7 @@ class Studio:
                 "start",
                 "restart",
                 "stop",
+                "remove",
             }:
                 self.manage_deploy(args)
             else:
@@ -3139,6 +3166,12 @@ class Studio:
             parts.append("--yes")
         if (
             tuple(lowered[:3]) == ("project", "reset", "fresh")
+            and "--yes" not in lowered
+        ):
+            parts.append("--yes")
+        if (
+            tuple(lowered[:2]) == ("deploy", "remove")
+            and "--purge" not in lowered
             and "--yes" not in lowered
         ):
             parts.append("--yes")
@@ -9923,6 +9956,9 @@ class Studio:
         if action == "notify":
             self._notify_deployment(rest)
             return
+        if action == "remove":
+            self.remove_deployment(rest)
+            return
         if action in {"tasks", "approve", "trace"}:
             if len(rest) > 1:
                 raise SystemExit(
@@ -9949,8 +9985,155 @@ class Studio:
             return
         raise SystemExit(
             "Use deploy list, show, inspect, doctor, logs, tasks, approve, "
-            "trace, connectors, notify, start, restart, or stop."
+            "trace, connectors, notify, start, restart, stop, or remove."
         )
+
+    def remove_deployment(self, args: list[str]) -> None:
+        purge = False
+        yes = False
+        names: list[str] = []
+        for argument in args:
+            if argument == "--purge":
+                purge = True
+            elif argument == "--yes":
+                yes = True
+            elif argument.startswith("--"):
+                raise SystemExit(
+                    "Use deploy remove [NAME] [--purge] [--yes]."
+                )
+            else:
+                names.append(argument)
+        if len(names) > 1:
+            raise SystemExit(
+                "Use deploy remove [NAME] [--purge] [--yes]."
+            )
+        if purge and not names:
+            raise SystemExit(
+                "Permanent removal requires an explicit deployment name. "
+                "Use deploy remove NAME --purge."
+            )
+
+        name = self._deployment_name(names[0] if names else None)
+        from zippergen.serve import (
+            _deployment_service_status,
+            _load_deployment_profile,
+        )
+        from zippergen.studio_deployments import (
+            DeploymentRemovalError,
+            present_deployment_artifacts,
+            remove_deployment_artifacts,
+            unregister_deployment_service,
+        )
+
+        profile = _load_deployment_profile(name)
+        try:
+            artifacts = present_deployment_artifacts(name, profile)
+        except DeploymentRemovalError as exc:
+            raise SystemExit(str(exc)) from exc
+        service = _deployment_service_status(name)
+        mode = (
+            "permanent purge; no recovery archive"
+            if purge
+            else "recoverable archive"
+        )
+        self._emit_table(
+            "Deployment removal",
+            [
+                ("Deployment", name, None),
+                ("Mode", mode, "error" if purge else "warning"),
+                (
+                    "Service",
+                    str(service.get("detail") or "state unavailable"),
+                    (
+                        "success"
+                        if service.get("state") in {"not-loaded", "completed"}
+                        else "warning"
+                    ),
+                ),
+                (
+                    "Project state",
+                    "workflow code, accepted reviews, models, and connector "
+                    "configurations remain",
+                    "info",
+                ),
+            ],
+        )
+        self._emit_columns(
+            "Deployment-owned artifacts",
+            ("Artifact", "Path"),
+            [(artifact.label, artifact.path) for artifact in artifacts],
+        )
+
+        if not yes:
+            if purge:
+                try:
+                    confirmation = self.input(
+                        f"Type {name} to permanently purge this deployment: "
+                    ).strip()
+                except (EOFError, KeyboardInterrupt):
+                    self._warning(
+                        "Deployment purge cancelled; nothing was changed."
+                    )
+                    return
+                if confirmation != name:
+                    self._warning(
+                        "Deployment purge cancelled; the name did not match."
+                    )
+                    return
+            elif not self._confirm_action(
+                f"Archive deployment {name} and remove it from active use? "
+                "[y/N]: ",
+                cancel_message=(
+                    "Deployment removal cancelled; nothing was changed."
+                ),
+                default=False,
+            ):
+                return
+
+        service_result: str | None = None
+        try:
+            service_result = unregister_deployment_service(name)
+            result = remove_deployment_artifacts(
+                name,
+                profile,
+                purge=purge,
+            )
+        except DeploymentRemovalError as exc:
+            if service_result is not None:
+                raise SystemExit(
+                    f"{exc} The service was safely unregistered, but the "
+                    "deployment artifacts remain in active storage."
+                ) from exc
+            raise SystemExit(str(exc)) from exc
+
+        state = self.workspace.load()
+        updates: dict[str, object] = {}
+        if str(state.get("last_deployment") or "").casefold() == name.casefold():
+            updates["last_deployment"] = None
+        store = str(profile.get("store") or "")
+        if store and str(state.get("current_store") or "") == store:
+            updates["current_store"] = None
+        if updates:
+            self.workspace.update(**updates)
+
+        self._success(
+            (
+                f"Deployment permanently purged: {name}"
+                if result.purged
+                else f"Deployment removed from active use: {name}"
+            )
+        )
+        rows: list[tuple[str, object, StatusKind | None]] = [
+            ("Deployment", name, None),
+            ("Service", service_result, "success"),
+            ("Artifacts", result.artifact_count, None),
+        ]
+        if result.archive is not None:
+            rows.append(("Archive", result.archive, "success"))
+        else:
+            rows.append(("Archive", "none; deletion was permanent", "warning"))
+        self._emit_table("Removal result", rows)
+        self._emit_next("deploy list · deploy")
 
     def deployment_action(self, action: str, args: list[str]) -> None:
         if len(args) > 1:

@@ -513,6 +513,7 @@ deploy logs [NAME]
 deploy start [NAME]
 deploy restart [NAME]
 deploy stop [NAME]
+deploy remove [NAME] [--purge] [--yes]
 ```
 
 `deploy` is an explicit transition from development to the existing guided,
@@ -520,6 +521,14 @@ secret-aware named deployment path. Studio remembers the successful deployment
 name, so the operational subcommands need no argument afterward. They run from the
 discovered project root and retain the same behavior as their scriptable CLI
 equivalents.
+
+`deploy stop` preserves the deployment. `deploy remove` treats the named
+deployment as one owned operational unit. The default form unregisters its
+service and archives its profile, private secrets, generated launch files,
+bundles, managed environment, stable store, and logs. `--purge` permanently
+deletes the same owned artifacts, requires an explicit name, and has no
+remove-all form. Project source and shared model or connector configurations
+are outside this ownership boundary.
 
 ## Inline durable human tasks
 

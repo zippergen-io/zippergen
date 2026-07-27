@@ -380,6 +380,12 @@ COMMANDS: tuple[CommandSpec, ...] = (
         "stop a deployment",
         "execution",
     ),
+    CommandSpec(
+        ("deploy", "remove"),
+        "deploy remove [NAME] [--purge] [--yes]",
+        "archive or permanently purge a deployment",
+        "destructive",
+    ),
     CommandSpec(("current",), "current", "show complete project context", "read-only"),
     CommandSpec(
         ("studio",),

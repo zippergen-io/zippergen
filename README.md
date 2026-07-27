@@ -339,10 +339,16 @@ deploy trace review-demo
 deploy logs review-demo
 deploy restart review-demo
 deploy stop review-demo
+deploy remove review-demo
 ```
 
 The service policy restarts failed workflows. It does not restart a finite
-workflow after successful completion.
+workflow after successful completion. `deploy stop` preserves the deployment.
+`deploy remove` stops it, unregisters the user service, and moves its profile,
+private secrets, bundles, environment, store, and logs into a private archive.
+Use `deploy remove review-demo --purge` only when those files must be deleted
+permanently. A permanent purge requires the explicit deployment name and a
+second confirmation.
 
 Logical connectors are declared without credentials in workflow source.
 Studio keeps named connector configurations and private credentials outside

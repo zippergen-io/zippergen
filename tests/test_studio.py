@@ -162,6 +162,7 @@ def test_studio_completion_is_context_and_project_aware(tmp_path):
         _completions(studio, "run ")
     )
     assert "trace" in _completions(studio, "deploy ")
+    assert "remove" in _completions(studio, "deploy ")
     assert _completions(studio, "run inspect W") == ["Writer"]
     assert _completions(studio, "workflow create --file req") == [
         "requirements.md"
@@ -3257,6 +3258,110 @@ def test_studio_deployment_list_includes_an_expected_missing_state(
         and "missing" in line
         for line in output
     )
+
+
+def test_studio_deploy_remove_archives_the_deployment_and_clears_selection(
+    tmp_path,
+    monkeypatch,
+):
+    studio, workspace, output = _studio(tmp_path)
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(workspace.home))
+    deployments = workspace.home / "deployments"
+    deployments.mkdir(parents=True)
+    store = workspace.home / "runs" / "reviewed-answer.sqlite"
+    store.parent.mkdir(parents=True)
+    store.write_bytes(b"sqlite")
+    profile = {
+        "name": "reviewed-answer",
+        "project_root": str(workspace.root),
+        "workflow": "workflow.py:sample",
+        "store": str(store),
+        "log": str(workspace.home / "logs" / "reviewed-answer.log"),
+    }
+    (deployments / "reviewed-answer.json").write_text(json.dumps(profile))
+    workspace.update(
+        last_deployment="reviewed-answer",
+        current_store=str(store),
+    )
+    monkeypatch.setattr(
+        "zippergen.serve._deployment_service_status",
+        lambda _name: {
+            "state": "not-loaded",
+            "detail": "service is not installed",
+        },
+    )
+    monkeypatch.setattr(
+        "zippergen.studio_deployments.unregister_deployment_service",
+        lambda _name: "service was not installed",
+    )
+
+    studio.execute("deploy remove reviewed-answer --yes")
+
+    assert not (deployments / "reviewed-answer.json").exists()
+    assert not store.exists()
+    archives = list(
+        (workspace.home / "trash" / "deployments").iterdir()
+    )
+    assert len(archives) == 1
+    assert (archives[0] / "profile/deployment.json").exists()
+    state = workspace.load()
+    assert state["last_deployment"] is None
+    assert state["current_store"] is None
+    assert any(
+        "Deployment removed from active use: reviewed-answer" in line
+        for line in output
+    )
+    rendered = "\n".join(output).replace("\n", "")
+    assert "Archive" in rendered
+    assert archives[0].name in rendered
+
+
+def test_studio_deploy_remove_purge_requires_a_name_and_deletes_permanently(
+    tmp_path,
+    monkeypatch,
+):
+    studio, workspace, output = _studio(tmp_path)
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(workspace.home))
+    deployments = workspace.home / "deployments"
+    deployments.mkdir(parents=True)
+    profile = {
+        "name": "reviewed-answer",
+        "project_root": str(workspace.root),
+        "workflow": "workflow.py:sample",
+        "store": str(workspace.home / "runs" / "reviewed-answer.sqlite"),
+        "log": str(workspace.home / "logs" / "reviewed-answer.log"),
+    }
+    (deployments / "reviewed-answer.json").write_text(json.dumps(profile))
+    workspace.update(last_deployment="reviewed-answer")
+    monkeypatch.setattr(
+        "zippergen.serve._deployment_service_status",
+        lambda _name: {
+            "state": "not-loaded",
+            "detail": "service is not installed",
+        },
+    )
+    monkeypatch.setattr(
+        "zippergen.studio_deployments.unregister_deployment_service",
+        lambda _name: "service was not installed",
+    )
+
+    with pytest.raises(
+        SystemExit,
+        match="Permanent removal requires an explicit deployment name",
+    ):
+        studio.execute("deploy remove --purge")
+
+    studio.execute("deploy remove reviewed-answer --purge --yes")
+
+    assert not (deployments / "reviewed-answer.json").exists()
+    trash = workspace.home / "trash" / "deployments"
+    assert trash.is_dir()
+    assert list(trash.iterdir()) == []
+    assert any(
+        "Deployment permanently purged: reviewed-answer" in line
+        for line in output
+    )
+    assert any("none; deletion was permanent" in line for line in output)
 
 
 def test_studio_deployment_list_hides_another_projects_state(

@@ -622,6 +622,21 @@ manual's foreground-deployment section later.
 The generated service retries failures but does not restart a finite workflow
 after it completes successfully.
 
+If this deployment was only for the tutorial and you no longer want it, enter:
+
+\begin{lstlisting}[style=shell]
+deploy remove reviewed-answer-tutorial
+\end{lstlisting}
+
+Studio first shows the service state and every deployment-owned path. After
+confirmation, it unregisters the service and moves the profile, private
+secrets, bundles, environment, stable store, and logs into a private archive.
+The workflow source, specification, accepted review, model configurations, and
+connector configurations remain. The permanent
+\texttt{deploy remove reviewed-answer-tutorial --purge} form deletes the same
+deployment-owned files instead. It requires the name explicitly and asks you
+to type it, so it is not the normal tutorial cleanup path.
+
 \section{What you have established}
 
 You have now completed the essential ZipperGen cycle:

@@ -236,6 +236,32 @@ def deterministic_plan(
             "deterministic",
         )
 
+    permanent_removal = re.fullmatch(
+        r"(?:please\s+)?(?:permanently\s+)?(?:delete|purge)\s+"
+        r"(?:the\s+)?deployment\s+([a-zA-Z0-9._-]+)",
+        text,
+    )
+    if permanent_removal:
+        name = permanent_removal.group(1)
+        return NaturalCommandPlan(
+            f"Permanently purge deployment {name}.",
+            (shlex.join(["deploy", "remove", name, "--purge"]),),
+            "deterministic",
+        )
+
+    removal = re.fullmatch(
+        r"(?:please\s+)?(?:remove|archive)\s+"
+        r"(?:the\s+)?deployment\s+([a-zA-Z0-9._-]+)",
+        text,
+    )
+    if removal:
+        name = removal.group(1)
+        return NaturalCommandPlan(
+            f"Archive deployment {name} and remove it from active use.",
+            (shlex.join(["deploy", "remove", name]),),
+            "deterministic",
+        )
+
     project_rename_match = re.fullmatch(
         r"(?:please\s+)?rename\s+(?:the\s+)?project\s+"
         r"(?:to|as)\s+(.+?)\.?",
@@ -931,7 +957,7 @@ def _slot_positions(parts: list[str]) -> list[tuple[str, int]]:
         command == "deploy"
         and len(parts) == 3
         and parts[1].casefold()
-        in {"show", "doctor", "logs", "start", "restart", "stop"}
+        in {"show", "doctor", "logs", "start", "restart", "stop", "remove"}
     ):
         return [("deployment", 2)]
     return []

@@ -1892,6 +1892,8 @@ deploy logs # recent service output
 deploy start # start the remembered installed service
 deploy restart # restart it
 deploy stop # stop it without deleting durable state
+deploy remove [NAME] # unregister and archive one complete deployment
+deploy remove NAME --purge # permanently delete its owned artifacts
 exit           # leave Studio
 \end{lstlisting}
 
@@ -2274,7 +2276,28 @@ deploy stop
 \texttt{deploy start} is the first command in this sequence that changes
 the user service manager. \texttt{deploy logs} returns after showing
 recent output; it does not stop the service. \texttt{deploy stop} leaves
-the deployment artifacts and durable store in place.
+the deployment artifacts and durable store in place. To retire the complete
+deployment safely, use:
+
+\begin{lstlisting}[style=shell]
+deploy remove tutorial-review-studio
+\end{lstlisting}
+
+Studio previews the service state and exact owned paths before it changes
+anything. The default form stops and unregisters the service. It then moves
+the profile, private secrets, generated launch files, bundles, managed
+environment, stable store, SQLite sidecars, and log into a private archive
+below \path{ZIPPERGEN_HOME/trash/deployments}. The deployment disappears from
+\texttt{deploy list}. Project source, specifications, accepted reviews, shared
+model configurations, and shared connector configurations remain. The archive
+preserves the files for manual recovery. Studio does not currently provide an
+automatic restore command.
+
+For deliberate permanent cleanup, use
+\texttt{deploy remove tutorial-review-studio --purge}. This form requires an
+explicit deployment name. Without \texttt{--yes}, Studio also requires you to
+type that exact name. There is no remove-all form. Permanent purge has no
+recovery archive.
 
 You may also provide a deployment name explicitly:
 
@@ -2324,7 +2347,7 @@ Deploy/operate & \texttt{deploy}, then \texttt{deploy show},
 \texttt{deploy tasks}, \texttt{deploy approve},
 \texttt{deploy trace},
 \texttt{deploy logs}, \texttt{deploy restart},
-\texttt{deploy stop} & Named deployment commands,
+\texttt{deploy stop}, and \texttt{deploy remove} & Named deployment commands,
 explicit options, profiles, and service-manager operations. \\
 \bottomrule
 \end{tabularx}
@@ -3828,25 +3851,38 @@ and comments.
 
 \section{Safe stopping, preservation, and cleanup}
 
-If you started the supervised tutorial deployment, stop it before archiving its
-data:
+Inside Studio, one named deployment is one operational unit. The preferred
+cleanup path is:
 
 \begin{lstlisting}[style=shell]
-export ZIPPERGEN_HOME="$HOME/Projects/zippergen-tutorial/tutorial-runtime"
-zippergen stop tutorial-review-service
+deploy stop tutorial-review-service
+deploy remove tutorial-review-service
 \end{lstlisting}
 
-The foreground deployment needs no stop command after it exits. To preserve all
-tutorial profiles, stores, logs, environments, and bundles while keeping the
-Git checkout in place, move the exact runtime directory:
+\texttt{deploy stop} only stops supervision. It preserves every deployment
+artifact. \texttt{deploy remove} shows the exact ownership boundary, stops and
+unregisters the service if needed, and archives the whole deployment under
+\path{ZIPPERGEN_HOME/trash/deployments}. This includes its profile, private
+deployment secrets, launch files, immutable bundle revisions, managed Python
+environment, stable SQLite store and sidecars, and log.
+
+The source checkout and project design remain. Named model configurations and
+connector configurations also remain because other deployments may use them.
+If another deployment refers to an allegedly owned path, Studio refuses
+removal rather than moving shared state.
+
+Use the permanent form only when recovery is not required:
 
 \begin{lstlisting}[style=shell]
-mv "$HOME/Projects/zippergen-tutorial/tutorial-runtime" \
-  "$HOME/Projects/zippergen-tutorial-runtime.saved"
+deploy remove tutorial-review-service --purge
 \end{lstlisting}
 
-If the destination already exists, choose a different explicit name. Moving is
-safer than recursive deletion and keeps the audit trail recoverable.
+The purge command requires the deployment name explicitly and asks you to type
+the exact name before deletion. Scripts may add \texttt{--yes} only after
+performing equivalent checks. There is deliberately no remove-all command.
+The foreground deployment needs no stop command after it exits, but its named
+profile and files still belong to the deployment and can be retired with the
+same \texttt{deploy remove} command.
 
 To reset only this project's private Studio/development context while retaining
 the visible project, reopen Studio from the project root and enter:
@@ -3864,8 +3900,8 @@ keys, model/provider choices, and generated \path{.zippergen} task data are in
 that backup rather than being deleted. The canonical specification, workflow
 source, tests, manifest, Git
 repository, and framework checkout remain where they were. Deployment
-profiles, stores, logs, and running services are not part of this reset; stop
-them separately as shown above. The explicit
+profiles, stores, logs, and running services are not part of this reset; retire
+them separately with \texttt{deploy remove}. The explicit
 \texttt{project reset state --yes} form is intended for scripts after
 equivalent checks, not casual interactive use. To restart the design tutorial
 instead, choose the fresh option from plain \texttt{project reset}; its preview
@@ -4066,6 +4102,7 @@ deploy logs
 deploy restart
 deploy show
 deploy stop
+deploy remove tutorial-review-studio # safe archive after the tutorial
 exit
 \end{lstlisting}
 

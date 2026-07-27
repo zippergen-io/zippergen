@@ -81,6 +81,14 @@ def test_natural_current_request_executes_without_a_model(tmp_path):
         ("What is the deployment status?", "deploy show"),
         ("Show the deploy logs", "deploy logs"),
         ("Stop the deployment", "deploy stop"),
+        (
+            "Remove deployment review-demo",
+            "deploy remove review-demo",
+        ),
+        (
+            "Permanently delete deployment review-demo",
+            "deploy remove review-demo --purge",
+        ),
     ],
 )
 def test_natural_operational_requests_use_the_namespaced_surface(
