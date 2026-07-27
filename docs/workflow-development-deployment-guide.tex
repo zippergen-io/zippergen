@@ -175,7 +175,135 @@ opaque model output as an automatically deployed workflow.
 \tableofcontents
 \newpage
 
-\section{The ZipperGen Studio lifecycle}
+\section{The mental model}
+
+\subsection{A workflow is a global protocol}
+
+Most agent frameworks distribute control logic among agents. ZipperGen instead
+starts with one global protocol: who owns a value, who sends it, who receives
+it, who performs an action, and who owns each decision. From that global code,
+ZipperGen projects an exact local program for every participant.
+
+\begin{figure}[htbp]
+\centering
+\begin{tikzpicture}[node distance=6.5mm]
+  \node[zgstage, text width=22mm] (intent) {Prompt or\\human intent};
+  \node[zgstage, text width=22mm, right=of intent] (source) {Python global\\workflow};
+  \node[zgstage, text width=22mm, right=of source] (verify) {Validate, show,\\and diff};
+  \node[zgstage, text width=22mm, right=of verify] (execute) {Durable\\execution};
+  \node[zgstage, text width=22mm, right=of execute] (deploy) {Named, supervised\\deployment};
+  \draw[zgflow] (intent) -- (source);
+  \draw[zgflow] (source) -- (verify);
+  \draw[zgflow] (verify) -- (execute);
+  \draw[zgflow] (execute) -- (deploy);
+\end{tikzpicture}
+\caption{The prompt-to-production path. The Python workflow remains the
+reviewable source of truth in the middle of the cycle.}
+\label{fig:lifecycle}
+\end{figure}
+
+For a well-formed protocol, every projected send has a corresponding receive.
+The code therefore serves simultaneously as executable behavior, design
+documentation, and an audit surface.
+
+A global protocol does not have to be one monolithic function. Reusable or
+conceptually coherent subsequences can be given meaningful names so that the
+top-level protocol stays a reasonable size. Decorate such a helper with
+\texttt{@fragment}, then call it inside a \texttt{@workflow} body:
+
+\begin{lstlisting}[style=python]
+from zippergen import fragment, workflow
+
+@fragment
+def request_review(draft):
+    Writer(draft) >> Reviewer(draft)
+    Reviewer: approved = review(draft)
+    Reviewer(approved) >> Writer(approved)
+
+@workflow
+def reviewed_answer(request: str @ Requester):
+    Requester(request) >> Writer(request)
+    Writer: draft = write_draft(request)
+    request_review(draft)
+\end{lstlisting}
+
+A fragment is an authoring-time, reusable piece of the same global protocol.
+Its statements are inlined into the surrounding workflow before validation and
+projection; it is not a separately deployed workflow, participant, process, or
+durable run. It can still be useful when called only once if it names a coherent
+protocol stage. Use another top-level \texttt{@workflow} only when the unit
+should be loaded, run, and deployed independently.
+
+\subsection{Important words}
+
+\begin{longtable}{p{0.20\linewidth}p{0.73\linewidth}}
+\toprule
+\textbf{Term} & \textbf{Meaning} \\
+\midrule
+\endhead
+Lifeline & One sequential participant or responsibility boundary. It may
+represent an agent, a person, a mailbox, or an external-system role. \\
+Message & An explicit transfer of one or more values from one lifeline to
+another, written with \texttt{Sender(value) >> Receiver(value)}. \\
+Action & Work performed locally at one lifeline: deterministic computation,
+LLM work, an external effect, human input, or runtime planning. \\
+Owned decision & An \texttt{if} or \texttt{while} guard followed by
+\texttt{@ Lifeline}. That lifeline must know the guard value and owns the
+choice. \\
+Projection & The local program generated for one lifeline from the global
+protocol. \\
+Workflow spec & A CLI reference such as
+\path{zippergen/examples/tutorial_review.py:tutorial_review}: file path, colon, workflow
+object name. It selects an existing workflow object; it does not name a
+deployment. \\
+Store & A SQLite file holding messages, actions, traces, human tasks, and
+workflow results. It enables durable resume and replay. \\
+Human task & A durable pending request created by a \texttt{@human} action. It
+contains the question or rendered content, its pending/completed state, and the
+eventual human decision. \\
+Task ID & The stable internal identifier of a human task. A trusted local
+operator may use it with \texttt{approve --task}. It identifies the task but is
+not intended to be an approval credential in an untrusted external link. \\
+Task token & A durable random bearer value that maps back to one human task.
+External adapters can use it with \texttt{approve --token}; treat it like a
+secret approval link. A token does not create another task. \\
+Token channel & An arbitrary label such as \texttt{email}, \texttt{telegram},
+or \texttt{cli}. It allows the same task to have a separate token for each
+adapter; it is not a workflow message channel. \\
+Deployment profile & Persistent non-secret settings for a named deployment. \\
+Bundle & A timestamped copy of the workflow and its declared support files.
+Deployments run from this snapshot, not from a file that may change halfway
+through execution. \\
+Managed environment & A deployment-specific Python virtual environment with
+ZipperGen and declared packages installed. \\
+Service manager & macOS \texttt{launchd} or Linux user \texttt{systemd}, used
+to start, restart, and supervise a deployment. \\
+\bottomrule
+\end{longtable}
+
+\subsection{Action kinds}
+
+\begin{tabularx}{\linewidth}{p{0.14\linewidth}X X}
+\toprule
+\textbf{Decorator} & \textbf{Use it for} & \textbf{Important property} \\
+\midrule
+\texttt{@pure} & Deterministic local computation & No external I/O or durable
+side effect. \\
+\texttt{@effect} & Email, files, APIs, databases, or other external mutation &
+Make it retry-safe or idempotent. \\
+\texttt{@assistant} & Repository-aware work performed by Codex, Claude Code,
+or a custom assistant backend & The action, Markdown instruction fingerprint,
+typed inputs, owner, and result remain inspectable and durable. \\
+\texttt{@llm} & Model generation or judgment & Declare prompts, parse format,
+and typed outputs. \\
+\texttt{@human} & Confirmation, edit, selection, acknowledgement, or input &
+Creates a durable task in SQLite execution. \\
+\texttt{@planner} & A model-generated allowed sub-workflow at runtime & Not the
+normal mechanism for coding-assistant source generation. \\
+\bottomrule
+\end{tabularx}
+
+\section{Project setup and Studio orientation}
 \label{sec:studio}
 
 ZipperGen Studio is the recommended way to experience the development cycle.
@@ -184,9 +312,9 @@ terminal. It does not replace the operating-system shell, Git, the editor, or
 the visible Python workflow. Instead, it remembers the project context and
 turns the most common operations into short, discoverable commands.
 
-This section records the complete Studio lifecycle, including optional
-configuration and migration details. The shorter companion tutorial deliberately
-omits those branches. Here, the project root contains
+These chapters describe Studio by topic, including optional configuration and
+migration details. The shorter companion tutorial deliberately omits those
+branches. Here, the project root contains
 the canonical specification, generated workflows, tests, and its own Git history; the nested
 \path{zippergen} directory contains the framework checkout. Readers who already
 have both may skip only that first subsection. Section~\ref{sec:install} later
@@ -210,9 +338,9 @@ human tasks inline, and remembers the current workflow, run, view, and named
 deployment for this project.
 \end{notebox}
 
-\subsection{Create the tutorial checkout and local environment}
+\subsection{Create the project and framework checkouts}
 
-Open an ordinary terminal. Create the tutorial project, initialize its Git
+Open an ordinary terminal. Create the example project, initialize its Git
 history, clone the framework below it, and install the framework's command as
 an editable user tool:
 
@@ -327,15 +455,15 @@ outside the Git checkout.}
 \label{fig:studio-path}
 \end{figure}
 
-\subsection{The complete prompt-to-deployment walk-through}
+\section{Specification and workflow development}
 
-This subsection carries out every box in Figure~\ref{fig:studio-path} in small
-steps. It creates a reviewed-answer workflow from a natural-language
-specification. Studio and the coding assistant handle its Python filename and
-symbol. The shipped \path{zippergen/examples/tutorial_review.py:tutorial_review}
-is the deterministic fallback if a coding assistant is not available.
+The following topics explain every box in Figure~\ref{fig:studio-path} using a
+reviewed-answer workflow created from a natural-language specification. Studio
+and the coding assistant handle its Python filename and symbol. The shipped
+\path{zippergen/examples/tutorial_review.py:tutorial_review} is the
+deterministic fallback if a coding assistant is not available.
 
-\subsubsection*{Step 1: open Studio without selecting a workflow}
+\subsection{Initialize the project in Studio}
 
 Keep the first terminal in the Git root and start Studio:
 
@@ -419,8 +547,9 @@ current
 
 Studio creates \path{zippergen.toml} and safe Git
 ignores for \path{.zippergen}, the nested framework checkout, and the optional
-transparent runtime. The manifest and the \path{specification.md} created in
-Step~2 are project source and may be committed. Timestamped tasks, semantic baselines, runs, and secrets remain
+transparent runtime. The manifest and canonical \path{specification.md} are
+project source and may be committed. Timestamped tasks, semantic baselines,
+runs, and secrets remain
 in private Studio state outside the project. Studio mirrors only the current
 generated task at \path{.zippergen/current-task.md}; Git ignores that file.
 Repeating \texttt{project init} is safe; it reports the existing manifest
@@ -446,7 +575,7 @@ This distinction explains the complete restart sequence. Choose the fresh
 design cycle, confirm it, then enter \texttt{project init} and \texttt{workflow
 create}.
 The manifest is genuinely new and the specification contains only the writing
-guide described in Step~2, not the previous requirements. For automation, the
+guide described below, not the previous requirements. For automation, the
 explicit commands are \texttt{project reset fresh --yes} and
 \texttt{project reset state --yes}; ambiguous
 \texttt{project reset --yes} is rejected.
@@ -502,9 +631,10 @@ Studio accepts exact commands as well as ordinary-language requests, and it
 discovers a usable terminal editor automatically. Neither feature needs
 configuration before the first specification. The language, learning,
 settings, and editor controls are collected later in
-Section~\ref{sec:studio-preferences}; continue directly to the creative step.
+Section~\ref{sec:studio-preferences}; continue directly to specification
+authoring.
 
-\subsubsection*{Step 2: write the canonical specification}
+\subsection{Write the canonical specification}
 
 Long requirements do not belong in a single-line terminal question, and the
 user should not have to invent or remember a prompt filename. Enter
@@ -584,7 +714,8 @@ The implementation request asks the assistant to identify participants,
 ownership, messages, action kinds, decisions, loops, deployment needs, safety
 assumptions, and acceptance examples before editing. It also requires tests,
 validation, semantic views, and all exact local projections. No workflow file
-has been created yet; Step~3 starts the coding assistant on this request.
+has been created yet; the implementation subsection starts the coding
+assistant on this request.
 
 Notice that the specification does not choose a Python filename or symbol,
 request tests and validation, or repeat the prohibition on deployment. Those
@@ -641,7 +772,7 @@ Python file is inspected and versioned. ZipperGen never treats opaque model
 output as an automatically deployed workflow.
 \end{notebox}
 
-\subsubsection*{Step 3: choose an assistant and execute the task}
+\subsection{Implement the specification with a coding assistant}
 
 At the same Studio prompt, enter:
 
@@ -813,11 +944,11 @@ git diff
 \end{lstlisting}
 
 Do not commit merely because code was generated. First complete the checks
-below. If generation is unavailable or fails, continue with Step~4 and select
-the shipped \texttt{tutorial\_review} workflow instead. The selector displays
+below. If generation is unavailable or fails, continue with workflow discovery
+and select the shipped \texttt{tutorial\_review} workflow instead. The selector displays
 its internal source reference; the user does not have to type it.
 
-\subsubsection*{Step 4: discover, select, and inspect the generated source}
+\subsection{Discover and select generated workflow source}
 
 Return to the Studio terminal and enter:
 
@@ -862,7 +993,9 @@ selection step automatically. One discovered entry point is selected with an
 explicit notice; several open the numbered selector. In both cases Studio says
 that validation has not yet run.
 
-\subsubsection*{Step 5: inspect increasing degrees of detail}
+\section{Workflow inspection and validation}
+
+\subsection{Inspect increasing degrees of detail}
 
 Enter \texttt{workflow show} and choose the semantic views:
 
@@ -952,7 +1085,9 @@ retry decision, whether every revision returns to human review, whether an
 unapproved draft can reach Requester, and whether both model prompts are
 visible. Do not continue until the code answers all five clearly.
 
-\subsubsection*{Step 6: configure models without shell exports}
+\section{Model configuration and routing}
+
+\subsection{Configure models without shell exports}
 
 Enter:
 
@@ -1004,7 +1139,9 @@ performs no network request. Enter \texttt{models assignments check} to check
 only the effective configurations shown in this table; shared configurations
 are checked once.
 
-\subsubsection*{Step 7: make a durable mock run in one terminal}
+\section{Durable execution, recovery, and stores}
+
+\subsection{Make a durable mock run in one terminal}
 
 Enter \texttt{run}. Before asking for inputs, Studio checks every model
 configuration that is actually used by an LLM-active participant and performs
@@ -1043,7 +1180,7 @@ Enter \texttt{current} and \texttt{runs}. Studio shows a unique managed SQLite
 store even though no filename was typed. Every new \texttt{run} receives a new
 store and never silently reuses an old result.
 
-\paragraph{Inspect the current projected positions.}
+\subsection{Inspect current projected positions}
 After an interrupted run, enter at the Studio prompt:
 
 \begin{lstlisting}[style=shell]
@@ -1075,7 +1212,7 @@ loop-boundary snapshots used for recovery. Studio also withholds local
 environment values, action inputs, and secrets; use task presentation or
 explicit trace inspection when those details are genuinely required.
 
-\paragraph{The store is a first-class Studio object.}
+\subsection{Treat the store as a first-class Studio object}
 Enter:
 
 \begin{lstlisting}[style=shell]
@@ -1111,7 +1248,7 @@ recoverable private trash. \texttt{store delete all} is restricted to stores
 belonging to the current project. Rename and deletion refuse a store referenced
 by a running or restart-looping deployment; stop that deployment first.
 
-\subsubsection*{Step 8: verify crash and resume behavior}
+\subsection{Verify crash and resume behavior}
 
 Start another run and press Control-C at the human prompt. Studio records the
 managed run as interrupted and prints a recovery hint instead of a traceback.
@@ -1160,15 +1297,16 @@ validation, and the development run are satisfactory. Confirm when Studio
 asks. Acceptance does not remove the specification, workflow, tests, run, or
 private implementation history; it only records that this implementation is
 no longer open.
-\texttt{current} will then show no current workflow implementation. The optional
-model-routing step below and later deployment do not require an open assistant
+\texttt{current} will then show no current workflow implementation. Optional
+real-model routing and later deployment do not require an open assistant
 request.
 
-\subsubsection*{Optional Step 9: route two lifelines to different real models}
+\section{Real-model readiness and participant routing}
 
 Only do this after the mock path succeeds and only if you have provider
 accounts, valid model access, and permission to incur API charges. Otherwise
-skip directly to Step~10; the workflow remains fully usable with mock models.
+skip directly to refinement; the workflow remains fully usable with mock
+models.
 
 If you choose this optional step, prepare each provider account before changing
 the Studio profile:
@@ -1342,9 +1480,11 @@ update the canonical specification and visible project files together. It is
 intentionally heavier than routing.
 \end{notebox}
 
-\subsubsection*{Step 10: refine through one pending change}
+\section{Refinement, review, and acceptance}
 
-If Step~9 used paid models, return to deterministic mock execution before
+\subsection{Refine through one pending change}
+
+If paid models are active, return to deterministic mock execution before
 changing behavior unless another paid run is intentional:
 
 \begin{lstlisting}[style=shell]
@@ -1384,7 +1524,8 @@ workflow. Studio saves one semantic pre-edit baseline and the exact pre-edit
 specification. It creates a task containing the
 canonical \path{specification.md}, the pending refinement, the selected
 workflow, and those baselines. Enter \texttt{workflow status} if you want to
-inspect its lifecycle, then \texttt{workflow implement} as in Step~3.
+inspect its lifecycle, then use \texttt{workflow implement} as described
+earlier.
 The assistant is explicitly
 required to integrate the change coherently into \path{specification.md},
 rather than turning that document into a chronological journal; it updates
@@ -1470,7 +1611,7 @@ unwanted edits explicitly. Use
 with implementation history. Accepted specification history remains visible
 in Git.
 
-\subsubsection*{Step 11: perform the pre-deployment review}
+\subsection{Perform the pre-deployment review}
 
 Enter \texttt{workflow show full}. In the ordinary terminal run:
 
@@ -1511,7 +1652,7 @@ git commit -m "Add reviewed answer workflow"
 The commit is a local recovery point. Pushing is a separate choice and is not
 required for local deployment.
 
-\subsubsection*{Step 12: deploy and operate the reviewed workflow}
+\section{Deployment and operation}
 
 First prepare the named deployment without starting a background service. This
 command deploys the immutable accepted source snapshot by default, creates a
@@ -1655,13 +1796,13 @@ may cost money and an \texttt{@effect} may change an external system. Use fake
 services until effects and retry safety have been reviewed.
 \end{warningbox}
 
-\subsection{Alternative track: use the shipped running example}
+\section{Studio command reference with the shipped example}
 
-Use this track if you skipped Codex or want to rehearse Studio against a known,
-versioned result before generating anything. It intentionally repeats the
+Use this section if you skipped Codex or want to inspect Studio against a known,
+versioned result before generating anything. It intentionally collects the
 inspection, mock run, resume, model, and deployment controls using
 \path{zippergen/examples/tutorial_review.py}. If you completed the generated-workflow
-track above and those controls are already clear, skip to
+sections above and those controls are already clear, skip to
 Section~\ref{sec:reference-chapters}.
 
 From the project root, open Studio with the tutorial workflow already
@@ -1927,10 +2068,10 @@ not itself concatenate or rewrite the two documents.
 
 \subsection{Use a real LLM without repeating an API-key export}
 
-Remain on the mock backend until the complete local path works. If you did not
-read Optional Step~9 above, first follow its account, billing, key creation, and
-revocation precautions. When ready, configure one model for Writer and another
-for Reviewer:
+Remain on the mock backend until the complete local path works. First follow
+the account, billing, key-creation, and revocation precautions in the
+real-model readiness section. When ready, configure one model for Writer and
+another for Reviewer:
 
 \begin{lstlisting}[style=shell]
 models provider configure openai
@@ -1976,7 +2117,7 @@ state. Answering \texttt{n} preserves the option to enter a distinct deployment
 credential. A later deployment with the same name keeps its already-saved
 deployment key without asking for it again.
 
-\subsection{Studio language, settings, and editor reference}
+\section{Studio language, settings, and editors}
 \label{sec:studio-preferences}
 
 These controls are useful after the first workflow succeeds, but none is a
@@ -1984,7 +2125,7 @@ prerequisite for writing its specification. Studio's exact commands remain the
 durable, scriptable interface; ordinary language is a discoverability layer
 that always exposes the resulting command plan.
 
-\subsubsection{Commands and ordinary language}
+\subsection{Commands and ordinary language}
 
 At the Studio prompt, requests such as the following use the deterministic
 interpreter and need no model, network, or API key:
@@ -2027,7 +2168,7 @@ may return only a structured plan made from documented Studio commands.
 Studio validates and executes the plan itself; model text is never run as
 shell code.
 
-\subsubsection{Global settings and project-local learning}
+\subsection{Global settings and project-local learning}
 
 Inspect and change the language layer with:
 
@@ -2066,7 +2207,7 @@ Raw CLI output is not learned. Secret-looking requests are rejected before
 interpretation and are not stored. Provider credentials belong in the private
 prompt opened by \texttt{models provider configure}.
 
-\subsubsection{Automatic and explicit terminal editors}
+\subsection{Automatic and explicit terminal editors}
 
 Studio checks an explicit preference, then \texttt{\$VISUAL} and
 \texttt{\$EDITOR}, then installed \texttt{micro}, \texttt{nano},
@@ -2098,7 +2239,7 @@ For a command with arguments, quote the complete value, for example
 \texttt{--editor "code --wait"}. Studio accepts edited files only inside the
 project root and stops when the editor reports failure.
 
-\subsection{Move explicitly from development to deployment}
+\section{The development-to-deployment boundary}
 
 Deployment may install packages, run declared setup such as OAuth, create a
 source bundle and managed environment, and start a macOS or Linux user service.
@@ -2164,7 +2305,7 @@ services, and understand the declared setup and effects. The \texttt{workflow sh
 view exposes prompts and deployment requirements before this transition.
 \end{warningbox}
 
-\subsection{Studio and detailed CLI equivalents}
+\section{Studio and scriptable CLI equivalents}
 
 The rest of this manual intentionally exposes the lower-level operations. Use
 this table to understand why those sections contain more commands.
@@ -2198,15 +2339,17 @@ explicit options, profiles, and service-manager operations. \\
 \bottomrule
 \end{tabularx}
 
-The Studio lifecycle should be enough to make the workflow concrete. The
-detailed path that follows makes it auditable and automatable.
+The topical Studio chapters should be enough to make the workflow concrete.
+The detailed reference that follows makes each operation auditable and
+automatable.
 
-\section{What the reference chapters explain}
+\section{How to use the detailed reference}
 \label{sec:reference-chapters}
 
-The preceding Studio track is the recommended practical cycle. The remaining
-chapters unpack its machinery so that commands can be audited, automated, and
-debugged. They explain how to perform all of the following explicitly:
+The preceding topical chapters describe the recommended practical cycle. The
+remaining reference chapters unpack its machinery so that commands can be
+audited, automated, and debugged. They explain how to perform all of the
+following explicitly:
 
 \begin{enumerate}
   \item Install an isolated Python environment for ZipperGen.
@@ -2335,133 +2478,7 @@ cycle works. The mock backend returns recognizable placeholders such as
 without network calls or charges.
 \end{warningbox}
 
-\section{The mental model}
-
-\subsection{A workflow is a global protocol}
-
-Most agent frameworks distribute control logic among agents. ZipperGen instead
-starts with one global protocol: who owns a value, who sends it, who receives
-it, who performs an action, and who owns each decision. From that global code,
-ZipperGen projects an exact local program for every participant.
-
-\begin{figure}[htbp]
-\centering
-\begin{tikzpicture}[node distance=6.5mm]
-  \node[zgstage, text width=22mm] (intent) {Prompt or\\human intent};
-  \node[zgstage, text width=22mm, right=of intent] (source) {Python global\\workflow};
-  \node[zgstage, text width=22mm, right=of source] (verify) {Validate, show,\\and diff};
-  \node[zgstage, text width=22mm, right=of verify] (execute) {Durable\\execution};
-  \node[zgstage, text width=22mm, right=of execute] (deploy) {Named, supervised\\deployment};
-  \draw[zgflow] (intent) -- (source);
-  \draw[zgflow] (source) -- (verify);
-  \draw[zgflow] (verify) -- (execute);
-  \draw[zgflow] (execute) -- (deploy);
-\end{tikzpicture}
-\caption{The prompt-to-production path. The Python workflow remains the
-reviewable source of truth in the middle of the cycle.}
-\label{fig:lifecycle}
-\end{figure}
-
-For a well-formed protocol, every projected send has a corresponding receive.
-The code therefore serves simultaneously as executable behavior, design
-documentation, and an audit surface.
-
-A global protocol does not have to be one monolithic function. Reusable or
-conceptually coherent subsequences can be given meaningful names so that the
-top-level protocol stays a reasonable size. Decorate such a helper with
-\texttt{@fragment}, then call it inside a \texttt{@workflow} body:
-
-\begin{lstlisting}[style=python]
-from zippergen import fragment, workflow
-
-@fragment
-def request_review(draft):
-    Writer(draft) >> Reviewer(draft)
-    Reviewer: approved = review(draft)
-    Reviewer(approved) >> Writer(approved)
-
-@workflow
-def reviewed_answer(request: str @ Requester):
-    Requester(request) >> Writer(request)
-    Writer: draft = write_draft(request)
-    request_review(draft)
-\end{lstlisting}
-
-A fragment is an authoring-time, reusable piece of the same global protocol.
-Its statements are inlined into the surrounding workflow before validation and
-projection; it is not a separately deployed workflow, participant, process, or
-durable run. It can still be useful when called only once if it names a coherent
-protocol stage. Use another top-level \texttt{@workflow} only when the unit
-should be loaded, run, and deployed independently.
-
-\subsection{Important words}
-
-\begin{longtable}{p{0.20\linewidth}p{0.73\linewidth}}
-\toprule
-\textbf{Term} & \textbf{Meaning} \\
-\midrule
-\endhead
-Lifeline & One sequential participant or responsibility boundary. It may
-represent an agent, a person, a mailbox, or an external-system role. \\
-Message & An explicit transfer of one or more values from one lifeline to
-another, written with \texttt{Sender(value) >> Receiver(value)}. \\
-Action & Work performed locally at one lifeline: deterministic computation,
-LLM work, an external effect, human input, or runtime planning. \\
-Owned decision & An \texttt{if} or \texttt{while} guard followed by
-\texttt{@ Lifeline}. That lifeline must know the guard value and owns the
-choice. \\
-Projection & The local program generated for one lifeline from the global
-protocol. \\
-Workflow spec & A CLI reference such as
-\path{zippergen/examples/tutorial_review.py:tutorial_review}: file path, colon, workflow
-object name. It selects an existing workflow object; it does not name a
-deployment. \\
-Store & A SQLite file holding messages, actions, traces, human tasks, and
-workflow results. It enables durable resume and replay. \\
-Human task & A durable pending request created by a \texttt{@human} action. It
-contains the question or rendered content, its pending/completed state, and the
-eventual human decision. \\
-Task ID & The stable internal identifier of a human task. A trusted local
-operator may use it with \texttt{approve --task}. It identifies the task but is
-not intended to be an approval credential in an untrusted external link. \\
-Task token & A durable random bearer value that maps back to one human task.
-External adapters can use it with \texttt{approve --token}; treat it like a
-secret approval link. A token does not create another task. \\
-Token channel & An arbitrary label such as \texttt{email}, \texttt{telegram},
-or \texttt{cli}. It allows the same task to have a separate token for each
-adapter; it is not a workflow message channel. \\
-Deployment profile & Persistent non-secret settings for a named deployment. \\
-Bundle & A timestamped copy of the workflow and its declared support files.
-Deployments run from this snapshot, not from a file that may change halfway
-through execution. \\
-Managed environment & A deployment-specific Python virtual environment with
-ZipperGen and declared packages installed. \\
-Service manager & macOS \texttt{launchd} or Linux user \texttt{systemd}, used
-to start, restart, and supervise a deployment. \\
-\bottomrule
-\end{longtable}
-
-\subsection{Action kinds}
-
-\begin{tabularx}{\linewidth}{p{0.14\linewidth}X X}
-\toprule
-\textbf{Decorator} & \textbf{Use it for} & \textbf{Important property} \\
-\midrule
-\texttt{@pure} & Deterministic local computation & No external I/O or durable
-side effect. \\
-\texttt{@effect} & Email, files, APIs, databases, or other external mutation &
-Make it retry-safe or idempotent. \\
-\texttt{@assistant} & Repository-aware work performed by Codex, Claude Code,
-or a custom assistant backend & The action, Markdown instruction fingerprint,
-typed inputs, owner, and result remain inspectable and durable. \\
-\texttt{@llm} & Model generation or judgment & Declare prompts, parse format,
-and typed outputs. \\
-\texttt{@human} & Confirmation, edit, selection, acknowledgement, or input &
-Creates a durable task in SQLite execution. \\
-\texttt{@planner} & A model-generated allowed sub-workflow at runtime & Not the
-normal mechanism for coding-assistant source generation. \\
-\bottomrule
-\end{tabularx}
+\section{Assistant actions and connector boundaries}
 
 \subsection{Coding assistants inside an executing workflow}
 
@@ -4023,9 +4040,9 @@ workflow review       # inspect, validate, run, and explicitly accept
 workflow history
 \end{lstlisting}
 
-The listing above stays on the free mock backend. Only after following Optional
-Step~9's account, billing, and key-safety instructions, the optional paid-model
-commands are:
+The listing above stays on the free mock backend. Only after following the
+account, billing, and key-safety instructions in the real-model readiness
+section, the optional paid-model commands are:
 
 \begin{lstlisting}[style=shell]
 models provider configure openai
@@ -4157,7 +4174,7 @@ zippergen deploy tutorial-review --yes
 zippergen stop tutorial-review
 \end{lstlisting}
 
-\section{Complete tutorial source}
+\section{Complete running-example source}
 \label{app:source}
 
 The listing below is imported from the executable file at document build time.

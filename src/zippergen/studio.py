@@ -8234,7 +8234,7 @@ class Studio:
             )
         self._emit_columns(
             "Participant positions",
-            ("Focus", "Participant", "State", "Current position", "For"),
+            ("Focus", "Participant", "State", "Current position", "Elapsed"),
             rows,
         )
         if focus is not None:

@@ -220,6 +220,7 @@ def test_studio_inspects_current_run_with_a_local_program_pointer(tmp_path):
     studio.execute("run inspect Writer")
 
     assert any(line == "Execution context" for line in output)
+    assert any("Current position" in line and "Elapsed" in line for line in output)
     assert any("Writer" in line and "running model action" in line for line in output)
     assert any("▶" in line and "result = echo(value)" in line for line in output)
     assert any("workflow variables and action inputs" in line for line in output)
