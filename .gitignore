@@ -50,8 +50,6 @@ docs/*.log
 docs/*.out
 docs/*.synctex*
 docs/*.toc
-docs/first-workflow.pdf
-docs/workflow-development-deployment-guide.pdf
 
 # Local state created while following the development/deployment tutorial
 /tutorial-runtime/
