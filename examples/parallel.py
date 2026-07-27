@@ -4,8 +4,7 @@
 
 The orchestrator prepares a merge candidate. The test runner and security
 checker work independently, and the committer waits for both results before
-making the final decision. In ZipperChat, the two parallel branches are shown
-with their branch labels while the global event order is still preserved.
+making the final decision.
 """
 
 import time
@@ -62,9 +61,5 @@ def merge_candidate(candidate: str @ Orchestrator) -> str:
 
 
 if __name__ == "__main__":
-    merge_candidate.configure(llms="mock", ui=True, timeout=30)
+    merge_candidate.configure(llms="mock", timeout=30)
     print(merge_candidate(candidate="patch-17 on main@8fd2"))
-    try:
-        input("\nZipperChat is running at http://localhost:8765\nPress Enter to stop.\n")
-    except EOFError:
-        pass

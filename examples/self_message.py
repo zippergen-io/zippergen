@@ -51,7 +51,6 @@ def self_message(n: int @ A) -> int:
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    self_message.configure(llms="mock", ui=True)
+    self_message.configure(llms="mock")
     r = self_message(n=3)
     print(f"\nResult: {r}")   # expected: 6
-    input("\nPress Enter to exit...")

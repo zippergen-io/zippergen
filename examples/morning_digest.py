@@ -181,7 +181,6 @@ if __name__ == "__main__":
     inbox_triage.configure(
         llms="mistral",
         # llms="mock",
-        ui=True,
         timeout=120,
     )
     result = inbox_triage(query="latest unread email")
@@ -189,5 +188,3 @@ if __name__ == "__main__":
     print("TRIAGE RESULT")
     print('='*60)
     print(result)
-
-    input("\nZipperChat is running at http://localhost:8765 . Press Enter to close. ")

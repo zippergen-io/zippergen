@@ -1042,12 +1042,15 @@ if __name__ == "__main__":
     parser.add_argument("--mock", action="store_true", help="Shortcut for --llm mock --services fake.")
     parser.add_argument("--openai", action="store_true", help="Shortcut for --llm openai:gpt-4o --services live.")
     parser.add_argument("--live", action="store_true", help="Shortcut for --llm ollama:qwen2.5:7b --services live.")
-    parser.add_argument("--no-ui", action="store_true", help="Run without ZipperChat.")
     parser.add_argument("--timeout", type=float, default=3600.0, help="Workflow timeout in seconds; use 0 for no deadline.")
     parser.add_argument("--llm-idle-timeout", type=float, help="Release a managed local LLM after this many idle seconds.")
     parser.add_argument("--store", dest="store_path", help="SQLite store path.")
-    parser.add_argument("--execution", choices=("sqlite", "memory"), help="Execution backend.")
-    parser.add_argument("--show-decisions", action="store_true", help="Show branch/control events in ZipperChat.")
+    parser.add_argument(
+        "--execution",
+        choices=("sqlite", "memory"),
+        default="memory",
+        help="Execution backend. The direct example defaults to terminal-friendly memory mode.",
+    )
     args = parser.parse_args()
 
     preset_count = int(args.mock) + int(args.openai) + int(args.live)
@@ -1073,14 +1076,10 @@ if __name__ == "__main__":
     print(f"Services: {services}")
     command_center.configure(
         llm_spec,
-        ui=not args.no_ui,
         timeout=args.timeout,
         llm_idle_timeout=args.llm_idle_timeout,
-        show_decisions=args.show_decisions,
         execution=args.execution,
         store_path=args.store_path,
     )
 
     command_center()
-    if not args.no_ui:
-        input("ZipperChat running at http://localhost:8765. Press Enter to exit. ")

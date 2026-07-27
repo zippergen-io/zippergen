@@ -115,10 +115,8 @@ def reviewed_execution(task: str @ Planner) -> str:
 if __name__ == "__main__":
     reviewed_execution.configure(
         llms="mock",
-        ui=True,
         timeout=60,
         mock_delay=(5.0, 10.0),
     )
     final = reviewed_execution(task="Build a REST API for a to-do list application.")
     print(f"\nResult → {final}")
-    input("ZipperChat is running at http://localhost:8765 . Press Enter to close. ")

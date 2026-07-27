@@ -47,6 +47,5 @@ def crossing_messages(item: str @ Sender) -> str:
 
 
 if __name__ == "__main__":
-    crossing_messages.configure(llms="mock", ui=True, timeout=30)
+    crossing_messages.configure(llms="mock", timeout=30)
     print(crossing_messages(item="batch-4"))
-    input("\nZipperChat is running at http://localhost:8765\nPress Enter to stop.\n")

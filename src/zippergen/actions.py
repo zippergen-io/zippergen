@@ -217,7 +217,7 @@ def pure(fn: Callable | None = None, *, visible: bool = True):
         def check_agreement(v1: bool, v2: bool) -> bool:
             return v1 == v2
 
-    Pass ``visible=False`` to suppress ZipperChat trace events:
+    Pass ``visible=False`` to suppress trace events:
 
         @pure(visible=False)
         def wait_briefly() -> str: ...

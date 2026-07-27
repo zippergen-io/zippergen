@@ -1704,7 +1704,6 @@ if __name__ == "__main__":
     parser.add_argument("--max-messages", type=int)
     parser.add_argument("--timeout", type=float, default=0.0)
     parser.add_argument("--llm-idle-timeout", type=float)
-    parser.add_argument("--no-ui", action="store_true")
     args = parser.parse_args()
 
     configure_call_intake(
@@ -1725,7 +1724,6 @@ if __name__ == "__main__":
         execution="sqlite",
         store_path=args.store_path,
         timeout=args.timeout,
-        ui=not args.no_ui,
         llm_idle_timeout=args.llm_idle_timeout,
     )
     call_intake()

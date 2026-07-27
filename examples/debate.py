@@ -229,9 +229,7 @@ if __name__ == "__main__":
     debate.configure(
         llms={"Pro": "openai", "Con": "openai", "Judge": "openai"},
         # llms="mock",
-        ui=True,
         timeout=600,
     )
     result = debate(topic="AI should replace human judges in courtrooms")
     print(f"\nVerdict → {result}")
-    input("ZipperChat is running at http://localhost:8765 . Press Enter to close. ")

@@ -1,5 +1,9 @@
 # Human-in-the-Loop Implementation Plan
 
+> **Historical note:** The browser UI parts of this plan were retired on
+> 27 July 2026. The durable `@human` and SQLite task implementation remains
+> active. See [the retirement decision](../../decisions/2026-07-27-retire-zipperchat.md).
+>
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add a `@human` action decorator so a human lifeline can participate in ZipperGen workflows as a first-class agent, blocking for real input (CLI or ZipperChat) at runtime.

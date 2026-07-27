@@ -9,10 +9,7 @@ import hashlib
 import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Union
-
-if TYPE_CHECKING:
-    from zipperchat import WebTrace as _WebTrace
+from typing import Union
 
 __all__ = [
     # Types
@@ -253,7 +250,7 @@ class PureAction:
     inputs: tuple[tuple[str, ZType], ...]
     outputs: tuple[tuple[str, ZType], ...]
     fn: Callable[..., object]
-    visible: bool = True   # False → skip trace events (no ZipperChat card)
+    visible: bool = True   # False means skip trace events.
 
     def __repr__(self) -> str:
         ins = ", ".join(f"{n}: {t.__name__}" for n, t in self.inputs)
@@ -721,17 +718,11 @@ class _WorkflowRuntime:
     _backend: object = field(default=None, repr=False)
     _trace: object = field(default=None, repr=False)
     _timeout: float = field(default=60.0, repr=False)
-    _webtrace: _WebTrace | None = field(default=None, repr=False)
-    _ui_enabled: bool = field(default=False, repr=False)
     _run_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
-    _replay_thread: object = field(default=None, repr=False)
-    _last_kwargs: dict[str, object] = field(default_factory=dict, repr=False)
     _human_backend: object = field(default=None, repr=False)
     _assistant_backend: object = field(default=None, repr=False)
     _execution: str = field(default="sqlite", repr=False)
     _store_path: str | None = field(default=None, repr=False)
-    _store_tmpdir: object = field(default=None, repr=False)
-    _ephemeral_store_path: str | None = field(default=None, repr=False)
 
 
 @dataclass
@@ -763,27 +754,7 @@ class Workflow:
     def _timeout(self, v): self._rt._timeout = v
 
     @property
-    def _webtrace(self): return self._rt._webtrace
-    @_webtrace.setter
-    def _webtrace(self, v): self._rt._webtrace = v
-
-    @property
-    def _ui_enabled(self): return self._rt._ui_enabled
-    @_ui_enabled.setter
-    def _ui_enabled(self, v): self._rt._ui_enabled = v
-
-    @property
     def _run_lock(self): return self._rt._run_lock
-
-    @property
-    def _replay_thread(self): return self._rt._replay_thread
-    @_replay_thread.setter
-    def _replay_thread(self, v): self._rt._replay_thread = v
-
-    @property
-    def _last_kwargs(self): return self._rt._last_kwargs
-    @_last_kwargs.setter
-    def _last_kwargs(self, v): self._rt._last_kwargs = v
 
     @property
     def _human_backend(self): return self._rt._human_backend
@@ -820,10 +791,8 @@ class Workflow:
                   trace:   object = None,
                   timeout: float  = 60.0,
                   llms: str | Mapping[str, str | Callable] | None = None,
-                  ui: bool | None = None,
                   mock_delay: tuple[float, float] = (1.0, 2.0),
                   llm_idle_timeout: float | None = None,
-                  show_decisions: bool = False,
                   execution: str | None = None,
                   store_path: str | None = None,
                   human_backend: object | None = None,
@@ -837,17 +806,15 @@ class Workflow:
         llm     : compact LLM spec such as ``"mock"``, ``"openai:gpt-4o"``,
                   or ``"ollama:qwen2.5:7b"``.  A mapping routes individual
                   lifelines by name.  This may also be passed positionally:
-                  ``workflow.configure("openai:gpt-4o", ui=True)``.
+                  ``workflow.configure("openai:gpt-4o")``.
         backend : LLM backend callable ``(action, inputs_dict) → outputs_dict``.
                   Defaults to the built-in mock backend.
         trace   : trace callable passed to ``run()``.
         timeout : per-thread timeout in seconds (default 60).
         llms    : backward-compatible alias for ``llm``.
-        ui      : if true, start ZipperChat and mirror the execution there.
         mock_delay : delay range used by the mock backend when ``llm="mock"``.
         llm_idle_timeout : for local managed backends such as Ollama, release
                   the model after this many seconds without LLM calls.
-        show_decisions : if true, show decision/control-broadcast markers in ZipperChat.
         execution : ``"sqlite"`` (default) or ``"memory"`` for the legacy
                     in-process runner.
         store_path : optional SQLite store path used when ``execution="sqlite"``.
@@ -863,9 +830,8 @@ class Workflow:
         """
         from zippergen.runtime import _workflow_configure
         return _workflow_configure(self, llm=llm, backend=backend, trace=trace, timeout=timeout,
-                                   llms=llms, ui=ui, mock_delay=mock_delay,
+                                   llms=llms, mock_delay=mock_delay,
                                    llm_idle_timeout=llm_idle_timeout,
-                                   show_decisions=show_decisions,
                                    execution=execution, store_path=store_path,
                                    human_backend=human_backend,
                                    assistant=assistant,
@@ -875,10 +841,6 @@ class Workflow:
     def _run_once(self, kwargs: dict[str, object]) -> object:
         from zippergen.runtime import _workflow_run_once
         return _workflow_run_once(self, kwargs)
-
-    def _ensure_replay_loop(self) -> None:
-        from zippergen.runtime import _workflow_ensure_replay_loop
-        _workflow_ensure_replay_loop(self)
 
     def __call__(self, **kwargs: object) -> object:
         """Run this workflow like a regular Python function."""

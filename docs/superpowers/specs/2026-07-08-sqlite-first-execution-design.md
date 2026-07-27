@@ -3,6 +3,10 @@
 **Date:** 2026-07-08
 **Status:** Draft
 
+**Historical note:** References to browser trace events describe the runtime
+before the browser viewer was retired on 27 July 2026. See
+[the retirement decision](../../decisions/2026-07-27-retire-zipperchat.md).
+
 ## Overview
 
 ZipperGen currently has two execution shapes:

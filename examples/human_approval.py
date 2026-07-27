@@ -80,10 +80,6 @@ def approval_workflow(request: str @ Planner) -> str:
 
 
 if __name__ == "__main__":
-    approval_workflow.configure(llms="mock", ui=True)
+    approval_workflow.configure(llms="mock", execution="memory")
     result = approval_workflow(request="organise a team offsite")
     print(f"\nResult → {result}")
-    try:
-        input("\nZipperChat is running at http://localhost:8765\nPress Enter to stop, or click Run again in the browser.\n")
-    except EOFError:
-        pass

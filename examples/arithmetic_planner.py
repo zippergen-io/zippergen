@@ -106,8 +106,6 @@ if __name__ == "__main__":
 
     arithmetic_planner.configure(
         llms={"Planner": make_openai_backend(api_key=os.environ["OPENAI_API_KEY"], model="gpt-4o")},
-        ui=True,
-        show_decisions=True,
         timeout=120,
     )
 
@@ -115,4 +113,3 @@ if __name__ == "__main__":
     print(f"Expression: {expr}")
     result = arithmetic_planner(expression=expr)
     print(f"\nResult: {result}")
-    input("\nZipperChat is running at http://localhost:8765 . Press Enter to close. ")

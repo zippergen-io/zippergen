@@ -43,7 +43,7 @@ def generated_workflow() -> float:
         assert action.name == "_generate_spec"
         return {"workflow_spec": spec}
 
-    planned_float.configure(backend=backend, ui=False, timeout=5)
+    planned_float.configure(backend=backend, timeout=5)
 
     assert plan_float.outputs == (("plan_float", float),)
     assert planned_float(expression="2 - 4") == -2.0
@@ -72,7 +72,7 @@ def generated_workflow() -> float:
             return {"workflow_spec": invalid_spec}
         return {"workflow_spec": valid_second_spec}
 
-    planned_float.configure(backend=backend, ui=False, timeout=5)
+    planned_float.configure(backend=backend, timeout=5)
 
     with pytest.raises(RuntimeError) as exc:
         planned_float(expression="2 - 4")

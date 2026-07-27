@@ -188,7 +188,7 @@ def _run_one(
         row["error"] = str(exc)
         return row
 
-    arithmetic_planner.configure(backend=backend, ui=False, timeout=timeout)
+    arithmetic_planner.configure(backend=backend, timeout=timeout)
 
     buffer = io.StringIO()
     started = time.perf_counter()

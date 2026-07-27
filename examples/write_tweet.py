@@ -92,10 +92,6 @@ def write_tweet(topic: str @ User) -> str:
 if __name__ == "__main__":
     # No API key needed — runs with the built-in mock backend.
     # Switch to a real LLM: write_tweet.configure(llms="openai")
-    write_tweet.configure(llms="mock", ui=True, mock_delay=(0.5, 1.5))
+    write_tweet.configure(llms="mock", mock_delay=(0.5, 1.5))
     result = write_tweet(topic="a git commit message that tells the truth")
     print(f"\nResult: {result}")
-    try:
-        input("ZipperChat is running at http://localhost:8765 . Press Enter to close. ")
-    except EOFError:
-        pass

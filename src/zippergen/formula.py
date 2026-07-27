@@ -308,7 +308,8 @@ def atom(fn: Callable[..., bool], src: str = "") -> AtomicFormula:
     """Wrap a Python callable as an atomic CPL predicate.
 
     fn  : dict -> bool, or (dict, EventContext) -> bool.
-    src : optional display string for ZipperChat; defaults to fn.__name__.
+    src : optional display string for trace and diagnostic output; defaults to
+          fn.__name__.
     """
     return AtomicFormula(fn=fn, src=src or getattr(fn, "__name__", ""))
 

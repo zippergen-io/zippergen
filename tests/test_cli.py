@@ -744,6 +744,8 @@ def test_guided_deploy_persists_config_and_private_secrets(tmp_path, monkeypatch
     assert profile["options"]["prefix"] == "hello"
     assert profile["environment"] == {"DEMO_MODE": "safe"}
     assert profile["secret_names"] == ["DEMO_TOKEN"]
+    assert "ui" not in profile
+    assert "show_decisions" not in profile
     assert "top-secret" not in profile_text
     assert json.loads(secrets_path.read_text()) == {"DEMO_TOKEN": "top-secret"}
     assert secrets_path.stat().st_mode & 0o077 == 0
@@ -889,6 +891,12 @@ def test_configure_keeps_existing_secret_when_updating_public_field(tmp_path, mo
     ])
     capsys.readouterr()
 
+    profile_path = zippergen_home / "deployments" / "guided-prod.json"
+    legacy_profile = json.loads(profile_path.read_text())
+    legacy_profile["ui"] = True
+    legacy_profile["show_decisions"] = True
+    profile_path.write_text(json.dumps(legacy_profile))
+
     rc = main([
         "configure",
         "guided-prod",
@@ -903,7 +911,17 @@ def test_configure_keeps_existing_secret_when_updating_public_field(tmp_path, mo
     secrets = json.loads((zippergen_home / "deployments" / "guided-prod.secrets.json").read_text())
     assert rc == 0
     assert profile["options"]["prefix"] == "updated"
+    assert "ui" not in profile
+    assert "show_decisions" not in profile
     assert secrets == {"DEMO_TOKEN": "top-secret"}
+
+
+@pytest.mark.parametrize("flag", ["--ui", "--show-decisions"])
+def test_run_rejects_retired_browser_flags(flag):
+    with pytest.raises(SystemExit) as exc:
+        main(["run", "unused.py:workflow", flag])
+
+    assert exc.value.code == 2
 
 
 def test_logs_command_tails_deployment_log(tmp_path, monkeypatch, capsys):

@@ -14,9 +14,6 @@ The recommended deployment shape is:
 6. You inspect the system with `zippergen status`, `zippergen logs`, and
    `zippergen trace`.
 
-ZipperChat can still be useful for visualization, but browser approval is
-legacy. For deployed systems, SQLite is the source of truth.
-
 `zippergen run` is useful for experiments. `zippergen serve` is a legacy,
 low-level per-role command; neither is the normal long-running deployment path.
 

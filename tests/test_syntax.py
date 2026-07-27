@@ -1,13 +1,21 @@
 """Tests for Layer 1: IR nodes, participation_set, and seq."""
 
+import inspect
 import pytest
 
 from zippergen.syntax import (
     EmptyStmt, MsgStmt, CoregionStmt, ActStmt, SkipStmt, SeqStmt, IfStmt, WhileStmt,
     SendStmt, RecvStmt, ReceiveAnyStmt, IfRecvStmt, WhileRecvStmt,
-    Lifeline, Var, VarExpr, LitExpr,
+    Lifeline, Var, VarExpr, LitExpr, Workflow,
     participation_set, seq,
 )
+
+
+def test_workflow_configure_has_no_retired_browser_options():
+    parameters = inspect.signature(Workflow.configure).parameters
+
+    assert "ui" not in parameters
+    assert "show_decisions" not in parameters
 
 
 # ---------------------------------------------------------------------------

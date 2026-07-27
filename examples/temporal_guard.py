@@ -76,7 +76,6 @@ def guarded_execution(request: str @ Orchestrator) -> str:
 
 
 if __name__ == "__main__":
-    guarded_execution.configure(llms="mock", ui=True)
+    guarded_execution.configure(llms="mock")
     r = guarded_execution(request="organise a team offsite")
     print(f"\nResult → {r}")
-    input("\nZipperChat is running at http://localhost:8765\nPress Enter to stop.\n")

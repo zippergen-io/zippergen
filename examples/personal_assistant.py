@@ -295,7 +295,7 @@ if __name__ == "__main__":
     import sys
 
     if "--mock" in sys.argv:
-        inbox_assistant.configure(llms="mock", ui=True, timeout=60)
+        inbox_assistant.configure(llms="mock", execution="memory", timeout=60)
 
     elif "--live" in sys.argv:
         import importlib.util
@@ -314,7 +314,7 @@ if __name__ == "__main__":
             max_tokens=512,
             timeout=120,
         )
-        inbox_assistant.configure(backend=backend, ui=True, timeout=600)
+        inbox_assistant.configure(backend=backend, execution="memory", timeout=600)
 
     else:
         backend = make_openai_backend(
@@ -324,8 +324,7 @@ if __name__ == "__main__":
             max_tokens=512,
             timeout=120,
         )
-        inbox_assistant.configure(backend=backend, ui=True, timeout=600)
+        inbox_assistant.configure(backend=backend, execution="memory", timeout=600)
 
     result = inbox_assistant()
     print(f"\nResult: {result}")
-    input("ZipperChat running at http://localhost:8765. Press Enter to exit. ")

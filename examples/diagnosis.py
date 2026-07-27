@@ -142,7 +142,6 @@ if __name__ == "__main__":
     diagnosis_consensus.configure(
         llms={"LLM1": "openai", "LLM2": "openai"},
         # llms="mock",
-        ui=True,
         timeout=600,
     )
     result = diagnosis_consensus(
@@ -158,4 +157,3 @@ if __name__ == "__main__":
         diagnosis="Pulmonary embolism",
     )
     print(f"\nResult → {result}")
-    input("ZipperChat is running at http://localhost:8765 . Press Enter to close. ")

@@ -196,7 +196,7 @@ def test_ollama_backend_idle_timeout_unloads_model(monkeypatch):
 
 
 def test_workflow_configure_accepts_positional_llm_spec():
-    config_workflow.configure("mock", ui=False, execution="memory", timeout=5)
+    config_workflow.configure("mock", execution="memory", timeout=5)
 
     assert config_workflow(topic="hello") == "[config_reply:draft]"
 

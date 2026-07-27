@@ -103,7 +103,7 @@ def review_gate(rev: str @ Publisher, gk: str @ Publisher, doc: str @ Publisher)
 
 
 if __name__ == "__main__":
-    review_gate.configure(llms="mock", ui=True)
+    review_gate.configure(llms="mock")
 
     print("Run 1 — matching versions, sufficient content:")
     r = review_gate(rev="v1.0", gk="v1.0", doc="A well-written document ready for release")
@@ -116,5 +116,3 @@ if __name__ == "__main__":
     print("Run 3 — version mismatch (Gatekeeper updated to v2.0, Reviewer still on v1.0):")
     r = review_gate(rev="v1.0", gk="v2.0", doc="A well-written document ready for release")
     print(f"  → {r}\n")
-
-    input("ZipperChat is running at http://localhost:8765\nPress Enter to stop.\n")

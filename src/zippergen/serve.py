@@ -122,10 +122,8 @@ class RunConfig:
     store_path: str | None
     inputs: dict[str, object]
     options: dict[str, object]
-    ui: bool
     timeout: float
     execution: str
-    show_decisions: bool
 
     def option(self, name: str, default: object = None) -> object:
         return self.options.get(name, default)
@@ -471,10 +469,8 @@ def _run_args_from_deployment(profile: dict[str, object]):
         input_json=json.dumps(profile.get("inputs") or {}, default=str),
         option=_jsonable_kv_pairs(profile.get("options") or {}),  # type: ignore[arg-type]
         services=profile.get("services") or None,
-        ui=bool(profile.get("ui", False)),
         timeout=timeout,
         execution=str(profile.get("execution", "sqlite")),
-        show_decisions=bool(profile.get("show_decisions", False)),
     )
 
 
@@ -1765,20 +1761,16 @@ def _run_workflow_command(args) -> int:
         store_path=store_path,
         inputs=inputs,
         options=options,
-        ui=args.ui,
         timeout=args.timeout,
         execution=args.execution,
-        show_decisions=args.show_decisions,
     )
     _call_setup_hook(module, config)
 
     configure_kwargs = {
-        "ui": args.ui,
         "timeout": args.timeout,
         "llm_idle_timeout": args.llm_idle_timeout,
         "execution": args.execution,
         "store_path": store_path,
-        "show_decisions": args.show_decisions,
         "assistant": args.assistant,
         "assistant_root": str(Path.cwd()),
     }
@@ -1794,8 +1786,6 @@ def _run_workflow_command(args) -> int:
 
     result = wf(**inputs)
     print(json.dumps({"result": result}, default=str))
-    if args.ui and sys.stdin.isatty():
-        input("ZipperChat running at http://localhost:8765. Press Enter to exit. ")
     return 0
 
 
@@ -2717,6 +2707,9 @@ def _apply_deploy_arguments(
     spec: DeploymentSpec,
     workflow: Workflow,
 ) -> tuple[dict[str, object], dict[str, str]]:
+    # Remove fields written by the retired browser viewer.
+    profile.pop("ui", None)
+    profile.pop("show_decisions", None)
     if args.llm is not None:
         profile["llm"] = args.llm
     llms = normalize_llm_overrides(profile.get("llms"))
@@ -2741,10 +2734,6 @@ def _apply_deploy_arguments(
         profile["store"] = _ensure_store_parent(args.store)
     if args.log is not None:
         profile["log"] = str(Path(args.log).expanduser())
-    if args.ui is not None:
-        profile["ui"] = args.ui
-    if args.show_decisions is not None:
-        profile["show_decisions"] = args.show_decisions
     project_root = getattr(args, "project_root", None)
     if project_root:
         profile["project_root"] = str(Path(project_root).expanduser().resolve())
@@ -2939,8 +2928,6 @@ def _deploy_command(args) -> int:
                 "environment": {},
                 "timeout": 0.0,
                 "execution": "sqlite",
-                "ui": False,
-                "show_decisions": False,
                 "created_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
                 "python": sys.executable,
             }
@@ -3003,8 +2990,6 @@ def _deploy_local_command(args) -> int:
         "inputs": inputs,
         "timeout": args.timeout,
         "execution": "sqlite",
-        "ui": args.ui,
-        "show_decisions": args.show_decisions,
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "python": sys.executable,
     }
@@ -3292,8 +3277,6 @@ def _add_guided_deployment_arguments(
     parser.add_argument("--concise", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--services", choices=("fake", "live"), help="Workflow service mode.")
     parser.add_argument("--timeout", type=float, help="Workflow timeout; defaults to 0 (no deadline).")
-    parser.add_argument("--ui", action="store_true", default=None, help="Start legacy ZipperChat visualization.")
-    parser.add_argument("--show-decisions", action="store_true", default=None, help="Show control events in ZipperChat.")
     parser.add_argument("--yes", action="store_true", help="Accept defaults and existing environment values without prompting.")
     if configure:
         parser.add_argument("--install", dest="no_install", action="store_false", help="Update the managed Python environment.")
@@ -3363,10 +3346,8 @@ def main(argv=None) -> int:
     rn.add_argument("--input-json", help="Workflow inputs as a JSON object.")
     rn.add_argument("--option", action="append", default=[], metavar="name=value", help="Option passed to zippergen_setup(config).")
     rn.add_argument("--services", choices=("fake", "live"), help="Shortcut for --option services=<value>.")
-    rn.add_argument("--ui", action="store_true", help="Start legacy ZipperChat visualization; approvals still live in SQLite.")
     rn.add_argument("--timeout", type=float, default=60.0, help="Workflow timeout in seconds; use 0 for no deadline.")
     rn.add_argument("--execution", choices=("sqlite", "memory"), default="sqlite", help="Execution backend.")
-    rn.add_argument("--show-decisions", action="store_true", help="Show branch/control events in ZipperChat.")
 
     show = sub.add_parser("show", help="render a workflow as a code-first semantic view")
     show.add_argument("workflow", help="Workflow spec: module:workflow or path.py:workflow")
@@ -3426,9 +3407,7 @@ def main(argv=None) -> int:
     dl.add_argument("--input-json", help="Workflow inputs as a JSON object.")
     dl.add_argument("--option", action="append", default=[], metavar="name=value", help="Option passed to zippergen_setup(config).")
     dl.add_argument("--services", choices=("fake", "live"), help="Shortcut stored as services=<value>.")
-    dl.add_argument("--ui", action="store_true", help="Start legacy ZipperChat visualization when the deployment runs.")
     dl.add_argument("--timeout", type=float, default=0.0, help="Workflow timeout in seconds; default 0 for no deadline.")
-    dl.add_argument("--show-decisions", action="store_true", help="Show branch/control events in ZipperChat.")
     dl.add_argument("--force", action="store_true", help="Overwrite an existing deployment profile.")
     dl.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
 

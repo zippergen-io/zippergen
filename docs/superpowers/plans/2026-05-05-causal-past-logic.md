@@ -1,5 +1,9 @@
 # Causal Past Logic — Runtime Verification Implementation Plan
 
+> **Historical note:** The browser visualization parts of this plan were
+> retired on 27 July 2026. CPL remains active. See
+> [the retirement decision](../../decisions/2026-07-27-retire-zipperchat.md).
+>
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Extend ZipperGen's `if`/`while` guards with Causal Past Logic (CPL) formulas evaluated locally via vector-clock–based online monitoring, and surface guard verdicts visually in ZipperChat.

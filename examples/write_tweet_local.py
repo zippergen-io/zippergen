@@ -85,7 +85,6 @@ if __name__ == "__main__":
         max_tokens=256,
         timeout=120,
     )
-    write_tweet_local.configure(backend=backend, ui=True, timeout=300)
+    write_tweet_local.configure(backend=backend, timeout=300)
     result = write_tweet_local(topic="a git commit message that tells the truth")
     print(f"\nResult: {result}")
-    input("ZipperChat is running at http://localhost:8765 . Press Enter to close. ")

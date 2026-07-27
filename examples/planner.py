@@ -64,7 +64,6 @@ def open_planner_agent(request: str @ User, job_desc: str @ User, cv_sketch: str
 if __name__ == "__main__":
     open_planner_agent.configure(
         llms={"Planner": "openai"},
-        ui=True,
         timeout=300,
     )
 
@@ -87,4 +86,3 @@ if __name__ == "__main__":
     print("RESULT")
     print("=" * 60)
     print(result_val)
-    input("\nZipperChat is running at http://localhost:8765 . Press Enter to close. ")

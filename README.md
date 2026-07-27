@@ -5,24 +5,24 @@
 <p align="center">
   <a href="https://github.com/zippergen-io/zippergen/actions/workflows/test.yml"><img src="https://github.com/zippergen-io/zippergen/actions/workflows/test.yml/badge.svg" alt="Tests"></a>
   <a href="https://arxiv.org/abs/2604.17612"><img src="https://img.shields.io/badge/arXiv-2604.17612-b31b1b.svg" alt="arXiv"></a>
-  <a href="https://github.com/zippergen-io/paper-isola/tree/main/Lean"><img src="assets/lean-formalized.svg" alt="Lean formalized"></a>
-  <a href="https://github.com/zippergen-io/paper-isola/tree/main/Lean"><img src="assets/lean.svg" alt="Lean verified"></a>
 </p>
 
-ZipperGen turns readable multi-participant Python protocols into durable
-services that you can inspect, recover, and operate.
+Multi-agent systems scatter coordination across agents and callbacks. The
+complete message order becomes hard to read, and a blocked run is hard to
+diagnose.
 
-You write one global workflow. It states who owns each value, who sends each
-message, who calls an LLM or tool, and who makes each decision. ZipperGen
-projects that workflow into one exact local program for every participant.
+ZipperGen puts that coordination in one readable Python protocol. It projects
+the protocol into a local program for each participant, runs them durably,
+shows exactly where each participant is waiting, and deploys the result as a
+real service.
 
-Studio connects design and operation. It helps you create the workflow, inspect
-the protocol, configure models, run it durably, review it, and deploy an
-immutable bundle. The formal model gives the system its coordination
-guarantees.
+Coordination deadlocks are ruled out by construction, not by runtime checks.
+This guarantee applies to well-formed workflows in ZipperGen's supported
+language.
 
 ## Contents
 
+- [See the current program position](#see-the-current-program-position)
 - [Quick start](#quick-start)
 - [What Studio looks like](#what-studio-looks-like)
 - [Why protocols](#why-protocols)
@@ -155,12 +155,8 @@ ZipperGen is based on [Message Sequence
 Charts](https://en.wikipedia.org/wiki/Message_sequence_chart) and
 [choreographic programming](https://en.wikipedia.org/wiki/Choreographic_programming).
 
-ZipperChat remains available as an optional local message-sequence view:
-
-![ZipperChat message sequence chart](assets/zipperchat-msc.png)
-
-The terminal projections are better for long-running loops. The MSC remains
-useful when you want to explain a short protocol or inspect a short trace.
+Message Sequence Charts are useful for explaining a short protocol. Local
+projections are better for inspecting long-running loops.
 
 ## Hello, ZipperGen
 
@@ -400,9 +396,9 @@ The main result states that the projected local programs produce the same
 behaviors as the global workflow. Deadlock freedom follows for well-formed
 workflows in the supported formal model.
 
-The main theorems are machine-checked in Lean 4:
+The main theorems are machine-checked in Lean 4. The formal results are
+described in these papers:
 
-- [Lean formalization](https://github.com/zippergen-io/paper-isola/tree/main/Lean)
 - [Provable Coordination for LLM Agents via Message Sequence
   Charts](https://arxiv.org/abs/2604.17612)
 - [Causal Past Logic for Runtime Verification of Distributed LLM Agent

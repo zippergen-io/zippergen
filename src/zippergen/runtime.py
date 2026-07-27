@@ -204,27 +204,6 @@ def console_trace(event: dict) -> None:
             print()
 
 
-def _is_decision_or_control_event(event: dict) -> bool:
-    if event.get("type") == "decision" or event.get("ctrl"):
-        return True
-    values = event.get("values") or ()
-    if any(isinstance(v, str) and v.startswith("κ_ctrl_") for v in values):
-        return True
-    bindings = event.get("bindings") or {}
-    return any(isinstance(v, str) and v.startswith("κ_ctrl_") for v in bindings.values())
-
-
-def _console_trace_for_decisions(show_decisions: bool):
-    if show_decisions:
-        return console_trace
-
-    def trace(event: dict) -> None:
-        if not _is_decision_or_control_event(event):
-            console_trace(event)
-
-    return trace
-
-
 def tee_traces(*traces):
     active = [trace for trace in traces if trace is not None]
 
@@ -1444,10 +1423,8 @@ def _workflow_configure(
     trace: object = None,
     timeout: float = 60.0,
     llms=None,
-    ui: bool | None = None,
     mock_delay: tuple[float, float] = (1.0, 2.0),
     llm_idle_timeout: float | None = None,
-    show_decisions: bool = False,
     execution: str | None = None,
     store_path: str | None = None,
     human_backend: object | None = None,
@@ -1510,31 +1487,13 @@ def _workflow_configure(
     if assistant_backend is not None:
         wf._rt._assistant_backend = assistant_backend
 
-    if ui is not None:
-        wf._rt._ui_enabled = ui
-    if wf._rt._ui_enabled:
-        from zipperchat import WebTrace
-        if isinstance(trace, WebTrace):
-            wf._rt._webtrace = trace.start()
-            wf._rt._trace = _console_trace_for_decisions(show_decisions)
-        else:
-            if wf._rt._webtrace is None:
-                wf._rt._webtrace = WebTrace(lifelines, name=wf.name, show_decisions=show_decisions).start()
-            base_trace = trace if trace is not None else _console_trace_for_decisions(show_decisions)
-            wf._rt._trace = base_trace
-    elif trace is not None:
+    if trace is not None:
         wf._rt._trace = trace
 
     # An explicit backend is used by project-aware development surfaces that
     # keep SQLite durability while presenting human tasks in the terminal.
     if human_backend is not None:
         wf._rt._human_backend = human_backend
-    elif (
-        wf._rt._ui_enabled
-        and wf._rt._webtrace is not None
-        and not wf._rt._webtrace.is_dashboard
-    ):
-        wf._rt._human_backend = wf._rt._webtrace.make_human_backend()
     elif wf._rt._execution == "sqlite":
         from zippergen.human_backends import make_sqlite_human_backend
         wf._rt._human_backend = make_sqlite_human_backend()
@@ -1561,87 +1520,36 @@ def _workflow_run_once(wf: Workflow, kwargs: dict[str, object]) -> object:
     lifelines = _ordered_workflow_lifelines(wf)
     backend = wf._rt._backend if wf._rt._backend is not None else mock_llm
     with wf._rt._run_lock:
-        run_trace = None
         trace = wf._rt._trace
         human_backend = wf._rt._human_backend
         assistant_backend = wf._rt._assistant_backend
         if assistant_backend is None:
             from zippergen.assistant_backends import make_cli_assistant_backend
             assistant_backend = make_cli_assistant_backend()
-        if wf._rt._webtrace is not None and wf._rt._ui_enabled:
-            if wf._rt._webtrace.is_dashboard:
-                run_trace = wf._rt._webtrace.start_run(wf.name, lifelines)
-                if wf._rt._execution == "memory":
-                    trace = tee_traces(run_trace, wf._rt._trace)
-                human_backend = run_trace.make_human_backend()
-            else:
-                wf._rt._webtrace.reset()
-                if wf._rt._execution == "memory":
-                    trace = tee_traces(wf._rt._webtrace, wf._rt._trace)
-        try:
-            if wf._rt._execution == "sqlite":
-                from zippergen.sqlite_runner import run_sqlite
-                store_path = wf._rt._store_path
-                sqlite_trace = run_trace if run_trace is not None else wf._rt._webtrace
-                if wf._rt._ui_enabled and sqlite_trace is not None:
-                    if store_path is None:
-                        import tempfile
-                        from pathlib import Path
-                        if wf._rt._ephemeral_store_path is None:
-                            wf._rt._store_tmpdir = tempfile.TemporaryDirectory(prefix="zippergen-ui-run-")
-                            wf._rt._ephemeral_store_path = str(Path(wf._rt._store_tmpdir.name) / "run.sqlite")
-                        store_path = wf._rt._ephemeral_store_path
-                    if hasattr(sqlite_trace, "use_store"):
-                        sqlite_trace.use_store(store_path)
-                    if hasattr(sqlite_trace, "make_sqlite_human_backend"):
-                        human_backend = sqlite_trace.make_sqlite_human_backend()
-                return run_sqlite(
-                    wf,
-                    list(lifelines),
-                    initial_envs,
-                    store_path=store_path,
-                    llm_backend=backend,
-                    human_backend=human_backend,
-                    assistant_backend=assistant_backend,
-                    trace=trace,
-                    timeout=wf._rt._timeout,
-                )
-            return run(wf, list(lifelines), initial_envs,
-                       llm_backend=backend,
-                       human_backend=human_backend,
-                       assistant_backend=assistant_backend,
-                       trace=trace, timeout=wf._rt._timeout)
-        finally:
-            if wf._rt._webtrace is not None and wf._rt._ui_enabled:
-                if run_trace is not None:
-                    run_trace.done()
-                else:
-                    wf._rt._webtrace.done()
-
-
-def _workflow_ensure_replay_loop(wf: Workflow) -> None:
-    if not wf._rt._ui_enabled or wf._rt._webtrace is None or wf._rt._replay_thread is not None:
-        return
-    if wf._rt._webtrace.is_dashboard:
-        return
-
-    def _worker() -> None:
-        assert wf._rt._webtrace is not None
-        while True:
-            wf._rt._webtrace.wait_for_replay()
-            if not wf._rt._last_kwargs:
-                continue
-            try:
-                result = _workflow_run_once(wf, dict(wf._rt._last_kwargs))
-                print(f"\nResult → {result}")
-            except Exception as exc:
-                print(f"\nReplay failed: {exc}")
-
-    wf._rt._replay_thread = threading.Thread(target=_worker, daemon=True)
-    wf._rt._replay_thread.start()
+        if wf._rt._execution == "sqlite":
+            from zippergen.sqlite_runner import run_sqlite
+            return run_sqlite(
+                wf,
+                list(lifelines),
+                initial_envs,
+                store_path=wf._rt._store_path,
+                llm_backend=backend,
+                human_backend=human_backend,
+                assistant_backend=assistant_backend,
+                trace=trace,
+                timeout=wf._rt._timeout,
+            )
+        return run(
+            wf,
+            list(lifelines),
+            initial_envs,
+            llm_backend=backend,
+            human_backend=human_backend,
+            assistant_backend=assistant_backend,
+            trace=trace,
+            timeout=wf._rt._timeout,
+        )
 
 
 def _workflow_call(wf: Workflow, kwargs: dict[str, object]) -> object:
-    wf._rt._last_kwargs = dict(kwargs)
-    _workflow_ensure_replay_loop(wf)
     return _workflow_run_once(wf, dict(kwargs))

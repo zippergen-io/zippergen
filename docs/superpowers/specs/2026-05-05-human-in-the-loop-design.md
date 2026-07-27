@@ -1,7 +1,9 @@
 # Human-in-the-Loop Design
 
 **Date:** 2026-05-05
-**Status:** Approved
+**Status:** Historical. The browser UI parts were retired on 27 July 2026.
+The durable `@human` and SQLite task design remains active. See
+[the retirement decision](../../decisions/2026-07-27-retire-zipperchat.md).
 
 ## Overview
 

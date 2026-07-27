@@ -18,7 +18,6 @@ from zippergen.projection import project
 from zippergen.role_runner import RoleRunner, _begin_immediate
 from zippergen.runtime import _input_hash
 from zippergen.syntax import ReceiveAnyStmt, VarExpr
-from zipperchat import WebTrace
 from tests.loop_fixture import counter_loop, A as LoopA, B as LoopB
 from tests.test_examples_regression import _two_role_branch_workflow, A, B
 import json
@@ -319,20 +318,20 @@ def test_observation_failure_and_lock_contention_never_fail_or_stall_role(
 def test_workflow_call_uses_sqlite_execution_by_default():
     wf = _two_role_branch_workflow()
     assert wf._execution == "sqlite"
-    wf.configure(ui=False, timeout=10)
+    wf.configure(timeout=10)
     assert wf(x=7) is True
 
 
 def test_workflow_call_can_opt_into_memory_execution():
     wf = _two_role_branch_workflow()
-    wf.configure(execution="memory", ui=False, timeout=10)
+    wf.configure(execution="memory", timeout=10)
     assert wf(x=7) is True
 
 
 def test_workflow_call_sqlite_persistent_store_replays_without_duplicates(tmp_path):
     path = str(tmp_path / "run.sqlite")
     wf = _two_role_branch_workflow()
-    wf.configure(execution="sqlite", store_path=path, ui=False, timeout=10)
+    wf.configure(execution="sqlite", store_path=path, timeout=10)
     assert wf(x=7) is True
     conn = open_store(path)
     before = conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
@@ -412,9 +411,9 @@ def test_run_sqlite_persists_final_result(tmp_path):
 
 
 def test_workflow_call_sqlite_parallel():
-    sqlite_parallel_sum.configure(execution="sqlite", ui=False, timeout=10)
+    sqlite_parallel_sum.configure(execution="sqlite", timeout=10)
     assert sqlite_parallel_sum(a=2, b=5) == 7
-    sqlite_parallel_sum.configure(execution="memory", ui=False)
+    sqlite_parallel_sum.configure(execution="memory")
 
 
 def test_run_sqlite_external_act_replays_without_backend_call(tmp_path):
@@ -724,61 +723,14 @@ def test_role_runner_terminal_backend_claims_existing_pending_human_task(tmp_pat
     assert json.loads(task[1]) == {"p_approved": True}
 
 
-def test_workflow_call_sqlite_ui_completes_human_task_through_store(tmp_path):
-    path = str(tmp_path / "sqlite-ui-human.sqlite")
-    trace = WebTrace([PHuman], port=0)
+def test_workflow_call_sqlite_waits_for_human_task_store(tmp_path):
+    path = str(tmp_path / "sqlite-human.sqlite")
     result_box = {}
     errors = []
 
     sqlite_human_round.configure(
         execution="sqlite",
         store_path=path,
-        ui=True,
-        trace=trace,
-        timeout=10,
-    )
-
-    def run_workflow():
-        try:
-            result_box["result"] = sqlite_human_round(prompt="plan")
-        except BaseException as exc:
-            errors.append(exc)
-
-    thread = threading.Thread(target=run_workflow)
-    conn = open_store(path)
-    try:
-        thread.start()
-        task_id = None
-        deadline = time.monotonic() + 10
-        while time.monotonic() < deadline:
-            row = conn.execute("SELECT task_id FROM human_tasks WHERE status='pending'").fetchone()
-            if row is not None:
-                task_id = row[0]
-                break
-            time.sleep(0.05)
-
-        assert task_id is not None
-        assert trace._complete_sqlite_human_input(task_id, "true") is True
-        thread.join(timeout=10)
-
-        assert not thread.is_alive()
-        assert errors == []
-        assert result_box["result"] is True
-        assert conn.execute("SELECT status FROM human_tasks WHERE task_id=?", (task_id,)).fetchone()[0] == "done"
-    finally:
-        trace.stop()
-        sqlite_human_round.configure(execution="memory", ui=False)
-
-
-def test_workflow_call_sqlite_without_ui_waits_for_human_task_store(tmp_path):
-    path = str(tmp_path / "sqlite-no-ui-human.sqlite")
-    result_box = {}
-    errors = []
-
-    sqlite_human_round.configure(
-        execution="sqlite",
-        store_path=path,
-        ui=False,
         timeout=10,
     )
 
@@ -823,4 +775,4 @@ def test_workflow_call_sqlite_without_ui_waits_for_human_task_store(tmp_path):
         assert conn.execute("SELECT status FROM human_tasks WHERE task_id=?", (task_id,)).fetchone()[0] == "done"
         assert list_execution_states(conn)[0]["state"] == "done"
     finally:
-        sqlite_human_round.configure(execution="memory", ui=False)
+        sqlite_human_round.configure(execution="memory")

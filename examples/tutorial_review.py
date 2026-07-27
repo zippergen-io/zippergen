@@ -208,7 +208,6 @@ if __name__ == "__main__":
     tutorial_review.configure(
         "mock",
         execution="memory",
-        ui=False,
         mock_delay=(0.0, 0.0),
     )
     answer = tutorial_review(

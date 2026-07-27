@@ -345,10 +345,8 @@ def _run_setup_hook(
             store_path=store_path,
             inputs=inputs,
             options=setup_options,
-            ui=False,
             timeout=timeout,
             execution="sqlite",
-            show_decisions=False,
         ),
     )
 
@@ -558,7 +556,6 @@ def run_dev(
                 execution="sqlite",
                 store_path=store_path,
                 timeout=timeout,
-                ui=False,
                 mock_delay=(0.0, 0.0),
                 human_backend=managed_human_backend,
                 assistant=selected_assistant,

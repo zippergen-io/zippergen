@@ -342,7 +342,6 @@ if __name__ == "__main__":
         #     "Confidentiality": make_openai_backend(api_key=os.environ["OPENAI_API_KEY_C"]),
         #     "Orchestrator":    "mistral",
         # },
-        ui=True,
         timeout=600,
     )
 
@@ -351,5 +350,3 @@ if __name__ == "__main__":
     print("CONTRACT REVIEW REPORT")
     print('='*60)
     print(result)
-
-    input("\nZipperChat is running at http://localhost:8765 . Press Enter to close. ")
