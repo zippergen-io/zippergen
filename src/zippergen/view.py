@@ -244,6 +244,7 @@ def _render_action(action: object, *, full: bool) -> list[str]:
         if action.backend is not None:
             arguments.append(f"backend={action.backend!r}")
         arguments.append(f"access={action.access!r}")
+        arguments.append(f"external_tools={action.external_tools!r}")
         if action.workspace is not None:
             arguments.append(f"workspace={action.workspace!r}")
         if action.timeout is not None:
@@ -404,87 +405,245 @@ class _LocalRenderer:
         return True
 
     def render(self, stmt: AnyStmt, indent: int = 0) -> list[str]:
+        return [
+            line
+            for _path, line in self.render_annotated(stmt, indent=indent)
+        ]
+
+    def render_annotated(
+        self,
+        stmt: AnyStmt,
+        indent: int = 0,
+        path: tuple[int, ...] = (),
+    ) -> list[tuple[tuple[int, ...] | None, str]]:
+        """Render local code while retaining each statement's stable path."""
+
         pad = "    " * indent
         if not self._relevant(stmt):
             return []
         if isinstance(stmt, SeqStmt):
-            lines: list[str] = []
-            for part in _flatten_seq(stmt):
-                lines.extend(self.render(part, indent))
-            return lines
+            return [
+                *self.render_annotated(stmt.first, indent, path + (0,)),
+                *self.render_annotated(stmt.second, indent, path + (1,)),
+            ]
         if isinstance(stmt, SendStmt):
             if len(stmt.payload) == 2 and is_kappa_ctrl(stmt.payload[1]):
                 return [
-                    f"{pad}send_decision({stmt.receiver.name!r}, "
-                    f"{_expr(stmt.payload[0])}{_channel_suffix(stmt.channel)})"
+                    (
+                        path,
+                        f"{pad}send_decision({stmt.receiver.name!r}, "
+                        f"{_expr(stmt.payload[0])}{_channel_suffix(stmt.channel)})",
+                    )
                 ]
             return [
-                f"{pad}send({stmt.receiver.name!r}, {_exprs(stmt.payload)}"
-                f"{_channel_suffix(stmt.channel)})"
+                (
+                    path,
+                    f"{pad}send({stmt.receiver.name!r}, {_exprs(stmt.payload)}"
+                    f"{_channel_suffix(stmt.channel)})",
+                )
             ]
         if isinstance(stmt, RecvStmt):
             bindings = _exprs(stmt.bindings)
             prefix = f"{bindings} = " if bindings else ""
             return [
-                f"{pad}{prefix}recv({stmt.sender.name!r}{_channel_suffix(stmt.channel)})"
+                (
+                    path,
+                    f"{pad}{prefix}recv({stmt.sender.name!r}"
+                    f"{_channel_suffix(stmt.channel)})",
+                )
             ]
         if isinstance(stmt, ReceiveAnyStmt):
             options = ", ".join(
                 f"{sender.name!r}: ({_exprs(bindings)})" for sender, bindings in stmt.receives
             )
-            return [f"{pad}recv_any({{{options}}}{_channel_suffix(stmt.channel)})"]
+            return [
+                (
+                    path,
+                    f"{pad}recv_any({{{options}}}{_channel_suffix(stmt.channel)})",
+                )
+            ]
         if isinstance(stmt, SelfAssignStmt):
-            return [f"{pad}{_exprs(stmt.bindings)} = {_exprs(stmt.payload)}"]
+            return [
+                (path, f"{pad}{_exprs(stmt.bindings)} = {_exprs(stmt.payload)}")
+            ]
         if isinstance(stmt, ActStmt):
             outputs = ", ".join(value.name for value in stmt.outputs)
-            return [f"{pad}{outputs} = {stmt.action.name}({_exprs(stmt.inputs)})"]
-        if isinstance(stmt, SkipStmt):
-            return [f"{pad}pass  # skip {stmt.lifeline.name}"]
-        if isinstance(stmt, IfStmt):
-            true_lines = self.render(stmt.branch_true, indent + 1) or ["    " * (indent + 1) + "pass"]
-            false_lines = self.render(stmt.branch_false, indent + 1) or ["    " * (indent + 1) + "pass"]
             return [
-                f"{pad}if {_condition(stmt.condition)}:",
+                (
+                    path,
+                    f"{pad}{outputs} = {stmt.action.name}({_exprs(stmt.inputs)})",
+                )
+            ]
+        if isinstance(stmt, SkipStmt):
+            return [(path, f"{pad}pass  # skip {stmt.lifeline.name}")]
+        if isinstance(stmt, IfStmt):
+            true_lines = self.render_annotated(
+                stmt.branch_true,
+                indent + 1,
+                path + (0,),
+            ) or [(None, "    " * (indent + 1) + "pass")]
+            false_lines = self.render_annotated(
+                stmt.branch_false,
+                indent + 1,
+                path + (1,),
+            ) or [(None, "    " * (indent + 1) + "pass")]
+            return [
+                (path, f"{pad}if {_condition(stmt.condition)}:"),
                 *true_lines,
-                f"{pad}else:",
+                (None, f"{pad}else:"),
                 *false_lines,
             ]
         if isinstance(stmt, IfRecvStmt):
-            true_lines = self.render(stmt.branch_true, indent + 1) or ["    " * (indent + 1) + "pass"]
-            false_lines = self.render(stmt.branch_false, indent + 1) or ["    " * (indent + 1) + "pass"]
+            true_lines = self.render_annotated(
+                stmt.branch_true,
+                indent + 1,
+                path + (0,),
+            ) or [(None, "    " * (indent + 1) + "pass")]
+            false_lines = self.render_annotated(
+                stmt.branch_false,
+                indent + 1,
+                path + (1,),
+            ) or [(None, "    " * (indent + 1) + "pass")]
             return [
-                f"{pad}if recv_decision({stmt.sender.name!r}{_channel_suffix(stmt.channel)}):",
+                (
+                    path,
+                    f"{pad}if recv_decision({stmt.sender.name!r}"
+                    f"{_channel_suffix(stmt.channel)}):",
+                ),
                 *true_lines,
-                f"{pad}else:",
+                (None, f"{pad}else:"),
                 *false_lines,
             ]
         if isinstance(stmt, WhileStmt):
-            body = self.render(stmt.body, indent + 1) or ["    " * (indent + 1) + "pass"]
-            lines = [f"{pad}while {_condition(stmt.condition)}:", *body]
-            exit_lines = self.render(stmt.exit_body, indent + 1)
+            body = self.render_annotated(
+                stmt.body,
+                indent + 1,
+                path + (0,),
+            ) or [(None, "    " * (indent + 1) + "pass")]
+            lines = [(path, f"{pad}while {_condition(stmt.condition)}:"), *body]
+            exit_lines = self.render_annotated(
+                stmt.exit_body,
+                indent + 1,
+                path + (1,),
+            )
             if exit_lines:
-                lines.extend([f"{pad}else:", *exit_lines])
+                lines.extend([(None, f"{pad}else:"), *exit_lines])
             return lines
         if isinstance(stmt, WhileRecvStmt):
-            body = self.render(stmt.body, indent + 1) or ["    " * (indent + 1) + "pass"]
+            body = self.render_annotated(
+                stmt.body,
+                indent + 1,
+                path + (0,),
+            ) or [(None, "    " * (indent + 1) + "pass")]
             lines = [
-                f"{pad}while recv_decision({stmt.sender.name!r}{_channel_suffix(stmt.channel)}):",
+                (
+                    path,
+                    f"{pad}while recv_decision({stmt.sender.name!r}"
+                    f"{_channel_suffix(stmt.channel)}):",
+                ),
                 *body,
             ]
-            exit_lines = self.render(stmt.exit_body, indent + 1)
+            exit_lines = self.render_annotated(
+                stmt.exit_body,
+                indent + 1,
+                path + (1,),
+            )
             if exit_lines:
-                lines.extend([f"{pad}else:", *exit_lines])
+                lines.extend([(None, f"{pad}else:"), *exit_lines])
             return lines
         if isinstance(stmt, ParallelLocalStmt):
             indices = stmt.branch_indices or tuple(range(len(stmt.branches)))
-            lines = [f"{pad}with local_parallel:"]
-            for index, branch_stmt in zip(indices, stmt.branches):
+            lines: list[tuple[tuple[int, ...] | None, str]] = [
+                (path, f"{pad}with local_parallel:")
+            ]
+            for child_index, (index, branch_stmt) in enumerate(
+                zip(indices, stmt.branches)
+            ):
                 if not self._relevant(branch_stmt):
                     continue
-                lines.append(f"{pad}    with branch({index + 1}):")
-                lines.extend(self.render(branch_stmt, indent + 2) or ["    " * (indent + 2) + "pass"])
+                lines.append((None, f"{pad}    with branch({index + 1}):"))
+                lines.extend(
+                    self.render_annotated(
+                        branch_stmt,
+                        indent + 2,
+                        path + (child_index,),
+                    )
+                    or [(None, "    " * (indent + 2) + "pass")]
+                )
             return lines
         raise TypeError(f"unsupported local statement: {type(stmt).__name__}")
+
+
+def describe_local_statement(stmt: object) -> str:
+    """Return a compact, non-sensitive description of a local program point."""
+
+    if isinstance(stmt, SendStmt):
+        return f"send to {stmt.receiver.name}"
+    if isinstance(stmt, RecvStmt):
+        return f"receive from {stmt.sender.name}"
+    if isinstance(stmt, ReceiveAnyStmt):
+        senders = " or ".join(sender.name for sender, _ in stmt.receives)
+        return f"receive from {senders}"
+    if isinstance(stmt, SelfAssignStmt):
+        return "local assignment"
+    if isinstance(stmt, ActStmt):
+        return f"{_action_kind(stmt.action)} action {stmt.action.name}"
+    if isinstance(stmt, SkipStmt):
+        return "local no-op"
+    if isinstance(stmt, IfStmt):
+        return "evaluate local decision"
+    if isinstance(stmt, IfRecvStmt):
+        return f"receive decision from {stmt.sender.name}"
+    if isinstance(stmt, WhileStmt):
+        return "evaluate loop decision"
+    if isinstance(stmt, WhileRecvStmt):
+        return f"receive loop decision from {stmt.sender.name}"
+    if isinstance(stmt, ParallelLocalStmt):
+        return "parallel local branches"
+    return type(stmt).__name__
+
+
+def render_local_projection_with_pointers(
+    workflow: Workflow,
+    participant: str,
+    active_paths: tuple[tuple[int, ...], ...] | list[list[int]],
+) -> str:
+    """Render one projected program with one or more current pointers."""
+
+    lifeline = next(
+        (
+            item
+            for item in _ordered_workflow_lifelines(workflow)
+            if item.name == participant
+        ),
+        None,
+    )
+    if lifeline is None:
+        raise ValueError(
+            f"unknown participant {participant!r}; available: "
+            f"{', '.join(item.name for item in _ordered_workflow_lifelines(workflow))}"
+        )
+    active = {tuple(path) for path in active_paths}
+    local = project(workflow, lifeline)
+    body = _LocalRenderer(
+        communications_only=False,
+        detail="protocol",
+    ).render_annotated(local, 1)
+    lines = [
+        f"# Live local projection for {lifeline.name}; read-only observation.",
+        "# ▶ marks the current durable program position.",
+        "",
+        f"  @role({lifeline.name!r})",
+        f"  {_workflow_signature(workflow, agent=lifeline.name)}",
+    ]
+    if not body:
+        lines.append("      pass")
+    else:
+        lines.extend(
+            ("▶ " if path is not None and path in active else "  ") + line
+            for path, line in body
+        )
+    return "\n".join(lines)
 
 
 def _workflow_signature(workflow: Workflow, *, agent: str | None = None) -> str:

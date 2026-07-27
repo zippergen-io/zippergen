@@ -7,6 +7,7 @@ from zippergen.store import (
     human_task_id,
     load_adapter_state,
     list_trace_events,
+    list_execution_states,
     list_workflow_results,
     load_human_task,
     load_human_task_notification,
@@ -19,6 +20,7 @@ from zippergen.store import (
     chan_key,
     ReplayMismatch,
     write_adapter_state,
+    write_execution_state,
     write_workflow_result,
 )
 
@@ -30,12 +32,34 @@ def test_open_store_creates_tables(tmp_path):
         "events",
         "cursors",
         "snapshots",
+        "execution_states",
         "human_tasks",
         "human_task_tokens",
         "human_task_notifications",
         "adapter_state",
         "workflow_results",
     } <= names
+
+
+def test_execution_state_is_non_sensitive_and_replaces_current_position(tmp_path):
+    conn = open_store(str(tmp_path / "s.sqlite"))
+
+    write_execution_state(
+        conn,
+        "Writer",
+        "running_model",
+        [[0, 1]],
+        {"action": "draft"},
+    )
+    first = list_execution_states(conn)
+    assert first[0]["detail"] == {"action": "draft"}
+    assert "env" not in first[0]
+
+    write_execution_state(conn, "Writer", "done", [], {})
+    current = list_execution_states(conn)
+    assert len(current) == 1
+    assert current[0]["state"] == "done"
+    assert current[0]["locators"] == []
 
 def test_open_store_is_wal(tmp_path):
     conn = open_store(str(tmp_path / "s.sqlite"))

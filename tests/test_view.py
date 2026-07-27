@@ -9,7 +9,15 @@ from zippergen import (
     pure,
     workflow,
 )
-from zippergen.view import ViewOptions, render_workflow, render_workflow_json
+from zippergen.locator import resolve_path, statement_node_paths
+from zippergen.projection import project
+from zippergen.syntax import ActStmt
+from zippergen.view import (
+    ViewOptions,
+    render_local_projection_with_pointers,
+    render_workflow,
+    render_workflow_json,
+)
 
 
 Author = Lifeline("Author")
@@ -83,6 +91,25 @@ def test_one_agent_view_is_exact_local_projection_code():
     assert "if recv_decision('Author')" in code
     assert "send('Publisher', edited)" in code
     assert "publish_text" not in code
+
+
+def test_live_agent_view_marks_the_stable_local_statement_path():
+    local = project(editorial, Editor)
+    paths = statement_node_paths(local)
+    action_path = next(
+        path
+        for path in paths.values()
+        if isinstance(resolve_path(local, path), ActStmt)
+    )
+
+    code = render_local_projection_with_pointers(
+        editorial,
+        "Editor",
+        [action_path],
+    )
+
+    assert "▶     edited = edit_text(text)" in code
+    assert "  " + "    text = recv('Author')" in code
 
 
 def test_selected_agent_view_preserves_hidden_agents_as_boundaries():

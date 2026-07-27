@@ -51,6 +51,14 @@ CREATE TABLE IF NOT EXISTS snapshots (
   floor   BLOB NOT NULL            -- json-encoded per-channel replay floor
 );
 
+CREATE TABLE IF NOT EXISTS execution_states (
+  role       TEXT PRIMARY KEY,
+  state      TEXT NOT NULL,
+  locators   BLOB NOT NULL,         -- json-encoded current statement paths
+  detail     BLOB NOT NULL,         -- json-encoded non-sensitive status metadata
+  updated_at REAL NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS human_tasks (
   task_id    TEXT PRIMARY KEY,
   role       TEXT NOT NULL,
@@ -171,6 +179,45 @@ def load_snapshot(conn, role: str) -> dict | None:
         return None
     return {"env": json.loads(row[0]), "locator": json.loads(row[1]),
             "floor": json.loads(row[2])}
+
+
+def write_execution_state(
+    conn,
+    role: str,
+    state: str,
+    locators: list[list[int]],
+    detail: dict | None = None,
+) -> None:
+    """Persist diagnostic execution state without exposing the role environment."""
+
+    locator_payload = json.dumps(locators)
+    detail_payload = json.dumps(_json_safe(detail or {}))
+    now = time.time()
+    conn.execute(
+        "INSERT INTO execution_states(role,state,locators,detail,updated_at) "
+        "VALUES(?,?,?,?,?) "
+        "ON CONFLICT(role) DO UPDATE SET "
+        "state=excluded.state, locators=excluded.locators, "
+        "detail=excluded.detail, updated_at=excluded.updated_at",
+        (role, state, locator_payload, detail_payload, now),
+    )
+
+
+def list_execution_states(conn) -> list[dict]:
+    rows = conn.execute(
+        "SELECT role,state,locators,detail,updated_at "
+        "FROM execution_states ORDER BY role"
+    ).fetchall()
+    return [
+        {
+            "role": row[0],
+            "state": row[1],
+            "locators": json.loads(row[2]),
+            "detail": json.loads(row[3]),
+            "updated_at": row[4],
+        }
+        for row in rows
+    ]
 
 
 def _json_safe(value):

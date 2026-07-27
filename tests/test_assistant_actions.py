@@ -1,5 +1,6 @@
 import hashlib
 import subprocess
+import sys
 
 import pytest
 
@@ -19,14 +20,17 @@ from zippergen import (
     workflow,
     workflow_semantics,
 )
-from zippergen.serve import _bundle_deployment
+from zippergen.serve import _bundle_deployment, _validate_workflow
 from zippergen.syntax import Workflow
 
 
 Developer = Lifeline("Developer")
 
 
-@assistant(instructions="Update the repository according to the request.")
+@assistant(
+    instructions="Update the repository according to the request.",
+    access="write",
+)
 def update_repository(request: str) -> str: ...
 
 
@@ -43,6 +47,14 @@ def test_assistant_decorator_creates_first_class_action():
     assert update_repository.instructions_sha256 == hashlib.sha256(
         update_repository.instructions.encode()
     ).hexdigest()
+
+
+def test_assistant_decorator_defaults_to_least_privilege():
+    @assistant(instructions="Review the repository.")
+    def review_repository(request: str) -> str: ...
+
+    assert review_repository.access == "read-only"
+    assert review_repository.external_tools == "none"
 
 
 def test_assistant_decorator_requires_one_instruction_source(tmp_path, monkeypatch):
@@ -76,6 +88,14 @@ def test_assistant_decorator_loads_markdown_file(tmp_path, monkeypatch):
 def test_assistant_decorator_rejects_unknown_access():
     with pytest.raises(ValueError, match="read-only.*write"):
         assistant(instructions="Review the repository.", access="review")
+
+
+def test_assistant_decorator_rejects_unknown_external_tool_policy():
+    with pytest.raises(ValueError, match="external_tools.*none.*configured"):
+        assistant(
+            instructions="Review the repository.",
+            external_tools="automatic",
+        )
 
 
 def test_assistant_action_uses_explicit_memory_backend():
@@ -154,13 +174,29 @@ def test_assistant_action_has_distinct_views_and_semantics():
 
     assert (
         "@assistant(instructions='Update the repository according to the "
-        "request.', access='write')" in code
+        "request.', access='write', external_tools='none')" in code
     )
     definition = model["action_definitions"]["update_repository"]
     assert definition["kind"] == "assistant"
     assert definition["instructions"] == update_repository.instructions
     assert definition["instructions_sha256"] == update_repository.instructions_sha256
-    assert definition.get("access", "write") == "write"
+    assert definition["access"] == "write"
+    assert definition["external_tools"] == "none"
+
+
+def test_validation_warns_when_write_workspace_contains_workflow_source():
+    result = _validate_workflow(assistant_round, sys.modules[__name__])
+    checks = {
+        str(check["name"]): check
+        for check in result["checks"]
+    }
+
+    assert result["valid"] is True
+    assert checks["assistant self-modification update_repository"]["status"] == "warn"
+    assert "contains the executing workflow source" in str(
+        checks["assistant self-modification update_repository"]["detail"]
+    )
+    assert checks["assistant external tools update_repository"]["status"] == "ok"
 
 
 def test_cli_backend_invokes_codex_without_a_shell(tmp_path, monkeypatch):
@@ -190,6 +226,15 @@ def test_cli_backend_invokes_codex_without_a_shell(tmp_path, monkeypatch):
         str(tmp_path),
         "--sandbox",
         "workspace-write",
+        "--ignore-user-config",
+        "--config",
+        "mcp_servers={}",
+        "--config",
+        'web_search="disabled"',
+        "--config",
+        "agents.enabled=false",
+        "--config",
+        "sandbox_workspace_write.network_access=false",
         "-",
     ]
     assert captured["cwd"] == tmp_path
@@ -232,8 +277,59 @@ def test_cli_backend_enforces_read_only_codex_and_claude_modes(
     backend(codex_review, {"request": "review"})
     backend(claude_review, {"request": "review"})
 
-    assert commands[0][-3:] == ["--sandbox", "read-only", "-"]
+    assert commands[0][5:7] == ["--sandbox", "read-only"]
+    assert "--ignore-user-config" in commands[0]
+    assert "mcp_servers={}" in commands[0]
     assert commands[1][1:4] == ["--print", "--permission-mode", "plan"]
+    assert "--safe-mode" in commands[1]
+    assert "--strict-mcp-config" in commands[1]
+    assert "Read,Glob,Grep" in commands[1]
+
+
+def test_cli_backend_allows_configured_external_tools_only_by_opt_in(
+    tmp_path,
+    monkeypatch,
+):
+    commands: list[list[str]] = []
+    monkeypatch.setattr(
+        "zippergen.assistant_backends.shutil.which",
+        lambda name: f"/tools/{name}",
+    )
+    monkeypatch.setattr(
+        "zippergen.assistant_backends.subprocess.run",
+        lambda command, **_kwargs: (
+            commands.append(command)
+            or subprocess.CompletedProcess(
+                command,
+                0,
+                stdout="done\n",
+                stderr="",
+            )
+        ),
+    )
+
+    @assistant(
+        instructions="Use the configured issue tracker.",
+        backend="codex",
+        external_tools="configured",
+    )
+    def codex_external(request: str) -> str: ...
+
+    @assistant(
+        instructions="Use the configured issue tracker.",
+        backend="claude",
+        external_tools="configured",
+    )
+    def claude_external(request: str) -> str: ...
+
+    backend = make_cli_assistant_backend(project_root=tmp_path)
+    backend(codex_external, {"request": "review"})
+    backend(claude_external, {"request": "review"})
+
+    assert "--ignore-user-config" not in commands[0]
+    assert "mcp_servers={}" not in commands[0]
+    assert "--safe-mode" not in commands[1]
+    assert "--strict-mcp-config" not in commands[1]
 
 
 def test_cli_backend_requires_selection_when_action_has_none(tmp_path):
@@ -252,7 +348,7 @@ def test_guided_bundle_includes_markdown_instructions(tmp_path, monkeypatch):
     prompt.parent.mkdir()
     prompt.write_text("Perform the requested maintenance.\n")
 
-    @assistant(instructions_file="prompts/job.md")
+    @assistant(instructions_file="prompts/job.md", access="write")
     def maintain(request: str) -> str: ...
 
     request = Var("request", str)

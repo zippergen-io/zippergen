@@ -2,7 +2,13 @@ from zippergen.syntax import (
     SeqStmt, WhileStmt, EmptyStmt, SendStmt, Lifeline, VarExpr, Var, seq,
     ActStmt, ParallelLocalStmt, IfStmt,
 )
-from zippergen.locator import loop_node_paths, resolve_path, action_node_paths
+from zippergen.locator import (
+    action_node_paths,
+    execution_frontier_paths,
+    loop_node_paths,
+    resolve_path,
+    statement_node_paths,
+)
 from zippergen.actions import pure
 
 A = Lifeline("A"); B = Lifeline("B")
@@ -62,3 +68,23 @@ def test_action_paths_index_owner_loop():
     paths = action_node_paths(root)
     assert id(root) in paths                    # owner WhileStmt indexed (decision)
     assert id(body) in paths                    # act inside the loop body indexed
+
+
+def test_statement_paths_and_execution_frontier_cover_parallel_branches():
+    first = SendStmt(A, (VarExpr(x),), B)
+    second = SendStmt(A, (VarExpr(x),), B, channel="other")
+    root = ParallelLocalStmt((first, second), (0, 1))
+
+    paths = statement_node_paths(root)
+
+    assert paths[id(first)] == [0]
+    assert paths[id(second)] == [1]
+    assert execution_frontier_paths(root, root) == [[0], [1]]
+
+
+def test_execution_frontier_descends_through_a_residual_sequence():
+    first, second = _act(), _act()
+    root = SeqStmt(first, second)
+    residual = SeqStmt(EmptyStmt(), second)
+
+    assert execution_frontier_paths(root, residual) == [[1]]

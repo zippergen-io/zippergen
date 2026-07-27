@@ -432,6 +432,35 @@ resume
 No export or store path needs to be reconstructed after the terminal closes or
 the computer restarts.
 
+\subsection*{See where every participant is}
+
+After an interruption, enter at the Studio prompt:
+
+\begin{lstlisting}[style=shell]
+run inspect
+run inspect HumanApprover
+\end{lstlisting}
+
+To inspect without interrupting an active foreground run, open a second
+terminal in the project root and enter:
+
+\begin{lstlisting}[style=shell]
+zippergen studio --command "run inspect HumanApprover"
+\end{lstlisting}
+
+The foreground terminal continues to own its input and human-approval prompt;
+the second command only reads the durable observation state.
+The first command shows one bounded row per participant: running, waiting to
+receive, waiting for a human, executing an external action, completed, or
+failed. It automatically focuses the participant most likely to need
+attention. The second command selects one participant explicitly and renders
+its exact local projection with a pointer marking the current durable program
+position. A local parallel program can have several pointers.
+
+This is observation state, not the recovery snapshot and not an ever-growing
+trace. Studio does not display workflow variables, action inputs, provider
+keys, or other environment values in this view.
+
 \subsection*{Inspect the durable store without copying its path}
 
 Studio remembers the SQLite store behind the run. Enter:
@@ -551,6 +580,8 @@ When the readiness checks are acceptable:
 \begin{lstlisting}[style=shell]
 deployment start
 deployment show
+deployment inspect
+deployment inspect HumanApprover
 deployment tasks
 deployment approve
 deployment logs
@@ -559,7 +590,11 @@ deployment stop
 
 The finite workflow should reach a waiting human task. Each named deployment
 owns one stable logical store, so normal operation never requires selecting or
-copying a store. \texttt{deployment tasks} displays the proposed draft,
+copying a store. Bare \texttt{deployment inspect} uses the remembered
+deployment name; with one argument that is not a deployment name, Studio
+treats it as the participant to focus. It reads the durable positions from the
+deployment store, so no debugger connection is required.
+\texttt{deployment tasks} displays the proposed draft,
 reviewer notes, instruction, and decision labels.
 \texttt{deployment approve} repeats that evidence immediately before asking
 for the decision; an unseen draft is never presented for blind approval.

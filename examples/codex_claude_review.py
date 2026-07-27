@@ -26,6 +26,7 @@ Claude = Lifeline("Claude")
     instructions_file="examples/prompts/codex_claude_review/implement.md",
     backend="codex",
     access="write",
+    external_tools="none",
     workspace=".",
 )
 def implement_task(task: str) -> str: ...
@@ -35,6 +36,7 @@ def implement_task(task: str) -> str: ...
     instructions_file="examples/prompts/codex_claude_review/review.md",
     backend="claude",
     access="read-only",
+    external_tools="none",
     workspace=".",
 )
 def review_candidate(task: str, implementation_summary: str) -> str: ...
@@ -44,6 +46,7 @@ def review_candidate(task: str, implementation_summary: str) -> str: ...
     instructions_file="examples/prompts/codex_claude_review/revise.md",
     backend="codex",
     access="write",
+    external_tools="none",
     workspace=".",
 )
 def revise_candidate(task: str, review: str) -> str: ...
@@ -53,6 +56,7 @@ def revise_candidate(task: str, review: str) -> str: ...
     instructions_file="examples/prompts/codex_claude_review/finalize.md",
     backend="codex",
     access="read-only",
+    external_tools="none",
     workspace=".",
 )
 def finalize_result(task: str, review: str) -> str: ...

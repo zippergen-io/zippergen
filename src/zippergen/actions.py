@@ -296,7 +296,8 @@ def assistant(
     instructions: str | None = None,
     instructions_file: str | None = None,
     backend: str | None = None,
-    access: str = "write",
+    access: str = "read-only",
+    external_tools: str = "none",
     workspace: str | None = None,
     timeout: float | None = None,
     visible: bool = True,
@@ -311,9 +312,12 @@ def assistant(
     ``backend`` may request ``"codex"`` or ``"claude"`` for this action.  When
     omitted, the runtime default selected with
     ``workflow.configure(assistant="...")`` or ``ZIPPERGEN_ASSISTANT`` is used.
-    ``access`` is ``"read-only"`` or ``"write"`` and is enforced through the
-    selected CLI's non-interactive permission mode.  Use read-only for review
-    and analysis actions that must not modify the workspace.
+    ``access`` is ``"read-only"`` (the default) or ``"write"`` and is enforced
+    through the selected CLI's non-interactive permission mode.
+    ``external_tools`` is ``"none"`` (the default) or ``"configured"``.
+    The safe default disables configured MCP/tool integrations and web access;
+    opt in only when the reviewed action intentionally needs them.  Filesystem
+    access and external-tool access are separate capabilities.
     ``workspace`` is a static path, relative to the configured project root.
     The decorated function's typed parameters become explicit dynamic inputs;
     its return annotation declares the single typed result.
@@ -331,6 +335,11 @@ def assistant(
         raise ValueError(
             "@assistant access must be 'read-only' or 'write', "
             f"got {access!r}."
+        )
+    if external_tools not in {"none", "configured"}:
+        raise ValueError(
+            "@assistant external_tools must be 'none' or 'configured', "
+            f"got {external_tools!r}."
         )
     if timeout is not None and timeout <= 0:
         raise ValueError("@assistant timeout must be greater than zero.")
@@ -364,6 +373,7 @@ def assistant(
             instructions_sha256=hashlib.sha256(text.encode("utf-8")).hexdigest(),
             backend=backend,
             access=access,
+            external_tools=external_tools,
             workspace=workspace,
             timeout=timeout,
             visible=visible,

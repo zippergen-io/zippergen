@@ -90,6 +90,26 @@ help, completion, natural-language permissions, and risk classification.
 Workflow-view names, labels, aliases, rendering options, and completion
 descriptions likewise come from one view registry.
 
+Durable runs also expose their current projected program positions:
+
+```text
+run inspect
+run inspect Reviewer
+deployment inspect reviewed-answer
+deployment inspect reviewed-answer Reviewer
+```
+
+The overview is bounded by the workflow and participant count rather than by
+trace length. It shows whether each participant is running, waiting to
+receive, waiting for a human, executing a model/assistant/effect action, or
+finished. Focusing a participant renders its exact local projection with
+`▶` on every active branch. These are diagnostic observation records,
+separate from recovery snapshots; workflow variables, action inputs, and
+secrets are not displayed. Because a foreground development run owns its
+terminal, inspect it concurrently from another project-root terminal with
+`zippergen studio --command "run inspect Reviewer"`. Background deployments
+can be inspected directly from the ordinary Studio prompt.
+
 After updating an editable ZipperGen checkout in another terminal, enter
 `studio restart` to replace the current Studio process and import the updated
 source. It preserves the working directory and reloads the project context
@@ -1010,9 +1030,23 @@ Inside Studio, the corresponding command is
 is stored with the durable run so `resume` uses the same backend.
 
 Assistant access is part of the reviewed workflow semantics. Declare
-`access="write"` for an implementation action and `access="read-only"` for a
-review action. ZipperGen maps this to Codex's `read-only`/`workspace-write`
-sandbox and Claude Code's `plan`/`acceptEdits` permission modes. The complete
+`access="write"` explicitly for an implementation action; the default is
+`access="read-only"`. ZipperGen maps this to Codex's
+`read-only`/`workspace-write` sandbox and Claude Code's
+`plan`/`acceptEdits` permission modes.
+
+Filesystem access and external-tool access are separate capabilities. By
+default, `external_tools="none"` disables configured MCP servers, web access,
+subagents, and comparable assistant integrations. Opt in with
+`external_tools="configured"` only when the action genuinely needs the user's
+configured tools; `validate` reports that broader boundary. Both fields are
+always present in semantic snapshots and diffs. A write workspace containing
+the executing workflow also produces a validation warning: the sandbox permits
+self-editing, so the static instruction must explicitly protect the running
+workflow and must not imply permission to deploy, restart services, commit,
+push, or mutate unrelated external systems.
+
+The complete
 [Codex–Claude review-loop example](examples/codex_claude_review.py) keeps
 Claude read-only, lets Codex critically evaluate every review, requires
 approval before success, and returns an explicit failure after a bounded number
@@ -1086,7 +1120,10 @@ zippergen deploy examples/call_intake.py:call_intake
 
 Inside Studio, select the workflow once and enter `deploy NAME --no-start` to
 prepare it without starting a service. Inspect it with `deployment show` and
-`deployment doctor`, then use `deployment start` when authorized. Subsequent
+`deployment doctor`, then use `deployment start` when authorized. Once the
+run begins, `deployment inspect [NAME] [PARTICIPANT]` shows its durable
+participant positions and the selected local program without requiring a
+live debugger. Subsequent
 deployment commands use the remembered name. `deployment show` reports four
 separate layers: immutable bundle, supervised process, workflow run, and
 SQLite store. A loaded service whose process repeatedly exits is reported as

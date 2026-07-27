@@ -5,6 +5,7 @@ from zippergen.store import (
     DurableChannel,
     ensure_human_task,
     human_task_id,
+    list_execution_states,
     list_trace_events,
     load_workflow_result,
     open_store,
@@ -286,6 +287,33 @@ def test_role_runner_idle_backoff_grows_and_resets(monkeypatch, tmp_path):
     runner._reset_idle_backoff()
     runner._sleep_after_idle_step()
     assert sleeps[-1] == pytest.approx(0.02)
+
+
+def test_observation_failure_and_lock_contention_never_fail_or_stall_role(
+    tmp_path,
+):
+    path = str(tmp_path / "observation.sqlite")
+    runner = RoleRunner(
+        open_store(path),
+        PAsk.name,
+        project(sqlite_external_round, PAsk),
+        {"n": 1},
+        sqlite_external_round.ns,
+    )
+    assert runner._observation_conn is not None
+
+    locker = open_store(path)
+    locker.execute("BEGIN IMMEDIATE")
+    started = time.monotonic()
+    runner._set_execution_state("running", [[0]])
+    elapsed = time.monotonic() - started
+    locker.execute("ROLLBACK")
+
+    assert elapsed < 0.5
+    runner._observation_conn.close()
+    runner._set_execution_state("running", [[1]])
+    runner.conn.close()
+    locker.close()
 
 
 def test_workflow_call_uses_sqlite_execution_by_default():
@@ -774,6 +802,16 @@ def test_workflow_call_sqlite_without_ui_waits_for_human_task_store(tmp_path):
             time.sleep(0.05)
 
         assert task_id is not None
+        positions = list_execution_states(conn)
+        assert positions == [
+            {
+                "role": "PHuman",
+                "state": "waiting_human",
+                "locators": [[]],
+                "detail": {"action": "p_review", "kind": "human"},
+                "updated_at": positions[0]["updated_at"],
+            }
+        ]
         conn.execute("BEGIN")
         complete_human_task(conn, task_id, {"p_approved": True})
         conn.execute("COMMIT")
@@ -783,5 +821,6 @@ def test_workflow_call_sqlite_without_ui_waits_for_human_task_store(tmp_path):
         assert errors == []
         assert result_box["result"] is True
         assert conn.execute("SELECT status FROM human_tasks WHERE task_id=?", (task_id,)).fetchone()[0] == "done"
+        assert list_execution_states(conn)[0]["state"] == "done"
     finally:
         sqlite_human_round.configure(execution="memory", ui=False)

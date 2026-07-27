@@ -268,6 +268,12 @@ COMMANDS: tuple[CommandSpec, ...] = (
         primary=True,
     ),
     CommandSpec(
+        ("run", "inspect"),
+        "run inspect [PARTICIPANT]",
+        "show durable participant positions and a live local projection",
+        "read-only",
+    ),
+    CommandSpec(
         ("resume",), "resume", "resume the current incomplete run", "execution"
     ),
     CommandSpec(("runs",), "runs", "list managed development runs", "read-only"),
@@ -360,6 +366,12 @@ COMMANDS: tuple[CommandSpec, ...] = (
         ("deployment", "show"),
         "deployment show [NAME]",
         "show bundle, service, run, and store health",
+        "read-only",
+    ),
+    CommandSpec(
+        ("deployment", "inspect"),
+        "deployment inspect [NAME] [PARTICIPANT]",
+        "show durable participant positions and a live local projection",
         "read-only",
     ),
     CommandSpec(
@@ -664,6 +676,7 @@ Start actions:
 
 Useful now:
   current          show context and the next action
+  run inspect      show where each participant currently is
   studio doctor    check editor and assistant readiness
   store             advanced development-state and recovery tools
   help all         show every exact command

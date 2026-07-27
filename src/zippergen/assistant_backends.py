@@ -27,7 +27,21 @@ def _assistant_prompt(action: AssistantAction, inputs: dict[str, object]) -> str
     access_instruction = (
         "Inspect and review only. Do not modify files or repository state. "
         if action.access == "read-only"
-        else "You may modify files inside the workspace as requested. "
+        else (
+            "You may modify files inside the workspace as requested. "
+            "Filesystem write access does not authorize deployment, service "
+            "start/restart, Git commit/push, or external-system changes unless "
+            "the static action instructions explicitly require them. "
+        )
+    )
+    tool_instruction = (
+        "Configured MCP servers, connectors, web search, and other external "
+        "tool integrations are disabled for this action. "
+        if action.external_tools == "none"
+        else (
+            "The reviewed action explicitly permits the assistant's configured "
+            "external tools; use only those required by the static instructions. "
+        )
     )
     return (
         f"{action.instructions.rstrip()}\n\n"
@@ -36,6 +50,7 @@ def _assistant_prompt(action: AssistantAction, inputs: dict[str, object]) -> str
         f"```json\n{input_json}\n```\n\n"
         "Work in the current repository workspace. "
         + access_instruction
+        + tool_instruction
         + f"At the end, print only the value for `{output_name}` as "
         f"{output_type.__name__}. For a string result, print plain text; for "
         "other types, print valid JSON."
@@ -124,8 +139,22 @@ def make_cli_assistant_backend(
                 str(workspace),
                 "--sandbox",
                 "read-only" if action.access == "read-only" else "workspace-write",
-                "-",
             ]
+            if action.external_tools == "none":
+                command.extend(
+                    [
+                        "--ignore-user-config",
+                        "--config",
+                        "mcp_servers={}",
+                        "--config",
+                        'web_search="disabled"',
+                        "--config",
+                        "agents.enabled=false",
+                        "--config",
+                        "sandbox_workspace_write.network_access=false",
+                    ]
+                )
+            command.append("-")
             stdin = prompt
         else:
             command = [
@@ -134,11 +163,18 @@ def make_cli_assistant_backend(
                 "--permission-mode",
                 "plan" if action.access == "read-only" else "acceptEdits",
             ]
-            if action.access == "read-only":
+            if action.external_tools == "none":
                 command.extend(
                     [
+                        "--safe-mode",
+                        "--no-chrome",
+                        "--disable-slash-commands",
                         "--tools",
-                        "Read,Glob,Grep",
+                        (
+                            "Read,Glob,Grep"
+                            if action.access == "read-only"
+                            else "Read,Glob,Grep,Edit,Write,Bash"
+                        ),
                         "--strict-mcp-config",
                     ]
                 )

@@ -97,10 +97,21 @@ instructions. Select the runtime CLI with `workflow.configure(assistant="codex")
 `zippergen run ... --assistant codex`, `ZIPPERGEN_ASSISTANT=codex`, or a static
 `backend="codex"`/`backend="claude"` on the action. Prefer runtime selection
 when the same workflow must run in different environments.
-Declare `access="read-only"` for analysis and review actions and
-`access="write"` for actions that may change the repository. ZipperGen maps
-this policy to the selected CLI's non-interactive sandbox or permission mode;
-do not rely on prompt wording alone to make a reviewer read-only.
+Assistant actions default to `access="read-only"`. Declare `access="write"`
+explicitly for actions that may change the repository. ZipperGen maps this
+policy to the selected CLI's non-interactive sandbox or permission mode; do not
+rely on prompt wording alone to make a reviewer read-only.
+
+Filesystem access is separate from external-tool access. The default
+`external_tools="none"` disables configured MCP servers, web access, and
+assistant subagents. Use `external_tools="configured"` only when those
+configured capabilities are an intentional part of the action. Both policies
+are always visible in semantic snapshots and diffs. Validation warns when a
+write workspace contains the executing workflow, because that workspace can
+permit self-modification. In that case, make the static instruction explicitly
+protect the workflow and prohibit deployment, service control, commits, pushes,
+and unrelated external mutations unless the reviewed protocol deliberately
+requires them.
 
 An assistant action is journaled like other external actions in durable mode:
 a recorded result is replayed without launching the assistant again. The
@@ -321,6 +332,19 @@ The semantic diff compares meaning-bearing IR facts: participants, owned
 inputs/outputs, messages and their control context, action kinds and
 implementations, action sites, control constructs, parallel regions, and
 deployment requirements. It deliberately ignores irrelevant source layout.
+
+Studio can also inspect the durable current position of projected programs:
+
+```text
+run inspect [PARTICIPANT]
+deployment inspect [NAME] [PARTICIPANT]
+```
+
+These commands read diagnostic per-participant locators from the SQLite store
+and render the matching local projection with active pointers. The locators
+are observation data, not recovery snapshots. Do not add workflow variables,
+action inputs, provider credentials, or other environment values to the
+default position view.
 
 ## Studio natural-language commands
 

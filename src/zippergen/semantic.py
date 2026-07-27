@@ -124,11 +124,11 @@ def _action_definition(action: object) -> dict[str, object]:
             "instructions_sha256": action.instructions_sha256,
             "instructions": action.instructions,
             "backend": action.backend,
+            "access": action.access,
+            "external_tools": action.external_tools,
             "workspace": action.workspace,
             "timeout": action.timeout,
         })
-        if action.access != "write":
-            base["access"] = action.access
     elif isinstance(action, PlannerAction):
         base.update({
             "kind": "planner",

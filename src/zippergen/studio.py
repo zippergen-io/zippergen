@@ -143,6 +143,7 @@ _SUBCOMMAND_COMPLETIONS = {
         "editor",
         "edit",
         "models",
+        "run",
         "store",
         "deployment",
     )
@@ -179,6 +180,8 @@ def _is_explicit_studio_syntax(parts: list[str]) -> bool:
     if command == "run":
         if not args:
             return True
+        if args[0].casefold() == "inspect":
+            return len(args) <= 2
         if len(args) == 1:
             return not args[0].startswith("-")
         if len(args) == 2:
@@ -343,6 +346,8 @@ def _is_allowed_natural_plan_command(parts: list[str]) -> bool:
             return True
         if lowered[0] == "connectors":
             return len(args) <= 5
+        if lowered[0] == "inspect":
+            return len(args) <= 3
         return (
             lowered[0]
             in {
@@ -374,6 +379,8 @@ def _is_allowed_natural_plan_command(parts: list[str]) -> bool:
     if command == "run":
         if not args:
             return True
+        if lowered[0] == "inspect":
+            return len(args) <= 2
         if len(args) == 1:
             return not args[0].startswith("-")
         if len(args) == 2:
@@ -629,6 +636,12 @@ class Studio:
         """Name a command precisely without echoing user values or secrets."""
 
         command = parts[0].casefold()
+        if (
+            command == "run"
+            and len(parts) > 1
+            and parts[1].casefold() == "inspect"
+        ):
+            return "run inspect"
         if len(parts) > 1 and command in {
             "workflow",
             "models",
@@ -887,6 +900,12 @@ class Studio:
             return list(_COMMAND_COMPLETIONS)
         command = words[0].lower()
         args = words[1:]
+        if command == "run" and not args:
+            return [
+                *_SUBCOMMAND_COMPLETIONS["run"],
+                *_MODEL_COMPLETIONS,
+                ("--assistant", "select the coding-assistant action backend"),
+            ]
         if not args and command in _SUBCOMMAND_COMPLETIONS:
             return list(_SUBCOMMAND_COMPLETIONS[command])
         if command == "settings":
@@ -1210,6 +1229,7 @@ class Studio:
                 args[0].lower()
                 in {
                     "show",
+                    "inspect",
                     "doctor",
                     "logs",
                     "tasks",
@@ -1222,8 +1242,18 @@ class Studio:
                 and len(args) == 1
             ):
                 return self._deployment_completion_candidates()
+            if args[0].lower() == "inspect" and len(args) == 2:
+                return [
+                    (name, "workflow participant")
+                    for name in self._completion_lifelines()
+                ]
             return []
         if command in {"run"}:
+            if args[0].lower() == "inspect":
+                return [
+                    (name, "workflow participant")
+                    for name in self._completion_lifelines()
+                ]
             if args and args[-1] == "--assistant":
                 return [
                     ("codex", "run @assistant actions with Codex CLI"),
@@ -2385,6 +2415,8 @@ class Studio:
         args = parts[1:]
         if command == "run" and len(args) == 1:
             entered = args[0]
+            if entered.casefold() == "inspect":
+                return True
             configurations = {
                 name.casefold()
                 for name in self.workspace.model_configurations()
@@ -2512,6 +2544,9 @@ class Studio:
         elif command == "models":
             self.configure_models(args)
         elif command == "run":
+            if args and args[0].casefold() == "inspect":
+                self.inspect_run(args[1:])
+                return True
             assistant_backend = str(self._global_settings()["assistant"])
             run_args = list(args)
             if "--assistant" in run_args:
@@ -5928,6 +5963,7 @@ class Studio:
                         run.get("assistant") or "none selected",
                         None,
                     ),
+                    ("Run inspection", "run inspect [PARTICIPANT]", None),
                 ]
             )
         deployment = state.get("last_deployment")
@@ -5978,6 +6014,13 @@ class Studio:
                         if service["state"] == "restarting"
                         else "warning"
                     ),
+                )
+            )
+            runtime_rows.append(
+                (
+                    "Deployment inspection",
+                    f"deployment inspect {deployment} [PARTICIPANT]",
+                    None,
                 )
             )
         else:
@@ -8081,6 +8124,167 @@ class Studio:
                 for record in runs
             ],
         )
+        self._emit_next("run inspect · resume · run")
+
+    @staticmethod
+    def _execution_age(updated_at: float | None) -> str:
+        if updated_at is None:
+            return "—"
+        seconds = max(0, int(time.time() - updated_at))
+        if seconds < 2:
+            return "just now"
+        if seconds < 60:
+            return f"{seconds}s"
+        minutes = seconds // 60
+        if minutes < 60:
+            return f"{minutes}m"
+        hours = minutes // 60
+        if hours < 48:
+            return f"{hours}h"
+        return f"{hours // 24}d"
+
+    def _inspect_execution(
+        self,
+        *,
+        workflow,
+        store: str | Path,
+        source_rows: list[tuple[str, object, StatusKind | None]],
+        participant: str | None,
+        next_commands: str,
+    ) -> None:
+        from zippergen.execution_inspection import (
+            default_focus,
+            participant_positions,
+            read_execution_states,
+            state_label,
+        )
+        from zippergen.view import render_local_projection_with_pointers
+
+        raw_states = read_execution_states(store)
+        positions = participant_positions(workflow, raw_states)
+        names = [position.participant for position in positions]
+        if participant is not None:
+            matched = next(
+                (
+                    name
+                    for name in names
+                    if name.casefold() == participant.casefold()
+                ),
+                None,
+            )
+            if matched is None:
+                raise SystemExit(
+                    f"Unknown participant {participant!r}. Available: "
+                    f"{', '.join(names) or 'none'}."
+                )
+            focus = matched
+        else:
+            focus = default_focus(positions)
+        observation_kind: StatusKind = "success" if raw_states else "warning"
+        self._emit_table(
+            "Execution context",
+            [
+                *source_rows,
+                ("Store", store, None),
+                (
+                    "Observation",
+                    (
+                        f"{len(raw_states)} participant position(s) recorded"
+                        if raw_states
+                        else "no position data; the run may not have started "
+                        "or may predate execution inspection"
+                    ),
+                    observation_kind,
+                ),
+                (
+                    "Privacy",
+                    "workflow variables and action inputs are not displayed",
+                    "info",
+                ),
+            ],
+        )
+        status_kind = {
+            "done": "success",
+            "failed": "error",
+            "cancelled": "warning",
+            "waiting_human": "warning",
+            "waiting_receive": "info",
+            "running_model": "info",
+            "running_assistant": "info",
+            "running_effect": "info",
+            "running_action": "info",
+            "running": "info",
+            "blocked": "warning",
+            "not_started": "warning",
+        }
+        rows = []
+        for position in positions:
+            kind = cast(
+                StatusKind,
+                status_kind.get(position.state, "info"),
+            )
+            rows.append(
+                (
+                    "▶" if position.participant == focus else "",
+                    position.participant,
+                    f"{self._status_mark(kind)} {state_label(position.state)}",
+                    position.location,
+                    self._execution_age(position.updated_at),
+                )
+            )
+        self._emit_columns(
+            "Participant positions",
+            ("Focus", "Participant", "State", "Current position", "For"),
+            rows,
+        )
+        if focus is not None:
+            selected = next(
+                position
+                for position in positions
+                if position.participant == focus
+            )
+            self._emit()
+            self._emit_section_title(f"{focus} · live local projection")
+            self._emit(
+                render_local_projection_with_pointers(
+                    workflow,
+                    focus,
+                    selected.locators,
+                )
+            )
+        self._emit_next(next_commands)
+
+    def inspect_run(self, args: list[str]) -> None:
+        if len(args) > 1:
+            raise SystemExit("Use run inspect [PARTICIPANT].")
+        record = self.workspace.current_run()
+        if record is None:
+            raise SystemExit(
+                "There is no current development run. Start one with 'run'."
+            )
+        workflow_spec = str(record.get("workflow_spec") or "")
+        if not workflow_spec:
+            raise SystemExit("The current run has no recorded workflow.")
+        from zippergen.serve import load_workflow_spec
+
+        workflow, _module = load_workflow_spec(
+            self.workspace.absolute_spec(workflow_spec)
+        )
+        self._inspect_execution(
+            workflow=workflow,
+            store=str(record.get("store") or ""),
+            source_rows=[
+                ("Run", record.get("run_id") or "unknown", None),
+                ("Workflow", workflow_spec, None),
+                ("Run status", record.get("status") or "unknown", None),
+            ],
+            participant=args[0] if args else None,
+            next_commands=(
+                f"run inspect {args[0]} · runs · resume"
+                if args
+                else "run inspect PARTICIPANT · runs · resume"
+            ),
+        )
 
     @staticmethod
     def _store_size(value: int) -> str:
@@ -9650,18 +9854,18 @@ class Studio:
             None,
         )
         next_action = (
-            "deployment stop · "
+            "deployment inspect · deployment stop · "
             + (
                 f"models provider check {missing_provider} · deploy"
                 if missing_provider
                 else "deployment logs"
             )
             if service["state"] == "restarting"
-            else "deployment tasks"
+            else "deployment inspect · deployment tasks"
             if store["state"] == "waiting"
-            else "deployment logs"
+            else "deployment inspect · deployment logs"
             if failures
-            else "deployment doctor · deployment logs"
+            else "deployment inspect · deployment doctor · deployment logs"
         )
         self._emit_table(
             "Deployment state",
@@ -9694,6 +9898,75 @@ class Studio:
         self.workspace.update(
             last_deployment=name,
             current_store=str(profile["store"]),
+        )
+
+    def inspect_deployment(self, args: list[str]) -> None:
+        if len(args) > 2:
+            raise SystemExit(
+                "Use deployment inspect [NAME] [PARTICIPANT]."
+            )
+        from zippergen.serve import (
+            _deployment_profile_path,
+            _deployment_service_status,
+            _load_deployment_profile,
+            load_workflow_spec,
+        )
+
+        participant: str | None = None
+        if len(args) == 2:
+            name = self._deployment_name(args[0])
+            participant = args[1]
+        elif len(args) == 1 and _deployment_profile_path(args[0]).exists():
+            name = self._deployment_name(args[0])
+        elif len(args) == 1:
+            name = self._deployment_name(None)
+            participant = args[0]
+        else:
+            name = self._deployment_name(None)
+        profile = _load_deployment_profile(name)
+        workflow_ref = str(profile.get("workflow") or "")
+        cwd = Path(str(profile.get("cwd") or profile.get("bundle") or ""))
+        module_ref, separator, workflow_name = workflow_ref.partition(":")
+        module_path = Path(module_ref).expanduser()
+        if not module_path.is_absolute():
+            module_path = cwd / module_path
+        target = str(module_path)
+        if separator:
+            target += f":{workflow_name}"
+        workflow, _module = load_workflow_spec(target)
+        service = _deployment_service_status(name)
+        service_kind: StatusKind = (
+            "success"
+            if service["state"] in {"running", "completed"}
+            else "error"
+            if service["state"] == "restarting"
+            else "warning"
+        )
+        self._inspect_execution(
+            workflow=workflow,
+            store=str(profile.get("store") or ""),
+            source_rows=[
+                ("Deployment", name, None),
+                ("Workflow", workflow_ref, None),
+                ("Service", service["detail"], service_kind),
+                (
+                    "Bundle",
+                    cwd,
+                    "success" if cwd.is_dir() else "error",
+                ),
+            ],
+            participant=participant,
+            next_commands=(
+                f"deployment inspect {name} {participant} · "
+                f"deployment tasks {name} · deployment logs {name}"
+                if participant
+                else f"deployment inspect {name} PARTICIPANT · "
+                f"deployment tasks {name} · deployment logs {name}"
+            ),
+        )
+        self.workspace.update(
+            last_deployment=name,
+            current_store=str(profile.get("store") or ""),
         )
 
     def _notify_deployment(self, args: list[str]) -> None:
@@ -9798,6 +10071,9 @@ class Studio:
         if action == "show":
             self.show_deployment(rest)
             return
+        if action == "inspect":
+            self.inspect_deployment(rest)
+            return
         if action == "connectors":
             self.manage_connectors(rest)
             return
@@ -9824,7 +10100,7 @@ class Studio:
             self.deployment_action(action, rest)
             return
         raise SystemExit(
-            "Use deployment list, show, doctor, logs, tasks, approve, "
+            "Use deployment list, show, inspect, doctor, logs, tasks, approve, "
             "connectors, notify, start, restart, or stop."
         )
 

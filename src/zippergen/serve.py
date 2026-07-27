@@ -1980,6 +1980,37 @@ def _validate_workflow(workflow: Workflow, module: ModuleType) -> dict[str, obje
                 f"{action.access}; enforced by the selected CLI permission mode"
             ),
         })
+        checks.append({
+            "status": (
+                "warn" if action.external_tools == "configured" else "ok"
+            ),
+            "name": f"assistant external tools {action.name}",
+            "detail": (
+                "configured assistant MCP/tool integrations are permitted"
+                if action.external_tools == "configured"
+                else "configured MCP/tool integrations and web access are disabled"
+            ),
+        })
+        module_file = getattr(module, "__file__", None)
+        if action.access == "write" and module_file:
+            requested_workspace = Path(action.workspace or ".").expanduser()
+            workspace_path = (
+                requested_workspace.resolve()
+                if requested_workspace.is_absolute()
+                else (Path.cwd() / requested_workspace).resolve()
+            )
+            workflow_source = Path(module_file).resolve()
+            if workflow_source.is_relative_to(workspace_path):
+                checks.append({
+                    "status": "warn",
+                    "name": f"assistant self-modification {action.name}",
+                    "detail": (
+                        f"write workspace {workspace_path} contains the "
+                        f"executing workflow source {workflow_source}; keep "
+                        "self-modification, deployment, and Git boundaries "
+                        "explicit in the reviewed instructions"
+                    ),
+                })
         if action.instructions_path is None:
             checks.append({
                 "status": "ok",

@@ -74,6 +74,8 @@ def test_codex_claude_review_has_enforced_roles_and_owned_control():
     assert {control["owner"] for control in model["controls"]} == {"Codex"}
     assert actions["implement_task"]["backend"] == "codex"
     assert actions["implement_task"].get("access", "write") == "write"
+    assert actions["implement_task"]["external_tools"] == "none"
     assert actions["review_candidate"]["backend"] == "claude"
     assert actions["review_candidate"]["access"] == "read-only"
+    assert actions["review_candidate"]["external_tools"] == "none"
     assert actions["finalize_result"]["access"] == "read-only"

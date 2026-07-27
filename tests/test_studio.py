@@ -159,6 +159,8 @@ def test_studio_completion_is_context_and_project_aware(tmp_path):
     assert "show" in _completions(studio, "store ")
     assert _completions(studio, "depl") == ["deploy", "deployment"]
     assert "show" in _completions(studio, "deployment ")
+    assert "inspect" in _completions(studio, "run ")
+    assert _completions(studio, "run inspect W") == ["Writer"]
     assert _completions(studio, "workflow create --file req") == [
         "requirements.md"
     ]
@@ -170,6 +172,57 @@ def test_studio_completion_is_context_and_project_aware(tmp_path):
     ) == [
         "'notes folder/spec.md'"
     ]
+
+
+def test_studio_inspects_current_run_with_a_local_program_pointer(tmp_path):
+    studio, workspace, output = _studio(tmp_path)
+    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    from zippergen.locator import resolve_path, statement_node_paths
+    from zippergen.projection import project
+    from zippergen.serve import load_workflow_spec
+    from zippergen.store import open_store, write_execution_state
+    from zippergen.syntax import ActStmt, _ordered_workflow_lifelines
+
+    workflow, _module = load_workflow_spec(
+        workspace.absolute_spec("workflow.py:sample")
+    )
+    record = workspace.new_run(
+        workflow_spec="workflow.py:sample",
+        workflow_name="sample",
+        fingerprint="test",
+        inputs={"value": "hello"},
+        llm="mock",
+    )
+    workspace.update_run(str(record["run_id"]), status="running")
+    local = project(
+        workflow,
+        next(
+            lifeline
+            for lifeline in _ordered_workflow_lifelines(workflow)
+            if lifeline.name == "Writer"
+        ),
+    )
+    action_path = next(
+        path
+        for path in statement_node_paths(local).values()
+        if isinstance(resolve_path(local, path), ActStmt)
+    )
+    connection = open_store(str(record["store"]))
+    write_execution_state(
+        connection,
+        "Writer",
+        "running_model",
+        [action_path],
+        {"action": "echo", "kind": "model"},
+    )
+    connection.close()
+
+    studio.execute("run inspect Writer")
+
+    assert any(line == "Execution context" for line in output)
+    assert any("Writer" in line and "running model action" in line for line in output)
+    assert any("▶" in line and "result = echo(value)" in line for line in output)
+    assert any("workflow variables and action inputs" in line for line in output)
 
 
 def test_studio_explains_a_single_completion_match(tmp_path):
@@ -3254,7 +3307,16 @@ def test_studio_operates_human_tasks_through_the_deployment(
     }
     (deployments / "reviewed-answer.json").write_text(json.dumps(profile))
 
-    from zippergen.store import ensure_human_task, load_human_task, open_store
+    from zippergen.locator import resolve_path, statement_node_paths
+    from zippergen.projection import project
+    from zippergen.serve import load_workflow_spec
+    from zippergen.store import (
+        ensure_human_task,
+        load_human_task,
+        open_store,
+        write_execution_state,
+    )
+    from zippergen.syntax import ActStmt, _ordered_workflow_lifelines
 
     connection = open_store(str(store))
     ensure_human_task(
@@ -3283,6 +3345,27 @@ def test_studio_operates_human_tasks_through_the_deployment(
                 "prefill": None,
             },
         },
+    )
+    deployed_workflow, _module = load_workflow_spec(
+        str(bundle / "dual.py") + ":sample"
+    )
+    reviewer = next(
+        item
+        for item in _ordered_workflow_lifelines(deployed_workflow)
+        if item.name == "Reviewer"
+    )
+    reviewer_local = project(deployed_workflow, reviewer)
+    reviewer_action = next(
+        path
+        for path in statement_node_paths(reviewer_local).values()
+        if isinstance(resolve_path(reviewer_local, path), ActStmt)
+    )
+    write_execution_state(
+        connection,
+        "Reviewer",
+        "running_model",
+        [reviewer_action],
+        {"action": "process", "kind": "model"},
     )
     connection.close()
     monkeypatch.setattr(
@@ -3324,6 +3407,17 @@ def test_studio_operates_human_tasks_through_the_deployment(
     assert any("deployment approve reviewed-answer" in line for line in output)
     assert workspace.load()["last_deployment"] == "reviewed-answer"
     assert workspace.load()["current_store"] == str(store)
+
+    output.clear()
+    studio.execute("deployment inspect reviewed-answer Reviewer")
+    assert any(
+        "Reviewer" in line and "running model action" in line
+        for line in output
+    )
+    assert any(
+        "▶" in line and "result = process(draft)" in line
+        for line in output
+    )
 
     prompts: list[str] = []
     studio.input = lambda prompt: prompts.append(prompt) or "y"

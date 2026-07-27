@@ -21,9 +21,13 @@ def test_command_registry_has_unique_paths_and_derives_user_surfaces():
     assert ("store", "list") in paths
     assert ("store", "delete") in paths
     assert ("deployment", "show") in paths
+    assert ("deployment", "inspect") in paths
+    assert ("run", "inspect") in paths
     assert "studio doctor" in full_help()
     assert "store list" in full_help()
     assert "deployment show" in full_help()
+    assert "deployment inspect" in full_help()
+    assert "run inspect" in full_help()
     assert "\n  status " not in full_help()
     assert "workflow prompts" not in full_help()
     assert ("studio", "inspect or operate the Studio process") in (

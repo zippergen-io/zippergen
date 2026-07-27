@@ -8,6 +8,8 @@ Maintainer = Lifeline("Maintainer")
 
 @assistant(
     instructions_file="examples/prompts/update_release_notes.md",
+    access="write",
+    external_tools="none",
     workspace=".",
 )
 def update_release_notes(change: str) -> str: ...

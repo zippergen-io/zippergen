@@ -12,7 +12,12 @@ import time
 from dataclasses import dataclass
 from typing import Any, cast
 
-from zippergen.locator import action_node_paths, loop_node_paths, resolve_path
+from zippergen.locator import (
+    action_node_paths,
+    execution_frontier_paths,
+    loop_node_paths,
+    resolve_path,
+)
 from zippergen.runtime import (
     PendingExternal,
     _input_hash,
@@ -20,14 +25,33 @@ from zippergen.runtime import (
     external_out_map,
     mock_llm,
 )
-from zippergen.store import DurableChannel, load_snapshot, record_trace_event, write_snapshot
+from zippergen.store import (
+    DurableChannel,
+    load_snapshot,
+    record_trace_event,
+    write_execution_state,
+    write_snapshot,
+)
 from zippergen.store import (
     complete_human_task,
     ensure_human_task,
     human_task_id,
     load_human_task,
 )
-from zippergen.syntax import ActStmt, EmptyStmt, HumanAction, WhileRecvStmt, WhileStmt
+from zippergen.syntax import (
+    ActStmt,
+    AssistantAction,
+    EffectAction,
+    EmptyStmt,
+    HumanAction,
+    IfRecvStmt,
+    LLMAction,
+    PlannerAction,
+    ReceiveAnyStmt,
+    RecvStmt,
+    WhileRecvStmt,
+    WhileStmt,
+)
 
 
 @dataclass
@@ -80,6 +104,39 @@ def _maybe_snapshot(conn, role: str, env: dict, locator: list, ch) -> None:
         # healthy role — skip on a non-serializable env OR a transient store
         # error (e.g. lock contention in the separate snapshot transaction).
         pass
+
+
+def _open_observation_connection(conn) -> sqlite3.Connection | None:
+    """Open an isolated, short-timeout connection for best-effort telemetry."""
+
+    observer: sqlite3.Connection | None = None
+    try:
+        rows = conn.execute("PRAGMA database_list").fetchall()
+        path = next(
+            (
+                str(row[2])
+                for row in rows
+                if len(row) >= 3 and row[1] == "main" and row[2]
+            ),
+            "",
+        )
+        if not path or path == ":memory:":
+            return None
+        observer = sqlite3.connect(
+            path,
+            isolation_level=None,
+            check_same_thread=False,
+            timeout=0.05,
+        )
+        observer.execute("PRAGMA busy_timeout=50")
+        return observer
+    except Exception:
+        if observer is not None:
+            try:
+                observer.close()
+            except Exception:
+                pass
+        return None
 
 
 def _begin_immediate(conn, stop: threading.Event | None = None) -> None:
@@ -174,6 +231,8 @@ class RoleRunner:
         self.journal = JournalContext(self.channel, action_node_paths(local_stmt))
         self.trace = self._make_trace(trace)
         self._idle_sleep = self._IDLE_SLEEP_INITIAL
+        self._execution_state_signature: str | None = None
+        self._observation_conn = _open_observation_connection(conn)
 
     def _make_trace(self, trace):
         def durable_trace(event: dict) -> None:
@@ -208,6 +267,78 @@ class RoleRunner:
         except BaseException:
             self.conn.execute("ROLLBACK")
             raise
+
+    def _set_execution_state(
+        self,
+        state: str,
+        locators: list[list[int]],
+        detail: dict | None = None,
+    ) -> None:
+        """Best-effort observation state; never make execution depend on it."""
+
+        normalized_detail = detail or {}
+        signature = repr((state, locators, sorted(normalized_detail.items())))
+        if signature == self._execution_state_signature:
+            return
+        if self._observation_conn is None:
+            return
+        try:
+            write_execution_state(
+                self._observation_conn,
+                self.role,
+                state,
+                locators,
+                normalized_detail,
+            )
+        except Exception:
+            return
+        self._execution_state_signature = signature
+
+    def _frontier(self) -> tuple[list[list[int]], list[object]]:
+        locators = execution_frontier_paths(self.local_stmt, self.residual)
+        nodes = [
+            node
+            for locator in locators
+            if (node := resolve_path(self.local_stmt, locator)) is not None
+        ]
+        return locators, nodes
+
+    def _set_residual_state(self, *, blocked: bool = False) -> None:
+        locators, nodes = self._frontier()
+        if not locators:
+            self._set_execution_state("done", [])
+            return
+        receives = (RecvStmt, ReceiveAnyStmt, IfRecvStmt, WhileRecvStmt)
+        if blocked and nodes and all(isinstance(node, receives) for node in nodes):
+            state = "waiting_receive"
+        elif blocked:
+            state = "blocked"
+        else:
+            state = "running"
+        self._set_execution_state(state, locators)
+
+    def _set_external_state(self, pending: PendingExternal) -> None:
+        node = cast(ActStmt, pending.node)
+        locator = self.journal.act_paths.get(id(node))
+        locators = [locator] if locator is not None else []
+        action = node.action
+        detail = {"action": action.name}
+        if isinstance(action, HumanAction) and action.visible:
+            state = "waiting_human"
+            detail["kind"] = "human"
+        elif isinstance(action, AssistantAction):
+            state = "running_assistant"
+            detail["kind"] = "assistant"
+        elif isinstance(action, (LLMAction, PlannerAction)):
+            state = "running_model"
+            detail["kind"] = "model"
+        elif isinstance(action, EffectAction):
+            state = "running_effect"
+            detail["kind"] = "effect"
+        else:
+            state = "running_action"
+            detail["kind"] = type(action).__name__
+        self._set_execution_state(state, locators, detail)
 
     def _wait_for_human_task(self, task_id: str) -> dict:
         while True:
@@ -323,6 +454,7 @@ class RoleRunner:
         self._idle_sleep = min(self._IDLE_SLEEP_MAX, delay * self._IDLE_SLEEP_FACTOR)
 
     def run_live(self) -> None:
+        self._set_residual_state()
         while not isinstance(self.residual, EmptyStmt):
             if self.stop is not None and self.stop.is_set():
                 raise RuntimeError("Workflow cancelled")
@@ -336,6 +468,7 @@ class RoleRunner:
             out, progressed = self.step(self.residual, self.trace)
             if isinstance(out, PendingExternal):
                 self.conn.execute("ROLLBACK")                 # release the write lock first
+                self._set_external_state(out)
                 out_map, task_id = self._resolve_external(out)   # OUTSIDE any txn
                 self._record_act_outputs(out, out_map, human_task=task_id)
                 # pass 2 (no txn): consume the just-committed act row, apply env, advance
@@ -349,6 +482,7 @@ class RoleRunner:
                         self.loop_paths[id(self.residual)],
                         self.channel,
                     )
+                self._set_residual_state()
                 self._reset_idle_backoff()
                 continue
             if progressed:
@@ -365,16 +499,44 @@ class RoleRunner:
                         self.loop_paths[id(self.residual)],
                         self.channel,
                     )
+                self._set_residual_state()
             else:
                 self.channel.rollback_txn()
+                self._set_residual_state(blocked=True)
                 if self.stop is not None and self.stop.is_set():
                     raise RuntimeError("Workflow cancelled")
                 self._sleep_after_idle_step()
 
     def run(self) -> dict:
-        self.replay_committed()
-        self.run_live()
-        return self.env
+        try:
+            try:
+                self.replay_committed()
+                self.run_live()
+            except BaseException as exc:
+                if self.conn.in_transaction:
+                    self.conn.execute("ROLLBACK")
+                state = (
+                    "cancelled"
+                    if "Workflow cancelled" in str(exc)
+                    else "failed"
+                )
+                self._set_execution_state(
+                    state,
+                    execution_frontier_paths(
+                        self.local_stmt,
+                        self.residual,
+                    ),
+                    {"error": type(exc).__name__},
+                )
+                raise
+            self._set_execution_state("done", [])
+            return self.env
+        finally:
+            if self._observation_conn is not None:
+                try:
+                    self._observation_conn.close()
+                except Exception:
+                    pass
 
 
 def run_role(conn, role: str, local_stmt, env: dict, ns: dict, *,
