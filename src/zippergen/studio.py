@@ -142,7 +142,7 @@ _SUBCOMMAND_COMPLETIONS = {
         "language",
         "editor",
         "edit",
-        "models",
+        "model",
         "run",
         "deployment",
     )
@@ -300,7 +300,7 @@ def _is_allowed_natural_plan_command(parts: list[str]) -> bool:
         return False
     if command == "studio":
         return len(args) == 1 and lowered[0] in {"doctor", "restart"}
-    if command == "models":
+    if command == "model":
         if not args:
             return True
         if lowered[0] == "provider":
@@ -648,7 +648,7 @@ class Studio:
             return f"run {parts[1].casefold()}"
         if len(parts) > 1 and command in {
             "workflow",
-            "models",
+            "model",
             "project",
             "settings",
             "language",
@@ -1101,9 +1101,9 @@ class Studio:
             if action in {"accept", "discard"}:
                 return [("--yes", "confirm without another prompt")]
             return []
-        if command == "models":
+        if command == "model":
             if not args:
-                return list(_SUBCOMMAND_COMPLETIONS["models"])
+                return list(_SUBCOMMAND_COMPLETIONS["model"])
             action = args[0].lower()
             if action == "provider":
                 provider_actions = [
@@ -2347,7 +2347,7 @@ class Studio:
                 ),
                 (
                     "Model setup",
-                    "optional until a non-mock run; inspect with models",
+                    "optional until a non-mock run; inspect with model",
                     "success",
                 ),
                 ("Next", self._welcome_next_action(), None),
@@ -2463,11 +2463,18 @@ class Studio:
             return True
         if parts[0].casefold() == "providers":
             if show_boundary:
-                self._emit_output_boundary("models")
+                self._emit_output_boundary("model")
             raise SystemExit(
                 "`providers` is not a Studio command. Provider connections are "
-                "managed with `models provider configure NAME`; use `models` "
+                "managed with `model provider configure NAME`; use `model` "
                 "to inspect them."
+            )
+        if parts[0].casefold() == "models":
+            if show_boundary:
+                self._emit_output_boundary("model")
+            raise SystemExit(
+                "`models` was renamed to `model`. Use `model`, "
+                "`model setup`, or another `model ...` command."
             )
         if parts[0].casefold() == "store":
             if show_boundary:
@@ -2548,7 +2555,7 @@ class Studio:
                 self.restart_studio()
             else:
                 raise SystemExit("Use studio doctor or studio restart.")
-        elif command == "models":
+        elif command == "model":
             self.configure_models(args)
         elif command == "run":
             if args:
@@ -2999,7 +3006,7 @@ class Studio:
             ):
                 for index in range(3, len(parts)):
                     replace(index)
-        elif top == "models" and len(parts) >= 2:
+        elif top == "model" and len(parts) >= 2:
             action = parts[1].casefold()
             if action in {"assign", "inherit"}:
                 replace(2)
@@ -3031,7 +3038,7 @@ class Studio:
             )
         lowered = [value.casefold() for value in parts]
         if (
-            lowered[:2] in (["models", "provider"], ["models", "config"])
+            lowered[:2] in (["model", "provider"], ["model", "config"])
             and len(lowered) >= 3
         ):
             if lowered[2] in {"list", "show", "check"}:
@@ -3134,7 +3141,7 @@ class Studio:
             raise SystemExit(
                 "The request appears to contain a secret value and was not sent "
                 "to an interpreter or stored. Use "
-                "'models provider configure NAME' so Studio can collect the "
+                "'model provider configure NAME' so Studio can collect the "
                 "key privately."
             )
 
@@ -6632,13 +6639,13 @@ class Studio:
             next_step = (
                 "check the run override or run without it"
                 if failures[0] == "run override"
-                else f"run 'models config check {failures[0]}'"
+                else f"run 'model config check {failures[0]}'"
             )
             if not for_run:
                 raise SystemExit(
                     f"Assignment check failed because {unique} could not be "
                     "verified. Restore the connection or configuration, then "
-                    f"{next_step} or use 'models assignments check' again."
+                    f"{next_step} or use 'model assignments check' again."
                 )
             raise SystemExit(
                 f"Run stopped before collecting inputs because {unique} "
@@ -6719,7 +6726,7 @@ class Studio:
         )
         if include_next:
             self._emit_next(
-                "models config create [NAME] · models config check [NAME]"
+                "model config create [NAME] · model config check [NAME]"
             )
 
     def _emit_model_assignments(
@@ -6785,7 +6792,7 @@ class Studio:
             indent=2,
         )
         self._emit()
-        self._emit_next("models assignments check")
+        self._emit_next("model assignments check")
 
     def _model_configuration_name(self, requested: str) -> str:
         configurations = self.workspace.model_configurations()
@@ -6796,7 +6803,7 @@ class Studio:
             available = ", ".join(configurations) or "none"
             raise SystemExit(
                 f"Unknown model configuration {requested!r}. Available: "
-                f"{available}. Use 'models config create' to create one."
+                f"{available}. Use 'model config create' to create one."
             )
         return canonical
 
@@ -6809,7 +6816,7 @@ class Studio:
     ) -> str:
         if len(args) > 1:
             command = "edit NAME" if edit_only else "create [NAME]"
-            raise SystemExit(f"Use models config {command}.")
+            raise SystemExit(f"Use model config {command}.")
         configurations = self.workspace.model_configurations()
         requested = args[0] if args else None
         existing_name = None
@@ -6820,14 +6827,14 @@ class Studio:
         if edit_only and existing_name is None:
             raise SystemExit(
                 f"Unknown model configuration {requested!r}. "
-                "Use 'models config list' to see available names."
+                "Use 'model config list' to see available names."
             )
         if existing_name == "mock":
             raise SystemExit("The built-in mock configuration cannot be edited.")
         if existing_name is not None and not edit_only:
             raise SystemExit(
                 f"Model configuration {existing_name!r} already exists. "
-                f"Use 'models config edit {existing_name}'."
+                f"Use 'model config edit {existing_name}'."
             )
 
         existing = configurations.get(existing_name or "", {})
@@ -6856,7 +6863,7 @@ class Studio:
         if provider != "mock" and not self._provider_is_connected(provider):
             raise SystemExit(
                 f"Provider {provider!r} is not configured. "
-                f"Next: models provider configure {provider}"
+                f"Next: model provider configure {provider}"
             )
         if provider == "mock":
             model = ""
@@ -6884,8 +6891,8 @@ class Studio:
                     f"Model configuration already exists: {name} ({spec})"
                 )
                 self._emit_next(
-                    f"models config check {name} · "
-                    f"models assign LIFELINE {name}"
+                    f"model config check {name} · "
+                    f"model assign LIFELINE {name}"
                 )
                 return name
         try:
@@ -6901,7 +6908,7 @@ class Studio:
                     "check_detail": (
                         "built in"
                         if provider == "mock"
-                        else "run 'models config check' before assignment"
+                        else "run 'model config check' before assignment"
                     ),
                 },
             )
@@ -6910,8 +6917,8 @@ class Studio:
         verb = "Updated" if existing_name else "Created"
         self._success(f"{verb} model configuration: {name} ({spec})")
         self._emit_next(
-            f"models config check {name} · "
-            f"models assign LIFELINE {name}"
+            f"model config check {name} · "
+            f"model assign LIFELINE {name}"
         )
         return name
 
@@ -7014,7 +7021,7 @@ class Studio:
                     "may be assigned to several participants; calls stay independent",
                     "success",
                 ),
-                ("Next", f"models config check {name}", None),
+                ("Next", f"model config check {name}", None),
             ],
         )
 
@@ -7069,7 +7076,7 @@ class Studio:
                 )
         if reference_count == 0:
             rows.append(("References", "none assigned", None))
-        rows.append(("Next", "models", None))
+        rows.append(("Next", "model", None))
         self._emit_table("Model configuration renamed", rows)
 
     def _show_model_assignments(self) -> None:
@@ -7111,7 +7118,7 @@ class Studio:
                     "provider configure/check → config create/check → assign",
                     None,
                 ),
-                ("Next", "models setup", None),
+                ("Next", "model setup", None),
             ],
         )
 
@@ -7188,7 +7195,7 @@ class Studio:
                     ("Status", "no workflow selected", "warning"),
                     (
                         "Next",
-                        "workflow list · workflow select · models setup",
+                        "workflow list · workflow select · model setup",
                         None,
                     ),
                 ],
@@ -7259,9 +7266,9 @@ class Studio:
                 self._emit_model_connections()
                 return
             raise SystemExit(
-                "Use models provider list, models provider configure NAME "
-                "[URL], models provider check [NAME|all], or "
-                "models provider remove NAME."
+                "Use model provider list, model provider configure NAME "
+                "[URL], model provider check [NAME|all], or "
+                "model provider remove NAME."
             )
 
         if action == "config":
@@ -7297,10 +7304,10 @@ class Studio:
                 self._success(f"Removed model configuration: {name}")
                 return
             raise SystemExit(
-                "Use models config list, models config create [NAME], "
-                "models config show [NAME], models config check [NAME|all], "
-                "models config edit NAME, models config rename OLD NEW, or "
-                "models config remove NAME."
+                "Use model config list, model config create [NAME], "
+                "model config show [NAME], model config check [NAME|all], "
+                "model config edit NAME, model config rename OLD NEW, or "
+                "model config remove NAME."
             )
 
         if action == "assignments":
@@ -7312,15 +7319,15 @@ class Studio:
                 self._check_workflow_models(current, workflow, module)
                 return
             raise SystemExit(
-                "Use models assignments or models assignments check."
+                "Use model assignments or model assignments check."
             )
 
         if action not in {"assign", "default", "inherit"}:
             raise SystemExit(
-                "Use models, models setup, models provider ..., "
-                "models config ..., models assignments, "
-                "models assign LIFELINE NAME, models default NAME, or "
-                "models inherit LIFELINE."
+                "Use model, model setup, model provider ..., "
+                "model config ..., model assignments, "
+                "model assign LIFELINE NAME, model default NAME, or "
+                "model inherit LIFELINE."
             )
 
         current, workflow, module = self._current_context()
@@ -7374,8 +7381,8 @@ class Studio:
             )
         else:
             raise SystemExit(
-                "Use models assign LIFELINE NAME, models default NAME, or "
-                "models inherit LIFELINE."
+                "Use model assign LIFELINE NAME, model default NAME, or "
+                "model inherit LIFELINE."
             )
 
         if changed_configuration is not None:
@@ -7386,14 +7393,14 @@ class Studio:
             if status == "unavailable":
                 raise SystemExit(
                     f"{changed_configuration} is unavailable. Run "
-                    f"'models config check {changed_configuration}' again, "
+                    f"'model config check {changed_configuration}' again, "
                     "or edit the configuration before assigning it."
                 )
             if status != "available":
                 self._warning(
                     f"{changed_configuration} is "
                     f"{status or 'not checked'}; "
-                    f"use 'models config check {changed_configuration}'."
+                    f"use 'model config check {changed_configuration}'."
                 )
         saved = self.workspace.save_model_assignment_profile(
             current,
@@ -7555,7 +7562,7 @@ class Studio:
                 "warning",
                 f"{label}: {message} because "
                 f"{provider} is not configured. Use "
-                f"'models provider configure {provider}'.",
+                f"'model provider configure {provider}'.",
             )
         available, detail = self._remote_model_available(provider, model, api_key)
         if available is False:
@@ -7690,7 +7697,7 @@ class Studio:
             if not self._provider_is_connected(provider):
                 message = (
                     f"{provider}: not configured; use "
-                    f"'models provider configure {provider}'"
+                    f"'model provider configure {provider}'"
                 )
                 if len(selected) == 1:
                     self._error(message, indent=2)
@@ -7797,7 +7804,7 @@ class Studio:
                 )
             return (
                 "warning",
-                "not configured; use 'models provider configure local'",
+                "not configured; use 'model provider configure local'",
             )
         secret_name = _PROVIDER_SECRETS.get(canonical)
         if secret_name is None:
@@ -7831,7 +7838,7 @@ class Studio:
             )
         return (
             "warning",
-            f"not configured; use 'models provider configure {canonical}'",
+            f"not configured; use 'model provider configure {canonical}'",
         )
 
     def _provider_status(self, provider: str) -> str:
@@ -7870,7 +7877,7 @@ class Studio:
         self._emit()
         if include_next:
             self._emit_next(
-                "models provider configure NAME · models provider check [NAME]"
+                "model provider configure NAME · model provider check [NAME]"
             )
 
     def _local_models_url(self, base_url: str) -> str:
@@ -7973,7 +7980,7 @@ class Studio:
 
     def _connect_model_provider(self, args: list[str]) -> None:
         if not args:
-            raise SystemExit("Use models provider configure NAME [URL].")
+            raise SystemExit("Use model provider configure NAME [URL].")
         provider = _canonical_provider(args[0])
         if provider not in _SUPPORTED_PROVIDERS:
             raise SystemExit(
@@ -7988,7 +7995,7 @@ class Studio:
         if provider == "local":
             if len(args) > 2:
                 raise SystemExit(
-                    "Use models provider configure local [BASE_URL]."
+                    "Use model provider configure local [BASE_URL]."
                 )
             existing = self.workspace.provider_profiles().get("local", {}).get(
                 "base_url"
@@ -8025,7 +8032,7 @@ class Studio:
                 self._warning(message + "; install or load a model before running")
             return
         if len(args) != 1:
-            raise SystemExit(f"Use models provider configure {provider}.")
+            raise SystemExit(f"Use model provider configure {provider}.")
         secret_name = _PROVIDER_SECRETS[provider]
         secrets = self.workspace.load_secrets()
         from_environment = bool(os.environ.get(secret_name))
@@ -9623,7 +9630,7 @@ class Studio:
         next_action = (
             "deployment inspect · deployment stop · "
             + (
-                f"models provider check {missing_provider} · deploy"
+                f"model provider check {missing_provider} · deploy"
                 if missing_provider
                 else "deployment logs"
             )

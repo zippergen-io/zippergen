@@ -139,16 +139,16 @@ def test_studio_completion_is_context_and_project_aware(tmp_path):
         "workflow.py:sample"
     ]
     assert _completions(studio, "workflow show agent W") == ["Writer"]
-    assert _completions(studio, "models assign W") == ["Writer"]
-    assert "check" in _completions(studio, "models config ch")
-    assert _completions(studio, "models config check m") == ["mock"]
-    assert "all" in _completions(studio, "models config check ")
-    assert _completions(studio, "models assignments ") == ["check"]
+    assert _completions(studio, "model assign W") == ["Writer"]
+    assert "check" in _completions(studio, "model config ch")
+    assert _completions(studio, "model config check m") == ["mock"]
+    assert "all" in _completions(studio, "model config check ")
+    assert _completions(studio, "model assignments ") == ["check"]
     assert _completions(
-        studio, "models provider configure a"
+        studio, "model provider configure a"
     ) == ["anthropic"]
-    assert _completions(studio, "models inh") == ["inherit"]
-    assert _completions(studio, "models inherit W") == ["Writer"]
+    assert _completions(studio, "model inh") == ["inherit"]
+    assert _completions(studio, "model inherit W") == ["Writer"]
     assert _completions(studio, "settings set l") == ["learning"]
     assert _completions(studio, "settings set learning ") == ["on", "off"]
     assert "assistant" in _completions(studio, "settings reset ")
@@ -2113,10 +2113,10 @@ def test_studio_commands_are_discoverable(tmp_path):
     assert "workflow create" in output[-1]
     assert "workflow edit" in output[-1]
     assert "workflow refine" in output[-1]
-    assert "models provider" in output[-1]
-    assert "models config" in output[-1]
-    assert "models config list|create|show|check" in output[-1]
-    assert "models assign LIFELINE NAME" in output[-1]
+    assert "model provider" in output[-1]
+    assert "model config" in output[-1]
+    assert "model config list|create|show|check" in output[-1]
+    assert "model assign LIFELINE NAME" in output[-1]
     assert "NATURAL LANGUAGE" in output[-1]
     assert "language history" in output[-1]
     assert "language learned" in output[-1]
@@ -2128,9 +2128,21 @@ def test_studio_retires_the_providers_command_with_targeted_guidance(tmp_path):
 
     with pytest.raises(
         SystemExit,
-        match=r"`providers` is not a Studio command.*models provider configure NAME",
+        match=r"`providers` is not a Studio command.*model provider configure NAME",
     ):
         studio.execute("providers set openai")
+
+
+def test_studio_retires_the_plural_models_command_with_targeted_guidance(
+    tmp_path,
+):
+    studio, _workspace, _output = _studio(tmp_path)
+
+    with pytest.raises(
+        SystemExit,
+        match=r"`models` was renamed to `model`",
+    ):
+        studio.execute("models assignments")
 
 
 def test_studio_project_rename_changes_only_the_logical_manifest_name(tmp_path):
@@ -2968,11 +2980,11 @@ def test_studio_configures_api_and_local_providers_without_displaying_secrets(
 
     monkeypatch.setattr("zippergen.studio.request.urlopen", fake_urlopen)
 
-    studio.execute("models provider configure openai")
+    studio.execute("model provider configure openai")
     studio.execute(
-        "models provider configure local http://localhost:1234/v1"
+        "model provider configure local http://localhost:1234/v1"
     )
-    studio.execute("models")
+    studio.execute("model")
 
     assert workspace.load_secrets() == {"OPENAI_API_KEY": "super-secret-key"}
     assert workspace.provider_profiles()["local"]["base_url"] == (
@@ -2995,12 +3007,12 @@ def test_studio_configures_api_and_local_providers_without_displaying_secrets(
     )
     assert any(line == "Provider connections" for line in output)
     assert any(
-        "models provider configure NAME" in line
-        and "models provider check" in line
+        "model provider configure NAME" in line
+        and "model provider check" in line
         for line in output
     )
 
-    studio.execute("models provider remove openai")
+    studio.execute("model provider remove openai")
     assert "OPENAI_API_KEY" not in workspace.load_secrets()
     assert "openai" not in workspace.provider_profiles()
 
@@ -3026,7 +3038,7 @@ def test_studio_does_not_replace_local_endpoint_when_check_fails(
 
     with pytest.raises(SystemExit, match="connection was not saved"):
         studio.execute(
-            "models provider configure local http://localhost:9999/v1"
+            "model provider configure local http://localhost:9999/v1"
         )
 
     assert workspace.provider_profiles()["local"] == original
@@ -3059,13 +3071,13 @@ def test_studio_records_failed_local_configuration_check(tmp_path, monkeypatch):
 
     monkeypatch.setattr("zippergen.studio.request.urlopen", fail_urlopen)
 
-    studio.execute("models config check local-reviewer")
+    studio.execute("model config check local-reviewer")
 
     configuration = workspace.model_configurations()["local-reviewer"]
     assert configuration["check_status"] == "unverified"
     assert "connection refused" in configuration["check_detail"]
     output.clear()
-    studio.execute("models")
+    studio.execute("model")
     assert any(
         "local-reviewer" in line and "unverified" in line
         for line in output
@@ -3891,7 +3903,7 @@ def test_studio_models_displays_connections_and_llm_active_lifelines(tmp_path):
         lifelines={"Writer": "openai:gpt-4o-mini"},
     )
 
-    studio.execute("models")
+    studio.execute("model")
 
     assert workspace.model_profile("workflow.py:sample") == {
         "default": "mock",
@@ -3944,14 +3956,14 @@ def test_studio_models_configure_check_then_assign(
     )
     workspace.save_secrets({"MISTRAL_API_KEY": "private-mistral-key"})
 
-    studio.execute("models config create fast-review")
+    studio.execute("model config create fast-review")
     assert requests == []
     assert workspace.model_configurations()["fast-review"]["check_status"] == (
         "not_checked"
     )
 
-    studio.execute("models config check fast-review")
-    studio.execute("models assign Writer fast-review")
+    studio.execute("model config check fast-review")
+    studio.execute("model assign Writer fast-review")
 
     assert workspace.model_profile("workflow.py:sample")["lifelines"] == {
         "Writer": "mistral:mistral-small-latest"
@@ -3987,7 +3999,7 @@ def test_studio_guided_model_setup_labels_progress_and_each_selection(tmp_path):
         return next(answers)
 
     studio.input = answer
-    studio.execute("models setup")
+    studio.execute("model setup")
 
     assert prompts == [
         "Select provider [1-5]: ",
@@ -4052,7 +4064,7 @@ def test_studio_models_rename_preserves_check_and_updates_all_assignments(
         lifelines={"Reviewer": "fast-review"},
     )
 
-    studio.execute("models config rename fast-review editorial")
+    studio.execute("model config rename fast-review editorial")
 
     configurations = workspace.model_configurations()
     assert "fast-review" not in configurations
@@ -4098,9 +4110,9 @@ def test_studio_models_rename_rejects_mock_and_name_collisions(tmp_path):
         )
 
     with pytest.raises(SystemExit, match="built-in mock.*cannot be renamed"):
-        studio.execute("models config rename mock replacement")
+        studio.execute("model config rename mock replacement")
     with pytest.raises(SystemExit, match="conflicts with existing"):
-        studio.execute("models config rename first SECOND")
+        studio.execute("model config rename first SECOND")
 
     assert {"first", "second"}.issubset(workspace.model_configurations())
 
@@ -4130,8 +4142,8 @@ def test_studio_model_configuration_guides_missing_provider_connection(
         lambda req, *, timeout: ModelsResponse(),
     )
 
-    studio.execute("models provider configure anthropic")
-    studio.execute("models config create anthropic-review")
+    studio.execute("model provider configure anthropic")
+    studio.execute("model config create anthropic-review")
 
     assert workspace.load_secrets()["ANTHROPIC_API_KEY"] == (
         "private-anthropic-key"
@@ -4150,7 +4162,7 @@ def test_studio_model_assignment_requires_a_saved_configuration(
     workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
 
     with pytest.raises(SystemExit, match="Unknown model configuration"):
-        studio.execute("models assign Writer openai:gpt-4o-mini")
+        studio.execute("model assign Writer openai:gpt-4o-mini")
 
     assert workspace.model_profile("workflow.py:sample")["lifelines"] == {}
 
@@ -4164,9 +4176,9 @@ def test_studio_model_configuration_requires_a_configured_provider(tmp_path):
     with pytest.raises(
         SystemExit,
         match=r"Provider 'anthropic' is not configured.*"
-        r"models provider configure anthropic",
+        r"model provider configure anthropic",
     ):
-        studio.execute("models config create editorial")
+        studio.execute("model config create editorial")
 
     assert "editorial" not in workspace.model_configurations()
     assert workspace.provider_profiles() == {}
@@ -4187,8 +4199,8 @@ def test_studio_configuration_is_reusable_without_serializing_calls(tmp_path):
         },
     )
 
-    studio.execute("models assign Writer shared-local")
-    studio.execute("models assign Reviewer shared-local")
+    studio.execute("model assign Writer shared-local")
+    studio.execute("model assign Reviewer shared-local")
 
     assignments = workspace.model_assignment_profile("dual.py:sample")
     assert assignments["lifelines"] == {
@@ -4269,14 +4281,14 @@ def test_studio_assignment_listing_is_cached_and_check_is_targeted(
 
     monkeypatch.setattr(studio, "_verify_model_spec", verify)
 
-    studio.execute("models assignments")
+    studio.execute("model assignments")
 
     assert checks == []
     assert any("Last check" in line for line in output)
     assert any("never" in line for line in output)
 
     output.clear()
-    studio.execute("models assignments check")
+    studio.execute("model assignments check")
 
     assert checks == [("shared-local", "local:qwen3")]
     assert any(line == "Assignment checks" for line in output)
@@ -4298,7 +4310,7 @@ def test_studio_models_inherit_removes_a_participant_assignment(tmp_path):
         lifelines={"Writer": "local:qwen2.5:7b"},
     )
 
-    studio.execute("models inherit Writer")
+    studio.execute("model inherit Writer")
 
     assert workspace.model_profile("workflow.py:sample")["lifelines"] == {}
     assert any(
@@ -4353,7 +4365,7 @@ def test_studio_models_check_updates_configuration_not_assignments(
 
     monkeypatch.setattr("zippergen.studio.request.urlopen", fake_urlopen)
 
-    studio.execute("models config check review-model")
+    studio.execute("model config check review-model")
 
     assert len(requests) == 1
     assert workspace.model_assignment_profile("workflow.py:sample") == before
@@ -4407,7 +4419,7 @@ def test_studio_models_check_records_an_unavailable_configuration(
         SystemExit,
         match="check failed for broken-reviewer.*Assignments were not changed",
     ):
-        studio.execute("models config check broken-reviewer")
+        studio.execute("model config check broken-reviewer")
 
     assert workspace.model_assignment_profile("workflow.py:sample") == before
     configuration = workspace.model_configurations()["broken-reviewer"]
@@ -4418,14 +4430,14 @@ def test_studio_models_check_records_an_unavailable_configuration(
         for line in output
     )
     with pytest.raises(SystemExit, match="broken-reviewer is unavailable"):
-        studio.execute("models assign Writer broken-reviewer")
+        studio.execute("model assign Writer broken-reviewer")
     assert workspace.model_profile("workflow.py:sample")["lifelines"] == {}
 
 
 def test_studio_models_check_accepts_a_case_insensitive_configuration(tmp_path):
     studio, _workspace, output = _studio(tmp_path)
 
-    studio.execute("models config check MOCK")
+    studio.execute("model config check MOCK")
 
     assert any(
         line.startswith("  ✓ mock:") and "built in" in line
@@ -4438,7 +4450,7 @@ def test_studio_models_dashboard_does_not_change_routing(tmp_path):
     workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
     before = workspace.model_profile("workflow.py:sample")
 
-    studio.execute("models")
+    studio.execute("model")
 
     assert workspace.model_profile("workflow.py:sample") == before
     assert any(line == "Provider connections" for line in output)
@@ -4459,13 +4471,13 @@ def test_studio_models_assignment_warns_when_configuration_is_unchecked(tmp_path
         },
     )
 
-    studio.execute("models assign Writer review-model")
+    studio.execute("model assign Writer review-model")
     assert workspace.model_profile("workflow.py:sample")["lifelines"] == {
         "Writer": "mistral:mistral-small-latest"
     }
     assert any(
         "review-model is not_checked" in line
-        and "models config check review-model" in line
+        and "model config check review-model" in line
         for line in output
     )
 
@@ -4517,7 +4529,7 @@ def test_studio_models_checks_local_configuration_identifiers(
         lambda req, *, timeout: ModelsResponse(),
     )
 
-    studio.execute("models config check local-writer")
+    studio.execute("model config check local-writer")
 
     assert any(
         "local-writer:" in line
@@ -4526,7 +4538,7 @@ def test_studio_models_checks_local_configuration_identifiers(
     )
 
     with pytest.raises(SystemExit, match="check failed for missing-local"):
-        studio.execute("models config check missing-local")
+        studio.execute("model config check missing-local")
     assert workspace.model_configurations()["missing-local"]["check_status"] == (
         "unavailable"
     )
@@ -4711,7 +4723,7 @@ def test_studio_models_rejects_lifelines_without_llm_actions(tmp_path):
     workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
 
     try:
-        studio.execute("models assign User openai:gpt-4o-mini")
+        studio.execute("model assign User openai:gpt-4o-mini")
     except SystemExit as exc:
         assert "has no LLM actions" in str(exc)
     else:

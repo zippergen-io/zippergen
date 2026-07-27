@@ -109,7 +109,7 @@ def test_column_renderer_wraps_descriptions_before_status_phrases():
             (
                 "anthropic",
                 "not configured",
-                "⚠ not configured; use models provider configure anthropic",
+                "⚠ not configured; use model provider configure anthropic",
             ),
             (
                 "local",

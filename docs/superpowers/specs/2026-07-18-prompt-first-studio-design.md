@@ -442,10 +442,10 @@ share the same lifecycle and explicit ordered-precedence rules.
 ### Model and provider configuration
 
 ```text
-models show
-models default SPEC
-models set LIFELINE SPEC
-models reset LIFELINE|all
+model show
+model default SPEC
+model set LIFELINE SPEC
+model reset LIFELINE|all
 providers
 providers set openai|anthropic|mistral
 providers set local [BASE_URL]
@@ -460,7 +460,7 @@ secret file; a local provider stores only its non-secret endpoint. Development
 runs temporarily inject the selected configured providers and restore the
 process environment afterward.
 
-A routing-only model change uses `models default` or `models set` and requires
+A routing-only model change uses `model default` or `model set` and requires
 no source edit or coding assistant. A model change that belongs in versioned
 intent, workflow/deployment declarations, action prompts, or tests uses the
 normal source-change loop: `refine`, optionally inspect `task`, launch either
@@ -558,7 +558,7 @@ zippergen.dev
 
 zippergen.studio
   line-oriented command loop
-  project/prompts/current/use/show/models/providers/run/resume/create/refine
+  project/prompts/current/use/show/model/providers/run/resume/create/refine
   deploy/operations
   thin calls into workspace, dev, semantic, and deployment application APIs
 

@@ -288,7 +288,7 @@ def deterministic_plan(
                 f"Rename model configuration {old_name} to {new_name}.",
                 (
                     shlex.join(
-                        ["models", "config", "rename", old_name, new_name]
+                        ["model", "config", "rename", old_name, new_name]
                     ),
                 ),
                 "deterministic",
@@ -411,7 +411,7 @@ def deterministic_plan(
     if re.search(r"\b(show|display|list|what)\b.*\b(models?|routing)\b", text):
         return NaturalCommandPlan(
             "Show effective model routing.",
-            ("models",),
+            ("model",),
             "deterministic",
         )
 
@@ -426,7 +426,7 @@ def deterministic_plan(
         )
         return NaturalCommandPlan(
             f"Check model configuration {target}.",
-            (shlex.join(["models", "config", "check", target]),),
+            (shlex.join(["model", "config", "check", target]),),
             "deterministic",
         )
 
@@ -454,7 +454,7 @@ def deterministic_plan(
                 f"Assign {configuration} to {participant}.",
                 (
                     shlex.join(
-                        ["models", "assign", participant, configuration]
+                        ["model", "assign", participant, configuration]
                     ),
                 ),
                 "deterministic",
@@ -463,7 +463,7 @@ def deterministic_plan(
     if re.search(r"\b(show|display|list|what)\b.*\bproviders?\b", text):
         return NaturalCommandPlan(
             "Show model-provider connections.",
-            ("models provider list",),
+            ("model provider list",),
             "deterministic",
         )
 
@@ -476,7 +476,7 @@ def deterministic_plan(
         )
         return NaturalCommandPlan(
             f"Configure the {provider} provider.",
-            (shlex.join(["models", "provider", "configure", provider]),),
+            (shlex.join(["model", "provider", "configure", provider]),),
             "deterministic",
         )
 
@@ -486,7 +486,7 @@ def deterministic_plan(
         )
         return NaturalCommandPlan(
             f"Remove the {provider} model provider.",
-            (shlex.join(["models", "provider", "remove", provider]),),
+            (shlex.join(["model", "provider", "remove", provider]),),
             "deterministic",
         )
 
@@ -915,14 +915,11 @@ def _slot_positions(parts: list[str]) -> list[tuple[str, int]]:
         and parts[2].casefold() == "agent"
     ):
         return [("participant", 3)]
-    if command == "models" and len(parts) >= 3:
+    if command == "model" and len(parts) >= 3:
         action = parts[1].casefold()
-        if action == "set" and len(parts) == 4:
-            return [("participant", 2), ("model", 3)]
-        if action in {"check", "reset"} and parts[2].casefold() not in {
-            "all",
-            "default",
-        }:
+        if action == "assign" and len(parts) == 4:
+            return [("participant", 2), ("configuration", 3)]
+        if action == "inherit" and len(parts) == 3:
             return [("participant", 2)]
     if (
         command == "workflow"

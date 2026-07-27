@@ -97,7 +97,7 @@ Commands are grouped by purpose:
 | Area | What it covers |
 |---|---|
 | `workflow` | Specification, implementation, views, validation, review |
-| `models` | Providers, named configurations, checks, assignments |
+| `model` | Providers, named configurations, checks, assignments |
 | `run`, `resume`, and `runs` | Durable development execution, decisions, traces, recovery |
 | `deployment` | Bundles, services, durable state, decisions, logs, connectors |
 

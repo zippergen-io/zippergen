@@ -346,7 +346,7 @@ def test_natural_model_assignment_is_canonical_and_reversible(tmp_path):
 
     profile = workspace.model_profile("workflow.py:sample", default="mock")
     assert profile["lifelines"] == {"Writer": "mock"}
-    assert any("models assign Writer mock" in line for line in output)
+    assert any("model assign Writer mock" in line for line in output)
     assert any("Natural-language command plan completed" in line for line in output)
 
 
@@ -367,7 +367,7 @@ def test_natural_model_configuration_rename_is_deterministic(tmp_path):
     assert "fast-review" not in workspace.model_configurations()
     assert workspace.model_configurations()["editorial"]["spec"] == "local:qwen3"
     assert any(
-        "models config rename fast-review editorial" in line
+        "model config rename fast-review editorial" in line
         for line in output
     )
     history = NaturalLanguageStore(workspace.natural_language_path).history()
@@ -457,7 +457,7 @@ def test_natural_provider_configuration_uses_the_models_surface(
     )
     assert set(workspace.model_configurations()) == {"mock"}
     assert any(
-        "models provider configure anthropic" in line
+        "model provider configure anthropic" in line
         for line in output
     )
     assert not any("providers set" in line for line in output)
@@ -599,7 +599,7 @@ def test_cli_fallback_can_return_a_validated_read_only_command_sequence(
     )
     payload = {
         "summary": "Show project state and model routing.",
-        "commands": ["current", "models"],
+        "commands": ["current", "model"],
         "clarification": None,
     }
     monkeypatch.setattr(
@@ -612,10 +612,10 @@ def test_cli_fallback_can_return_a_validated_read_only_command_sequence(
     studio.execute("Give me one combined operational and model summary")
 
     history = NaturalLanguageStore(workspace.natural_language_path).history()
-    assert history[-1]["commands"] == ["current", "models"]
+    assert history[-1]["commands"] == ["current", "model"]
     assert history[-1]["status"] == "executed"
     assert any("Executing 1/2: current" in line for line in output)
-    assert any("Executing 2/2: models" in line for line in output)
+    assert any("Executing 2/2: model" in line for line in output)
 
 
 def test_cli_fallback_can_ask_for_a_missing_value(tmp_path, monkeypatch):
@@ -750,3 +750,15 @@ def test_generalization_quotes_values_only_when_rendering(tmp_path):
 
     assert template == "show what {participant} sees"
     assert commands == ("workflow show agent {participant}",)
+
+
+def test_generalization_uses_current_model_assignment_syntax():
+    template, commands = generalize_interpretation(
+        "Assign careful review to Lead Writer",
+        ("model assign 'Lead Writer' 'careful review'",),
+    )
+
+    assert template == "assign {configuration} to {participant}"
+    assert commands == (
+        "model assign {participant} {configuration}",
+    )

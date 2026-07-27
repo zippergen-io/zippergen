@@ -369,7 +369,7 @@ created automatically only when a change is pending.
 available while still using this editable checkout. The project, checkout,
 downloaded Python, and environment survive closing the terminal or rebooting.
 The final help output should list \texttt{studio} among the available
-top-level commands. You do not run \texttt{models} here: \texttt{models} is a
+top-level commands. You do not run \texttt{model} here: \texttt{model} is a
 short command entered later inside Studio.
 
 \begin{notebox}{If your existing tutorial checkout is flat}
@@ -499,12 +499,12 @@ The command vocabulary has three main areas. Everything that changes or
 explains the application design lives below \texttt{workflow}: creation,
 refinement, coding-assistant implementation, selection, semantic views,
 validation, review, and history. Everything about model connections,
-configurations, checks, and assignments lives below \texttt{models}. Running
+configurations, checks, and assignments lives below \texttt{model}. Running
 starts with the short verbs \texttt{run}, \texttt{resume}, and
 \texttt{deploy}. Development decisions, traces, and inspection remain below
 \texttt{run}. Installed operation, including its durable state, decisions,
 and traces, lives below \texttt{deployment}. Thus a beginner can type
-\texttt{workflow}, \texttt{models}, \texttt{deployment}, or
+\texttt{workflow}, \texttt{model}, \texttt{deployment}, or
 \texttt{current} to recover the next step instead of remembering several
 unrelated nouns.
 The small cross-cutting \texttt{settings} command covers global Studio
@@ -617,7 +617,7 @@ Inside the banner, Studio uses the same hierarchy for every command: a section
 title and rule, explicit column headings, another rule separating those
 headings from the actual rows, and a standalone \texttt{Next} section when
 guidance is useful. Success, warning, or failure appears before the data it
-describes. Thus \texttt{project}, \texttt{workflow}, \texttt{models},
+describes. Thus \texttt{project}, \texttt{workflow}, \texttt{model},
 \texttt{language}, run, and deployment results do not require the reader to
 learn different output layouts.
 Long fields and table rows wrap to the terminal width, so a path, assistant-check
@@ -1095,9 +1095,9 @@ visible. Do not continue until the code answers all five clearly.
 Enter:
 
 \begin{lstlisting}[style=shell]
-models default mock
-models
-models config check mock
+model default mock
+model
+model config check mock
 \end{lstlisting}
 
 Studio lists only lifelines containing \texttt{@llm} action sites, together
@@ -1137,8 +1137,8 @@ Execution
 Generated action names may differ, but Writer and Reviewer should appear. The
 non-secret assignments are stored per workflow and survive a reboot. The
 built-in \texttt{mock} configuration needs no provider connection and is
-already checked. Plain \texttt{models assignments} uses saved check state and
-performs no network request. Enter \texttt{models assignments check} to check
+already checked. Plain \texttt{model assignments} uses saved check state and
+performs no network request. Enter \texttt{model assignments check} to check
 only the effective configurations shown in this table; shared configurations
 are checked once.
 
@@ -1151,7 +1151,7 @@ configuration that is actually used by an LLM-active participant and performs
 technical workflow validation. A shared configuration is checked once. If a
 provider is unreachable or the configured model is absent, Studio stops before
 it creates the run and points to the relevant
-\texttt{models config check} command. The run summary shows one effective
+\texttt{model config check} command. The run summary shows one effective
 model route per LLM-active participant rather than only showing the default
 fallback.
 
@@ -1327,17 +1327,17 @@ it in the provider console and create a replacement before continuing.
 
 \begin{minipage}{\linewidth}
 \begin{lstlisting}[style=shell]
-models
-models default mock
-models provider configure openai
-models config create drafting
-models config check drafting
-models assign Writer drafting
-models provider configure anthropic
-models config create careful-reviewer
-models config check careful-reviewer
-models assign Reviewer careful-reviewer
-models
+model
+model default mock
+model provider configure openai
+model config create drafting
+model config check drafting
+model assign Writer drafting
+model provider configure anthropic
+model config create careful-reviewer
+model config check careful-reviewer
+model assign Reviewer careful-reviewer
+model
 \end{lstlisting}
 \end{minipage}
 
@@ -1345,50 +1345,50 @@ The model workflow has three deliberately separate layers:
 \emph{provider, configuration, assignment}. A provider connection contains an
 API key or local endpoint. A named configuration contains a provider and exact
 model identifier. An assignment maps an LLM-active participant to one of those
-names. Enter \texttt{models setup} for a guided pass through all three layers.
+names. Enter \texttt{model setup} for a guided pass through all three layers.
 
-\texttt{models provider configure PROVIDER} asks for a missing API key without
+\texttt{model provider configure PROVIDER} asks for a missing API key without
 echo, or for the endpoint of a local provider. It saves and checks the
-connection. \texttt{models provider check PROVIDER} repeats that check later.
-\texttt{models config create NAME} then asks for one configured provider and
+connection. \texttt{model provider check PROVIDER} repeats that check later.
+\texttt{model config create NAME} then asks for one configured provider and
 one model identifier. It does not collect credentials: if the chosen provider
 is not configured, Studio stops and prints the exact provider command to run
-first. Plain \texttt{models} makes no remote request, never prints a secret,
+first. Plain \texttt{model} makes no remote request, never prints a secret,
 and displays provider connections, named configurations, and workflow
 assignments as separate tables.
 
-\texttt{models config check} checks every saved configuration;
-\texttt{models config check NAME} checks one. It records \texttt{available},
+\texttt{model config check} checks every saved configuration;
+\texttt{model config check NAME} checks one. It records \texttt{available},
 \texttt{unverified}, or \texttt{unavailable}, but never changes which
 participant uses which model. A green result confirms that the provider
 accepted the configured key and exact model identifier at check time. A yellow
 result means connectivity prevented a conclusive answer.
-\texttt{models assignments} displays each effective participant route together
+\texttt{model assignments} displays each effective participant route together
 with its cached last-check state and never contacts a provider.
-\texttt{models assignments check} performs a fresh, targeted check of only
+\texttt{model assignments check} performs a fresh, targeted check of only
 those effective configurations, deduplicating configurations shared by
 several participants. \texttt{run} repeats that targeted check as a mandatory
 preflight. For a local
 OpenAI-compatible or Ollama endpoint,
-\texttt{models provider configure local} asks for the endpoint (normally
+\texttt{model provider configure local} asks for the endpoint (normally
 \texttt{http://127.0.0.1:11434/v1}). A later
-\texttt{models config create NAME} asks for the local model. Local identifiers
+\texttt{model config create NAME} asks for the local model. Local identifiers
 are checked against the live \texttt{/models} response.
 
-\texttt{models assign LIFELINE NAME} and
-\texttt{models default NAME} only assign saved configurations; they do not
+\texttt{model assign LIFELINE NAME} and
+\texttt{model default NAME} only assign saved configurations; they do not
 contact the provider. Studio warns when a configuration has not yet been
 checked but allows the assignment so offline preparation remains possible. A
 configuration whose last conclusive check found it unavailable must be fixed or
 checked successfully before assignment.
 Use Tab completion rather than retyping generated names. Editing one named
-configuration with \texttt{models config edit NAME} updates every assignment
-that refers to it. \texttt{models config rename OLD NEW} changes only its
+configuration with \texttt{model config edit NAME} updates every assignment
+that refers to it. \texttt{model config rename OLD NEW} changes only its
 reusable name: Studio preserves the provider, model, and recorded check result
 and updates every default and participant assignment in the project atomically.
 It does not reconnect to the provider or change runtime model selection.
-\texttt{models config remove NAME} refuses to remove a configuration that is
-still in use. \texttt{models provider remove NAME} removes a provider
+\texttt{model config remove NAME} refuses to remove a configuration that is
+still in use. \texttt{model provider remove NAME} removes a provider
 connection and its privately stored key.
 
 One named configuration may be assigned to any number of participants. They
@@ -1437,11 +1437,11 @@ prompt, or a Git-tracked \path{.env}. Development secrets are mode-0600 and
 absent from workspace, run, and request JSON. Existing environment values are
 used but not copied. Later development runs temporarily inject the selected
 connected providers and restore the process environment afterward. Use
-\texttt{models provider remove NAME} to remove a saved connection and private
+\texttt{model provider remove NAME} to remove a saved connection and private
 key.
 
-Use \texttt{models inherit Writer} to restore inheritance for one role, and
-\texttt{models default mock} to select the declared tutorial default. Named
+Use \texttt{model inherit Writer} to restore inheritance for one role, and
+\texttt{model default mock} to select the declared tutorial default. Named
 configurations are a Studio convenience; the scriptable equivalent still uses
 the resolved provider/model specification with repeatable \texttt{--llm-for}:
 
@@ -1454,8 +1454,8 @@ zippergen dev workflows/reviewed_answer.py:reviewed_answer \
 
 \begin{notebox}{Two different meanings of ``change the model''}
 For a routing-only change, create or edit a named configuration, check it, then
-use \texttt{models default NAME} or
-\texttt{models assign LIFELINE NAME}. Studio remembers that choice for runs
+use \texttt{model default NAME} or
+\texttt{model assign LIFELINE NAME}. Studio remembers that choice for runs
 and deployment; source code does not change, so no refinement or coding
 assistant is needed. If the model choice must become versioned design intent,
 change declared workflow/deployment defaults, or accompany prompt, action, or
@@ -1479,9 +1479,9 @@ If paid models are active, return to deterministic mock execution before
 changing behavior unless another paid run is intentional:
 
 \begin{lstlisting}[style=shell]
-models default mock
-models inherit Writer
-models inherit Reviewer
+model default mock
+model inherit Writer
+model inherit Reviewer
 \end{lstlisting}
 
 This changes only routing; it does not delete saved development secrets. Enter:
@@ -1708,8 +1708,8 @@ and prints that it is keeping the saved value, without presenting another
 secret prompt. A selected local configuration needs no key; Studio copies its
 configured OpenAI-compatible endpoint into the deployment profile so that the
 deployed service uses the same local or tunneled server as development. With
-the recommended \texttt{models default mock} and
-\texttt{models inherit} commands above, all routes are mock and no provider
+the recommended \texttt{model default mock} and
+\texttt{model inherit} commands above, all routes are mock and no provider
 key is needed.
 
 Read every prompt. The request and retry budget are runtime inputs, not another
@@ -1821,7 +1821,7 @@ zippergen [tutorial_review]>
 The text in square brackets is the current workflow object name, not a
 deployment name. Enter \texttt{help} at any time. The public commands follow
 three main areas: \texttt{workflow} for specification, implementation,
-inspection, and validation; \texttt{models} for connections, configurations,
+inspection, and validation; \texttt{model} for connections, configurations,
 checks, and assignments; and \texttt{deployment} for installed operation.
 Development execution and its durable state remain below \texttt{run}. The
 important commands are:
@@ -1859,16 +1859,16 @@ workflow discard # archive rejection; does not revert working-tree files
 workflow history # specification and implementation history
 workflow list   # discover workflow entry points; does not validate
 workflow select # select one by number, name, or complete reference
-models         # show connections, configurations, and assignments
-models setup   # guided provider, configuration, and assignment setup
-models provider configure NAME # configure an API key or local endpoint
-models provider check [NAME] # verify provider connectivity
-models config create [NAME] # name one provider/model pair
-models config check [NAME] # verify exact model availability
-models assignments # show routes and cached last-check state
-models assignments check # check only configurations used here
-models assign LIFELINE NAME # route a participant to a configuration
-models config rename OLD NEW # rename it and migrate all assignments
+model         # show connections, configurations, and assignments
+model setup   # guided provider, configuration, and assignment setup
+model provider configure NAME # configure an API key or local endpoint
+model provider check [NAME] # verify provider connectivity
+model config create [NAME] # name one provider/model pair
+model config check [NAME] # verify exact model availability
+model assignments # show routes and cached last-check state
+model assignments check # check only configurations used here
+model assign LIFELINE NAME # route a participant to a configuration
+model config rename OLD NEW # rename it and migrate all assignments
 run            # fresh guided, durable development run
 run inspect [PARTICIPANT] # current states and focused local projection
 run tasks      # pending decisions for the current development run
@@ -2063,15 +2063,15 @@ real-model readiness section. When ready, configure one model for Writer and
 another for Reviewer:
 
 \begin{lstlisting}[style=shell]
-models provider configure openai
-models config create drafting
-models config check drafting
-models assign Writer drafting
-models provider configure anthropic
-models config create careful-reviewer
-models config check careful-reviewer
-models assign Reviewer careful-reviewer
-models
+model provider configure openai
+model config create drafting
+model config check drafting
+model assign Writer drafting
+model provider configure anthropic
+model config create careful-reviewer
+model config check careful-reviewer
+model assign Reviewer careful-reviewer
+model
 run
 \end{lstlisting}
 
@@ -2127,7 +2127,7 @@ Please restart ZipperGen Studio.
 \end{lstlisting}
 
 They become \texttt{current}, \texttt{workflow show protocol},
-\texttt{models assign Writer mock}, and \texttt{studio restart}. Studio prints
+\texttt{model assign Writer mock}, and \texttt{studio restart}. Studio prints
 the exact plan before its result. Starting or stopping execution, deployment
 operations, and destructive changes require confirmation. Use
 \texttt{plan TEXT} to preview an interpretation without executing it and
@@ -2194,7 +2194,7 @@ Use \texttt{settings set learning off} to stop adding entries globally, or
 
 Raw CLI output is not learned. Secret-looking requests are rejected before
 interpretation and are not stored. Provider credentials belong in the private
-prompt opened by \texttt{models provider configure}.
+prompt opened by \texttt{model provider configure}.
 
 \subsection{Automatic and explicit terminal editors}
 
@@ -2237,9 +2237,9 @@ selected, return to mock unless a real deployment is intentional, then choose
 a separate name:
 
 \begin{lstlisting}[style=shell]
-models default mock
-models inherit Writer
-models inherit Reviewer
+model default mock
+model inherit Writer
+model inherit Reviewer
 deploy tutorial-review-studio --no-start
 \end{lstlisting}
 
@@ -2394,7 +2394,7 @@ There are three places where text is entered:
 Operating-system shell & \texttt{\%}, \texttt{\$}, or a directory name &
 \texttt{cd}, \texttt{git}, \texttt{zippergen}, \texttt{codex} \\
 ZipperGen Studio & \texttt{zippergen [workflow]>} & \texttt{workflow show},
-\texttt{models}, \texttt{run}, \texttt{deploy}, \texttt{status} \\
+\texttt{model}, \texttt{run}, \texttt{deploy}, \texttt{status} \\
 Coding assistant & Codex conversation prompt & The Studio-generated task;
 \texttt{workflow implement} supplies it automatically \\
 \bottomrule
@@ -3695,16 +3695,16 @@ installation. ``Already up to date''
 only means Git found no newer commit on the configured upstream; it does not
 prove that the terminal is in the intended checkout or branch.
 
-\subsection*{The shell reports \texttt{models} as an invalid command}
+\subsection*{The shell reports \texttt{model} as an invalid command}
 
-This is expected if you entered \texttt{zippergen models} in the
-operating-system shell. \texttt{models} is a Studio command, not a top-level CLI
+This is expected if you entered \texttt{zippergen model} in the
+operating-system shell. \texttt{model} is a Studio command, not a top-level CLI
 subcommand. Start Studio from the Git root, then enter it at the Studio prompt:
 
 \begin{lstlisting}[style=shell]
 zippergen
 # The next line is entered only after zippergen [workflow]> appears:
-models
+model
 \end{lstlisting}
 
 If no workflow is selected, enter \texttt{workflow list} and then
@@ -3728,10 +3728,10 @@ ensure every continuation backslash is the final character on its line. This
 same mistake can cause ZipperGen to report a missing workflow input because
 only the first part of the intended command actually ran.
 
-\subsection*{\texttt{models} lists no Writer or Reviewer}
+\subsection*{\texttt{model} lists no Writer or Reviewer}
 
 Run \texttt{current} to confirm the selected workflow, then
-\texttt{workflow show actions}. Studio lists a lifeline in \texttt{models} only when that
+\texttt{workflow show actions}. Studio lists a lifeline in \texttt{model} only when that
 lifeline contains an actual \texttt{@llm} action. A pure, human, or message-only
 lifeline does not need a model. If the generated workflow was meant to contain
 those actions, treat their absence as a generation/validation problem rather
@@ -3739,14 +3739,14 @@ than assigning a model to an unrelated participant.
 
 \subsection*{A real model run reports an authentication or model error}
 
-Use \texttt{models} to inspect configurations and assignments, then use
-\texttt{models provider check NAME} for a fresh connection check and
-\texttt{models config check NAME} for exact model availability.
+Use \texttt{model} to inspect configurations and assignments, then use
+\texttt{model provider check NAME} for a fresh connection check and
+\texttt{model config check NAME} for exact model availability.
 Confirm that the account key belongs to that provider and that the named model
 is enabled for the account. Do not print the key while diagnosing. To continue
 the tutorial without network access or charges, enter
-\texttt{models default mock}, restore participant inheritance with
-\texttt{models inherit LIFELINE}, and start a fresh mock \texttt{run}.
+\texttt{model default mock}, restore participant inheritance with
+\texttt{model inherit LIFELINE}, and start a fresh mock \texttt{run}.
 
 \subsection*{The workflow file cannot be found}
 
@@ -3932,15 +3932,15 @@ also creates a content-checked private source snapshot. & \\
 $\square$ & An unchanged accepted workflow deploys its immutable snapshot; a
 divergent workflow shows exact diffs and requires accepted-version selection,
 return to review, cancellation, or a reasoned audited override. & \\
-$\square$ & \texttt{models} lists connections, reusable configurations, and
+$\square$ & \texttt{model} lists connections, reusable configurations, and
 only LLM-active lifeline assignments;
-\texttt{models config check NAME} verifies a configuration without changing
+\texttt{model config check NAME} verifies a configuration without changing
 those assignments. & \\
 $\square$ & Studio \texttt{run} collects both inputs and presents rejection and
 approval in the same terminal. & \\
 $\square$ & Studio \texttt{resume} continues the same managed run after an
 interruption. & \\
-$\square$ & \texttt{models} distinguishes stored provider connections from
+$\square$ & \texttt{model} distinguishes stored provider connections from
 timestamped local checks and model routing without displaying keys; secrets
 remain absent from source/request/run JSON and their private file has
 owner-only permissions. & \\
@@ -4012,9 +4012,9 @@ workflow files        # list known implementation and resource files
 workflow show source  # inspect authored Python before validation
 workflow show
 workflow validate
-models default mock
-models
-models config check mock
+model default mock
+model
+model config check mock
 run
 resume
 runs
@@ -4035,28 +4035,28 @@ account, billing, and key-safety instructions in the real-model readiness
 section, the optional paid-model commands are:
 
 \begin{lstlisting}[style=shell]
-models provider configure openai
-models config create drafting
-models config check drafting
-models assign Writer drafting
-models provider configure anthropic
-models config create careful-reviewer
-models config check careful-reviewer
-models assign Reviewer careful-reviewer
-models
+model provider configure openai
+model config create drafting
+model config check drafting
+model assign Writer drafting
+model provider configure anthropic
+model config create careful-reviewer
+model config check careful-reviewer
+model assign Reviewer careful-reviewer
+model
 run
-models default mock
-models inherit Writer
-models inherit Reviewer
+model default mock
+model inherit Writer
+model inherit Reviewer
 \end{lstlisting}
 
 Only after reading the deployment chapters and choosing mock/fake services,
 enter this prepare-first operational sequence:
 
 \begin{lstlisting}[style=shell]
-models default mock
-models inherit Writer
-models inherit Reviewer
+model default mock
+model inherit Writer
+model inherit Reviewer
 deploy tutorial-review-studio --no-start
 deployment doctor
 deployment show
@@ -4071,8 +4071,8 @@ exit
 \end{lstlisting}
 
 No \texttt{ZIPPERGEN\_HOME} export or \texttt{STORE} variable is required for
-this path. Real model overrides are optional; use \texttt{models default mock}
-and \texttt{models inherit LIFELINE} to stay on the free mock path. If a coding assistant is unavailable, select
+this path. Real model overrides are optional; use \texttt{model default mock}
+and \texttt{model inherit LIFELINE} to stay on the free mock path. If a coding assistant is unavailable, select
 \path{zippergen/examples/tutorial_review.py:tutorial_review} instead of the generated
 workflow.
 

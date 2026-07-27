@@ -207,56 +207,56 @@ COMMANDS: tuple[CommandSpec, ...] = (
         "read-only",
     ),
     CommandSpec(
-        ("models",),
-        "models",
+        ("model",),
+        "model",
         "show providers, configurations, and assignments",
         "read-only",
     ),
     CommandSpec(
-        ("models", "setup"),
-        "models setup",
+        ("model", "setup"),
+        "model setup",
         "guide provider, configuration, and assignment setup",
         "configuration",
     ),
     CommandSpec(
-        ("models", "provider"),
-        "models provider list|configure|check|remove ...",
+        ("model", "provider"),
+        "model provider list|configure|check|remove ...",
         "manage provider connections",
         "configuration",
     ),
     CommandSpec(
-        ("models", "config"),
-        "models config list|create|show|check|edit|rename|remove ...",
+        ("model", "config"),
+        "model config list|create|show|check|edit|rename|remove ...",
         "manage reusable model configurations",
         "configuration",
     ),
     CommandSpec(
-        ("models", "assignments"),
-        "models assignments",
+        ("model", "assignments"),
+        "model assignments",
         "show participant routes and their last check",
         "read-only",
     ),
     CommandSpec(
-        ("models", "assignments", "check"),
-        "models assignments check",
+        ("model", "assignments", "check"),
+        "model assignments check",
         "check configurations used by the selected workflow",
         "read-only",
     ),
     CommandSpec(
-        ("models", "assign"),
-        "models assign LIFELINE NAME",
+        ("model", "assign"),
+        "model assign LIFELINE NAME",
         "assign a configuration to a participant",
         "configuration",
     ),
     CommandSpec(
-        ("models", "default"),
-        "models default NAME",
+        ("model", "default"),
+        "model default NAME",
         "set the inherited default configuration",
         "configuration",
     ),
     CommandSpec(
-        ("models", "inherit"),
-        "models inherit LIFELINE",
+        ("model", "inherit"),
+        "model inherit LIFELINE",
         "restore inheritance from the default",
         "configuration",
     ),
@@ -625,7 +625,7 @@ def concise_help() -> str:
 
 Three main areas:
   workflow    specify, implement, inspect, and validate
-  models      configure, check, and assign models
+  model       configure, check, and assign models
   deployment  operate installed applications and their durable state
 
 Start actions:

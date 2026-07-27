@@ -347,16 +347,16 @@ every generated projection:
 
 \begin{lstlisting}[style=shell]
 workflow validate
-models default mock
-models assignments
+model default mock
+model assignments
 \end{lstlisting}
 
 A green validation result means the deterministic checks passed; it is not a
 claim that the prompts are useful or the application intent is correct. The
 built-in mock model needs no account, network connection, or API key.
-\texttt{models assignments} should list Writer and Reviewer because they
+\texttt{model assignments} should list Writer and Reviewer because they
 contain LLM actions. Its \emph{Last check} column is cached: displaying the
-table never contacts a provider. Enter \texttt{models assignments check} when
+table never contacts a provider. Enter \texttt{model assignments check} when
 you want a fresh check of precisely the configurations used by this workflow.
 If both participants share a configuration, Studio checks it only once.
 
@@ -532,7 +532,7 @@ Return to Studio. Keep the mock model selected and prepare the deployment
 without starting a background service:
 
 \begin{lstlisting}[style=shell]
-models default mock
+model default mock
 deploy reviewed-answer-tutorial --no-start
 deployment doctor
 deployment show
