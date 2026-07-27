@@ -35,12 +35,23 @@ def _assistant_prompt(action: AssistantAction, inputs: dict[str, object]) -> str
         )
     )
     tool_instruction = (
-        "Configured MCP servers, connectors, web search, and other external "
-        "tool integrations are disabled for this action. "
+        "Configured MCP servers, connectors, dedicated web-search tools, and "
+        "other external integrations are disabled for this action. "
         if action.external_tools == "none"
         else (
             "The reviewed action explicitly permits the assistant's configured "
             "external tools; use only those required by the static instructions. "
+        )
+    )
+    shell_instruction = (
+        "Use only the backend's restricted file and command capabilities. "
+        if action.shell == "restricted"
+        else (
+            "The reviewed action explicitly permits the backend shell; use it "
+            "only as required by the static instructions. Shell permission does "
+            "not authorize deployment, service control, Git publication, or "
+            "unrelated external mutations, and must not be assumed to provide "
+            "structural network isolation on every backend. "
         )
     )
     return (
@@ -51,6 +62,7 @@ def _assistant_prompt(action: AssistantAction, inputs: dict[str, object]) -> str
         "Work in the current repository workspace. "
         + access_instruction
         + tool_instruction
+        + shell_instruction
         + f"At the end, print only the value for `{output_name}` as "
         f"{output_type.__name__}. For a string result, print plain text; for "
         "other types, print valid JSON."
@@ -134,6 +146,7 @@ def make_cli_assistant_backend(
             command = [
                 executable,
                 "exec",
+                "--strict-config",
                 "--skip-git-repo-check",
                 "--cd",
                 str(workspace),
@@ -157,11 +170,18 @@ def make_cli_assistant_backend(
             command.append("-")
             stdin = prompt
         else:
+            tools = ["Read", "Glob", "Grep"]
+            if action.access == "write":
+                tools.extend(["Edit", "Write"])
+            if action.shell == "enabled":
+                tools.append("Bash")
             command = [
                 executable,
                 "--print",
                 "--permission-mode",
                 "plan" if action.access == "read-only" else "acceptEdits",
+                "--tools",
+                ",".join(tools),
             ]
             if action.external_tools == "none":
                 command.extend(
@@ -169,12 +189,6 @@ def make_cli_assistant_backend(
                         "--safe-mode",
                         "--no-chrome",
                         "--disable-slash-commands",
-                        "--tools",
-                        (
-                            "Read,Glob,Grep"
-                            if action.access == "read-only"
-                            else "Read,Glob,Grep,Edit,Write,Bash"
-                        ),
                         "--strict-mcp-config",
                     ]
                 )

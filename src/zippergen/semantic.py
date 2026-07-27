@@ -126,6 +126,7 @@ def _action_definition(action: object) -> dict[str, object]:
             "backend": action.backend,
             "access": action.access,
             "external_tools": action.external_tools,
+            "shell": action.shell,
             "workspace": action.workspace,
             "timeout": action.timeout,
         })

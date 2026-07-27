@@ -298,6 +298,7 @@ def assistant(
     backend: str | None = None,
     access: str = "read-only",
     external_tools: str = "none",
+    shell: str = "restricted",
     workspace: str | None = None,
     timeout: float | None = None,
     visible: bool = True,
@@ -318,6 +319,11 @@ def assistant(
     The safe default disables configured MCP/tool integrations and web access;
     opt in only when the reviewed action intentionally needs them.  Filesystem
     access and external-tool access are separate capabilities.
+    ``shell`` is ``"restricted"`` (the default) or ``"enabled"``.  Restricted
+    mode gives each backend its strongest practical boundary: Claude receives
+    no Bash tool, while Codex retains command execution inside its structural
+    read-only or network-disabled workspace sandbox.  Enabling the shell is an
+    explicit, semantically visible choice for backends such as Claude.
     ``workspace`` is a static path, relative to the configured project root.
     The decorated function's typed parameters become explicit dynamic inputs;
     its return annotation declares the single typed result.
@@ -340,6 +346,11 @@ def assistant(
         raise ValueError(
             "@assistant external_tools must be 'none' or 'configured', "
             f"got {external_tools!r}."
+        )
+    if shell not in {"restricted", "enabled"}:
+        raise ValueError(
+            "@assistant shell must be 'restricted' or 'enabled', "
+            f"got {shell!r}."
         )
     if timeout is not None and timeout <= 0:
         raise ValueError("@assistant timeout must be greater than zero.")
@@ -374,6 +385,7 @@ def assistant(
             backend=backend,
             access=access,
             external_tools=external_tools,
+            shell=shell,
             workspace=workspace,
             timeout=timeout,
             visible=visible,

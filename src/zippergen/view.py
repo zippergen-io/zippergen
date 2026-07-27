@@ -245,6 +245,7 @@ def _render_action(action: object, *, full: bool) -> list[str]:
             arguments.append(f"backend={action.backend!r}")
         arguments.append(f"access={action.access!r}")
         arguments.append(f"external_tools={action.external_tools!r}")
+        arguments.append(f"shell={action.shell!r}")
         if action.workspace is not None:
             arguments.append(f"workspace={action.workspace!r}")
         if action.timeout is not None:

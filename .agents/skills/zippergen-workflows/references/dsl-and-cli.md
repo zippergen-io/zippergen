@@ -84,6 +84,8 @@ from zippergen import assistant
 @assistant(
     instructions_file="prompts/update_release_notes.md",
     access="write",
+    external_tools="none",
+    shell="restricted",
     workspace=".",
 )
 def update_release_notes(change: str) -> str: ...
@@ -103,15 +105,30 @@ policy to the selected CLI's non-interactive sandbox or permission mode; do not
 rely on prompt wording alone to make a reviewer read-only.
 
 Filesystem access is separate from external-tool access. The default
-`external_tools="none"` disables configured MCP servers, web access, and
-assistant subagents. Use `external_tools="configured"` only when those
+`external_tools="none"` disables configured MCP servers, dedicated web tools,
+and assistant subagents. Use `external_tools="configured"` only when those
 configured capabilities are an intentional part of the action. Both policies
-are always visible in semantic snapshots and diffs. Validation warns when a
-write workspace contains the executing workflow, because that workspace can
-permit self-modification. In that case, make the static instruction explicitly
-protect the workflow and prohibit deployment, service control, commits, pushes,
-and unrelated external mutations unless the reviewed protocol deliberately
-requires them.
+are always visible in semantic snapshots and diffs.
+
+Shell capability is a third explicit policy. The default
+`shell="restricted"` gives each backend its strongest practical boundary:
+Codex keeps sandboxed command execution with network disabled when external
+tools are disabled, while Claude receives no Bash tool. Codex also runs with
+strict configuration parsing so an unknown isolation key fails closed. Use
+`shell="enabled"` only when the action genuinely requires it. Validation warns
+when Claude may receive Bash because that backend does not provide the same
+structural network boundary.
+
+Prefer a separate visible `@effect` containing a fixed command and arguments
+for verification after shell-free assistant edits. Never execute a command
+string returned by the assistant. Truly provider-independent arbitrary-shell
+isolation requires an external OS or container sandbox.
+
+Validation also warns when a write workspace contains the executing workflow,
+because that workspace can permit self-modification. In that case, make the
+static instruction explicitly protect the workflow and prohibit deployment,
+service control, commits, pushes, and unrelated external mutations unless the
+reviewed protocol deliberately requires them.
 
 An assistant action is journaled like other external actions in durable mode:
 a recorded result is replayed without launching the assistant again. The

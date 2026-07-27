@@ -27,6 +27,7 @@ Claude = Lifeline("Claude")
     backend="codex",
     access="write",
     external_tools="none",
+    shell="restricted",
     workspace=".",
 )
 def implement_task(task: str) -> str: ...
@@ -37,6 +38,7 @@ def implement_task(task: str) -> str: ...
     backend="claude",
     access="read-only",
     external_tools="none",
+    shell="restricted",
     workspace=".",
 )
 def review_candidate(task: str, implementation_summary: str) -> str: ...
@@ -47,6 +49,7 @@ def review_candidate(task: str, implementation_summary: str) -> str: ...
     backend="codex",
     access="write",
     external_tools="none",
+    shell="restricted",
     workspace=".",
 )
 def revise_candidate(task: str, review: str) -> str: ...
@@ -57,6 +60,7 @@ def revise_candidate(task: str, review: str) -> str: ...
     backend="codex",
     access="read-only",
     external_tools="none",
+    shell="restricted",
     workspace=".",
 )
 def finalize_result(task: str, review: str) -> str: ...

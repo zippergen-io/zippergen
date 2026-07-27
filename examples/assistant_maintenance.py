@@ -10,6 +10,7 @@ Maintainer = Lifeline("Maintainer")
     instructions_file="examples/prompts/update_release_notes.md",
     access="write",
     external_tools="none",
+    shell="restricted",
     workspace=".",
 )
 def update_release_notes(change: str) -> str: ...

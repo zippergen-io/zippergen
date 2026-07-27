@@ -1991,6 +1991,26 @@ def _validate_workflow(workflow: Workflow, module: ModuleType) -> dict[str, obje
                 else "configured MCP/tool integrations and web access are disabled"
             ),
         })
+        shell_may_be_claude = action.backend in {None, "claude"}
+        shell_warning = action.shell == "enabled" and shell_may_be_claude
+        checks.append({
+            "status": "warn" if shell_warning else "ok",
+            "name": f"assistant shell {action.name}",
+            "detail": (
+                "enabled; a Claude selection receives Bash without structural "
+                "network isolation; use a separate fixed verification action "
+                "when possible"
+                if shell_warning
+                else (
+                    "enabled inside the Codex structural sandbox"
+                    if action.shell == "enabled"
+                    else (
+                        "restricted; Claude receives no Bash and Codex commands "
+                        "remain inside its structural sandbox"
+                    )
+                )
+            ),
+        })
         module_file = getattr(module, "__file__", None)
         if action.access == "write" and module_file:
             requested_workspace = Path(action.workspace or ".").expanduser()

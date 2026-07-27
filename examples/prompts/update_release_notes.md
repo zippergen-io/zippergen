@@ -8,5 +8,6 @@ Inspect the repository and implement the requested release-note change.
   this instruction file.
 - Do not commit, push, publish, or deploy.
 - Do not start, stop, or restart services, and do not mutate external systems.
-- Run any lightweight documentation check already provided by the repository.
-- Return a concise summary of the files changed and verification performed.
+- Do not run repository commands. Return a concise summary of the files
+  changed and identify any fixed documentation check that the workflow owner
+  should run as a separate verification action.

@@ -34,9 +34,24 @@ Developer = Lifeline("Developer")
 def update_repository(request: str) -> str: ...
 
 
+@assistant(
+    instructions="Update the repository and run the requested checks.",
+    backend="claude",
+    access="write",
+    shell="enabled",
+)
+def claude_shell_update(request: str) -> str: ...
+
+
 @workflow
 def assistant_round(request: str @ Developer) -> str:
     Developer: report = update_repository(request)
+    return report @ Developer
+
+
+@workflow
+def claude_shell_round(request: str @ Developer) -> str:
+    Developer: report = claude_shell_update(request)
     return report @ Developer
 
 
@@ -55,6 +70,7 @@ def test_assistant_decorator_defaults_to_least_privilege():
 
     assert review_repository.access == "read-only"
     assert review_repository.external_tools == "none"
+    assert review_repository.shell == "restricted"
 
 
 def test_assistant_decorator_requires_one_instruction_source(tmp_path, monkeypatch):
@@ -95,6 +111,14 @@ def test_assistant_decorator_rejects_unknown_external_tool_policy():
         assistant(
             instructions="Review the repository.",
             external_tools="automatic",
+        )
+
+
+def test_assistant_decorator_rejects_unknown_shell_policy():
+    with pytest.raises(ValueError, match="shell.*restricted.*enabled"):
+        assistant(
+            instructions="Review the repository.",
+            shell="automatic",
         )
 
 
@@ -174,7 +198,8 @@ def test_assistant_action_has_distinct_views_and_semantics():
 
     assert (
         "@assistant(instructions='Update the repository according to the "
-        "request.', access='write', external_tools='none')" in code
+        "request.', access='write', external_tools='none', "
+        "shell='restricted')" in code
     )
     definition = model["action_definitions"]["update_repository"]
     assert definition["kind"] == "assistant"
@@ -182,6 +207,7 @@ def test_assistant_action_has_distinct_views_and_semantics():
     assert definition["instructions_sha256"] == update_repository.instructions_sha256
     assert definition["access"] == "write"
     assert definition["external_tools"] == "none"
+    assert definition["shell"] == "restricted"
 
 
 def test_validation_warns_when_write_workspace_contains_workflow_source():
@@ -197,6 +223,18 @@ def test_validation_warns_when_write_workspace_contains_workflow_source():
         checks["assistant self-modification update_repository"]["detail"]
     )
     assert checks["assistant external tools update_repository"]["status"] == "ok"
+    assert checks["assistant shell update_repository"]["status"] == "ok"
+
+
+def test_validation_warns_for_claude_shell_without_structural_network_isolation():
+    result = _validate_workflow(claude_shell_round, sys.modules[__name__])
+    checks = {str(check["name"]): check for check in result["checks"]}
+
+    assert result["valid"] is True
+    assert checks["assistant shell claude_shell_update"]["status"] == "warn"
+    assert "without structural network isolation" in str(
+        checks["assistant shell claude_shell_update"]["detail"]
+    )
 
 
 def test_cli_backend_invokes_codex_without_a_shell(tmp_path, monkeypatch):
@@ -221,6 +259,7 @@ def test_cli_backend_invokes_codex_without_a_shell(tmp_path, monkeypatch):
     assert captured["command"] == [
         "/tools/codex",
         "exec",
+        "--strict-config",
         "--skip-git-repo-check",
         "--cd",
         str(tmp_path),
@@ -277,13 +316,53 @@ def test_cli_backend_enforces_read_only_codex_and_claude_modes(
     backend(codex_review, {"request": "review"})
     backend(claude_review, {"request": "review"})
 
-    assert commands[0][5:7] == ["--sandbox", "read-only"]
+    assert commands[0][6:8] == ["--sandbox", "read-only"]
+    assert "--strict-config" in commands[0]
     assert "--ignore-user-config" in commands[0]
     assert "mcp_servers={}" in commands[0]
     assert commands[1][1:4] == ["--print", "--permission-mode", "plan"]
     assert "--safe-mode" in commands[1]
     assert "--strict-mcp-config" in commands[1]
     assert "Read,Glob,Grep" in commands[1]
+
+
+def test_claude_shell_requires_explicit_opt_in(tmp_path, monkeypatch):
+    commands: list[list[str]] = []
+    monkeypatch.setattr(
+        "zippergen.assistant_backends.shutil.which",
+        lambda name: f"/tools/{name}",
+    )
+    monkeypatch.setattr(
+        "zippergen.assistant_backends.subprocess.run",
+        lambda command, **_kwargs: (
+            commands.append(command)
+            or subprocess.CompletedProcess(command, 0, stdout="done\n", stderr="")
+        ),
+    )
+
+    @assistant(
+        instructions="Edit the requested files.",
+        backend="claude",
+        access="write",
+    )
+    def restricted_edit(request: str) -> str: ...
+
+    @assistant(
+        instructions="Edit the files and run fixed checks.",
+        backend="claude",
+        access="write",
+        shell="enabled",
+    )
+    def shell_edit(request: str) -> str: ...
+
+    backend = make_cli_assistant_backend(project_root=tmp_path)
+    backend(restricted_edit, {"request": "edit"})
+    backend(shell_edit, {"request": "edit and verify"})
+
+    restricted_tools = commands[0][commands[0].index("--tools") + 1]
+    enabled_tools = commands[1][commands[1].index("--tools") + 1]
+    assert restricted_tools == "Read,Glob,Grep,Edit,Write"
+    assert enabled_tools == "Read,Glob,Grep,Edit,Write,Bash"
 
 
 def test_cli_backend_allows_configured_external_tools_only_by_opt_in(
@@ -327,6 +406,7 @@ def test_cli_backend_allows_configured_external_tools_only_by_opt_in(
     backend(claude_external, {"request": "review"})
 
     assert "--ignore-user-config" not in commands[0]
+    assert "--strict-config" in commands[0]
     assert "mcp_servers={}" not in commands[0]
     assert "--safe-mode" not in commands[1]
     assert "--strict-mcp-config" not in commands[1]

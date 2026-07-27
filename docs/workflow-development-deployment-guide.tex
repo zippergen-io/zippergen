@@ -2479,6 +2479,8 @@ Maintainer = Lifeline("Maintainer")
 @assistant(
     instructions_file="prompts/update_release_notes.md",
     access="write",
+    external_tools="none",
+    shell="restricted",
     workspace=".",
 )
 def update_release_notes(change: str) -> str: ...
@@ -2522,15 +2524,36 @@ non-interactive sandbox or permission mode; a prompt that merely asks a
 reviewer not to edit is not the security boundary.
 
 Filesystem access and external-tool access are separate capabilities. The
-default \texttt{external\_tools="none"} disables configured MCP servers, web
-access, assistant subagents, and comparable integrations. Use
+default \texttt{external\_tools="none"} disables configured MCP servers,
+dedicated web tools, assistant subagents, and comparable integrations. Use
 \texttt{external\_tools="configured"} only when the reviewed action
-intentionally needs the user's configured tools. Both policies always appear
-in semantic snapshots and diffs. Validation also warns when a write workspace
-contains the executing workflow. That workspace permits self-modification, so
-the static instruction must protect the running workflow and must not silently
-authorize deployment, service control, commits, pushes, or unrelated external
-mutations.
+intentionally needs the user's configured tools.
+
+Shell capability is a third reviewed policy. The default
+\texttt{shell="restricted"} selects the strongest practical boundary offered
+by each backend:
+\begin{itemize}
+\item Codex retains command execution inside its read-only or workspace-write
+sandbox. When external tools are disabled, network access is disabled
+structurally as well. Strict configuration parsing makes an unsupported
+isolation key fail the action instead of being ignored.
+\item Claude receives no Bash tool. Setting \texttt{shell="enabled"} permits
+Bash, but Claude does not then provide Codex's structural network isolation;
+\texttt{validate} displays a warning.
+\end{itemize}
+
+For a provider-independent hard boundary, let the assistant edit without a
+shell and perform a predetermined check in a subsequent visible
+\texttt{@effect}. The effect should contain a fixed executable and fixed
+arguments; never execute a command string returned by the assistant. Arbitrary
+shell access with provider-independent network isolation requires an external
+operating-system or container sandbox.
+
+Access, external-tool policy, and shell policy always appear in semantic
+snapshots and diffs. Validation also warns when a write workspace contains the
+executing workflow. That workspace permits self-modification, so the static
+instruction must protect the running workflow and must not silently authorize
+deployment, service control, commits, pushes, or unrelated external mutations.
 
 The shipped
 \path{examples/codex_claude_review.py} workflow demonstrates a bounded

@@ -995,6 +995,8 @@ Maintainer = Lifeline("Maintainer")
 @assistant(
     instructions_file="prompts/update_release_notes.md",
     access="write",
+    external_tools="none",
+    shell="restricted",
     workspace=".",
 )
 def update_release_notes(change: str) -> str: ...
@@ -1036,15 +1038,35 @@ Assistant access is part of the reviewed workflow semantics. Declare
 `plan`/`acceptEdits` permission modes.
 
 Filesystem access and external-tool access are separate capabilities. By
-default, `external_tools="none"` disables configured MCP servers, web access,
-subagents, and comparable assistant integrations. Opt in with
+default, `external_tools="none"` disables configured MCP servers, dedicated
+web tools, subagents, and comparable assistant integrations. Opt in with
 `external_tools="configured"` only when the action genuinely needs the user's
-configured tools; `validate` reports that broader boundary. Both fields are
-always present in semantic snapshots and diffs. A write workspace containing
-the executing workflow also produces a validation warning: the sandbox permits
-self-editing, so the static instruction must explicitly protect the running
-workflow and must not imply permission to deploy, restart services, commit,
-push, or mutate unrelated external systems.
+configured tools; `validate` reports that broader boundary.
+
+Shell capability is reviewed separately as `shell="restricted"` (the default)
+or `shell="enabled"`. The effective restricted boundary is deliberately
+backend-specific:
+
+- Codex retains command execution inside its read-only or workspace-write
+  sandbox, with network disabled when external tools are disabled. ZipperGen
+  also passes `--strict-config`, so an installed Codex version that does not
+  recognize an isolation setting fails the action instead of silently ignoring
+  it.
+- Claude receives no Bash tool in restricted mode. Enabling its shell permits
+  Bash but does not provide structural network isolation; `validate` reports
+  this explicitly as a warning.
+
+For a provider-independent hard boundary, let the assistant edit without a
+shell and perform predetermined checks in a subsequent visible `@effect`
+action. Do not pass assistant-generated commands into that verifier. Stronger
+arbitrary-shell isolation requires an external OS or container sandbox.
+
+Access, external-tool policy, and shell policy are always present in semantic
+snapshots and diffs. A write workspace containing the executing workflow also
+produces a validation warning: the sandbox permits self-editing, so the static
+instruction must explicitly protect the running workflow and must not imply
+permission to deploy, restart services, commit, push, or mutate unrelated
+external systems.
 
 The complete
 [Codex–Claude review-loop example](examples/codex_claude_review.py) keeps
