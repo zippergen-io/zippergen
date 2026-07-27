@@ -55,20 +55,30 @@ def _line_class(line: str) -> str:
     return "text"
 
 
-def render_svg(capture: Path, destination: Path, title: str) -> None:
+def render_svg(
+    capture: Path,
+    destination: Path,
+    title: str,
+    *,
+    canvas_columns: int = CANVAS_COLUMNS,
+) -> None:
+    if canvas_columns < 1 or canvas_columns > CANVAS_COLUMNS:
+        raise ValueError(
+            f"canvas_columns must be between 1 and {CANVAS_COLUMNS}"
+        )
     lines = _capture_lines(capture)
     too_wide = [
         (index, line)
         for index, line in enumerate(lines, start=1)
-        if len(line) > CANVAS_COLUMNS
+        if len(line) > canvas_columns
     ]
     if too_wide:
         index, line = too_wide[0]
         raise ValueError(
             f"{capture}: line {index} is {len(line)} columns wide. "
-            f"Capture Studio at {CANVAS_COLUMNS} columns so it wraps the output."
+            f"Capture Studio at {canvas_columns} columns so it wraps the output."
         )
-    width = int(CANVAS_COLUMNS * CELL_WIDTH + 2 * MARGIN_X)
+    width = int(canvas_columns * CELL_WIDTH + 2 * MARGIN_X)
     height = len(lines) * LINE_HEIGHT + 2 * MARGIN_Y
     text_nodes = []
     for index, line in enumerate(lines):
@@ -115,8 +125,22 @@ def main() -> None:
     parser.add_argument("capture", type=Path)
     parser.add_argument("destination", type=Path)
     parser.add_argument("--title", required=True)
+    parser.add_argument(
+        "--columns",
+        type=int,
+        default=CANVAS_COLUMNS,
+        help=(
+            "SVG terminal width. Use a narrower value only for captures "
+            "already wrapped to that width."
+        ),
+    )
     args = parser.parse_args()
-    render_svg(args.capture, args.destination, args.title)
+    render_svg(
+        args.capture,
+        args.destination,
+        args.title,
+        canvas_columns=args.columns,
+    )
 
 
 if __name__ == "__main__":

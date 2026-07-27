@@ -1,6 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" role="img"
-  aria-labelledby="title description" width="876" height="504"
-  viewBox="0 0 876 504" preserveAspectRatio="xMinYMin meet">
+  aria-labelledby="title description" width="708" height="464"
+  viewBox="0 0 708 464" preserveAspectRatio="xMinYMin meet">
   <title id="title">ZipperGen Studio deployment state</title>
   <desc id="description">Real ZipperGen Studio terminal output.</desc>
   <style>
@@ -23,8 +23,8 @@
       .comment { fill: #8b949e; }
     }
   </style>
-  <rect class="background" x="0.5" y="0.5" width="875"
-    height="503" rx="8"/>
+  <rect class="background" x="0.5" y="0.5" width="707"
+    height="463" rx="8"/>
   <text class="banner" x="18" y="36" xml:space="preserve">╭──────────────────────────────────────────────────────────╮</text>
 <text class="banner" x="18" y="56" xml:space="preserve">│ ZipperGen Studio · deploy show                           │</text>
 <text class="banner" x="18" y="76" xml:space="preserve">╰──────────────────────────────────────────────────────────╯</text>
@@ -33,19 +33,17 @@
 <text class="text" x="18" y="136" xml:space="preserve">Field       Value</text>
 <text class="text" x="18" y="156" xml:space="preserve">──────────  ─────</text>
 <text class="text" x="18" y="176" xml:space="preserve">Deployment  review-demo</text>
-<text class="success" x="18" y="196" xml:space="preserve">Bundle      ✓ installed — /private/tmp/zippergen-deploy-capture.Cj2dXD/home/apps/review-demo/2026072</text>
-<text class="text" x="18" y="216" xml:space="preserve">              7-175251-263429000</text>
-<text class="warning" x="18" y="236" xml:space="preserve">Service     ⚠ gui/501/io.zippergen.review-demo is not loaded: Bad request.</text>
-<text class="warning" x="18" y="256" xml:space="preserve">Run         ⚠ waiting for human action</text>
-<text class="warning" x="18" y="276" xml:space="preserve">Store       ⚠ exists — 1 pending human task —</text>
-<text class="text" x="18" y="296" xml:space="preserve">              /private/tmp/zippergen-deploy-capture.Cj2dXD/home/runs/review-demo.sqlite</text>
-<text class="text" x="18" y="316" xml:space="preserve">Models      Writer=mock · Reviewer=mock</text>
-<text class="text" x="18" y="336" xml:space="preserve">Connectors  none</text>
-<text class="success" x="18" y="356" xml:space="preserve">Cause       ✓ no immediate failure detected</text>
-<text class="text" x="18" y="376" xml:space="preserve">Profile     /private/tmp/zippergen-deploy-capture.Cj2dXD/home/deployments/review-demo.json</text>
-<text class="text" x="18" y="396" xml:space="preserve">Log         /private/tmp/zippergen-deploy-capture.Cj2dXD/home/logs/review-demo.log</text>
-<text class="text" x="18" y="416" xml:space="preserve"></text>
-<text class="text" x="18" y="436" xml:space="preserve">Next</text>
-<text class="text" x="18" y="456" xml:space="preserve">────</text>
-<text class="text" x="18" y="476" xml:space="preserve">  deploy inspect · deploy tasks</text>
+<text class="success" x="18" y="196" xml:space="preserve">Bundle      ✓ installed — /tmp/y/apps/review-demo/20260727-135130-871170000</text>
+<text class="warning" x="18" y="216" xml:space="preserve">Service     ⚠ gui/501/io.zippergen.review-demo is not loaded: Bad request.</text>
+<text class="warning" x="18" y="236" xml:space="preserve">Run         ⚠ waiting for human action</text>
+<text class="warning" x="18" y="256" xml:space="preserve">Store       ⚠ exists — 1 pending human task — /tmp/y/runs/review-demo.sqlite</text>
+<text class="text" x="18" y="276" xml:space="preserve">Models      Writer=mock · Reviewer=mock</text>
+<text class="text" x="18" y="296" xml:space="preserve">Connectors  none</text>
+<text class="success" x="18" y="316" xml:space="preserve">Cause       ✓ no immediate failure detected</text>
+<text class="text" x="18" y="336" xml:space="preserve">Profile     /tmp/y/deployments/review-demo.json</text>
+<text class="text" x="18" y="356" xml:space="preserve">Log         /tmp/y/logs/review-demo.log</text>
+<text class="text" x="18" y="376" xml:space="preserve"></text>
+<text class="text" x="18" y="396" xml:space="preserve">Next</text>
+<text class="text" x="18" y="416" xml:space="preserve">────</text>
+<text class="text" x="18" y="436" xml:space="preserve">  deploy inspect · deploy tasks</text>
 </svg>
