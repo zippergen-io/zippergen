@@ -33,7 +33,8 @@ Extract these facts from all supplied prompts before writing code:
 4. Deterministic computation, LLM work, external effects, and human actions.
 5. Decisions and loops, including the one participant that owns each guard.
 6. Parallel work and the data needed to join it.
-7. External services, configuration, secrets, packages, setup, and source files.
+7. Logical connector requirements, external services, configuration, secrets,
+   packages, setup, and source files.
 8. Safety constraints, retry/idempotency expectations, and acceptance examples.
 
 Resolve contradictions between prompts explicitly. Ask only when a missing
@@ -55,7 +56,10 @@ Otherwise choose the smallest reasonable workflow and state the assumption.
    at the lifeline that actually knows and owns the decision.
 5. Add focused tests that run with mock LLMs or fake services. Test protocol
    structure and safety behavior separately from live integrations.
-6. Run the validation and inspection gate below.
+6. When the intent names a connector, declare an exact module-level
+   `ConnectorRequirement` and test that it appears in workflow semantics.
+   An `@human` action does not declare a connector automatically.
+7. Run the validation and inspection gate below.
 
 Do not invent a generic agent for every function. A lifeline represents a
 sequential participant or trust/ownership boundary, not merely a code module.
@@ -115,6 +119,8 @@ uv run zippergen show path/to/workflow.py:workflow --agent AgentName
 
 Use `--format json` when programmatic checking helps. Run focused tests first,
 then the repository's broader suite and static checks in proportion to risk.
+When a specification names logical connectors, confirm every exact name in the
+full view or semantic JSON before reporting success.
 Treat load, projection, rendering, test, or type-check failures as blockers.
 Respect project boundaries when the application root contains a nested
 framework checkout. If `zippergen.toml` declares `framework_directory`, use

@@ -9454,9 +9454,51 @@ class Studio:
                 None,
             )
             if requirement is None:
+                declared = ", ".join(
+                    item.name for item in requirements
+                ) or "none"
+                request_record = self.workspace.current_request()
+                request_status = (
+                    str(request_record.get("status") or "")
+                    if request_record is not None
+                    else ""
+                )
+                if request_status == "awaiting_review":
+                    correction = "workflow implement --rerun"
+                elif request_status == "prepared":
+                    correction = "workflow implement"
+                else:
+                    correction = "workflow refine"
+                self._emit_table(
+                    "Connector binding blocked",
+                    [
+                        ("Workflow", current, None),
+                        ("Requested", requirement_name, "warning"),
+                        ("Configuration", configuration_name, None),
+                        (
+                            "Declared requirements",
+                            declared,
+                            "warning" if not requirements else None,
+                        ),
+                        (
+                            "Reason",
+                            (
+                                "the selected workflow declares no logical "
+                                "connector requirements"
+                                if not requirements
+                                else "the requested name is not among the "
+                                "workflow's declared requirements"
+                            ),
+                            "warning",
+                        ),
+                    ],
+                )
+                self._emit_next(
+                    f"workflow show full · {correction} · deploy connectors"
+                )
                 raise SystemExit(
-                    f"Workflow connector requirement does not exist: "
-                    f"{requirement_name}."
+                    f"Cannot bind {requirement_name}. The selected workflow "
+                    "does not declare that connector requirement."
                 )
             configurations = self.workspace.connector_configurations()
             configuration = configurations.get(configuration_name)
@@ -10291,14 +10333,17 @@ The canonical workflow specification is the durable source of truth.
 {context}
 
 Before editing, summarize participants, owned inputs and outputs, messages,
-action kinds, owned decisions and loops, deployment requirements, retry and
-safety assumptions, and acceptance examples. Then create visible Python source
-and focused mock/fake tests. When deployment metadata is present, keep its
-bundle self-contained by including the workflow source and any required
-project assets. Run validation, show the communication-only and full code
-views, and inspect every new participant's exact local projection. Do not
-deploy or start a service. Report generated files, assumptions, and
-assistant-check results.
+action kinds, owned decisions and loops, logical connector requirements,
+deployment requirements, retry and safety assumptions, and acceptance
+examples. Then create visible Python source and focused mock/fake tests. Every
+named connector in the specification must appear as an exact module-level
+`ConnectorRequirement`; do not infer that an `@human` action declares it.
+When deployment metadata is present, keep its bundle self-contained by
+including the workflow source and any required project assets. Run validation,
+show the communication-only and full code views, confirm that every requested
+connector name appears in the full view, and inspect every new participant's
+exact local projection. Do not deploy or start a service. Report generated
+files, assumptions, and assistant-check results.
 
 ## Required completion record
 
@@ -10347,9 +10392,13 @@ refinement; the user will reconcile it in Studio after reviewing your changes.
 The semantic baseline is {baseline_file}.
 Preserve all behavior not explicitly changed.
 Update source, deployment metadata, and focused tests together when needed.
+Preserve and update module-level `ConnectorRequirement` declarations whenever
+the specification names a logical connector. An `@human` action is not a
+connector declaration.
 Keep any deployment bundle self-contained by including the workflow source and
 required project assets.
 Validate the result, show communication-only and full code views,
+confirm that every requested connector name appears in the full view,
 inspect every changed participant's exact local projection, and compare the
 result with the baseline using `zippergen diff`. Do not deploy or start a
 service. Report assumptions, intended semantic changes, preserved behavior,

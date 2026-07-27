@@ -1024,6 +1024,7 @@ workflow show full
 workflow show agent Writer
 workflow show agent Reviewer
 workflow show agents Writer Reviewer
+deploy connectors
 workflow validate
 current
 \end{lstlisting}
@@ -1034,6 +1035,10 @@ calls and prompts. \texttt{workflow show full} adds implementation and deploymen
 \texttt{workflow show agent Reviewer} is the exact projected local program.
 \texttt{workflow show agents Writer Reviewer} is a focused global view with hidden
 peers marked as boundaries; it is not a projection.
+\texttt{deploy connectors} inspects module-level logical connector
+requirements without configuring a credential. For the generated tutorial
+workflow, it must show \texttt{human-approval}, kind \texttt{telegram}, and
+configuration \texttt{not bound}.
 
 Only the final \texttt{workflow validate} command makes a validity claim.
 Discovery answers which entry points exist, and selection answers which one is
@@ -1084,8 +1089,17 @@ behavior even when no \texttt{@effect} is present.
 
 Before running, confirm from these views who owns both inputs, who owns the
 retry decision, whether every revision returns to human review, whether an
-unapproved draft can reach Requester, and whether both model prompts are
-visible. Do not continue until the code answers all five clearly.
+unapproved draft can reach Requester, whether both model prompts are visible,
+and whether the exact \texttt{human-approval} connector is declared. Do not
+continue until the code answers all six clearly.
+
+If the connector view reports no declared requirements, the generated code did
+not satisfy the existing specification. Do not accept it. While the
+implementation is still awaiting review, use
+\texttt{workflow implement codex --rerun} or the corresponding Claude command,
+then inspect again. For an already accepted implementation, record the
+correction with \texttt{workflow refine}, implement it, and complete
+\texttt{workflow review} again.
 
 \section{Model configuration and routing}
 
@@ -2624,6 +2638,14 @@ deploy connectors setup telegram
 deploy connectors check telegram-approvals
 deploy connectors bind human-approval telegram-approvals
 \end{lstlisting}
+
+The first command is the boundary check. It must list
+\texttt{human-approval} under workflow requirements before setup or binding.
+Creating \texttt{telegram-approvals} does not add a requirement to Python
+source, and an \texttt{@human} action does not imply one. If binding names a
+missing requirement, Studio displays the selected workflow, requested name,
+and every declared requirement, then directs an open implementation to rerun
+or an accepted implementation to \texttt{workflow refine}.
 
 Setup asks for the Telegram chat id and bot token, stores the token outside the
 repository, and checks both the bot identity and target chat. Guided deployment

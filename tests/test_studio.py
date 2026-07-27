@@ -1082,6 +1082,9 @@ def test_studio_task_explains_nested_framework_test_environment(tmp_path):
     assert "Do not run bare\n`uv run pytest`" in task
     assert "assistant-result.json" in task
     assert '"verification": "passed"' in task
+    assert "logical connector requirements" in task
+    assert "exact module-level\n`ConnectorRequirement`" in task
+    assert "an `@human` action declares it" in task
 
 
 def test_studio_assistant_stops_before_launch_when_nested_tests_are_not_synced(
@@ -2921,6 +2924,44 @@ def test_studio_configures_checks_and_binds_a_telegram_connector(
     assert binding["token_env"].startswith("ZIPPERGEN_CONNECTOR_")
     secret_argument = arguments[arguments.index("--connector-secret") + 1]
     assert secret_argument.endswith("=private-bot-token")
+
+
+def test_studio_explains_a_missing_workflow_connector_requirement(
+    tmp_path,
+):
+    studio, workspace, output = _studio(tmp_path)
+    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+
+    with pytest.raises(
+        SystemExit,
+        match=(
+            "The selected workflow does not declare that connector "
+            "requirement"
+        ),
+    ):
+        studio.execute(
+            "deploy connectors bind human-approval telegram-approvals"
+        )
+
+    assert "Connector binding blocked" in output
+    assert any(
+        "Workflow" in line and "workflow.py:sample" in line
+        for line in output
+    )
+    assert any(
+        "Requested" in line and "human-approval" in line
+        for line in output
+    )
+    assert any(
+        "Declared requirements" in line and "none" in line
+        for line in output
+    )
+    assert any(
+        "Reason" in line and "declares no logical" in line
+        for line in output
+    )
+    assert any("workflow refine" in line for line in output)
+    assert any("deploy connectors" in line for line in output)
 
 
 def test_studio_notifies_the_stable_deployment_store_through_telegram(

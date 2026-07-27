@@ -322,14 +322,18 @@ workflow show communications
 workflow show agent Writer
 workflow show agent Reviewer
 workflow show full
+deploy connectors
 \end{lstlisting}
 
 \texttt{workflow files} reveals supporting modules and declared resources.
 The protocol view shows the global behavior; communications hides local
 actions; an agent view is that participant's exact projection; the full view
 includes actions, prompts, and deployment metadata.
+\texttt{deploy connectors} should list a logical requirement named
+\texttt{human-approval}, with kind \texttt{telegram} and configuration
+\texttt{not bound}. It does not ask for a token at this inspection step.
 
-Check five things before continuing:
+Check six things before continuing:
 
 \begin{enumerate}
   \item Requester initially owns both inputs.
@@ -337,7 +341,15 @@ Check five things before continuing:
   \item The participant that knows the retry condition owns that decision.
   \item Every revised draft returns to review and human approval.
   \item No unapproved draft can reach Requester.
+  \item The exact connector requirement \texttt{human-approval} is declared.
 \end{enumerate}
+
+If \texttt{deploy connectors} says that the workflow declares no connector
+requirements, do not continue or accept the implementation. The specification
+already requested this declaration, so the generated Python is incomplete.
+Enter \texttt{workflow implement codex --rerun}, or use the corresponding
+Claude command, then repeat \texttt{workflow show full} and
+\texttt{deploy connectors}.
 
 \section{Validate and use the mock model}
 
@@ -607,11 +619,19 @@ decision to a private Telegram chat, configure and bind it before the next
 deployment:
 
 \begin{lstlisting}[style=shell]
+deploy connectors
 deploy connectors setup telegram
 deploy connectors bind human-approval telegram-approvals
 deploy
 deploy notify
 \end{lstlisting}
+
+The first command is a required checkpoint. It must show
+\texttt{human-approval} as a declared workflow requirement before setup or
+binding. If it shows \texttt{Requirements: none declared}, return to the
+implementation correction described earlier. A private Telegram
+configuration cannot be bound to a requirement that the Python workflow does
+not declare.
 
 The bot token is stored privately and is never written to the workflow or
 ordinary deployment profile. \texttt{deploy notify} sends pending

@@ -491,7 +491,7 @@ The assistant handoff contains:
 - combined natural-language requirements;
 - project root and target path/spec;
 - the ZipperGen skill invocation;
-- participant/input/output/message/action/control/deployment checklist;
+- participant/input/output/message/action/control/connector/deployment checklist;
 - required validation and code views;
 - for refinement, a unique semantic baseline and expected preserved behavior;
 - an explicit no-deployment boundary unless deployment was requested.
