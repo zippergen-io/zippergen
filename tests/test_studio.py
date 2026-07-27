@@ -156,12 +156,12 @@ def test_studio_completion_is_context_and_project_aware(tmp_path):
     assert _completions(studio, "stu") == ["studio"]
     assert _completions(studio, "studio res") == ["restart"]
     assert _completions(studio, "sto") == []
-    assert _completions(studio, "depl") == ["deploy", "deployment"]
-    assert "show" in _completions(studio, "deployment ")
+    assert _completions(studio, "depl") == ["deploy"]
+    assert "show" in _completions(studio, "deploy ")
     assert {"inspect", "tasks", "approve", "trace"}.issubset(
         _completions(studio, "run ")
     )
-    assert "trace" in _completions(studio, "deployment ")
+    assert "trace" in _completions(studio, "deploy ")
     assert _completions(studio, "run inspect W") == ["Writer"]
     assert _completions(studio, "workflow create --file req") == [
         "requirements.md"
@@ -2145,6 +2145,44 @@ def test_studio_retires_the_plural_models_command_with_targeted_guidance(
         studio.execute("models assignments")
 
 
+def test_studio_retires_the_deployment_namespace_with_targeted_guidance(
+    tmp_path,
+):
+    studio, _workspace, _output = _studio(tmp_path)
+
+    with pytest.raises(
+        SystemExit,
+        match=r"`deployment` was replaced by the single `deploy` namespace",
+    ):
+        studio.execute("deployment show")
+
+
+@pytest.mark.parametrize(
+    ("legacy", "replacement"),
+    [
+        ("status", "show"),
+        ("doctor", "doctor"),
+        ("logs", "logs"),
+        ("start", "start"),
+        ("restart", "restart"),
+        ("stop", "stop"),
+    ],
+)
+def test_studio_retires_legacy_deployment_verbs_with_targeted_guidance(
+    tmp_path,
+    legacy,
+    replacement,
+):
+    studio, _workspace, _output = _studio(tmp_path)
+
+    with pytest.raises(
+        SystemExit,
+        match=rf"`{legacy}` is no longer a Studio command.*"
+        rf"`deploy {replacement} \[NAME\]`",
+    ):
+        studio.execute(legacy)
+
+
 def test_studio_project_rename_changes_only_the_logical_manifest_name(tmp_path):
     studio, workspace, output = _studio(tmp_path)
     studio.execute("project init Tutorial")
@@ -2848,10 +2886,10 @@ def test_studio_configures_checks_and_binds_a_telegram_connector(
     )
 
     studio.execute(
-        "deployment connectors setup telegram review-telegram"
+        "deploy connectors setup telegram review-telegram"
     )
     studio.execute(
-        "deployment connectors bind human-approval review-telegram"
+        "deploy connectors bind human-approval review-telegram"
     )
 
     configuration = workspace.connector_configurations()["review-telegram"]
@@ -2865,7 +2903,7 @@ def test_studio_configures_checks_and_binds_a_telegram_connector(
     ) == {"human-approval": "review-telegram"}
     assert all("private-bot-token" not in line for line in output)
     assert _completions(
-        studio, "deployment connectors bind human-approval "
+        studio, "deploy connectors bind human-approval "
     ) == ["review-telegram"]
 
     current, _workflow, module = studio._current_context()
@@ -2937,7 +2975,7 @@ def test_studio_notifies_the_stable_deployment_store_through_telegram(
         lambda _notifier, **_kwargs: 2,
     )
 
-    studio.execute("deployment notify reviewed")
+    studio.execute("deploy notify reviewed")
 
     assert observed == {"store": str(store), "chat_id": "123456"}
     assert any("Telegram approval connector" in line for line in output)
@@ -3212,7 +3250,7 @@ def test_studio_deployment_list_includes_an_expected_missing_state(
         )
     )
 
-    studio.execute("deployment list")
+    studio.execute("deploy list")
 
     assert any(
         "reviewed-answer" in line
@@ -3241,7 +3279,7 @@ def test_studio_deployment_list_hides_another_projects_state(
         )
     )
 
-    studio.execute("deployment list")
+    studio.execute("deploy list")
 
     assert all("other.sqlite" not in line for line in output)
     assert all("workflow.py:other" not in line for line in output)
@@ -3281,12 +3319,12 @@ def test_studio_deployment_show_separates_service_run_and_store(
     )
     monkeypatch.setattr("zippergen.serve._doctor_checks", lambda *a, **k: [])
 
-    studio.execute("deployment")
+    studio.execute("deploy list")
 
     assert any(line == "Deployments" for line in output)
     assert any("reviewed-answer" in line for line in output)
     output.clear()
-    studio.execute("deployment show reviewed-answer")
+    studio.execute("deploy show reviewed-answer")
 
     assert any(line == "Deployment state" for line in output)
     assert any("Bundle" in line and "installed" in line for line in output)
@@ -3406,7 +3444,7 @@ def test_studio_operates_human_tasks_through_the_deployment(
     )
     monkeypatch.setattr("zippergen.serve._doctor_checks", lambda *a, **k: [])
 
-    studio.execute("deployment show reviewed-answer")
+    studio.execute("deploy show reviewed-answer")
 
     assert any(
         "Store" in line and "exists" in line and "pending" in line
@@ -3416,8 +3454,8 @@ def test_studio_operates_human_tasks_through_the_deployment(
     assert "Writer=local:qwen2.5:7b" in models
     assert "Reviewer=mistral:mistral-small-latest" in models
     assert "mock" not in models
-    assert any("deployment tasks" in line for line in output)
-    assert _completions(studio, "deployment tasks r") == [
+    assert any("deploy tasks" in line for line in output)
+    assert _completions(studio, "deploy tasks r") == [
         "reviewed-answer"
     ]
 
@@ -3430,20 +3468,20 @@ def test_studio_operates_human_tasks_through_the_deployment(
     assert not any("store" in line.casefold() for line in output)
 
     output.clear()
-    studio.execute("deployment tasks reviewed-answer")
+    studio.execute("deploy tasks reviewed-answer")
 
     assert any("Candidate answer" in line for line in output)
     assert any("Missing citation." in line for line in output)
-    assert any("deployment approve reviewed-answer" in line for line in output)
+    assert any("deploy approve reviewed-answer" in line for line in output)
     assert workspace.load()["last_deployment"] == "reviewed-answer"
     assert workspace.load()["current_store"] == str(store)
 
     output.clear()
-    studio.execute("deployment trace reviewed-answer")
+    studio.execute("deploy trace reviewed-answer")
     assert any("Reviewer act action process" in line for line in output)
 
     output.clear()
-    studio.execute("deployment inspect reviewed-answer Reviewer")
+    studio.execute("deploy inspect reviewed-answer Reviewer")
     assert any(
         "Reviewer" in line and "running model action" in line
         for line in output
@@ -3456,7 +3494,7 @@ def test_studio_operates_human_tasks_through_the_deployment(
     prompts: list[str] = []
     studio.input = lambda prompt: prompts.append(prompt) or "y"
     output.clear()
-    studio.execute("deployment approve reviewed-answer")
+    studio.execute("deploy approve reviewed-answer")
 
     connection = open_store(str(store))
     task = load_human_task(connection, "review-1")

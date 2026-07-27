@@ -75,12 +75,12 @@ def test_natural_current_request_executes_without_a_model(tmp_path):
 @pytest.mark.parametrize(
     ("phrase", "command"),
     [
-        ("Show me all stores", ("runs", "deployment list")),
+        ("Show me all stores", ("runs", "deploy list")),
         ("Show pending human tasks", ("run tasks",)),
         ("Show the store trace", ("run trace",)),
-        ("What is the deployment status?", "deployment show"),
-        ("Show the deployment logs", "deployment logs"),
-        ("Stop the deployment", "deployment stop"),
+        ("What is the deployment status?", "deploy show"),
+        ("Show the deploy logs", "deploy logs"),
+        ("Stop the deployment", "deploy stop"),
     ],
 )
 def test_natural_operational_requests_use_the_namespaced_surface(
@@ -569,7 +569,7 @@ def test_execution_plan_requires_confirmation(tmp_path, monkeypatch):
     )
     payload = {
         "summary": "Stop the remembered deployment.",
-        "commands": ["stop review"],
+        "commands": ["deploy stop review"],
         "clarification": None,
     }
     monkeypatch.setattr(

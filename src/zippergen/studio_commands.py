@@ -303,114 +303,82 @@ COMMANDS: tuple[CommandSpec, ...] = (
         primary=True,
     ),
     CommandSpec(
-        ("deployment",),
-        "deployment",
-        "list named deployed applications",
-        "read-only",
-    ),
-    CommandSpec(
-        ("deployment", "list"),
-        "deployment list",
+        ("deploy", "list"),
+        "deploy list",
         "list deployment profiles",
         "read-only",
     ),
     CommandSpec(
-        ("deployment", "show"),
-        "deployment show [NAME]",
+        ("deploy", "show"),
+        "deploy show [NAME]",
         "show bundle, service, run, and store health",
         "read-only",
     ),
     CommandSpec(
-        ("deployment", "inspect"),
-        "deployment inspect [NAME] [PARTICIPANT]",
+        ("deploy", "inspect"),
+        "deploy inspect [NAME] [PARTICIPANT]",
         "show durable participant positions and a live local projection",
         "read-only",
     ),
     CommandSpec(
-        ("deployment", "doctor"),
-        "deployment doctor [NAME]",
+        ("deploy", "doctor"),
+        "deploy doctor [NAME]",
         "run detailed deployment readiness checks",
         "read-only",
     ),
     CommandSpec(
-        ("deployment", "logs"),
-        "deployment logs [NAME]",
+        ("deploy", "logs"),
+        "deploy logs [NAME]",
         "show deployment logs",
         "read-only",
     ),
     CommandSpec(
-        ("deployment", "tasks"),
-        "deployment tasks [NAME]",
+        ("deploy", "tasks"),
+        "deploy tasks [NAME]",
         "show pending decisions and their complete context",
         "read-only",
     ),
     CommandSpec(
-        ("deployment", "approve"),
-        "deployment approve [NAME]",
+        ("deploy", "approve"),
+        "deploy approve [NAME]",
         "review and answer a pending deployment decision",
         "execution",
     ),
     CommandSpec(
-        ("deployment", "trace"),
-        "deployment trace [NAME]",
+        ("deploy", "trace"),
+        "deploy trace [NAME]",
         "show recent events for a deployment",
         "read-only",
     ),
     CommandSpec(
-        ("deployment", "connectors"),
-        "deployment connectors [setup|check|bind] ...",
+        ("deploy", "connectors"),
+        "deploy connectors [setup|check|bind] ...",
         "configure external deployment connections",
         "configuration",
     ),
     CommandSpec(
-        ("deployment", "notify"),
-        "deployment notify [NAME]",
+        ("deploy", "notify"),
+        "deploy notify [NAME]",
         "send pending decisions and receive connector replies",
         "execution",
     ),
     CommandSpec(
-        ("deployment", "start"),
-        "deployment start [NAME]",
+        ("deploy", "start"),
+        "deploy start [NAME]",
         "start a deployment",
         "execution",
     ),
     CommandSpec(
-        ("deployment", "restart"),
-        "deployment restart [NAME]",
+        ("deploy", "restart"),
+        "deploy restart [NAME]",
         "restart a deployment",
         "execution",
     ),
     CommandSpec(
-        ("deployment", "stop"),
-        "deployment stop [NAME]",
+        ("deploy", "stop"),
+        "deploy stop [NAME]",
         "stop a deployment",
         "execution",
-    ),
-    CommandSpec(
-        ("status",), "status [NAME]", "show deployment status", "read-only", hidden=True
-    ),
-    CommandSpec(
-        ("doctor",),
-        "doctor [NAME]",
-        "check deployment readiness",
-        "read-only",
-        hidden=True,
-    ),
-    CommandSpec(
-        ("logs",), "logs [NAME]", "show deployment logs", "read-only", hidden=True
-    ),
-    CommandSpec(
-        ("start",), "start [NAME]", "start a deployment", "execution", hidden=True
-    ),
-    CommandSpec(
-        ("restart",),
-        "restart [NAME]",
-        "restart a deployment",
-        "execution",
-        hidden=True,
-    ),
-    CommandSpec(
-        ("stop",), "stop [NAME]", "stop a deployment", "execution", hidden=True
     ),
     CommandSpec(("current",), "current", "show complete project context", "read-only"),
     CommandSpec(
@@ -623,10 +591,11 @@ def concise_help() -> str:
   5. run
   6. deploy
 
-Three main areas:
+Four main areas:
   workflow    specify, implement, inspect, and validate
   model       configure, check, and assign models
-  deployment  operate installed applications and their durable state
+  run         execute and inspect development runs
+  deploy      create, inspect, and operate installed applications
 
 Start actions:
   run         start a managed development run
@@ -668,6 +637,7 @@ def natural_command_catalog() -> str:
             not spec.natural
             or spec.hidden
             or len(spec.path) == 1
+            and spec.path != ("deploy",)
             and any(
                 candidate.path[:1] == spec.path and len(candidate.path) > 1
                 for candidate in COMMANDS

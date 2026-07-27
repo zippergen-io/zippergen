@@ -144,7 +144,7 @@ _SUBCOMMAND_COMPLETIONS = {
         "edit",
         "model",
         "run",
-        "deployment",
+        "deploy",
     )
 }
 _SUBCOMMAND_COMPLETIONS.update({"show": workflow_view_completions()})
@@ -193,10 +193,31 @@ def _is_explicit_studio_syntax(parts: list[str]) -> bool:
         return len(args) == 3 and args[1] == "--assistant"
     if command in {"resume", "runs"}:
         return not args
-    if command in {"status", "doctor", "logs", "start", "restart", "stop", "deploy"}:
+    if command == "deploy":
         if args and args[0].casefold() in {"of", "please", "the"}:
             return False
-        return len(args) <= 2
+        if not args:
+            return True
+        action = args[0].casefold()
+        if action == "connectors":
+            return len(args) <= 5
+        if action == "inspect":
+            return len(args) <= 3
+        if action in {
+            "list",
+            "show",
+            "doctor",
+            "logs",
+            "tasks",
+            "approve",
+            "trace",
+            "notify",
+            "start",
+            "restart",
+            "stop",
+        }:
+            return len(args) <= 2
+        return True
     if command in _SUBCOMMAND_COMPLETIONS:
         allowed = {
             name.casefold()
@@ -328,14 +349,14 @@ def _is_allowed_natural_plan_command(parts: list[str]) -> bool:
         if lowered[0] in {"default", "inherit"}:
             return len(args) == 2
         return lowered[0] == "assign" and len(args) == 3
-    if command == "deployment":
+    if command == "deploy":
         if not args:
             return True
         if lowered[0] == "connectors":
             return len(args) <= 5
         if lowered[0] == "inspect":
             return len(args) <= 3
-        return (
+        if (
             lowered[0]
             in {
                 "list",
@@ -350,7 +371,16 @@ def _is_allowed_natural_plan_command(parts: list[str]) -> bool:
                 "restart",
                 "stop",
             }
-            and len(args) <= 2
+        ):
+            if lowered[0] == "list":
+                return len(args) == 1
+            return len(args) <= 2
+        return (
+            len(args) == 1
+            and (args[0] == "--no-start" or not args[0].startswith("-"))
+            or len(args) == 2
+            and args[1] == "--no-start"
+            and not args[0].startswith("-")
         )
     if command == "editor":
         return (
@@ -385,17 +415,6 @@ def _is_allowed_natural_plan_command(parts: list[str]) -> bool:
             and lowered[1] == "--assistant"
             and lowered[2] in {"codex", "claude"}
         )
-    if command == "deploy":
-        return (
-            not args
-            or len(args) == 1
-            and (args[0] == "--no-start" or not args[0].startswith("-"))
-            or len(args) == 2
-            and args[1] == "--no-start"
-            and not args[0].startswith("-")
-        )
-    if command in {"status", "doctor", "logs", "start", "restart", "stop"}:
-        return len(args) <= 1
     return False
 
 
@@ -646,6 +665,27 @@ class Studio:
             and parts[1].casefold() in {"inspect", "tasks", "approve", "trace"}
         ):
             return f"run {parts[1].casefold()}"
+        if (
+            command == "deploy"
+            and len(parts) > 1
+            and parts[1].casefold()
+            in {
+                "list",
+                "show",
+                "inspect",
+                "doctor",
+                "logs",
+                "tasks",
+                "approve",
+                "trace",
+                "connectors",
+                "notify",
+                "start",
+                "restart",
+                "stop",
+            }
+        ):
+            return f"deploy {parts[1].casefold()}"
         if len(parts) > 1 and command in {
             "workflow",
             "model",
@@ -655,7 +695,6 @@ class Studio:
             "editor",
             "edit",
             "studio",
-            "deployment",
         }:
             return f"{command} {parts[1].casefold()}"
         return command
@@ -1177,9 +1216,21 @@ class Studio:
                     for name in self._completion_lifelines(llm_only=True)
                 ]
             return []
-        if command == "deployment":
+        if command == "deploy":
             if not args:
-                return list(_SUBCOMMAND_COMPLETIONS["deployment"])
+                return [
+                    *_SUBCOMMAND_COMPLETIONS["deploy"],
+                    *self._deployment_completion_candidates(),
+                    ("--no-start", "prepare without starting"),
+                    (
+                        "--accepted",
+                        "deploy the immutable human-accepted source",
+                    ),
+                    (
+                        "--unreviewed",
+                        "override a divergence with an audited reason",
+                    ),
+                ]
             if args[0].lower() == "connectors":
                 if len(args) == 1:
                     return [
@@ -1313,26 +1364,6 @@ class Studio:
                     if record.get("id")
                 ]
             return []
-        if command in {"deploy", "status", "doctor", "logs", "start", "restart", "stop"}:
-            values: list[tuple[str, str]] = []
-            deployment = self.workspace.load().get("last_deployment")
-            if deployment:
-                values.append((str(deployment), "remembered deployment"))
-            if command == "deploy":
-                values.extend(
-                    [
-                        ("--no-start", "prepare without starting"),
-                        (
-                            "--accepted",
-                            "deploy the immutable human-accepted source",
-                        ),
-                        (
-                            "--unreviewed",
-                            "override a divergence with an audited reason",
-                        ),
-                    ]
-                )
-            return values
         return []
 
     def _deployment_completion_candidates(self) -> list[tuple[str, str]]:
@@ -2426,17 +2457,6 @@ class Studio:
             except SystemExit:
                 return False
             return True
-        if (
-            command in {"status", "doctor", "logs", "start", "restart", "stop"}
-            and args
-        ):
-            name = args[0]
-            remembered = self.workspace.load().get("last_deployment")
-            if remembered and str(remembered).casefold() == name.casefold():
-                return True
-            from zippergen.serve import _deployment_profile_path
-
-            return _deployment_profile_path(name).exists()
         return True
 
     def execute(
@@ -2476,13 +2496,52 @@ class Studio:
                 "`models` was renamed to `model`. Use `model`, "
                 "`model setup`, or another `model ...` command."
             )
+        if parts[0].casefold() == "deployment":
+            if show_boundary:
+                self._emit_output_boundary("deploy")
+            raise SystemExit(
+                "`deployment` was replaced by the single `deploy` namespace. "
+                "Use `deploy list`, `deploy show`, or another `deploy ...` "
+                "command."
+            )
+        legacy_deploy_commands = {
+            "status": "show",
+            "doctor": "doctor",
+            "logs": "logs",
+            "start": "start",
+            "restart": "restart",
+            "stop": "stop",
+        }
+        legacy_command = parts[0].casefold()
+        legacy_target_known = False
+        if legacy_command in legacy_deploy_commands and len(parts) == 2:
+            remembered = self.workspace.load().get("last_deployment")
+            legacy_target_known = bool(
+                remembered
+                and str(remembered).casefold() == parts[1].casefold()
+            )
+            if not legacy_target_known:
+                from zippergen.serve import _deployment_profile_path
+
+                legacy_target_known = _deployment_profile_path(parts[1]).exists()
+        if (
+            legacy_command in legacy_deploy_commands
+            and (len(parts) == 1 or legacy_target_known)
+        ):
+            replacement = legacy_deploy_commands[legacy_command]
+            if show_boundary:
+                self._emit_output_boundary(f"deploy {replacement}")
+            raise SystemExit(
+                f"`{legacy_command}` is no longer a Studio command. "
+                f"Use `deploy {replacement} [NAME]`."
+            )
         if parts[0].casefold() == "store":
             if show_boundary:
                 self._emit_output_boundary("run")
             raise SystemExit(
                 "`store` is not a Studio command. Durable state belongs to "
                 "a development run or deployment. Use run inspect, run tasks, "
-                "run approve, run trace, or the corresponding deployment "
+                "run approve, run trace, or the corresponding deploy "
                 "command."
             )
         if (
@@ -2641,14 +2700,24 @@ class Studio:
         elif command == "runs":
             self.show_runs()
         elif command == "deploy":
-            self.deploy_workflow(args)
-        elif command == "deployment":
-            self.manage_deployments(args)
-        elif command in {"status", "doctor", "logs", "start", "restart", "stop"}:
-            if command == "status":
-                self.show_deployment(args)
+            if args and args[0].casefold() in {
+                "list",
+                "show",
+                "inspect",
+                "doctor",
+                "logs",
+                "tasks",
+                "approve",
+                "trace",
+                "connectors",
+                "notify",
+                "start",
+                "restart",
+                "stop",
+            }:
+                self.manage_deploy(args)
             else:
-                self.deployment_action(command, args)
+                self.deploy_workflow(args)
         else:
             raise SystemExit(
                 f"Unknown Studio command: {command}. "
@@ -6001,7 +6070,7 @@ class Studio:
             runtime_rows.append(
                 (
                     "Deployment inspection",
-                    f"deployment inspect {deployment} [PARTICIPANT]",
+                    f"deploy inspect {deployment} [PARTICIPANT]",
                     None,
                 )
             )
@@ -8401,7 +8470,7 @@ class Studio:
         for task in tasks:
             self._emit_human_task_detail(task)
         self._emit_next(
-            f"deployment approve {deployment_name}"
+            f"deploy approve {deployment_name}"
             if deployment_name
             else "run approve TASK_ID"
         )
@@ -8416,7 +8485,7 @@ class Studio:
         if len(args) > 2:
             raise SystemExit(
                 (
-                    "Use deployment approve [NAME]."
+                    "Use deploy approve [NAME]."
                     if deployment_name
                     else "Use run approve [TASK_ID] [yes|no|VALUE]."
                 )
@@ -8466,7 +8535,7 @@ class Studio:
             connection.close()
         if task is None or task.get("status") != "pending":
             tasks_command = (
-                f"deployment tasks {deployment_name}"
+                f"deploy tasks {deployment_name}"
                 if deployment_name
                 else "run tasks"
             )
@@ -8741,7 +8810,7 @@ class Studio:
             raise SystemExit(
                 "Required connector bindings are missing: "
                 + ", ".join(missing)
-                + ". Use deployment connectors."
+                + ". Use deploy connectors."
             )
 
         snapshot: dict[str, dict[str, object]] = {}
@@ -8765,7 +8834,7 @@ class Studio:
             if configuration.get("check_status") != "available":
                 raise SystemExit(
                     f"Connector {configuration_name} has not passed its latest "
-                    "check. Use deployment connectors check "
+                    "check. Use deploy connectors check "
                     f"{configuration_name}."
                 )
             record: dict[str, object] = {
@@ -9154,7 +9223,7 @@ class Studio:
                     ("Status", "none", "warning"),
                     (
                         "Next",
-                        "deployment connectors setup telegram",
+                        "deploy connectors setup telegram",
                         None,
                     ),
                 ],
@@ -9207,7 +9276,7 @@ class Studio:
                 + "."
             )
             self._emit_next(
-                f"deployment connectors bind {missing[0]} CONFIGURATION"
+                f"deploy connectors bind {missing[0]} CONFIGURATION"
             )
 
     def _check_connector_configuration(self, name: str) -> bool:
@@ -9267,13 +9336,13 @@ class Studio:
         if action == "setup":
             if len(rest) > 2 or not rest:
                 raise SystemExit(
-                    "Use deployment connectors setup telegram [NAME]."
+                    "Use deploy connectors setup telegram [NAME]."
                 )
             kind = rest[0].casefold()
             if kind != "telegram":
                 raise SystemExit(
                     "Telegram is the first supported connector. Use "
-                    "deployment connectors setup telegram [NAME]."
+                    "deploy connectors setup telegram [NAME]."
                 )
             name = rest[1] if len(rest) == 2 else "telegram-approvals"
             existing = self.workspace.connector_configurations().get(name, {})
@@ -9315,7 +9384,7 @@ class Studio:
         if action == "check":
             if len(rest) > 1:
                 raise SystemExit(
-                    "Use deployment connectors check [NAME|all]."
+                    "Use deploy connectors check [NAME|all]."
                 )
             target = rest[0] if rest else "all"
             names = list(self.workspace.connector_configurations())
@@ -9323,7 +9392,7 @@ class Studio:
                 names = [target]
             if not names:
                 raise SystemExit(
-                    "No connector configurations exist. Use deployment "
+                    "No connector configurations exist. Use deploy "
                     "connectors setup telegram."
                 )
             failed = [
@@ -9339,7 +9408,7 @@ class Studio:
         if action == "bind":
             if len(rest) != 2:
                 raise SystemExit(
-                    "Use deployment connectors bind REQUIREMENT CONFIGURATION."
+                    "Use deploy connectors bind REQUIREMENT CONFIGURATION."
                 )
             requirement_name, configuration_name = rest
             current, requirements = self._connector_requirements()
@@ -9379,7 +9448,7 @@ class Studio:
             self._emit_connectors()
             return
         raise SystemExit(
-            "Use deployment connectors, setup, check, or bind."
+            "Use deploy connectors, setup, check, or bind."
         )
 
     def _deployment_name(self, selector: str | None = None) -> str:
@@ -9395,7 +9464,7 @@ class Studio:
             if len(matches) == 1:
                 return matches[0]
             raise SystemExit(
-                f"Deployment not found: {selector}. Use 'deployment list'."
+                f"Deployment not found: {selector}. Use 'deploy list'."
             )
         remembered = self.workspace.load().get("last_deployment")
         if remembered:
@@ -9405,8 +9474,8 @@ class Studio:
         if not profiles:
             raise SystemExit("No deployments exist. Use deploy first.")
         raise SystemExit(
-            "No deployment is selected. Use 'deployment list', then "
-            "'deployment show NAME'."
+            "No deployment is selected. Use 'deploy list', then "
+            "'deploy show NAME'."
         )
 
     def _deployment_store_record(self, name: str):
@@ -9466,7 +9535,7 @@ class Studio:
             rows,
         )
         self._emit_next(
-            "deployment show NAME · deployment tasks NAME · deployment logs NAME"
+            "deploy show NAME · deploy tasks NAME · deploy logs NAME"
         )
 
     @staticmethod
@@ -9548,7 +9617,7 @@ class Studio:
 
     def show_deployment(self, args: list[str]) -> None:
         if len(args) > 1:
-            raise SystemExit("Use deployment show [NAME].")
+            raise SystemExit("Use deploy show [NAME].")
         name = self._deployment_name(args[0] if args else None)
         from zippergen.serve import (
             _deployment_profile_path,
@@ -9628,18 +9697,18 @@ class Studio:
             None,
         )
         next_action = (
-            "deployment inspect · deployment stop · "
+            "deploy inspect · deploy stop · "
             + (
                 f"model provider check {missing_provider} · deploy"
                 if missing_provider
-                else "deployment logs"
+                else "deploy logs"
             )
             if service["state"] == "restarting"
-            else "deployment inspect · deployment tasks"
+            else "deploy inspect · deploy tasks"
             if store["state"] == "waiting"
-            else "deployment inspect · deployment logs"
+            else "deploy inspect · deploy logs"
             if failures
-            else "deployment inspect · deployment doctor · deployment logs"
+            else "deploy inspect · deploy doctor · deploy logs"
         )
         self._emit_table(
             "Deployment state",
@@ -9677,7 +9746,7 @@ class Studio:
     def inspect_deployment(self, args: list[str]) -> None:
         if len(args) > 2:
             raise SystemExit(
-                "Use deployment inspect [NAME] [PARTICIPANT]."
+                "Use deploy inspect [NAME] [PARTICIPANT]."
             )
         from zippergen.serve import (
             _deployment_profile_path,
@@ -9731,11 +9800,11 @@ class Studio:
             ],
             participant=participant,
             next_commands=(
-                f"deployment inspect {name} {participant} · "
-                f"deployment tasks {name} · deployment logs {name}"
+                f"deploy inspect {name} {participant} · "
+                f"deploy tasks {name} · deploy logs {name}"
                 if participant
-                else f"deployment inspect {name} PARTICIPANT · "
-                f"deployment tasks {name} · deployment logs {name}"
+                else f"deploy inspect {name} PARTICIPANT · "
+                f"deploy tasks {name} · deploy logs {name}"
             ),
         )
         self.workspace.update(
@@ -9745,7 +9814,7 @@ class Studio:
 
     def _notify_deployment(self, args: list[str]) -> None:
         if len(args) > 1:
-            raise SystemExit("Use deployment notify [NAME].")
+            raise SystemExit("Use deploy notify [NAME].")
         name = self._deployment_name(args[0] if args else None)
         from zippergen.serve import (
             _load_deployment_profile,
@@ -9828,10 +9897,10 @@ class Studio:
             ],
         )
         self._emit_next(
-            f"deployment notify {name} · deployment tasks {name}"
+            f"deploy notify {name} · deploy tasks {name}"
         )
 
-    def manage_deployments(self, args: list[str]) -> None:
+    def manage_deploy(self, args: list[str]) -> None:
         if not args:
             self.show_deployments()
             return
@@ -9839,7 +9908,7 @@ class Studio:
         action = action.casefold()
         if action == "list":
             if rest:
-                raise SystemExit("Use deployment list.")
+                raise SystemExit("Use deploy list.")
             self.show_deployments()
             return
         if action == "show":
@@ -9857,7 +9926,7 @@ class Studio:
         if action in {"tasks", "approve", "trace"}:
             if len(rest) > 1:
                 raise SystemExit(
-                    f"Use deployment {action} or deployment {action} NAME."
+                    f"Use deploy {action} or deploy {action} NAME."
                 )
             name = self._deployment_name(rest[0] if rest else None)
             record = self._deployment_store_record(name)
@@ -9879,14 +9948,14 @@ class Studio:
             self.deployment_action(action, rest)
             return
         raise SystemExit(
-            "Use deployment list, show, inspect, doctor, logs, tasks, approve, "
+            "Use deploy list, show, inspect, doctor, logs, tasks, approve, "
             "trace, connectors, notify, start, restart, or stop."
         )
 
     def deployment_action(self, action: str, args: list[str]) -> None:
         if len(args) > 1:
             raise SystemExit(
-                f"Use deployment {action} or deployment {action} NAME."
+                f"Use deploy {action} or deploy {action} NAME."
             )
         name = self._deployment_name(args[0] if args else None)
         rc = self._run_project_cli([action, str(name)])

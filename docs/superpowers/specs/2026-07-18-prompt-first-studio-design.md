@@ -506,17 +506,18 @@ with workflow execution.
 
 ```text
 deploy [NAME]
-status [NAME]
-doctor [NAME]
-logs [NAME]
-start [NAME]
-restart [NAME]
-stop [NAME]
+deploy list
+deploy show [NAME]
+deploy doctor [NAME]
+deploy logs [NAME]
+deploy start [NAME]
+deploy restart [NAME]
+deploy stop [NAME]
 ```
 
 `deploy` is an explicit transition from development to the existing guided,
 secret-aware named deployment path. Studio remembers the successful deployment
-name, so the operational commands need no argument afterward. They run from the
+name, so the operational subcommands need no argument afterward. They run from the
 discovered project root and retain the same behavior as their scriptable CLI
 equivalents.
 

@@ -495,16 +495,15 @@ exact reference is useful. The assistant line may instead be a warning when
 neither supported CLI is installed; specification, deterministic inspection,
 mock execution, and the rest of Studio remain available.
 
-The command vocabulary has three main areas. Everything that changes or
+The command vocabulary has four main areas. Everything that changes or
 explains the application design lives below \texttt{workflow}: creation,
 refinement, coding-assistant implementation, selection, semantic views,
 validation, review, and history. Everything about model connections,
-configurations, checks, and assignments lives below \texttt{model}. Running
-starts with the short verbs \texttt{run}, \texttt{resume}, and
-\texttt{deploy}. Development decisions, traces, and inspection remain below
-\texttt{run}. Installed operation, including its durable state, decisions,
-and traces, lives below \texttt{deployment}. Thus a beginner can type
-\texttt{workflow}, \texttt{model}, \texttt{deployment}, or
+configurations, checks, and assignments lives below \texttt{model}.
+Development execution, decisions, traces, and inspection remain below
+\texttt{run}. Creating and operating an installed application, including its
+durable state and decisions, lives below \texttt{deploy}. Thus a beginner can
+type \texttt{workflow}, \texttt{model}, \texttt{run}, \texttt{deploy}, or
 \texttt{current} to recover the next step instead of remembering several
 unrelated nouns.
 The small cross-cutting \texttt{settings} command covers global Studio
@@ -525,7 +524,7 @@ It does not run \texttt{git pull}, install packages, or synchronize the Python
 environment. If dependency metadata changed, leave Studio, run
 \texttt{uv sync} or reinstall the editable tool, and then start
 \texttt{zippergen} again. Do not confuse this with
-\texttt{deployment restart [NAME]}, which restarts an installed deployment.
+\texttt{deploy restart [NAME]}, which restarts an installed deployment.
 
 Press Tab at any point while entering a command. Studio completes commands and
 subcommands and, where relevant, offers the workflows, participants,
@@ -618,8 +617,8 @@ title and rule, explicit column headings, another rule separating those
 headings from the actual rows, and a standalone \texttt{Next} section when
 guidance is useful. Success, warning, or failure appears before the data it
 describes. Thus \texttt{project}, \texttt{workflow}, \texttt{model},
-\texttt{language}, run, and deployment results do not require the reader to
-learn different output layouts.
+\texttt{language}, \texttt{run}, and \texttt{deploy} results do not require
+the reader to learn different output layouts.
 Long fields and table rows wrap to the terminal width, so a path, assistant-check
 command, or assistant explanation no longer extends far beyond its heading.
 Wide multi-column data lists may use more terminal width than prose
@@ -1719,55 +1718,55 @@ Studio remembers the deployment name. Check the prepared artifacts before the
 first real service-state change:
 
 \begin{lstlisting}[style=shell]
-deployment doctor
-deployment show
+deploy doctor
+deploy show
 \end{lstlisting}
 
-\texttt{deployment show} separates four objects that must not be confused:
+\texttt{deploy show} separates four objects that must not be confused:
 the immutable bundle, the supervised operating-system process, the workflow
 run, and its SQLite store. Studio condenses the deployer's checks into one
-readiness summary; \texttt{deployment doctor} is the explicit expanded view.
+readiness summary; \texttt{deploy doctor} is the explicit expanded view.
 Doctor should contain no failures; before first
 execution, a missing store/log and an uninstalled service are expected
 warnings. If the checks are acceptable and service startup is authorized,
 enter these one at a time:
 
 \begin{lstlisting}[style=shell]
-deployment start
-deployment show
-deployment inspect
-deployment inspect Reviewer
-deployment tasks
-deployment approve
-deployment logs
-deployment restart
-deployment show
-deployment stop
+deploy start
+deploy show
+deploy inspect
+deploy inspect Reviewer
+deploy tasks
+deploy approve
+deploy logs
+deploy restart
+deploy show
+deploy stop
 \end{lstlisting}
 
-\texttt{deployment start} is the first command here that changes
+\texttt{deploy start} is the first command here that changes
 service-manager state. It reruns readiness checks immediately before doing so;
-\texttt{deployment restart} applies the same gate. A failed credential,
+\texttt{deploy restart} applies the same gate. A failed credential,
 workflow import, bundle, package, or workflow-specific doctor check blocks the
 operation before launchd/systemd is touched. Warnings remain informative and
-do not block startup. \texttt{deployment stop} is never subject to this gate.
+do not block startup. \texttt{deploy stop} is never subject to this gate.
 The process may need a few seconds to reach its first action; repeat
-\texttt{deployment show} once if necessary. The run/store rows should report
+\texttt{deploy show} once if necessary. The run/store rows should report
 \texttt{waiting} once durable human approval is pending. Each deployment name
 owns one stable logical store, so normal deployment operation requires no
 store selection or copied path.
-\texttt{deployment inspect} reads per-participant positions from that store
+\texttt{deploy inspect} reads per-participant positions from that store
 and projects the workflow from the immutable deployment bundle, so later
 working-tree edits cannot change what is displayed. With no name it uses the
 remembered deployment; a participant can be supplied as the final argument.
-\texttt{deployment tasks} shows the full
+\texttt{deploy tasks} shows the full
 stored instruction, draft, reviewer notes, and decision labels;
-\texttt{deployment approve} repeats them immediately before accepting yes or
-no. \texttt{deployment trace} shows recent durable events without requiring a
+\texttt{deploy approve} repeats them immediately before accepting yes or
+no. \texttt{deploy trace} shows recent durable events without requiring a
 SQLite path.
-\texttt{deployment logs} shows the service output and returns;
-\texttt{deployment restart} deliberately proves that the same
-pending task survives a process restart. Then \texttt{deployment stop} prevents this
+\texttt{deploy logs} shows the service output and returns;
+\texttt{deploy restart} deliberately proves that the same
+pending task survives a process restart. Then \texttt{deploy stop} prevents this
 finite tutorial workflow from being supervised indefinitely. Later chapters
 show task tokens and notification adapters for delivering the same approval
 context through Telegram or another out-of-process channel. Stopping does not
@@ -1778,8 +1777,8 @@ finite workflow after successful completion.
 If Studio reports that no supported user service manager is available, stop at
 the error and use the later \texttt{deploy --no-start} plus
 \texttt{run-deployment} foreground path. Do not repeatedly retry a failing
-service start without reading \texttt{deployment doctor} and
-\texttt{deployment logs}.
+service start without reading \texttt{deploy doctor} and
+\texttt{deploy logs}.
 
 \begin{warningbox}{Deployment is a real operational action}
 First complete mock execution and inspect \texttt{workflow show full}. A real model call
@@ -1820,11 +1819,11 @@ zippergen [tutorial_review]>
 
 The text in square brackets is the current workflow object name, not a
 deployment name. Enter \texttt{help} at any time. The public commands follow
-three main areas: \texttt{workflow} for specification, implementation,
+four main areas: \texttt{workflow} for specification, implementation,
 inspection, and validation; \texttt{model} for connections, configurations,
-checks, and assignments; and \texttt{deployment} for installed operation.
-Development execution and its durable state remain below \texttt{run}. The
-important commands are:
+checks, and assignments; \texttt{run} for development execution and its
+durable state; and \texttt{deploy} for installed operation. The important
+commands are:
 
 \begin{lstlisting}[style=shell]
 project show   # visible manifest and automatic specification path
@@ -1877,22 +1876,22 @@ run trace      # recent events for the current development run
 resume         # continue the current incomplete managed run
 runs           # list this project's managed development runs
 project reset  # choose fresh design, state-only reset, or cancel
-deploy         # explicitly enter guided named deployment
-deployment     # list named deployments
-deployment show [NAME] # bundle, service, run, and stable store
-deployment inspect [NAME] [PARTICIPANT] # durable local program positions
-deployment tasks [NAME] # pending decisions with complete context
-deployment approve [NAME] # review and answer a pending decision
-deployment trace [NAME] # recent durable deployment events
-deployment connectors # logical requirements, private configs, and bindings
-deployment connectors setup telegram [NAME] # configure and check a bot/chat
-deployment connectors bind REQUIREMENT CONFIGURATION
-deployment notify [NAME] # one Telegram send/receive synchronization pass
-deployment doctor # detailed readiness checks
-deployment logs # recent service output
-deployment start # start the remembered installed service
-deployment restart # restart it
-deployment stop # stop it without deleting durable state
+deploy         # create or update a guided named deployment
+deploy list    # list named deployments
+deploy show [NAME] # bundle, service, run, and stable store
+deploy inspect [NAME] [PARTICIPANT] # durable local program positions
+deploy tasks [NAME] # pending decisions with complete context
+deploy approve [NAME] # review and answer a pending decision
+deploy trace [NAME] # recent durable deployment events
+deploy connectors # logical requirements, private configs, and bindings
+deploy connectors setup telegram [NAME] # configure and check a bot/chat
+deploy connectors bind REQUIREMENT CONFIGURATION
+deploy notify [NAME] # one Telegram send/receive synchronization pass
+deploy doctor # detailed readiness checks
+deploy logs # recent service output
+deploy start # start the remembered installed service
+deploy restart # restart it
+deploy stop # stop it without deleting durable state
 exit           # leave Studio
 \end{lstlisting}
 
@@ -2254,8 +2253,8 @@ installing or starting a user service. After a successful preparation, Studio
 remembers that name. Inspect it first:
 
 \begin{lstlisting}[style=shell]
-deployment doctor
-deployment show
+deploy doctor
+deploy show
 \end{lstlisting}
 
 Warnings about a missing first-run store or log and an uninstalled service are
@@ -2263,32 +2262,32 @@ expected at this point; a doctor failure is not. Only when service startup is
 intentional and authorized, enter:
 
 \begin{lstlisting}[style=shell]
-deployment start
-deployment show
-deployment tasks
-deployment logs
-deployment restart
-deployment show
-deployment stop
+deploy start
+deploy show
+deploy tasks
+deploy logs
+deploy restart
+deploy show
+deploy stop
 \end{lstlisting}
 
-\texttt{deployment start} is the first command in this sequence that changes
-the user service manager. \texttt{deployment logs} returns after showing
-recent output; it does not stop the service. \texttt{deployment stop} leaves
+\texttt{deploy start} is the first command in this sequence that changes
+the user service manager. \texttt{deploy logs} returns after showing
+recent output; it does not stop the service. \texttt{deploy stop} leaves
 the deployment artifacts and durable store in place.
 
 You may also provide a deployment name explicitly:
 
 \begin{lstlisting}[style=shell]
-deployment show tutorial-review-studio
+deploy show tutorial-review-studio
 \end{lstlisting}
 
 The scriptable equivalents outside Studio remain
 \texttt{zippergen status tutorial-review-studio} and so on.
 
 \begin{warningbox}{Deployment is a real operational action}
-Do not enter \texttt{deploy}, \texttt{deployment start}, or
-\texttt{deployment restart} merely to
+Do not enter \texttt{deploy}, \texttt{deploy start}, or
+\texttt{deploy restart} merely to
 explore the menu. Read the deployment chapters first, remain on mock/fake
 services, and understand the declared setup and effects. The \texttt{workflow show full}
 view exposes prompts and deployment requirements before this transition.
@@ -2316,16 +2315,16 @@ Human decision & Inline in the same terminal & \texttt{tasks} and
 Continue & \texttt{resume} & Re-run against the same explicit SQLite store. \\
 Inspect durable state & \texttt{run inspect}, \texttt{run tasks},
 \texttt{run approve}, \texttt{run trace}, or the corresponding
-\texttt{deployment} commands & Pass the exact \texttt{--store} path to
+\texttt{deploy} commands & Pass the exact \texttt{--store} path to
 status/task/trace commands. \\
 Specification change & \texttt{workflow create} or
 \texttt{workflow refine} & Manually request a snapshot, assistant edit,
 validation, views, projections, and semantic diff. \\
-Deploy/operate & \texttt{deploy}, then \texttt{deployment show},
-\texttt{deployment tasks}, \texttt{deployment approve},
-\texttt{deployment trace},
-\texttt{deployment logs}, \texttt{deployment restart},
-\texttt{deployment stop} & Named deployment commands,
+Deploy/operate & \texttt{deploy}, then \texttt{deploy show},
+\texttt{deploy tasks}, \texttt{deploy approve},
+\texttt{deploy trace},
+\texttt{deploy logs}, \texttt{deploy restart},
+\texttt{deploy stop} & Named deployment commands,
 explicit options, profiles, and service-manager operations. \\
 \bottomrule
 \end{tabularx}
@@ -2394,7 +2393,7 @@ There are three places where text is entered:
 Operating-system shell & \texttt{\%}, \texttt{\$}, or a directory name &
 \texttt{cd}, \texttt{git}, \texttt{zippergen}, \texttt{codex} \\
 ZipperGen Studio & \texttt{zippergen [workflow]>} & \texttt{workflow show},
-\texttt{model}, \texttt{run}, \texttt{deploy}, \texttt{status} \\
+\texttt{model}, \texttt{run}, \texttt{deploy}, \texttt{deploy show} \\
 Coding assistant & Codex conversation prompt & The Studio-generated task;
 \texttt{workflow implement} supplies it automatically \\
 \bottomrule
@@ -2593,10 +2592,10 @@ Studio separately owns named machine-private configurations and binds them to
 the logical requirement:
 
 \begin{lstlisting}[style=shell]
-deployment connectors
-deployment connectors setup telegram
-deployment connectors check telegram-approvals
-deployment connectors bind human-approval telegram-approvals
+deploy connectors
+deploy connectors setup telegram
+deploy connectors check telegram-approvals
+deploy connectors bind human-approval telegram-approvals
 \end{lstlisting}
 
 Setup asks for the Telegram chat id and bot token, stores the token outside the
@@ -2606,11 +2605,11 @@ token in the owner-private deployment secret file. Start and restart rerun the
 live readiness check.
 
 \begin{lstlisting}[style=shell]
-deployment notify
-deployment tasks
+deploy notify
+deploy tasks
 \end{lstlisting}
 
-\texttt{deployment notify} performs one synchronization pass against the
+\texttt{deploy notify} performs one synchronization pass against the
 deployment's unique store: unseen tasks are sent and available Telegram replies
 are consumed. Run it again to collect a reply that arrived later. Direct
 terminal approval remains available and an unbound optional connector never
@@ -4058,15 +4057,15 @@ model default mock
 model inherit Writer
 model inherit Reviewer
 deploy tutorial-review-studio --no-start
-deployment doctor
-deployment show
-deployment start
-deployment show
-deployment tasks
-deployment logs
-deployment restart
-deployment show
-deployment stop
+deploy doctor
+deploy show
+deploy start
+deploy show
+deploy tasks
+deploy logs
+deploy restart
+deploy show
+deploy stop
 exit
 \end{lstlisting}
 

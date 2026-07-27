@@ -99,7 +99,7 @@ Commands are grouped by purpose:
 | `workflow` | Specification, implementation, views, validation, review |
 | `model` | Providers, named configurations, checks, assignments |
 | `run`, `resume`, and `runs` | Durable development execution, decisions, traces, recovery |
-| `deployment` | Bundles, services, durable state, decisions, logs, connectors |
+| `deploy` | Bundles, services, durable state, decisions, logs, connectors |
 
 Tab completion shows valid commands, workflows, participants, model
 configurations, and deployments. `current` gives one project summary. Every
@@ -117,7 +117,7 @@ source, selected participants, or one exact local projection.
 
 ### Understand a deployment
 
-`deployment show` separates the installed bundle, service process, workflow
+`deploy show` separates the installed bundle, service process, workflow
 run, SQLite store, model routing, connectors, and likely failure cause.
 
 ![ZipperGen Studio deployment state](assets/studio-deployment-show.svg)
@@ -329,16 +329,16 @@ bundle:
 
 ```text
 deploy review-demo --no-start
-deployment doctor review-demo
-deployment show review-demo
-deployment start review-demo
-deployment inspect review-demo
-deployment tasks review-demo
-deployment approve review-demo
-deployment trace review-demo
-deployment logs review-demo
-deployment restart review-demo
-deployment stop review-demo
+deploy doctor review-demo
+deploy show review-demo
+deploy start review-demo
+deploy inspect review-demo
+deploy tasks review-demo
+deploy approve review-demo
+deploy trace review-demo
+deploy logs review-demo
+deploy restart review-demo
+deploy stop review-demo
 ```
 
 The service policy restarts failed workflows. It does not restart a finite
@@ -349,11 +349,11 @@ Studio keeps named connector configurations and private credentials outside
 Git:
 
 ```text
-deployment connectors
-deployment connectors setup telegram
-deployment connectors check telegram-approvals
-deployment connectors bind human-approval telegram-approvals
-deployment notify
+deploy connectors
+deploy connectors setup telegram
+deploy connectors check telegram-approvals
+deploy connectors bind human-approval telegram-approvals
+deploy notify
 ```
 
 Telegram task delivery is available now. Gmail and Google connector work is

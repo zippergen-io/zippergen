@@ -19,17 +19,22 @@ def test_command_registry_has_unique_paths_and_derives_user_surfaces():
     assert ("studio", "doctor") in paths
     assert ("studio", "restart") in paths
     assert not any(path[0] == "store" for path in paths)
-    assert ("deployment", "show") in paths
-    assert ("deployment", "inspect") in paths
-    assert ("deployment", "trace") in paths
+    assert ("deploy", "show") in paths
+    assert ("deploy", "inspect") in paths
+    assert ("deploy", "trace") in paths
+    assert not any(path[0] == "deployment" for path in paths)
+    assert not any(
+        path[0] in {"status", "doctor", "logs", "start", "restart", "stop"}
+        for path in paths
+    )
     assert ("run", "inspect") in paths
     assert ("run", "tasks") in paths
     assert ("run", "approve") in paths
     assert ("run", "trace") in paths
     assert "studio doctor" in full_help()
     assert "store list" not in full_help()
-    assert "deployment show" in full_help()
-    assert "deployment inspect" in full_help()
+    assert "deploy show" in full_help()
+    assert "deploy inspect" in full_help()
     assert "run inspect" in full_help()
     assert "run tasks" in full_help()
     assert "\n  status " not in full_help()
@@ -47,10 +52,13 @@ def test_command_registry_owns_risk_and_natural_language_catalog():
     assert command_spec(["workflow", "implement"]).risk == "execution"
     assert command_spec(["workflow", "show", "protocol"]).risk == "read-only"
     assert command_spec(["run", "approve"]).risk == "execution"
-    assert command_spec(["deployment", "trace"]).risk == "read-only"
+    assert command_spec(["deploy", "trace"]).risk == "read-only"
     catalog = natural_command_catalog()
     assert "workflow discard" in catalog
     assert "studio doctor" in catalog
+    assert "\n- deploy [NAME]" in catalog
+    assert "\n- deployment" not in catalog
+    assert "\n- status [NAME]" not in catalog
     assert "\n- exit" not in catalog
 
 

@@ -224,7 +224,7 @@ def resolve_store(
             )
         raise WorkspaceError(
             f"Durable state not found: {selector}. Use 'runs' or "
-            "'deployment list' to inspect its owner."
+            "'deploy list' to inspect its owner."
         )
 
     current = workspace.load().get("current_store")
