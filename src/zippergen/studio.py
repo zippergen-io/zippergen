@@ -616,20 +616,32 @@ class Studio:
     def _info(self, message: str, *, indent: int = 0) -> None:
         self._status("info", message, indent=indent)
 
-    def _emit_output_boundary(self, command: str) -> None:
-        """Separate one command's interaction from its echoed input line."""
+    def _emit_studio_banner(
+        self,
+        command: str | None = None,
+        *,
+        leading_blank: bool = False,
+    ) -> None:
+        """Render the common Studio identity banner."""
 
-        self._emit()
+        if leading_blank:
+            self._emit()
         settings = self.workspace.global_settings()
+        suffix = f" · {command}" if command else ""
         if settings.get("output_style") == "compact":
-            label = f" ZipperGen Studio · {command} "
+            label = f" ZipperGen Studio{suffix} "
             self._emit(f"──{label}{'─' * max(2, 58 - len(label))}")
             return
-        content = f" ZipperGen Studio · {command} "
+        content = f" ZipperGen Studio{suffix} "
         width = max(58, len(content))
         self._emit(f"╭{'─' * width}╮")
         self._emit(f"│{content:<{width}}│")
         self._emit(f"╰{'─' * width}╯")
+
+    def _emit_output_boundary(self, command: str) -> None:
+        """Separate one command's interaction from its echoed input line."""
+
+        self._emit_studio_banner(command, leading_blank=True)
 
     @staticmethod
     def _output_boundary_label(parts: list[str]) -> str:
@@ -663,19 +675,35 @@ class Studio:
         return f"zippergen [{label}]> "
 
     def welcome(self) -> None:
-        self._emit("ZipperGen Studio")
+        self._emit_studio_banner()
         manifest = self.workspace.project_manifest()
-        self._emit(f"Project: {manifest['name']}")
-        self._emit(f"Root: {self.workspace.root}")
         current = self.workspace.current_workflow
-        self._emit(f"Workflow: {current}" if current else "No workflow selected.")
-        self._emit(
-            "Type a command or describe what you want in ordinary language; "
-            "press Tab to complete; 'help' shows the short path."
-        )
         assistant, assistant_kind = self._coding_assistant_readiness()
-        self._status(assistant_kind, f"Assistant: {assistant}")
-        self._emit(f"Next: {self._welcome_next_action()}")
+        rows: list[tuple[str, object, StatusKind | None]] = [
+            ("Project", manifest["name"], None),
+            ("Root", self.workspace.root, None),
+            (
+                "Workflow",
+                current if current else "none selected",
+                "success" if current else "warning",
+            ),
+            ("Assistant", assistant, assistant_kind),
+        ]
+        if not manifest["exists"]:
+            rows.append(
+                (
+                    "Start",
+                    "Type a command or describe what you want in ordinary "
+                    "language. You can press Tab to complete. Use 'help' for "
+                    "the short path.",
+                    "info",
+                )
+            )
+        self._emit_table(
+            "Session context",
+            rows,
+        )
+        self._emit_next(self._welcome_next_action())
 
     def _coding_assistant_readiness(self) -> tuple[str, StatusKind]:
         configured = str(self._global_settings().get("assistant") or "codex")

@@ -19,10 +19,20 @@ MARGIN_Y = 22
 def _capture_lines(path: Path) -> list[str]:
     text = ANSI.sub("", path.read_text(encoding="utf-8")).replace("\r", "")
     lines = text.splitlines()
-    try:
-        start = next(index for index, line in enumerate(lines) if line.startswith("╭"))
-    except StopIteration:
-        start = 0
+    command_starts = [
+        index
+        for index, line in enumerate(lines[:-1])
+        if line.startswith("╭") and "ZipperGen Studio ·" in lines[index + 1]
+    ]
+    if command_starts:
+        start = command_starts[-1]
+    else:
+        try:
+            start = next(
+                index for index, line in enumerate(lines) if line.startswith("╭")
+            )
+        except StopIteration:
+            start = 0
     lines = lines[start:]
     while lines and not lines[-1]:
         lines.pop()

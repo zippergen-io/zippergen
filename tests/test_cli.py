@@ -328,7 +328,7 @@ def test_studio_commands_remember_workflow_and_render_code(
     assert "ZipperGen Studio" in captured.out
     assert "│ ZipperGen Studio · current " in captured.out
     assert "│ ZipperGen Studio · language " in captured.out
-    assert f"Workflow: {workflow_path.name}:hello" in captured.out
+    assert f"Workflow   ✓ {workflow_path.name}:hello" in captured.out
     assert "def hello(topic: str @ User)" in captured.out
     assert "return reply @ User" in captured.out
     assert "add_suffix(topic)" not in captured.out
@@ -400,7 +400,7 @@ def test_no_command_opens_studio(tmp_path, monkeypatch, capsys):
     captured = capsys.readouterr()
     assert rc == 0
     assert "ZipperGen Studio" in captured.out
-    assert "No workflow selected." in captured.out
+    assert "Workflow   ⚠ none selected" in captured.out
 
 
 def test_dev_run_id_requires_resume():

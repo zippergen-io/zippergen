@@ -253,8 +253,15 @@ def test_welcome_and_studio_doctor_show_readiness_and_next_action(
 
     studio.welcome()
 
-    assert any("✓ Assistant: Codex CLI found" in line for line in output)
-    assert output[-1] == "Next: project init"
+    assert output[0].startswith("╭")
+    assert "Session context" in output
+    assert any(
+        "Assistant" in line and "✓ Codex CLI found" in line
+        for line in output
+    )
+    assert any("Type a command or describe" in line for line in output)
+    next_title = output.index("Next")
+    assert output[next_title + 2].strip() == "project init"
 
     output.clear()
     workspace.initialize_project(name="Tutorial")
@@ -263,6 +270,12 @@ def test_welcome_and_studio_doctor_show_readiness_and_next_action(
     assert "Studio readiness" in output
     assert any("Codex CLI found" in line for line in output)
     assert any("workflow create" in line for line in output)
+
+    output.clear()
+    studio.welcome()
+
+    assert any("Project" in line and "Tutorial" in line for line in output)
+    assert not any("Type a command or describe" in line for line in output)
 
 
 def test_studio_restart_replaces_the_original_process(tmp_path, monkeypatch):
@@ -356,7 +369,7 @@ def test_studio_run_uses_prompt_toolkit_session_when_interactive(tmp_path):
 
     assert studio.run() == 0
     assert prompts == [("zippergen [no workflow]> ", True)]
-    assert any("press Tab to complete" in line for line in output)
+    assert "press Tab to complete" in " ".join(line.strip() for line in output)
 
 
 def test_studio_command_history_is_owner_only(tmp_path):
