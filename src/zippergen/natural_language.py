@@ -519,23 +519,36 @@ def deterministic_plan(
         )
 
     if re.search(r"\b(show|display|list)\b.*\bhuman\s+tasks?\b", text):
+        deployment = bool(re.search(r"\b(deployment|service)\b", text))
         return NaturalCommandPlan(
-            "Show pending tasks in the selected store.",
-            ("store tasks",),
+            (
+                "Show pending decisions for the current deployment."
+                if deployment
+                else "Show pending decisions for the current development run."
+            ),
+            ("deployment tasks" if deployment else "run tasks",),
             "deterministic",
         )
 
-    if re.search(r"\b(show|display|inspect)\b.*\b(?:store\s+)?trace\b", text):
+    if re.search(
+        r"\b(show|display|inspect)\b.*\b(?:store\s+)?trace\b",
+        text,
+    ):
+        deployment = bool(re.search(r"\b(deployment|service)\b", text))
         return NaturalCommandPlan(
-            "Show recent events in the selected store.",
-            ("store trace",),
+            (
+                "Show recent events for the current deployment."
+                if deployment
+                else "Show recent events for the current development run."
+            ),
+            ("deployment trace" if deployment else "run trace",),
             "deterministic",
         )
 
     if re.search(r"\b(list|show)\b.*\bstores?\b", text):
         return NaturalCommandPlan(
-            "List durable execution stores.",
-            ("store list",),
+            "Show development runs and deployments that own durable state.",
+            ("runs", "deployment list"),
             "deterministic",
         )
 

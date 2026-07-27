@@ -193,8 +193,8 @@ def resolve_store(
     records = discover_stores(workspace)
     if not records:
         raise WorkspaceError(
-            "No stores are known. A store is normally created by run or deploy; "
-            "use 'store create NAME' only when you need an empty standalone store."
+            "No durable state is known. Start a development run or prepare a "
+            "deployment first."
         )
     if selector:
         if selector.isdigit():
@@ -223,7 +223,8 @@ def resolve_store(
                 f"Store name {selector!r} is ambiguous; use its list number or path."
             )
         raise WorkspaceError(
-            f"Store not found: {selector}. Use 'store list' to see available stores."
+            f"Durable state not found: {selector}. Use 'runs' or "
+            "'deployment list' to inspect its owner."
         )
 
     current = workspace.load().get("current_store")
@@ -259,7 +260,7 @@ def resolve_store(
     if len(records) == 1:
         return records[0]
     raise WorkspaceError(
-        "No store is selected. Use 'store list', then 'store use NUMBER|NAME'."
+        "No current run or deployment owns the selected durable state."
     )
 
 

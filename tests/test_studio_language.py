@@ -75,9 +75,9 @@ def test_natural_current_request_executes_without_a_model(tmp_path):
 @pytest.mark.parametrize(
     ("phrase", "command"),
     [
-        ("Show me all stores", "store list"),
-        ("Show pending human tasks", "store tasks"),
-        ("Show the store trace", "store trace"),
+        ("Show me all stores", ("runs", "deployment list")),
+        ("Show pending human tasks", ("run tasks",)),
+        ("Show the store trace", ("run trace",)),
         ("What is the deployment status?", "deployment show"),
         ("Show the deployment logs", "deployment logs"),
         ("Stop the deployment", "deployment stop"),
@@ -90,7 +90,8 @@ def test_natural_operational_requests_use_the_namespaced_surface(
     plan = deterministic_plan(phrase)
 
     assert plan is not None
-    assert plan.commands == (command,)
+    expected = command if isinstance(command, tuple) else (command,)
+    assert plan.commands == expected
 
 
 def test_unmatched_design_prose_is_offered_as_initial_specification(tmp_path):

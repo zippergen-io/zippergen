@@ -461,30 +461,26 @@ This is observation state, not the recovery snapshot and not an ever-growing
 trace. Studio does not display workflow variables, action inputs, provider
 keys, or other environment values in this view.
 
-\subsection*{Inspect the durable store without copying its path}
+\subsection*{Inspect durable state through the current run}
 
-Studio remembers the SQLite store behind the run. Enter:
+Studio remembers the current development run and its durable state. Enter:
 
 \begin{lstlisting}[style=shell]
-store list
-store show
-store tasks
-store approve
-store trace
+run inspect
+run tasks
+run approve
+run trace
 \end{lstlisting}
 
-\texttt{store list} distinguishes development-run, deployment, standalone,
-missing, waiting, and completed stores. \texttt{store use NUMBER} selects one
-when several exist; the short \texttt{show}, \texttt{tasks}, and
-\texttt{approve}, and \texttt{trace} forms then use that selection. With one
-pending task, bare \texttt{store approve} selects it automatically; with
-several, Studio opens a numbered selector. Before accepting any answer, Studio
-shows the stored instruction and complete rendered context---for this example,
-the draft and automated reviewer notes---together with the meaning of yes and
-no. \texttt{store tasks} shows the same evidence while listing pending
-decisions. Stores are normally created by \texttt{run} or \texttt{deploy};
-beginners do not need \texttt{store create}. Deletion is recoverable and
-refuses stores used by an active deployment.
+\texttt{run inspect} shows participant positions.
+\texttt{run tasks} lists pending decisions for this run.
+With one pending task, bare \texttt{run approve} selects it automatically;
+with several, Studio opens a numbered selector. Before accepting any answer,
+Studio shows the stored instruction and complete rendered context---for this
+example, the draft and automated reviewer notes---together with the meaning
+of yes and no. \texttt{run trace} shows recent durable events. Studio creates
+and selects the underlying SQLite file automatically. It is not a separate
+user-managed object.
 
 \section{Review and accept assistant-generated work}
 
@@ -584,6 +580,7 @@ deployment inspect
 deployment inspect HumanApprover
 deployment tasks
 deployment approve
+deployment trace
 deployment logs
 deployment stop
 \end{lstlisting}
@@ -598,7 +595,7 @@ deployment store, so no debugger connection is required.
 reviewer notes, instruction, and decision labels.
 \texttt{deployment approve} repeats that evidence immediately before asking
 for the decision; an unseen draft is never presented for blind approval.
-\texttt{store} remains available for development runs and advanced recovery.
+\texttt{deployment trace} shows recent durable events for this deployment.
 
 The tutorial workflow also declares an optional logical Telegram approval
 connector. It is not required for the first run. To deliver the same durable

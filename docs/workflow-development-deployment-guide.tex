@@ -476,13 +476,15 @@ Expected beginning:
 
 \begin{lstlisting}[style=shell]
 ZipperGen Studio
-Project: zippergen-tutorial
-Root: /path/to/zippergen-tutorial
-No workflow selected.
-Type a command or describe what you want in ordinary language;
-press Tab to complete; 'help' shows the short path.
-OK Assistant: Codex CLI found
-Next: project init
+Session context
+Project    zippergen-tutorial
+Root       /path/to/zippergen-tutorial
+Workflow   WARN none selected
+Assistant  OK Codex CLI found
+Start      Type a command or describe what you want.
+           Press Tab to complete. Use 'help' for the short path.
+Next
+  project init
 zippergen [no workflow]>
 \end{lstlisting}
 
@@ -493,17 +495,18 @@ exact reference is useful. The assistant line may instead be a warning when
 neither supported CLI is installed; specification, deterministic inspection,
 mock execution, and the rest of Studio remain available.
 
-The command vocabulary has four visible namespaces. Everything that changes or
+The command vocabulary has three main areas. Everything that changes or
 explains the application design lives below \texttt{workflow}: creation,
 refinement, coding-assistant implementation, selection, semantic views,
 validation, review, and history. Everything about model connections,
 configurations, checks, and assignments lives below \texttt{models}. Running
 starts with the short verbs \texttt{run}, \texttt{resume}, and
-\texttt{deploy}. Installed operation lives below \texttt{deployment}; durable
-SQLite state, tasks, and traces live below \texttt{store}. Thus a beginner can
-type \texttt{workflow}, \texttt{models}, \texttt{deployment},
-\texttt{store}, or \texttt{current} to recover the next step instead of
-remembering several unrelated nouns.
+\texttt{deploy}. Development decisions, traces, and inspection remain below
+\texttt{run}. Installed operation, including its durable state, decisions,
+and traces, lives below \texttt{deployment}. Thus a beginner can type
+\texttt{workflow}, \texttt{models}, \texttt{deployment}, or
+\texttt{current} to recover the next step instead of remembering several
+unrelated nouns.
 The small cross-cutting \texttt{settings} command covers global Studio
 preferences rather than application behavior.
 
@@ -1212,41 +1215,29 @@ loop-boundary snapshots used for recovery. Studio also withholds local
 environment values, action inputs, and secrets; use task presentation or
 explicit trace inspection when those details are genuinely required.
 
-\subsection{Treat the store as a first-class Studio object}
+\subsection{Work through the current development run}
 Enter:
 
 \begin{lstlisting}[style=shell]
-store list
-store show
-store tasks
-store approve
-store trace
+run inspect
+run tasks
+run approve
+run trace
 \end{lstlisting}
 
-\texttt{store list} discovers stores owned by development runs, named
-deployments, and the uncommon standalone store. It also shows an expected
-deployment store before its SQLite file exists. When several stores exist,
-enter \texttt{store use NUMBER} once; \texttt{store show},
-\texttt{store tasks}, \texttt{store approve}, \texttt{store trace}, and
-\texttt{store path} then use that selection. Bare \texttt{store approve}
-selects the sole pending task automatically or opens a numbered selector when
-there are several. \texttt{store tasks} renders each task's instruction and
-decision context, and \texttt{store approve} repeats the complete context
-immediately before collecting a response. For the reviewed-answer workflow,
-that context contains the proposed draft and automated reviewer notes, so the
-human never approves an opaque identifier. A run or deployment normally
-creates its store automatically; \texttt{store create NAME} is an advanced
-convenience, not a prerequisite.
-The ownership column deliberately says \texttt{run} instead of
-repeating the long run identifier already used as the store name. Exact owner
-IDs and paths remain available through \texttt{store show} and
-\texttt{store path}.
+\texttt{run inspect} shows the current participant positions and one focused
+local projection. Bare \texttt{run approve} selects the sole pending task
+automatically or opens a numbered selector when there are several.
+\texttt{run tasks} renders each task's instruction and decision context, and
+\texttt{run approve} repeats the complete context immediately before
+collecting a response. For the reviewed-answer workflow, that context contains
+the proposed draft and automated reviewer notes, so the human never approves
+an opaque identifier. \texttt{run trace} shows recent durable events.
 
-\texttt{store rename OLD NEW} updates stopped run/deployment references.
-\texttt{store delete NAME} moves the SQLite file and its WAL companions to
-recoverable private trash. \texttt{store delete all} is restricted to stores
-belonging to the current project. Rename and deletion refuse a store referenced
-by a running or restart-looping deployment; stop that deployment first.
+Studio creates a unique SQLite file for each development run. The file is an
+implementation detail, not a separately selected or renamed Studio object.
+The corresponding deployment commands operate on the one durable state owned
+by a named deployment.
 
 \subsection{Verify crash and resume behavior}
 
@@ -1772,8 +1763,8 @@ remembered deployment; a participant can be supplied as the final argument.
 \texttt{deployment tasks} shows the full
 stored instruction, draft, reviewer notes, and decision labels;
 \texttt{deployment approve} repeats them immediately before accepting yes or
-no. The generic \texttt{store} namespace remains available for development
-runs and advanced inspection, migration, and recovery.
+no. \texttt{deployment trace} shows recent durable events without requiring a
+SQLite path.
 \texttt{deployment logs} shows the service output and returns;
 \texttt{deployment restart} deliberately proves that the same
 pending task survives a process restart. Then \texttt{deployment stop} prevents this
@@ -1817,22 +1808,22 @@ of course be different on your machine:
 
 \begin{lstlisting}[style=shell]
 ZipperGen Studio
-Project: zippergen-tutorial
-Root: /path/to/zippergen-tutorial
-Workflow: zippergen/examples/tutorial_review.py:tutorial_review
-Type a command or describe what you want in ordinary language;
-press Tab to complete; 'help' shows the short path.
-OK Assistant: Codex CLI found
-Next: workflow show
+Session context
+Project    zippergen-tutorial
+Root       /path/to/zippergen-tutorial
+Workflow   OK zippergen/examples/tutorial_review.py:tutorial_review
+Assistant  OK Codex CLI found
+Next
+  workflow show
 zippergen [tutorial_review]>
 \end{lstlisting}
 
 The text in square brackets is the current workflow object name, not a
 deployment name. Enter \texttt{help} at any time. The public commands follow
-four namespaces: \texttt{workflow} for specification, implementation, inspection,
-and validation; \texttt{models} for connections, configurations, checks, and
-assignments; \texttt{deployment} for installed operation; and \texttt{store}
-for durable execution state. The
+three main areas: \texttt{workflow} for specification, implementation,
+inspection, and validation; \texttt{models} for connections, configurations,
+checks, and assignments; and \texttt{deployment} for installed operation.
+Development execution and its durable state remain below \texttt{run}. The
 important commands are:
 
 \begin{lstlisting}[style=shell]
@@ -1880,14 +1871,11 @@ models assign LIFELINE NAME # route a participant to a configuration
 models config rename OLD NEW # rename it and migrate all assignments
 run            # fresh guided, durable development run
 run inspect [PARTICIPANT] # current states and focused local projection
+run tasks      # pending decisions for the current development run
+run approve    # review and answer a pending run decision
+run trace      # recent events for the current development run
 resume         # continue the current incomplete managed run
 runs           # list this project's managed development runs
-store          # list durable run/deployment stores
-store show     # selected store state, owner, tasks, and exact path
-store use NAME # select one store for short store commands
-store tasks    # pending human tasks in the selected store
-store approve  # select and answer a pending task
-store trace    # recent events in the selected store
 project reset  # choose fresh design, state-only reset, or cancel
 deploy         # explicitly enter guided named deployment
 deployment     # list named deployments
@@ -1895,6 +1883,7 @@ deployment show [NAME] # bundle, service, run, and stable store
 deployment inspect [NAME] [PARTICIPANT] # durable local program positions
 deployment tasks [NAME] # pending decisions with complete context
 deployment approve [NAME] # review and answer a pending decision
+deployment trace [NAME] # recent durable deployment events
 deployment connectors # logical requirements, private configs, and bindings
 deployment connectors setup telegram [NAME] # configure and check a bot/chat
 deployment connectors bind REQUIREMENT CONFIGURATION
@@ -2325,14 +2314,16 @@ Develop & \texttt{run}; guided inputs and unique managed store &
 Human decision & Inline in the same terminal & \texttt{tasks} and
 \texttt{approve} from another terminal or notification adapter. \\
 Continue & \texttt{resume} & Re-run against the same explicit SQLite store. \\
-Inspect durable state & \texttt{store list}, \texttt{store show},
-\texttt{store tasks}, \texttt{store approve}, \texttt{store trace} & Pass the exact
-\texttt{--store} path to status/task/trace commands. \\
+Inspect durable state & \texttt{run inspect}, \texttt{run tasks},
+\texttt{run approve}, \texttt{run trace}, or the corresponding
+\texttt{deployment} commands & Pass the exact \texttt{--store} path to
+status/task/trace commands. \\
 Specification change & \texttt{workflow create} or
 \texttt{workflow refine} & Manually request a snapshot, assistant edit,
 validation, views, projections, and semantic diff. \\
 Deploy/operate & \texttt{deploy}, then \texttt{deployment show},
 \texttt{deployment tasks}, \texttt{deployment approve},
+\texttt{deployment trace},
 \texttt{deployment logs}, \texttt{deployment restart},
 \texttt{deployment stop} & Named deployment commands,
 explicit options, profiles, and service-manager operations. \\
@@ -4027,11 +4018,10 @@ models config check mock
 run
 resume
 runs
-store list
-store show
-store tasks
-store approve
-store trace
+run inspect
+run tasks
+run approve
+run trace
 workflow refine       # creates or reopens one pending change
 workflow show pending
 workflow implement codex # or: workflow implement claude

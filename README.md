@@ -98,9 +98,8 @@ Commands are grouped by purpose:
 |---|---|
 | `workflow` | Specification, implementation, views, validation, review |
 | `models` | Providers, named configurations, checks, assignments |
-| `run` and `resume` | Durable development execution and recovery |
-| `deployment` | Bundles, services, runs, stores, logs, connectors |
-| `store` | Durable state, tasks, approvals, traces |
+| `run`, `resume`, and `runs` | Durable development execution, decisions, traces, recovery |
+| `deployment` | Bundles, services, durable state, decisions, logs, connectors |
 
 Tab completion shows valid commands, workflows, participants, model
 configurations, and deployments. `current` gives one project summary. Every
@@ -315,15 +314,15 @@ Inside Studio:
 run
 run inspect
 run inspect Reviewer
+run tasks
+run approve
+run trace
 resume
 runs
-store
-store tasks
-store approve
 ```
 
-Every new development run gets its own managed store. Users do not need to
-invent filenames or copy long SQLite paths.
+Every new development run gets its own managed durable state. Users work with
+the run and do not need to manage SQLite files.
 
 A named deployment owns one stable logical store and an immutable source
 bundle:
@@ -336,6 +335,7 @@ deployment start review-demo
 deployment inspect review-demo
 deployment tasks review-demo
 deployment approve review-demo
+deployment trace review-demo
 deployment logs review-demo
 deployment restart review-demo
 deployment stop review-demo

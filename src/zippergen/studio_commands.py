@@ -274,75 +274,27 @@ COMMANDS: tuple[CommandSpec, ...] = (
         "read-only",
     ),
     CommandSpec(
-        ("resume",), "resume", "resume the current incomplete run", "execution"
-    ),
-    CommandSpec(("runs",), "runs", "list managed development runs", "read-only"),
-    CommandSpec(
-        ("store",),
-        "store",
-        "list durable execution stores",
+        ("run", "tasks"),
+        "run tasks",
+        "show pending decisions for the current development run",
         "read-only",
     ),
     CommandSpec(
-        ("store", "list"),
-        "store list",
-        "list run, deployment, and standalone stores",
-        "read-only",
-    ),
-    CommandSpec(
-        ("store", "show"),
-        "store show [NUMBER|NAME]",
-        "inspect durable state and ownership",
-        "read-only",
-    ),
-    CommandSpec(
-        ("store", "use"),
-        "store use NUMBER|NAME",
-        "select the store used by short store commands",
-        "configuration",
-    ),
-    CommandSpec(
-        ("store", "path"),
-        "store path [NUMBER|NAME]",
-        "print the exact SQLite path",
-        "read-only",
-    ),
-    CommandSpec(
-        ("store", "tasks"),
-        "store tasks [NUMBER|NAME]",
-        "show pending human tasks",
-        "read-only",
-    ),
-    CommandSpec(
-        ("store", "approve"),
-        "store approve [TASK_ID] [yes|no|VALUE]",
-        "complete a pending human task in the selected store",
+        ("run", "approve"),
+        "run approve [TASK_ID] [yes|no|VALUE]",
+        "review and answer a pending development-run decision",
         "execution",
     ),
     CommandSpec(
-        ("store", "trace"),
-        "store trace [NUMBER|NAME]",
-        "show recent durable events",
+        ("run", "trace"),
+        "run trace",
+        "show recent events for the current development run",
         "read-only",
     ),
     CommandSpec(
-        ("store", "create"),
-        "store create NAME",
-        "create an empty standalone store",
-        "configuration",
+        ("resume",), "resume", "resume the current incomplete run", "execution"
     ),
-    CommandSpec(
-        ("store", "rename"),
-        "store rename NUMBER|NAME NEW_NAME",
-        "rename a stopped store and update its references",
-        "configuration",
-    ),
-    CommandSpec(
-        ("store", "delete"),
-        "store delete NUMBER|NAME|all [--yes]",
-        "archive store data recoverably",
-        "destructive",
-    ),
+    CommandSpec(("runs",), "runs", "list managed development runs", "read-only"),
     CommandSpec(
         ("deploy",),
         "deploy [NAME] [--no-start] [--accepted|--unreviewed --reason TEXT]",
@@ -397,6 +349,12 @@ COMMANDS: tuple[CommandSpec, ...] = (
         "deployment approve [NAME]",
         "review and answer a pending deployment decision",
         "execution",
+    ),
+    CommandSpec(
+        ("deployment", "trace"),
+        "deployment trace [NAME]",
+        "show recent events for a deployment",
+        "read-only",
     ),
     CommandSpec(
         ("deployment", "connectors"),
@@ -677,8 +635,8 @@ Start actions:
 Useful now:
   current          show context and the next action
   run inspect      show where each participant currently is
+  run tasks        show pending decisions for the current run
   studio doctor    check editor and assistant readiness
-  store             advanced development-state and recovery tools
   help all         show every exact command
   exit             leave Studio
 

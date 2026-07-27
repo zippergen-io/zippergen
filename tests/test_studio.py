@@ -155,11 +155,13 @@ def test_studio_completion_is_context_and_project_aware(tmp_path):
     assert _completions(studio, "project ren") == ["rename"]
     assert _completions(studio, "stu") == ["studio"]
     assert _completions(studio, "studio res") == ["restart"]
-    assert _completions(studio, "sto") == ["store"]
-    assert "show" in _completions(studio, "store ")
+    assert _completions(studio, "sto") == []
     assert _completions(studio, "depl") == ["deploy", "deployment"]
     assert "show" in _completions(studio, "deployment ")
-    assert "inspect" in _completions(studio, "run ")
+    assert {"inspect", "tasks", "approve", "trace"}.issubset(
+        _completions(studio, "run ")
+    )
+    assert "trace" in _completions(studio, "deployment ")
     assert _completions(studio, "run inspect W") == ["Writer"]
     assert _completions(studio, "workflow create --file req") == [
         "requirements.md"
@@ -3070,38 +3072,25 @@ def test_studio_records_failed_local_configuration_check(tmp_path, monkeypatch):
     )
 
 
-def test_studio_manages_a_store_without_manual_paths(tmp_path):
-    studio, workspace, output = _studio(tmp_path)
+def test_studio_retires_the_public_store_namespace(tmp_path):
+    studio, _workspace, _output = _studio(tmp_path)
 
-    studio.execute("store create scratch")
-    original = Path(str(workspace.load()["current_store"]))
-    assert original.exists()
-    assert original.name == "scratch.sqlite"
-
-    output.clear()
-    studio.execute("store list")
-    assert any("scratch" in line and "empty" in line for line in output)
-
-    studio.execute("store rename scratch reviewed-state")
-    renamed = Path(str(workspace.load()["current_store"]))
-    assert renamed.name == "reviewed-state.sqlite"
-    assert renamed.exists()
-    assert not original.exists()
-
-    studio.execute("store delete reviewed-state --yes")
-    assert not renamed.exists()
-    archived = list((workspace.home / "trash" / "stores").rglob("*.sqlite"))
-    assert len(archived) == 1
-    assert archived[0].name == "reviewed-state.sqlite"
-    assert any("data remains recoverable" in line for line in output)
+    with pytest.raises(SystemExit, match="not a Studio command"):
+        studio.execute("store list")
 
 
-def test_studio_guides_approval_in_the_selected_store(tmp_path):
+def test_studio_guides_approval_in_the_current_run(tmp_path):
     studio, workspace, output = _studio(tmp_path)
     prompts: list[str] = []
     studio.input = lambda prompt: prompts.append(prompt) or "y"
-    studio.execute("store create approvals")
-    store_path = Path(str(workspace.load()["current_store"]))
+    run = workspace.new_run(
+        workflow_spec="workflow.py:sample",
+        workflow_name="sample",
+        fingerprint="fingerprint",
+        inputs={},
+        llm="mock",
+    )
+    store_path = Path(str(run["store"]))
     from zippergen.store import ensure_human_task, load_human_task, open_store
 
     connection = open_store(str(store_path))
@@ -3131,8 +3120,8 @@ def test_studio_guides_approval_in_the_selected_store(tmp_path):
     )
     connection.close()
 
-    studio.execute("store tasks")
-    studio.execute("store approve")
+    studio.execute("run tasks")
+    studio.execute("run approve")
 
     connection = open_store(str(store_path))
     task = load_human_task(connection, "review-1")
@@ -3157,10 +3146,16 @@ def test_studio_guides_approval_in_the_selected_store(tmp_path):
     assert any("Completed human task review-1" in line for line in output)
 
 
-def test_studio_store_trace_renders_the_persisted_event(tmp_path):
+def test_studio_run_trace_renders_the_persisted_event(tmp_path):
     studio, workspace, output = _studio(tmp_path)
-    studio.execute("store create traced")
-    store_path = Path(str(workspace.load()["current_store"]))
+    run = workspace.new_run(
+        workflow_spec="workflow.py:sample",
+        workflow_name="sample",
+        fingerprint="fingerprint",
+        inputs={},
+        llm="mock",
+    )
+    store_path = Path(str(run["store"]))
     from zippergen.store import open_store, record_trace_event
 
     connection = open_store(str(store_path))
@@ -3178,14 +3173,14 @@ def test_studio_store_trace_renders_the_persisted_event(tmp_path):
     connection.close()
 
     output.clear()
-    studio.execute("store trace")
+    studio.execute("run trace")
 
     assert any(
         "Writer send Writer->Reviewer draft" in line for line in output
     )
 
 
-def test_studio_store_list_includes_an_expected_missing_deployment_store(
+def test_studio_deployment_list_includes_an_expected_missing_state(
     tmp_path,
 ):
     studio, workspace, output = _studio(tmp_path)
@@ -3205,17 +3200,16 @@ def test_studio_store_list_includes_an_expected_missing_deployment_store(
         )
     )
 
-    studio.execute("store list")
+    studio.execute("deployment list")
 
     assert any(
         "reviewed-answer" in line
-        and "deployment" in line
         and "missing" in line
         for line in output
     )
 
 
-def test_studio_store_and_deployment_lists_hide_another_projects_state(
+def test_studio_deployment_list_hides_another_projects_state(
     tmp_path,
 ):
     studio, workspace, output = _studio(tmp_path)
@@ -3235,7 +3229,6 @@ def test_studio_store_and_deployment_lists_hide_another_projects_state(
         )
     )
 
-    studio.execute("store list")
     studio.execute("deployment list")
 
     assert all("other.sqlite" not in line for line in output)
@@ -3328,6 +3321,7 @@ def test_studio_operates_human_tasks_through_the_deployment(
         ensure_human_task,
         load_human_task,
         open_store,
+        record_trace_event,
         write_execution_state,
     )
     from zippergen.syntax import ActStmt, _ordered_workflow_lifelines
@@ -3381,6 +3375,15 @@ def test_studio_operates_human_tasks_through_the_deployment(
         [reviewer_action],
         {"action": "process", "kind": "model"},
     )
+    record_trace_event(
+        connection,
+        "Reviewer",
+        {
+            "type": "act",
+            "role": "Reviewer",
+            "action": "process",
+        },
+    )
     connection.close()
     monkeypatch.setattr(
         "zippergen.serve._deployment_service_status",
@@ -3409,9 +3412,10 @@ def test_studio_operates_human_tasks_through_the_deployment(
     output.clear()
     studio.execute("current")
     assert any(
-        "Deployment store" in line and "reviewed-answer" in line
+        "Deployment" in line and "reviewed-answer" in line
         for line in output
     )
+    assert not any("store" in line.casefold() for line in output)
 
     output.clear()
     studio.execute("deployment tasks reviewed-answer")
@@ -3421,6 +3425,10 @@ def test_studio_operates_human_tasks_through_the_deployment(
     assert any("deployment approve reviewed-answer" in line for line in output)
     assert workspace.load()["last_deployment"] == "reviewed-answer"
     assert workspace.load()["current_store"] == str(store)
+
+    output.clear()
+    studio.execute("deployment trace reviewed-answer")
+    assert any("Reviewer act action process" in line for line in output)
 
     output.clear()
     studio.execute("deployment inspect reviewed-answer Reviewer")

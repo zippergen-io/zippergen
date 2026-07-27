@@ -144,7 +144,6 @@ _SUBCOMMAND_COMPLETIONS = {
         "edit",
         "models",
         "run",
-        "store",
         "deployment",
     )
 }
@@ -180,8 +179,13 @@ def _is_explicit_studio_syntax(parts: list[str]) -> bool:
     if command == "run":
         if not args:
             return True
-        if args[0].casefold() == "inspect":
+        action = args[0].casefold()
+        if action == "inspect":
             return len(args) <= 2
+        if action in {"tasks", "trace"}:
+            return len(args) == 1
+        if action == "approve":
+            return 1 <= len(args) <= 3
         if len(args) == 1:
             return not args[0].startswith("-")
         if len(args) == 2:
@@ -324,23 +328,6 @@ def _is_allowed_natural_plan_command(parts: list[str]) -> bool:
         if lowered[0] in {"default", "inherit"}:
             return len(args) == 2
         return lowered[0] == "assign" and len(args) == 3
-    if command == "store":
-        if not args:
-            return True
-        action = lowered[0]
-        if action in {"list"}:
-            return len(args) == 1
-        if action in {"show", "use", "path", "tasks", "trace", "create"}:
-            return len(args) <= 2
-        if action == "approve":
-            return 1 <= len(args) <= 3
-        if action == "rename":
-            return len(args) == 3
-        if action == "delete":
-            return 2 <= len(args) <= 3 and (
-                len(args) == 2 or lowered[2] == "--yes"
-            )
-        return False
     if command == "deployment":
         if not args:
             return True
@@ -357,6 +344,7 @@ def _is_allowed_natural_plan_command(parts: list[str]) -> bool:
                 "logs",
                 "tasks",
                 "approve",
+                "trace",
                 "notify",
                 "start",
                 "restart",
@@ -381,6 +369,10 @@ def _is_allowed_natural_plan_command(parts: list[str]) -> bool:
             return True
         if lowered[0] == "inspect":
             return len(args) <= 2
+        if lowered[0] in {"tasks", "trace"}:
+            return len(args) == 1
+        if lowered[0] == "approve":
+            return 1 <= len(args) <= 3
         if len(args) == 1:
             return not args[0].startswith("-")
         if len(args) == 2:
@@ -651,9 +643,9 @@ class Studio:
         if (
             command == "run"
             and len(parts) > 1
-            and parts[1].casefold() == "inspect"
+            and parts[1].casefold() in {"inspect", "tasks", "approve", "trace"}
         ):
-            return "run inspect"
+            return f"run {parts[1].casefold()}"
         if len(parts) > 1 and command in {
             "workflow",
             "models",
@@ -663,7 +655,6 @@ class Studio:
             "editor",
             "edit",
             "studio",
-            "store",
             "deployment",
         }:
             return f"{command} {parts[1].casefold()}"
@@ -1186,32 +1177,6 @@ class Studio:
                     for name in self._completion_lifelines(llm_only=True)
                 ]
             return []
-        if command == "store":
-            if not args:
-                return list(_SUBCOMMAND_COMPLETIONS["store"])
-            action = args[0].lower()
-            if action == "delete" and len(args) == 1:
-                store_values = self._store_completion_candidates()
-                return [
-                    ("all", "all stores belonging to this project"),
-                    *store_values,
-                ]
-            if action in {"show", "use", "path", "tasks", "trace", "delete"}:
-                if len(args) == 1:
-                    return self._store_completion_candidates()
-                if action == "delete" and len(args) == 2:
-                    return [("--yes", "confirm without another prompt")]
-            if action == "rename" and len(args) == 1:
-                return self._store_completion_candidates()
-            if action == "approve":
-                if len(args) == 1:
-                    return self._store_task_completion_candidates()
-                if len(args) == 2:
-                    return [
-                        ("yes", "approve a boolean human decision"),
-                        ("no", "reject a boolean human decision"),
-                    ]
-            return []
         if command == "deployment":
             if not args:
                 return list(_SUBCOMMAND_COMPLETIONS["deployment"])
@@ -1262,6 +1227,7 @@ class Studio:
                     "logs",
                     "tasks",
                     "approve",
+                    "trace",
                     "notify",
                     "start",
                     "restart",
@@ -1276,12 +1242,24 @@ class Studio:
                     for name in self._completion_lifelines()
                 ]
             return []
-        if command in {"run"}:
-            if args[0].lower() == "inspect":
+        if command == "run":
+            action = args[0].lower()
+            if action == "inspect":
                 return [
                     (name, "workflow participant")
                     for name in self._completion_lifelines()
                 ]
+            if action == "approve":
+                if len(args) == 1:
+                    return self._run_task_completion_candidates()
+                if len(args) == 2:
+                    return [
+                        ("yes", "approve a boolean human decision"),
+                        ("no", "reject a boolean human decision"),
+                    ]
+                return []
+            if action in {"tasks", "trace"}:
+                return []
             if args and args[-1] == "--assistant":
                 return [
                     ("codex", "run @assistant actions with Codex CLI"),
@@ -1357,14 +1335,6 @@ class Studio:
             return values
         return []
 
-    def _store_completion_candidates(self) -> list[tuple[str, str]]:
-        from zippergen.studio_stores import discover_stores
-
-        return [
-            (record.name, ", ".join(record.owners))
-            for record in discover_stores(self.workspace)
-        ]
-
     def _deployment_completion_candidates(self) -> list[tuple[str, str]]:
         from zippergen.serve import _deployments_dir
 
@@ -1382,9 +1352,9 @@ class Studio:
                     values.append((str(profile["name"]), "deployment"))
         return values
 
-    def _store_task_completion_candidates(self) -> list[tuple[str, str]]:
+    def _run_task_completion_candidates(self) -> list[tuple[str, str]]:
         try:
-            record = self._store_record()
+            record = self._run_store_record()
         except SystemExit:
             return []
         if not record.exists:
@@ -2443,7 +2413,7 @@ class Studio:
         args = parts[1:]
         if command == "run" and len(args) == 1:
             entered = args[0]
-            if entered.casefold() == "inspect":
+            if entered.casefold() in {"inspect", "tasks", "approve", "trace"}:
                 return True
             configurations = {
                 name.casefold()
@@ -2498,6 +2468,15 @@ class Studio:
                 "`providers` is not a Studio command. Provider connections are "
                 "managed with `models provider configure NAME`; use `models` "
                 "to inspect them."
+            )
+        if parts[0].casefold() == "store":
+            if show_boundary:
+                self._emit_output_boundary("run")
+            raise SystemExit(
+                "`store` is not a Studio command. Durable state belongs to "
+                "a development run or deployment. Use run inspect, run tasks, "
+                "run approve, run trace, or the corresponding deployment "
+                "command."
             )
         if (
             len(parts) >= 2
@@ -2572,9 +2551,14 @@ class Studio:
         elif command == "models":
             self.configure_models(args)
         elif command == "run":
-            if args and args[0].casefold() == "inspect":
-                self.inspect_run(args[1:])
-                return True
+            if args:
+                run_action = args[0].casefold()
+                if run_action == "inspect":
+                    self.inspect_run(args[1:])
+                    return True
+                if run_action in {"tasks", "approve", "trace"}:
+                    self.manage_run_state(run_action, args[1:])
+                    return True
             assistant_backend = str(self._global_settings()["assistant"])
             run_args = list(args)
             if "--assistant" in run_args:
@@ -2649,8 +2633,6 @@ class Studio:
             )
         elif command == "runs":
             self.show_runs()
-        elif command == "store":
-            self.manage_stores(args)
         elif command == "deploy":
             self.deploy_workflow(args)
         elif command == "deployment":
@@ -3083,8 +3065,6 @@ class Studio:
             tuple(lowered[:3]) == ("project", "reset", "fresh")
             and "--yes" not in lowered
         ):
-            parts.append("--yes")
-        if tuple(lowered[:2]) == ("store", "delete") and "--yes" not in lowered:
             parts.append("--yes")
         return shlex.join(parts)
 
@@ -5985,7 +5965,6 @@ class Studio:
             runtime_rows.extend(
                 [
                     ("Run", f"{run['run_id']} ({run['status']})", run_kind),
-                    ("Run store", run["store"], None),
                     (
                         "Assistant",
                         run.get("assistant") or "none selected",
@@ -5995,38 +5974,6 @@ class Studio:
                 ]
             )
         deployment = state.get("last_deployment")
-        deployment_store: str | None = None
-        if deployment:
-            try:
-                from zippergen.serve import _load_deployment_profile
-
-                deployment_profile = _load_deployment_profile(str(deployment))
-                deployment_store = str(deployment_profile.get("store") or "")
-            except (SystemExit, OSError, ValueError):
-                deployment_store = None
-        current_store = state.get("current_store")
-        if current_store:
-            store_label = (
-                "Deployment store"
-                if deployment_store
-                and Path(deployment_store).expanduser()
-                == Path(str(current_store)).expanduser()
-                else "Selected store"
-            )
-            try:
-                record = self._store_record(str(current_store))
-            except SystemExit:
-                runtime_rows.append(
-                    (store_label, f"missing — {current_store}", "warning")
-                )
-            else:
-                runtime_rows.append(
-                    (
-                        store_label,
-                        f"{record.name} ({record.state}) — {record.path}",
-                        "warning" if record.state == "missing" else None,
-                    )
-                )
         if deployment:
             from zippergen.serve import _deployment_service_status
 
@@ -8315,15 +8262,6 @@ class Studio:
         )
 
     @staticmethod
-    def _store_size(value: int) -> str:
-        size = float(value)
-        for unit in ("B", "KB", "MB", "GB"):
-            if size < 1024 or unit == "GB":
-                return f"{size:.0f} {unit}" if unit == "B" else f"{size:.1f} {unit}"
-            size /= 1024
-        return f"{value} B"
-
-    @staticmethod
     def _store_updated(value: float | None) -> str:
         if value is None:
             return "—"
@@ -8337,117 +8275,18 @@ class Studio:
         except WorkspaceError as exc:
             raise SystemExit(str(exc)) from exc
 
-    def show_stores(self) -> None:
-        from zippergen.studio_stores import discover_stores
-
-        records = discover_stores(self.workspace)
-        if not records:
-            self._emit_table(
-                "Durable stores",
-                [
-                    ("Status", "none", "warning"),
-                    (
-                        "Meaning",
-                        "stores are normally created automatically by run or deploy",
-                        "info",
-                    ),
-                    ("Next", "run · deploy · store create NAME", None),
-                ],
+    def _run_store_record(self):
+        run = self.workspace.current_run()
+        if run is None:
+            raise SystemExit(
+                "There is no current development run. Start one with 'run'."
             )
-            return
-        selected = str(self.workspace.load().get("current_store") or "")
-        rows = []
-        for index, record in enumerate(records, start=1):
-            state_mark = {
-                "done": "✓ done",
-                "waiting": "⚠ waiting",
-                "active": "• active",
-                "empty": "• empty",
-                "missing": "⚠ missing",
-                "invalid": "✗ invalid",
-            }.get(record.state, record.state)
-            if record.deployment_names:
-                owner = (
-                    "deployment"
-                    if len(record.deployment_names) == 1
-                    else f"deployment ×{len(record.deployment_names)}"
-                )
-            elif record.run_ids:
-                owner = (
-                    "run"
-                    if len(record.run_ids) == 1
-                    else f"run ×{len(record.run_ids)}"
-                )
-            else:
-                owner = "standalone"
-            rows.append(
-                (
-                    index,
-                    "●" if str(record.path) == selected else "",
-                    record.name,
-                    owner,
-                    state_mark,
-                    record.pending_tasks or "—",
-                    self._store_size(record.size) if record.exists else "—",
-                    self._store_updated(record.updated_at),
-                )
-            )
-        self._emit_columns(
-            "Durable stores",
-            ("#", "Current", "Store", "Used by", "State", "Tasks", "Size", "Updated"),
-            rows,
-            right_aligned=frozenset({0, 5}),
-        )
-        self._emit_next(
-            "store show NUMBER|NAME · store use NUMBER|NAME · store delete NUMBER|NAME"
-        )
-
-    def show_store(self, selector: str | None = None) -> None:
-        record = self._store_record(selector)
-        selected = str(self.workspace.load().get("current_store") or "")
-        kind: StatusKind = (
-            "success"
-            if record.state == "done"
-            else "warning"
-            if record.state in {"waiting", "missing", "empty"}
-            else "error"
-            if record.state == "invalid"
-            else "info"
-        )
-        self._emit_table(
-            "Durable store",
-            [
-                ("Name", record.name, None),
-                (
-                    "Selected",
-                    "yes" if str(record.path) == selected else "no",
-                    "success" if str(record.path) == selected else None,
-                ),
-                ("State", f"{record.state} — {record.summary}", kind),
-                ("Used by", ", ".join(record.owners), None),
-                (
-                    "Workflow",
-                    ", ".join(record.workflows) if record.workflows else "unknown",
-                    None,
-                ),
-                ("Pending tasks", record.pending_tasks, "warning" if record.pending_tasks else None),
-                ("Size", self._store_size(record.size) if record.exists else "—", None),
-                ("Updated", self._store_updated(record.updated_at), None),
-                ("Path", record.path, None),
-                (
-                    "Recovery",
-                    "deletion moves data below ZIPPERGEN_HOME/trash/stores",
-                    "info",
-                ),
-                (
-                    "Next",
-                    "store tasks · store trace · store path"
-                    if str(record.path) == selected
-                    else f"store use {record.name}",
-                    None,
-                ),
-            ],
-        )
+        store = str(run.get("store") or "")
+        if not store:
+            raise SystemExit("The current development run has no durable state.")
+        record = self._store_record(store)
+        self.workspace.update(current_store=str(record.path))
+        return record
 
     def _emit_human_task_detail(self, task: dict[str, object]) -> None:
         """Render the evidence and expected response before a human decision."""
@@ -8518,7 +8357,12 @@ class Studio:
         deployment_name: str | None = None,
     ) -> None:
         if not record.exists:
-            raise SystemExit(f"Store does not exist yet: {record.path}")
+            owner = (
+                f"deployment {deployment_name}"
+                if deployment_name
+                else "the current development run"
+            )
+            raise SystemExit(f"Durable state does not exist yet for {owner}.")
         from zippergen.serve import _load_human_tasks
 
         tasks = cast(
@@ -8552,7 +8396,7 @@ class Studio:
         self._emit_next(
             f"deployment approve {deployment_name}"
             if deployment_name
-            else "store approve TASK_ID"
+            else "run approve TASK_ID"
         )
 
     def _approve_pending_task(
@@ -8564,10 +8408,19 @@ class Studio:
     ) -> None:
         if len(args) > 2:
             raise SystemExit(
-                "Use store approve [TASK_ID] [yes|no|VALUE]."
+                (
+                    "Use deployment approve [NAME]."
+                    if deployment_name
+                    else "Use run approve [TASK_ID] [yes|no|VALUE]."
+                )
             )
         if not record.exists:
-            raise SystemExit(f"Store does not exist yet: {record.path}")
+            owner = (
+                f"deployment {deployment_name}"
+                if deployment_name
+                else "the current development run"
+            )
+            raise SystemExit(f"Durable state does not exist yet for {owner}.")
         from zippergen.store import load_human_task, open_store
         from zippergen.serve import _store_status
 
@@ -8605,9 +8458,14 @@ class Studio:
         finally:
             connection.close()
         if task is None or task.get("status") != "pending":
+            tasks_command = (
+                f"deployment tasks {deployment_name}"
+                if deployment_name
+                else "run tasks"
+            )
             raise SystemExit(
                 f"Pending human task not found: {task_id}. "
-                "Use 'deployment tasks' or 'store tasks'."
+                f"Use '{tasks_command}'."
             )
         self._emit_human_task_detail(cast(dict[str, object], task))
         spec = task.get("spec") or {}
@@ -8658,171 +8516,52 @@ class Studio:
             deployment_name=deployment_name,
         )
 
-    def manage_stores(self, args: list[str]) -> None:
-        from zippergen.studio_stores import (
-            active_store_deployments,
-            archive_store,
-            create_store,
-            discover_stores,
-            rename_store,
+    def _show_recent_trace(self, record, *, owner: str) -> None:
+        if not record.exists:
+            raise SystemExit(f"Durable state does not exist yet for {owner}.")
+        from zippergen.serve import _load_trace_events, _trace_summary
+
+        events = _load_trace_events(str(record.path), after_rowid=0, limit=30)
+        if not events:
+            self._emit_table(
+                "Recent durable events",
+                [("Execution", owner, None), ("Events", "none", "warning")],
+            )
+            return
+        self._emit_columns(
+            "Recent durable events",
+            ("#", "Event"),
+            [
+                (
+                    event.get("rowid"),
+                    _trace_summary(
+                        str(event.get("role") or "—"),
+                        event.get("event"),
+                    ),
+                )
+                for event in events
+            ],
+            right_aligned=frozenset({0}),
         )
 
-        if not args or args == ["list"]:
-            self.show_stores()
-            return
-        action, *rest = args
-        action = action.casefold()
-        if action == "show":
-            if len(rest) > 1:
-                raise SystemExit("Use store show [NUMBER|NAME].")
-            self.show_store(rest[0] if rest else None)
-            return
-        if action == "use":
-            if len(rest) != 1:
-                raise SystemExit("Use store use NUMBER|NAME.")
-            record = self._store_record(rest[0])
-            self.workspace.update(current_store=str(record.path))
-            self._success(f"Selected store {record.name}.")
-            self.show_store(str(record.path))
-            return
-        if action == "path":
-            if len(rest) > 1:
-                raise SystemExit("Use store path [NUMBER|NAME].")
-            self._emit(str(self._store_record(rest[0] if rest else None).path))
-            return
-        if action == "create":
-            if len(rest) != 1:
-                raise SystemExit("Use store create NAME.")
-            try:
-                record = create_store(self.workspace, rest[0])
-            except WorkspaceError as exc:
-                raise SystemExit(str(exc)) from exc
-            self._success(f"Created and selected store {record.name}.")
-            self.show_store(str(record.path))
-            return
+    def manage_run_state(self, action: str, args: list[str]) -> None:
+        record = self._run_store_record()
         if action == "tasks":
-            if len(rest) > 1:
-                raise SystemExit("Use store tasks [NUMBER|NAME].")
-            record = self._store_record(rest[0] if rest else None)
+            if args:
+                raise SystemExit("Use run tasks.")
             self._show_pending_tasks(record)
             return
         if action == "approve":
-            record = self._store_record()
-            self._approve_pending_task(record, rest)
+            self._approve_pending_task(record, args)
             return
         if action == "trace":
-            if len(rest) > 1:
-                raise SystemExit("Use store trace [NUMBER|NAME].")
-            record = self._store_record(rest[0] if rest else None)
-            if not record.exists:
-                raise SystemExit(f"Store does not exist yet: {record.path}")
-            from zippergen.serve import _load_trace_events, _trace_summary
-
-            events = _load_trace_events(str(record.path), after_rowid=0, limit=30)
-            if not events:
-                self._emit_table(
-                    "Recent durable events",
-                    [("Store", record.name, None), ("Events", "none", "warning")],
-                )
-                return
-            self._emit_columns(
-                "Recent durable events",
-                ("#", "Event"),
-                [
-                    (
-                        event.get("rowid"),
-                        _trace_summary(
-                            str(event.get("role") or "—"),
-                            event.get("event"),
-                        ),
-                    )
-                    for event in events
-                ],
-                right_aligned=frozenset({0}),
-            )
+            if args:
+                raise SystemExit("Use run trace.")
+            run = self.workspace.current_run()
+            run_id = str(run.get("run_id") or "current run") if run else "current run"
+            self._show_recent_trace(record, owner=f"run {run_id}")
             return
-        if action == "rename":
-            if len(rest) != 2:
-                raise SystemExit("Use store rename NUMBER|NAME NEW_NAME.")
-            record = self._store_record(rest[0])
-            try:
-                renamed = rename_store(self.workspace, record, rest[1])
-            except WorkspaceError as exc:
-                raise SystemExit(str(exc)) from exc
-            self._success(
-                f"Renamed store {record.name} to {renamed.name}; references updated."
-            )
-            self.show_store(str(renamed.path))
-            return
-        if action == "delete":
-            yes = "--yes" in rest
-            selectors = [value for value in rest if value != "--yes"]
-            if len(selectors) != 1:
-                raise SystemExit("Use store delete NUMBER|NAME|all [--yes].")
-            if selectors[0] in {"all", "--all"}:
-                records = [
-                    record
-                    for record in discover_stores(self.workspace)
-                    if record.project_owned
-                ]
-                label = f"all {len(records)} project stores"
-            else:
-                records = [self._store_record(selectors[0])]
-                label = f"store {records[0].name}"
-            if not records:
-                self._success("No project stores exist; nothing changed.")
-                return
-            active = {
-                name
-                for record in records
-                for name in active_store_deployments(record)
-            }
-            if active:
-                raise SystemExit(
-                    "Stop these deployments before deleting their stores: "
-                    + ", ".join(sorted(active))
-                )
-            self._emit_table(
-                "Store deletion",
-                [
-                    ("Target", label, "warning"),
-                    (
-                        "Effect",
-                        "move existing SQLite data to private recoverable trash; "
-                        "run and deployment references remain visible as missing",
-                        "warning",
-                    ),
-                ],
-            )
-            if not yes and not self._confirm_action(
-                f"Archive {label}? [y/n]: ",
-                cancel_message="Store deletion cancelled; nothing was changed.",
-            ):
-                return
-            archived = []
-            for record in records:
-                try:
-                    destination = archive_store(self.workspace, record)
-                except WorkspaceError as exc:
-                    raise SystemExit(str(exc)) from exc
-                if destination is not None:
-                    archived.append(destination)
-            if archived:
-                self._success(
-                    f"Archived {len(archived)} store"
-                    f"{'s' if len(archived) != 1 else ''}; data remains recoverable."
-                )
-                self._emit_table(
-                    "Store archive",
-                    [("Location", archived[0].parent, "success")],
-                )
-            else:
-                self._success("Selected store data was already absent; nothing changed.")
-            return
-        raise SystemExit(
-            "Use store list, show, use, path, tasks, approve, trace, create, "
-            "rename, or delete."
-        )
+        raise SystemExit("Use run inspect, run tasks, run approve, or run trace.")
 
     def _run_project_cli(
         self,
@@ -9670,7 +9409,7 @@ class Studio:
         store = profile.get("store")
         if not store:
             raise SystemExit(
-                f"Deployment {name} has no durable store configured."
+                f"Deployment {name} has no durable state configured."
             )
         record = self._store_record(str(store))
         self.workspace.update(
@@ -10108,7 +9847,7 @@ class Studio:
         if action == "notify":
             self._notify_deployment(rest)
             return
-        if action in {"tasks", "approve"}:
+        if action in {"tasks", "approve", "trace"}:
             if len(rest) > 1:
                 raise SystemExit(
                     f"Use deployment {action} or deployment {action} NAME."
@@ -10117,11 +9856,16 @@ class Studio:
             record = self._deployment_store_record(name)
             if action == "tasks":
                 self._show_pending_tasks(record, deployment_name=name)
-            else:
+            elif action == "approve":
                 self._approve_pending_task(
                     record,
                     [],
                     deployment_name=name,
+                )
+            else:
+                self._show_recent_trace(
+                    record,
+                    owner=f"deployment {name}",
                 )
             return
         if action in {"doctor", "logs", "start", "restart", "stop"}:
@@ -10129,7 +9873,7 @@ class Studio:
             return
         raise SystemExit(
             "Use deployment list, show, inspect, doctor, logs, tasks, approve, "
-            "connectors, notify, start, restart, or stop."
+            "trace, connectors, notify, start, restart, or stop."
         )
 
     def deployment_action(self, action: str, args: list[str]) -> None:
