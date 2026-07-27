@@ -186,7 +186,7 @@ class TerminalRenderer:
     ) -> None:
         self.emit(f"{' ' * indent}{self.status_mark(kind)} {message}")
 
-    def section(self, title: str, *, major: bool = False) -> None:
+    def section(self, title: str, *, major: bool = True) -> None:
         self.emit(title)
         self.emit(("═" if major else "─") * self.visible_width(title))
 
@@ -247,7 +247,7 @@ class TerminalRenderer:
             candidates = [self.visible_width(heading)]
             candidates.extend(self.visible_width(row[index]) for row in rendered)
             natural_widths.append(max(candidates))
-        available = self.data_output_columns() - 2 - 2 * (len(headers) - 1)
+        available = self.data_output_columns() - 2 * (len(headers) - 1)
         widths = list(natural_widths)
         if sum(widths) > available:
             minimums: list[int] = []
@@ -322,8 +322,7 @@ class TerminalRenderer:
             height = max(len(lines) for lines in wrapped)
             for line_index in range(height):
                 self.emit(
-                    "  "
-                    + "  ".join(
+                    "  ".join(
                         self.pad_cell(
                             (
                                 wrapped[index][line_index]
@@ -338,13 +337,13 @@ class TerminalRenderer:
                 )
 
         emit_row(headers)
-        self.emit("  " + "  ".join("─" * width for width in widths))
+        self.emit("  ".join("─" * width for width in widths))
         for row in rendered:
             emit_row(row)
         self.emit()
 
     def next(self, value: object) -> None:
-        self.section("Next")
+        self.section("Next", major=False)
         for line in self.wrapped_lines(value, self.output_columns() - 2):
             self.emit(f"  {line}")
         self.emit()
@@ -370,14 +369,14 @@ class TerminalRenderer:
         )
         value_width = max(
             len("Value"),
-            self.output_columns() - label_width - 4,
+            self.output_columns() - label_width - 2,
         )
         if headings:
-            self.emit(f"  {self.pad_cell('Field', label_width)}  Value")
-            self.emit(f"  {'─' * label_width}  {'─' * value_width}")
+            self.emit(f"{self.pad_cell('Field', label_width)}  Value")
+            self.emit(f"{'─' * label_width}  {'─' * len('Value')}")
         for label, value, kind in content:
             mark = f"{self.status_mark(kind)} " if kind else ""
-            prefix = f"  {label:<{label_width}}  {mark}"
+            prefix = f"{label:<{label_width}}  {mark}"
             continuation = " " * self.visible_width(prefix)
             lines = self.wrapped_lines(
                 value,

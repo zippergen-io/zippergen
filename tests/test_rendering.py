@@ -1,6 +1,65 @@
 from zippergen.rendering import TerminalRenderer
 
 
+def test_table_uses_double_section_rule_and_no_data_indent():
+    output: list[str] = []
+    renderer = TerminalRenderer(
+        output.append,
+        color=False,
+        columns=lambda: 80,
+    )
+
+    renderer.table(
+        "Execution context",
+        [
+            ("Run", "tutorial-review", None),
+            ("Status", "waiting", "warning"),
+        ],
+    )
+
+    assert output[:6] == [
+        "Execution context",
+        "═" * len("Execution context"),
+        "Field   Value",
+        "──────  ─────",
+        "Run     tutorial-review",
+        "Status  ⚠ waiting",
+    ]
+    assert not any(line.startswith("  ") for line in output if line)
+
+
+def test_column_table_uses_double_section_rule_and_no_indent():
+    output: list[str] = []
+    renderer = TerminalRenderer(
+        output.append,
+        color=False,
+        columns=lambda: 80,
+    )
+
+    renderer.columns(
+        "Participants",
+        ("Name", "State"),
+        [("Writer", "running")],
+    )
+
+    assert output[:5] == [
+        "Participants",
+        "═" * len("Participants"),
+        "Name    State",
+        "──────  ───────",
+        "Writer  running",
+    ]
+
+
+def test_next_keeps_a_lighter_single_rule():
+    output: list[str] = []
+    renderer = TerminalRenderer(output.append, color=False)
+
+    renderer.next("run")
+
+    assert output[:3] == ["Next", "────", "  run"]
+
+
 def test_column_renderer_keeps_short_marked_statuses_on_one_line():
     output: list[str] = []
     renderer = TerminalRenderer(

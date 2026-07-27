@@ -9,6 +9,7 @@ from pathlib import Path
 
 
 ANSI = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+CANVAS_COLUMNS = 100
 CELL_WIDTH = 8.4
 LINE_HEIGHT = 20
 MARGIN_X = 18
@@ -46,8 +47,18 @@ def _line_class(line: str) -> str:
 
 def render_svg(capture: Path, destination: Path, title: str) -> None:
     lines = _capture_lines(capture)
-    columns = max((len(line) for line in lines), default=1)
-    width = int(columns * CELL_WIDTH + 2 * MARGIN_X)
+    too_wide = [
+        (index, line)
+        for index, line in enumerate(lines, start=1)
+        if len(line) > CANVAS_COLUMNS
+    ]
+    if too_wide:
+        index, line = too_wide[0]
+        raise ValueError(
+            f"{capture}: line {index} is {len(line)} columns wide. "
+            f"Capture Studio at {CANVAS_COLUMNS} columns so it wraps the output."
+        )
+    width = int(CANVAS_COLUMNS * CELL_WIDTH + 2 * MARGIN_X)
     height = len(lines) * LINE_HEIGHT + 2 * MARGIN_Y
     text_nodes = []
     for index, line in enumerate(lines):
@@ -57,7 +68,8 @@ def render_svg(capture: Path, destination: Path, title: str) -> None:
             f'xml:space="preserve">{html.escape(line)}</text>'
         )
     svg = f"""<svg xmlns="http://www.w3.org/2000/svg" role="img"
-  aria-labelledby="title description" viewBox="0 0 {width} {height}">
+  aria-labelledby="title description" width="{width}" height="{height}"
+  viewBox="0 0 {width} {height}" preserveAspectRatio="xMinYMin meet">
   <title id="title">{html.escape(title)}</title>
   <desc id="description">Real ZipperGen Studio terminal output.</desc>
   <style>

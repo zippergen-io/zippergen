@@ -549,7 +549,7 @@ class Studio:
     def _status_mark(self, kind: StatusKind) -> str:
         return self._renderer.status_mark(kind)
 
-    def _emit_section_title(self, title: str, *, major: bool = False) -> None:
+    def _emit_section_title(self, title: str, *, major: bool = True) -> None:
         """Render the shared boundary between a section heading and its data."""
 
         self._renderer.section(title, major=major)

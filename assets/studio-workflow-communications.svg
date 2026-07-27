@@ -1,5 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" role="img"
-  aria-labelledby="title description" viewBox="0 0 733 404">
+  aria-labelledby="title description" width="876" height="404"
+  viewBox="0 0 876 404" preserveAspectRatio="xMinYMin meet">
   <title id="title">ZipperGen Studio communication-only workflow view</title>
   <desc id="description">Real ZipperGen Studio terminal output.</desc>
   <style>
@@ -22,13 +23,13 @@
       .comment { fill: #8b949e; }
     }
   </style>
-  <rect class="background" x="0.5" y="0.5" width="732"
+  <rect class="background" x="0.5" y="0.5" width="875"
     height="403" rx="8"/>
   <text class="banner" x="18" y="36" xml:space="preserve">╭──────────────────────────────────────────────────────────╮</text>
 <text class="banner" x="18" y="56" xml:space="preserve">│ ZipperGen Studio · workflow show                         │</text>
 <text class="banner" x="18" y="76" xml:space="preserve">╰──────────────────────────────────────────────────────────╯</text>
 <text class="text" x="18" y="96" xml:space="preserve">Workflow view · tutorial_review · communications</text>
-<text class="text" x="18" y="116" xml:space="preserve">────────────────────────────────────────────────</text>
+<text class="text" x="18" y="116" xml:space="preserve">════════════════════════════════════════════════</text>
 <text class="text" x="18" y="136" xml:space="preserve">@workflow</text>
 <text class="text" x="18" y="156" xml:space="preserve">def tutorial_review(request: str @ Requester, max_retries: int @ Requester) -&gt; str:</text>
 <text class="text" x="18" y="176" xml:space="preserve">    Requester(request) &gt;&gt; Writer(request)</text>

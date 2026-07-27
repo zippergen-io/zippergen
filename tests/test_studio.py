@@ -2204,7 +2204,7 @@ def test_studio_structured_output_separates_titles_headers_rows_and_next(
     studio.execute("workflow", show_boundary=True)
 
     title = output.index("Workflow development")
-    assert output[title + 1] == "─" * len("Workflow development")
+    assert output[title + 1] == "═" * len("Workflow development")
     assert output[title + 2].split() == ["Field", "Value"]
     assert set(output[title + 3].replace(" ", "")) == {"─"}
     assert output[title + 4].lstrip().startswith("Specification")
@@ -2257,7 +2257,7 @@ def test_studio_validation_marks_successful_checks(tmp_path):
     studio.validate()
 
     assert output[0] == "Workflow validation"
-    assert output[1] == "─" * len("Workflow validation")
+    assert output[1] == "═" * len("Workflow validation")
     assert output[2] == "✓ Workflow sample: valid"
     distinction = output.index("Validation and acceptance")
     assert all(line.startswith("  ✓ ") for line in output[3:distinction])

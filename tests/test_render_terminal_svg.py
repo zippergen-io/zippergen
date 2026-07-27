@@ -1,0 +1,36 @@
+from pathlib import Path
+
+import pytest
+
+from scripts.render_terminal_svg import CANVAS_COLUMNS, render_svg
+
+
+def test_terminal_svg_uses_one_fixed_canvas_width(tmp_path: Path):
+    capture = tmp_path / "capture.txt"
+    destination = tmp_path / "capture.svg"
+    capture.write_text(
+        "╭────╮\n"
+        "│ Hi │\n"
+        "╰────╯\n"
+        "Short output\n",
+        encoding="utf-8",
+    )
+
+    render_svg(capture, destination, "Example")
+
+    svg = destination.read_text(encoding="utf-8")
+    assert 'width="876"' in svg
+    assert 'viewBox="0 0 876 ' in svg
+    assert 'preserveAspectRatio="xMinYMin meet"' in svg
+
+
+def test_terminal_svg_rejects_a_capture_wider_than_its_canvas(tmp_path: Path):
+    capture = tmp_path / "capture.txt"
+    destination = tmp_path / "capture.svg"
+    capture.write_text(
+        "╭────╮\n" + "x" * (CANVAS_COLUMNS + 1) + "\n",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="101 columns wide"):
+        render_svg(capture, destination, "Too wide")
