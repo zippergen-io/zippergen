@@ -1,4 +1,5 @@
 import json
+import os
 import tomllib
 from pathlib import Path
 
@@ -68,6 +69,34 @@ def test_workspace_state_lives_outside_checkout_and_remembers_workflow(tmp_path)
     assert workspace.absolute_spec(selected) == str(workflow_path) + ":review"
     assert workspace.state_path.is_relative_to(home)
     assert not (root / ".zippergen").exists()
+
+
+def test_workspace_cleans_only_stale_studio_google_uploads(tmp_path):
+    root = tmp_path / "project"
+    root.mkdir()
+    workspace = Workspace(root, home=tmp_path / "state")
+    upload_directory = workspace.directory / "uploads"
+    upload_directory.mkdir(parents=True, mode=0o755)
+    stale = upload_directory / "google-oauth-client-123.json"
+    recent = upload_directory / "google-oauth-client-456.json"
+    unrelated = upload_directory / "keep-me.json"
+    stale.write_text("stale")
+    recent.write_text("recent")
+    unrelated.write_text("unrelated")
+    os.utime(stale, (1_000, 1_000))
+    os.utime(recent, (100_000, 100_000))
+    os.utime(unrelated, (1_000, 1_000))
+
+    removed = workspace.cleanup_stale_connector_uploads(
+        now=100_000,
+        max_age_seconds=10_000,
+    )
+
+    assert removed == (stale,)
+    assert not stale.exists()
+    assert recent.exists()
+    assert unrelated.exists()
+    assert upload_directory.stat().st_mode & 0o777 == 0o700
 
 
 def test_workspace_creates_unique_managed_runs(tmp_path):
@@ -366,6 +395,38 @@ def test_workspace_configuration_edits_update_every_assignment(tmp_path):
     }
     with pytest.raises(WorkspaceError, match="still assigned"):
         workspace.remove_model_configuration("writer")
+
+
+def test_workspace_validates_local_model_idle_release(tmp_path):
+    root = tmp_path / "project"
+    root.mkdir()
+    workspace = Workspace(root, home=tmp_path / "state")
+
+    saved = workspace.save_model_configuration(
+        "local-writer",
+        {
+            "provider": "local",
+            "model": "qwen2.5:7b",
+            "spec": "local:qwen2.5:7b",
+            "idle_timeout": "300.0",
+        },
+    )
+
+    assert saved["idle_timeout"] == "300"
+    assert (
+        workspace.model_configurations()["local-writer"]["idle_timeout"]
+        == "300"
+    )
+    with pytest.raises(WorkspaceError, match="only available for local"):
+        workspace.save_model_configuration(
+            "remote-writer",
+            {
+                "provider": "openai",
+                "model": "gpt-4o-mini",
+                "spec": "openai:gpt-4o-mini",
+                "idle_timeout": "300",
+            },
+        )
 
 
 def test_workspace_connector_rename_updates_assignments_and_bindings(tmp_path):

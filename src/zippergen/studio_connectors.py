@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 import time
 from pathlib import Path
 
@@ -16,6 +17,116 @@ from zippergen.workspace import WorkspaceError
 
 
 class StudioConnectorsMixin:
+    @staticmethod
+    def _read_google_client_json(path: Path) -> str:
+        from zippergen.google_auth import (
+            GoogleConnectorError,
+            normalize_google_client_json,
+        )
+
+        expanded = path.expanduser().resolve()
+        if not expanded.is_file():
+            raise SystemExit(
+                f"Google OAuth desktop client JSON does not exist: {expanded}"
+            )
+        try:
+            value = expanded.read_text()
+        except OSError as exc:
+            raise SystemExit(
+                f"Could not read Google OAuth desktop client JSON: {exc}"
+            ) from exc
+        try:
+            return normalize_google_client_json(value)
+        except GoogleConnectorError as exc:
+            raise SystemExit(str(exc)) from exc
+
+    def _upload_google_client_json(self) -> str:
+        upload_directory = self.workspace.directory / "uploads"
+        upload_directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        upload_directory.chmod(0o700)
+        upload_path = upload_directory / (
+            f"google-oauth-client-{time.time_ns()}.json"
+        )
+        local_path = self.input(
+            "Absolute JSON path on your local computer "
+            "[/local/path/downloaded-client.json]: "
+        ).strip() or "/local/path/downloaded-client.json"
+        ssh_host = self.input(
+            "SSH server or alias [AI_SERVER]: "
+        ).strip() or "AI_SERVER"
+        command = (
+            f"scp {shlex.quote(local_path)} "
+            f"{shlex.quote(f'{ssh_host}:{upload_path}')}"
+        )
+        self._emit_table(
+            "Private Google client upload",
+            [
+                ("Run on", "your local computer", None),
+                ("Command", command, None),
+                (
+                    "Destination",
+                    "private temporary Studio storage",
+                    "success",
+                ),
+            ],
+        )
+        confirmation = self.input(
+            "Press Enter after the upload, or type 'cancel': "
+        ).strip()
+        if confirmation.casefold() == "cancel":
+            raise SystemExit("Google provider configuration cancelled.")
+        if not upload_path.is_file():
+            raise SystemExit(
+                "The uploaded Google OAuth client was not found. Run the "
+                "displayed scp command, then try again."
+            )
+        try:
+            upload_path.chmod(0o600)
+            return self._read_google_client_json(upload_path)
+        finally:
+            upload_path.unlink(missing_ok=True)
+
+    def _collect_google_client_json(self, profile: dict[str, str]) -> str:
+        stored = self.workspace.connector_provider_secret(
+            "google", "oauth_client_json"
+        )
+        choices = []
+        if stored:
+            choices.append("Use the client already stored privately")
+        choices.extend(
+            [
+                "Use a file already on this computer",
+                "Upload from another computer",
+            ]
+        )
+        selected = self._select(
+            "Google OAuth client",
+            choices,
+            prompt="Select client source",
+        )
+        assert isinstance(selected, str)
+        if selected == "Use the client already stored privately":
+            assert stored is not None
+            return stored
+        if selected == "Upload from another computer":
+            return self._upload_google_client_json()
+
+        legacy_path = str(profile.get("credentials_file") or "")
+        entered = self.input(
+            (
+                f"Google OAuth desktop client JSON [{legacy_path}]: "
+                if legacy_path
+                else "Google OAuth desktop client JSON path: "
+            )
+        ).strip()
+        selected_path = entered or legacy_path
+        if not selected_path:
+            raise SystemExit(
+                "Select the OAuth Desktop app JSON downloaded from Google "
+                "Cloud."
+            )
+        return self._read_google_client_json(Path(selected_path))
+
     @staticmethod
     def _google_profile_scopes(profile) -> tuple[str, ...]:
         raw = profile.get("scopes") if profile else None
@@ -487,7 +598,6 @@ class StudioConnectorsMixin:
         preserve_google_scopes: bool = False,
     ) -> None:
         name = provider.casefold()
-        credentials_path = ""
         scopes: tuple[str, ...] = ()
         if name not in {"telegram", "google"}:
             raise SystemExit(
@@ -516,26 +626,14 @@ class StudioConnectorsMixin:
                     self._google_requirement_pairs()
                     or (("google-sheets", "read-write"),)
                 )
-            current_path = str(
-                self.workspace.connector_provider_profiles()
-                .get(name, {})
-                .get("credentials_file")
-                or ""
+            google_profile = (
+                self.workspace.connector_provider_profiles().get(name, {})
             )
-            entered = self.input(
-                (
-                    f"Google OAuth desktop credentials JSON [{current_path}]: "
-                    if current_path
-                    else "Google OAuth desktop credentials JSON: "
-                )
-            ).strip()
-            credentials_path = entered or current_path
-            if not credentials_path:
-                raise SystemExit(
-                    "Select the OAuth desktop credentials JSON downloaded "
-                    "from Google Cloud."
-                )
-            from zippergen.google_auth import authorize_google
+            client_json = self._collect_google_client_json(google_profile)
+            self.workspace.save_connector_provider_secret(
+                name, "oauth_client_json", client_json
+            )
+            from zippergen.google_auth import authorize_google_client
 
             scopes = self._google_scopes_for_requirements(
                 google_requirements
@@ -560,8 +658,8 @@ class StudioConnectorsMixin:
                 "Studio stores the resulting token privately."
             )
             try:
-                authorized_user = authorize_google(
-                    credentials_path,
+                authorized_user = authorize_google_client(
+                    client_json,
                     scopes=scopes,
                 )
             except Exception as exc:
@@ -569,12 +667,10 @@ class StudioConnectorsMixin:
             self.workspace.save_connector_provider_secret(
                 name, "authorized_user_json", authorized_user
             )
-            credentials_path = str(
-                Path(credentials_path).expanduser().resolve()
-            )
             detail = "Google authorization changed"
             success = (
-                "Configured Google provider; OAuth tokens are private."
+                "Configured Google provider; the OAuth client and token are "
+                "stored privately."
             )
         self.workspace.save_connector_provider_profile(
             name,
@@ -582,7 +678,7 @@ class StudioConnectorsMixin:
                 "kind": "human-delivery" if name == "telegram" else "google",
                 **(
                     {
-                        "credentials_file": credentials_path,
+                        "client_storage": "private Studio storage",
                         "scopes": json.dumps(list(scopes)),
                     }
                     if name == "google"

@@ -8,7 +8,9 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import math
 import threading
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import cast
 import time
@@ -1425,6 +1427,7 @@ def _workflow_configure(
     llms=None,
     mock_delay: tuple[float, float] = (1.0, 2.0),
     llm_idle_timeout: float | None = None,
+    llm_idle_timeouts: Mapping[str, float] | None = None,
     execution: str | None = None,
     store_path: str | None = None,
     human_backend: object | None = None,
@@ -1436,8 +1439,19 @@ def _workflow_configure(
 
     if llm is not None and llms is not None:
         raise ValueError("Use either 'llm' or the legacy 'llms' option, not both.")
-    if llm_idle_timeout is not None and llm_idle_timeout < 0:
+    if llm_idle_timeout is not None and (
+        not math.isfinite(llm_idle_timeout) or llm_idle_timeout < 0
+    ):
         raise ValueError("llm_idle_timeout must be non-negative.")
+    normalized_idle_timeouts = {
+        str(target): float(value)
+        for target, value in (llm_idle_timeouts or {}).items()
+    }
+    if any(
+        not math.isfinite(value) or value < 0
+        for value in normalized_idle_timeouts.values()
+    ):
+        raise ValueError("llm_idle_timeouts values must be non-negative.")
     if callable(llm):
         if backend is not None:
             raise ValueError("Use either positional backend/llm or 'backend=', not both.")
@@ -1464,6 +1478,7 @@ def _workflow_configure(
             routes,
             fallback=lambda a, i: mock_llm(a, i, min_delay=mock_delay[0], max_delay=mock_delay[1]),
             idle_timeout=llm_idle_timeout,
+            idle_timeouts=normalized_idle_timeouts,
         )
         wf._rt._backend = built_backend
     if backend is not None:

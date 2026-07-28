@@ -8,6 +8,7 @@ from zippergen.google_auth import (
     google_scope_for_access,
     google_scopes_cover,
     google_scopes_for_access,
+    normalize_google_client_json,
 )
 
 
@@ -55,3 +56,33 @@ def test_unknown_google_scope_inputs_are_rejected():
         google_scope_for_access("gmail", "admin")
     with pytest.raises(ValueError, match="connector kind"):
         google_scope_for_access("google-drive", "read-only")
+
+
+def test_google_desktop_client_json_is_validated_and_normalized():
+    normalized = normalize_google_client_json(
+        """
+        {
+          "installed": {
+            "token_uri": "https://oauth2.googleapis.com/token",
+            "client_secret": "secret",
+            "client_id": "example.apps.googleusercontent.com",
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth"
+          }
+        }
+        """
+    )
+
+    assert normalized == (
+        '{"installed":{"auth_uri":"https://accounts.google.com/o/oauth2/auth",'
+        '"client_id":"example.apps.googleusercontent.com",'
+        '"client_secret":"secret",'
+        '"token_uri":"https://oauth2.googleapis.com/token"}}'
+    )
+
+
+def test_google_client_json_must_be_a_desktop_app():
+    with pytest.raises(
+        RuntimeError,
+        match="must describe a Desktop app",
+    ):
+        normalize_google_client_json('{"web":{"client_id":"example"}}')

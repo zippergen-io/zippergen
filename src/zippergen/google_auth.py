@@ -98,23 +98,56 @@ def google_scopes_cover(
     )
 
 
-def authorize_google(
-    credentials_file: str | Path,
+def normalize_google_client_json(value: str) -> str:
+    """Validate and normalize one Google desktop OAuth client document."""
+
+    try:
+        document = json.loads(value)
+    except json.JSONDecodeError as exc:
+        raise GoogleConnectorError(
+            f"Google OAuth client JSON is invalid: {exc.msg}"
+        ) from exc
+    if not isinstance(document, dict):
+        raise GoogleConnectorError(
+            "Google OAuth client JSON must contain one JSON object."
+        )
+    installed = document.get("installed")
+    if not isinstance(installed, dict):
+        raise GoogleConnectorError(
+            "Google OAuth client JSON must describe a Desktop app. "
+            "Create a Desktop app OAuth client in Google Cloud and download "
+            "its JSON file."
+        )
+    missing = [
+        field
+        for field in ("client_id", "client_secret", "auth_uri", "token_uri")
+        if not str(installed.get(field) or "").strip()
+    ]
+    if missing:
+        raise GoogleConnectorError(
+            "Google OAuth Desktop app JSON is missing: "
+            + ", ".join(missing)
+            + "."
+        )
+    return json.dumps(document, sort_keys=True, separators=(",", ":"))
+
+
+def authorize_google_client(
+    client_json: str,
     *,
     scopes: Iterable[str],
     open_browser: bool = True,
 ) -> str:
-    """Run Google's desktop OAuth flow and return authorized-user JSON."""
+    """Authorize a validated private desktop client JSON document."""
 
     requested = normalize_google_scopes(scopes)
+    normalized = normalize_google_client_json(client_json)
     _session, _request, _credentials, flow_type = google_imports()
-    path = Path(credentials_file).expanduser().resolve()
-    if not path.is_file():
-        raise GoogleConnectorError(
-            f"Google OAuth desktop credentials file does not exist: {path}"
-        )
     try:
-        flow = flow_type.from_client_secrets_file(str(path), scopes=list(requested))
+        flow = flow_type.from_client_config(
+            json.loads(normalized),
+            scopes=list(requested),
+        )
         credentials = flow.run_local_server(
             host="127.0.0.1",
             port=0,
@@ -132,6 +165,32 @@ def authorize_google(
     except Exception as exc:
         raise GoogleConnectorError(f"Google authorization failed: {exc}") from exc
     return credentials.to_json()
+
+
+def authorize_google(
+    credentials_file: str | Path,
+    *,
+    scopes: Iterable[str],
+    open_browser: bool = True,
+) -> str:
+    """Run Google's desktop OAuth flow and return authorized-user JSON."""
+
+    path = Path(credentials_file).expanduser().resolve()
+    if not path.is_file():
+        raise GoogleConnectorError(
+            f"Google OAuth desktop credentials file does not exist: {path}"
+        )
+    try:
+        client_json = path.read_text()
+    except OSError as exc:
+        raise GoogleConnectorError(
+            f"Could not read Google OAuth client JSON: {exc}"
+        ) from exc
+    return authorize_google_client(
+        client_json,
+        scopes=scopes,
+        open_browser=open_browser,
+    )
 
 
 def credentials_from_json(value: str, *, scopes: Iterable[str]):
@@ -167,6 +226,7 @@ __all__ = [
     "GOOGLE_SHEETS_READONLY_SCOPE",
     "GoogleConnectorError",
     "authorize_google",
+    "authorize_google_client",
     "check_google_authorization",
     "credentials_from_json",
     "google_imports",
@@ -174,4 +234,5 @@ __all__ = [
     "google_scopes_cover",
     "google_scopes_for_access",
     "normalize_google_scopes",
+    "normalize_google_client_json",
 ]

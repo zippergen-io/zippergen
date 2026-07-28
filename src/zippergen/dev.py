@@ -330,6 +330,7 @@ def _run_setup_hook(
     module: ModuleType,
     llm: str,
     llms: dict[str, str],
+    llm_idle_timeouts: dict[str, float],
     assistant: str | None,
     store_path: str,
     inputs: dict[str, object],
@@ -352,6 +353,7 @@ def _run_setup_hook(
             llms=llms,
             assistant=assistant,
             llm_idle_timeout=None,
+            llm_idle_timeouts=llm_idle_timeouts,
             store_path=store_path,
             inputs=inputs,
             options=setup_options,
@@ -370,6 +372,7 @@ def run_dev(
     provided_inputs: dict[str, object] | None = None,
     llm: str | None = None,
     llms: dict[str, str] | None = None,
+    llm_idle_timeouts: dict[str, float] | None = None,
     assistant: str | None = None,
     options: dict[str, object] | None = None,
     services: str | None = None,
@@ -390,6 +393,7 @@ def run_dev(
         provided_inputs
         or llm is not None
         or llms
+        or llm_idle_timeouts
         or assistant is not None
         or options
         or services is not None
@@ -423,6 +427,12 @@ def run_dev(
         inputs = dict(record.get("inputs") or {})
         selected_llm = str(record.get("llm") or "mock")
         selected_llms = normalize_llm_overrides(record.get("llms"))
+        selected_idle_timeouts = {
+            str(target): float(value)
+            for target, value in (
+                record.get("llm_idle_timeouts") or {}
+            ).items()
+        }
         selected_assistant = (
             str(record["assistant"]) if record.get("assistant") else None
         )
@@ -456,6 +466,10 @@ def run_dev(
         )
         selected_llm = llm or default_llm_spec(module)
         selected_llms = normalize_llm_overrides(llms)
+        selected_idle_timeouts = {
+            str(target): float(value)
+            for target, value in (llm_idle_timeouts or {}).items()
+        }
         selected_assistant = assistant
         effective_llm_routes(workflow, selected_llm, selected_llms)
         run_options = dict(options or {})
@@ -467,6 +481,7 @@ def run_dev(
             inputs=inputs,
             llm=selected_llm,
             llms=selected_llms,
+            llm_idle_timeouts=selected_idle_timeouts,
             assistant=selected_assistant,
             options=run_options,
             services=run_services,
@@ -520,6 +535,21 @@ def run_dev(
                 (f"Model · {participant}", spec, None)
                 for participant, spec in routes.items()
             )
+            if selected_idle_timeouts:
+                run_rows.extend(
+                    (
+                        f"Idle release · {target}",
+                        (
+                            "after every call"
+                            if seconds == 0
+                            else f"after {seconds:g} seconds"
+                        ),
+                        None,
+                    )
+                    for target, seconds in sorted(
+                        selected_idle_timeouts.items()
+                    )
+                )
         else:
             run_rows.append(("Models", "none; no LLM actions", None))
         renderer.table(
@@ -568,6 +598,7 @@ def run_dev(
                 module=module,
                 llm=selected_llm,
                 llms=selected_llms,
+                llm_idle_timeouts=selected_idle_timeouts,
                 assistant=selected_assistant,
                 store_path=store_path,
                 inputs=inputs,
@@ -584,6 +615,7 @@ def run_dev(
                 )
             workflow.configure(
                 llm_config,
+                llm_idle_timeouts=selected_idle_timeouts,
                 execution="sqlite",
                 store_path=store_path,
                 timeout=timeout,

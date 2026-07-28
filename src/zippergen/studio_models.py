@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import time
 from dataclasses import dataclass
@@ -80,6 +81,97 @@ def _validate_model_spec(value: str) -> str:
 
 
 class StudioModelsMixin:
+    @staticmethod
+    def _idle_seconds_summary(seconds: float) -> str:
+        if seconds == 0:
+            return "after every call"
+        value = f"{seconds:g} s"
+        if seconds >= 60 and seconds % 60 == 0:
+            value += f" ({seconds / 60:g} min)"
+        return f"after {value}"
+
+    @classmethod
+    def _model_idle_routes_summary(cls, values: object) -> str:
+        if not isinstance(values, dict) or not values:
+            return "none"
+        return " · ".join(
+            f"{target} {cls._idle_seconds_summary(float(seconds))}"
+            for target, seconds in sorted(values.items())
+        )
+
+    @staticmethod
+    def _configuration_idle_timeout(
+        configuration: dict[str, str] | None,
+    ) -> float | None:
+        if not configuration or not configuration.get("idle_timeout"):
+            return None
+        return float(configuration["idle_timeout"])
+
+    @classmethod
+    def _configuration_idle_summary(
+        cls,
+        configuration: dict[str, str] | None,
+    ) -> str:
+        if not configuration:
+            return "unknown"
+        provider = _canonical_provider(
+            configuration.get("provider") or configuration.get("spec") or ""
+        )
+        if provider != "local":
+            return "not applicable" if provider == "mock" else "API managed"
+        timeout = cls._configuration_idle_timeout(configuration)
+        if timeout is None:
+            return "never"
+        return cls._idle_seconds_summary(timeout)
+
+    def _model_idle_timeout_routes(
+        self,
+        current: str,
+        workflow,
+        module,
+        *,
+        default_override: str | None = None,
+    ) -> dict[str, float]:
+        """Resolve configuration-level idle release for active LLM routes."""
+
+        active = self._llm_action_lifelines(workflow, module)
+        if not active:
+            return {}
+        assignments = self.workspace.model_assignment_profile(
+            current,
+            default=default_llm_spec(module),
+        )
+        configurations = self.workspace.model_configurations()
+        default_name = str(assignments["default"])
+        participant_overrides = assignments.get("lifelines") or {}
+        action_overrides = assignments.get("actions") or {}
+        assert isinstance(participant_overrides, dict)
+        assert isinstance(action_overrides, dict)
+
+        routes: dict[str, float] = {}
+        for participant, actions in active.items():
+            configuration_name = participant_overrides.get(participant)
+            if configuration_name is None and default_override is None:
+                configuration_name = default_name
+            timeout = self._configuration_idle_timeout(
+                configurations.get(str(configuration_name))
+                if configuration_name is not None
+                else None
+            )
+            if timeout is not None:
+                routes[participant] = timeout
+            for action_name in actions:
+                target = f"{participant}.{action_name}"
+                action_configuration = action_overrides.get(target)
+                if action_configuration is None:
+                    continue
+                action_timeout = self._configuration_idle_timeout(
+                    configurations.get(str(action_configuration))
+                )
+                if action_timeout is not None:
+                    routes[target] = action_timeout
+        return routes
+
     def _run_model_profile(self) -> dict[str, object]:
         current = self.workspace.current_workflow
         if not current:
@@ -306,12 +398,13 @@ class StudioModelsMixin:
                     name,
                     provider,
                     model,
+                    self._configuration_idle_summary(configuration),
                     f"{mark} {status.replace('_', ' ')}",
                 )
             )
         self._emit_columns(
             "Model configurations",
-            ("Name", "Provider", "Model", "Status"),
+            ("Name", "Provider", "Model", "Idle release", "Status"),
             rows,
         )
         if include_next:
@@ -470,6 +563,7 @@ class StudioModelsMixin:
         if provider == "mock":
             model = ""
             spec = "mock"
+            idle_timeout = None
         else:
             _environment_name, fallback_model = _PROVIDER_DEFAULT_MODELS[provider]
             default_model = (
@@ -481,6 +575,43 @@ class StudioModelsMixin:
                 f"Model identifier [{default_model}]: "
             ).strip() or default_model
             spec = _validate_model_spec(f"{provider}:{model}")
+            idle_timeout = None
+            if provider == "local":
+                if (
+                    existing_name
+                    and existing.get("provider") == "local"
+                ):
+                    default_idle = existing.get("idle_timeout") or "never"
+                else:
+                    default_idle = "300"
+                entered_idle = self.input(
+                    "Release local model after idle seconds "
+                    f"[{default_idle}, or type 'never']: "
+                ).strip()
+                selected_idle = entered_idle or default_idle
+                if selected_idle.casefold() not in {
+                    "never",
+                    "none",
+                    "off",
+                    "disabled",
+                }:
+                    try:
+                        parsed_idle = float(selected_idle)
+                    except ValueError as exc:
+                        raise SystemExit(
+                            "Idle release must be a non-negative number of "
+                            "seconds or 'never'."
+                        ) from exc
+                    if not math.isfinite(parsed_idle) or parsed_idle < 0:
+                        raise SystemExit(
+                            "Idle release must be a non-negative number of "
+                            "seconds or 'never'."
+                        )
+                    idle_timeout = (
+                        str(int(parsed_idle))
+                        if parsed_idle.is_integer()
+                        else str(parsed_idle)
+                    )
 
         if existing_name:
             name = existing_name
@@ -511,6 +642,11 @@ class StudioModelsMixin:
                         "built in"
                         if provider == "mock"
                         else "run 'model config check' before assignment"
+                    ),
+                    **(
+                        {"idle_timeout": idle_timeout}
+                        if idle_timeout is not None
+                        else {}
                     ),
                 },
             )
@@ -603,6 +739,11 @@ class StudioModelsMixin:
                     None,
                 ),
                 ("Effective", configuration["spec"], None),
+                (
+                    "Idle release",
+                    self._configuration_idle_summary(configuration),
+                    None,
+                ),
                 (
                     "Check",
                     configuration.get("check_status", "not checked"),

@@ -3,6 +3,8 @@
 The documentation is deliberately split by reader and purpose:
 
 - `docs/first-workflow.tex` — the short, linear first-workflow tutorial;
+- `docs/call-intake-end-to-end.tex` — a focused Gmail and Google Sheets
+  deployment check for a local or remote AI server;
 - `docs/workflow-development-deployment-guide.tex` — the comprehensive
   development and deployment manual;
 - `examples/tutorial_review.py` — complete fallback source imported by the
@@ -22,6 +24,7 @@ The command first checks the compiler and required packages. It then creates:
 
 ```text
 docs/_build/first-workflow.pdf
+docs/_build/call-intake-end-to-end.pdf
 docs/_build/workflow-development-deployment-guide.pdf
 ```
 
@@ -31,6 +34,7 @@ Build only one document with:
 
 ```bash
 make docs-first-workflow
+make docs-call-intake
 make docs-manual
 ```
 
@@ -48,6 +52,9 @@ mkdir -p _build
 latexmk -pdf -interaction=nonstopmode -halt-on-error \
   -file-line-error -outdir=_build \
   first-workflow.tex
+latexmk -pdf -interaction=nonstopmode -halt-on-error \
+  -file-line-error -outdir=_build \
+  call-intake-end-to-end.tex
 latexmk -pdf -interaction=nonstopmode -halt-on-error \
   -file-line-error -outdir=_build \
   workflow-development-deployment-guide.tex

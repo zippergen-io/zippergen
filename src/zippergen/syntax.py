@@ -795,6 +795,7 @@ class Workflow:
                   llms: str | Mapping[str, str | Callable] | None = None,
                   mock_delay: tuple[float, float] = (1.0, 2.0),
                   llm_idle_timeout: float | None = None,
+                  llm_idle_timeouts: Mapping[str, float] | None = None,
                   execution: str | None = None,
                   store_path: str | None = None,
                   human_backend: object | None = None,
@@ -818,6 +819,8 @@ class Workflow:
         mock_delay : delay range used by the mock backend when ``llm="mock"``.
         llm_idle_timeout : for local managed backends such as Ollama, release
                   the model after this many seconds without LLM calls.
+        llm_idle_timeouts : optional participant or action-specific idle
+                  release times for managed local backends.
         execution : ``"sqlite"`` (default) or ``"memory"`` for the legacy
                     in-process runner.
         store_path : optional SQLite store path used when ``execution="sqlite"``.
@@ -835,6 +838,7 @@ class Workflow:
         return _workflow_configure(self, llm=llm, backend=backend, trace=trace, timeout=timeout,
                                    llms=llms, mock_delay=mock_delay,
                                    llm_idle_timeout=llm_idle_timeout,
+                                   llm_idle_timeouts=llm_idle_timeouts,
                                    execution=execution, store_path=store_path,
                                    human_backend=human_backend,
                                    assistant=assistant,

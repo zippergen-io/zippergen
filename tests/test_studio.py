@@ -36,6 +36,17 @@ def sample(value: str @ User) -> str:
     return result @ User
 """
 
+GOOGLE_DESKTOP_CLIENT = json.dumps(
+    {
+        "installed": {
+            "client_id": "example.apps.googleusercontent.com",
+            "client_secret": "private-client-secret",
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+        }
+    }
+)
+
 TWO_LLM_PARTICIPANT_SOURCE = """
 from zippergen import Lifeline, llm, workflow
 
@@ -3109,19 +3120,19 @@ def test_studio_guides_google_sheet_setup_and_builds_private_runtime_context(
     monkeypatch,
 ):
     credentials = tmp_path / "google-desktop.json"
-    credentials.write_text('{"installed":{"client_id":"example"}}')
+    credentials.write_text(GOOGLE_DESKTOP_CLIENT)
     sheet_url = (
         "https://docs.google.com/spreadsheets/d/sheet-123/edit#gid=0"
     )
     studio, workspace, output = _studio(
         tmp_path,
-        responses=[str(credentials), sheet_url, "Calls"],
+        responses=["1", str(credentials), sheet_url, "Calls"],
     )
     (workspace.root / "workflow.py").write_text(GOOGLE_SHEETS_SOURCE)
     workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
     monkeypatch.setattr(
-        "zippergen.google_auth.authorize_google",
-        lambda path, *, scopes: '{"refresh_token":"private-google-token"}',
+        "zippergen.google_auth.authorize_google_client",
+        lambda value, *, scopes: '{"refresh_token":"private-google-token"}',
     )
     monkeypatch.setattr(
         "zippergen.google_auth.check_google_authorization",
@@ -3150,6 +3161,16 @@ def test_studio_guides_google_sheet_setup_and_builds_private_runtime_context(
     assert workspace.connector_provider_secret(
         "google", "authorized_user_json"
     ) == '{"refresh_token":"private-google-token"}'
+    assert workspace.connector_provider_secret(
+        "google", "oauth_client_json"
+    ) is not None
+    assert (
+        workspace.connector_provider_profiles()["google"]["client_storage"]
+        == "private Studio storage"
+    )
+    assert "credentials_file" not in (
+        workspace.connector_provider_profiles()["google"]
+    )
 
     current, workflow, module = studio._current_context()
     environment = studio._workflow_connector_environment(
@@ -3177,10 +3198,11 @@ def test_studio_guides_one_google_authorization_for_gmail_and_sheets(
     monkeypatch,
 ):
     credentials = tmp_path / "google-desktop.json"
-    credentials.write_text('{"installed":{"client_id":"example"}}')
+    credentials.write_text(GOOGLE_DESKTOP_CLIENT)
     studio, workspace, _output = _studio(
         tmp_path,
         responses=[
+            "1",
             str(credentials),
             "is:unread label:Calls",
             "sheet-123",
@@ -3191,8 +3213,8 @@ def test_studio_guides_one_google_authorization_for_gmail_and_sheets(
     workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
     requested_scopes = []
     monkeypatch.setattr(
-        "zippergen.google_auth.authorize_google",
-        lambda path, *, scopes: (
+        "zippergen.google_auth.authorize_google_client",
+        lambda value, *, scopes: (
             requested_scopes.extend(scopes)
             or '{"refresh_token":"private-google-token"}'
         ),
@@ -3255,6 +3277,63 @@ def test_studio_guides_one_google_authorization_for_gmail_and_sheets(
     assert environment[mailbox["credential_env"]] == (
         '{"refresh_token":"private-google-token"}'
     )
+
+
+def test_studio_imports_and_removes_a_private_google_client_upload(
+    tmp_path,
+    monkeypatch,
+):
+    studio, workspace, output = _studio(tmp_path)
+    upload_path = (
+        workspace.directory
+        / "uploads"
+        / "google-oauth-client-123456.json"
+    )
+    answers = iter(
+        [
+            "2",
+            "/Users/example/Downloads/google-client.json",
+            "lmf-gpu",
+            "",
+        ]
+    )
+
+    def answer(prompt: str) -> str:
+        value = next(answers)
+        if prompt.startswith("Press Enter after the upload"):
+            upload_path.write_text(GOOGLE_DESKTOP_CLIENT)
+        return value
+
+    studio.input = answer
+    monkeypatch.setattr(
+        "zippergen.studio_connectors.time.time_ns",
+        lambda: 123456,
+    )
+    monkeypatch.setattr(
+        "zippergen.google_auth.authorize_google_client",
+        lambda value, *, scopes: '{"refresh_token":"private-google-token"}',
+    )
+    monkeypatch.setattr(
+        "zippergen.google_auth.check_google_authorization",
+        lambda value, *, scopes: value,
+    )
+
+    studio.execute("connector provider configure google")
+
+    assert not upload_path.exists()
+    assert workspace.connector_provider_secret(
+        "google", "oauth_client_json"
+    ) == json.dumps(
+        json.loads(GOOGLE_DESKTOP_CLIENT),
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    assert any(
+        "scp /Users/example/Downloads/google-client.json" in line
+        and "lmf-gpu:" in line
+        for line in output
+    )
+    assert all("private-client-secret" not in line for line in output)
 
 
 def test_studio_human_connector_assignment_needs_no_extra_requirement(
@@ -3992,6 +4071,8 @@ def test_studio_deploys_current_workflow_and_remembers_name(tmp_path, monkeypatc
         "--concise",
         "--llm",
         "mock",
+        "--llm-idle-timeouts-json",
+        "{}",
     ]]
     assert workspace.load()["last_deployment"] == "sample-test"
     assert output[-1] == "✓ Deployment completed: sample-test"
@@ -4172,6 +4253,8 @@ def test_studio_can_prepare_deployment_without_starting_it(tmp_path, monkeypatch
         "--no-start",
         "--llm",
         "mock",
+        "--llm-idle-timeouts-json",
+        "{}",
     ]
 
 
@@ -4532,6 +4615,35 @@ def test_studio_models_configure_check_then_assign(
     assert any(
         "Writer" in line and "fast-review" in line
         and "mistral:mistral-small-latest" in line
+        for line in output
+    )
+
+
+def test_studio_local_model_configuration_includes_idle_release(tmp_path):
+    studio, workspace, output = _studio(
+        tmp_path,
+        responses=["local", "qwen2.5:7b", "300"],
+    )
+    workspace.save_provider_profile(
+        "local",
+        {
+            "kind": "local",
+            "base_url": "http://localhost:11434/v1",
+            "check_status": "reachable",
+            "checked_at": "2026-07-28T10:00:00+0200",
+            "model_count": "1",
+        },
+    )
+
+    studio.execute("model config create local-writer")
+    configuration = workspace.model_configurations()["local-writer"]
+
+    assert configuration["spec"] == "local:qwen2.5:7b"
+    assert configuration["idle_timeout"] == "300"
+    output.clear()
+    studio.execute("model config show local-writer")
+    assert any(
+        "Idle release" in line and "after 300 s (5 min)" in line
         for line in output
     )
 
@@ -5175,12 +5287,72 @@ def test_studio_model_profile_is_used_for_run_and_deploy(tmp_path, monkeypatch):
     assert run_calls[0]["llms"] == {
         "Writer": "claude:claude-sonnet-4-6"
     }
-    assert cli_calls[0][-4:] == [
+    assert cli_calls[0][-6:] == [
         "--llm",
         "mock",
         "--llm-for",
         "Writer=anthropic:claude-sonnet-4-6",
+        "--llm-idle-timeouts-json",
+        "{}",
     ]
+
+
+def test_studio_propagates_local_configuration_idle_release(
+    tmp_path,
+    monkeypatch,
+):
+    studio, workspace, _output = _studio(tmp_path)
+    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    workspace.save_provider_profile(
+        "local",
+        {
+            "kind": "local",
+            "base_url": "http://localhost:11434/v1",
+            "check_status": "reachable",
+            "checked_at": "2026-07-28T10:00:00+0200",
+            "model_count": "1",
+        },
+    )
+    workspace.save_model_configuration(
+        "local-writer",
+        {
+            "provider": "local",
+            "model": "qwen2.5:7b",
+            "spec": "local:qwen2.5:7b",
+            "idle_timeout": "300",
+            "check_status": "available",
+        },
+    )
+    workspace.save_model_assignment_profile(
+        "workflow.py:sample",
+        default="mock",
+        lifelines={"Writer": "local-writer"},
+    )
+    run_calls = []
+    cli_calls: list[list[str]] = []
+    monkeypatch.setattr(
+        "zippergen.studio.run_dev",
+        lambda workspace, **kwargs: run_calls.append(kwargs),
+    )
+    monkeypatch.setattr(
+        studio,
+        "_verify_model_spec",
+        lambda label, spec, for_save=False: SimpleNamespace(
+            kind="success",
+            message=f"{label}: {spec} is available.",
+        ),
+    )
+    monkeypatch.setattr(
+        "zippergen.serve.main",
+        lambda arguments: cli_calls.append(arguments) or 0,
+    )
+
+    studio.execute("run")
+    studio.deploy_workflow(["local-routed"])
+
+    assert run_calls[0]["llm_idle_timeouts"] == {"Writer": 300.0}
+    option = cli_calls[0].index("--llm-idle-timeouts-json")
+    assert json.loads(cli_calls[0][option + 1]) == {"Writer": 300.0}
 
 
 def test_studio_run_checks_only_models_used_by_llm_participants(

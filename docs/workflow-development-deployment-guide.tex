@@ -1362,8 +1362,9 @@ model
 The model workflow has three deliberately separate layers:
 \emph{provider, configuration, assignment}. A provider connection contains an
 API key or local endpoint. A named configuration contains a provider and exact
-model identifier. An assignment maps an LLM-active participant to one of those
-names. Enter \texttt{model setup} for a guided pass through all three layers.
+model identifier. For a local Ollama model, it can also contain an idle-release
+time. An assignment maps an LLM-active participant to one of those names.
+Enter \texttt{model setup} for a guided pass through all three layers.
 
 \texttt{model provider configure PROVIDER} asks for a missing API key without
 echo, or for the endpoint of a local provider. It saves and checks the
@@ -1391,7 +1392,14 @@ OpenAI-compatible or Ollama endpoint,
 \texttt{model provider configure local} asks for the endpoint (normally
 \texttt{http://127.0.0.1:11434/v1}). A later
 \texttt{model config create NAME} asks for the local model. Local identifiers
-are checked against the live \texttt{/models} response.
+are checked against the live \texttt{/models} response. Studio also asks when
+the local model should be released after its last call. The default is
+\texttt{300} seconds. Enter \texttt{never} to keep it loaded, or
+\texttt{0} to release it after every call. The workflow and its durable state
+remain active. Ollama loads the model again automatically when the next LLM
+action is reached. The policy follows the named configuration into development
+runs and deployments. Hosted providers need no idle-release setting because
+ZipperGen does not keep their models in local memory.
 
 \texttt{model assign PARTICIPANT NAME},
 \texttt{model assign PARTICIPANT.ACTION NAME}, and
@@ -2788,8 +2796,9 @@ connector:
 For a workflow with one Google Sheets requirement, guided setup performs these
 steps:
 \begin{enumerate}
-  \item It asks for the OAuth desktop credentials JSON downloaded from Google
-        Cloud.
+  \item It imports the OAuth Desktop app JSON into private Studio storage. If
+        the file is on another computer, Studio creates a private temporary
+        destination and prints one complete \texttt{scp} command.
   \item It opens the system browser for Google authorization.
   \item It asks for a spreadsheet URL or ID and a tab name.
   \item It checks that the spreadsheet and tab are reachable.
@@ -2807,11 +2816,12 @@ connector bind project-records project-records
 connector assignments check
 \end{lstlisting}
 
-The provider stores the private Google authorization. The configuration stores
-only the spreadsheet ID and tab. The workflow binding stores only the
-configuration name. During deployment, ZipperGen copies the resource metadata
-into the immutable deployment profile and copies the OAuth credential into
-the deployment's private secret file.
+The provider stores the OAuth client and authorization privately. It does not
+retain a user-managed client-file path. The configuration stores only the
+spreadsheet ID and tab. The workflow binding stores only the configuration
+name. During deployment, ZipperGen copies the resource metadata into the
+immutable deployment profile and copies the OAuth credential into the
+deployment's private secret file.
 
 Studio derives Google scopes from each connector's declared
 \texttt{access}. A read-only Sheets requirement requests

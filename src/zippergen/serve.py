@@ -48,6 +48,7 @@ import hashlib
 import importlib
 import importlib.util
 import json
+import math
 import os
 import platform
 import plistlib
@@ -121,6 +122,7 @@ class RunConfig:
     llms: dict[str, str]
     assistant: str | None
     llm_idle_timeout: float | None
+    llm_idle_timeouts: dict[str, float]
     store_path: str | None
     inputs: dict[str, object]
     options: dict[str, object]
@@ -317,6 +319,37 @@ def _parse_options(pairs: list[str], *, services: str | None = None) -> dict:
     return options
 
 
+def _parse_llm_idle_timeouts(pairs: list[str]) -> dict[str, float]:
+    values = _parse_inputs(pairs)
+    timeouts: dict[str, float] = {}
+    for target, value in values.items():
+        try:
+            seconds = float(value)
+        except (TypeError, ValueError) as exc:
+            raise SystemExit(
+                "--llm-idle-timeout-for requires "
+                "PARTICIPANT_OR_ACTION=SECONDS."
+            ) from exc
+        if not math.isfinite(seconds) or seconds < 0:
+            raise SystemExit("LLM idle release seconds must be non-negative.")
+        timeouts[str(target)] = seconds
+    return timeouts
+
+
+def _parse_llm_idle_timeouts_json(text: str | None) -> dict[str, float] | None:
+    if text is None:
+        return None
+    try:
+        value = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise SystemExit(
+            "--llm-idle-timeouts-json must be a JSON object."
+        ) from exc
+    if not isinstance(value, dict):
+        raise SystemExit("--llm-idle-timeouts-json must be a JSON object.")
+    return _parse_llm_idle_timeouts(_jsonable_kv_pairs(value))
+
+
 def _seed_inputs(wf: Workflow, inputs: dict) -> dict:
     """Var defaults from the workflow namespace, overlaid by caller inputs —
     parity with the in-process run() seeding (runtime.py:1014)."""
@@ -504,6 +537,9 @@ def _run_args_from_deployment(profile: dict[str, object]):
         llm=profile.get("llm") or None,
         llm_for=_jsonable_kv_pairs(normalize_llm_overrides(profile.get("llms"))),
         llm_idle_timeout=profile.get("llm_idle_timeout"),
+        llm_idle_timeout_for=_jsonable_kv_pairs(
+            profile.get("llm_idle_timeouts") or {}  # type: ignore[arg-type]
+        ),
         assistant=profile.get("assistant") or None,
         store=str(profile["store"]),
         input=[],
@@ -1951,6 +1987,9 @@ def _run_workflow_command(args) -> int:
     inputs.update(_parse_inputs(args.input))
     options = _parse_options(args.option, services=args.services)
     llms = normalize_llm_overrides(_parse_inputs(args.llm_for))
+    llm_idle_timeouts = _parse_llm_idle_timeouts(
+        args.llm_idle_timeout_for
+    )
 
     store_path = args.store
     if args.execution == "sqlite":
@@ -1967,6 +2006,7 @@ def _run_workflow_command(args) -> int:
         llms=llms,
         assistant=args.assistant,
         llm_idle_timeout=args.llm_idle_timeout,
+        llm_idle_timeouts=llm_idle_timeouts,
         store_path=store_path,
         inputs=inputs,
         options=options,
@@ -1978,6 +2018,7 @@ def _run_workflow_command(args) -> int:
     configure_kwargs = {
         "timeout": args.timeout,
         "llm_idle_timeout": args.llm_idle_timeout,
+        "llm_idle_timeouts": llm_idle_timeouts,
         "execution": args.execution,
         "store_path": store_path,
         "assistant": args.assistant,
@@ -3029,6 +3070,16 @@ def _apply_deploy_arguments(
     profile["llms"] = llms
     if args.llm_idle_timeout is not None:
         profile["llm_idle_timeout"] = args.llm_idle_timeout
+    supplied_idle_timeouts = _parse_llm_idle_timeouts_json(
+        args.llm_idle_timeouts_json
+    )
+    if supplied_idle_timeouts is None:
+        repeated_idle_timeouts = _parse_llm_idle_timeouts(
+            args.llm_idle_timeout_for
+        )
+        supplied_idle_timeouts = repeated_idle_timeouts or None
+    if supplied_idle_timeouts is not None:
+        profile["llm_idle_timeouts"] = supplied_idle_timeouts
     if args.assistant is not None:
         profile["assistant"] = args.assistant
     if args.services is not None:
@@ -3227,6 +3278,7 @@ def _deploy_command(args) -> int:
                 "llm": None,
                 "llms": {},
                 "llm_idle_timeout": None,
+                "llm_idle_timeouts": {},
                 "assistant": None,
                 "services": None,
                 "options": {},
@@ -3276,6 +3328,9 @@ def _deploy_local_command(args) -> int:
     inputs.update(_parse_inputs(args.input))
     options = _parse_options(args.option)
     llms = normalize_llm_overrides(_parse_inputs(args.llm_for))
+    llm_idle_timeouts = _parse_llm_idle_timeouts(
+        args.llm_idle_timeout_for
+    )
     effective_llm_routes(wf, args.llm or "mock", llms)
     store_path = _ensure_store_parent(args.store or _default_deployment_store_path(name))
     log_path = str(Path(args.log or _default_deployment_log_path(name)).expanduser())
@@ -3290,6 +3345,7 @@ def _deploy_local_command(args) -> int:
         "llm": args.llm,
         "llms": llms,
         "llm_idle_timeout": args.llm_idle_timeout,
+        "llm_idle_timeouts": llm_idle_timeouts,
         "assistant": args.assistant,
         "services": args.services,
         "options": options,
@@ -3620,6 +3676,17 @@ def _add_guided_deployment_arguments(
     )
     parser.add_argument("--llm-idle-timeout", type=float, help="Release a managed local LLM after this idle time.")
     parser.add_argument(
+        "--llm-idle-timeout-for",
+        action="append",
+        default=[],
+        metavar="PARTICIPANT_OR_ACTION=SECONDS",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
+        "--llm-idle-timeouts-json",
+        help=argparse.SUPPRESS,
+    )
+    parser.add_argument(
         "--assistant",
         choices=("codex", "claude"),
         help="Default coding-assistant backend for @assistant actions.",
@@ -3716,6 +3783,13 @@ def main(argv=None) -> int:
     )
     rn.add_argument("--llm-idle-timeout", type=float, help="Release a managed local LLM after this many idle seconds.")
     rn.add_argument(
+        "--llm-idle-timeout-for",
+        action="append",
+        default=[],
+        metavar="PARTICIPANT_OR_ACTION=SECONDS",
+        help=argparse.SUPPRESS,
+    )
+    rn.add_argument(
         "--assistant",
         choices=("codex", "claude"),
         help="Default coding-assistant backend for @assistant actions.",
@@ -3775,6 +3849,17 @@ def main(argv=None) -> int:
         help="Override the LLM for one participant or exact action; repeat as needed.",
     )
     dl.add_argument("--llm-idle-timeout", type=float, help="Release a managed local LLM after this many idle seconds.")
+    dl.add_argument(
+        "--llm-idle-timeout-for",
+        action="append",
+        default=[],
+        metavar="PARTICIPANT_OR_ACTION=SECONDS",
+        help=argparse.SUPPRESS,
+    )
+    dl.add_argument(
+        "--llm-idle-timeouts-json",
+        help=argparse.SUPPRESS,
+    )
     dl.add_argument(
         "--assistant",
         choices=("codex", "claude"),

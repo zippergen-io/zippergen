@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from urllib import request
 from urllib.error import HTTPError, URLError
 
@@ -210,7 +211,9 @@ class ManagedBackend:
         release: Callable[[], None] | None = None,
         idle_timeout: float | None = None,
     ):
-        if idle_timeout is not None and idle_timeout < 0:
+        if idle_timeout is not None and (
+            not math.isfinite(idle_timeout) or idle_timeout < 0
+        ):
             raise ValueError("idle_timeout must be non-negative.")
         self._factory = factory
         self._release = release
@@ -631,6 +634,7 @@ def router_from_specs(
     fallback: Callable | None = None,
     fallback_label: str = "mock LLM",
     idle_timeout: float | None = None,
+    idle_timeouts: Mapping[str, float] | None = None,
 ) -> tuple[Callable, str]:
     """Build a participant and action backend router from compact LLM specs.
 
@@ -646,16 +650,53 @@ def router_from_specs(
 
     built_backends: dict[str, Callable] = {}
     labels: list[str] = []
+    shared_backends: dict[tuple[str, float | None], tuple[Callable, str]] = {}
+    local_policies: dict[str, float | None] = {}
+    route_idle_timeouts = dict(idle_timeouts or {})
+    unknown_idle_routes = sorted(set(route_idle_timeouts) - set(routes))
+    if unknown_idle_routes:
+        raise ValueError(
+            "Idle release refers to unknown LLM route(s): "
+            + ", ".join(unknown_idle_routes)
+        )
     for lifeline_name, provider in routes.items():
         if callable(provider):
             built_backends[lifeline_name] = provider
             labels.append(f"{lifeline_name}=custom")
         else:
-            backend, label = backend_from_spec(
-                provider,
-                fallback=fallback,
-                idle_timeout=idle_timeout,
+            selected_idle_timeout = (
+                route_idle_timeouts[lifeline_name]
+                if lifeline_name in route_idle_timeouts
+                else idle_timeout
             )
+            provider_name, model = _split_llm_spec(provider)
+            managed_local = provider_name in {"local", "ollama"}
+            physical_spec = (
+                f"local:{model}" if model is not None else "local"
+            ) if managed_local else provider
+            if managed_local:
+                if (
+                    physical_spec in local_policies
+                    and local_policies[physical_spec] != selected_idle_timeout
+                ):
+                    raise ValueError(
+                        f"Local model {physical_spec!r} has conflicting idle "
+                        "release policies."
+                    )
+                local_policies[physical_spec] = selected_idle_timeout
+            cache_key = (
+                physical_spec,
+                selected_idle_timeout if managed_local else None,
+            )
+            cached = shared_backends.get(cache_key)
+            if cached is None:
+                cached = backend_from_spec(
+                    provider,
+                    fallback=fallback,
+                    idle_timeout=selected_idle_timeout,
+                )
+                shared_backends[cache_key] = cached
+            backend, label = cached
             built_backends[lifeline_name] = backend
             labels.append(f"{lifeline_name}={label}")
     return make_lifeline_router(built_backends), ", ".join(labels)
@@ -667,6 +708,7 @@ def router_from_env(
     fallback: Callable | None = None,
     fallback_label: str = "mock LLM",
     idle_timeout: float | None = None,
+    idle_timeouts: Mapping[str, float] | None = None,
 ) -> tuple[Callable, str]:
     """Backward-compatible alias for :func:`router_from_specs`."""
 
@@ -675,4 +717,5 @@ def router_from_env(
         fallback=fallback,
         fallback_label=fallback_label,
         idle_timeout=idle_timeout,
+        idle_timeouts=idle_timeouts,
     )

@@ -15,6 +15,7 @@ from __future__ import annotations
 import ast
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -37,6 +38,8 @@ GLOBAL_SETTINGS_NAME = "settings.json"
 PROMPT_INDEX_NAME = "index.toml"
 PROJECT_TASK_DIRECTORY = ".zippergen"
 CURRENT_TASK_NAME = "current-task.md"
+GOOGLE_CLIENT_UPLOAD_PATTERN = re.compile(r"google-oauth-client-\d+\.json")
+STALE_CONNECTOR_UPLOAD_SECONDS = 24 * 60 * 60
 ASSISTANT_RESULT_NAME = "assistant-result.json"
 SPECIFICATION_FILE_NAME = "specification.md"
 PENDING_REFINEMENT_NAME = "pending-refinement.md"
@@ -321,6 +324,45 @@ class Workspace:
         """Return the ephemeral, project-local assistant result handoff path."""
 
         return self.root / PROJECT_TASK_DIRECTORY / ASSISTANT_RESULT_NAME
+
+    def cleanup_stale_connector_uploads(
+        self,
+        *,
+        now: float | None = None,
+        max_age_seconds: float = STALE_CONNECTOR_UPLOAD_SECONDS,
+    ) -> tuple[Path, ...]:
+        """Remove abandoned Studio-owned credential uploads.
+
+        Active uploads and unrelated files are deliberately left alone.  The
+        age threshold avoids interfering with another Studio process that is
+        currently waiting for the user's ``scp`` command to finish.
+        """
+
+        upload_directory = self.directory / "uploads"
+        if not upload_directory.is_dir():
+            return ()
+        try:
+            upload_directory.chmod(0o700)
+            candidates = tuple(upload_directory.iterdir())
+        except OSError:
+            return ()
+
+        cutoff = (time.time() if now is None else now) - max_age_seconds
+        removed: list[Path] = []
+        for path in candidates:
+            if GOOGLE_CLIENT_UPLOAD_PATTERN.fullmatch(path.name) is None:
+                continue
+            try:
+                metadata = path.lstat()
+                if metadata.st_mtime > cutoff:
+                    continue
+                if not (path.is_file() or path.is_symlink()):
+                    continue
+                path.unlink()
+            except OSError:
+                continue
+            removed.append(path)
+        return tuple(removed)
 
     @property
     def pending_refinement_path(self) -> Path:
@@ -2011,6 +2053,34 @@ class Workspace:
             )
         if not values.get("spec"):
             raise WorkspaceError("A model configuration requires a model spec.")
+        idle_timeout = str(values.get("idle_timeout") or "").strip()
+        if idle_timeout:
+            provider = str(values.get("provider") or "").casefold()
+            if provider not in {"local", "ollama"}:
+                raise WorkspaceError(
+                    "Idle release is only available for local Ollama model "
+                    "configurations."
+                )
+            try:
+                idle_seconds = float(idle_timeout)
+            except ValueError as exc:
+                raise WorkspaceError(
+                    "A model configuration idle timeout must be a number of "
+                    "seconds."
+                ) from exc
+            if not math.isfinite(idle_seconds) or idle_seconds < 0:
+                raise WorkspaceError(
+                    "A model configuration idle timeout must be a non-negative "
+                    "number of seconds."
+                )
+            values = {
+                **values,
+                "idle_timeout": (
+                    str(int(idle_seconds))
+                    if idle_seconds.is_integer()
+                    else str(idle_seconds)
+                ),
+            }
         state = self.load()
         raw = state.get("model_configurations") or {}
         if not isinstance(raw, dict):
@@ -2463,6 +2533,7 @@ class Workspace:
         inputs: dict[str, object],
         llm: str,
         llms: dict[str, str] | None = None,
+        llm_idle_timeouts: dict[str, float] | None = None,
         assistant: str | None = None,
         options: dict[str, object] | None = None,
         services: str | None = None,
@@ -2489,6 +2560,10 @@ class Workspace:
             "inputs": dict(inputs),
             "llm": llm,
             "llms": dict(llms or {}),
+            "llm_idle_timeouts": {
+                str(target): float(value)
+                for target, value in (llm_idle_timeouts or {}).items()
+            },
             "assistant": assistant,
             "options": dict(options or {}),
             "services": services,

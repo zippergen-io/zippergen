@@ -102,6 +102,10 @@ Commands are grouped by purpose:
 | `run`, `resume`, and `runs` | Durable development execution, decisions, traces, recovery |
 | `deploy` | Bundles, services, durable state, decisions, and logs |
 
+Named local Ollama configurations can release their model after an idle
+period. The workflow stays active, and the model loads again automatically at
+the next LLM action.
+
 Tab completion shows valid commands, workflows, participants, model
 configurations, and deployments. `current` gives one project summary. Every
 structured result ends with a useful `Next` section.
@@ -413,7 +417,9 @@ deploy call-intake
 The default reply mode creates Gmail drafts. Change it to `send` only after
 testing with a dedicated account. Before setup, enable the Gmail and Google
 Sheets APIs in one Google Cloud project and download a Desktop app OAuth
-client. Read-only connector requirements request read-only Google scopes.
+client. Studio imports that client into private storage. If it is on another
+computer, Studio prints one `scp` command and removes the temporary upload
+after import. Read-only connector requirements request read-only Google scopes.
 Writing to an existing spreadsheet requires Google's broader spreadsheets
 scope. See
 [`google_sheets_records.py`](examples/google_sheets_records.py) for a complete
@@ -439,6 +445,7 @@ Documentation:
 
 - [Your First ZipperGen Workflow](docs/first-workflow.pdf)
 - [Development and Deployment Manual](docs/workflow-development-deployment-guide.pdf)
+- [Call Intake end-to-end TeX source](docs/call-intake-end-to-end.tex)
 - [Tutorial TeX source](docs/first-workflow.tex)
 - [Manual TeX source](docs/workflow-development-deployment-guide.tex)
 - [Workflow authoring skill](.agents/skills/zippergen-workflows/SKILL.md)

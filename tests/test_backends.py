@@ -10,6 +10,7 @@ from zippergen.backends import (
     backend_from_spec,
     make_lifeline_router,
     make_openai_backend,
+    router_from_specs,
 )
 
 
@@ -100,6 +101,80 @@ def test_managed_backend_is_lazy_and_releases_after_call():
 
     assert backend.loaded is False
     assert calls == ["factory", "call", "release"]
+
+
+def test_router_uses_route_specific_idle_release(monkeypatch):
+    selected: list[tuple[str, float | None]] = []
+
+    def fake_backend_from_spec(spec, *, fallback=None, idle_timeout=None):
+        selected.append((spec, idle_timeout))
+        return (lambda action, inputs: {"text": "done"}), spec
+
+    monkeypatch.setattr(
+        "zippergen.backends.backend_from_spec",
+        fake_backend_from_spec,
+    )
+
+    router_from_specs(
+        {
+            "Writer": "local:qwen2.5:7b",
+            "Reviewer": "local:mistral",
+        },
+        idle_timeout=600,
+        idle_timeouts={"Writer": 0},
+    )
+
+    assert selected == [
+        ("local:qwen2.5:7b", 0),
+        ("local:mistral", 600),
+    ]
+
+
+def test_router_shares_one_managed_backend_for_one_local_configuration(
+    monkeypatch,
+):
+    built = []
+
+    def fake_backend_from_spec(spec, *, fallback=None, idle_timeout=None):
+        backend = lambda action, inputs: {"text": "done"}
+        built.append((spec, idle_timeout, backend))
+        return backend, spec
+
+    monkeypatch.setattr(
+        "zippergen.backends.backend_from_spec",
+        fake_backend_from_spec,
+    )
+
+    router_from_specs(
+        {
+            "Writer": "local:qwen2.5:7b",
+            "Reviewer": "ollama:qwen2.5:7b",
+        },
+        idle_timeouts={"Writer": 300, "Reviewer": 300},
+    )
+
+    assert len(built) == 1
+
+
+def test_router_rejects_conflicting_idle_policies_across_local_aliases(
+    monkeypatch,
+):
+    monkeypatch.setattr(
+        "zippergen.backends.backend_from_spec",
+        lambda spec, *, fallback=None, idle_timeout=None: (
+            lambda action, inputs: {"text": "done"},
+            spec,
+        ),
+    )
+
+    with pytest.raises(ValueError, match="conflicting idle release policies"):
+        router_from_specs(
+            {
+                "Writer": "local:qwen2.5:7b",
+                "Reviewer": "ollama:qwen2.5:7b",
+            },
+            idle_timeouts={"Writer": 300, "Reviewer": 0},
+        )
 
 
 def test_backend_from_spec_accepts_inline_openai_model(monkeypatch):

@@ -2,12 +2,13 @@ DOC_DIR := docs
 DOC_BUILD_DIR := $(DOC_DIR)/_build
 FIRST_WORKFLOW_DOC := first-workflow
 MANUAL_DOC := workflow-development-deployment-guide
-DOC_NAMES := $(FIRST_WORKFLOW_DOC) $(MANUAL_DOC)
+CALL_INTAKE_DOC := call-intake-end-to-end
+DOC_NAMES := $(FIRST_WORKFLOW_DOC) $(MANUAL_DOC) $(CALL_INTAKE_DOC)
 DOC_SOURCES := $(addprefix $(DOC_DIR)/,$(addsuffix .tex,$(DOC_NAMES)))
 
-.PHONY: docs docs-check docs-first-workflow docs-manual
+.PHONY: docs docs-check docs-first-workflow docs-manual docs-call-intake
 
-docs: docs-first-workflow docs-manual
+docs: docs-first-workflow docs-manual docs-call-intake
 
 docs-first-workflow: docs-check
 	@mkdir -p "$(DOC_BUILD_DIR)"
@@ -30,6 +31,17 @@ docs-manual: docs-check
 		-outdir=_build \
 		"$(MANUAL_DOC).tex"
 	@printf 'Built %s/%s.pdf\n' "$(DOC_BUILD_DIR)" "$(MANUAL_DOC)"
+
+docs-call-intake: docs-check
+	@mkdir -p "$(DOC_BUILD_DIR)"
+	@cd "$(DOC_DIR)" && latexmk \
+		-pdf \
+		-interaction=nonstopmode \
+		-halt-on-error \
+		-file-line-error \
+		-outdir=_build \
+		"$(CALL_INTAKE_DOC).tex"
+	@printf 'Built %s/%s.pdf\n' "$(DOC_BUILD_DIR)" "$(CALL_INTAKE_DOC)"
 
 docs-check:
 	@command -v latexmk >/dev/null 2>&1 || { \

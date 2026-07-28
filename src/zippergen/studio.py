@@ -501,6 +501,7 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
         color: bool | None = None,
     ) -> None:
         self.workspace = workspace
+        self.workspace.cleanup_stale_connector_uploads()
         self.input = input_func
         self.output = output_func
         self._prompt_toolkit_enabled = (
@@ -1146,10 +1147,14 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
             if action == "config":
                 config_actions = [
                     ("list", "list reusable configurations"),
-                    ("create", "create a named provider/model configuration"),
+                    (
+                        "create",
+                        "create a provider/model configuration with optional "
+                        "local idle release",
+                    ),
                     ("show", "inspect a saved configuration"),
                     ("check", "verify exact model availability"),
-                    ("edit", "change provider or model"),
+                    ("edit", "change provider, model, or local idle release"),
                     ("rename", "rename and migrate assignments"),
                     ("remove", "remove an unused configuration"),
                 ]
@@ -2727,6 +2732,12 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
                 module,
                 for_run=True,
             )
+            idle_timeouts = self._model_idle_timeout_routes(
+                current,
+                workflow,
+                module,
+                default_override=run_args[0] if run_args else None,
+            )
             human_connector_factory = self._human_connector_factory(
                 current, workflow, module
             )
@@ -2735,6 +2746,7 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
                     self.workspace,
                     llm=selected_default,
                     llms=normalize_llm_overrides(profile.get("lifelines")),
+                    llm_idle_timeouts=idle_timeouts,
                     assistant=assistant_backend,
                     interactive=True,
                     input_func=self.input,
@@ -6116,6 +6128,18 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
                 model_rows.append(
                     (f"Provider {provider}", provider_status, kind)
                 )
+            idle_routes = self._model_idle_timeout_routes(
+                str(state["current_workflow"]),
+                workflow,
+                module,
+            )
+            model_rows.append(
+                (
+                    "Local idle release",
+                    self._model_idle_routes_summary(idle_routes),
+                    "success" if idle_routes else None,
+                )
+            )
             self._emit_table("Models", model_rows)
         else:
             self._emit_table(
@@ -8295,6 +8319,17 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
             for target, model in sorted(action_overrides.items()):
                 arguments.extend(["--llm-for", f"{target}={model}"])
                 selected_specs.append(str(model))
+        idle_timeouts = self._model_idle_timeout_routes(
+            current,
+            deployment_workflow,
+            deployment_module,
+        )
+        arguments.extend(
+            [
+                "--llm-idle-timeouts-json",
+                json.dumps(idle_timeouts, sort_keys=True),
+            ]
+        )
         arguments.extend(
             self._deployment_secret_reuse_arguments(
                 name=name,
@@ -8652,6 +8687,13 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
                     store_kind,
                 ),
                 ("Models", selected_models, None),
+                (
+                    "Local idle release",
+                    self._model_idle_routes_summary(
+                        profile.get("llm_idle_timeouts")
+                    ),
+                    None,
+                ),
                 ("Connectors", selected_connectors, None),
                 (
                     "Cause",
