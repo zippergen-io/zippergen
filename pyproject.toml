@@ -27,6 +27,12 @@ dependencies = [
   "prompt-toolkit>=3.0.52,<4",
 ]
 
+[project.optional-dependencies]
+google = [
+  "google-auth>=2.40,<3",
+  "google-auth-oauthlib>=1.2,<2",
+]
+
 [dependency-groups]
 dev = [
   "pytest>=8,<10",

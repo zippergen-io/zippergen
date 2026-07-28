@@ -57,13 +57,16 @@ def test_call_intake_declares_guided_deployment_requirements():
     assert fields["openai_api_key"].secret is True
     assert fields["certified"].required is True
     assert fields["recipient"].required is True
-    assert fields["sheet_id"].when_values == ("sheets", "both")
-    assert {package.import_name for package in spec.packages} == {
-        "google.auth",
-        "google_auth_oauthlib",
-        "googleapiclient",
-    }
-    assert [step.name for step in spec.setup] == ["gmail-oauth", "sheets-oauth"]
+    assert "sheet_id" not in fields
+    assert "gmail_token" not in fields
+    assert spec.packages == ()
+    assert spec.setup == ()
+    assert spec.files == ("examples/call_intake.py",)
+    requirements = {item.name: item for item in module.zippergen_connectors}
+    assert requirements["call-mailbox"].kind == "gmail"
+    assert requirements["call-mailbox"].participant == "Mailbox"
+    assert requirements["call-records"].kind == "google-sheets"
+    assert requirements["call-records"].participant == "Table"
 
 
 def test_certified_sender_accepts_exact_and_domain(tmp_path):

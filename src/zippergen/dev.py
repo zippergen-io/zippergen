@@ -380,6 +380,7 @@ def run_dev(
     output_func: OutputFunc = print,
     renderer: TerminalRenderer | None = None,
     human_connector_factory: Callable[[str], object] | None = None,
+    connector_environment: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Create or resume one managed durable development run."""
 
@@ -492,6 +493,7 @@ def run_dev(
         selected_llm_specs(selected_llm, selected_llms)
     )
     provider_environment.update(environment)
+    provider_environment.update(connector_environment or {})
     environment = provider_environment
 
     store_path = str(record["store"])

@@ -116,7 +116,12 @@ def _action_definition(action: object) -> dict[str, object]:
     elif isinstance(action, PureAction):
         base.update({"kind": "pure", "implementation_hash": _implementation_hash(action)})
     elif isinstance(action, EffectAction):
-        base.update({"kind": "effect", "implementation_hash": _implementation_hash(action)})
+        base.update({
+            "kind": "effect",
+            "implementation_hash": _implementation_hash(action),
+            "connector": action.connector,
+            "operation": action.operation,
+        })
     elif isinstance(action, AssistantAction):
         base.update({
             "kind": "assistant",

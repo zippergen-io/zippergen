@@ -88,3 +88,45 @@ def test_failed_ensurepip_keeps_the_previous_environment_and_has_guidance(
     assert "previous deployment environment" in message
     assert sentinel.read_text() == "still usable\n"
     assert not list((home / "environments").glob(".*-building-*"))
+
+
+def test_google_connector_deployment_installs_the_optional_extra(
+    tmp_path,
+    monkeypatch,
+):
+    home = tmp_path / "home"
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(home))
+    monkeypatch.setattr(
+        "zippergen.serve.shutil.which",
+        lambda name: "/tools/uv" if name == "uv" else None,
+    )
+    calls: list[list[str]] = []
+
+    def fake_run(arguments, *, check):
+        command = [str(value) for value in arguments]
+        calls.append(command)
+        if command[1] == "venv":
+            python = Path(command[-1]) / "bin" / "python"
+            python.parent.mkdir(parents=True)
+            python.write_text("managed python\n")
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr("zippergen.serve.subprocess.run", fake_run)
+    profile: dict[str, object] = {
+        "name": "google-service",
+        "connectors": {
+            "requirement:records": {
+                "kind": "google-sheets",
+            },
+        },
+    }
+
+    _prepare_deployment_environment(
+        profile,
+        DeploymentSpec(),
+        skip_install=False,
+    )
+
+    install_requirement = calls[1][5]
+    assert install_requirement.endswith("[google]")
+    assert profile["zippergen_extras"] == ["google"]

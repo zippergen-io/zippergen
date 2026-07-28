@@ -90,6 +90,7 @@ from zippergen.syntax import (
     ActStmt,
     AssistantAction,
     CoregionStmt,
+    EffectAction,
     IfStmt,
     ParallelStmt,
     SeqStmt,
@@ -148,19 +149,52 @@ class DoctorConfig:
 
 
 def _import_module_path(module_path: str) -> ModuleType:
-    path = Path(module_path).expanduser()
+    path = Path(module_path).expanduser().resolve()
+    package_parts: list[str] = []
+    package_root = path.parent
+    while (package_root / "__init__.py").is_file():
+        package_parts.insert(0, package_root.name)
+        package_root = package_root.parent
+    if package_parts:
+        module_name = ".".join(
+            [
+                *package_parts,
+                *([] if path.name == "__init__.py" else [path.stem]),
+            ]
+        )
+        import_root = package_root
+    else:
+        module_name = (
+            f"_zippergen_wf_"
+            f"{hashlib.sha1(str(path).encode()).hexdigest()[:12]}"
+        )
+        import_root = path.parent
     spec = importlib.util.spec_from_file_location(
-        f"_zippergen_wf_{hashlib.sha1(str(path).encode()).hexdigest()[:12]}",
+        module_name,
         path,
     )
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
-    sys.path.insert(0, str(path.parent))
+    modules_before = set(sys.modules)
+    sys.path.insert(0, str(import_root))
     try:
         spec.loader.exec_module(module)
     finally:
+        for imported_name in set(sys.modules) - modules_before:
+            imported = sys.modules.get(imported_name)
+            imported_file = getattr(imported, "__file__", None)
+            if not imported_file:
+                continue
+            try:
+                local = Path(imported_file).resolve().is_relative_to(
+                    import_root
+                )
+            except OSError:
+                local = False
+            if local:
+                sys.modules.pop(imported_name, None)
         try:
-            sys.path.remove(str(path.parent))
+            sys.path.remove(str(import_root))
         except ValueError:
             pass
     return module
@@ -428,6 +462,12 @@ def _deployment_environment(profile: dict[str, object]) -> dict[str, str]:
         raise SystemExit("Deployment profile environment must be an object.")
     values = {str(key): str(value) for key, value in raw.items()}
     values.update(_load_deployment_secrets(profile))
+    connectors = profile.get("connectors")
+    if isinstance(connectors, dict):
+        values["ZIPPERGEN_CONNECTORS_JSON"] = json.dumps(
+            connectors,
+            sort_keys=True,
+        )
     return values
 
 
@@ -1305,6 +1345,96 @@ def _doctor_checks(
                         f"connector {requirement.name}",
                         f"Telegram chat {chat_id} is reachable",
                     ))
+            elif kind == "google-sheets":
+                credential_env = str(
+                    raw_binding.get("credential_env") or ""
+                )
+                credential = environment.get(credential_env)
+                spreadsheet_id = str(
+                    raw_binding.get("spreadsheet_id") or ""
+                )
+                tab = str(raw_binding.get("tab") or "")
+                if not credential or not spreadsheet_id or not tab:
+                    checks.append(_doctor_check(
+                        "fail",
+                        f"connector {requirement.name}",
+                        "Google credential, spreadsheet ID, or tab is missing",
+                    ))
+                    continue
+                if not live_connectors:
+                    checks.append(_doctor_check(
+                        "ok",
+                        f"connector {requirement.name}",
+                        f"Google spreadsheet {spreadsheet_id}, tab {tab} is configured",
+                    ))
+                    continue
+                try:
+                    from zippergen.google_sheets import GoogleSheetsTable
+
+                    info = GoogleSheetsTable(
+                        requirement=requirement.name,
+                        spreadsheet_id=spreadsheet_id,
+                        tab=tab,
+                        credential_json=credential,
+                        access=requirement.access,
+                    ).inspect()
+                except Exception as exc:
+                    checks.append(_doctor_check(
+                        "fail",
+                        f"connector {requirement.name}",
+                        f"Google Sheets is unavailable: {exc}",
+                    ))
+                else:
+                    checks.append(_doctor_check(
+                        "ok",
+                        f"connector {requirement.name}",
+                        f"{info['title']}, tab {info['tab']} is reachable",
+                    ))
+            elif kind == "gmail":
+                credential_env = str(
+                    raw_binding.get("credential_env") or ""
+                )
+                credential = environment.get(credential_env)
+                account = str(raw_binding.get("account") or "me")
+                query = str(
+                    raw_binding.get("query") or "is:unread in:inbox"
+                )
+                if not credential:
+                    checks.append(_doctor_check(
+                        "fail",
+                        f"connector {requirement.name}",
+                        "Google credential is missing",
+                    ))
+                    continue
+                if not live_connectors:
+                    checks.append(_doctor_check(
+                        "ok",
+                        f"connector {requirement.name}",
+                        f"Gmail account {account}, query {query!r} is configured",
+                    ))
+                    continue
+                try:
+                    from zippergen.google_gmail import GmailMailbox
+
+                    info = GmailMailbox(
+                        requirement=requirement.name,
+                        account=account,
+                        query=query,
+                        credential_json=credential,
+                        access=requirement.access,
+                    ).inspect()
+                except Exception as exc:
+                    checks.append(_doctor_check(
+                        "fail",
+                        f"connector {requirement.name}",
+                        f"Gmail is unavailable: {exc}",
+                    ))
+                else:
+                    checks.append(_doctor_check(
+                        "ok",
+                        f"connector {requirement.name}",
+                        f"Gmail account {info['email']} is reachable",
+                    ))
             else:
                 checks.append(_doctor_check(
                     "warn",
@@ -2020,6 +2150,13 @@ def _validate_workflow(workflow: Workflow, module: ModuleType) -> dict[str, obje
         })
     else:
         participants = {item.name for item in lifelines}
+        requirement_names = {
+            requirement.name for requirement in connector_requirements
+        }
+        requirements_by_name = {
+            requirement.name: requirement
+            for requirement in connector_requirements
+        }
         for requirement in connector_requirements:
             if requirement.participant not in participants:
                 checks.append({
@@ -2036,6 +2173,44 @@ def _validate_workflow(workflow: Workflow, module: ModuleType) -> dict[str, obje
                     "name": f"connector {requirement.name}",
                     "detail": (
                         f"{requirement.kind}; {requirement.access}; participant "
+                        f"{requirement.participant}"
+                    ),
+                })
+        referenced_connectors = {
+            action.connector
+            for action in _workflow_actions(workflow)
+            if isinstance(action, EffectAction) and action.connector is not None
+        }
+        for connector_name in sorted(referenced_connectors):
+            if connector_name not in requirement_names:
+                checks.append({
+                    "status": "fail",
+                    "name": f"effect connector {connector_name}",
+                    "detail": (
+                        "the effect references an undeclared connector; add a "
+                        "matching ConnectorRequirement"
+                    ),
+                })
+            else:
+                checks.append({
+                    "status": "ok",
+                    "name": f"effect connector {connector_name}",
+                    "detail": "declared logical connector requirement",
+                })
+        for participant, action in _workflow_action_sites(workflow):
+            if not isinstance(action, EffectAction) or action.connector is None:
+                continue
+            requirement = requirements_by_name.get(action.connector)
+            if (
+                requirement is not None
+                and requirement.participant != participant
+            ):
+                checks.append({
+                    "status": "fail",
+                    "name": f"effect connector owner {action.name}",
+                    "detail": (
+                        f"action runs on {participant}, but connector "
+                        f"{requirement.name} belongs to "
                         f"{requirement.participant}"
                     ),
                 })
@@ -2436,17 +2611,16 @@ def _copy_deployment_source(source: Path, target: Path) -> None:
         shutil.copy2(source, target)
 
 
-def _assistant_actions(workflow: Workflow) -> tuple[AssistantAction, ...]:
-    """Return each first-class assistant action used by a global workflow."""
+def _workflow_action_sites(
+    workflow: Workflow,
+) -> tuple[tuple[str, object], ...]:
+    """Return each action site and its owning participant."""
 
-    found: list[AssistantAction] = []
-    seen: set[int] = set()
+    found: list[tuple[str, object]] = []
 
     def visit(stmt) -> None:
         if isinstance(stmt, ActStmt):
-            if isinstance(stmt.action, AssistantAction) and id(stmt.action) not in seen:
-                seen.add(id(stmt.action))
-                found.append(stmt.action)
+            found.append((stmt.lifeline.name, stmt.action))
         elif isinstance(stmt, SeqStmt):
             visit(stmt.first)
             visit(stmt.second)
@@ -2464,6 +2638,29 @@ def _assistant_actions(workflow: Workflow) -> tuple[AssistantAction, ...]:
 
     visit(workflow.body)
     return tuple(found)
+
+
+def _workflow_actions(workflow: Workflow) -> tuple[object, ...]:
+    """Return each distinct first-class action used by a global workflow."""
+
+    found: list[object] = []
+    seen: set[int] = set()
+    for _participant, action in _workflow_action_sites(workflow):
+        if id(action) in seen:
+            continue
+        seen.add(id(action))
+        found.append(action)
+    return tuple(found)
+
+
+def _assistant_actions(workflow: Workflow) -> tuple[AssistantAction, ...]:
+    """Return each first-class assistant action used by a global workflow."""
+
+    return tuple(
+        action
+        for action in _workflow_actions(workflow)
+        if isinstance(action, AssistantAction)
+    )
 
 
 def _bundle_deployment(
@@ -2578,16 +2775,43 @@ def _bundle_deployment(
     profile["bundled_files"] = [str(path) for path in copied.values()]
 
 
-def _zippergen_install_requirement() -> str:
+def _zippergen_install_requirement(
+    *,
+    extras: tuple[str, ...] = (),
+) -> str:
     project_root = Path(__file__).resolve().parents[2]
     if (project_root / "pyproject.toml").exists():
-        return str(project_root)
-    try:
-        from importlib.metadata import version
+        requirement = str(project_root)
+    else:
+        try:
+            from importlib.metadata import version
 
-        return f"zippergen=={version('zippergen')}"
-    except Exception:
-        return "zippergen"
+            requirement = f"zippergen=={version('zippergen')}"
+        except Exception:
+            requirement = "zippergen"
+    if extras:
+        name, separator, version_spec = requirement.partition("==")
+        suffix = ",".join(sorted(set(extras)))
+        return (
+            f"{name}[{suffix}]=={version_spec}"
+            if separator
+            else f"{requirement}[{suffix}]"
+        )
+    return requirement
+
+
+def _deployment_zippergen_extras(
+    profile: dict[str, object],
+) -> tuple[str, ...]:
+    raw = profile.get("connectors") or {}
+    bindings = raw if isinstance(raw, dict) else {}
+    if any(
+        isinstance(value, dict)
+        and value.get("kind") in {"gmail", "google-sheets"}
+        for value in bindings.values()
+    ):
+        return ("google",)
+    return ()
 
 
 def _prepare_deployment_environment(
@@ -2598,6 +2822,8 @@ def _prepare_deployment_environment(
 ) -> None:
     requirements = [package.requirement for package in spec.packages]
     profile["packages"] = requirements
+    zippergen_extras = _deployment_zippergen_extras(profile)
+    profile["zippergen_extras"] = list(zippergen_extras)
     if skip_install:
         profile["python"] = str(profile.get("python") or sys.executable)
         return
@@ -2633,7 +2859,7 @@ def _prepare_deployment_environment(
                 "install",
                 "--python",
                 str(build_python),
-                _zippergen_install_requirement(),
+                _zippergen_install_requirement(extras=zippergen_extras),
                 *requirements,
             ]
         else:
@@ -2643,7 +2869,7 @@ def _prepare_deployment_environment(
                 "-m",
                 "pip",
                 "install",
-                _zippergen_install_requirement(),
+                _zippergen_install_requirement(extras=zippergen_extras),
                 *requirements,
             ]
         phase = "installing deployment dependencies"

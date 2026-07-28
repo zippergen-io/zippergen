@@ -14,6 +14,8 @@ from zippergen.deployment import *      # noqa: F401, F403
 from zippergen.connectors import *      # noqa: F401, F403
 from zippergen.view import *            # noqa: F401, F403
 from zippergen.semantic import *        # noqa: F401, F403
-from zippergen import syntax, actions, backends, human_backends, assistant_backends, formula, builder, projection, runtime, sqlite_runner, deployment, connectors, view, semantic
+from zippergen.google_sheets import *    # noqa: F401, F403
+from zippergen.google_gmail import *     # noqa: F401, F403
+from zippergen import syntax, actions, backends, human_backends, assistant_backends, formula, builder, projection, runtime, sqlite_runner, deployment, connectors, google_sheets, google_gmail, view, semantic
 
-__all__: list[str] = syntax.__all__ + actions.__all__ + backends.__all__ + human_backends.__all__ + assistant_backends.__all__ + formula.__all__ + builder.__all__ + projection.__all__ + runtime.__all__ + sqlite_runner.__all__ + deployment.__all__ + connectors.__all__ + view.__all__ + semantic.__all__  # type: ignore[assignment]
+__all__: list[str] = syntax.__all__ + actions.__all__ + backends.__all__ + human_backends.__all__ + assistant_backends.__all__ + formula.__all__ + builder.__all__ + projection.__all__ + runtime.__all__ + sqlite_runner.__all__ + deployment.__all__ + connectors.__all__ + google_sheets.__all__ + google_gmail.__all__ + view.__all__ + semantic.__all__  # type: ignore[assignment]

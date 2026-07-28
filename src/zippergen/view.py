@@ -277,7 +277,18 @@ def _render_action(action: object, *, full: bool) -> list[str]:
             f"def {action.name}({params}) -> {result_type}: ...",
         ]
     decorator = "effect" if isinstance(action, EffectAction) else "pure"
-    return [f"@{decorator}", f"def {action.name}({params}) -> {result_type}: ..."]  # type: ignore[attr-defined]
+    arguments: list[str] = []
+    if isinstance(action, EffectAction):
+        if action.connector is not None:
+            arguments.append(f"connector={action.connector!r}")
+        if action.operation is not None:
+            arguments.append(f"operation={action.operation!r}")
+    rendered = (
+        f"@{decorator}({', '.join(arguments)})"
+        if arguments
+        else f"@{decorator}"
+    )
+    return [rendered, f"def {action.name}({params}) -> {result_type}: ..."]  # type: ignore[attr-defined]
 
 
 class _GlobalRenderer:

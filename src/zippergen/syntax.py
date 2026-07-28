@@ -270,6 +270,8 @@ class EffectAction:
     outputs: tuple[tuple[str, ZType], ...]
     fn: Callable[..., object]
     visible: bool = True
+    connector: str | None = None
+    operation: str | None = None
 
     def __repr__(self) -> str:
         ins = ", ".join(f"{n}: {t.__name__}" for n, t in self.inputs)

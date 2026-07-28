@@ -119,6 +119,75 @@ def sample(request: str @ User) -> str:
     return choice @ User
 """
 
+GOOGLE_SHEETS_SOURCE = """
+from zippergen import ConnectorRequirement, Lifeline, effect, workflow
+
+User = Lifeline("User")
+Records = Lifeline("Records")
+
+@effect(connector="call-records", operation="upsert-json-row")
+def save_record(record: str) -> str:
+    return "created"
+
+zippergen_connectors = (
+    ConnectorRequirement(
+        name="call-records",
+        kind="google-sheets",
+        participant="Records",
+        capabilities=("read-rows", "upsert-row"),
+        access="read-write",
+    ),
+)
+
+@workflow
+def sample(record: str @ User) -> str:
+    User(record) >> Records(record)
+    Records: status = save_record(record)
+    Records(status) >> User(status)
+    return status @ User
+"""
+
+GMAIL_AND_SHEETS_SOURCE = """
+from zippergen import ConnectorRequirement, Lifeline, effect, workflow
+
+User = Lifeline("User")
+Mailbox = Lifeline("Mailbox")
+Records = Lifeline("Records")
+
+@effect(connector="mailbox", operation="read-messages")
+def read_mail() -> str:
+    return "message"
+
+@effect(connector="records", operation="upsert-row")
+def save_record(message: str) -> str:
+    return "created"
+
+zippergen_connectors = (
+    ConnectorRequirement(
+        name="mailbox",
+        kind="gmail",
+        participant="Mailbox",
+        capabilities=("read-messages",),
+        access="read-only",
+    ),
+    ConnectorRequirement(
+        name="records",
+        kind="google-sheets",
+        participant="Records",
+        capabilities=("upsert-row",),
+        access="write",
+    ),
+)
+
+@workflow
+def sample() -> str:
+    Mailbox: message = read_mail()
+    Mailbox(message) >> Records(message)
+    Records: status = save_record(message)
+    Records(status) >> User(status)
+    return status @ User
+"""
+
 
 def _studio(tmp_path, responses=(), secret_responses=()):
     root = tmp_path / "project"
@@ -203,6 +272,86 @@ def test_studio_completion_is_context_and_project_aware(tmp_path):
     ) == [
         "'notes folder/spec.md'"
     ]
+    assert _completions(studio, "workflow impo") == ["import"]
+
+
+def test_studio_imports_external_workflow_dependencies_and_resources(
+    tmp_path,
+):
+    studio, workspace, output = _studio(tmp_path)
+    external = tmp_path / "external"
+    (external / "flows").mkdir(parents=True)
+    (external / "prompts").mkdir()
+    (external / "pyproject.toml").write_text("[project]\nname='source'\n")
+    (external / "flows" / "__init__.py").write_text("")
+    (external / "flows" / "helper.py").write_text(
+        "from zippergen import pure\n\n"
+        "@pure\n"
+        "def normalize(value: str) -> str:\n"
+        "    return value.strip()\n"
+    )
+    (external / "prompts" / "instructions.md").write_text("Keep it short.\n")
+    source = external / "flows" / "imported.py"
+    source.write_text(
+        "from zippergen import DeploymentSpec, Lifeline, workflow\n"
+        "from .helper import normalize\n\n"
+        "User = Lifeline('User')\n\n"
+        "zippergen_deployment = DeploymentSpec(\n"
+        "    name='imported',\n"
+        "    files=('prompts/instructions.md',),\n"
+        ")\n\n"
+        "@workflow\n"
+        "def imported(request: str @ User) -> str:\n"
+        "    User: result = normalize(request)\n"
+        "    return result @ User\n"
+    )
+
+    studio.execute(f"workflow import {source}")
+
+    assert (workspace.root / "flows" / "imported.py").is_file()
+    assert (workspace.root / "flows" / "__init__.py").is_file()
+    assert (workspace.root / "flows" / "helper.py").is_file()
+    assert (workspace.root / "prompts" / "instructions.md").is_file()
+    assert workspace.current_workflow == "flows/imported.py:imported"
+    assert any("Workflow imported" in line for line in output)
+    assert any("workflow validate" in line for line in output)
+
+
+def test_studio_import_refuses_to_overwrite_different_project_file(tmp_path):
+    studio, workspace, _output = _studio(tmp_path)
+    external = tmp_path / "external"
+    external.mkdir()
+    source = external / "imported.py"
+    source.write_text(WORKFLOW_SOURCE)
+    (workspace.root / "imported.py").write_text("# local work\n")
+
+    with pytest.raises(SystemExit, match="would overwrite different"):
+        studio.execute(f"workflow import {source}")
+
+    assert (workspace.root / "imported.py").read_text() == "# local work\n"
+
+
+def test_studio_import_selects_requested_entry_from_multi_workflow_file(
+    tmp_path,
+):
+    studio, workspace, _output = _studio(tmp_path)
+    external = tmp_path / "external"
+    external.mkdir()
+    source = external / "choices.py"
+    source.write_text(
+        "from zippergen import Lifeline, workflow\n"
+        "User = Lifeline('User')\n\n"
+        "@workflow\n"
+        "def first(value: str @ User) -> str:\n"
+        "    return value @ User\n\n"
+        "@workflow\n"
+        "def second(value: str @ User) -> str:\n"
+        "    return value @ User\n"
+    )
+
+    studio.execute(f"workflow import {source}:second")
+
+    assert workspace.current_workflow == "choices.py:second"
 
 
 def test_studio_inspects_current_run_with_a_local_program_pointer(tmp_path):
@@ -2953,6 +3102,159 @@ def test_studio_configures_checks_and_binds_a_telegram_connector(
     assert binding["token_env"].startswith("ZIPPERGEN_CONNECTOR_")
     secret_argument = arguments[arguments.index("--connector-secret") + 1]
     assert secret_argument.endswith("=private-bot-token")
+
+
+def test_studio_guides_google_sheet_setup_and_builds_private_runtime_context(
+    tmp_path,
+    monkeypatch,
+):
+    credentials = tmp_path / "google-desktop.json"
+    credentials.write_text('{"installed":{"client_id":"example"}}')
+    sheet_url = (
+        "https://docs.google.com/spreadsheets/d/sheet-123/edit#gid=0"
+    )
+    studio, workspace, output = _studio(
+        tmp_path,
+        responses=[str(credentials), sheet_url, "Calls"],
+    )
+    (workspace.root / "workflow.py").write_text(GOOGLE_SHEETS_SOURCE)
+    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    monkeypatch.setattr(
+        "zippergen.google_auth.authorize_google",
+        lambda path, *, scopes: '{"refresh_token":"private-google-token"}',
+    )
+    monkeypatch.setattr(
+        "zippergen.google_auth.check_google_authorization",
+        lambda value, *, scopes: value,
+    )
+    monkeypatch.setattr(
+        "zippergen.google_sheets.GoogleSheetsTable.inspect",
+        lambda self: {
+            "title": "Call records",
+            "tab": self.tab,
+            "tabs": [self.tab],
+        },
+    )
+
+    studio.execute("connector setup")
+
+    assert workspace.connector_binding_profile(
+        "workflow.py:sample"
+    ) == {"call-records": "call-records"}
+    configuration = workspace.connector_configurations()["call-records"]
+    assert configuration["provider"] == "google"
+    assert configuration["kind"] == "google-sheets"
+    assert configuration["spreadsheet_id"] == "sheet-123"
+    assert configuration["tab"] == "Calls"
+    assert configuration["check_status"] == "available"
+    assert workspace.connector_provider_secret(
+        "google", "authorized_user_json"
+    ) == '{"refresh_token":"private-google-token"}'
+
+    current, workflow, module = studio._current_context()
+    environment = studio._workflow_connector_environment(
+        workflow_spec=current,
+        workflow=workflow,
+        module=module,
+    )
+    snapshot = json.loads(environment["ZIPPERGEN_CONNECTORS_JSON"])
+    binding = snapshot["requirement:call-records"]
+    assert binding["provider"] == "google"
+    assert binding["kind"] == "google-sheets"
+    assert binding["spreadsheet_id"] == "sheet-123"
+    assert binding["tab"] == "Calls"
+    assert environment[binding["credential_env"]] == (
+        '{"refresh_token":"private-google-token"}'
+    )
+    assert all("private-google-token" not in line for line in output)
+    assert "google" in _completions(
+        studio, "connector provider configure "
+    )
+
+
+def test_studio_guides_one_google_authorization_for_gmail_and_sheets(
+    tmp_path,
+    monkeypatch,
+):
+    credentials = tmp_path / "google-desktop.json"
+    credentials.write_text('{"installed":{"client_id":"example"}}')
+    studio, workspace, _output = _studio(
+        tmp_path,
+        responses=[
+            str(credentials),
+            "is:unread label:Calls",
+            "sheet-123",
+            "Calls",
+        ],
+    )
+    (workspace.root / "workflow.py").write_text(GMAIL_AND_SHEETS_SOURCE)
+    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    requested_scopes = []
+    monkeypatch.setattr(
+        "zippergen.google_auth.authorize_google",
+        lambda path, *, scopes: (
+            requested_scopes.extend(scopes)
+            or '{"refresh_token":"private-google-token"}'
+        ),
+    )
+    monkeypatch.setattr(
+        "zippergen.google_auth.check_google_authorization",
+        lambda value, *, scopes: value,
+    )
+    monkeypatch.setattr(
+        "zippergen.google_gmail.GmailMailbox.inspect",
+        lambda self: {"email": "calls@example.com"},
+    )
+    monkeypatch.setattr(
+        "zippergen.google_sheets.GoogleSheetsTable.inspect",
+        lambda self: {
+            "title": "Call records",
+            "tab": self.tab,
+            "tabs": [self.tab],
+        },
+    )
+
+    studio.execute("connector setup")
+
+    assert set(workspace.connector_binding_profile("workflow.py:sample")) == {
+        "mailbox",
+        "records",
+    }
+    assert workspace.connector_configurations()["mailbox"]["kind"] == "gmail"
+    assert (
+        workspace.connector_configurations()["mailbox"]["query"]
+        == "is:unread label:Calls"
+    )
+    assert (
+        workspace.connector_configurations()["records"]["kind"]
+        == "google-sheets"
+    )
+    from zippergen.google_auth import (
+        GOOGLE_GMAIL_READONLY_SCOPE,
+        GOOGLE_SHEETS_SCOPE,
+    )
+
+    assert set(requested_scopes) == {
+        GOOGLE_GMAIL_READONLY_SCOPE,
+        GOOGLE_SHEETS_SCOPE,
+    }
+    current, workflow, module = studio._current_context()
+    environment = studio._workflow_connector_environment(
+        workflow_spec=current,
+        workflow=workflow,
+        module=module,
+    )
+    snapshot = json.loads(environment["ZIPPERGEN_CONNECTORS_JSON"])
+    mailbox = snapshot["requirement:mailbox"]
+    records = snapshot["requirement:records"]
+    assert mailbox["kind"] == "gmail"
+    assert mailbox["access"] == "read-only"
+    assert mailbox["query"] == "is:unread label:Calls"
+    assert records["kind"] == "google-sheets"
+    assert records["access"] == "write"
+    assert environment[mailbox["credential_env"]] == (
+        '{"refresh_token":"private-google-token"}'
+    )
 
 
 def test_studio_human_connector_assignment_needs_no_extra_requirement(

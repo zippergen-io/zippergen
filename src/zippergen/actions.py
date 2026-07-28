@@ -244,7 +244,13 @@ def pure(fn: Callable | None = None, *, visible: bool = True):
 # @effect decorator
 # ---------------------------------------------------------------------------
 
-def effect(fn: Callable | None = None, *, visible: bool = True):
+def effect(
+    fn: Callable | None = None,
+    *,
+    visible: bool = True,
+    connector: str | None = None,
+    operation: str | None = None,
+):
     """
     Decorator for Python actions that are not deterministic/pure.
 
@@ -252,7 +258,24 @@ def effect(fn: Callable | None = None, *, visible: bool = True):
     SQLite runner, it is resolved outside the write transaction and its output
     is journaled so replay returns the recorded result instead of performing the
     external operation again.
+
+    ``connector`` names a logical :class:`ConnectorRequirement`. ``operation``
+    describes the external operation, for example ``"upsert-json-row"``.
+    These static labels become part of the semantic workflow snapshot. They do
+    not contain credentials or machine-specific resource identifiers.
     """
+    if connector is not None and not re.fullmatch(
+        r"[A-Za-z][A-Za-z0-9._-]{0,63}", connector
+    ):
+        raise ValueError(
+            "@effect connector names must start with a letter and contain "
+            "only letters, digits, '.', '_' or '-'."
+        )
+    if operation is not None and not operation.strip():
+        raise ValueError("@effect operation must not be empty.")
+    if operation is not None and connector is None:
+        raise ValueError("@effect operation requires connector=...")
+
     def decorator(fn: Callable) -> EffectAction:
         inputs = _extract_inputs(fn)
         outputs = _single_output_from_return(fn)
@@ -262,6 +285,8 @@ def effect(fn: Callable | None = None, *, visible: bool = True):
             outputs=outputs,
             fn=fn,
             visible=visible,
+            connector=connector,
+            operation=operation,
         )
     if fn is not None:
         return decorator(fn)

@@ -143,24 +143,73 @@ override.
 Non-human services remain explicit, credential-free requirements:
 
 ```python
-from zippergen import ConnectorRequirement
+from zippergen import (
+    ConnectorRequirement,
+    effect,
+    read_json_rows,
+    upsert_json_row,
+)
 
 zippergen_connectors = (
     ConnectorRequirement(
         name="review-log",
         kind="google-sheets",
         participant="Records",
-        capabilities=("append-row",),
-        access="write",
-        required=False,
+        capabilities=("read-rows", "upsert-row"),
+        access="read-write",
     ),
 )
+
+REVIEW_COLUMNS = ("review_id", "status", "notes")
+
+
+@effect(connector="review-log", operation="upsert-json-row")
+def save_review(review_json: str) -> str:
+    return upsert_json_row(
+        "review-log",
+        review_json,
+        columns=REVIEW_COLUMNS,
+        key_field="review_id",
+    )
+
+
+@effect(connector="review-log", operation="read-json-rows")
+def read_reviews() -> str:
+    return read_json_rows("review-log", columns=REVIEW_COLUMNS)
 ```
 
 Use connector declarations when workflow behavior requires a non-human
 external capability independently of deployment configuration. Studio stores
 named configurations and secrets privately, while semantic snapshots and full
-views retain the logical kind, participant, access, and capabilities.
+views retain the logical kind, participant, access, capabilities, and each
+effect's logical connector operation. For Google Sheets writes, prefer a
+stable-key upsert to a blind append. This makes a retry after a crash safe.
+Never put a spreadsheet ID, OAuth token, or credentials path in workflow code.
+Use `connector setup` to configure and bind the concrete resource.
+
+Gmail follows the same pattern:
+
+```python
+zippergen_connectors = (
+    ConnectorRequirement(
+        name="mailbox",
+        kind="gmail",
+        participant="Mailbox",
+        capabilities=("read-messages", "mark-processed", "create-draft"),
+        access="read-write",
+    ),
+)
+
+@effect(connector="mailbox", operation="read-messages")
+def read_mail() -> str:
+    ...
+```
+
+Keep the account, Gmail search query, and OAuth token outside workflow source.
+`connector setup` can authorize Gmail and Google Sheets together when the
+selected workflow requires both. Declare `access="read-only"` for readers.
+Use `read-write` only when an action modifies Gmail or Sheets. Studio uses
+that declaration to request the narrowest supported Google OAuth scope.
 
 ## Owned control flow
 

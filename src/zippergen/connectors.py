@@ -30,7 +30,7 @@ class ConnectorRequirement:
     kind: str
     participant: str
     capabilities: tuple[str, ...] = ()
-    access: str = "read-write"
+    access: str = "read-only"
     description: str = ""
     required: bool = True
 

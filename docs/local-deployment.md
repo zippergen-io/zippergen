@@ -406,33 +406,47 @@ history.
 
 The call intake example watches a Gmail inbox for calls for projects, grants,
 positions, fellowships, and similar opportunities. It only sends certified
-senders to the LLM. Accepted messages are classified, converted to JSON, written
-to a CSV table, and answered automatically by email with the extracted JSON.
+senders to the LLM. Accepted messages are classified, converted to JSON,
+written to Google Sheets, and answered by a controlled Gmail draft or message.
 
-The recommended setup is now one guided command:
-
-```bash
-uv run zippergen deploy examples/call_intake.py:call_intake
-```
-
-The workflow declaration tells ZipperGen to collect the LLM key, certified
-senders, intake address, Gmail query, table destination, safe reply mode, OAuth
-credential path, and polling/rate limits. ZipperGen then creates the managed
-environment, installs the Google clients, performs missing Gmail and Sheets
-OAuth setup, runs readiness checks, and starts launchd or systemd. The `export`
-commands below are not needed for this guided path.
-
-Operate it by name:
+The recommended path is ZipperGen Studio:
 
 ```bash
-uv run zippergen status call-intake
-uv run zippergen logs call-intake --follow
-uv run zippergen restart call-intake
-uv run zippergen configure call-intake --restart
+uv sync --extra google
+zippergen
 ```
 
-The remainder of this part documents the equivalent manual configuration for
-troubleshooting and older deployments.
+Then enter:
+
+```text
+workflow select examples/call_intake.py:call_intake
+workflow validate
+model setup
+connector setup
+connector assignments check
+deploy call-intake
+```
+
+`connector setup` uses one private Google provider authorization. It creates
+and checks separate Gmail and Google Sheets configurations and binds them to
+the workflow. The deployment questions cover application policy such as
+certified senders, the intake address, safe reply mode, and rate limits.
+OAuth token paths and Google resource IDs are not deployment fields.
+The optional installation keeps Google libraries out of basic ZipperGen
+installs. Managed deployments with Gmail or Sheets requirements add them
+automatically.
+
+Operate it in Studio by name:
+
+```text
+deploy show call-intake
+deploy logs call-intake
+deploy restart call-intake
+deploy configure call-intake
+```
+
+The remainder of this part documents the older environment-variable path for
+troubleshooting existing deployments. New deployments should use Studio.
 
 Automatic sending has a built-in safeguard: the send effect will not send more
 than 10 emails per hour. If the limit is reached, the workflow waits outside the

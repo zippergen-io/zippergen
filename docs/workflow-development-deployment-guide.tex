@@ -138,7 +138,7 @@
 \title{\color{ZipperInk}\Huge\textbf{ZipperGen Workflow Development and Deployment Manual}\\[5pt]
 \Large Concepts, commands, configuration, runtime, and operations}
 \author{The ZipperGen Authors}
-\date{Manual edition: 26 July 2026}
+\date{Manual edition: 28 July 2026}
 
 \begin{document}
 
@@ -972,6 +972,13 @@ The commands have deliberately different jobs:
   \item[\texttt{workflow list}] discovers top-level \texttt{@workflow} entry
         points from project source and lists their \texttt{PATH.py:NAME}
         references. This is source discovery, not validation.
+  \item[\texttt{workflow import PATH.py[:WORKFLOW]}] copies an external
+        workflow into the current project before selection. It preserves paths
+        relative to the external project root when that root has
+        \path{pyproject.toml}, \path{zippergen.toml}, or \path{.git}. It also
+        copies statically imported local Python modules and literal files named
+        by deployment or assistant declarations. It never overwrites a
+        different project file.
   \item[\texttt{workflow select}] loads the chosen entry point and remembers it
         as the current workflow for later Studio commands. It neither validates,
         accepts, runs, nor deploys it.
@@ -1878,6 +1885,7 @@ workflow accept # record human approval and close reviewed work
 workflow discard # archive rejection; does not revert working-tree files
 workflow history # specification and implementation history
 workflow list   # discover workflow entry points; does not validate
+workflow import /path/to/workflow.py # copy external source into this project
 workflow select # select one by number, name, or complete reference
 model         # show connections, configurations, and assignments
 model setup   # guided provider, configuration, and assignment setup
@@ -1890,12 +1898,13 @@ model assignments check # check only configurations used here
 model assign PARTICIPANT NAME # route a participant to a configuration
 model assign PARTICIPANT.ACTION NAME # override one LLM action
 model config rename OLD NEW # rename it and migrate all assignments
-connector # providers, configurations, and effective human routes
-connector setup # guided Telegram setup and assignment
+connector # providers, configurations, assignments, and bindings
+connector setup # guided setup for every connector used here
 connector provider configure telegram # store the bot token privately
-connector provider check telegram # check bot authentication
-connector config create [NAME] # name a Telegram chat
-connector config check [NAME] # check the exact chat
+connector provider configure google # authorize Google Sheets privately
+connector provider check [NAME] # check provider authentication
+connector config create [NAME] # name a chat, sheet, or other resource
+connector config check [NAME] # check the exact resource
 connector assign PARTICIPANT NAME # route all human actions on a participant
 connector assign PARTICIPANT.ACTION NAME # override one human action
 connector assignments # show every effective human route
@@ -2677,12 +2686,206 @@ the same bridge automatically when the selected workflow has an external
 human assignment. Without such an assignment, development keeps the human
 decision in the Studio terminal.
 
-Non-human services remain explicit workflow capabilities. Gmail, Sheets,
-Docs, and Calendar configurations will use the same provider, configuration,
-and assignment surface. A participant assignment supplies the normal default,
-while an action-specific assignment allows one participant to use several
-services. The workflow must still declare the capability and access level
-needed by each non-human external action.
+Non-human services remain explicit workflow capabilities. Gmail and Google
+Sheets use the same provider and configuration surface. Docs and Calendar can
+follow the same pattern. A workflow declares a logical requirement and binds
+that requirement to a saved resource configuration. Human delivery continues
+to use participant and action assignments.
+
+\subsection{Google Sheets resources}
+
+Google support is optional so that a basic ZipperGen installation remains
+small. In a source checkout, install it once with:
+
+\begin{lstlisting}[style=shell]
+uv sync --extra google
+\end{lstlisting}
+
+For an installed package, use
+\texttt{pip install "zippergen[google]"}. Studio reports this exact command if
+the support is missing. A managed deployment whose workflow declares Gmail or
+Google Sheets installs the optional support automatically.
+
+The workflow owns the meaning of a table operation. It declares the logical
+table, columns, stable key, and whether an effect reads or writes data. It does
+not contain a spreadsheet ID or OAuth token:
+
+\begin{quote}
+Records owns a project-records table with record\_id, title, and status
+columns. One effect upserts a JSON record by record\_id. Another effect reads
+all rows into a JSON workflow variable. Both effects use a required
+read-write Google Sheets connector. Keep the spreadsheet and Google account
+as deployment configuration.
+\end{quote}
+
+A repository-aware assistant can translate that requirement into the visible
+workflow declaration and effects below:
+
+\begin{lstlisting}[style=python]
+from zippergen import (
+    ConnectorRequirement,
+    effect,
+    read_json_rows,
+    upsert_json_row,
+)
+
+zippergen_connectors = (
+    ConnectorRequirement(
+        name="project-records",
+        kind="google-sheets",
+        participant="Records",
+        capabilities=("read-rows", "upsert-row"),
+        access="read-write",
+    ),
+)
+
+COLUMNS = ("record_id", "title", "status")
+
+@effect(
+    connector="project-records",
+    operation="upsert-json-row",
+)
+def write_record(record_json: str) -> str:
+    return upsert_json_row(
+        "project-records",
+        record_json,
+        columns=COLUMNS,
+        key_field="record_id",
+    )
+
+@effect(
+    connector="project-records",
+    operation="read-json-rows",
+)
+def read_records() -> str:
+    return read_json_rows(
+        "project-records",
+        columns=COLUMNS,
+    )
+\end{lstlisting}
+
+The stable key is important. Durable execution can retry an effect after a
+process failure. A blind append could create the same row twice. The upsert
+checks the key and replaces the existing row when needed.
+
+The user configures the environment after selecting the workflow:
+
+\begin{lstlisting}[style=shell]
+connector setup
+\end{lstlisting}
+
+Google requires one account-level preparation before Studio can authorize the
+connector:
+\begin{enumerate}
+  \item Create or select a project in Google Cloud Console.
+  \item Enable the Google Sheets API for that project.
+  \item Configure the OAuth consent screen for the intended test users or
+        organization.
+  \item Create an OAuth client with application type \emph{Desktop app}.
+  \item Download its JSON file. Keep it outside the project repository.
+\end{enumerate}
+
+For a workflow with one Google Sheets requirement, guided setup performs these
+steps:
+\begin{enumerate}
+  \item It asks for the OAuth desktop credentials JSON downloaded from Google
+        Cloud.
+  \item It opens the system browser for Google authorization.
+  \item It asks for a spreadsheet URL or ID and a tab name.
+  \item It checks that the spreadsheet and tab are reachable.
+  \item It binds the saved configuration to the logical requirement.
+\end{enumerate}
+
+The equivalent explicit commands are:
+
+\begin{lstlisting}[style=shell]
+connector provider configure google
+connector provider check google
+connector config create project-records
+connector config check project-records
+connector bind project-records project-records
+connector assignments check
+\end{lstlisting}
+
+The provider stores the private Google authorization. The configuration stores
+only the spreadsheet ID and tab. The workflow binding stores only the
+configuration name. During deployment, ZipperGen copies the resource metadata
+into the immutable deployment profile and copies the OAuth credential into
+the deployment's private secret file.
+
+Studio derives Google scopes from each connector's declared
+\texttt{access}. A read-only Sheets requirement requests
+\texttt{spreadsheets.readonly}. A write or read-write requirement requests
+\texttt{spreadsheets}. Google does not provide a write-only Sheets scope for
+an arbitrary existing spreadsheet. The broader scope applies to the account's
+spreadsheet files, not only to the configured tab. Use a dedicated account,
+a dedicated spreadsheet, or protected ranges when a narrower operational
+boundary is required.
+
+\subsection{Gmail and Sheets in one workflow}
+
+The call-intake example declares two connector requirements. Mailbox owns a
+\texttt{gmail} requirement for reading messages, marking them processed, and
+creating or sending replies. Table owns a \texttt{google-sheets} requirement
+for reading and updating the call register. The source does not contain a
+Gmail account, OAuth token, search query, spreadsheet ID, or tab:
+
+Before opening Studio:
+\begin{enumerate}
+  \item Enable the Gmail API and Google Sheets API in one Google Cloud
+        project.
+  \item Configure the OAuth consent screen.
+  \item For an external test application, add the Gmail account as a test
+        user.
+  \item Create a Desktop app OAuth client and download its JSON file.
+\end{enumerate}
+Publishing an external application with Gmail access may require additional
+Google review. Use a dedicated test account while developing.
+
+\begin{lstlisting}[style=shell]
+workflow select examples/call_intake.py:call_intake
+workflow show communications
+workflow validate
+model setup
+connector setup
+connector assignments check
+\end{lstlisting}
+
+For this workflow, \texttt{connector setup} performs one Google browser
+authorization with the Gmail and Sheets scopes required by the declared
+operations. It then creates and checks two named configurations:
+\begin{itemize}
+  \item a Gmail configuration containing account \texttt{me} and a search
+        query such as \texttt{is:unread in:inbox to:calls@example.com};
+  \item a Google Sheets configuration containing a spreadsheet ID and tab.
+\end{itemize}
+Both configurations may use the same Google provider authorization. They are
+still separate resources and may be rebound independently.
+
+A read-only Gmail requirement requests \texttt{gmail.readonly}. A write or
+read-write Gmail requirement requests \texttt{gmail.modify}. The call-intake
+workflow declares read-write access because it reads messages, marks them
+processed, and creates drafts or sends replies.
+
+The deployment fields ask only for application policy such as certified
+senders, the expected intake address, reply mode, rate limit, and polling
+interval. The default reply mode is \texttt{draft}. Inspect the drafts in a
+dedicated test account before choosing \texttt{send}.
+
+\begin{lstlisting}[style=shell]
+workflow review
+workflow accept
+deploy call-intake
+deploy show call-intake
+deploy logs call-intake
+\end{lstlisting}
+
+Deployment takes an immutable snapshot of both connector bindings and copies
+the OAuth credential into the deployment's private secret file. Readiness
+checks verify the Gmail account and the selected spreadsheet tab before the
+service starts. The deployed service owns one durable store, so a crash can
+resume the protocol without losing which message or table operation was in
+progress.
 
 \section{Reference: prerequisites and installation details}
 \label{sec:install}
@@ -4089,6 +4292,7 @@ workflow status
 workflow implement codex # or: workflow implement claude
 # After the coding assistant creates source:
 workflow list         # show discovered entry points without validating
+workflow import PATH.py[:WORKFLOW] # copy an existing workflow into this project
 workflow select       # select one by number
 workflow files        # list known implementation and resource files
 workflow show source  # inspect authored Python before validation

@@ -132,6 +132,12 @@ COMMANDS: tuple[CommandSpec, ...] = (
         "read-only",
     ),
     CommandSpec(
+        ("workflow", "import"),
+        "workflow import PATH.py[:WORKFLOW]",
+        "copy an existing workflow and its local files into this project",
+        "configuration",
+    ),
+    CommandSpec(
         ("workflow", "select"),
         "workflow select [NUMBER|NAME|PATH.py:NAME]",
         "select a workflow entry point",
@@ -263,13 +269,13 @@ COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec(
         ("connector",),
         "connector",
-        "show providers, configurations, and human routes",
+        "show providers, configurations, human routes, and service bindings",
         "read-only",
     ),
     CommandSpec(
         ("connector", "setup"),
         "connector setup",
-        "guide Telegram provider, configuration, and assignments",
+        "configure and bind the connectors required by this workflow",
         "configuration",
     ),
     CommandSpec(
@@ -638,6 +644,9 @@ def concise_help() -> str:
   4. workflow review
   5. run
   6. deploy
+
+Existing workflow:
+  workflow import /path/to/workflow.py
 
 Main areas:
   workflow    specify, implement, inspect, and validate

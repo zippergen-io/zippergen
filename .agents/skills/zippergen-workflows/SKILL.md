@@ -60,7 +60,13 @@ Otherwise choose the smallest reasonable workflow and state the assumption.
    Studio. Do not add a redundant connector requirement merely to route a
    human action through Telegram or email. For a non-human external service,
    declare an exact connector capability and test that it appears in workflow
-   semantics.
+   semantics. For Google Sheets, keep columns and a stable key in code, label
+   each `@effect` with its connector and operation, and use the built-in JSON
+   row helpers instead of embedding spreadsheet credentials or identifiers.
+   For Gmail, declare the exact mailbox operations and keep the account,
+   search query, and OAuth credential in Studio. Declare connector access
+   explicitly. Use `read-only` whenever the workflow does not modify the
+   external service.
 7. Run the validation and inspection gate below.
 
 Do not invent a generic agent for every function. A lifeline represents a

@@ -1,38 +1,19 @@
 # pyright: reportInvalidTypeForm=false, reportGeneralTypeIssues=false, reportOperatorIssue=false, reportCallIssue=false, reportAttributeAccessIssue=false, reportUnusedExpression=false, reportUnboundVariable=false, reportReturnType=false, reportArgumentType=false
 
-"""Call/project intake workflow for local deployment.
+"""Call/project intake workflow for Studio deployment.
 
 The workflow watches an email inbox, accepts messages only from certified
 senders, asks an LLM to classify/extract calls, replies with the extracted JSON,
-and records new calls in a local CSV table. Corrections are handled by replying
-to the JSON email with corrected fields, preferably keeping the same call_id.
+and records new calls in Google Sheets. Corrections are handled by replying to
+the JSON email with corrected fields, preferably keeping the same call_id.
 
 Guided deployment:
 
     uv run zippergen deploy examples/call_intake.py:call_intake
 
-The deployment declaration below collects and persists configuration, installs
-the Google clients, guides OAuth, runs readiness checks, and starts launchd or
-systemd. The following remains the equivalent low-level manual setup:
-
-    uv run python examples/call_intake_email_client.py --setup
-
-    export ZIPPERGEN_CERTIFIED_SENDERS="alice@example.com,@trusted-lab.org"
-    export ZIPPERGEN_CALL_INTAKE_RECIPIENTS="zippergen.sandbox+calls@gmail.com"
-    export ZIPPERGEN_CALL_GMAIL_QUERY="is:unread in:inbox to:zippergen.sandbox+calls@gmail.com"
-    export ZIPPERGEN_CALL_TABLE="$HOME/.zippergen/calls.csv"
-    export ZIPPERGEN_CALL_SHEET_ID="<google-sheet-id>"
-    export ZIPPERGEN_CALL_TABLE_TARGETS=both
-    export ZIPPERGEN_CALL_INTAKE_SEND_MODE=send
-    export ZIPPERGEN_CALL_INTAKE_MAX_EMAILS_PER_HOUR=10
-    export ZIPPERGEN_CALL_INTAKE_POLL_SECONDS=60
-
-    uv run zippergen run examples/call_intake.py:call_intake \
-      --store "$HOME/.zippergen/runs/call-intake.sqlite" \
-      --llm openai:gpt-4o \
-      --services live \
-      --llm-idle-timeout 300 \
-      --timeout 0
+In Studio, select the workflow and run ``connector setup``. Studio asks for
+one Google OAuth desktop client, a Gmail search query, and a spreadsheet tab.
+No token paths or Google resource IDs are part of the workflow source.
 """
 
 import csv
@@ -47,9 +28,8 @@ from email.utils import parseaddr
 from pathlib import Path
 
 from zippergen import (
+    ConnectorRequirement,
     DeploymentField,
-    DeploymentPackage,
-    DeploymentSetup,
     DeploymentSpec,
     Lifeline,
     Var,
@@ -68,6 +48,31 @@ Mailbox = Lifeline("Mailbox")
 Gatekeeper = Lifeline("Gatekeeper")
 Extractor = Lifeline("Extractor")
 Table = Lifeline("Table")
+
+
+zippergen_connectors = (
+    ConnectorRequirement(
+        name="call-mailbox",
+        kind="gmail",
+        participant="Mailbox",
+        capabilities=(
+            "read-messages",
+            "mark-processed",
+            "create-draft",
+            "send-message",
+        ),
+        access="read-write",
+        description="Read call emails and create or send controlled replies.",
+    ),
+    ConnectorRequirement(
+        name="call-records",
+        kind="google-sheets",
+        participant="Table",
+        capabilities=("read-rows", "upsert-row"),
+        access="read-write",
+        description="Read and update the durable call register.",
+    ),
+)
 
 
 # ---------------------------------------------------------------------------
@@ -111,7 +116,7 @@ zippergen_deployment = DeploymentSpec(
     name="call-intake",
     description=(
         "Watch a Gmail inbox for certified call announcements, extract structured "
-        "records with an LLM, write CSV/Google Sheets, and send controlled replies."
+        "records with an LLM, write Google Sheets, and send controlled replies."
     ),
     fields=(
         DeploymentField(
@@ -152,48 +157,6 @@ zippergen_deployment = DeploymentSpec(
             required=True,
         ),
         DeploymentField(
-            "gmail_query",
-            "Gmail search query",
-            target="env",
-            env="ZIPPERGEN_CALL_GMAIL_QUERY",
-            default="is:unread in:inbox to:{recipient}",
-            required=True,
-        ),
-        DeploymentField(
-            "table_targets",
-            "Table destination: csv, sheets, or both",
-            target="option",
-            default="both",
-            required=True,
-            choices=("csv", "sheets", "both"),
-        ),
-        DeploymentField(
-            "sheet_id",
-            "Google Sheet ID",
-            target="option",
-            required=True,
-            when="table_targets",
-            when_values=("sheets", "both"),
-        ),
-        DeploymentField(
-            "sheet_name",
-            "Google Sheet tab name",
-            target="option",
-            default="Calls",
-            required=True,
-            when="table_targets",
-            when_values=("sheets", "both"),
-        ),
-        DeploymentField(
-            "table",
-            "CSV table path",
-            target="option",
-            default=str(Path.home() / ".zippergen" / "calls.csv"),
-            required=True,
-            when="table_targets",
-            when_values=("csv", "both"),
-        ),
-        DeploymentField(
             "send_mode",
             "Reply mode: draft, send, or log",
             target="option",
@@ -215,66 +178,8 @@ zippergen_deployment = DeploymentSpec(
             default=60,
             required=True,
         ),
-        DeploymentField(
-            "google_credentials",
-            "Google OAuth client credentials JSON",
-            target="env",
-            env="ZIPPERGEN_CALL_GMAIL_CREDENTIALS",
-            default=str(Path.home() / ".zippergen_google_credentials.json"),
-            required=True,
-            path_exists=True,
-            when="services",
-            when_values=("live",),
-        ),
-        DeploymentField(
-            "gmail_token",
-            "Gmail OAuth token cache",
-            target="env",
-            env="ZIPPERGEN_CALL_GMAIL_TOKEN",
-            default=str(Path.home() / ".zippergen" / "call-gmail-token.json"),
-            required=True,
-            when="services",
-            when_values=("live",),
-        ),
-        DeploymentField(
-            "sheets_token",
-            "Google Sheets OAuth token cache",
-            target="env",
-            env="ZIPPERGEN_CALL_SHEETS_TOKEN",
-            default=str(Path.home() / ".zippergen" / "call-sheets-token.json"),
-            required=True,
-            when="table_targets",
-            when_values=("sheets", "both"),
-        ),
     ),
-    packages=(
-        DeploymentPackage("google-auth", "google.auth"),
-        DeploymentPackage("google-auth-oauthlib", "google_auth_oauthlib"),
-        DeploymentPackage("google-api-python-client", "googleapiclient"),
-    ),
-    setup=(
-        DeploymentSetup(
-            "gmail-oauth",
-            "Authorize Gmail access",
-            ("{python}", "examples/call_intake_email_client.py", "--setup"),
-            when="services",
-            when_values=("live",),
-            creates_env="ZIPPERGEN_CALL_GMAIL_TOKEN",
-        ),
-        DeploymentSetup(
-            "sheets-oauth",
-            "Authorize Google Sheets access",
-            ("{python}", "examples/call_intake_sheets_client.py", "--setup"),
-            when="table_targets",
-            when_values=("sheets", "both"),
-            creates_env="ZIPPERGEN_CALL_SHEETS_TOKEN",
-        ),
-    ),
-    files=(
-        "examples/call_intake.py",
-        "examples/call_intake_email_client.py",
-        "examples/call_intake_sheets_client.py",
-    ),
+    files=("examples/call_intake.py",),
 )
 
 
@@ -477,8 +382,14 @@ def configure_call_intake(
         )
 
     if services_text == "live":
-        _email_client = _load_service_module("call_intake_email_client")
-        _sheets_client = _load_service_module("call_intake_sheets_client") if "sheets" in _table_targets else None
+        from zippergen.google_gmail import GmailMailbox
+        from zippergen.google_sheets import GoogleSheetsTable
+
+        _email_client = GmailMailbox.from_requirement("call-mailbox")
+        _sheets_client = GoogleSheetsTable.from_requirement("call-records")
+        _sheet_id = "configured"
+        _sheet_name = "configured"
+        _table_targets = {"sheets"}
         _fake_inbox = []
     else:
         _email_client = None
@@ -538,9 +449,6 @@ def zippergen_setup(config) -> None:
     intake_recipients = config.option("recipient", None)
     if intake_recipients is None:
         intake_recipients = config.option("recipients", None)
-    sheet_id = config.option("sheet_id", None)
-    if sheet_id is None:
-        sheet_id = config.option("sheet", None)
     configure_call_intake(
         services=config.option("services", "fake"),
         certified_senders=config.option("certified", None),
@@ -551,9 +459,6 @@ def zippergen_setup(config) -> None:
         max_messages=config.option("max_messages", None),
         poll_seconds=config.option("poll_seconds", None),
         intake_recipients=intake_recipients,
-        sheet_id=sheet_id,
-        sheet_name=config.option("sheet_name", None),
-        table_targets=config.option("table_targets", None),
     )
 
 
@@ -566,8 +471,6 @@ def zippergen_doctor(config) -> list[dict[str, object]]:
     recipients = _split_senders(
         config.option("recipient", config.option("recipients", None))
     )
-    table_targets = str(config.option("table_targets", "csv"))
-    sheet_id = str(config.option("sheet_id", config.option("sheet", "")) or "").strip()
     send_mode = str(config.option("send_mode", "draft"))
 
     checks.append({
@@ -589,41 +492,38 @@ def zippergen_doctor(config) -> list[dict[str, object]]:
             else f"safe {send_mode!r} mode is configured"
         ),
     })
-    if table_targets in {"sheets", "both"}:
-        checks.append({
-            "status": "ok" if sheet_id else "fail",
-            "name": "Google Sheet",
-            "detail": sheet_id or "sheet target selected but no Sheet ID configured",
-        })
-
     if services == "live":
-        credentials = Path(os.environ.get(
-            "ZIPPERGEN_CALL_GMAIL_CREDENTIALS",
-            str(Path.home() / ".zippergen_google_credentials.json"),
-        )).expanduser()
-        gmail_token = Path(os.environ.get(
-            "ZIPPERGEN_CALL_GMAIL_TOKEN",
-            str(Path.home() / ".zippergen" / "call-gmail-token.json"),
-        )).expanduser()
-        checks.append({
-            "status": "ok" if credentials.exists() else "fail",
-            "name": "Google OAuth credentials",
-            "detail": str(credentials) if credentials.exists() else f"file does not exist: {credentials}",
-        })
-        checks.append({
-            "status": "ok" if gmail_token.exists() else "fail",
-            "name": "Gmail OAuth token",
-            "detail": str(gmail_token) if gmail_token.exists() else f"authorization has not created {gmail_token}",
-        })
-        if table_targets in {"sheets", "both"}:
-            sheets_token = Path(os.environ.get(
-                "ZIPPERGEN_CALL_SHEETS_TOKEN",
-                str(Path.home() / ".zippergen" / "call-sheets-token.json"),
-            )).expanduser()
+        try:
+            from zippergen.google_gmail import GmailMailbox
+
+            GmailMailbox.from_requirement("call-mailbox")
+        except Exception as exc:
             checks.append({
-                "status": "ok" if sheets_token.exists() else "fail",
-                "name": "Sheets OAuth token",
-                "detail": str(sheets_token) if sheets_token.exists() else f"authorization has not created {sheets_token}",
+                "status": "fail",
+                "name": "Gmail connector",
+                "detail": str(exc),
+            })
+        else:
+            checks.append({
+                "status": "ok",
+                "name": "Gmail connector",
+                "detail": "bound through Studio",
+            })
+        try:
+            from zippergen.google_sheets import GoogleSheetsTable
+
+            GoogleSheetsTable.from_requirement("call-records")
+        except Exception as exc:
+            checks.append({
+                "status": "fail",
+                "name": "Google Sheets connector",
+                "detail": str(exc),
+            })
+        else:
+            checks.append({
+                "status": "ok",
+                "name": "Google Sheets connector",
+                "detail": "bound through Studio",
             })
 
     llm_spec = str(config.profile.get("llm") or "")
@@ -693,7 +593,8 @@ def _format_email(meta: dict) -> str:
         value = meta.get(source_key)
         if value:
             lines.append(f"{header}: {value}")
-    return "\n".join(lines) + "\n\n" + str(meta.get("body", "")).strip()
+    body = _dequote_reply_text(str(meta.get("body", "")))
+    return "\n".join(lines) + "\n\n" + body.strip()
 
 
 def _looks_like_email_address(address: str) -> bool:
@@ -1094,7 +995,17 @@ def _read_records() -> list[dict[str, str]]:
     if _sheet_enabled():
         if _sheets_client is None:
             raise RuntimeError("Google Sheets table target is configured, but the Sheets client is not loaded.")
-        return _sheets_client.read_rows(_sheet_id, _sheet_name, CALL_FIELDS)  # type: ignore[union-attr]
+        try:
+            rows = _sheets_client.read_rows(CALL_FIELDS)  # type: ignore[union-attr]
+        except TypeError:
+            # Compatibility for small injected test adapters.
+            rows = _sheets_client.read_rows(  # type: ignore[union-attr]
+                _sheet_id, _sheet_name, CALL_FIELDS
+            )
+        return [
+            {field: str(row.get(field, "") or "") for field in CALL_FIELDS}
+            for row in rows
+        ]
     return _read_table(_table_path)
 
 
@@ -1104,7 +1015,14 @@ def _write_records(rows: list[dict[str, str]]) -> None:
     if _sheet_enabled():
         if _sheets_client is None:
             raise RuntimeError("Google Sheets table target is configured, but the Sheets client is not loaded.")
-        _sheets_client.write_rows(_sheet_id, _sheet_name, CALL_FIELDS, rows)  # type: ignore[union-attr]
+        if hasattr(_sheets_client, "replace_rows"):
+            _sheets_client.replace_rows(  # type: ignore[union-attr]
+                rows, columns=CALL_FIELDS
+            )
+        else:
+            _sheets_client.write_rows(  # type: ignore[union-attr]
+                _sheet_id, _sheet_name, CALL_FIELDS, rows
+            )
 
 
 def _table_location_text() -> str:
@@ -1112,7 +1030,7 @@ def _table_location_text() -> str:
     if "csv" in _table_targets:
         parts.append(str(_table_path))
     if _sheet_enabled():
-        parts.append(f"Google Sheet {_sheet_id}/{_sheet_name}")
+        parts.append("the configured Google Sheet")
     return " and ".join(parts) if parts else str(_table_path)
 
 
@@ -1254,7 +1172,7 @@ def mail_present() -> bool:
     return bool(_fake_inbox)
 
 
-@effect
+@effect(connector="call-mailbox", operation="read-messages")
 def pop_pending_email() -> str:
     if _email_client is not None:
         while True:
@@ -1328,7 +1246,7 @@ def normalize_correction_json(email: str, call_json: str) -> str:
     return _normalise_payload(email, source_json, status="corrected")
 
 
-@effect
+@effect(connector="call-records", operation="upsert-row")
 def insert_call_record(email: str, call_json: str) -> str:
     incoming = _record_from_json(call_json)
     rows = _read_records()
@@ -1352,7 +1270,7 @@ def insert_call_record(email: str, call_json: str) -> str:
     return f"created:{incoming['call_id']}"
 
 
-@effect
+@effect(connector="call-records", operation="upsert-row")
 def apply_call_correction(email: str, call_json: str) -> str:
     incoming = _record_from_json(call_json)
     rows = _read_records()
@@ -1378,7 +1296,7 @@ def record_non_call(email: str) -> str:
     return "ignored_non_call"
 
 
-@effect
+@effect(connector="call-mailbox", operation="mark-processed")
 def ignore_uncertified(email: str) -> str:
     meta = _parse_email_text(email)
     print(f"[CallIntake] Ignored uncertified sender {meta.get('sender_email', '')}")
@@ -1387,7 +1305,7 @@ def ignore_uncertified(email: str) -> str:
     return "ignored_uncertified"
 
 
-@effect
+@effect(connector="call-mailbox", operation="mark-processed")
 def ignore_unexpected_recipient(email: str) -> str:
     meta = _parse_email_text(email)
     found = ", ".join(sorted(_recipient_addresses(meta))) or "(none)"
@@ -1508,7 +1426,11 @@ def _send_response(email: str, call_json_text: str, table_status_text: str, *, c
     }
 
     if _email_client is not None and _send_mode in {"draft", "send"}:
-        reply_meta = {**meta, "sender_email": recipient}
+        reply_meta = {
+            **meta,
+            "sender_email": recipient,
+            "response_reply_to": _intake_reply_address(),
+        }
         if _send_mode == "send":
             _wait_for_send_rate_limit()
             external_id = _email_client.send_email(reply_meta, subject, body)  # type: ignore[union-attr]
@@ -1527,17 +1449,17 @@ def _send_response(email: str, call_json_text: str, table_status_text: str, *, c
     return f"logged:{call_id}"
 
 
-@effect
+@effect(connector="call-mailbox", operation="send-message")
 def send_call_json_response(email: str, call_json: str, table_status: str) -> str:
     return _send_response(email, call_json, table_status, correction=False)
 
 
-@effect
+@effect(connector="call-mailbox", operation="send-message")
 def send_correction_response(email: str, call_json: str, table_status: str) -> str:
     return _send_response(email, call_json, table_status, correction=True)
 
 
-@effect
+@effect(connector="call-mailbox", operation="mark-processed")
 def finish_email(email: str, status: str) -> str:
     meta = _parse_email_text(email)
     if _email_client is not None:

@@ -97,7 +97,7 @@
 \title{\color{ZipperInk}\Huge\textbf{Your First ZipperGen Workflow}\\[5pt]
 \Large A short path from a prompt to a prepared deployment}
 \author{The ZipperGen Authors}
-\date{Tutorial edition: 26 July 2026}
+\date{Tutorial edition: 28 July 2026}
 
 \begin{document}
 
@@ -311,6 +311,19 @@ Studio lists top-level \texttt{@workflow} entry points. Select the new
 reviewed-answer workflow by number. A displayed reference such as
 \texttt{workflows/reviewed\_answer.py:reviewed\_answer} means
 \emph{Python file: workflow object}; it is not a deployment name.
+
+\begin{notebox}{Starting from an existing workflow}
+In a fresh project, an existing workflow does not have to be copied with shell
+commands. Enter:
+\begin{lstlisting}[style=shell]
+workflow import /path/to/existing_workflow.py
+\end{lstlisting}
+Studio copies the source, statically imported local Python modules, and
+literal declared resources into the current project. It refuses to overwrite
+different project files. One discovered entry point is selected
+automatically; several are displayed for selection. Continue below with
+\texttt{workflow files}, inspection, and validation.
+\end{notebox}
 
 Now inspect the authored source and the semantic protocol:
 
@@ -659,6 +672,63 @@ prepared deployment is still valid. Stop at the reported error and use the
 manual's foreground-deployment section later.
 The generated service retries failures but does not restart a finite workflow
 after it completes successfully.
+
+\subsection{Optional: see the same connector pattern with Google Sheets}
+
+The reviewed-answer workflow does not need Google Sheets. A separate small
+example shows how a workflow can declare a table while Studio owns the Google
+account and concrete spreadsheet:
+
+\begin{lstlisting}[style=shell]
+uv sync --extra google
+\end{lstlisting}
+
+This optional installation is needed only for Google connectors in a source
+checkout. An installed package uses
+\texttt{pip install "zippergen[google]"}. A managed deployment with a Gmail
+or Sheets requirement installs the same optional support automatically.
+
+\begin{lstlisting}[style=shell]
+workflow select examples/google_sheets_records.py:google_sheet_records
+workflow validate
+connector setup
+run
+\end{lstlisting}
+
+\texttt{connector setup} asks for Google OAuth desktop credentials, opens the
+browser for authorization, asks for a spreadsheet and tab, checks access, and
+binds the result to the workflow's logical \texttt{project-records}
+requirement. The Python file contains the table columns, stable key, and exact
+read and write operations. It contains no spreadsheet ID or OAuth token.
+
+The larger call-intake example uses the same command for two resources:
+
+\begin{lstlisting}[style=shell]
+workflow select examples/call_intake.py:call_intake
+workflow validate
+connector setup
+connector assignments check
+\end{lstlisting}
+
+Studio asks for one Google OAuth desktop client. The browser authorization
+covers the Gmail and Google Sheets capabilities required by this workflow.
+Studio then asks for a Gmail search query, a spreadsheet, and a tab. The
+workflow source contains none of these machine-specific values. Its default
+reply mode creates Gmail drafts, so a first deployment does not send mail
+automatically. Read-only requirements request read-only scopes. Writing to an
+existing spreadsheet requires Google's broader spreadsheets scope.
+
+Before this setup, enable both the Gmail API and Google Sheets API in the same
+Google Cloud project. Configure its OAuth consent screen and create a Desktop
+app OAuth client. For an external test application, add the Gmail account as a
+test user.
+
+This optional example performs a stable-key upsert instead of a blind append.
+That makes a retry after a crash safe. Return to the tutorial workflow with:
+
+\begin{lstlisting}[style=shell]
+workflow select examples/tutorial_review.py:tutorial_review
+\end{lstlisting}
 
 If this deployment was only for the tutorial and you no longer want it, enter:
 

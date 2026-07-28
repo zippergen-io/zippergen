@@ -732,7 +732,9 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
         if not manifest["exists"]:
             return "project init"
         if self.workspace.specification() is None:
-            return "workflow create"
+            if self.workspace.current_workflow is not None:
+                return "workflow show · workflow validate"
+            return "workflow create · workflow import PATH.py"
         record = self._ensure_current_task_fresh(announce=False)
         if record is not None:
             return self._task_next(self._normalize_task_lifecycle(record))
@@ -1021,6 +1023,8 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
                     (value, "discovered workflow") for value in workflows
                 )
                 return values
+            if action == "import":
+                return self._path_completion_candidates(fragment)
             if action in {"create", "refine"}:
                 if "--file" in rest and rest[-1] == "--file":
                     return self._path_completion_candidates(fragment)
@@ -1226,7 +1230,10 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
                 if len(args) == 2 and args[1].lower() in {
                     "configure", "check", "remove"
                 }:
-                    values = [("telegram", "Telegram Bot API")]
+                    values = [
+                        ("telegram", "Telegram Bot API"),
+                        ("google", "Google Workspace OAuth"),
+                    ]
                     if args[1].lower() == "check":
                         values.insert(0, ("all", "all connector providers"))
                     return values
@@ -1235,7 +1242,7 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
                 if len(args) == 1:
                     return [
                         ("list", "list reusable configurations"),
-                        ("create", "create a chat configuration"),
+                        ("create", "create a reusable resource configuration"),
                         ("show", "inspect one configuration"),
                         ("edit", "change a configuration"),
                         ("check", "check its destination"),
@@ -2285,6 +2292,9 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
                 raise SystemExit("Use workflow list.")
             self.list_workflows()
             return
+        if action == "import":
+            self.import_workflow(rest)
+            return
         if action == "select":
             self.select_workflow(rest)
             return
@@ -2363,7 +2373,7 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
             self.manage_spec(["path"])
             return
         raise SystemExit(
-            "Use workflow create, refine, edit, list, select, files, show, "
+            "Use workflow create, refine, edit, list, import, select, files, show, "
             "diff, status, implement, review, validate, accept, discard, "
             "history, or path."
         )
@@ -2731,6 +2741,13 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
                     output_func=self.output,
                     renderer=self._renderer,
                     human_connector_factory=human_connector_factory,
+                    connector_environment=(
+                        self._workflow_connector_environment(
+                            workflow_spec=current,
+                            workflow=workflow,
+                            module=module,
+                        )
+                    ),
                 )
             except RuntimeError as exc:
                 raise SystemExit(
@@ -2756,6 +2773,11 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
                 renderer=self._renderer,
                 human_connector_factory=self._human_connector_factory(
                     current, workflow, module
+                ),
+                connector_environment=self._workflow_connector_environment(
+                    workflow_spec=current,
+                    workflow=workflow,
+                    module=module,
                 ),
             )
         elif command == "runs":
@@ -4544,7 +4566,12 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
                 ("Name", manifest["name"], None),
                 ("Manifest", self.workspace.manifest_path, None),
                 ("Specification", self.workspace.specification_path, None),
-                ("Next", "workflow create · workflow list · current", None),
+                (
+                    "Next",
+                    "workflow create · workflow import PATH.py · "
+                    "workflow list · current",
+                    None,
+                ),
             ],
         )
 
@@ -6264,6 +6291,266 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
             ],
         )
 
+    @staticmethod
+    def _imported_resource_paths(entry: Path, root: Path) -> list[Path]:
+        """Find literal local files named by common workflow declarations."""
+
+        try:
+            tree = ast.parse(
+                entry.read_text(encoding="utf-8"),
+                filename=str(entry),
+            )
+        except (OSError, SyntaxError, UnicodeDecodeError):
+            return []
+        values: list[str] = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.keyword) or node.arg not in {
+                "files",
+                "instructions_file",
+            }:
+                continue
+            candidates = (
+                node.value.elts
+                if isinstance(node.value, (ast.List, ast.Tuple))
+                else [node.value]
+            )
+            values.extend(
+                str(candidate.value)
+                for candidate in candidates
+                if isinstance(candidate, ast.Constant)
+                and isinstance(candidate.value, str)
+            )
+        resources: list[Path] = []
+        for value in values:
+            candidate = (root / value).resolve()
+            if (
+                candidate.is_file()
+                and candidate.is_relative_to(root)
+                and candidate not in resources
+            ):
+                resources.append(candidate)
+        return resources
+
+    @staticmethod
+    def _external_workflow_root(source: Path) -> Path:
+        """Find a source project root, or treat the file's folder as its root."""
+
+        for parent in source.parents:
+            if any(
+                (parent / marker).exists()
+                for marker in ("zippergen.toml", "pyproject.toml", ".git")
+            ):
+                return parent
+        return source.parent
+
+    @staticmethod
+    def _package_initializers(path: Path, root: Path) -> list[Path]:
+        initializers: list[Path] = []
+        parent = path.parent
+        while parent.is_relative_to(root):
+            initializer = parent / "__init__.py"
+            if initializer.is_file():
+                initializers.append(initializer.resolve())
+            if parent == root:
+                break
+            parent = parent.parent
+        return list(reversed(initializers))
+
+    def import_workflow(self, args: list[str]) -> None:
+        """Copy an external workflow into the project and discover its entry."""
+
+        if len(args) != 1:
+            raise SystemExit("Use workflow import PATH.py[:WORKFLOW].")
+        entered = args[0]
+        module_text, separator, requested_name = entered.rpartition(":")
+        if not separator or not module_text.casefold().endswith(".py"):
+            module_text = entered
+            requested_name = ""
+        source = Path(module_text).expanduser()
+        if not source.is_absolute():
+            source = (self.workspace.root / source).resolve()
+        else:
+            source = source.resolve()
+        if not source.is_file():
+            raise SystemExit(f"Workflow source file does not exist: {source}")
+        if source.suffix.casefold() != ".py":
+            raise SystemExit("Workflow import requires a Python source file.")
+        if source.is_relative_to(self.workspace.root):
+            candidates = [
+                candidate
+                for candidate in self.workspace.discover_workflows()
+                if (self.workspace.root / candidate.partition(":")[0]).resolve()
+                == source.resolve()
+            ]
+            if not candidates:
+                raise SystemExit(
+                    "The file is already in this project, but it contains no "
+                    "discoverable top-level @workflow."
+                )
+            selected = next(
+                (
+                    candidate
+                    for candidate in candidates
+                    if not requested_name
+                    or candidate.rpartition(":")[2] == requested_name
+                ),
+                None,
+            )
+            if selected is None or (len(candidates) > 1 and not requested_name):
+                self.list_workflows()
+                self._info(
+                    "The source is already in this project. Use workflow "
+                    "select PATH.py:WORKFLOW."
+                )
+                return
+            self._select_workflow_spec(selected)
+            self._success(f"Selected existing project workflow: {selected}")
+            return
+
+        source_root = self._external_workflow_root(source)
+        destination_root = self.workspace.root.resolve()
+        dependencies = self._local_python_dependencies(
+            source,
+            root=source_root,
+        )
+        resources = self._imported_resource_paths(source, source_root)
+        sources: list[Path] = []
+        for item in [source, *dependencies]:
+            for candidate in [
+                *self._package_initializers(item, source_root),
+                item,
+            ]:
+                if candidate not in sources:
+                    sources.append(candidate)
+        sources.extend(
+            resource for resource in resources if resource not in sources
+        )
+        planned: list[tuple[Path, Path, str]] = []
+        for item in sources:
+            relative = item.relative_to(source_root)
+            destination = destination_root / relative
+            role = (
+                "entry point"
+                if item == source
+                else "local Python import"
+                if item.suffix == ".py"
+                else "declared resource"
+            )
+            planned.append((item, destination, role))
+
+        conflicts = [
+            destination
+            for item, destination, _role in planned
+            if destination.exists()
+            and (
+                not destination.is_file()
+                or destination.read_bytes() != item.read_bytes()
+            )
+        ]
+        if conflicts:
+            display = ", ".join(
+                str(path.relative_to(self.workspace.root))
+                for path in conflicts
+            )
+            raise SystemExit(
+                "Workflow import would overwrite different project files: "
+                f"{display}. Rename or move the existing import first."
+            )
+
+        copied: list[tuple[Path, str]] = []
+        created: list[Path] = []
+        try:
+            for item, destination, role in planned:
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                if not destination.exists():
+                    shutil.copy2(item, destination)
+                    created.append(destination)
+                copied.append((destination, role))
+        except OSError as exc:
+            for path in reversed(created):
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
+            raise SystemExit(
+                f"Workflow import failed while copying files: {exc}"
+            ) from exc
+
+        imported_entry = (
+            destination_root / source.relative_to(source_root)
+        ).resolve()
+        discovered = [
+            candidate
+            for candidate in self.workspace.discover_workflows()
+            if (self.workspace.root / candidate.partition(":")[0]).resolve()
+            == imported_entry
+        ]
+        self._emit_columns(
+            "Imported workflow files",
+            ("File", "Role"),
+            [
+                (
+                    path.relative_to(self.workspace.root).as_posix(),
+                    role,
+                )
+                for path, role in copied
+            ],
+        )
+        if not discovered:
+            raise SystemExit(
+                "Files were copied, but no top-level @workflow entry point "
+                "was discovered in the imported source."
+            )
+        selected = next(
+            (
+                candidate
+                for candidate in discovered
+                if requested_name
+                and candidate.rpartition(":")[2] == requested_name
+            ),
+            None,
+        )
+        if requested_name and selected is None:
+            raise SystemExit(
+                f"Files were copied, but workflow {requested_name!r} was not "
+                f"found. Available: {', '.join(discovered)}."
+            )
+        if selected is None and len(discovered) == 1:
+            selected = discovered[0]
+        if selected is None:
+            self._emit_columns(
+                "Imported workflow entry points",
+                ("Workflow", "Entry point"),
+                [
+                    (candidate.rpartition(":")[2], candidate)
+                    for candidate in discovered
+                ],
+            )
+            self._emit_next("workflow select PATH.py:WORKFLOW")
+            return
+        try:
+            canonical, name = self._select_workflow_spec(selected)
+        except Exception as exc:
+            raise SystemExit(
+                "The files were copied, but the imported workflow could not "
+                f"be loaded: {exc}"
+            ) from exc
+        self._emit_table(
+            "Workflow imported",
+            [
+                ("Workflow", name, None),
+                ("Entry point", canonical, None),
+                ("Files", len(copied), "success"),
+                ("Validation", "not run", "warning"),
+                (
+                    "Next",
+                    "workflow show source · workflow show protocol · "
+                    "workflow validate",
+                    None,
+                ),
+            ],
+        )
+
     def _resolve_workflow_choice(
         self,
         value: str,
@@ -6299,7 +6586,17 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
         from zippergen.serve import load_workflow_spec
 
         canonical = self.workspace.canonical_spec(selected)
-        workflow, _module = load_workflow_spec(self.workspace.absolute_spec(canonical))
+        project_path = str(self.workspace.root)
+        sys.path.insert(0, project_path)
+        try:
+            workflow, _module = load_workflow_spec(
+                self.workspace.absolute_spec(canonical)
+            )
+        finally:
+            try:
+                sys.path.remove(project_path)
+            except ValueError:
+                pass
         self.workspace.select_workflow(canonical, cwd=self.workspace.root)
         return canonical, workflow.name
 
@@ -6348,8 +6645,13 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
         paths = [base.with_suffix(".py"), base / "__init__.py"]
         return [path.resolve() for path in paths if path.is_file()]
 
-    def _local_python_dependencies(self, entry: Path) -> list[Path]:
-        root = self.workspace.root
+    def _local_python_dependencies(
+        self,
+        entry: Path,
+        *,
+        root: Path | None = None,
+    ) -> list[Path]:
+        root = (root or self.workspace.root).resolve()
         discovered: list[Path] = []
         queued = [entry.resolve()]
         visited: set[Path] = set()
@@ -6788,10 +7090,43 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
         *,
         for_run: bool = False,
     ) -> None:
+        from zippergen.connectors import connector_requirements_from_module
+
         assignments = self.workspace.connector_assignment_profile(current)
+        requirements = connector_requirements_from_module(module)
+        bindings = self.workspace.connector_binding_profile(current)
+        missing = [
+            requirement.name
+            for requirement in requirements
+            if requirement.required and requirement.name not in bindings
+        ]
+        if missing:
+            raise SystemExit(
+                "Required connector bindings are missing: "
+                + ", ".join(missing)
+                + ". Use 'connector setup'."
+            )
+        configurations = self.workspace.connector_configurations()
+        for requirement in requirements:
+            configuration_name = bindings.get(requirement.name)
+            if configuration_name is None:
+                continue
+            configuration = configurations.get(configuration_name)
+            if configuration is None:
+                raise SystemExit(
+                    f"Connector {requirement.name} references missing "
+                    f"configuration {configuration_name}."
+                )
+            if configuration.get("kind") != requirement.kind:
+                raise SystemExit(
+                    f"Connector {requirement.name} requires "
+                    f"{requirement.kind}, but {configuration_name} is "
+                    f"{configuration.get('kind') or 'unknown'}."
+                )
         names = list(dict.fromkeys([
             *assignments["lifelines"].values(),
             *assignments["actions"].values(),
+            *bindings.values(),
         ]))
         if not names:
             return
@@ -6806,7 +7141,7 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
                 f"are unavailable: {', '.join(failed)}."
             )
         self._success(
-            "All human connector routes used by this workflow are reachable."
+            "All connector configurations used by this workflow are reachable."
         )
 
 
@@ -7484,7 +7819,7 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
 
         def configuration_record(
             configuration_name: str,
-        ) -> tuple[dict[str, str], str, str | None]:
+        ) -> tuple[dict[str, str], str, dict[str, str]]:
             configuration = configurations.get(configuration_name)
             if configuration is None:
                 raise SystemExit(
@@ -7502,7 +7837,7 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
                 or configuration.get("kind")
                 or ""
             )
-            token: str | None = None
+            secrets: dict[str, str] = {}
             if provider == "telegram":
                 token = self.workspace.connector_provider_secret(
                     provider, "bot_token"
@@ -7514,7 +7849,20 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
                         "Telegram provider token is missing. Use "
                         "'connector provider configure telegram'."
                     )
-            return configuration, provider, token
+                secrets["bot_token"] = token
+            elif provider == "google":
+                authorized_user = (
+                    self.workspace.connector_provider_secret(
+                        provider, "authorized_user_json"
+                    )
+                )
+                if not authorized_user:
+                    raise SystemExit(
+                        "Google authorization is missing. Use "
+                        "'connector provider configure google'."
+                    )
+                secrets["authorized_user_json"] = authorized_user
+            return configuration, provider, secrets
 
         human_sites = self._human_action_lifelines(workflow, module)
         human_targets = self._human_action_targets(workflow, module)
@@ -7526,7 +7874,7 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
                 raise SystemExit(
                     f"Connector assignment target no longer exists: {target}."
                 )
-            configuration, provider, token = configuration_record(
+            configuration, provider, secrets = configuration_record(
                 configuration_name
             )
             if provider != "telegram":
@@ -7539,8 +7887,7 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
                 + _slug(provider).replace("-", "_").upper()
                 + "_TOKEN"
             )
-            assert token is not None
-            connector_secrets[token_env] = token
+            connector_secrets[token_env] = secrets["bot_token"]
             snapshot[f"human:{target}"] = {
                 "type": "human",
                 "target": target,
@@ -7559,21 +7906,24 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
             configuration_name = bindings.get(requirement.name)
             if configuration_name is None:
                 continue
-            configuration, provider, token = configuration_record(
+            configuration, provider, secrets = configuration_record(
                 configuration_name
             )
-            if provider != requirement.kind:
+            configuration_kind = str(configuration.get("kind") or "")
+            if configuration_kind != requirement.kind:
                 raise SystemExit(
                     f"Connector binding {requirement.name} requires "
                     f"{requirement.kind}, but {configuration_name} is "
-                    f"{provider}."
+                    f"{configuration_kind or 'unknown'}."
                 )
             record: dict[str, object] = {
                 **requirement.as_dict(),
+                "provider": provider,
                 "configuration": configuration_name,
                 "channel": configuration.get("channel") or requirement.name,
             }
             if requirement.kind == "telegram":
+                token = secrets.get("bot_token")
                 if not token:
                     raise SystemExit(
                         f"Telegram token is missing for {configuration_name}."
@@ -7590,6 +7940,49 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
                     }
                 )
                 connector_secrets[token_env] = token
+            elif requirement.kind == "google-sheets":
+                credential = secrets.get("authorized_user_json")
+                if provider != "google" or not credential:
+                    raise SystemExit(
+                        f"{configuration_name} needs a configured Google "
+                        "provider."
+                    )
+                credential_env = (
+                    "ZIPPERGEN_CONNECTOR_"
+                    + _slug(configuration_name).replace("-", "_").upper()
+                    + "_GOOGLE_CREDENTIAL"
+                )
+                record.update(
+                    {
+                        "spreadsheet_id": configuration.get(
+                            "spreadsheet_id"
+                        ),
+                        "tab": configuration.get("tab"),
+                        "credential_env": credential_env,
+                    }
+                )
+                connector_secrets[credential_env] = credential
+            elif requirement.kind == "gmail":
+                credential = secrets.get("authorized_user_json")
+                if provider != "google" or not credential:
+                    raise SystemExit(
+                        f"{configuration_name} needs a configured Google "
+                        "provider."
+                    )
+                credential_env = (
+                    "ZIPPERGEN_CONNECTOR_"
+                    + _slug(configuration_name).replace("-", "_").upper()
+                    + "_GOOGLE_CREDENTIAL"
+                )
+                record.update(
+                    {
+                        "account": configuration.get("account") or "me",
+                        "query": configuration.get("query")
+                        or "is:unread in:inbox",
+                        "credential_env": credential_env,
+                    }
+                )
+                connector_secrets[credential_env] = credential
             snapshot[f"requirement:{requirement.name}"] = record
         for secret_name, secret in sorted(connector_secrets.items()):
             arguments.extend(
@@ -7602,6 +7995,37 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
             ]
         )
         return arguments
+
+    def _workflow_connector_environment(
+        self,
+        *,
+        workflow_spec: str,
+        workflow,
+        module,
+    ) -> dict[str, str]:
+        """Build the same private connector context used by deployments."""
+
+        arguments = self._deployment_connector_arguments(
+            workflow_spec=workflow_spec,
+            workflow=workflow,
+            module=module,
+        )
+        environment: dict[str, str] = {}
+        index = 0
+        while index < len(arguments):
+            option = arguments[index]
+            index += 1
+            if index >= len(arguments):
+                break
+            value = arguments[index]
+            index += 1
+            if option == "--connectors-json":
+                environment["ZIPPERGEN_CONNECTORS_JSON"] = value
+            elif option == "--connector-secret":
+                name, separator, secret = value.partition("=")
+                if separator and name:
+                    environment[name] = secret
+        return environment
 
     def deploy_workflow(self, args: list[str]) -> None:
         from zippergen.deployment import deployment_spec_from_module
@@ -8653,6 +9077,10 @@ Human delivery is inferred from `@human` action sites and configured in
 Studio, so do not add a redundant Telegram or email requirement for it. Every
 named non-human connector capability in the specification must remain
 explicit in workflow source.
+For Google Sheets, declare a `google-sheets` requirement and use connector-aware
+`@effect` actions with `read_json_rows` or stable-key `upsert_json_row`.
+Keep the table columns and key field visible in code. Never place a spreadsheet
+ID, OAuth token, or credentials path in workflow source.
 When deployment metadata is present, keep its bundle self-contained by
 including the workflow source and any required project assets. Run validation,
 show the communication-only and full code views, confirm that every requested

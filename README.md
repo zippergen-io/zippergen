@@ -236,6 +236,7 @@ Useful Studio forms:
 
 ```text
 workflow list
+workflow import /path/to/existing_workflow.py
 workflow select
 workflow show
 workflow show communications
@@ -245,6 +246,12 @@ workflow diff
 workflow review
 workflow accept
 ```
+
+`workflow import` copies an existing workflow into the current project. It
+also copies statically imported local Python modules and literal resource files
+declared by the workflow. Existing project files are never overwritten
+silently. If the imported file contains one workflow, Studio selects it. If it
+contains several, Studio displays the entry points for selection.
 
 Validation and acceptance answer different questions:
 
@@ -372,8 +379,46 @@ deployment. Participant assignments cover all human actions on that lifeline.
 `connector assign HumanApprover.approve_contract legal-approvals` shows the
 action-level override form, where `legal-approvals` is another saved Telegram
 configuration. One configuration may be assigned to several participants.
-Their model and connector calls can still run in parallel. Gmail and Google
-connector work is still in progress.
+Their model and connector calls can still run in parallel.
+
+Gmail and Google Sheets use the same provider and configuration pattern. The
+workflow declares logical mailbox and table operations. Studio stores Google
+authorization, the Gmail query, and the concrete spreadsheet privately:
+
+For a source checkout, install the optional Google support once:
+
+```bash
+uv sync --extra google
+```
+
+For an installed package, use `pip install "zippergen[google]"`. Managed
+deployments detect Gmail and Sheets requirements and install this support
+automatically.
+
+```text
+connector setup
+```
+
+For the call-intake workflow, this one command authorizes Gmail and Sheets,
+asks for the mailbox query, spreadsheet, and tab, checks both resources, and
+binds the saved configurations:
+
+```text
+workflow select examples/call_intake.py:call_intake
+connector setup
+connector assignments check
+deploy call-intake
+```
+
+The default reply mode creates Gmail drafts. Change it to `send` only after
+testing with a dedicated account. Before setup, enable the Gmail and Google
+Sheets APIs in one Google Cloud project and download a Desktop app OAuth
+client. Read-only connector requirements request read-only Google scopes.
+Writing to an existing spreadsheet requires Google's broader spreadsheets
+scope. See
+[`google_sheets_records.py`](examples/google_sheets_records.py) for a complete
+stable-key table example and [`call_intake.py`](examples/call_intake.py) for
+the complete Gmail and Sheets service.
 
 ## Examples and documentation
 
@@ -383,6 +428,8 @@ Start with these examples:
 |---|---|
 | [`hello.py`](examples/hello.py) | Two lifelines and one LLM action |
 | [`tutorial_review.py`](examples/tutorial_review.py) | Retry loop and human approval |
+| [`google_sheets_records.py`](examples/google_sheets_records.py) | Configured Google Sheets reads and retry-safe writes |
+| [`call_intake.py`](examples/call_intake.py) | Gmail intake, controlled replies, and a Google Sheets register |
 | [`parallel.py`](examples/parallel.py) | Parallel branches |
 | [`command_center.py`](examples/command_center.py) | Long-running application loops |
 | [`codex_claude_review.py`](examples/codex_claude_review.py) | Bounded coding-assistant review loop |
