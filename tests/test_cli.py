@@ -5,7 +5,11 @@ from pathlib import Path
 
 import pytest
 
-from zippergen.serve import _launchd_service_status, main
+from zippergen.serve import (
+    _launchd_service_status,
+    _start_deployment_connector_workers,
+    main,
+)
 from zippergen.store import (
     ensure_human_task,
     load_human_task,
@@ -1398,3 +1402,50 @@ def test_notify_stdout_reports_no_pending_tasks(tmp_path, capsys):
     captured = capsys.readouterr()
     assert rc == 0
     assert "No pending human tasks." in captured.out
+
+
+def test_deployment_starts_one_telegram_bridge_for_shared_routes(
+    tmp_path,
+    monkeypatch,
+):
+    observed = []
+    monkeypatch.setenv("ZIPPERGEN_CONNECTOR_TELEGRAM_TOKEN", "secret")
+    monkeypatch.setattr(
+        "zippergen.telegram_notify.TelegramDeploymentNotifier.run_forever",
+        lambda notifier: observed.append(
+            (dict(notifier.assignments), dict(notifier.routes))
+        ),
+    )
+    profile = {
+        "store": str(tmp_path / "deployment.sqlite"),
+        "connectors": {
+            "human:Writer": {
+                "type": "human",
+                "target": "Writer",
+                "kind": "telegram",
+                "configuration": "team-chat",
+                "chat_id": "123",
+                "channel": "telegram:team-chat",
+                "token_env": "ZIPPERGEN_CONNECTOR_TELEGRAM_TOKEN",
+            },
+            "human:Reviewer": {
+                "type": "human",
+                "target": "Reviewer",
+                "kind": "telegram",
+                "configuration": "team-chat",
+                "chat_id": "123",
+                "channel": "telegram:team-chat",
+                "token_env": "ZIPPERGEN_CONNECTOR_TELEGRAM_TOKEN",
+            },
+        },
+    }
+
+    threads = _start_deployment_connector_workers(profile)
+    for thread in threads:
+        thread.join(timeout=1)
+
+    assert len(threads) == 1
+    assert observed[0][0] == {
+        "Writer": "team-chat",
+        "Reviewer": "team-chat",
+    }

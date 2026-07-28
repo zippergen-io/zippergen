@@ -1,10 +1,16 @@
 import json
+import threading
 from types import SimpleNamespace
 
 import pytest
 
 from zippergen import Lifeline, llm, workflow
-from zippergen.backends import ManagedBackend, backend_from_spec, make_openai_backend
+from zippergen.backends import (
+    ManagedBackend,
+    backend_from_spec,
+    make_lifeline_router,
+    make_openai_backend,
+)
 
 
 ConfigUser = Lifeline("ConfigUser")
@@ -209,3 +215,33 @@ def test_workflow_configure_rejects_llm_and_llms_together():
 def test_workflow_configure_rejects_negative_llm_idle_timeout():
     with pytest.raises(ValueError, match="llm_idle_timeout"):
         config_conflict.configure(llm="mock", llm_idle_timeout=-1)
+
+
+def test_lifeline_router_prefers_an_exact_action_override():
+    selected = []
+
+    def participant_backend(action, _inputs):
+        selected.append(("participant", action.name))
+        return {}
+
+    def action_backend(action, _inputs):
+        selected.append(("action", action.name))
+        return {}
+
+    router = make_lifeline_router({
+        "Writer": participant_backend,
+        "Writer.revise": action_backend,
+    })
+
+    def invoke():
+        router(SimpleNamespace(name="draft"), {})
+        router(SimpleNamespace(name="revise"), {})
+
+    thread = threading.Thread(target=invoke, name="Writer")
+    thread.start()
+    thread.join()
+
+    assert selected == [
+        ("participant", "draft"),
+        ("action", "revise"),
+    ]

@@ -235,9 +235,9 @@ human approval.
 - A rejection sends the draft back to Writer while retries remain.
 - Never return an unapproved draft. Return an explicit failure after retry
   exhaustion.
-- Declare an optional logical Telegram connector named `human-approval` for
-  HumanApprover, with notification and approval capabilities. Terminal
-  approval must remain available when it is unbound.
+- Keep human delivery independent of workflow source. HumanApprover's
+  `@human` actions will use the terminal by default and may later be routed
+  through a reusable Telegram configuration.
 
 ## Inputs and operation
 
@@ -322,16 +322,16 @@ workflow show communications
 workflow show agent Writer
 workflow show agent Reviewer
 workflow show full
-deploy connectors
+connector
 \end{lstlisting}
 
 \texttt{workflow files} reveals supporting modules and declared resources.
 The protocol view shows the global behavior; communications hides local
 actions; an agent view is that participant's exact projection; the full view
 includes actions, prompts, and deployment metadata.
-\texttt{deploy connectors} should list a logical requirement named
-\texttt{human-approval}, with kind \texttt{telegram} and configuration
-\texttt{not bound}. It does not ask for a token at this inspection step.
+\texttt{connector} discovers HumanApprover and its human actions directly
+from the selected workflow. At this point their effective route is the local
+terminal, so no Telegram token is needed.
 
 Check six things before continuing:
 
@@ -341,15 +341,14 @@ Check six things before continuing:
   \item The participant that knows the retry condition owns that decision.
   \item Every revised draft returns to review and human approval.
   \item No unapproved draft can reach Requester.
-  \item The exact connector requirement \texttt{human-approval} is declared.
+  \item HumanApprover and every human action appear in connector assignments.
 \end{enumerate}
 
-If \texttt{deploy connectors} says that the workflow declares no connector
-requirements, do not continue or accept the implementation. The specification
-already requested this declaration, so the generated Python is incomplete.
-Enter \texttt{workflow implement codex --rerun}, or use the corresponding
-Claude command, then repeat \texttt{workflow show full} and
-\texttt{deploy connectors}.
+If \texttt{connector} reports no human actions, inspect
+\texttt{workflow show full}. The generated workflow is incomplete if the
+requested \texttt{@human} approval is absent. Correct it with
+\texttt{workflow implement codex --rerun}, or the corresponding Claude
+command, then inspect again.
 
 \section{Validate and use the mock model}
 
@@ -371,6 +370,17 @@ contain LLM actions. Its \emph{Last check} column is cached: displaying the
 table never contacts a provider. Enter \texttt{model assignments check} when
 you want a fresh check of precisely the configurations used by this workflow.
 If both participants share a configuration, Studio checks it only once.
+Participant assignment is the simple default. One action can use another
+configuration without changing the other actions on that participant:
+
+\begin{lstlisting}[style=shell]
+model assign Writer drafting
+model assign Writer.revise_answer careful-revision
+model inherit Writer.revise_answer
+\end{lstlisting}
+
+The exact action route takes precedence over the participant route. The
+\texttt{inherit} command removes only that override.
 
 \begin{notebox}{Validation is not acceptance}
 \texttt{workflow validate} is a repeatable technical check of the Python
@@ -613,31 +623,35 @@ reviewer notes, instruction, and decision labels.
 for the decision; an unseen draft is never presented for blind approval.
 \texttt{deploy trace} shows recent durable events for this deployment.
 
-The tutorial workflow also declares an optional logical Telegram approval
-connector. It is not required for the first run. To deliver the same durable
-decision to a private Telegram chat, configure and bind it before the next
-deployment:
+Telegram is not required for the first run. To deliver the same durable
+decision to a private Telegram chat, use the same provider, configuration, and
+assignment lifecycle as model setup:
 
 \begin{lstlisting}[style=shell]
-deploy connectors
-deploy connectors setup telegram
-deploy connectors bind human-approval telegram-approvals
+connector provider configure telegram
+connector provider check telegram
+connector config create telegram-approvals
+connector config check telegram-approvals
+connector assign HumanApprover telegram-approvals
+connector assignments
+connector assignments check
 deploy
-deploy notify
 \end{lstlisting}
 
-The first command is a required checkpoint. It must show
-\texttt{human-approval} as a declared workflow requirement before setup or
-binding. If it shows \texttt{Requirements: none declared}, return to the
-implementation correction described earlier. A private Telegram
-configuration cannot be bound to a requirement that the Python workflow does
-not declare.
+The provider owns the private bot token. The named configuration selects the
+chat. The assignment routes every \texttt{@human} action on HumanApprover
+through that configuration. A configuration may be shared by several
+participants. Sharing it does not prevent parallel workflow steps. Use
+\texttt{connector assign
+HumanApprover.approve\_answer OTHER} for an action-specific override.
 
-The bot token is stored privately and is never written to the workflow or
-ordinary deployment profile. \texttt{deploy notify} sends pending
-decisions and collects replies in one pass; run it again after replying in
-Telegram. \texttt{deploy tasks} always shows the same underlying decision
-and remains the local inspection path.
+Development runs and deployments start the Telegram bridge automatically
+when the selected workflow has an external human assignment. Telegram presents
+confirmations and selections as buttons. Every callback contains a durable
+one-time task token, so delayed or duplicate replies cannot answer the wrong
+task. Numbered replies to the original message remain a fallback.
+\texttt{deploy tasks} always shows the same underlying decision and remains
+the local inspection path.
 \texttt{deploy stop} prevents the tutorial service from being supervised
 indefinitely; it preserves the deployment profile, bundle, log, and durable
 store. If no supported macOS or Linux user service manager is available, the

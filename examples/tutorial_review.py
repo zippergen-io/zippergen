@@ -16,7 +16,6 @@ Use the durable SQLite runner and approve from another terminal:
 """
 
 from zippergen import (
-    ConnectorRequirement,
     DeploymentField,
     DeploymentSpec,
     Lifeline,
@@ -31,21 +30,6 @@ from zippergen import (
 Requester = Lifeline("Requester")
 Writer = Lifeline("Writer")
 Reviewer = Lifeline("Reviewer")
-
-
-zippergen_connectors = (
-    ConnectorRequirement(
-        name="human-approval",
-        kind="telegram",
-        participant="Reviewer",
-        capabilities=("notify", "approve"),
-        access="read-write",
-        description=(
-            "Optionally deliver durable approval tasks to a Telegram chat."
-        ),
-        required=False,
-    ),
-)
 
 
 @llm(

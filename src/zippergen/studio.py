@@ -143,6 +143,7 @@ _SUBCOMMAND_COMPLETIONS = {
         "editor",
         "edit",
         "model",
+        "connector",
         "run",
         "deploy",
     )
@@ -199,8 +200,6 @@ def _is_explicit_studio_syntax(parts: list[str]) -> bool:
         if not args:
             return True
         action = args[0].casefold()
-        if action == "connectors":
-            return len(args) <= 5
         if action == "inspect":
             return len(args) <= 3
         if action == "remove":
@@ -213,7 +212,6 @@ def _is_explicit_studio_syntax(parts: list[str]) -> bool:
             "tasks",
             "approve",
             "trace",
-            "notify",
             "start",
             "restart",
             "stop",
@@ -351,11 +349,25 @@ def _is_allowed_natural_plan_command(parts: list[str]) -> bool:
         if lowered[0] in {"default", "inherit"}:
             return len(args) == 2
         return lowered[0] == "assign" and len(args) == 3
+    if command == "connector":
+        if not args:
+            return True
+        if lowered[0] == "provider":
+            return len(args) <= 3
+        if lowered[0] == "config":
+            return len(args) <= 4
+        if lowered[0] == "setup":
+            return len(args) == 1
+        if lowered[0] == "assignments":
+            return len(args) in {1, 2} and (
+                len(args) == 1 or lowered[1] == "check"
+            )
+        if lowered[0] in {"assign", "bind"}:
+            return len(args) == 3
+        return lowered[0] == "inherit" and len(args) == 2
     if command == "deploy":
         if not args:
             return True
-        if lowered[0] == "connectors":
-            return len(args) <= 5
         if lowered[0] == "inspect":
             return len(args) <= 3
         if lowered[0] == "remove":
@@ -380,7 +392,6 @@ def _is_allowed_natural_plan_command(parts: list[str]) -> bool:
                 "tasks",
                 "approve",
                 "trace",
-                "notify",
                 "start",
                 "restart",
                 "stop",
@@ -692,8 +703,6 @@ class Studio:
                 "tasks",
                 "approve",
                 "trace",
-                "connectors",
-                "notify",
                 "start",
                 "restart",
                 "stop",
@@ -704,6 +713,7 @@ class Studio:
         if len(parts) > 1 and command in {
             "workflow",
             "model",
+            "connector",
             "project",
             "settings",
             "language",
@@ -1220,15 +1230,109 @@ class Studio:
                 return self._completion_model_configurations()
             if action == "assign":
                 if len(args) == 1:
-                    return [
+                    participants = [
                         (name, "LLM-active participant")
                         for name in self._completion_lifelines(llm_only=True)
                     ]
+                    try:
+                        _current, workflow, module = self._current_context()
+                        actions = [
+                            (target, "LLM action override")
+                            for target in self._llm_action_targets(
+                                workflow, module
+                            )
+                        ]
+                    except SystemExit:
+                        actions = []
+                    return [*participants, *actions]
                 return self._completion_model_configurations()
             if action == "inherit" and len(args) == 1:
-                return [
+                participants = [
                     (name, "LLM-active participant")
                     for name in self._completion_lifelines(llm_only=True)
+                ]
+                try:
+                    _current, workflow, module = self._current_context()
+                    actions = [
+                        (target, "LLM action override")
+                        for target in self._llm_action_targets(
+                            workflow, module
+                        )
+                    ]
+                except SystemExit:
+                    actions = []
+                return [*participants, *actions]
+            return []
+        if command == "connector":
+            if not args:
+                return list(_SUBCOMMAND_COMPLETIONS["connector"])
+            action = args[0].lower()
+            if action == "provider":
+                if len(args) == 1:
+                    return [
+                        ("list", "list provider status"),
+                        ("configure", "configure private credentials"),
+                        ("check", "test provider connectivity"),
+                        ("remove", "remove an unused provider"),
+                    ]
+                if len(args) == 2 and args[1].lower() in {
+                    "configure", "check", "remove"
+                }:
+                    values = [("telegram", "Telegram Bot API")]
+                    if args[1].lower() == "check":
+                        values.insert(0, ("all", "all connector providers"))
+                    return values
+                return []
+            if action == "config":
+                if len(args) == 1:
+                    return [
+                        ("list", "list reusable configurations"),
+                        ("create", "create a chat configuration"),
+                        ("show", "inspect one configuration"),
+                        ("edit", "change a configuration"),
+                        ("check", "check its destination"),
+                        ("rename", "rename and migrate assignments"),
+                        ("remove", "remove an unused configuration"),
+                    ]
+                if len(args) == 2 and args[1].lower() in {
+                    "show", "edit", "check", "rename", "remove"
+                }:
+                    values = [
+                        (name, value.get("provider", "connector"))
+                        for name, value
+                        in self.workspace.connector_configurations().items()
+                    ]
+                    if args[1].lower() == "check":
+                        values.insert(0, ("all", "all configurations"))
+                    return values
+                return []
+            if action in {"assign", "inherit"} and len(args) == 1:
+                try:
+                    _current, workflow, module = self._current_context()
+                    participants = [
+                        (name, "human-active participant")
+                        for name in self._human_action_lifelines(
+                            workflow, module
+                        )
+                    ]
+                    actions = [
+                        (name, "human action override")
+                        for name in self._human_action_targets(
+                            workflow, module
+                        )
+                    ]
+                    return [*participants, *actions]
+                except SystemExit:
+                    return []
+            if action == "assignments" and len(args) == 1:
+                return [
+                    ("check", "check effective connector routes")
+                ]
+            if action == "assign" and len(args) == 2:
+                return [
+                    (name, value.get("provider", "connector"))
+                    for name, value
+                    in self.workspace.connector_configurations().items()
                 ]
             return []
         if command == "deploy":
@@ -1246,44 +1350,6 @@ class Studio:
                         "override a divergence with an audited reason",
                     ),
                 ]
-            if args[0].lower() == "connectors":
-                if len(args) == 1:
-                    return [
-                        ("setup", "configure a connector privately"),
-                        ("check", "check connector availability"),
-                        ("bind", "bind a workflow requirement"),
-                    ]
-                if len(args) == 2 and args[1].lower() == "setup":
-                    return [("telegram", "Telegram human approvals")]
-                if len(args) == 2 and args[1].lower() == "check":
-                    return [
-                        ("all", "all connector configurations"),
-                        *[
-                            (name, value.get("kind", "connector"))
-                            for name, value in
-                            self.workspace.connector_configurations().items()
-                        ],
-                    ]
-                if len(args) == 2 and args[1].lower() == "bind":
-                    try:
-                        _current, _workflow, module = self._current_context()
-                        from zippergen.connectors import (
-                            connector_requirements_from_module,
-                        )
-
-                        return [
-                            (item.name, f"{item.kind} requirement")
-                            for item in connector_requirements_from_module(module)
-                        ]
-                    except SystemExit:
-                        return []
-                if len(args) == 3 and args[1].lower() == "bind":
-                    return [
-                        (name, value.get("kind", "connector"))
-                        for name, value in
-                        self.workspace.connector_configurations().items()
-                    ]
-                return []
             if (
                 args[0].lower()
                 in {
@@ -1294,7 +1360,6 @@ class Studio:
                     "tasks",
                     "approve",
                     "trace",
-                    "notify",
                     "start",
                     "restart",
                     "stop",
@@ -2642,6 +2707,8 @@ class Studio:
                 raise SystemExit("Use studio doctor or studio restart.")
         elif command == "model":
             self.configure_models(args)
+        elif command == "connector":
+            self.manage_connectors(args)
         elif command == "run":
             if args:
                 run_action = args[0].casefold()
@@ -2696,6 +2763,15 @@ class Studio:
                 default_override=run_args[0] if run_args else None,
                 for_run=True,
             )
+            self._check_workflow_connectors(
+                current,
+                workflow,
+                module,
+                for_run=True,
+            )
+            human_connector_factory = self._human_connector_factory(
+                current, workflow, module
+            )
             try:
                 run_dev(
                     self.workspace,
@@ -2706,6 +2782,7 @@ class Studio:
                     input_func=self.input,
                     output_func=self.output,
                     renderer=self._renderer,
+                    human_connector_factory=human_connector_factory,
                 )
             except RuntimeError as exc:
                 raise SystemExit(
@@ -2715,6 +2792,13 @@ class Studio:
         elif command == "resume":
             if args:
                 raise SystemExit("Studio 'resume' takes no arguments.")
+            current, workflow, module = self._current_context()
+            self._check_workflow_connectors(
+                current,
+                workflow,
+                module,
+                for_run=True,
+            )
             run_dev(
                 self.workspace,
                 resume=True,
@@ -2722,6 +2806,9 @@ class Studio:
                 input_func=self.input,
                 output_func=self.output,
                 renderer=self._renderer,
+                human_connector_factory=self._human_connector_factory(
+                    current, workflow, module
+                ),
             )
         elif command == "runs":
             self.show_runs()
@@ -2735,8 +2822,6 @@ class Studio:
                 "tasks",
                 "approve",
                 "trace",
-                "connectors",
-                "notify",
                 "start",
                 "restart",
                 "stop",
@@ -5899,14 +5984,28 @@ class Studio:
             connector_bindings = self.workspace.connector_binding_profile(
                 str(state["current_workflow"])
             )
-            connector_summary = (
-                "none"
-                if not connector_requirements
-                else " · ".join(
-                    f"{item.name}={connector_bindings.get(item.name, 'not bound')}"
-                    for item in connector_requirements
+            human_connector_assignments = (
+                self.workspace.connector_assignment_profile(
+                    str(state["current_workflow"])
                 )
             )
+            connector_parts = [
+                *[
+                    f"{target}={configuration}"
+                    for target, configuration in
+                    human_connector_assignments["lifelines"].items()
+                ],
+                *[
+                    f"{target}={configuration}"
+                    for target, configuration in
+                    human_connector_assignments["actions"].items()
+                ],
+                *[
+                    f"{item.name}={connector_bindings.get(item.name, 'not bound')}"
+                    for item in connector_requirements
+                ],
+            ]
+            connector_summary = " · ".join(connector_parts) or "none"
             active_models = self._llm_action_lifelines(workflow, module)
             llm_participants = list(active_models)
             validation = _validate_workflow(workflow, module)
@@ -5986,7 +6085,9 @@ class Studio:
             configurations = self.workspace.model_configurations()
             default_configuration = str(assignments["default"])
             overrides = assignments.get("lifelines") or {}
+            action_overrides = assignments.get("actions") or {}
             assert isinstance(overrides, dict)
+            assert isinstance(action_overrides, dict)
             model_rows: list[tuple[str, object, StatusKind | None]] = [
                 (
                     "Default",
@@ -5997,25 +6098,37 @@ class Studio:
             ]
             if active_models:
                 for lifeline, actions in active_models.items():
-                    explicit = overrides.get(lifeline)
-                    effective = str(explicit or default_configuration)
-                    source = "override" if explicit else "default"
-                    spec = configurations.get(effective, {}).get(
-                        "spec", "missing"
-                    )
-                    model_rows.append(
-                        (
-                            lifeline,
-                            f"{effective} → {spec} "
-                            f"({source}; actions: {', '.join(actions)})",
-                            None,
+                    for action_name in actions:
+                        target = f"{lifeline}.{action_name}"
+                        action_explicit = action_overrides.get(target)
+                        participant_explicit = overrides.get(lifeline)
+                        effective = str(
+                            action_explicit
+                            or participant_explicit
+                            or default_configuration
                         )
-                    )
+                        source = (
+                            "action override"
+                            if action_explicit
+                            else "participant"
+                            if participant_explicit
+                            else "default"
+                        )
+                        spec = configurations.get(effective, {}).get(
+                            "spec", "missing"
+                        )
+                        model_rows.append(
+                            (
+                                target,
+                                f"{effective} → {spec} ({source})",
+                                None,
+                            )
+                        )
             else:
                 model_rows.append(("Assignments", "none", None))
             selected_configurations = {default_configuration} | {
                 str(value) for value in overrides.values()
-            }
+            } | {str(value) for value in action_overrides.values()}
             selected_specs = {
                 configurations.get(name, {}).get("spec", "mock")
                 for name in selected_configurations
@@ -6610,15 +6723,156 @@ class Studio:
         ordered = self._agent_names(workflow)
         return {name: actions[name] for name in ordered if name in actions}
 
+    def _llm_action_targets(self, workflow, module) -> dict[str, tuple[str, str]]:
+        """Return canonical ``Participant.action`` targets in protocol order."""
+
+        return {
+            f"{participant}.{action}": (participant, action)
+            for participant, actions in self._llm_action_lifelines(
+                workflow, module
+            ).items()
+            for action in actions
+        }
+
+    def _human_action_lifelines(self, workflow, module) -> dict[str, list[str]]:
+        model = workflow_semantics(workflow, module)
+        actions: dict[str, list[str]] = {}
+        sites = model.get("action_sites") or []
+        if isinstance(sites, list):
+            for site in sites:
+                if (
+                    not isinstance(site, dict)
+                    or site.get("kind") != "human"
+                ):
+                    continue
+                participant = str(site.get("lifeline"))
+                action = str(site.get("action"))
+                actions.setdefault(participant, [])
+                if action not in actions[participant]:
+                    actions[participant].append(action)
+        ordered = self._agent_names(workflow)
+        return {
+            name: actions[name] for name in ordered if name in actions
+        }
+
+    def _human_action_targets(
+        self, workflow, module
+    ) -> dict[str, tuple[str, str]]:
+        return {
+            f"{participant}.{action}": (participant, action)
+            for participant, actions in self._human_action_lifelines(
+                workflow, module
+            ).items()
+            for action in actions
+        }
+
+    def _human_connector_factory(
+        self,
+        current: str,
+        workflow,
+        module,
+    ):
+        assignments = self.workspace.connector_assignment_profile(current)
+        selected = {
+            *assignments["lifelines"].values(),
+            *assignments["actions"].values(),
+        }
+        if not selected:
+            return None
+        configurations = self.workspace.connector_configurations()
+        routes: dict[str, dict[str, object]] = {}
+        for name in selected:
+            configuration = configurations.get(name)
+            if configuration is None:
+                raise SystemExit(
+                    f"Assigned connector configuration no longer exists: "
+                    f"{name}."
+                )
+            provider = str(
+                configuration.get("provider")
+                or configuration.get("kind")
+                or ""
+            )
+            if provider != "telegram":
+                raise SystemExit(
+                    f"Development human delivery is not implemented for "
+                    f"{provider or 'unknown'}."
+                )
+            routes[name] = {
+                **configuration,
+                "configuration": name,
+                "channel": configuration.get("channel")
+                or f"telegram:{name}",
+            }
+        token = self.workspace.connector_provider_secret(
+            "telegram", "bot_token"
+        )
+        if not token:
+            raise SystemExit(
+                "Telegram provider token is missing. Use "
+                "'connector provider configure telegram'."
+            )
+        route_assignments = {
+            **assignments["lifelines"],
+            **assignments["actions"],
+        }
+
+        def factory(store_path: str):
+            from zippergen.telegram_notify import (
+                TelegramBotClient,
+                TelegramDeploymentNotifier,
+            )
+
+            return TelegramDeploymentNotifier(
+                store_path=store_path,
+                client=TelegramBotClient(token),
+                routes=routes,
+                assignments=route_assignments,
+            )
+
+        return factory
+
+    def _check_workflow_connectors(
+        self,
+        current: str,
+        workflow,
+        module,
+        *,
+        for_run: bool = False,
+    ) -> None:
+        assignments = self.workspace.connector_assignment_profile(current)
+        names = list(dict.fromkeys([
+            *assignments["lifelines"].values(),
+            *assignments["actions"].values(),
+        ]))
+        if not names:
+            return
+        failed = [
+            name for name in names
+            if not self._check_connector_configuration(name)
+        ]
+        if failed:
+            context = "Run" if for_run else "Connector assignment"
+            raise SystemExit(
+                f"{context} stopped because these connector configurations "
+                f"are unavailable: {', '.join(failed)}."
+            )
+        self._success(
+            "All human connector routes used by this workflow are reachable."
+        )
+
     def _run_model_profile(self) -> dict[str, object]:
         current = self.workspace.current_workflow
         if not current:
             return {"default": None, "lifelines": {}}
         _current, _workflow, module = self._current_context()
-        return self.workspace.model_profile(
+        profile = self.workspace.model_profile(
             current,
             default=default_llm_spec(module),
         )
+        lifelines = dict(profile.get("lifelines") or {})
+        lifelines.update(dict(profile.get("actions") or {}))
+        return {"default": profile.get("default"), "lifelines": lifelines}
 
     def _check_workflow_models(
         self,
@@ -6646,39 +6900,54 @@ class Studio:
         )
         configurations = self.workspace.model_configurations()
         default_name = str(assignments["default"])
-        overrides = assignments.get("lifelines") or {}
-        assert isinstance(overrides, dict)
+        participant_overrides = assignments.get("lifelines") or {}
+        action_overrides = assignments.get("actions") or {}
+        assert isinstance(participant_overrides, dict)
+        assert isinstance(action_overrides, dict)
 
         routes: list[tuple[str, str, str]] = []
-        for participant in active:
-            if participant in overrides:
-                configuration_name = str(overrides[participant])
-                configuration = configurations.get(configuration_name)
-                if configuration is None:
-                    raise SystemExit(
-                        f"Model configuration {configuration_name!r}, assigned "
-                        f"to {participant}, no longer exists."
+        for participant, actions in active.items():
+            for action_name in actions:
+                target = f"{participant}.{action_name}"
+                if target in action_overrides:
+                    configuration_name = str(action_overrides[target])
+                    configuration = configurations.get(configuration_name)
+                    if configuration is None:
+                        raise SystemExit(
+                            f"Model configuration {configuration_name!r}, "
+                            f"assigned to {target}, no longer exists."
+                        )
+                    spec = str(configuration["spec"])
+                elif participant in participant_overrides:
+                    configuration_name = str(
+                        participant_overrides[participant]
                     )
-                spec = str(configuration["spec"])
-            elif default_override is not None:
-                configuration_name = "run override"
-                spec = default_override
-            else:
-                configuration_name = default_name
-                configuration = configurations.get(configuration_name)
-                if configuration is None:
-                    raise SystemExit(
-                        f"Default model configuration {configuration_name!r} "
-                        "no longer exists."
-                    )
-                spec = str(configuration["spec"])
-            routes.append((participant, configuration_name, spec))
+                    configuration = configurations.get(configuration_name)
+                    if configuration is None:
+                        raise SystemExit(
+                            f"Model configuration {configuration_name!r}, assigned "
+                            f"to {participant}, no longer exists."
+                        )
+                    spec = str(configuration["spec"])
+                elif default_override is not None:
+                    configuration_name = "run override"
+                    spec = default_override
+                else:
+                    configuration_name = default_name
+                    configuration = configurations.get(configuration_name)
+                    if configuration is None:
+                        raise SystemExit(
+                            f"Default model configuration {configuration_name!r} "
+                            "no longer exists."
+                        )
+                    spec = str(configuration["spec"])
+                routes.append((target, configuration_name, spec))
 
         checks: dict[tuple[str, str], _ModelVerification] = {}
         failures: list[str] = []
         details: list[str] = []
         checked_at = time.strftime("%Y-%m-%dT%H:%M:%S%z")
-        for _participant, configuration_name, spec in routes:
+        for _target, configuration_name, spec in routes:
             key = (configuration_name, spec)
             if key in checks:
                 continue
@@ -6717,7 +6986,7 @@ class Studio:
                 details.append(verification.message)
 
         rows: list[tuple[object, ...]] = []
-        for participant, configuration_name, spec in routes:
+        for target, configuration_name, spec in routes:
             verification = checks[(configuration_name, spec)]
             kind: StatusKind = (
                 "success" if verification.kind == "success" else "error"
@@ -6728,10 +6997,10 @@ class Studio:
                 "warning": "not verified",
             }[verification.kind]
             status = f"{self._status_mark(kind)} {status_text}"
-            rows.append((participant, configuration_name, spec, status))
+            rows.append((target, configuration_name, spec, status))
         self._emit_columns(
             title,
-            ("Participant", "Configuration", "Model", "Status"),
+            ("Participant.action", "Configuration", "Model", "Status"),
             rows,
         )
         if failures:
@@ -6841,8 +7110,10 @@ class Studio:
         active = self._llm_action_lifelines(workflow, module)
         configurations = self.workspace.model_configurations()
         default = str(assignments["default"])
-        overrides = assignments.get("lifelines") or {}
-        assert isinstance(overrides, dict)
+        participant_overrides = assignments.get("lifelines") or {}
+        action_overrides = assignments.get("actions") or {}
+        assert isinstance(participant_overrides, dict)
+        assert isinstance(action_overrides, dict)
         if not active:
             self._emit_table(
                 "Model assignments",
@@ -6859,30 +7130,40 @@ class Studio:
             return
         rows: list[tuple[object, ...]] = []
         for lifeline, actions in active.items():
-            explicit = overrides.get(lifeline)
-            effective = str(explicit or default)
-            spec = configurations.get(effective, {}).get("spec", "missing")
-            configuration = (
-                effective if explicit else f"{effective} (default)"
-            )
-            rows.append(
-                (
-                    lifeline,
-                    configuration,
-                    spec,
-                    ", ".join(actions),
-                    self._assignment_check_summary(
-                        configurations.get(effective)
-                    ),
+            for action_name in actions:
+                target = f"{lifeline}.{action_name}"
+                action_explicit = action_overrides.get(target)
+                participant_explicit = participant_overrides.get(lifeline)
+                effective = str(
+                    action_explicit or participant_explicit or default
                 )
-            )
+                spec = configurations.get(effective, {}).get("spec", "missing")
+                if action_explicit:
+                    source = "action override"
+                elif participant_explicit:
+                    source = "participant"
+                else:
+                    source = "default"
+                rows.append(
+                    (
+                        lifeline,
+                        action_name,
+                        effective,
+                        spec,
+                        source,
+                        self._assignment_check_summary(
+                            configurations.get(effective)
+                        ),
+                    )
+                )
         self._emit_columns(
             "Model assignments",
             (
                 "Participant",
+                "LLM action",
                 "Configuration",
                 "Model",
-                "LLM actions",
+                "Source",
                 "Last check",
             ),
             rows,
@@ -6994,7 +7275,7 @@ class Studio:
                 )
                 self._emit_next(
                     f"model config check {name} · "
-                    f"model assign LIFELINE {name}"
+                    f"model assign PARTICIPANT {name}"
                 )
                 return name
         try:
@@ -7020,7 +7301,7 @@ class Studio:
         self._success(f"{verb} model configuration: {name} ({spec})")
         self._emit_next(
             f"model config check {name} · "
-            f"model assign LIFELINE {name}"
+            f"model assign PARTICIPANT {name}"
         )
         return name
 
@@ -7311,6 +7592,7 @@ class Studio:
         )
         default = str(assignments["default"])
         overrides = dict(assignments.get("lifelines") or {})
+        action_overrides = dict(assignments.get("actions") or {})
         choices = list(self.workspace.model_configurations())
         for lifeline in active:
             selected = self._select(
@@ -7323,6 +7605,7 @@ class Studio:
             current,
             default=default,
             lifelines=overrides,
+            actions=action_overrides,
         )
         self._success(
             f"Model setup complete for {workflow.name}; "
@@ -7428,8 +7711,8 @@ class Studio:
             raise SystemExit(
                 "Use model, model setup, model provider ..., "
                 "model config ..., model assignments, "
-                "model assign LIFELINE NAME, model default NAME, or "
-                "model inherit LIFELINE."
+                "model assign PARTICIPANT_OR_ACTION NAME, model default NAME, "
+                "or model inherit PARTICIPANT_OR_ACTION."
             )
 
         current, workflow, module = self._current_context()
@@ -7439,7 +7722,9 @@ class Studio:
         )
         default = str(assignments["default"])
         overrides = dict(assignments.get("lifelines") or {})
+        action_overrides = dict(assignments.get("actions") or {})
         active = self._llm_action_lifelines(workflow, module)
+        action_targets = self._llm_action_targets(workflow, module)
         changed_configuration: str | None = None
         result_message: str
 
@@ -7448,43 +7733,68 @@ class Studio:
             changed_configuration = default
             result_message = f"Set the default configuration to {default}."
         elif action == "assign" and len(args) == 3:
-            entered_lifeline, entered_configuration = args[1:]
+            entered_target, entered_configuration = args[1:]
             lifeline = {
                 name.casefold(): name for name in active
-            }.get(entered_lifeline.casefold())
-            if lifeline is None:
-                available = ", ".join(active) or "none"
+            }.get(entered_target.casefold())
+            action_target = {
+                name.casefold(): name for name in action_targets
+            }.get(entered_target.casefold())
+            if lifeline is None and action_target is None:
+                available = ", ".join(
+                    [*active, *action_targets]
+                ) or "none"
                 raise SystemExit(
-                    f"{entered_lifeline!r} has no LLM actions. "
-                    f"LLM-active lifelines: "
+                    f"{entered_target!r} is not an LLM participant or action. "
+                    f"Available targets: "
                     f"{available}."
                 )
             configuration = self._model_configuration_name(
                 entered_configuration
             )
-            overrides[lifeline] = configuration
+            target = action_target or lifeline
+            assert target is not None
+            if action_target is not None:
+                action_overrides[action_target] = configuration
+            else:
+                overrides[lifeline] = configuration  # type: ignore[index]
             changed_configuration = configuration
-            result_message = f"Assigned {configuration} to {lifeline}."
+            result_message = f"Assigned {configuration} to {target}."
         elif action == "inherit" and len(args) == 2:
-            entered_lifeline = args[1]
+            entered_target = args[1]
             lifeline = {
                 name.casefold(): name for name in active
-            }.get(entered_lifeline.casefold())
-            if lifeline is None:
-                available = ", ".join(active) or "none"
+            }.get(entered_target.casefold())
+            action_target = {
+                name.casefold(): name for name in action_targets
+            }.get(entered_target.casefold())
+            if lifeline is None and action_target is None:
+                available = ", ".join(
+                    [*active, *action_targets]
+                ) or "none"
                 raise SystemExit(
-                    f"{entered_lifeline!r} has no LLM actions. "
-                    f"LLM-active lifelines: "
+                    f"{entered_target!r} is not an LLM participant or action. "
+                    f"Available targets: "
                     f"{available}."
                 )
-            overrides.pop(lifeline, None)
-            result_message = (
-                f"{lifeline} now inherits the default configuration {default}."
-            )
+            if action_target is not None:
+                action_overrides.pop(action_target, None)
+                participant = action_targets[action_target][0]
+                inherited = overrides.get(participant, default)
+                result_message = (
+                    f"{action_target} now inherits {inherited} from "
+                    f"{'its participant' if participant in overrides else 'the default'}."
+                )
+            else:
+                assert lifeline is not None
+                overrides.pop(lifeline, None)
+                result_message = (
+                    f"{lifeline} now inherits the default configuration {default}."
+                )
         else:
             raise SystemExit(
-                "Use model assign LIFELINE NAME, model default NAME, or "
-                "model inherit LIFELINE."
+                "Use model assign PARTICIPANT_OR_ACTION NAME, model default NAME, or "
+                "model inherit PARTICIPANT_OR_ACTION."
             )
 
         if changed_configuration is not None:
@@ -7508,6 +7818,7 @@ class Studio:
             current,
             default=default,
             lifelines=overrides,
+            actions=action_overrides,
         )
         self._success(result_message)
         self._emit()
@@ -8822,6 +9133,7 @@ class Studio:
         self,
         *,
         workflow_spec: str,
+        workflow,
         module,
     ) -> list[str]:
         """Validate bindings and serialize connector references for deployment."""
@@ -8830,7 +9142,14 @@ class Studio:
         from zippergen.serve import _slug
 
         requirements = connector_requirements_from_module(module)
-        if not requirements:
+        human_assignments = self.workspace.connector_assignment_profile(
+            workflow_spec
+        )
+        if (
+            not requirements
+            and not human_assignments["lifelines"]
+            and not human_assignments["actions"]
+        ):
             return []
         bindings = self.workspace.connector_binding_profile(workflow_spec)
         configurations = self.workspace.connector_configurations()
@@ -8843,32 +9162,98 @@ class Studio:
             raise SystemExit(
                 "Required connector bindings are missing: "
                 + ", ".join(missing)
-                + ". Use deploy connectors."
+                + ". Use connector bind."
             )
 
         snapshot: dict[str, dict[str, object]] = {}
         arguments: list[str] = []
-        for requirement in requirements:
-            configuration_name = bindings.get(requirement.name)
-            if configuration_name is None:
-                continue
+        connector_secrets: dict[str, str] = {}
+
+        def configuration_record(
+            configuration_name: str,
+        ) -> tuple[dict[str, str], str, str | None]:
             configuration = configurations.get(configuration_name)
             if configuration is None:
                 raise SystemExit(
-                    f"Connector binding {requirement.name} references missing "
-                    f"configuration {configuration_name}."
-                )
-            if configuration.get("kind") != requirement.kind:
-                raise SystemExit(
-                    f"Connector binding {requirement.name} requires "
-                    f"{requirement.kind}, but {configuration_name} is "
-                    f"{configuration.get('kind')}."
+                    f"Connector assignment references missing configuration "
+                    f"{configuration_name}."
                 )
             if configuration.get("check_status") != "available":
                 raise SystemExit(
                     f"Connector {configuration_name} has not passed its latest "
-                    "check. Use deploy connectors check "
-                    f"{configuration_name}."
+                    f"check. Use 'connector config check "
+                    f"{configuration_name}'."
+                )
+            provider = str(
+                configuration.get("provider")
+                or configuration.get("kind")
+                or ""
+            )
+            token: str | None = None
+            if provider == "telegram":
+                token = self.workspace.connector_provider_secret(
+                    provider, "bot_token"
+                ) or self.workspace.connector_secret(
+                    configuration_name, "bot_token"
+                )
+                if not token:
+                    raise SystemExit(
+                        "Telegram provider token is missing. Use "
+                        "'connector provider configure telegram'."
+                    )
+            return configuration, provider, token
+
+        human_sites = self._human_action_lifelines(workflow, module)
+        human_targets = self._human_action_targets(workflow, module)
+        for target, configuration_name in [
+            *human_assignments["lifelines"].items(),
+            *human_assignments["actions"].items(),
+        ]:
+            if target not in human_sites and target not in human_targets:
+                raise SystemExit(
+                    f"Connector assignment target no longer exists: {target}."
+                )
+            configuration, provider, token = configuration_record(
+                configuration_name
+            )
+            if provider != "telegram":
+                raise SystemExit(
+                    f"Human target {target} needs a human-delivery connector, "
+                    f"but {configuration_name} uses {provider or 'none'}."
+                )
+            token_env = (
+                "ZIPPERGEN_CONNECTOR_"
+                + _slug(provider).replace("-", "_").upper()
+                + "_TOKEN"
+            )
+            assert token is not None
+            connector_secrets[token_env] = token
+            snapshot[f"human:{target}"] = {
+                "type": "human",
+                "target": target,
+                "participant": target.partition(".")[0],
+                "action": target.partition(".")[2] or None,
+                "kind": provider,
+                "provider": provider,
+                "configuration": configuration_name,
+                "chat_id": configuration.get("chat_id"),
+                "channel": configuration.get("channel")
+                or f"telegram:{configuration_name}",
+                "token_env": token_env,
+            }
+
+        for requirement in requirements:
+            configuration_name = bindings.get(requirement.name)
+            if configuration_name is None:
+                continue
+            configuration, provider, token = configuration_record(
+                configuration_name
+            )
+            if provider != requirement.kind:
+                raise SystemExit(
+                    f"Connector binding {requirement.name} requires "
+                    f"{requirement.kind}, but {configuration_name} is "
+                    f"{provider}."
                 )
             record: dict[str, object] = {
                 **requirement.as_dict(),
@@ -8876,10 +9261,6 @@ class Studio:
                 "channel": configuration.get("channel") or requirement.name,
             }
             if requirement.kind == "telegram":
-                token = self.workspace.connector_secret(
-                    configuration_name,
-                    "bot_token",
-                )
                 if not token:
                     raise SystemExit(
                         f"Telegram token is missing for {configuration_name}."
@@ -8895,10 +9276,12 @@ class Studio:
                         "token_env": token_env,
                     }
                 )
-                arguments.extend(
-                    ["--connector-secret", f"{token_env}={token}"]
-                )
-            snapshot[requirement.name] = record
+                connector_secrets[token_env] = token
+            snapshot[f"requirement:{requirement.name}"] = record
+        for secret_name, secret in sorted(connector_secrets.items()):
+            arguments.extend(
+                ["--connector-secret", f"{secret_name}={secret}"]
+            )
         arguments.extend(
             [
                 "--connectors-json",
@@ -9165,10 +9548,15 @@ class Studio:
         )
         arguments.extend(["--llm", str(profile["default"])])
         overrides = profile.get("lifelines") or {}
+        action_overrides = profile.get("actions") or {}
         selected_specs = [str(profile["default"])]
         if isinstance(overrides, dict):
             for lifeline, model in sorted(overrides.items()):
                 arguments.extend(["--llm-for", f"{lifeline}={model}"])
+                selected_specs.append(str(model))
+        if isinstance(action_overrides, dict):
+            for target, model in sorted(action_overrides.items()):
+                arguments.extend(["--llm-for", f"{target}={model}"])
                 selected_specs.append(str(model))
         arguments.extend(
             self._deployment_secret_reuse_arguments(
@@ -9180,6 +9568,7 @@ class Studio:
         arguments.extend(
             self._deployment_connector_arguments(
                 workflow_spec=current,
+                workflow=deployment_workflow,
                 module=deployment_module,
             )
         )
@@ -9229,15 +9618,40 @@ class Studio:
         return current, connector_requirements_from_module(module)
 
     def _emit_connectors(self) -> None:
+        providers = self.workspace.connector_provider_profiles()
+        if providers:
+            self._emit_columns(
+                "Connector providers",
+                ("Provider", "Status", "Detail"),
+                [
+                    (
+                        name,
+                        value.get("check_status", "not checked"),
+                        value.get("check_detail", "—"),
+                    )
+                    for name, value in providers.items()
+                ],
+            )
+        else:
+            self._emit_table(
+                "Connector providers",
+                [
+                    ("Status", "none configured", "warning"),
+                    ("Next", "connector provider configure telegram", None),
+                ],
+            )
+
         configurations = self.workspace.connector_configurations()
         if configurations:
             self._emit_columns(
                 "Connector configurations",
-                ("Configuration", "Kind", "Resource", "Last check"),
+                ("Configuration", "Provider", "Resource", "Last check"),
                 [
                     (
                         name,
-                        value.get("kind") or "—",
+                        value.get("provider")
+                        or value.get("kind")
+                        or "—",
                         value.get("chat_id")
                         or value.get("resource")
                         or "—",
@@ -9256,61 +9670,128 @@ class Studio:
                     ("Status", "none", "warning"),
                     (
                         "Next",
-                        "deploy connectors setup telegram",
+                        "connector config create",
                         None,
                     ),
                 ],
             )
 
         try:
-            current, requirements = self._connector_requirements()
+            current, workflow, module = self._current_context()
         except SystemExit:
             self._emit_table(
-                "Workflow connector bindings",
+                "Connector assignments",
                 [
                     ("Workflow", "none selected", "warning"),
-                    ("Requirements", "not available", None),
+                    ("Assignments", "not available", None),
                 ],
             )
             return
-        bindings = self.workspace.connector_binding_profile(current)
-        if not requirements:
+
+        human = self._human_action_lifelines(workflow, module)
+        assignments = self.workspace.connector_assignment_profile(current)
+        lifelines = assignments["lifelines"]
+        actions = assignments["actions"]
+        if not human:
             self._emit_table(
-                "Workflow connector bindings",
+                "Human connector assignments",
                 [
                     ("Workflow", current, None),
-                    ("Requirements", "none declared", None),
+                    ("Status", "no human actions", None),
                 ],
             )
-            return
-        self._emit_columns(
-            "Workflow connector bindings",
-            ("Requirement", "Participant", "Kind", "Access", "Configuration"),
-            [
+        else:
+            rows: list[tuple[object, ...]] = []
+            for participant, action_names in human.items():
+                for action_name in action_names:
+                    target = f"{participant}.{action_name}"
+                    explicit_action = actions.get(target)
+                    participant_route = lifelines.get(participant)
+                    effective = explicit_action or participant_route
+                    source = (
+                        "action override"
+                        if explicit_action
+                        else "participant"
+                        if participant_route
+                        else "local terminal"
+                    )
+                    configuration = configurations.get(effective or "")
+                    provider = (
+                        configuration.get("provider")
+                        or configuration.get("kind")
+                        if configuration
+                        else "terminal"
+                    )
+                    rows.append(
+                        (
+                            participant,
+                            action_name,
+                            effective or "terminal",
+                            provider,
+                            source,
+                        )
+                    )
+            self._emit_columns(
+                "Human connector assignments",
                 (
-                    item.name,
-                    item.participant,
-                    item.kind,
-                    item.access,
-                    bindings.get(item.name, "not bound"),
-                )
-                for item in requirements
-            ],
+                    "Participant",
+                    "Human action",
+                    "Configuration",
+                    "Provider",
+                    "Source",
+                ),
+                rows,
+            )
+        self._emit_next("connector setup · connector assignments")
+
+    def _check_connector_provider(self, name: str) -> bool:
+        provider = name.casefold()
+        profiles = self.workspace.connector_provider_profiles()
+        profile = profiles.get(provider)
+        if profile is None:
+            raise SystemExit(
+                f"Connector provider is not configured: {provider}."
+            )
+        if provider != "telegram":
+            raise SystemExit(
+                f"Live checks are not implemented for connector provider "
+                f"{provider!r}."
+            )
+        token = self.workspace.connector_provider_secret(
+            provider, "bot_token"
         )
-        missing = [
-            item.name
-            for item in requirements
-            if item.required and item.name not in bindings
-        ]
-        if missing:
-            self._warning(
-                "Required connector bindings are missing: "
-                + ", ".join(missing)
-                + "."
+        status = "unavailable"
+        detail = ""
+        try:
+            if not token:
+                raise ValueError("bot token is missing")
+            from zippergen.telegram_notify import TelegramBotClient
+
+            identity = TelegramBotClient(token, timeout=10).request(
+                "getMe"
+            ).get("result") or {}
+            username = (
+                f"@{identity.get('username')}"
+                if isinstance(identity, dict) and identity.get("username")
+                else "Telegram bot"
             )
-            self._emit_next(
-                f"deploy connectors bind {missing[0]} CONFIGURATION"
-            )
+            status = "available"
+            detail = f"{username} authenticated"
+        except Exception as exc:
+            detail = str(exc)
+        self.workspace.save_connector_provider_profile(
+            provider,
+            {
+                **profile,
+                "kind": provider,
+                "check_status": status,
+                "check_detail": detail,
+                "checked_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            },
+        )
+        emit = self._success if status == "available" else self._error
+        emit(f"Connector provider {provider}: {detail}.")
+        return status == "available"
 
     def _check_connector_configuration(self, name: str) -> bool:
         configurations = self.workspace.connector_configurations()
@@ -9319,12 +9800,19 @@ class Studio:
             raise SystemExit(
                 f"Connector configuration does not exist: {name}."
             )
-        kind = str(configuration.get("kind") or "")
-        if kind != "telegram":
+        provider = str(
+            configuration.get("provider")
+            or configuration.get("kind")
+            or ""
+        )
+        if provider != "telegram":
             raise SystemExit(
-                f"Live checks are not implemented for connector kind {kind!r}."
+                f"Live checks are not implemented for connector provider "
+                f"{provider!r}."
             )
-        token = self.workspace.connector_secret(name, "bot_token")
+        token = self.workspace.connector_provider_secret(
+            provider, "bot_token"
+        ) or self.workspace.connector_secret(name, "bot_token")
         chat_id = str(configuration.get("chat_id") or "")
         status = "failed"
         detail = ""
@@ -9360,88 +9848,404 @@ class Studio:
         self._error(f"Connector {name}: {detail}.")
         return False
 
+    def _connector_configuration_name(self, requested: str) -> str:
+        configurations = self.workspace.connector_configurations()
+        name = {
+            candidate.casefold(): candidate
+            for candidate in configurations
+        }.get(requested.casefold())
+        if name is None:
+            raise SystemExit(
+                f"Connector configuration does not exist: {requested}. "
+                f"Available: {', '.join(configurations) or 'none'}."
+            )
+        return name
+
+    def _show_connector_configuration(self, requested: str) -> None:
+        name = self._connector_configuration_name(requested)
+        configuration = self.workspace.connector_configurations()[name]
+        usage = self.workspace.connector_configuration_usage(name)
+        self._emit_table(
+            "Connector configuration",
+            [
+                ("Name", name, None),
+                (
+                    "Provider",
+                    configuration.get("provider")
+                    or configuration.get("kind")
+                    or "unknown",
+                    None,
+                ),
+                (
+                    "Resource",
+                    configuration.get("chat_id")
+                    or configuration.get("resource")
+                    or "—",
+                    None,
+                ),
+                (
+                    "Last check",
+                    f"{configuration.get('check_status', 'not checked')} — "
+                    f"{configuration.get('check_detail', '')}".rstrip(" —"),
+                    None,
+                ),
+                (
+                    "Used by",
+                    ", ".join(usage) if usage else "none",
+                    None,
+                ),
+            ],
+        )
+
+    def _configure_connector_provider(self, provider: str) -> None:
+        name = provider.casefold()
+        if name != "telegram":
+            raise SystemExit(
+                "Telegram is the first supported human connector provider."
+            )
+        current = self.workspace.connector_provider_secret(
+            name, "bot_token"
+        )
+        prompt = (
+            "Telegram bot token [press Enter to keep stored token]: "
+            if current
+            else "Telegram bot token: "
+        )
+        token = self.secret_input(prompt).strip() or current
+        if not token:
+            raise SystemExit("Telegram bot token must not be empty.")
+        self.workspace.save_connector_provider_secret(
+            name, "bot_token", token
+        )
+        self.workspace.save_connector_provider_profile(
+            name,
+            {
+                "kind": name,
+                "check_status": "not checked",
+                "check_detail": "credentials changed",
+            },
+        )
+        self._success(
+            "Configured Telegram provider; the bot token is private."
+        )
+        self._check_connector_provider(name)
+
+    def _configure_connector_configuration(
+        self,
+        requested_name: str | None,
+        *,
+        edit: bool = False,
+    ) -> str:
+        configurations = self.workspace.connector_configurations()
+        if edit:
+            assert requested_name is not None
+            name = self._connector_configuration_name(requested_name)
+            existing = configurations[name]
+        else:
+            name = requested_name or "telegram-approvals"
+            existing = configurations.get(name, {})
+        providers = self.workspace.connector_provider_profiles()
+        if not providers:
+            raise SystemExit(
+                "No connector provider is configured. Use "
+                "'connector provider configure telegram' first."
+            )
+        current_provider = str(
+            existing.get("provider")
+            or existing.get("kind")
+            or next(iter(providers))
+        )
+        if len(providers) == 1:
+            provider = next(iter(providers))
+        else:
+            provider = str(
+                self._select(
+                    "Connector providers",
+                    list(providers),
+                    prompt="Select provider",
+                )
+            )
+        current_chat = str(existing.get("chat_id") or "")
+        chat_id = self.input(
+            f"Telegram chat id [{current_chat}]: "
+            if current_chat
+            else "Telegram chat id: "
+        ).strip() or current_chat
+        if not chat_id:
+            raise SystemExit("Telegram chat id must not be empty.")
+        self.workspace.save_connector_configuration(
+            name,
+            {
+                "provider": provider or current_provider,
+                "kind": provider or current_provider,
+                "chat_id": chat_id,
+                "channel": f"telegram:{name}",
+                "check_status": "not checked",
+                "check_detail": "configuration changed",
+            },
+        )
+        self._success(f"Saved connector configuration {name}.")
+        self._check_connector_configuration(name)
+        return name
+
+    def _show_connector_assignments(self) -> None:
+        current, workflow, module = self._current_context()
+        self._emit_connectors()
+
+    def _assign_connector(self, args: list[str]) -> None:
+        if len(args) != 2:
+            raise SystemExit(
+                "Use connector assign PARTICIPANT_OR_ACTION CONFIGURATION."
+            )
+        entered_target, entered_configuration = args
+        current, workflow, module = self._current_context()
+        human = self._human_action_lifelines(workflow, module)
+        action_targets = self._human_action_targets(workflow, module)
+        participant = {
+            name.casefold(): name for name in human
+        }.get(entered_target.casefold())
+        action_target = {
+            name.casefold(): name for name in action_targets
+        }.get(entered_target.casefold())
+        if participant is None and action_target is None:
+            available = ", ".join([*human, *action_targets]) or "none"
+            raise SystemExit(
+                f"{entered_target!r} is not a human participant or action. "
+                f"Available targets: {available}."
+            )
+        configuration_name = self._connector_configuration_name(
+            entered_configuration
+        )
+        configuration = self.workspace.connector_configurations()[
+            configuration_name
+        ]
+        if (
+            configuration.get("provider")
+            or configuration.get("kind")
+        ) != "telegram":
+            raise SystemExit(
+                f"{configuration_name} cannot deliver human actions."
+            )
+        status = configuration.get("check_status")
+        if status in {"failed", "unavailable"}:
+            raise SystemExit(
+                f"{configuration_name} is unavailable. Run "
+                f"'connector config check {configuration_name}' after fixing "
+                "the provider or destination."
+            )
+        if status != "available":
+            self._warning(
+                f"{configuration_name} has not passed a live check. Use "
+                f"'connector config check {configuration_name}'."
+            )
+        profile = self.workspace.connector_assignment_profile(current)
+        lifelines = dict(profile["lifelines"])
+        actions = dict(profile["actions"])
+        target = action_target or participant
+        assert target is not None
+        if action_target:
+            actions[action_target] = configuration_name
+        else:
+            lifelines[participant] = configuration_name  # type: ignore[index]
+        self.workspace.save_connector_assignment_profile(
+            current,
+            lifelines=lifelines,
+            actions=actions,
+        )
+        self._success(f"Assigned {configuration_name} to {target}.")
+        self._emit_connectors()
+
+    def _inherit_connector(self, args: list[str]) -> None:
+        if len(args) != 1:
+            raise SystemExit(
+                "Use connector inherit PARTICIPANT_OR_ACTION."
+            )
+        current, workflow, module = self._current_context()
+        human = self._human_action_lifelines(workflow, module)
+        action_targets = self._human_action_targets(workflow, module)
+        participant = {
+            name.casefold(): name for name in human
+        }.get(args[0].casefold())
+        action_target = {
+            name.casefold(): name for name in action_targets
+        }.get(args[0].casefold())
+        if participant is None and action_target is None:
+            raise SystemExit(
+                f"Unknown human participant or action: {args[0]}."
+            )
+        profile = self.workspace.connector_assignment_profile(current)
+        lifelines = dict(profile["lifelines"])
+        actions = dict(profile["actions"])
+        if action_target:
+            actions.pop(action_target, None)
+            message = (
+                f"{action_target} now inherits its participant route."
+            )
+        else:
+            assert participant is not None
+            lifelines.pop(participant, None)
+            message = (
+                f"{participant} now uses the local terminal unless an "
+                "action override is assigned."
+            )
+        self.workspace.save_connector_assignment_profile(
+            current,
+            lifelines=lifelines,
+            actions=actions,
+        )
+        self._success(message)
+        self._emit_connectors()
+
     def manage_connectors(self, args: list[str]) -> None:
-        if not args or args == ["list"]:
+        if not args or args in (["list"], ["show"]):
             self._emit_connectors()
             return
         action, *rest = args
         action = action.casefold()
         if action == "setup":
-            if len(rest) > 2 or not rest:
-                raise SystemExit(
-                    "Use deploy connectors setup telegram [NAME]."
-                )
-            kind = rest[0].casefold()
-            if kind != "telegram":
-                raise SystemExit(
-                    "Telegram is the first supported connector. Use "
-                    "deploy connectors setup telegram [NAME]."
-                )
-            name = rest[1] if len(rest) == 2 else "telegram-approvals"
-            existing = self.workspace.connector_configurations().get(name, {})
-            current_chat = str(existing.get("chat_id") or "")
-            chat_prompt = (
-                f"Telegram chat id [{current_chat}]: "
-                if current_chat
-                else "Telegram chat id: "
-            )
-            chat_id = self.input(chat_prompt).strip() or current_chat
-            if not chat_id:
-                raise SystemExit("Telegram chat id must not be empty.")
-            current_token = self.workspace.connector_secret(name, "bot_token")
-            token_prompt = (
-                "Telegram bot token [press Enter to keep stored token]: "
-                if current_token
-                else "Telegram bot token: "
-            )
-            token = self.secret_input(token_prompt).strip() or current_token
-            if not token:
-                raise SystemExit("Telegram bot token must not be empty.")
-            self.workspace.save_connector_secret(name, "bot_token", token)
-            self.workspace.save_connector_configuration(
-                name,
-                {
-                    "kind": "telegram",
-                    "chat_id": chat_id,
-                    "channel": str(existing.get("channel") or "telegram"),
-                    "check_status": "not checked",
-                    "check_detail": "configuration changed",
-                },
+            if rest:
+                raise SystemExit("Use connector setup.")
+            if "telegram" not in self.workspace.connector_provider_profiles():
+                self._configure_connector_provider("telegram")
+            name = self._configure_connector_configuration(None)
+            current, workflow, module = self._current_context()
+            human = self._human_action_lifelines(workflow, module)
+            profile = self.workspace.connector_assignment_profile(current)
+            lifelines = dict(profile["lifelines"])
+            for participant in human:
+                lifelines[participant] = name
+            self.workspace.save_connector_assignment_profile(
+                current,
+                lifelines=lifelines,
+                actions=profile["actions"],
             )
             self._success(
-                f"Saved connector configuration {name}; token is private."
+                f"Connector setup complete; {name} is assigned to "
+                f"{len(human)} human participant(s)."
             )
-            self._check_connector_configuration(name)
             self._emit_connectors()
             return
-        if action == "check":
-            if len(rest) > 1:
-                raise SystemExit(
-                    "Use deploy connectors check [NAME|all]."
+        if action == "provider":
+            subaction = rest[0].casefold() if rest else "list"
+            values = rest[1:]
+            if subaction in {"list", "show"} and not values:
+                self._emit_connectors()
+                return
+            if subaction == "configure" and len(values) == 1:
+                self._configure_connector_provider(values[0])
+                self._emit_connectors()
+                return
+            if subaction == "check" and len(values) <= 1:
+                names = (
+                    list(self.workspace.connector_provider_profiles())
+                    if not values or values[0] == "all"
+                    else [values[0]]
                 )
-            target = rest[0] if rest else "all"
-            names = list(self.workspace.connector_configurations())
-            if target != "all":
-                names = [target]
-            if not names:
-                raise SystemExit(
-                    "No connector configurations exist. Use deploy "
-                    "connectors setup telegram."
+                failed = [
+                    name for name in names
+                    if not self._check_connector_provider(name)
+                ]
+                if failed:
+                    raise SystemExit(
+                        "Connector provider checks failed: "
+                        + ", ".join(failed) + "."
+                    )
+                return
+            if subaction == "remove" and len(values) == 1:
+                try:
+                    self.workspace.remove_connector_provider_profile(
+                        values[0]
+                    )
+                except WorkspaceError as exc:
+                    raise SystemExit(str(exc)) from exc
+                self._success(
+                    f"Removed connector provider: {values[0].casefold()}"
                 )
-            failed = [
-                name
-                for name in names
-                if not self._check_connector_configuration(name)
-            ]
-            if failed:
-                raise SystemExit(
-                    "Connector checks failed: " + ", ".join(failed) + "."
+                return
+            raise SystemExit(
+                "Use connector provider list, configure telegram, "
+                "check [telegram|all], or remove telegram."
+            )
+        if action == "config":
+            subaction = rest[0].casefold() if rest else "list"
+            values = rest[1:]
+            if subaction == "list" and not values:
+                self._emit_connectors()
+                return
+            if subaction == "show" and len(values) <= 1:
+                if not values or values[0] == "all":
+                    self._emit_connectors()
+                else:
+                    self._show_connector_configuration(values[0])
+                return
+            if subaction == "create" and len(values) <= 1:
+                self._configure_connector_configuration(
+                    values[0] if values else None
                 )
+                return
+            if subaction == "edit" and len(values) == 1:
+                self._configure_connector_configuration(
+                    values[0], edit=True
+                )
+                return
+            if subaction == "check" and len(values) <= 1:
+                names = (
+                    list(self.workspace.connector_configurations())
+                    if not values or values[0] == "all"
+                    else [self._connector_configuration_name(values[0])]
+                )
+                failed = [
+                    name for name in names
+                    if not self._check_connector_configuration(name)
+                ]
+                if failed:
+                    raise SystemExit(
+                        "Connector configuration checks failed: "
+                        + ", ".join(failed) + "."
+                    )
+                return
+            if subaction == "rename" and len(values) == 2:
+                self.workspace.rename_connector_configuration(
+                    self._connector_configuration_name(values[0]),
+                    values[1],
+                )
+                self._success(
+                    f"Renamed connector configuration {values[0]} to "
+                    f"{values[1]}."
+                )
+                return
+            if subaction == "remove" and len(values) == 1:
+                name = self._connector_configuration_name(values[0])
+                self.workspace.remove_connector_configuration(name)
+                self._success(f"Removed connector configuration: {name}")
+                return
+            raise SystemExit(
+                "Use connector config list, create [NAME], edit NAME, "
+                "check [NAME|all], rename OLD NEW, or remove NAME."
+            )
+        if action == "assignments":
+            if not rest:
+                self._show_connector_assignments()
+                return
+            if rest == ["check"]:
+                current, workflow, module = self._current_context()
+                self._check_workflow_connectors(
+                    current, workflow, module
+                )
+                return
+            raise SystemExit(
+                "Use connector assignments or connector assignments check."
+            )
+        if action == "assign":
+            self._assign_connector(rest)
+            return
+        if action == "inherit":
+            self._inherit_connector(rest)
             return
         if action == "bind":
             if len(rest) != 2:
                 raise SystemExit(
-                    "Use deploy connectors bind REQUIREMENT CONFIGURATION."
+                    "Use connector bind REQUIREMENT CONFIGURATION."
                 )
             requirement_name, configuration_name = rest
             current, requirements = self._connector_requirements()
@@ -9494,7 +10298,7 @@ class Studio:
                     ],
                 )
                 self._emit_next(
-                    f"workflow show full · {correction} · deploy connectors"
+                    f"workflow show full · {correction} · connector"
                 )
                 raise SystemExit(
                     f"Cannot bind {requirement_name}. The selected workflow "
@@ -9523,7 +10327,9 @@ class Studio:
             self._emit_connectors()
             return
         raise SystemExit(
-            "Use deploy connectors, setup, check, or bind."
+            "Use connector, connector setup, connector provider ..., "
+            "connector config ..., connector assignments, connector assign, "
+            "connector inherit, or connector bind."
         )
 
     def _deployment_name(self, selector: str | None = None) -> str:
@@ -9662,8 +10468,10 @@ class Studio:
             if not active:
                 return "none; no LLM actions"
             return " · ".join(
-                f"{participant}={overrides.get(participant, default)}"
-                for participant in active
+                f"{participant}.{action}="
+                f"{overrides.get(f'{participant}.{action}', overrides.get(participant, default))}"
+                for participant, actions in active.items()
+                for action in actions
             )
         except (Exception, SystemExit):
             routes = [
@@ -9681,12 +10489,18 @@ class Studio:
         if not isinstance(raw, dict) or not raw:
             return "none"
         routes = []
-        for requirement, value in sorted(raw.items()):
+        for route_name, value in sorted(raw.items()):
             if not isinstance(value, dict):
-                routes.append(f"{requirement}=invalid")
+                routes.append(f"{route_name}=invalid")
                 continue
+            label = (
+                str(value.get("target"))
+                if value.get("type") == "human"
+                else route_name.removeprefix("requirement:")
+            )
             routes.append(
-                f"{requirement}={value.get('configuration') or value.get('kind') or 'unknown'}"
+                f"{label}="
+                f"{value.get('configuration') or value.get('kind') or 'unknown'}"
             )
         return " · ".join(routes)
 
@@ -9906,94 +10720,6 @@ class Studio:
             current_store=str(profile.get("store") or ""),
         )
 
-    def _notify_deployment(self, args: list[str]) -> None:
-        if len(args) > 1:
-            raise SystemExit("Use deploy notify [NAME].")
-        name = self._deployment_name(args[0] if args else None)
-        from zippergen.serve import (
-            _load_deployment_profile,
-            _load_deployment_secrets,
-        )
-        from zippergen.telegram_notify import TelegramBotClient, TelegramNotifier
-
-        profile = _load_deployment_profile(name)
-        raw = profile.get("connectors") or {}
-        bindings = raw if isinstance(raw, dict) else {}
-        telegram = [
-            (str(requirement), value)
-            for requirement, value in bindings.items()
-            if isinstance(value, dict) and value.get("kind") == "telegram"
-        ]
-        if not telegram:
-            raise SystemExit(
-                f"Deployment {name} has no Telegram connector. Configure and "
-                "bind one before deploying."
-            )
-        if len(telegram) == 1:
-            requirement, binding = telegram[0]
-        else:
-            selected_label = cast(
-                str,
-                self._select(
-                    "Telegram connectors",
-                    [
-                        f"{item[0]} — "
-                        f"{item[1].get('configuration') or 'Telegram'}"
-                        for item in telegram
-                    ],
-                    prompt="Select a connector",
-                ),
-            )
-            selected_requirement = selected_label.partition(" — ")[0]
-            requirement, binding = next(
-                item for item in telegram if item[0] == selected_requirement
-            )
-        secrets = _load_deployment_secrets(profile)
-        token_env = str(binding.get("token_env") or "")
-        token = secrets.get(token_env)
-        chat_id = str(binding.get("chat_id") or "")
-        store = Path(str(profile.get("store") or "")).expanduser()
-        if not token or not chat_id:
-            raise SystemExit(
-                f"Telegram connector {requirement} is missing its private token "
-                "or chat id."
-            )
-        if not store.is_file():
-            raise SystemExit(
-                f"Deployment store does not exist yet: {store}."
-            )
-        notifier = TelegramNotifier(
-            store_path=str(store),
-            client=TelegramBotClient(token),
-            chat_id=chat_id,
-            channel=str(binding.get("channel") or requirement),
-        )
-        try:
-            sent = notifier.send_pending_once()
-            processed = notifier.poll_updates_once(timeout=0)
-        except Exception as exc:
-            raise SystemExit(
-                f"Telegram connector {requirement} failed: {exc}"
-            ) from exc
-        self._emit_table(
-            "Telegram approval connector",
-            [
-                ("Deployment", name, None),
-                ("Binding", requirement, None),
-                ("Sent", f"{sent} pending decision(s)", "success"),
-                ("Received", f"{processed} response(s)", "success"),
-                (
-                    "Operation",
-                    "one synchronization pass; run this command again to "
-                    "collect later replies",
-                    "info",
-                ),
-            ],
-        )
-        self._emit_next(
-            f"deploy notify {name} · deploy tasks {name}"
-        )
-
     def manage_deploy(self, args: list[str]) -> None:
         if not args:
             self.show_deployments()
@@ -10010,12 +10736,6 @@ class Studio:
             return
         if action == "inspect":
             self.inspect_deployment(rest)
-            return
-        if action == "connectors":
-            self.manage_connectors(rest)
-            return
-        if action == "notify":
-            self._notify_deployment(rest)
             return
         if action == "remove":
             self.remove_deployment(rest)
@@ -10046,7 +10766,7 @@ class Studio:
             return
         raise SystemExit(
             "Use deploy list, show, inspect, doctor, logs, tasks, approve, "
-            "trace, connectors, notify, start, restart, stop, or remove."
+            "trace, start, restart, stop, or remove."
         )
 
     def remove_deployment(self, args: list[str]) -> None:
@@ -10333,17 +11053,19 @@ The canonical workflow specification is the durable source of truth.
 {context}
 
 Before editing, summarize participants, owned inputs and outputs, messages,
-action kinds, owned decisions and loops, logical connector requirements,
+action kinds, owned decisions and loops, non-human connector requirements,
 deployment requirements, retry and safety assumptions, and acceptance
-examples. Then create visible Python source and focused mock/fake tests. Every
-named connector in the specification must appear as an exact module-level
-`ConnectorRequirement`; do not infer that an `@human` action declares it.
+examples. Then create visible Python source and focused mock/fake tests.
+Human delivery is inferred from `@human` action sites and configured in
+Studio, so do not add a redundant Telegram or email requirement for it. Every
+named non-human connector capability in the specification must remain
+explicit in workflow source.
 When deployment metadata is present, keep its bundle self-contained by
 including the workflow source and any required project assets. Run validation,
 show the communication-only and full code views, confirm that every requested
-connector name appears in the full view, and inspect every new participant's
-exact local projection. Do not deploy or start a service. Report generated
-files, assumptions, and assistant-check results.
+non-human connector capability appears in the full view, and inspect every new
+participant's exact local projection. Do not deploy or start a service. Report
+generated files, assumptions, and assistant-check results.
 
 ## Required completion record
 
@@ -10392,13 +11114,13 @@ refinement; the user will reconcile it in Studio after reviewing your changes.
 The semantic baseline is {baseline_file}.
 Preserve all behavior not explicitly changed.
 Update source, deployment metadata, and focused tests together when needed.
-Preserve and update module-level `ConnectorRequirement` declarations whenever
-the specification names a logical connector. An `@human` action is not a
-connector declaration.
+Preserve and update explicit non-human connector capability declarations.
+Human Telegram or email delivery is configured from `@human` action sites and
+does not require a duplicate module-level declaration.
 Keep any deployment bundle self-contained by including the workflow source and
 required project assets.
 Validate the result, show communication-only and full code views,
-confirm that every requested connector name appears in the full view,
+confirm that every requested non-human connector capability appears in the full view,
 inspect every changed participant's exact local projection, and compare the
 result with the baseline using `zippergen diff`. Do not deploy or start a
 service. Report assumptions, intended semantic changes, preserved behavior,

@@ -1,4 +1,4 @@
-"""Shared helpers for default and per-lifeline LLM configuration."""
+"""Shared helpers for default, participant, and action LLM configuration."""
 
 from __future__ import annotations
 
@@ -13,13 +13,17 @@ def normalize_llm_overrides(values: object) -> dict[str, str]:
     if values is None:
         return {}
     if not isinstance(values, Mapping):
-        raise SystemExit("Per-lifeline LLM configuration must be an object.")
+        raise SystemExit(
+            "Participant and action LLM configuration must be an object."
+        )
     normalized: dict[str, str] = {}
     for lifeline, spec in values.items():
         name = str(lifeline).strip()
         model = str(spec).strip()
         if not name or not model:
-            raise SystemExit("Per-lifeline LLM entries require LIFELINE=SPEC.")
+            raise SystemExit(
+                "LLM route entries require PARTICIPANT_OR_ACTION=SPEC."
+            )
         normalized[name] = model
     return normalized
 
@@ -29,23 +33,41 @@ def effective_llm_routes(
     default_spec: str,
     overrides: Mapping[str, str] | None = None,
 ) -> dict[str, str]:
-    """Expand a default plus overrides to an exact route for every lifeline."""
+    """Expand defaults and validate participant or ``Participant.action`` routes."""
 
     default = str(default_spec).strip()
     if not default:
         raise SystemExit("The default LLM spec must not be empty.")
     names = [lifeline.name for lifeline in _ordered_workflow_lifelines(workflow)]
+    from zippergen.semantic import workflow_semantics
+
+    raw_sites = workflow_semantics(workflow).get("action_sites", [])
+    sites = raw_sites if isinstance(raw_sites, list) else []
+    action_targets = {
+        f"{site['lifeline']}.{site['action']}"
+        for site in sites
+        if isinstance(site, dict) and site.get("kind") == "llm"
+    }
     selected = normalize_llm_overrides(overrides)
-    unknown = sorted(set(selected) - set(names))
+    known = {*names, *action_targets}
+    unknown = sorted(set(selected) - known)
     if unknown:
         raise SystemExit(
-            "Unknown lifeline(s) in LLM configuration: "
+            "Unknown participant or LLM action target(s): "
             + ", ".join(unknown)
-            + ". Available lifelines: "
-            + ", ".join(names)
+            + ". Available targets: "
+            + ", ".join([*names, *sorted(action_targets)])
             + "."
         )
-    return {name: selected.get(name, default) for name in names}
+    routes = {name: selected.get(name, default) for name in names}
+    routes.update(
+        {
+            target: selected[target]
+            for target in sorted(action_targets)
+            if target in selected
+        }
+    )
+    return routes
 
 
 def selected_llm_specs(

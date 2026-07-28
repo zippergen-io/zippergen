@@ -804,8 +804,9 @@ class Workflow:
         Parameters
         ----------
         llm     : compact LLM spec such as ``"mock"``, ``"openai:gpt-4o"``,
-                  or ``"ollama:qwen2.5:7b"``.  A mapping routes individual
-                  lifelines by name.  This may also be passed positionally:
+                  or ``"ollama:qwen2.5:7b"``. A mapping routes participants
+                  by name, with optional ``Participant.action`` overrides.
+                  This may also be passed positionally:
                   ``workflow.configure("openai:gpt-4o")``.
         backend : LLM backend callable ``(action, inputs_dict) → outputs_dict``.
                   Defaults to the built-in mock backend.

@@ -368,6 +368,74 @@ def test_workspace_configuration_edits_update_every_assignment(tmp_path):
         workspace.remove_model_configuration("writer")
 
 
+def test_workspace_connector_rename_updates_assignments_and_bindings(tmp_path):
+    root = tmp_path / "project"
+    root.mkdir()
+    workspace = Workspace(root, home=tmp_path / "state")
+    workspace.save_connector_configuration(
+        "approvals",
+        {
+            "provider": "telegram",
+            "kind": "telegram",
+            "chat_id": "123",
+        },
+    )
+    workspace.save_connector_assignment_profile(
+        "review.py:review",
+        lifelines={"Human": "approvals"},
+        actions={"Human.escalate": "approvals"},
+    )
+    workspace.bind_connector(
+        "review.py:review",
+        "audit-log",
+        "approvals",
+    )
+    workspace.save_connector_secret(
+        "approvals", "legacy-token", "private"
+    )
+
+    assert workspace.connector_configuration_usage("approvals") == (
+        "review.py:review",
+    )
+    with pytest.raises(WorkspaceError, match="still assigned"):
+        workspace.remove_connector_configuration("approvals")
+
+    workspace.rename_connector_configuration("approvals", "team-chat")
+
+    assert "approvals" not in workspace.connector_configurations()
+    assert "team-chat" in workspace.connector_configurations()
+    assert workspace.connector_assignment_profile("review.py:review") == {
+        "lifelines": {"Human": "team-chat"},
+        "actions": {"Human.escalate": "team-chat"},
+    }
+    assert workspace.connector_binding_profile("review.py:review") == {
+        "audit-log": "team-chat"
+    }
+    assert workspace.connector_secret(
+        "team-chat", "legacy-token"
+    ) == "private"
+
+
+def test_workspace_removing_unused_connector_removes_legacy_secrets(tmp_path):
+    root = tmp_path / "project"
+    root.mkdir()
+    workspace = Workspace(root, home=tmp_path / "state")
+    workspace.save_connector_configuration(
+        "unused",
+        {
+            "provider": "telegram",
+            "kind": "telegram",
+            "chat_id": "123",
+        },
+    )
+    workspace.save_connector_secret("unused", "bot_token", "private")
+
+    workspace.remove_connector_configuration("unused")
+
+    assert "unused" not in workspace.connector_configurations()
+    assert workspace.connector_secret("unused", "bot_token") is None
+
+
 def test_workspace_initializes_visible_project_and_manages_prompt_ledger(tmp_path):
     root = tmp_path / "review-project"
     root.mkdir()

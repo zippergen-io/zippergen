@@ -1489,8 +1489,10 @@ class Workspace:
             "model_profiles": {},
             "model_configurations": {},
             "providers": {},
+            "connector_providers": {},
             "connector_configurations": {},
             "connector_bindings": {},
+            "connector_assignments": {},
             "updated_at": _timestamp(),
         }
 
@@ -1771,8 +1773,10 @@ class Workspace:
         state.setdefault("model_profiles", {})
         state.setdefault("model_configurations", {})
         state.setdefault("providers", {})
+        state.setdefault("connector_providers", {})
         state.setdefault("connector_configurations", {})
         state.setdefault("connector_bindings", {})
+        state.setdefault("connector_assignments", {})
         return state
 
     def update(self, **changes: object) -> dict[str, Any]:
@@ -1866,9 +1870,20 @@ class Workspace:
                 return configuration["spec"]
 
             raw_lifelines = raw_profile.get("lifelines") or {}
+            raw_actions = raw_profile.get("actions") or {}
             if not isinstance(raw_lifelines, dict):
                 raise WorkspaceError(
                     f"Model lifeline overrides for {canonical} must be an object."
+                )
+            if not isinstance(raw_actions, dict):
+                raise WorkspaceError(
+                    f"Model action overrides for {canonical} must be an object."
+                )
+            action_configurations = raw_profile.get("action_configurations") or {}
+            if not isinstance(action_configurations, dict):
+                raise WorkspaceError(
+                    f"Model action configuration assignments for {canonical} "
+                    "must be an object."
                 )
             resolved_lifelines = {
                 str(lifeline): resolve(
@@ -1878,24 +1893,44 @@ class Workspace:
                 for lifeline, configuration_name
                 in lifeline_configurations.items()
             }
-            return {
+            resolved_actions = {
+                str(target): resolve(
+                    configuration_name,
+                    raw_actions.get(target, default),
+                )
+                for target, configuration_name in action_configurations.items()
+            }
+            result = {
                 "default": resolve(
                     default_configuration,
                     raw_profile.get("default") or default,
                 ),
                 "lifelines": resolved_lifelines,
             }
+            if resolved_actions:
+                result["actions"] = resolved_actions
+            return result
         raw_lifelines = raw_profile.get("lifelines") or {}
+        raw_actions = raw_profile.get("actions") or {}
         if not isinstance(raw_lifelines, dict):
             raise WorkspaceError(
                 f"Model lifeline overrides for {canonical} must be an object."
             )
-        return {
+        if not isinstance(raw_actions, dict):
+            raise WorkspaceError(
+                f"Model action overrides for {canonical} must be an object."
+            )
+        result = {
             "default": str(raw_profile.get("default") or default),
             "lifelines": {
                 str(name): str(spec) for name, spec in raw_lifelines.items()
             },
         }
+        if raw_actions:
+            result["actions"] = {
+                str(name): str(spec) for name, spec in raw_actions.items()
+            }
+        return result
 
     def save_model_profile(
         self,
@@ -1903,6 +1938,7 @@ class Workspace:
         *,
         default: str,
         lifelines: dict[str, str],
+        actions: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """Persist a non-secret default model and explicit lifeline overrides."""
 
@@ -1912,12 +1948,17 @@ class Workspace:
         if not isinstance(raw_profiles, dict):
             raise WorkspaceError("Workspace model_profiles must be an object.")
         profiles = dict(raw_profiles)
-        profile = {
+        profile: dict[str, object] = {
             "default": str(default),
             "lifelines": {
                 str(name): str(spec) for name, spec in sorted(lifelines.items())
             },
         }
+        if actions:
+            profile["actions"] = {
+                str(name): str(spec)
+                for name, spec in sorted(actions.items())
+            }
         profiles[canonical] = profile
         self.update(model_profiles=profiles)
         return profile
@@ -2076,14 +2117,26 @@ class Workspace:
         default_configuration = raw_profile.get("default_configuration")
         raw_assignments = raw_profile.get("lifeline_configurations")
         if default_configuration and isinstance(raw_assignments, dict):
-            return {
+            raw_action_assignments = raw_profile.get("action_configurations") or {}
+            if not isinstance(raw_action_assignments, dict):
+                raise WorkspaceError(
+                    f"Model action assignments for {canonical} must be an object."
+                )
+            result = {
                 "default": str(default_configuration),
                 "lifelines": {
                     str(name): str(configuration)
                     for name, configuration in raw_assignments.items()
                 },
             }
+            if raw_action_assignments:
+                result["actions"] = {
+                    str(name): str(configuration)
+                    for name, configuration in raw_action_assignments.items()
+                }
+            return result
         raw_lifelines = raw_profile.get("lifelines") or {}
+        raw_actions = raw_profile.get("actions") or {}
         if not isinstance(raw_lifelines, dict):
             raise WorkspaceError(
                 f"Model lifeline overrides for {canonical} must be an object."
@@ -2095,10 +2148,19 @@ class Workspace:
             str(name): self.ensure_model_configuration(str(spec))
             for name, spec in raw_lifelines.items()
         }
+        if not isinstance(raw_actions, dict):
+            raise WorkspaceError(
+                f"Model action overrides for {canonical} must be an object."
+            )
+        migrated_actions = {
+            str(name): self.ensure_model_configuration(str(spec))
+            for name, spec in raw_actions.items()
+        }
         return self.save_model_assignment_profile(
             canonical,
             default=migrated_default,
             lifelines=migrated_lifelines,
+            actions=migrated_actions,
         )
 
     def save_model_assignment_profile(
@@ -2107,11 +2169,13 @@ class Workspace:
         *,
         default: str,
         lifelines: dict[str, str],
+        actions: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         """Persist configuration names and resolved compatibility snapshots."""
 
         configurations = self.model_configurations()
-        names = {default, *lifelines.values()}
+        action_assignments = dict(actions or {})
+        names = {default, *lifelines.values(), *action_assignments.values()}
         missing = sorted(names - set(configurations))
         if missing:
             raise WorkspaceError(
@@ -2123,7 +2187,7 @@ class Workspace:
         if not isinstance(raw_profiles, dict):
             raise WorkspaceError("Workspace model_profiles must be an object.")
         profiles = dict(raw_profiles)
-        profile = {
+        profile: dict[str, object] = {
             "default_configuration": default,
             "lifeline_configurations": {
                 str(name): str(configuration)
@@ -2135,12 +2199,32 @@ class Workspace:
                 for name, configuration in sorted(lifelines.items())
             },
         }
+        if action_assignments:
+            profile["action_configurations"] = {
+                str(name): str(configuration)
+                for name, configuration in sorted(action_assignments.items())
+            }
+            profile["actions"] = {
+                str(name): configurations[configuration]["spec"]
+                for name, configuration in sorted(action_assignments.items())
+            }
         profiles[canonical] = profile
         self.update(model_profiles=profiles)
-        return {
-            "default": default,
-            "lifelines": dict(profile["lifeline_configurations"]),
+        lifeline_assignments = {
+            str(name): str(configuration)
+            for name, configuration in sorted(lifelines.items())
         }
+        result: dict[str, object] = {
+            "default": default,
+            "lifelines": lifeline_assignments,
+        }
+        if action_assignments:
+            result["actions"] = {
+                str(name): str(configuration)
+                for name, configuration
+                in sorted(action_assignments.items())
+            }
+        return result
 
     def model_configuration_usage(self, name: str) -> tuple[str, ...]:
         """List workflows whose default or lifeline assignments use a name."""
@@ -2153,10 +2237,13 @@ class Workspace:
             if not isinstance(raw_profile, dict):
                 continue
             assignments = raw_profile.get("lifeline_configurations") or {}
+            action_assignments = raw_profile.get("action_configurations") or {}
             if (
                 raw_profile.get("default_configuration") == name
                 or isinstance(assignments, dict)
                 and name in assignments.values()
+                or isinstance(action_assignments, dict)
+                and name in action_assignments.values()
             ):
                 used.append(str(workflow_spec))
         return tuple(sorted(used))
@@ -2240,12 +2327,24 @@ class Workspace:
                     else:
                         lifelines[str(lifeline)] = configuration
                 profile["lifeline_configurations"] = lifelines
-            if changed_default or changed_lifelines:
+            raw_actions = profile.get("action_configurations") or {}
+            changed_actions: list[str] = []
+            if isinstance(raw_actions, dict):
+                actions = {}
+                for target, configuration in raw_actions.items():
+                    if configuration == old_name:
+                        actions[str(target)] = normalized
+                        changed_actions.append(str(target))
+                    else:
+                        actions[str(target)] = configuration
+                profile["action_configurations"] = actions
+            if changed_default or changed_lifelines or changed_actions:
                 references.append(
                     {
                         "workflow": str(workflow_spec),
                         "default": changed_default,
                         "lifelines": tuple(sorted(changed_lifelines)),
+                        "actions": tuple(sorted(changed_actions)),
                     }
                 )
             profiles[str(workflow_spec)] = profile
@@ -2478,6 +2577,100 @@ class Workspace:
             }
         return configurations
 
+    def connector_provider_profiles(self) -> dict[str, dict[str, str]]:
+        """Return non-secret connector provider connection metadata."""
+
+        raw = self.load().get("connector_providers") or {}
+        if not isinstance(raw, dict):
+            raise WorkspaceError(
+                "Workspace connector_providers must be an object."
+            )
+        profiles: dict[str, dict[str, str]] = {}
+        for name, value in raw.items():
+            if not isinstance(value, dict):
+                raise WorkspaceError(
+                    f"Connector provider {name!r} must be an object."
+                )
+            profiles[str(name)] = {
+                str(key): str(item)
+                for key, item in value.items()
+                if item is not None
+            }
+        return profiles
+
+    def save_connector_provider_profile(
+        self,
+        name: str,
+        values: dict[str, str],
+    ) -> dict[str, str]:
+        """Create or replace one non-secret connector provider profile."""
+
+        normalized = name.strip().casefold()
+        if not re.fullmatch(r"[a-z][a-z0-9._-]{0,63}", normalized):
+            raise WorkspaceError(
+                "A connector provider name must start with a letter and "
+                "contain only letters, digits, '.', '_' or '-'."
+            )
+        profiles = self.connector_provider_profiles()
+        profile = {
+            str(key): str(value)
+            for key, value in values.items()
+            if value is not None
+        }
+        profiles[normalized] = profile
+        self.update(connector_providers=profiles)
+        return profile
+
+    @staticmethod
+    def connector_provider_secret_name(provider: str, field: str) -> str:
+        return f"connector-provider:{provider.casefold()}:{field}"
+
+    def connector_provider_secret(
+        self,
+        provider: str,
+        field: str,
+    ) -> str | None:
+        return self.load_secrets().get(
+            self.connector_provider_secret_name(provider, field)
+        )
+
+    def save_connector_provider_secret(
+        self,
+        provider: str,
+        field: str,
+        value: str,
+    ) -> None:
+        secrets = self.load_secrets()
+        secrets[self.connector_provider_secret_name(provider, field)] = value
+        self.save_secrets(secrets)
+
+    def remove_connector_provider_profile(self, name: str) -> None:
+        provider = name.casefold()
+        used = [
+            configuration
+            for configuration, values in self.connector_configurations().items()
+            if (
+                values.get("provider")
+                or values.get("kind")
+            ) == provider
+        ]
+        if used:
+            raise WorkspaceError(
+                f"Connector provider {provider!r} is still used by: "
+                + ", ".join(used)
+            )
+        profiles = self.connector_provider_profiles()
+        profiles.pop(provider, None)
+        secrets = self.load_secrets()
+        prefix = f"connector-provider:{provider}:"
+        secrets = {
+            key: value
+            for key, value in secrets.items()
+            if not key.startswith(prefix)
+        }
+        self.save_secrets(secrets)
+        self.update(connector_providers=profiles)
+
     def save_connector_configuration(
         self,
         name: str,
@@ -2570,6 +2763,212 @@ class Workspace:
         profiles[canonical] = profile
         self.update(connector_bindings=profiles)
         return profile
+
+    def connector_assignment_profile(
+        self,
+        workflow_spec: str,
+    ) -> dict[str, dict[str, str]]:
+        """Return participant and action connector assignments."""
+
+        canonical = self.canonical_spec(workflow_spec, cwd=self.root)
+        raw = self.load().get("connector_assignments") or {}
+        if not isinstance(raw, dict):
+            raise WorkspaceError(
+                "Workspace connector_assignments must be an object."
+            )
+        profile = raw.get(canonical) or {}
+        if not isinstance(profile, dict):
+            raise WorkspaceError(
+                f"Connector assignments for {canonical!r} must be an object."
+            )
+        lifelines = profile.get("lifelines") or {}
+        actions = profile.get("actions") or {}
+        if not isinstance(lifelines, dict) or not isinstance(actions, dict):
+            raise WorkspaceError(
+                f"Connector assignments for {canonical!r} are malformed."
+            )
+        return {
+            "lifelines": {
+                str(name): str(configuration)
+                for name, configuration in lifelines.items()
+            },
+            "actions": {
+                str(name): str(configuration)
+                for name, configuration in actions.items()
+            },
+        }
+
+    def save_connector_assignment_profile(
+        self,
+        workflow_spec: str,
+        *,
+        lifelines: dict[str, str],
+        actions: dict[str, str] | None = None,
+    ) -> dict[str, dict[str, str]]:
+        """Persist reusable configuration routes for human actions."""
+
+        action_assignments = dict(actions or {})
+        configurations = self.connector_configurations()
+        missing = sorted(
+            {
+                *lifelines.values(),
+                *action_assignments.values(),
+            }
+            - set(configurations)
+        )
+        if missing:
+            raise WorkspaceError(
+                "Unknown connector configuration(s): " + ", ".join(missing)
+            )
+        canonical = self.canonical_spec(workflow_spec, cwd=self.root)
+        state = self.load()
+        raw = state.get("connector_assignments") or {}
+        if not isinstance(raw, dict):
+            raise WorkspaceError(
+                "Workspace connector_assignments must be an object."
+            )
+        profiles = {
+            str(name): dict(value)
+            for name, value in raw.items()
+            if isinstance(value, dict)
+        }
+        profile = {
+            "lifelines": {
+                str(name): str(configuration)
+                for name, configuration in sorted(lifelines.items())
+            },
+            "actions": {
+                str(name): str(configuration)
+                for name, configuration in sorted(action_assignments.items())
+            },
+        }
+        profiles[canonical] = profile
+        self.update(connector_assignments=profiles)
+        return profile
+
+    def connector_configuration_usage(self, name: str) -> tuple[str, ...]:
+        state = self.load()
+        raw = state.get("connector_assignments") or {}
+        if not isinstance(raw, dict):
+            raise WorkspaceError(
+                "Workspace connector_assignments must be an object."
+            )
+        used: set[str] = set()
+        for workflow_spec, profile in raw.items():
+            if not isinstance(profile, dict):
+                continue
+            lifelines = profile.get("lifelines") or {}
+            actions = profile.get("actions") or {}
+            if (
+                isinstance(lifelines, dict)
+                and name in lifelines.values()
+                or isinstance(actions, dict)
+                and name in actions.values()
+            ):
+                used.add(str(workflow_spec))
+        raw_bindings = state.get("connector_bindings") or {}
+        if not isinstance(raw_bindings, dict):
+            raise WorkspaceError(
+                "Workspace connector_bindings must be an object."
+            )
+        for workflow_spec, bindings in raw_bindings.items():
+            if isinstance(bindings, dict) and name in bindings.values():
+                used.add(str(workflow_spec))
+        return tuple(sorted(used))
+
+    def remove_connector_configuration(self, name: str) -> None:
+        usage = self.connector_configuration_usage(name)
+        if usage:
+            raise WorkspaceError(
+                f"Connector configuration {name!r} is still assigned in: "
+                + ", ".join(usage)
+            )
+        configurations = self.connector_configurations()
+        configurations.pop(name, None)
+        secrets = self.load_secrets()
+        prefix = f"connector:{name}:"
+        secrets = {
+            key: value
+            for key, value in secrets.items()
+            if not key.startswith(prefix)
+        }
+        self.save_secrets(secrets)
+        self.update(connector_configurations=configurations)
+
+    def rename_connector_configuration(
+        self,
+        old_name: str,
+        new_name: str,
+    ) -> None:
+        configurations = self.connector_configurations()
+        if old_name not in configurations:
+            raise WorkspaceError(
+                f"Unknown connector configuration {old_name!r}."
+            )
+        normalized = new_name.strip()
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", normalized):
+            raise WorkspaceError(
+                "A connector configuration name must start with a letter or "
+                "digit and contain only letters, digits, '.', '_' or '-'."
+            )
+        if any(
+            name != old_name and name.casefold() == normalized.casefold()
+            for name in configurations
+        ):
+            raise WorkspaceError(
+                f"Connector configuration already exists: {normalized}."
+            )
+        value = configurations.pop(old_name)
+        configurations[normalized] = value
+        state = self.load()
+        raw = state.get("connector_assignments") or {}
+        profiles: dict[str, object] = {}
+        if isinstance(raw, dict):
+            for workflow_spec, profile in raw.items():
+                if not isinstance(profile, dict):
+                    profiles[str(workflow_spec)] = profile
+                    continue
+                updated = dict(profile)
+                for key in ("lifelines", "actions"):
+                    assignments = updated.get(key) or {}
+                    if isinstance(assignments, dict):
+                        updated[key] = {
+                            str(target): (
+                                normalized if configuration == old_name
+                                else configuration
+                            )
+                            for target, configuration in assignments.items()
+                        }
+                profiles[str(workflow_spec)] = updated
+        raw_bindings = state.get("connector_bindings") or {}
+        if not isinstance(raw_bindings, dict):
+            raise WorkspaceError(
+                "Workspace connector_bindings must be an object."
+            )
+        bindings: dict[str, object] = {}
+        for workflow_spec, raw_profile in raw_bindings.items():
+            if not isinstance(raw_profile, dict):
+                bindings[str(workflow_spec)] = raw_profile
+                continue
+            bindings[str(workflow_spec)] = {
+                str(requirement): (
+                    normalized if configuration == old_name
+                    else configuration
+                )
+                for requirement, configuration in raw_profile.items()
+            }
+        secrets = self.load_secrets()
+        old_prefix = f"connector:{old_name}:"
+        for key in list(secrets):
+            if key.startswith(old_prefix):
+                suffix = key[len(old_prefix):]
+                secrets[f"connector:{normalized}:{suffix}"] = secrets.pop(key)
+        self.save_secrets(secrets)
+        self.update(
+            connector_configurations=configurations,
+            connector_assignments=profiles,
+            connector_bindings=bindings,
+        )
 
     @staticmethod
     def connector_secret_name(configuration: str, field: str) -> str:

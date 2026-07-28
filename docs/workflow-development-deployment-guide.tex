@@ -669,9 +669,9 @@ human approval.
 - A rejection sends the draft back to Writer while retries remain.
 - Never return an unapproved draft. Return an explicit failure after retry
   exhaustion.
-- Declare an optional logical Telegram connector named `human-approval` for
-  HumanApprover, with notification and approval capabilities. Terminal
-  approval must remain available when it is unbound.
+- Keep human delivery independent of workflow source. HumanApprover's
+  `@human` actions use the terminal by default and may later be assigned a
+  reusable Telegram configuration.
 
 ## Inputs and operation
 
@@ -1024,7 +1024,7 @@ workflow show full
 workflow show agent Writer
 workflow show agent Reviewer
 workflow show agents Writer Reviewer
-deploy connectors
+connector
 workflow validate
 current
 \end{lstlisting}
@@ -1035,10 +1035,9 @@ calls and prompts. \texttt{workflow show full} adds implementation and deploymen
 \texttt{workflow show agent Reviewer} is the exact projected local program.
 \texttt{workflow show agents Writer Reviewer} is a focused global view with hidden
 peers marked as boundaries; it is not a projection.
-\texttt{deploy connectors} inspects module-level logical connector
-requirements without configuring a credential. For the generated tutorial
-workflow, it must show \texttt{human-approval}, kind \texttt{telegram}, and
-configuration \texttt{not bound}.
+\texttt{connector} discovers the human-active participants and actions from
+the workflow. Before an external route is assigned, it shows the local
+terminal as their effective delivery path.
 
 Only the final \texttt{workflow validate} command makes a validity claim.
 Discovery answers which entry points exist, and selection answers which one is
@@ -1090,16 +1089,15 @@ behavior even when no \texttt{@effect} is present.
 Before running, confirm from these views who owns both inputs, who owns the
 retry decision, whether every revision returns to human review, whether an
 unapproved draft can reach Requester, whether both model prompts are visible,
-and whether the exact \texttt{human-approval} connector is declared. Do not
-continue until the code answers all six clearly.
+and whether HumanApprover's human action is discoverable. Do not continue
+until the code answers all six clearly.
 
-If the connector view reports no declared requirements, the generated code did
-not satisfy the existing specification. Do not accept it. While the
-implementation is still awaiting review, use
-\texttt{workflow implement codex --rerun} or the corresponding Claude command,
-then inspect again. For an already accepted implementation, record the
-correction with \texttt{workflow refine}, implement it, and complete
-\texttt{workflow review} again.
+If the connector view reports no human actions, inspect the full workflow.
+The generated code is incomplete when the requested \texttt{@human} action is
+absent. While implementation is awaiting review, use
+\texttt{workflow implement codex --rerun} or the corresponding Claude command.
+For an accepted implementation, record the correction with
+\texttt{workflow refine} and complete review again.
 
 \section{Model configuration and routing}
 
@@ -1376,8 +1374,8 @@ assignments as separate tables.
 participant uses which model. A green result confirms that the provider
 accepted the configured key and exact model identifier at check time. A yellow
 result means connectivity prevented a conclusive answer.
-\texttt{model assignments} displays each effective participant route together
-with its cached last-check state and never contacts a provider.
+\texttt{model assignments} displays the effective route of every LLM action,
+its source, and its cached last-check state. It never contacts a provider.
 \texttt{model assignments check} performs a fresh, targeted check of only
 those effective configurations, deduplicating configurations shared by
 several participants. \texttt{run} repeats that targeted check as a mandatory
@@ -1388,12 +1386,18 @@ OpenAI-compatible or Ollama endpoint,
 \texttt{model config create NAME} asks for the local model. Local identifiers
 are checked against the live \texttt{/models} response.
 
-\texttt{model assign LIFELINE NAME} and
+\texttt{model assign PARTICIPANT NAME},
+\texttt{model assign PARTICIPANT.ACTION NAME}, and
 \texttt{model default NAME} only assign saved configurations; they do not
 contact the provider. Studio warns when a configuration has not yet been
 checked but allows the assignment so offline preparation remains possible. A
 configuration whose last conclusive check found it unavailable must be fixed or
 checked successfully before assignment.
+An action assignment takes precedence over its participant assignment, which
+takes precedence over the default. Enter
+\texttt{model inherit PARTICIPANT.ACTION} to remove one action override, or
+\texttt{model inherit PARTICIPANT} to restore the project default for that
+participant.
 Use Tab completion rather than retyping generated names. Editing one named
 configuration with \texttt{model config edit NAME} updates every assignment
 that refers to it. \texttt{model config rename OLD NEW} changes only its
@@ -1468,7 +1472,7 @@ zippergen dev workflows/reviewed_answer.py:reviewed_answer \
 \begin{notebox}{Two different meanings of ``change the model''}
 For a routing-only change, create or edit a named configuration, check it, then
 use \texttt{model default NAME} or
-\texttt{model assign LIFELINE NAME}. Studio remembers that choice for runs
+\texttt{model assign PARTICIPANT NAME}. Studio remembers that choice for runs
 and deployment; source code does not change, so no refinement or coding
 assistant is needed. If the model choice must become versioned design intent,
 change declared workflow/deployment defaults, or accompany prompt, action, or
@@ -1694,7 +1698,7 @@ This review gate belongs to Studio. The lower-level operating-system command
 \texttt{zippergen deploy PATH:WORKFLOW} remains an explicit expert interface
 and does not consult Studio's private acceptance record.
 
-Studio carries the current default and per-lifeline routes into the deployment
+Studio carries the current default, participant, and action routes into the deployment
 profile. If the current model profile selects a real provider and its key was
 configured earlier, Studio displays a \emph{Deployment credentials} summary
 containing the key's name but never its value:
@@ -1883,8 +1887,19 @@ model config create [NAME] # name one provider/model pair
 model config check [NAME] # verify exact model availability
 model assignments # show routes and cached last-check state
 model assignments check # check only configurations used here
-model assign LIFELINE NAME # route a participant to a configuration
+model assign PARTICIPANT NAME # route a participant to a configuration
+model assign PARTICIPANT.ACTION NAME # override one LLM action
 model config rename OLD NEW # rename it and migrate all assignments
+connector # providers, configurations, and effective human routes
+connector setup # guided Telegram setup and assignment
+connector provider configure telegram # store the bot token privately
+connector provider check telegram # check bot authentication
+connector config create [NAME] # name a Telegram chat
+connector config check [NAME] # check the exact chat
+connector assign PARTICIPANT NAME # route all human actions on a participant
+connector assign PARTICIPANT.ACTION NAME # override one human action
+connector assignments # show every effective human route
+connector assignments check # check only configurations used here
 run            # fresh guided, durable development run
 run inspect [PARTICIPANT] # current states and focused local projection
 run tasks      # pending decisions for the current development run
@@ -1900,10 +1915,6 @@ deploy inspect [NAME] [PARTICIPANT] # durable local program positions
 deploy tasks [NAME] # pending decisions with complete context
 deploy approve [NAME] # review and answer a pending decision
 deploy trace [NAME] # recent durable deployment events
-deploy connectors # logical requirements, private configs, and bindings
-deploy connectors setup telegram [NAME] # configure and check a bot/chat
-deploy connectors bind REQUIREMENT CONFIGURATION
-deploy notify [NAME] # one Telegram send/receive synchronization pass
 deploy doctor # detailed readiness checks
 deploy logs # recent service output
 deploy start # start the remembered installed service
@@ -2262,7 +2273,7 @@ deploy tutorial-review-studio --no-start
 \end{lstlisting}
 
 The same guided deployer described later carries the current default and
-per-lifeline model routes, collects declared settings and deployment-scoped
+participant and action model routes, collects declared settings and deployment-scoped
 secrets, validates readiness, and prints the resulting deployment name. If a
 selected provider key is already configured, Studio first shows only its
 environment-variable name and asks whether to reuse it; accepting avoids
@@ -2609,60 +2620,69 @@ Codex--Claude loop: Codex owns every repository change, Claude reviews
 read-only after each candidate, success requires Claude approval, and Codex
 produces the final read-only assessment.
 
-\subsection{Logical connectors and private deployment bindings}
+\subsection{Connector providers, configurations, and assignments}
 
-A workflow declares the external capability it needs without naming a local
-account or embedding a credential:
-
-\begin{lstlisting}[language=Python]
-from zippergen import ConnectorRequirement
-
-zippergen_connectors = (
-    ConnectorRequirement(
-        name="human-approval",
-        kind="telegram",
-        participant="Reviewer",
-        capabilities=("notify", "approve"),
-        required=False,
-    ),
-)
-\end{lstlisting}
-
-The declaration appears in full workflow views and semantic snapshots.
-Studio separately owns named machine-private configurations and binds them to
-the logical requirement:
+Human authority remains visible in workflow code as an \texttt{@human}
+action. Its delivery mechanism does not belong in that code. Studio discovers
+the owning participant and supports the same three-stage lifecycle as models:
 
 \begin{lstlisting}[style=shell]
-deploy connectors
-deploy connectors setup telegram
-deploy connectors check telegram-approvals
-deploy connectors bind human-approval telegram-approvals
+connector provider configure telegram
+connector provider check telegram
+connector config create telegram-approvals
+connector config check telegram-approvals
+connector assign HumanApprover telegram-approvals
+connector assignments
+connector assignments check
 \end{lstlisting}
 
-The first command is the boundary check. It must list
-\texttt{human-approval} under workflow requirements before setup or binding.
-Creating \texttt{telegram-approvals} does not add a requirement to Python
-source, and an \texttt{@human} action does not imply one. If binding names a
-missing requirement, Studio displays the selected workflow, requested name,
-and every declared requirement, then directs an open implementation to rerun
-or an accepted implementation to \texttt{workflow refine}.
+The provider owns private authentication, such as a Telegram bot token. A
+named configuration chooses a reusable resource, such as one Telegram chat.
+An assignment routes compatible actions to that configuration. The token is
+stored outside the repository. Deployment copies only routing metadata into
+the ordinary profile and places the credential in its private secret file.
 
-Setup asks for the Telegram chat id and bot token, stores the token outside the
-repository, and checks both the bot identity and target chat. Guided deployment
-copies only a binding description into the ordinary profile and places the
-token in the owner-private deployment secret file. Start and restart rerun the
-live readiness check.
+A participant assignment covers every human action on that lifeline:
 
 \begin{lstlisting}[style=shell]
-deploy notify
+connector assign HumanApprover telegram-approvals
+\end{lstlisting}
+
+An exact action may override it:
+
+\begin{lstlisting}[style=shell]
+connector assign HumanApprover.approve_contract legal-approvals
+connector inherit HumanApprover.approve_contract
+\end{lstlisting}
+
+Several participants may share one configuration. Sharing a bot and chat does
+not serialize their workflow steps. Every durable human task has an opaque,
+one-time token. Telegram callback buttons include that token and the selected
+option. A delayed, duplicate, or out-of-order external message therefore
+cannot be mistaken for the next FIFO message. A numbered text answer is
+accepted only when its task is identified by the token or by a direct reply to
+the original Telegram message.
+
+The deployed service starts its connector bridge automatically:
+
+\begin{lstlisting}[style=shell]
 deploy tasks
+deploy show
 \end{lstlisting}
 
-\texttt{deploy notify} performs one synchronization pass against the
-deployment's unique store: unseen tasks are sent and available Telegram replies
-are consumed. Run it again to collect a reply that arrived later. Direct
-terminal approval remains available and an unbound optional connector never
-blocks the workflow.
+No manual notification synchronization command is required. The bridge watches
+the deployment's unique store, sends unseen tasks, consumes replies, and
+completes exactly the corresponding durable action. A development run starts
+the same bridge automatically when the selected workflow has an external
+human assignment. Without such an assignment, development keeps the human
+decision in the Studio terminal.
+
+Non-human services remain explicit workflow capabilities. Gmail, Sheets,
+Docs, and Calendar configurations will use the same provider, configuration,
+and assignment surface. A participant assignment supplies the normal default,
+while an action-specific assignment allows one participant to use several
+services. The workflow must still declare the capability and access level
+needed by each non-human external action.
 
 \section{Reference: prerequisites and installation details}
 \label{sec:install}
@@ -2887,9 +2907,9 @@ deployer to collect:
   \item the request text as a workflow input;
   \item the maximum number of revisions as a second workflow input, defaulting
         to \texttt{2};
-  \item an OpenAI API key only if the default or any per-lifeline model starts
+  \item an OpenAI API key only if the default or any assigned model starts
         with \texttt{openai}; and
-  \item an Anthropic API key only if the default or any per-lifeline model
+  \item an Anthropic API key only if the default or any assigned model
         starts with \texttt{anthropic} or \texttt{claude}.
 \end{itemize}
 
@@ -3794,7 +3814,7 @@ Confirm that the account key belongs to that provider and that the named model
 is enabled for the account. Do not print the key while diagnosing. To continue
 the tutorial without network access or charges, enter
 \texttt{model default mock}, restore participant inheritance with
-\texttt{model inherit LIFELINE}, and start a fresh mock \texttt{run}.
+\texttt{model inherit PARTICIPANT}, and start a fresh mock \texttt{run}.
 
 \subsection*{The workflow file cannot be found}
 
@@ -4135,7 +4155,7 @@ exit
 
 No \texttt{ZIPPERGEN\_HOME} export or \texttt{STORE} variable is required for
 this path. Real model overrides are optional; use \texttt{model default mock}
-and \texttt{model inherit LIFELINE} to stay on the free mock path. If a coding assistant is unavailable, select
+and \texttt{model inherit PARTICIPANT} to stay on the free mock path. If a coding assistant is unavailable, select
 \path{zippergen/examples/tutorial_review.py:tutorial_review} instead of the generated
 workflow.
 

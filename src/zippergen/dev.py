@@ -5,13 +5,17 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import threading
 from collections.abc import Callable
 from contextlib import contextmanager
 from types import ModuleType
 from typing import Any
 
 from zippergen.deployment import DeploymentField, deployment_spec_from_module
-from zippergen.human_backends import make_cli_human_backend
+from zippergen.human_backends import (
+    make_cli_human_backend,
+    make_sqlite_human_backend,
+)
 from zippergen.models import (
     effective_llm_routes,
     normalize_llm_overrides,
@@ -44,19 +48,25 @@ def active_llm_routes(
     default_spec: str,
     overrides: dict[str, str] | None = None,
 ) -> dict[str, str]:
-    """Return effective routes only for participants that invoke an LLM."""
+    """Return the effective model route for every LLM action site."""
 
     routes = effective_llm_routes(workflow, default_spec, overrides)
-    active: list[str] = []
+    active: list[tuple[str, str]] = []
     sites = workflow_semantics(workflow, module).get("action_sites") or []
     if isinstance(sites, list):
         for site in sites:
             if not isinstance(site, dict) or site.get("kind") != "llm":
                 continue
-            name = str(site.get("lifeline"))
-            if name in routes and name not in active:
-                active.append(name)
-    return {name: routes[name] for name in active}
+            participant = str(site.get("lifeline"))
+            action = str(site.get("action"))
+            target = f"{participant}.{action}"
+            item = (participant, target)
+            if participant in routes and item not in active:
+                active.append(item)
+    return {
+        target: routes.get(target, routes[participant])
+        for participant, target in active
+    }
 
 
 def _deployment_input_fields(module: ModuleType) -> dict[str, DeploymentField]:
@@ -369,6 +379,7 @@ def run_dev(
     secret_input_func: InputFunc | None = None,
     output_func: OutputFunc = print,
     renderer: TerminalRenderer | None = None,
+    human_connector_factory: Callable[[str], object] | None = None,
 ) -> dict[str, Any]:
     """Create or resume one managed durable development run."""
 
@@ -514,6 +525,19 @@ def run_dev(
             run_rows,
         )
 
+    if human_connector_factory is not None:
+        connector = human_connector_factory(store_path)
+        threading.Thread(
+            target=connector.run_forever,  # type: ignore[attr-defined]
+            name="connector-human",
+            daemon=True,
+        ).start()
+        if renderer is not None:
+            renderer.status(
+                "success",
+                "External human connector started for this durable run.",
+            )
+
     terminal_backend = make_cli_human_backend(
         input_func=input_func,
         output_func=output_func,
@@ -528,6 +552,11 @@ def run_dev(
 
     setattr(managed_human_backend, "claims_pending_human_tasks", True)
     setattr(managed_human_backend, "requires_main_thread", True)
+    selected_human_backend = (
+        make_sqlite_human_backend()
+        if human_connector_factory is not None
+        else managed_human_backend
+    )
 
     try:
         with _temporary_environment(environment):
@@ -557,7 +586,7 @@ def run_dev(
                 store_path=store_path,
                 timeout=timeout,
                 mock_delay=(0.0, 0.0),
-                human_backend=managed_human_backend,
+                human_backend=selected_human_backend,
                 assistant=selected_assistant,
                 assistant_root=str(workspace.root),
             )

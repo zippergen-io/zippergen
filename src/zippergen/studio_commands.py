@@ -244,8 +244,8 @@ COMMANDS: tuple[CommandSpec, ...] = (
     ),
     CommandSpec(
         ("model", "assign"),
-        "model assign LIFELINE NAME",
-        "assign a configuration to a participant",
+        "model assign PARTICIPANT_OR_ACTION NAME",
+        "assign a configuration to a participant or LLM action",
         "configuration",
     ),
     CommandSpec(
@@ -256,8 +256,62 @@ COMMANDS: tuple[CommandSpec, ...] = (
     ),
     CommandSpec(
         ("model", "inherit"),
-        "model inherit LIFELINE",
-        "restore inheritance from the default",
+        "model inherit PARTICIPANT_OR_ACTION",
+        "restore participant or action inheritance",
+        "configuration",
+    ),
+    CommandSpec(
+        ("connector",),
+        "connector",
+        "show providers, configurations, and human routes",
+        "read-only",
+    ),
+    CommandSpec(
+        ("connector", "setup"),
+        "connector setup",
+        "guide Telegram provider, configuration, and assignments",
+        "configuration",
+    ),
+    CommandSpec(
+        ("connector", "provider"),
+        "connector provider list|configure|check|remove ...",
+        "manage connector provider credentials",
+        "configuration",
+    ),
+    CommandSpec(
+        ("connector", "config"),
+        "connector config list|create|show|edit|check|rename|remove ...",
+        "manage reusable connector configurations",
+        "configuration",
+    ),
+    CommandSpec(
+        ("connector", "assignments"),
+        "connector assignments",
+        "show effective human-action routes",
+        "read-only",
+    ),
+    CommandSpec(
+        ("connector", "assignments", "check"),
+        "connector assignments check",
+        "check configurations used by human actions",
+        "read-only",
+    ),
+    CommandSpec(
+        ("connector", "assign"),
+        "connector assign PARTICIPANT_OR_ACTION CONFIGURATION",
+        "route human actions through a configuration",
+        "configuration",
+    ),
+    CommandSpec(
+        ("connector", "inherit"),
+        "connector inherit PARTICIPANT_OR_ACTION",
+        "restore the inherited or local human route",
+        "configuration",
+    ),
+    CommandSpec(
+        ("connector", "bind"),
+        "connector bind REQUIREMENT CONFIGURATION",
+        "bind an explicit non-human capability requirement",
         "configuration",
     ),
     CommandSpec(
@@ -349,18 +403,6 @@ COMMANDS: tuple[CommandSpec, ...] = (
         "deploy trace [NAME]",
         "show recent events for a deployment",
         "read-only",
-    ),
-    CommandSpec(
-        ("deploy", "connectors"),
-        "deploy connectors [setup|check|bind] ...",
-        "configure external deployment connections",
-        "configuration",
-    ),
-    CommandSpec(
-        ("deploy", "notify"),
-        "deploy notify [NAME]",
-        "send pending decisions and receive connector replies",
-        "execution",
     ),
     CommandSpec(
         ("deploy", "start"),
@@ -597,9 +639,10 @@ def concise_help() -> str:
   5. run
   6. deploy
 
-Four main areas:
+Main areas:
   workflow    specify, implement, inspect, and validate
   model       configure, check, and assign models
+  connector   configure and route human or service connections
   run         execute and inspect development runs
   deploy      create, inspect, and operate installed applications
 

@@ -56,9 +56,11 @@ Otherwise choose the smallest reasonable workflow and state the assumption.
    at the lifeline that actually knows and owns the decision.
 5. Add focused tests that run with mock LLMs or fake services. Test protocol
    structure and safety behavior separately from live integrations.
-6. When the intent names a connector, declare an exact module-level
-   `ConnectorRequirement` and test that it appears in workflow semantics.
-   An `@human` action does not declare a connector automatically.
+6. Human delivery is inferred from `@human` action sites and assigned through
+   Studio. Do not add a redundant connector requirement merely to route a
+   human action through Telegram or email. For a non-human external service,
+   declare an exact connector capability and test that it appears in workflow
+   semantics.
 7. Run the validation and inspection gate below.
 
 Do not invent a generic agent for every function. A lifeline represents a

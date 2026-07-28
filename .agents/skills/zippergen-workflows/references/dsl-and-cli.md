@@ -135,26 +135,32 @@ a recorded result is replayed without launching the assistant again. The
 requested repository operation should nevertheless be restart-safe because a
 process can fail after the CLI changes files but before its result is recorded.
 
-Logical connectors are module-level, credential-free requirements:
+Human delivery needs no separate connector declaration. Studio discovers the
+participant from each `@human` action. It can assign a reusable Telegram or
+email configuration to the participant, with an optional action-level
+override.
+
+Non-human services remain explicit, credential-free requirements:
 
 ```python
 from zippergen import ConnectorRequirement
 
 zippergen_connectors = (
     ConnectorRequirement(
-        name="human-approval",
-        kind="telegram",
-        participant="Reviewer",
-        capabilities=("notify", "approve"),
+        name="review-log",
+        kind="google-sheets",
+        participant="Records",
+        capabilities=("append-row",),
+        access="write",
         required=False,
     ),
 )
 ```
 
-Use connector declarations when deployment must bind an external account or
-channel independently of workflow source. Studio stores named configurations
-and secrets privately, while semantic snapshots and full views retain the
-logical kind, participant, access, and capabilities.
+Use connector declarations when workflow behavior requires a non-human
+external capability independently of deployment configuration. Studio stores
+named configurations and secrets privately, while semantic snapshots and full
+views retain the logical kind, participant, access, and capabilities.
 
 ## Owned control flow
 

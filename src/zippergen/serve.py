@@ -57,6 +57,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import venv
 from collections.abc import Mapping
@@ -1238,7 +1239,9 @@ def _doctor_checks(
             ))
             connector_requirements = ()
         for requirement in connector_requirements:
-            raw_binding = connector_bindings.get(requirement.name)
+            raw_binding = connector_bindings.get(
+                f"requirement:{requirement.name}"
+            ) or connector_bindings.get(requirement.name)
             if raw_binding is None:
                 checks.append(_doctor_check(
                     "fail" if requirement.required else "warn",
@@ -1308,6 +1311,62 @@ def _doctor_checks(
                     f"connector {requirement.name}",
                     f"{kind} is bound but has no live readiness adapter yet",
                 ))
+    checked_human_configurations: set[str] = set()
+    for route_name, raw_binding in connector_bindings.items():
+        if (
+            not isinstance(raw_binding, dict)
+            or raw_binding.get("type") != "human"
+        ):
+            continue
+        configuration = str(
+            raw_binding.get("configuration") or route_name
+        )
+        if configuration in checked_human_configurations:
+            continue
+        checked_human_configurations.add(configuration)
+        kind = str(raw_binding.get("kind") or "")
+        if kind != "telegram":
+            checks.append(_doctor_check(
+                "fail",
+                f"human connector {configuration}",
+                f"unsupported human connector provider: {kind or 'none'}",
+            ))
+            continue
+        token_env = str(raw_binding.get("token_env") or "")
+        token = environment.get(token_env)
+        chat_id = str(raw_binding.get("chat_id") or "")
+        if not token or not chat_id:
+            checks.append(_doctor_check(
+                "fail",
+                f"human connector {configuration}",
+                "Telegram token or chat id is missing",
+            ))
+            continue
+        if not live_connectors:
+            checks.append(_doctor_check(
+                "ok",
+                f"human connector {configuration}",
+                f"Telegram chat {chat_id} is configured",
+            ))
+            continue
+        try:
+            from zippergen.telegram_notify import TelegramBotClient
+
+            client = TelegramBotClient(token, timeout=5)
+            client.request("getMe")
+            client.request("getChat", chat_id=chat_id)
+        except Exception as exc:
+            checks.append(_doctor_check(
+                "fail",
+                f"human connector {configuration}",
+                f"Telegram is unavailable: {exc}",
+            ))
+        else:
+            checks.append(_doctor_check(
+                "ok",
+                f"human connector {configuration}",
+                f"Telegram chat {chat_id} is reachable",
+            ))
     declared_values = {
         field.name: _profile_field_value(profile, field, environment)
         for field in deployment_spec.fields
@@ -3046,9 +3105,81 @@ def _run_deployment_command(args) -> int:
     try:
         os.chdir(cwd)
         with _profile_environment(profile):
+            _start_deployment_connector_workers(profile)
             return _run_workflow_command(_run_args_from_deployment(profile))
     finally:
         os.chdir(old_cwd)
+
+
+def _start_deployment_connector_workers(
+    profile: dict[str, object],
+) -> tuple[threading.Thread, ...]:
+    """Start best-effort connector bridges owned by this service process."""
+
+    raw = profile.get("connectors") or {}
+    if not isinstance(raw, dict):
+        return ()
+    human_routes = [
+        value
+        for value in raw.values()
+        if isinstance(value, dict) and value.get("type") == "human"
+    ]
+    telegram_routes = [
+        value for value in human_routes
+        if value.get("kind") == "telegram"
+    ]
+    if not telegram_routes:
+        return ()
+
+    grouped: dict[str, list[dict[str, object]]] = {}
+    for route in telegram_routes:
+        token_env = str(route.get("token_env") or "")
+        if token_env:
+            grouped.setdefault(token_env, []).append(route)
+
+    threads: list[threading.Thread] = []
+    for token_env, records in grouped.items():
+        token = os.environ.get(token_env, "")
+        if not token:
+            raise SystemExit(
+                f"Telegram connector credential is missing: {token_env}."
+            )
+        routes: dict[str, dict[str, object]] = {}
+        assignments: dict[str, str] = {}
+        for route in records:
+            configuration = str(route.get("configuration") or "")
+            target = str(route.get("target") or "")
+            if not configuration or not target:
+                continue
+            routes[configuration] = route
+            assignments[target] = configuration
+        if not routes:
+            continue
+        from zippergen.telegram_notify import (
+            TelegramBotClient,
+            TelegramDeploymentNotifier,
+        )
+
+        notifier = TelegramDeploymentNotifier(
+            store_path=str(profile["store"]),
+            client=TelegramBotClient(token),
+            routes=routes,
+            assignments=assignments,
+        )
+        thread = threading.Thread(
+            target=notifier.run_forever,
+            name=f"connector-telegram-{len(threads) + 1}",
+            daemon=True,
+        )
+        thread.start()
+        threads.append(thread)
+        print(
+            "Telegram connector started for "
+            + ", ".join(sorted(assignments)),
+            file=sys.stderr,
+            flush=True,
+        )
+    return tuple(threads)
 
 
 def _status_command(args) -> int:
@@ -3255,10 +3386,10 @@ def _add_guided_deployment_arguments(
         "--llm-for",
         action="append",
         default=[],
-        metavar="LIFELINE=SPEC",
+        metavar="PARTICIPANT_OR_ACTION=SPEC",
         help=(
-            "Override the LLM for one lifeline; repeat as needed. Use "
-            "LIFELINE=inherit to remove an existing override."
+            "Override the LLM for one participant or exact action; repeat as "
+            "needed. Use PARTICIPANT=inherit to remove an existing override."
         ),
     )
     parser.add_argument("--llm-idle-timeout", type=float, help="Release a managed local LLM after this idle time.")
@@ -3337,8 +3468,8 @@ def main(argv=None) -> int:
         "--llm-for",
         action="append",
         default=[],
-        metavar="LIFELINE=SPEC",
-        help="Override the LLM for one lifeline; repeat as needed.",
+        metavar="PARTICIPANT_OR_ACTION=SPEC",
+        help="Override the LLM for one participant or exact action; repeat as needed.",
     )
     dev.add_argument("--input", action="append", default=[], metavar="name=value", help="Workflow input value.")
     dev.add_argument("--input-json", help="Workflow inputs as a JSON object.")
@@ -3354,8 +3485,8 @@ def main(argv=None) -> int:
         "--llm-for",
         action="append",
         default=[],
-        metavar="LIFELINE=SPEC",
-        help="Override the LLM for one lifeline; repeat as needed.",
+        metavar="PARTICIPANT_OR_ACTION=SPEC",
+        help="Override the LLM for one participant or exact action; repeat as needed.",
     )
     rn.add_argument("--llm-idle-timeout", type=float, help="Release a managed local LLM after this many idle seconds.")
     rn.add_argument(
@@ -3414,8 +3545,8 @@ def main(argv=None) -> int:
         "--llm-for",
         action="append",
         default=[],
-        metavar="LIFELINE=SPEC",
-        help="Override the LLM for one lifeline; repeat as needed.",
+        metavar="PARTICIPANT_OR_ACTION=SPEC",
+        help="Override the LLM for one participant or exact action; repeat as needed.",
     )
     dl.add_argument("--llm-idle-timeout", type=float, help="Release a managed local LLM after this many idle seconds.")
     dl.add_argument(

@@ -435,17 +435,20 @@ def make_anthropic_backend(
 
 
 def make_lifeline_router(backends: dict[str, Callable]) -> Callable:
-    """Route LLM calls to the backend registered for the calling lifeline.
+    """Route LLM calls by action override, then by calling lifeline.
 
     The calling lifeline is identified by the current thread name, which the
-    runtime sets to the lifeline name when it creates each thread.
+    runtime sets to the lifeline name when it creates each thread.  A key such
+    as ``Writer.revise_answer`` takes precedence over ``Writer``.
     """
 
     def backend(action, inputs: dict[str, object]) -> dict[str, object]:
         lifeline_name = threading.current_thread().name
-        if lifeline_name not in backends:
+        action_target = f"{lifeline_name}.{action.name}"
+        selected = backends.get(action_target) or backends.get(lifeline_name)
+        if selected is None:
             raise RuntimeError(f"No backend configured for lifeline {lifeline_name!r}.")
-        return backends[lifeline_name](action, inputs)
+        return selected(action, inputs)
 
     return backend
 
@@ -629,7 +632,7 @@ def router_from_specs(
     fallback_label: str = "mock LLM",
     idle_timeout: float | None = None,
 ) -> tuple[Callable, str]:
-    """Build a per-lifeline backend router from compact LLM specs.
+    """Build a participant and action backend router from compact LLM specs.
 
     Values in ``routes`` can be an LLM spec string (``"openai:gpt-4o"``,
     ``"ollama:qwen2.5:7b"``, ``"mistral"``, ``"mock"``) or a pre-built backend callable

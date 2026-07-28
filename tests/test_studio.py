@@ -97,6 +97,28 @@ zippergen_connectors = (
 )
 """
 
+HUMAN_SOURCE = """
+from zippergen import Lifeline, human, workflow
+
+User = Lifeline("User")
+Human = Lifeline("Human")
+
+@human(
+    kind="select",
+    instruction="Choose a time.",
+    prefill="Thursday, 11 AM\\nFriday, 10 AM",
+    outputs=["choice: str"],
+)
+def choose_time() -> None: ...
+
+@workflow
+def sample(request: str @ User) -> str:
+    User(request) >> Human(request)
+    Human: choice = choose_time()
+    Human(choice) >> User(choice)
+    return choice @ User
+"""
+
 
 def _studio(tmp_path, responses=(), secret_responses=()):
     root = tmp_path / "project"
@@ -139,7 +161,10 @@ def test_studio_completion_is_context_and_project_aware(tmp_path):
         "workflow.py:sample"
     ]
     assert _completions(studio, "workflow show agent W") == ["Writer"]
-    assert _completions(studio, "model assign W") == ["Writer"]
+    assert _completions(studio, "model assign W") == [
+        "Writer",
+        "Writer.echo",
+    ]
     assert "check" in _completions(studio, "model config ch")
     assert _completions(studio, "model config check m") == ["mock"]
     assert "all" in _completions(studio, "model config check ")
@@ -148,7 +173,10 @@ def test_studio_completion_is_context_and_project_aware(tmp_path):
         studio, "model provider configure a"
     ) == ["anthropic"]
     assert _completions(studio, "model inh") == ["inherit"]
-    assert _completions(studio, "model inherit W") == ["Writer"]
+    assert _completions(studio, "model inherit W") == [
+        "Writer",
+        "Writer.echo",
+    ]
     assert _completions(studio, "settings set l") == ["learning"]
     assert _completions(studio, "settings set learning ") == ["on", "off"]
     assert "assistant" in _completions(studio, "settings reset ")
@@ -1082,9 +1110,8 @@ def test_studio_task_explains_nested_framework_test_environment(tmp_path):
     assert "Do not run bare\n`uv run pytest`" in task
     assert "assistant-result.json" in task
     assert '"verification": "passed"' in task
-    assert "logical connector requirements" in task
-    assert "exact module-level\n`ConnectorRequirement`" in task
-    assert "an `@human` action declares it" in task
+    assert "non-human connector requirements" in task
+    assert "Human delivery is inferred from `@human` action sites" in task
 
 
 def test_studio_assistant_stops_before_launch_when_nested_tests_are_not_synced(
@@ -2120,7 +2147,7 @@ def test_studio_commands_are_discoverable(tmp_path):
     assert "model provider" in output[-1]
     assert "model config" in output[-1]
     assert "model config list|create|show|check" in output[-1]
-    assert "model assign LIFELINE NAME" in output[-1]
+    assert "model assign PARTICIPANT_OR_ACTION NAME" in output[-1]
     assert "NATURAL LANGUAGE" in output[-1]
     assert "language history" in output[-1]
     assert "language learned" in output[-1]
@@ -2874,7 +2901,7 @@ def test_studio_configures_checks_and_binds_a_telegram_connector(
         responses=["123456"],
         secret_responses=["private-bot-token"],
     )
-    (workspace.root / "workflow.py").write_text(CONNECTOR_SOURCE)
+    (workspace.root / "workflow.py").write_text(HUMAN_SOURCE)
     workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
 
     def fake_request(_client, method, **params):
@@ -2889,140 +2916,79 @@ def test_studio_configures_checks_and_binds_a_telegram_connector(
         fake_request,
     )
 
-    studio.execute(
-        "deploy connectors setup telegram review-telegram"
-    )
-    studio.execute(
-        "deploy connectors bind human-approval review-telegram"
-    )
+    studio.execute("connector provider configure telegram")
+    studio.execute("connector config create review-telegram")
+    studio.execute("connector assign Human review-telegram")
 
     configuration = workspace.connector_configurations()["review-telegram"]
-    assert configuration["kind"] == "telegram"
+    assert configuration["provider"] == "telegram"
     assert configuration["check_status"] == "available"
-    assert workspace.connector_secret(
-        "review-telegram", "bot_token"
+    assert workspace.connector_provider_secret(
+        "telegram", "bot_token"
     ) == "private-bot-token"
-    assert workspace.connector_binding_profile(
+    assert workspace.connector_assignment_profile(
         "workflow.py:sample"
-    ) == {"human-approval": "review-telegram"}
+    ) == {
+        "lifelines": {"Human": "review-telegram"},
+        "actions": {},
+    }
     assert all("private-bot-token" not in line for line in output)
     assert _completions(
-        studio, "deploy connectors bind human-approval "
+        studio, "connector assign Human "
     ) == ["review-telegram"]
 
-    current, _workflow, module = studio._current_context()
+    current, workflow, module = studio._current_context()
     arguments = studio._deployment_connector_arguments(
         workflow_spec=current,
+        workflow=workflow,
         module=module,
     )
     snapshot = json.loads(
         arguments[arguments.index("--connectors-json") + 1]
     )
-    binding = snapshot["human-approval"]
+    binding = snapshot["human:Human"]
     assert binding["configuration"] == "review-telegram"
+    assert binding["target"] == "Human"
     assert binding["chat_id"] == "123456"
     assert binding["token_env"].startswith("ZIPPERGEN_CONNECTOR_")
     secret_argument = arguments[arguments.index("--connector-secret") + 1]
     assert secret_argument.endswith("=private-bot-token")
 
 
-def test_studio_explains_a_missing_workflow_connector_requirement(
+def test_studio_human_connector_assignment_needs_no_extra_requirement(
     tmp_path,
 ):
     studio, workspace, output = _studio(tmp_path)
+    (workspace.root / "workflow.py").write_text(HUMAN_SOURCE)
     workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
-
-    with pytest.raises(
-        SystemExit,
-        match=(
-            "The selected workflow does not declare that connector "
-            "requirement"
-        ),
-    ):
-        studio.execute(
-            "deploy connectors bind human-approval telegram-approvals"
-        )
-
-    assert "Connector binding blocked" in output
-    assert any(
-        "Workflow" in line and "workflow.py:sample" in line
-        for line in output
+    workspace.save_connector_provider_profile(
+        "telegram",
+        {"kind": "telegram", "check_status": "available"},
     )
-    assert any(
-        "Requested" in line and "human-approval" in line
-        for line in output
-    )
-    assert any(
-        "Declared requirements" in line and "none" in line
-        for line in output
-    )
-    assert any(
-        "Reason" in line and "declares no logical" in line
-        for line in output
-    )
-    assert any("workflow refine" in line for line in output)
-    assert any("deploy connectors" in line for line in output)
-
-
-def test_studio_notifies_the_stable_deployment_store_through_telegram(
-    tmp_path,
-    monkeypatch,
-):
-    studio, workspace, output = _studio(tmp_path)
-    monkeypatch.setenv("ZIPPERGEN_HOME", str(workspace.home))
-    deployments = workspace.home / "deployments"
-    deployments.mkdir(parents=True)
-    store = workspace.home / "runs" / "reviewed.sqlite"
-    store.parent.mkdir(parents=True)
-    from zippergen.store import open_store
-
-    connection = open_store(str(store))
-    connection.close()
-    secrets_path = deployments / "reviewed.secrets.json"
-    secrets_path.write_text(
-        json.dumps({"ZIPPERGEN_CONNECTOR_REVIEW_TOKEN": "secret"})
-    )
-    profile = {
-        "name": "reviewed",
-        "project_root": str(workspace.root),
-        "workflow": "workflow.py:sample",
-        "cwd": str(workspace.root),
-        "store": str(store),
-        "log": str(workspace.home / "logs" / "reviewed.log"),
-        "secrets_file": str(secrets_path),
-        "connectors": {
-            "human-approval": {
-                "kind": "telegram",
-                "configuration": "review",
-                "chat_id": "123456",
-                "channel": "telegram",
-                "token_env": "ZIPPERGEN_CONNECTOR_REVIEW_TOKEN",
-            }
+    workspace.save_connector_configuration(
+        "approvals",
+        {
+            "provider": "telegram",
+            "kind": "telegram",
+            "chat_id": "123",
+            "check_status": "available",
         },
-    }
-    (deployments / "reviewed.json").write_text(json.dumps(profile))
-    observed: dict[str, object] = {}
-
-    def fake_send(notifier, **_kwargs):
-        observed["store"] = notifier.store_path
-        observed["chat_id"] = notifier.chat_id
-        return 1
-
-    monkeypatch.setattr(
-        "zippergen.telegram_notify.TelegramNotifier.send_pending_once",
-        fake_send,
-    )
-    monkeypatch.setattr(
-        "zippergen.telegram_notify.TelegramNotifier.poll_updates_once",
-        lambda _notifier, **_kwargs: 2,
     )
 
-    studio.execute("deploy notify reviewed")
+    studio.execute("connector assign Human approvals")
 
-    assert observed == {"store": str(store), "chat_id": "123456"}
-    assert any("Telegram approval connector" in line for line in output)
-    assert any("1 pending decision" in line for line in output)
-    assert any("2 response" in line for line in output)
+    assert workspace.connector_assignment_profile(
+        "workflow.py:sample"
+    )["lifelines"] == {"Human": "approvals"}
+    assert any("Human" in line and "approvals" in line for line in output)
+
+
+def test_studio_no_longer_exposes_manual_deploy_notify(
+    tmp_path,
+):
+    studio, _workspace, _output = _studio(tmp_path)
+    assert "notify" not in _completions(studio, "deploy ")
+    assert "connector" in _completions(studio, "con")
 
 
 def test_studio_configures_api_and_local_providers_without_displaying_secrets(
@@ -3646,8 +3612,8 @@ def test_studio_operates_human_tasks_through_the_deployment(
         for line in output
     )
     models = next(line for line in output if "Models" in line)
-    assert "Writer=local:qwen2.5:7b" in models
-    assert "Reviewer=mistral:mistral-small-latest" in models
+    assert "Writer.process=local:qwen2.5:7b" in models
+    assert "Reviewer.process=mistral:mistral-small-latest" in models
     assert "mock" not in models
     assert any("deploy tasks" in line for line in output)
     assert _completions(studio, "deploy tasks r") == [
@@ -4127,6 +4093,54 @@ def test_studio_run_accepts_an_assistant_action_backend(tmp_path, monkeypatch):
     assert calls[0]["assistant"] == "claude"
 
 
+def test_studio_run_starts_assigned_human_connector_automatically(
+    tmp_path,
+    monkeypatch,
+):
+    studio, workspace, _output = _studio(tmp_path)
+    (workspace.root / "workflow.py").write_text(HUMAN_SOURCE)
+    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    workspace.save_connector_provider_profile(
+        "telegram",
+        {"kind": "telegram", "check_status": "available"},
+    )
+    workspace.save_connector_provider_secret(
+        "telegram", "bot_token", "private-token"
+    )
+    workspace.save_connector_configuration(
+        "approvals",
+        {
+            "provider": "telegram",
+            "kind": "telegram",
+            "chat_id": "123",
+            "channel": "telegram:approvals",
+            "check_status": "available",
+        },
+    )
+    workspace.save_connector_assignment_profile(
+        "workflow.py:sample",
+        lifelines={"Human": "approvals"},
+    )
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        studio,
+        "_check_connector_configuration",
+        lambda name: name == "approvals",
+    )
+    monkeypatch.setattr(
+        "zippergen.studio.run_dev",
+        lambda workspace, **kwargs: calls.append(kwargs),
+    )
+
+    studio.execute("run")
+
+    factory = calls[0]["human_connector_factory"]
+    assert callable(factory)
+    notifier = factory("/tmp/example.sqlite")
+    assert notifier.assignments == {"Human": "approvals"}
+    assert notifier.routes["approvals"]["chat_id"] == "123"
+
+
 def test_studio_models_displays_connections_and_llm_active_lifelines(tmp_path):
     studio, workspace, output = _studio(tmp_path)
     workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
@@ -4456,16 +4470,62 @@ def test_studio_configuration_is_reusable_without_serializing_calls(tmp_path):
     )
     assert output[title + 2].split() == [
         "Participant",
+        "LLM",
+        "action",
         "Configuration",
         "Model",
-        "LLM",
-        "actions",
+        "Source",
         "Last",
         "check",
     ]
     assert set(output[title + 3].replace(" ", "")) == {"─"}
     assert any(
         line.startswith("✓ Assigned shared-local to Reviewer.")
+        for line in output
+    )
+
+
+def test_studio_model_action_override_precedes_participant_assignment(
+    tmp_path,
+):
+    studio, workspace, output = _studio(tmp_path)
+    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    workspace.save_model_configuration(
+        "participant-model",
+        {
+            "provider": "local",
+            "model": "qwen3",
+            "spec": "local:qwen3",
+            "check_status": "available",
+        },
+    )
+    workspace.save_model_configuration(
+        "action-model",
+        {
+            "provider": "openai",
+            "model": "gpt-4o-mini",
+            "spec": "openai:gpt-4o-mini",
+            "check_status": "available",
+        },
+    )
+
+    studio.execute("model assign Writer participant-model")
+    studio.execute("model assign Writer.echo action-model")
+
+    assignments = workspace.model_assignment_profile(
+        "workflow.py:sample"
+    )
+    assert assignments["lifelines"] == {
+        "Writer": "participant-model"
+    }
+    assert assignments["actions"] == {
+        "Writer.echo": "action-model"
+    }
+    profile = workspace.model_profile("workflow.py:sample")
+    assert profile["lifelines"]["Writer"] == "local:qwen3"
+    assert profile["actions"]["Writer.echo"] == "openai:gpt-4o-mini"
+    assert any(
+        "Writer" in line and "echo" in line and "action override" in line
         for line in output
     )
 
@@ -4547,7 +4607,8 @@ def test_studio_models_inherit_removes_a_participant_assignment(tmp_path):
 
     assert workspace.model_profile("workflow.py:sample")["lifelines"] == {}
     assert any(
-        "Writer" in line and "mock (default)" in line
+        "Writer" in line and "echo" in line and "mock" in line
+        and "default" in line
         for line in output
     )
 
@@ -4958,7 +5019,7 @@ def test_studio_models_rejects_lifelines_without_llm_actions(tmp_path):
     try:
         studio.execute("model assign User openai:gpt-4o-mini")
     except SystemExit as exc:
-        assert "has no LLM actions" in str(exc)
+        assert "not an LLM participant or action" in str(exc)
     else:
         raise AssertionError("a non-LLM lifeline should not accept a model override")
 

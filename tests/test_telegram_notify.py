@@ -6,6 +6,7 @@ from zippergen.store import (
     open_store,
 )
 from zippergen.telegram_notify import (
+    TelegramDeploymentNotifier,
     TelegramNotifier,
     build_reply_markup,
     format_task_message,
@@ -43,7 +44,14 @@ class FakeTelegramClient:
         })
 
 
-def _create_task(store_path, *, task_id="task-1", kind="confirm", output_type="bool"):
+def _create_task(
+    store_path,
+    *,
+    task_id="task-1",
+    kind="confirm",
+    output_type="bool",
+    prefill="Draft text",
+):
     conn = open_store(str(store_path))
     try:
         ensure_human_task(
@@ -61,7 +69,7 @@ def _create_task(store_path, *, task_id="task-1", kind="confirm", output_type="b
                 "rendered": {
                     "instruction": "Approve the request?",
                     "context": "Request context",
-                    "prefill": "Draft text",
+                    "prefill": prefill,
                 },
                 "submit_label": "Approve",
                 "cancel_label": "Decline",
@@ -178,3 +186,150 @@ def test_telegram_parsers_and_formatting():
     assert build_reply_markup(task, "abc") == {
         "inline_keyboard": [[{"text": "Acknowledge", "callback_data": "zg:yes:abc"}]]
     }
+
+
+def test_telegram_select_uses_task_specific_buttons(tmp_path):
+    store_path = tmp_path / "select.sqlite"
+    _create_task(
+        store_path,
+        kind="select",
+        output_type="str",
+        prefill="Thursday, 11 AM\nFriday, 10 AM",
+    )
+    client = FakeTelegramClient()
+    notifier = TelegramNotifier(str(store_path), client, chat_id="123")
+
+    assert notifier.send_pending_once() == 1
+    buttons = client.sent[0]["reply_markup"]["inline_keyboard"]
+    assert [row[0]["text"] for row in buttons] == [
+        "1. Thursday, 11 AM",
+        "2. Friday, 10 AM",
+    ]
+    token = buttons[1][0]["callback_data"].split(":", 3)[3]
+    assert notifier.process_update({
+        "update_id": 1,
+        "callback_query": {
+            "id": "select-1",
+            "data": f"zg:option:2:{token}",
+            "message": {"message_id": 1, "chat": {"id": 123}},
+        },
+    })
+    conn = open_store(str(store_path))
+    try:
+        assert load_human_task(conn, "task-1")["result"] == {
+            "reply": "Friday, 10 AM"
+        }
+    finally:
+        conn.close()
+
+
+def test_telegram_numbered_direct_reply_is_correlated_by_message(tmp_path):
+    store_path = tmp_path / "reply.sqlite"
+    _create_task(
+        store_path,
+        kind="select",
+        output_type="str",
+        prefill="Thursday, 11 AM\nFriday, 10 AM",
+    )
+    client = FakeTelegramClient()
+    notifier = TelegramNotifier(str(store_path), client, chat_id="123")
+    notifier.send_pending_once()
+
+    assert notifier.process_update({
+        "update_id": 1,
+        "message": {
+            "chat": {"id": 123},
+            "text": "2",
+            "reply_to_message": {"message_id": 1},
+        },
+    })
+    conn = open_store(str(store_path))
+    try:
+        assert load_human_task(conn, "task-1")["result"] == {
+            "reply": "Friday, 10 AM"
+        }
+    finally:
+        conn.close()
+
+
+def test_deployment_notifier_shares_one_configuration_across_participants(
+    tmp_path,
+):
+    store_path = tmp_path / "shared.sqlite"
+    _create_task(store_path, task_id="writer-task")
+    conn = open_store(str(store_path))
+    try:
+        ensure_human_task(
+            conn,
+            task_id="reviewer-task",
+            role="Reviewer",
+            locator=[1],
+            action="review",
+            input_hash=None,
+            inputs={},
+            spec={
+                "kind": "confirm",
+                "output": "approved",
+                "output_type": "bool",
+                "rendered": {"instruction": "Approve?", "context": None},
+            },
+        )
+        conn.execute(
+            "UPDATE human_tasks SET role='Writer' WHERE task_id='writer-task'"
+        )
+    finally:
+        conn.close()
+    client = FakeTelegramClient()
+    notifier = TelegramDeploymentNotifier(
+        str(store_path),
+        client,
+        routes={
+            "team-chat": {
+                "chat_id": "123",
+                "channel": "telegram:team-chat",
+            }
+        },
+        assignments={
+            "Writer": "team-chat",
+            "Reviewer": "team-chat",
+        },
+    )
+
+    assert notifier.send_pending_once() == 2
+    assert {item["chat_id"] for item in client.sent} == {"123"}
+
+
+def test_deployment_notifier_action_route_overrides_participant_route(
+    tmp_path,
+):
+    store_path = tmp_path / "override.sqlite"
+    _create_task(store_path)
+    conn = open_store(str(store_path))
+    try:
+        conn.execute(
+            "UPDATE human_tasks SET role='Human', action='approve_contract'"
+        )
+    finally:
+        conn.close()
+    client = FakeTelegramClient()
+    notifier = TelegramDeploymentNotifier(
+        str(store_path),
+        client,
+        routes={
+            "general": {
+                "chat_id": "111",
+                "channel": "telegram:general",
+            },
+            "legal": {
+                "chat_id": "222",
+                "channel": "telegram:legal",
+            },
+        },
+        assignments={
+            "Human": "general",
+            "Human.approve_contract": "legal",
+        },
+    )
+
+    assert notifier.send_pending_once() == 1
+    assert client.sent[0]["chat_id"] == "222"

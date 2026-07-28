@@ -477,6 +477,32 @@ def _notification_row(row) -> dict:
     }
 
 
+def load_human_task_notification_by_external(
+    conn,
+    *,
+    channel: str,
+    target: str,
+    external_id: str,
+) -> dict | None:
+    """Resolve a provider reply to the durable task it answers."""
+
+    row = conn.execute(
+        "SELECT task_id, channel, target, external_id, sent_at "
+        "FROM human_task_notifications "
+        "WHERE channel=? AND target=? AND external_id=?",
+        (str(channel), str(target), str(external_id)),
+    ).fetchone()
+    if row is None:
+        return None
+    return {
+        "task_id": row[0],
+        "channel": row[1],
+        "target": row[2],
+        "external_id": row[3],
+        "sent_at": row[4],
+    }
+
+
 def load_human_task_notification(
     conn,
     task_id: str,

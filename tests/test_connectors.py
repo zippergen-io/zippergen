@@ -48,7 +48,7 @@ def test_connector_loader_rejects_duplicate_requirements():
         connector_requirements_from_module(module)
 
 
-def test_tutorial_connector_is_visible_in_semantics_and_full_code_view():
+def test_tutorial_human_delivery_needs_no_redundant_connector_requirement():
     workflow, module = load_workflow_spec(
         "examples/tutorial_review.py:tutorial_review"
     )
@@ -59,9 +59,12 @@ def test_tutorial_connector_is_visible_in_semantics_and_full_code_view():
         options=ViewOptions(detail="full"),
     )
 
-    requirement = semantics["connectors"]["human-approval"]
-    assert requirement["kind"] == "telegram"
-    assert requirement["participant"] == "Reviewer"
-    assert requirement["required"] is False
-    assert "# Connector requirements" in code
-    assert "'human-approval'" in code
+    assert semantics.get("connectors", {}) == {}
+    assert any(
+        site["lifeline"] == "Reviewer"
+        and site["action"] == "approve_reply"
+        and site["kind"] == "human"
+        for site in semantics["action_sites"]
+    )
+    assert "approve_reply" in code
+    assert "# Connector requirements" not in code

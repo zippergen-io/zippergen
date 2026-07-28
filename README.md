@@ -98,8 +98,9 @@ Commands are grouped by purpose:
 |---|---|
 | `workflow` | Specification, implementation, views, validation, review |
 | `model` | Providers, named configurations, checks, assignments |
+| `connector` | Provider credentials, reusable resources, human-action routes |
 | `run`, `resume`, and `runs` | Durable development execution, decisions, traces, recovery |
-| `deploy` | Bundles, services, durable state, decisions, logs, connectors |
+| `deploy` | Bundles, services, durable state, decisions, and logs |
 
 Tab completion shows valid commands, workflows, participants, model
 configurations, and deployments. `current` gives one project summary. Every
@@ -352,20 +353,27 @@ Use `deploy remove review-demo --purge` only when those files must be deleted
 permanently. A permanent purge requires the explicit deployment name and a
 second confirmation.
 
-Logical connectors are declared without credentials in workflow source.
-Studio keeps named connector configurations and private credentials outside
-Git:
+Studio discovers human actions from workflow code. Their delivery uses the
+same provider, configuration, and assignment lifecycle as models. Private
+credentials remain outside Git:
 
 ```text
-deploy connectors
-deploy connectors setup telegram
-deploy connectors check telegram-approvals
-deploy connectors bind human-approval telegram-approvals
-deploy notify
+connector provider configure telegram
+connector provider check telegram
+connector config create telegram-approvals
+connector config check telegram-approvals
+connector assign HumanApprover telegram-approvals
+connector assignments
+connector assignments check
 ```
 
-Telegram task delivery is available now. Gmail and Google connector work is
-still in progress.
+Telegram uses task-specific buttons and starts automatically with the
+deployment. Participant assignments cover all human actions on that lifeline.
+`connector assign HumanApprover.approve_contract legal-approvals` shows the
+action-level override form, where `legal-approvals` is another saved Telegram
+configuration. One configuration may be assigned to several participants.
+Their model and connector calls can still run in parallel. Gmail and Google
+connector work is still in progress.
 
 ## Examples and documentation
 
