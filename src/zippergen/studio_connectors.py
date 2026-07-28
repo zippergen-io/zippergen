@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shlex
+import sys
 import time
 from pathlib import Path
 
@@ -54,6 +56,7 @@ class StudioConnectorsMixin:
         ssh_host = self.input(
             "SSH server or alias [AI_SERVER]: "
         ).strip() or "AI_SERVER"
+        self._google_ssh_host_hint = ssh_host
         command = (
             f"scp {shlex.quote(local_path)} "
             f"{shlex.quote(f'{ssh_host}:{upload_path}')}"
@@ -126,6 +129,110 @@ class StudioConnectorsMixin:
                 "Cloud."
             )
         return self._read_google_client_json(Path(selected_path))
+
+    def _needs_remote_google_browser(self) -> bool:
+        """Recognize an interactive Studio session on an SSH-only host."""
+
+        if not getattr(self, "_prompt_toolkit_enabled", False):
+            return False
+        if os.environ.get("SSH_CONNECTION") or os.environ.get("SSH_TTY"):
+            return True
+        return (
+            sys.platform.startswith("linux")
+            and not os.environ.get("DISPLAY")
+            and not os.environ.get("WAYLAND_DISPLAY")
+        )
+
+    def _authorize_google_provider(
+        self,
+        client_json: str,
+        *,
+        scopes: tuple[str, ...],
+        service_names: str,
+        profile: dict[str, str],
+    ) -> tuple[str, str | None]:
+        from zippergen.google_auth import (
+            authorize_google_client,
+            available_google_callback_port,
+        )
+
+        if not self._needs_remote_google_browser():
+            self._info(
+                f"A browser window will ask you to authorize {service_names}. "
+                "Studio stores the resulting token privately."
+            )
+            return authorize_google_client(client_json, scopes=scopes), None
+
+        default_host = str(
+            getattr(self, "_google_ssh_host_hint", "")
+            or profile.get("authorization_ssh_host")
+            or "AI_SERVER"
+        )
+        entered_host = self.input(
+            f"SSH server or alias used from your browser computer "
+            f"[{default_host}]: "
+        ).strip()
+        ssh_host = entered_host or default_host
+        port = available_google_callback_port()
+        forward = f"{port}:127.0.0.1:{port}"
+        quoted_host = shlex.quote(ssh_host)
+        self._emit_table(
+            "Remote Google authorization",
+            [
+                ("Browser", "your local computer", None),
+                (
+                    "Check",
+                    f"ssh -O check {quoted_host}",
+                    None,
+                ),
+                (
+                    "Forward",
+                    f"ssh -O forward -L {forward} {quoted_host}",
+                    None,
+                ),
+                (
+                    "Without a master",
+                    f"ssh -N -L {forward} {quoted_host}",
+                    None,
+                ),
+                (
+                    "Then",
+                    "return here; Studio prints the Google URL to open locally",
+                    None,
+                ),
+            ],
+        )
+        confirmation = self.input(
+            "Press Enter after the SSH forwarding is ready, or type 'cancel': "
+        ).strip()
+        if confirmation.casefold() == "cancel":
+            raise SystemExit("Google provider configuration cancelled.")
+        self._info(
+            f"Open the authorization URL below in your local browser. "
+            f"The callback uses forwarded port {port}."
+        )
+        authorized = authorize_google_client(
+            client_json,
+            scopes=scopes,
+            open_browser=False,
+            port=port,
+        )
+        self._emit_table(
+            "Remote authorization cleanup",
+            [
+                (
+                    "Multiplexed tunnel",
+                    f"ssh -O cancel -L {forward} {quoted_host}",
+                    None,
+                ),
+                (
+                    "Standalone tunnel",
+                    "close the terminal running ssh -N -L",
+                    None,
+                ),
+            ],
+        )
+        return authorized, ssh_host
 
     @staticmethod
     def _google_profile_scopes(profile) -> tuple[str, ...]:
@@ -599,6 +706,7 @@ class StudioConnectorsMixin:
     ) -> None:
         name = provider.casefold()
         scopes: tuple[str, ...] = ()
+        authorization_ssh_host: str | None = None
         if name not in {"telegram", "google"}:
             raise SystemExit(
                 "Supported connector providers are telegram and google."
@@ -633,8 +741,6 @@ class StudioConnectorsMixin:
             self.workspace.save_connector_provider_secret(
                 name, "oauth_client_json", client_json
             )
-            from zippergen.google_auth import authorize_google_client
-
             scopes = self._google_scopes_for_requirements(
                 google_requirements
             )
@@ -653,14 +759,14 @@ class StudioConnectorsMixin:
                     for kind, _access in google_requirements
                 })
             )
-            self._info(
-                f"A browser window will ask you to authorize {service_names}. "
-                "Studio stores the resulting token privately."
-            )
             try:
-                authorized_user = authorize_google_client(
-                    client_json,
-                    scopes=scopes,
+                authorized_user, authorization_ssh_host = (
+                    self._authorize_google_provider(
+                        client_json,
+                        scopes=scopes,
+                        service_names=service_names,
+                        profile=google_profile,
+                    )
                 )
             except Exception as exc:
                 raise SystemExit(str(exc)) from exc
@@ -680,6 +786,15 @@ class StudioConnectorsMixin:
                     {
                         "client_storage": "private Studio storage",
                         "scopes": json.dumps(list(scopes)),
+                        **(
+                            {
+                                "authorization_ssh_host": (
+                                    authorization_ssh_host
+                                )
+                            }
+                            if authorization_ssh_host
+                            else {}
+                        ),
                     }
                     if name == "google"
                     else {}

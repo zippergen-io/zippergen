@@ -5,6 +5,7 @@ from zippergen.google_auth import (
     GOOGLE_GMAIL_READONLY_SCOPE,
     GOOGLE_SHEETS_READONLY_SCOPE,
     GOOGLE_SHEETS_SCOPE,
+    available_google_callback_port,
     google_scope_for_access,
     google_scopes_cover,
     google_scopes_for_access,
@@ -86,3 +87,9 @@ def test_google_client_json_must_be_a_desktop_app():
         match="must describe a Desktop app",
     ):
         normalize_google_client_json('{"web":{"client_id":"example"}}')
+
+
+def test_google_callback_port_is_a_loopback_tcp_port():
+    port = available_google_callback_port()
+
+    assert 0 < port < 65536

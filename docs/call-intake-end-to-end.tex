@@ -372,17 +372,21 @@ Replace the address with the real test recipient. Later, enter the spreadsheet
 URL and tab \texttt{Calls}.
 
 \begin{notebox}{OAuth on an SSH-only server}
-Studio binds the callback to \texttt{127.0.0.1} on a temporary port. Suppose
-the printed authorization URL contains callback port \texttt{48321}. Keep
-Studio waiting in the first SSH terminal. In a second terminal on the local
-computer, run:
+Studio detects an interactive SSH session and chooses an available callback
+port before authorization starts. It prints exact commands for a multiplexed
+SSH connection. In a second terminal on the local computer, first check the
+master connection and then add the displayed forwarding rule:
 \begin{lstlisting}[style=shell]
-ssh -N -L 48321:127.0.0.1:48321 AI_SERVER
+ssh -O check AI_SERVER
+ssh -O forward -L 48321:127.0.0.1:48321 AI_SERVER
 \end{lstlisting}
-Copy the authorization URL printed by Studio into the local browser. After
-Google redirects the browser to \texttt{localhost:48321}, the tunnel carries
-the callback to Studio. Close the second tunnel after Studio reports success.
-Use the actual temporary port from the URL, not \texttt{48321}.
+If no SSH master is configured, Studio also displays the equivalent
+\texttt{ssh -N -L} command, which must remain open in its terminal. Return to
+Studio and press Enter. Copy the Google authorization URL that appears into
+the local browser. After Google redirects the browser to
+\texttt{localhost:48321}, the tunnel carries the callback to Studio. Studio
+prints the cleanup command after authorization. Use the actual port displayed
+by Studio, not \texttt{48321}.
 \end{notebox}
 
 Studio requests Gmail and Sheets scopes because this workflow reads and

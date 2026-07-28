@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import socket
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -132,11 +133,20 @@ def normalize_google_client_json(value: str) -> str:
     return json.dumps(document, sort_keys=True, separators=(",", ":"))
 
 
+def available_google_callback_port() -> int:
+    """Select an available loopback port for a guided remote OAuth tunnel."""
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+        listener.bind(("127.0.0.1", 0))
+        return int(listener.getsockname()[1])
+
+
 def authorize_google_client(
     client_json: str,
     *,
     scopes: Iterable[str],
     open_browser: bool = True,
+    port: int = 0,
 ) -> str:
     """Authorize a validated private desktop client JSON document."""
 
@@ -150,7 +160,7 @@ def authorize_google_client(
         )
         credentials = flow.run_local_server(
             host="127.0.0.1",
-            port=0,
+            port=port,
             open_browser=open_browser,
             authorization_prompt_message=(
                 "Open this URL in your browser to authorize Google services:\n{url}"
@@ -225,6 +235,7 @@ __all__ = [
     "GOOGLE_SHEETS_SCOPE",
     "GOOGLE_SHEETS_READONLY_SCOPE",
     "GoogleConnectorError",
+    "available_google_callback_port",
     "authorize_google",
     "authorize_google_client",
     "check_google_authorization",

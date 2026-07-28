@@ -2799,7 +2799,9 @@ steps:
   \item It imports the OAuth Desktop app JSON into private Studio storage. If
         the file is on another computer, Studio creates a private temporary
         destination and prints one complete \texttt{scp} command.
-  \item It opens the system browser for Google authorization.
+  \item It opens the system browser for Google authorization. In an
+        interactive SSH session without a browser, it instead prints exact
+        loopback-forwarding commands and a URL to open on the local computer.
   \item It asks for a spreadsheet URL or ID and a tab name.
   \item It checks that the spreadsheet and tab are reachable.
   \item It binds the saved configuration to the logical requirement.

@@ -419,7 +419,9 @@ testing with a dedicated account. Before setup, enable the Gmail and Google
 Sheets APIs in one Google Cloud project and download a Desktop app OAuth
 client. Studio imports that client into private storage. If it is on another
 computer, Studio prints one `scp` command and removes the temporary upload
-after import. Read-only connector requirements request read-only Google scopes.
+after import. On an SSH-only server, it also prints exact loopback-forwarding
+commands for completing authorization in the local browser. Read-only
+connector requirements request read-only Google scopes.
 Writing to an existing spreadsheet requires Google's broader spreadsheets
 scope. See
 [`google_sheets_records.py`](examples/google_sheets_records.py) for a complete

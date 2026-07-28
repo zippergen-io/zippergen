@@ -701,12 +701,18 @@ run
 \end{lstlisting}
 
 \texttt{connector setup} imports a Google OAuth Desktop app client into private
-Studio storage, opens the browser for authorization, asks for a spreadsheet
-and tab, checks access, and binds the result to the workflow's logical
+Studio storage, guides browser authorization, asks for a spreadsheet and tab,
+checks access, and binds the result to the workflow's logical
 \texttt{project-records} requirement. If the client JSON is on another
 computer, Studio prints one \texttt{scp} command and waits for the upload. The
 Python file contains the table columns, stable key, and exact read and write
 operations. It contains no spreadsheet ID, OAuth client, or token.
+
+On an SSH-only server, Studio does not try to open a browser there. It selects
+a loopback callback port and prints exact \texttt{ssh -O check} and
+\texttt{ssh -O forward -L} commands for the computer that has the browser. It
+also shows an \texttt{ssh -N -L} alternative when no multiplexed SSH master is
+available.
 
 The larger call-intake example uses the same command for two resources:
 
@@ -718,7 +724,7 @@ connector assignments check
 \end{lstlisting}
 
 Studio imports one Google OAuth Desktop app client. Later changes reuse that
-private copy. The browser authorization covers the Gmail and Google Sheets
+private copy. Local or SSH-guided browser authorization covers the Gmail and Google Sheets
 capabilities required by this workflow.
 Studio then asks for a Gmail search query, a spreadsheet, and a tab. The
 workflow source contains none of these machine-specific values. Its default

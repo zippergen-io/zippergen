@@ -3365,6 +3365,58 @@ def test_studio_imports_and_removes_a_private_google_client_upload(
     assert all("private-client-secret" not in line for line in output)
 
 
+def test_studio_guides_remote_google_authorization_through_ssh(
+    tmp_path,
+    monkeypatch,
+):
+    credentials = tmp_path / "google-desktop.json"
+    credentials.write_text(GOOGLE_DESKTOP_CLIENT)
+    studio, workspace, output = _studio(
+        tmp_path,
+        responses=["1", str(credentials), "lmf-gpu", ""],
+    )
+    studio._prompt_toolkit_enabled = True
+    monkeypatch.setenv("SSH_CONNECTION", "local remote")
+    monkeypatch.setattr(
+        "zippergen.google_auth.available_google_callback_port",
+        lambda: 48321,
+    )
+    authorization = {}
+
+    def authorize(value, *, scopes, open_browser=True, port=0):
+        authorization.update(
+            scopes=tuple(scopes),
+            open_browser=open_browser,
+            port=port,
+        )
+        return '{"refresh_token":"private-google-token"}'
+
+    monkeypatch.setattr(
+        "zippergen.google_auth.authorize_google_client",
+        authorize,
+    )
+    monkeypatch.setattr(
+        "zippergen.google_auth.check_google_authorization",
+        lambda value, *, scopes: value,
+    )
+
+    studio.execute("connector provider configure google")
+
+    assert authorization["open_browser"] is False
+    assert authorization["port"] == 48321
+    assert any("ssh -O check lmf-gpu" in line for line in output)
+    assert any(
+        "ssh -O forward -L 48321:127.0.0.1:48321 lmf-gpu" in line
+        for line in output
+    )
+    assert (
+        workspace.connector_provider_profiles()["google"][
+            "authorization_ssh_host"
+        ]
+        == "lmf-gpu"
+    )
+
+
 def test_studio_human_connector_assignment_needs_no_extra_requirement(
     tmp_path,
 ):
