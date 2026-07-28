@@ -365,6 +365,34 @@ def test_studio_import_selects_requested_entry_from_multi_workflow_file(
     assert workspace.current_workflow == "choices.py:second"
 
 
+def test_studio_imports_from_nested_project_checkout(tmp_path):
+    studio, workspace, output = _studio(tmp_path)
+    nested_checkout = workspace.root / "zippergen"
+    examples = nested_checkout / "examples"
+    examples.mkdir(parents=True)
+    (nested_checkout / "pyproject.toml").write_text(
+        "[project]\nname='zippergen-source'\n"
+    )
+    source = examples / "call_intake.py"
+    source.write_text(
+        "from zippergen import Lifeline, workflow\n"
+        "User = Lifeline('User')\n\n"
+        "@workflow\n"
+        "def call_intake(value: str @ User) -> str:\n"
+        "    return value @ User\n"
+    )
+
+    studio.execute(
+        "workflow import zippergen/examples/call_intake.py:call_intake"
+    )
+
+    imported = workspace.root / "examples" / "call_intake.py"
+    assert imported.is_file()
+    assert imported.read_bytes() == source.read_bytes()
+    assert workspace.current_workflow == "examples/call_intake.py:call_intake"
+    assert any("Workflow imported" in line for line in output)
+
+
 def test_studio_inspects_current_run_with_a_local_program_pointer(tmp_path):
     studio, workspace, output = _studio(tmp_path)
     workspace.select_workflow("workflow.py:sample", cwd=workspace.root)

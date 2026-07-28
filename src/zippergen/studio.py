@@ -6399,7 +6399,9 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
             raise SystemExit(f"Workflow source file does not exist: {source}")
         if source.suffix.casefold() != ".py":
             raise SystemExit("Workflow import requires a Python source file.")
-        if source.is_relative_to(self.workspace.root):
+        source_root = self._external_workflow_root(source).resolve()
+        destination_root = self.workspace.root.resolve()
+        if source_root == destination_root:
             candidates = [
                 candidate
                 for candidate in self.workspace.discover_workflows()
@@ -6431,8 +6433,6 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
             self._success(f"Selected existing project workflow: {selected}")
             return
 
-        source_root = self._external_workflow_root(source)
-        destination_root = self.workspace.root.resolve()
         dependencies = self._local_python_dependencies(
             source,
             root=source_root,
@@ -6609,7 +6609,10 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
     def _select_workflow_spec(self, selected: str) -> tuple[str, str]:
         from zippergen.serve import load_workflow_spec
 
-        canonical = self.workspace.canonical_spec(selected)
+        canonical = self.workspace.canonical_spec(
+            selected,
+            cwd=self.workspace.root,
+        )
         project_path = str(self.workspace.root)
         sys.path.insert(0, project_path)
         try:
