@@ -451,7 +451,7 @@ def test_natural_provider_configuration_uses_the_models_surface(
             return b'{"data":[{"id":"claude-sonnet-4-6"}]}'
 
     monkeypatch.setattr(
-        "zippergen.studio.request.urlopen",
+        "zippergen.studio_models.request.urlopen",
         lambda req, *, timeout: ModelsResponse(),
     )
 

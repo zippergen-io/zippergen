@@ -3024,7 +3024,7 @@ def test_studio_configures_api_and_local_providers_without_displaying_secrets(
         requests.append((req.full_url, timeout))
         return ModelsResponse()
 
-    monkeypatch.setattr("zippergen.studio.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("zippergen.studio_models.request.urlopen", fake_urlopen)
 
     studio.execute("model provider configure openai")
     studio.execute(
@@ -3080,7 +3080,7 @@ def test_studio_does_not_replace_local_endpoint_when_check_fails(
     def fail_urlopen(req, *, timeout):
         raise URLError("connection refused")
 
-    monkeypatch.setattr("zippergen.studio.request.urlopen", fail_urlopen)
+    monkeypatch.setattr("zippergen.studio_models.request.urlopen", fail_urlopen)
 
     with pytest.raises(SystemExit, match="connection was not saved"):
         studio.execute(
@@ -3115,7 +3115,7 @@ def test_studio_records_failed_local_configuration_check(tmp_path, monkeypatch):
     def fail_urlopen(req, *, timeout):
         raise URLError("connection refused")
 
-    monkeypatch.setattr("zippergen.studio.request.urlopen", fail_urlopen)
+    monkeypatch.setattr("zippergen.studio_models.request.urlopen", fail_urlopen)
 
     studio.execute("model config check local-reviewer")
 
@@ -4190,7 +4190,7 @@ def test_studio_models_configure_check_then_assign(
         assert timeout == 3.0
         return ModelResponse()
 
-    monkeypatch.setattr("zippergen.studio.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("zippergen.studio_models.request.urlopen", fake_urlopen)
 
     studio, workspace, output = _studio(
         tmp_path,
@@ -4385,7 +4385,7 @@ def test_studio_model_configuration_guides_missing_provider_connection(
             return b'{"data":[{"id":"claude-sonnet-4-6"}]}'
 
     monkeypatch.setattr(
-        "zippergen.studio.request.urlopen",
+        "zippergen.studio_models.request.urlopen",
         lambda req, *, timeout: ModelsResponse(),
     )
 
@@ -4657,7 +4657,7 @@ def test_studio_models_check_updates_configuration_not_assignments(
         assert timeout == 3.0
         return ModelResponse()
 
-    monkeypatch.setattr("zippergen.studio.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("zippergen.studio_models.request.urlopen", fake_urlopen)
 
     studio.execute("model config check review-model")
 
@@ -4707,7 +4707,7 @@ def test_studio_models_check_records_an_unavailable_configuration(
             BytesIO(b'{"message":"model not found"}'),
         )
 
-    monkeypatch.setattr("zippergen.studio.request.urlopen", fake_urlopen)
+    monkeypatch.setattr("zippergen.studio_models.request.urlopen", fake_urlopen)
 
     with pytest.raises(
         SystemExit,
@@ -4819,7 +4819,7 @@ def test_studio_models_checks_local_configuration_identifiers(
             return b'{"object":"list","data":[{"id":"qwen2.5:7b"}]}'
 
     monkeypatch.setattr(
-        "zippergen.studio.request.urlopen",
+        "zippergen.studio_models.request.urlopen",
         lambda req, *, timeout: ModelsResponse(),
     )
 
@@ -4964,7 +4964,7 @@ def test_studio_run_stops_before_inputs_when_a_used_model_is_unreachable(
     run_calls: list[dict[str, object]] = []
 
     monkeypatch.setattr(
-        "zippergen.studio.request.urlopen",
+        "zippergen.studio_models.request.urlopen",
         lambda req, *, timeout: (_ for _ in ()).throw(
             URLError("connection refused")
         ),

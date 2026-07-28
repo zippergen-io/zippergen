@@ -397,7 +397,18 @@ def test_workspace_connector_rename_updates_assignments_and_bindings(tmp_path):
     assert workspace.connector_configuration_usage("approvals") == (
         "review.py:review",
     )
-    with pytest.raises(WorkspaceError, match="still assigned"):
+    assert workspace.connector_configuration_references("approvals") == (
+        ("review.py:review", "action", "Human.escalate"),
+        ("review.py:review", "participant", "Human"),
+        ("review.py:review", "requirement", "audit-log"),
+    )
+    with pytest.raises(
+        WorkspaceError,
+        match=(
+            r"still referenced by:.*action Human\.escalate.*"
+            r"participant Human.*requirement audit-log"
+        ),
+    ):
         workspace.remove_connector_configuration("approvals")
 
     workspace.rename_connector_configuration("approvals", "team-chat")

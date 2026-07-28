@@ -2846,42 +2846,70 @@ class Workspace:
         self.update(connector_assignments=profiles)
         return profile
 
-    def connector_configuration_usage(self, name: str) -> tuple[str, ...]:
+    def connector_configuration_references(
+        self,
+        name: str,
+    ) -> tuple[tuple[str, str, str], ...]:
+        """Return exact workflow assignment and requirement references."""
+
         state = self.load()
         raw = state.get("connector_assignments") or {}
         if not isinstance(raw, dict):
             raise WorkspaceError(
                 "Workspace connector_assignments must be an object."
             )
-        used: set[str] = set()
+        references: set[tuple[str, str, str]] = set()
         for workflow_spec, profile in raw.items():
             if not isinstance(profile, dict):
                 continue
             lifelines = profile.get("lifelines") or {}
             actions = profile.get("actions") or {}
-            if (
-                isinstance(lifelines, dict)
-                and name in lifelines.values()
-                or isinstance(actions, dict)
-                and name in actions.values()
-            ):
-                used.add(str(workflow_spec))
+            if isinstance(lifelines, dict):
+                references.update(
+                    (str(workflow_spec), "participant", str(participant))
+                    for participant, configuration in lifelines.items()
+                    if configuration == name
+                )
+            if isinstance(actions, dict):
+                references.update(
+                    (str(workflow_spec), "action", str(action))
+                    for action, configuration in actions.items()
+                    if configuration == name
+                )
         raw_bindings = state.get("connector_bindings") or {}
         if not isinstance(raw_bindings, dict):
             raise WorkspaceError(
                 "Workspace connector_bindings must be an object."
             )
         for workflow_spec, bindings in raw_bindings.items():
-            if isinstance(bindings, dict) and name in bindings.values():
-                used.add(str(workflow_spec))
-        return tuple(sorted(used))
+            if not isinstance(bindings, dict):
+                continue
+            references.update(
+                (str(workflow_spec), "requirement", str(requirement))
+                for requirement, configuration in bindings.items()
+                if configuration == name
+            )
+        return tuple(sorted(references))
+
+    def connector_configuration_usage(self, name: str) -> tuple[str, ...]:
+        """Return workflows that reference a connector configuration."""
+
+        return tuple(sorted({
+            workflow
+            for workflow, _kind, _target
+            in self.connector_configuration_references(name)
+        }))
 
     def remove_connector_configuration(self, name: str) -> None:
-        usage = self.connector_configuration_usage(name)
-        if usage:
+        references = self.connector_configuration_references(name)
+        if references:
+            details = ", ".join(
+                f"{workflow} ({kind} {target})"
+                for workflow, kind, target in references
+            )
             raise WorkspaceError(
-                f"Connector configuration {name!r} is still assigned in: "
-                + ", ".join(usage)
+                f"Connector configuration {name!r} is still referenced by: "
+                + details
             )
         configurations = self.connector_configurations()
         configurations.pop(name, None)

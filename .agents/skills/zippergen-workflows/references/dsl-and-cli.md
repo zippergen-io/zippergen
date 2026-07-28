@@ -360,7 +360,7 @@ Studio can also inspect the durable current position of projected programs:
 
 ```text
 run inspect [PARTICIPANT]
-deployment inspect [NAME] [PARTICIPANT]
+deploy inspect [NAME] [PARTICIPANT]
 ```
 
 These commands read diagnostic per-participant locators from the SQLite store
