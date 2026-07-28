@@ -480,7 +480,8 @@ def test_welcome_and_studio_doctor_show_readiness_and_next_action(
     )
     assert any("Type a command or describe" in line for line in output)
     next_title = output.index("Next")
-    assert output[next_title + 2].strip() == "project init"
+    assert output[next_title + 1] == "═" * len("Next")
+    assert output[next_title + 2] == "project init"
 
     output.clear()
     workspace.initialize_project(name="Tutorial")
@@ -1993,7 +1994,7 @@ def test_studio_edits_selected_workflow_with_preference_or_one_off_override(
     assert any("global preference" in line for line in output)
     assert any("one-off" in line for line in output)
     assert "Next" in output
-    assert "  workflow validate · workflow show · run" in output
+    assert "workflow validate · workflow show · run" in output
 
 
 def test_studio_create_opens_automatic_specification_and_prepares_task(
@@ -2494,8 +2495,8 @@ def test_studio_structured_output_separates_titles_headers_rows_and_next(
     assert output[title + 4].lstrip().startswith("Specification")
 
     next_title = output.index("Next")
-    assert output[next_title + 1] == "─" * len("Next")
-    assert output[next_title + 2].strip() == "workflow create"
+    assert output[next_title + 1] == "═" * len("Next")
+    assert output[next_title + 2] == "workflow create"
 
 
 def test_studio_status_marks_use_color_only_when_enabled(tmp_path):

@@ -343,9 +343,9 @@ class TerminalRenderer:
         self.emit()
 
     def next(self, value: object) -> None:
-        self.section("Next", major=False)
-        for line in self.wrapped_lines(value, self.output_columns() - 2):
-            self.emit(f"  {line}")
+        self.section("Next")
+        for line in self.wrapped_lines(value, self.output_columns()):
+            self.emit(line)
         self.emit()
 
     def table(

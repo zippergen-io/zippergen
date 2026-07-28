@@ -51,13 +51,13 @@ def test_column_table_uses_double_section_rule_and_no_indent():
     ]
 
 
-def test_next_keeps_a_lighter_single_rule():
+def test_next_uses_double_section_rule_and_no_indent():
     output: list[str] = []
     renderer = TerminalRenderer(output.append, color=False)
 
     renderer.next("run")
 
-    assert output[:3] == ["Next", "────", "  run"]
+    assert output[:3] == ["Next", "════", "run"]
 
 
 def test_column_renderer_keeps_short_marked_statuses_on_one_line():
