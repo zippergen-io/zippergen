@@ -695,6 +695,59 @@ def test_guided_deploy_persists_an_implicit_model_provider_secret(
     assert secrets == {"MISTRAL_API_KEY": "private-key"}
 
 
+def test_guided_deploy_preserves_google_connector_credential_json(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    workflow_path = tmp_path / "deploy_workflow.py"
+    workflow_path.write_text(WORKFLOW_SOURCE)
+    zippergen_home = tmp_path / "zg-home"
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(zippergen_home))
+    credential = json.dumps(
+        {
+            "client_id": "example.apps.googleusercontent.com",
+            "client_secret": "private-client-secret",
+            "refresh_token": "private-refresh-token",
+            "token_uri": "https://oauth2.googleapis.com/token",
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+    rc = main(
+        [
+            "deploy",
+            f"{workflow_path}:hello",
+            "--name",
+            "hello-google",
+            "--connector-secret",
+            "ZIPPERGEN_CONNECTOR_MAILBOX_GOOGLE_CREDENTIAL="
+            + credential,
+            "--yes",
+            "--no-install",
+            "--no-setup",
+            "--no-doctor",
+            "--no-start",
+        ]
+    )
+
+    assert rc == 0
+    capsys.readouterr()
+    secrets = json.loads(
+        (
+            zippergen_home
+            / "deployments"
+            / "hello-google.secrets.json"
+        ).read_text()
+    )
+    stored = secrets[
+        "ZIPPERGEN_CONNECTOR_MAILBOX_GOOGLE_CREDENTIAL"
+    ]
+    assert stored == credential
+    assert json.loads(stored)["refresh_token"] == "private-refresh-token"
+
+
 def test_guided_deploy_persists_a_local_provider_endpoint(
     tmp_path,
     monkeypatch,

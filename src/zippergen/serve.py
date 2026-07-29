@@ -297,6 +297,24 @@ def _parse_inputs(pairs: list[str]) -> dict:
     return out
 
 
+def _parse_secret_inputs(
+    pairs: list[str],
+    *,
+    option: str,
+) -> dict[str, str]:
+    """Split secret arguments without interpreting or rewriting their values."""
+
+    values: dict[str, str] = {}
+    for pair in pairs or []:
+        name, separator, value = pair.partition("=")
+        if not name or not separator:
+            raise SystemExit(
+                f"Invalid {option} {pair!r}; expected name=value."
+            )
+        values[name] = value
+    return values
+
+
 def _parse_input_json(text: str | None) -> dict:
     if not text:
         return {}
@@ -3151,7 +3169,10 @@ def _apply_deploy_arguments(
         overrides=overrides,
         interactive=interactive,
     )
-    provider_secrets = _parse_inputs(getattr(args, "provider_secret", []))
+    provider_secrets = _parse_secret_inputs(
+        getattr(args, "provider_secret", []),
+        option="--provider-secret",
+    )
     unsupported = sorted(
         set(provider_secrets) - set(_MODEL_PROVIDER_SECRETS.values())
     )
@@ -3166,8 +3187,9 @@ def _apply_deploy_arguments(
             if value is not None and str(value)
         }
     )
-    connector_secrets = _parse_inputs(
-        getattr(args, "connector_secret", [])
+    connector_secrets = _parse_secret_inputs(
+        getattr(args, "connector_secret", []),
+        option="--connector-secret",
     )
     unsupported_connector_secrets = sorted(
         name

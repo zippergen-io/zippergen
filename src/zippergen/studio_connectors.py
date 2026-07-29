@@ -617,6 +617,21 @@ class StudioConnectorsMixin:
             )
         return name
 
+    def _unused_connector_configuration_name(
+        self,
+        preferred: str,
+    ) -> str:
+        """Return a stable free name without overwriting another resource."""
+
+        configurations = self.workspace.connector_configurations()
+        folded = {name.casefold() for name in configurations}
+        if preferred.casefold() not in folded:
+            return preferred
+        index = 2
+        while f"{preferred}-{index}".casefold() in folded:
+            index += 1
+        return f"{preferred}-{index}"
+
     def _show_connector_configuration(self, requested: str) -> None:
         name = self._connector_configuration_name(requested)
         configuration = self.workspace.connector_configurations()[name]
@@ -1118,16 +1133,39 @@ class StudioConnectorsMixin:
                     for name, value in configurations.items()
                     if value.get("kind") == requirement.kind
                 ]
-                if len(matching) == 1:
-                    configuration_name = matching[0]
-                elif len(matching) > 1:
-                    configuration_name = str(
+                if matching:
+                    create_choice = "Create a new configuration"
+                    choices = [
+                        create_choice,
+                        *[
+                            f"Use existing configuration: {name}"
+                            for name in matching
+                        ],
+                    ]
+                    selected = str(
                         self._select(
-                            f"Configurations for {requirement.name}",
-                            matching,
-                            prompt="Select configuration",
+                            f"Resource for {requirement.name}",
+                            choices,
+                            prompt="Choose resource",
                         )
                     )
+                    if selected == create_choice:
+                        configuration_name = (
+                            self._configure_connector_configuration(
+                                self._unused_connector_configuration_name(
+                                    requirement.name
+                                ),
+                                provider_hint=provider,
+                                kind_hint=requirement.kind,
+                            )
+                        )
+                        configurations = (
+                            self.workspace.connector_configurations()
+                        )
+                    else:
+                        configuration_name = matching[
+                            choices.index(selected) - 1
+                        ]
                 else:
                     configuration_name = (
                         self._configure_connector_configuration(

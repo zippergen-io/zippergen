@@ -334,6 +334,16 @@ The file remains on the computer that performs browser authorization.
 \section{Configure Gmail and Sheets in Studio}
 \label{sec:oauth}
 
+\begin{notebox}{The setup is driven by the selected workflow}
+Studio has no special case for \texttt{call\_intake}. The workflow declares
+logical connector requirements with a name, kind, participant, capabilities,
+and access level. Those declarations make Studio ask for a Gmail resource and
+a Google Sheets resource. The workflow's \texttt{DeploymentSpec} separately
+declares the later questions about certified senders, intake recipient, reply
+mode, rate limit, and polling interval. Selecting a different workflow
+produces questions from that workflow's own declarations.
+\end{notebox}
+
 Return to the Studio prompt and enter:
 
 \begin{lstlisting}[style=shell]
@@ -378,14 +388,40 @@ checksum, so Studio rejects an incomplete paste immediately. After accepting
 it, Studio shows only non-secret confirmation such as granted scopes and a
 short OAuth client prefix.
 
-A useful test query is:
+After Google authorization, Studio displays:
 
-\begin{lstlisting}
-is:unread in:inbox to:call-intake+test@example.com
+\begin{lstlisting}[style=shell]
+Gmail search query [is:unread in:inbox]:
 \end{lstlisting}
 
-Replace the address with the real test recipient. Later, enter the spreadsheet
-URL and tab \texttt{Calls}.
+Choose one intake address that delivers mail to the Google account you just
+authorized. You will use the same address again when preparing the deployment
+and when sending the test message. For example, if the authorized account is
+\texttt{alice@example.com}, enter:
+
+\begin{lstlisting}
+is:unread in:inbox to:alice@example.com
+\end{lstlisting}
+
+Do not copy \texttt{alice@example.com} literally. Replace it with your actual
+test address. A Gmail plus address such as
+\texttt{alice+call-intake@gmail.com} is also suitable when it delivers to the
+authorized inbox.
+
+Studio then displays:
+
+\begin{lstlisting}[style=shell]
+Google spreadsheet URL or ID:
+\end{lstlisting}
+
+Open the empty test spreadsheet created earlier and paste its complete browser
+URL. Studio extracts the spreadsheet ID. At the final prompt:
+
+\begin{lstlisting}[style=shell]
+Sheet tab [Sheet1]:
+\end{lstlisting}
+
+enter \texttt{Calls}. This must match the tab name in the spreadsheet.
 
 \begin{notebox}{Why no SSH tunnel is needed}
 The browser callback returns to the same computer that runs the authorization

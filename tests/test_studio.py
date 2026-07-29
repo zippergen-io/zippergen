@@ -199,6 +199,45 @@ def sample() -> str:
     return status @ User
 """
 
+TWO_SHEETS_SOURCE = """
+from zippergen import ConnectorRequirement, Lifeline, effect, workflow
+
+User = Lifeline("User")
+Archivist = Lifeline("Archivist")
+
+@effect(connector="source-catalog", operation="read-json-rows")
+def read_catalog() -> str:
+    return "items"
+
+@effect(connector="target-dashboard", operation="upsert-json-row")
+def update_dashboard(items: str) -> str:
+    return "updated"
+
+zippergen_connectors = (
+    ConnectorRequirement(
+        name="source-catalog",
+        kind="google-sheets",
+        participant="Archivist",
+        capabilities=("read-rows",),
+        access="read-only",
+    ),
+    ConnectorRequirement(
+        name="target-dashboard",
+        kind="google-sheets",
+        participant="Archivist",
+        capabilities=("upsert-row",),
+        access="write",
+    ),
+)
+
+@workflow
+def sample() -> str:
+    Archivist: items = read_catalog()
+    Archivist: status = update_dashboard(items)
+    Archivist(status) >> User(status)
+    return status @ User
+"""
+
 
 def _studio(tmp_path, responses=(), secret_responses=()):
     root = tmp_path / "project"
@@ -3324,6 +3363,73 @@ def test_studio_guides_one_google_authorization_for_gmail_and_sheets(
     assert environment[mailbox["credential_env"]] == (
         '{"refresh_token":"private-google-token"}'
     )
+
+
+def test_connector_setup_keeps_two_sheet_requirements_independent(
+    tmp_path,
+    monkeypatch,
+):
+    credentials = tmp_path / "google-desktop.json"
+    credentials.write_text(GOOGLE_DESKTOP_CLIENT)
+    studio, workspace, output = _studio(
+        tmp_path,
+        responses=[
+            str(credentials),
+            "sheet-source",
+            "Source",
+            "1",
+            "sheet-target",
+            "Dashboard",
+        ],
+    )
+    (workspace.root / "workflow.py").write_text(TWO_SHEETS_SOURCE)
+    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    monkeypatch.setattr(
+        "zippergen.google_auth.authorize_google_client_result",
+        lambda value, *, scopes: __import__(
+            "zippergen.google_auth", fromlist=["GoogleAuthorization"]
+        ).GoogleAuthorization(
+            authorized_user_json=(
+                '{"refresh_token":"private-google-token"}'
+            ),
+            granted_scopes=tuple(scopes),
+            client_id="example.apps.googleusercontent.com",
+        ),
+    )
+    monkeypatch.setattr(
+        "zippergen.google_auth.check_google_authorization",
+        lambda value, *, scopes: value,
+    )
+    monkeypatch.setattr(
+        "zippergen.google_sheets.GoogleSheetsTable.inspect",
+        lambda self: {
+            "title": self.spreadsheet_id,
+            "tab": self.tab,
+            "tabs": [self.tab],
+        },
+    )
+
+    studio.execute("connector setup")
+
+    assert workspace.connector_binding_profile(
+        "workflow.py:sample"
+    ) == {
+        "source-catalog": "source-catalog",
+        "target-dashboard": "target-dashboard",
+    }
+    configurations = workspace.connector_configurations()
+    assert configurations["source-catalog"]["spreadsheet_id"] == (
+        "sheet-source"
+    )
+    assert configurations["source-catalog"]["tab"] == "Source"
+    assert configurations["target-dashboard"]["spreadsheet_id"] == (
+        "sheet-target"
+    )
+    assert configurations["target-dashboard"]["tab"] == "Dashboard"
+    assert any(
+        "Resource for target-dashboard" in line for line in output
+    )
+    assert all("call-intake" not in line.casefold() for line in output)
 
 
 def test_studio_receives_remote_google_authorization_as_hidden_handoff(
