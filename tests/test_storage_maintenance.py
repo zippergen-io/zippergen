@@ -6,8 +6,12 @@ from zippergen.storage_maintenance import (
 )
 from zippergen.store import (
     DurableChannel,
+    complete_human_task,
+    ensure_human_task,
+    ensure_human_task_token,
     load_snapshot,
     open_store,
+    record_human_task_notification,
     record_trace_event,
     recovery_high_water,
     write_snapshot,
@@ -66,12 +70,37 @@ def _collectable_store(path: str) -> tuple[int, int]:
 def test_storage_report_counts_files_events_and_snapshot_coverage(tmp_path):
     path = str(tmp_path / "deployment.sqlite")
     _collectable_store(path)
+    conn = open_store(path)
+    ensure_human_task(
+        conn,
+        task_id="approve-1",
+        role="Human",
+        locator=[0],
+        action="approve",
+        input_hash=None,
+        inputs={"draft": "hello"},
+        spec={"outputs": {"approved": "bool"}},
+    )
+    complete_human_task(conn, "approve-1", {"approved": True})
+    ensure_human_task_token(conn, "approve-1", channel="telegram")
+    record_human_task_notification(
+        conn,
+        "approve-1",
+        channel="telegram",
+        target="chat-1",
+        external_id="message-1",
+    )
+    conn.close()
 
     report = inspect_store_storage(path)
 
     assert report.database_bytes > 0
     assert report.event_counts["seed"] == 2
     assert report.event_counts["trace"] == 5
+    assert report.completed_tasks == 1
+    assert report.pending_tasks == 0
+    assert report.task_tokens == 1
+    assert report.task_notifications == 1
     assert report.snapshot_roles == ("A", "B")
     assert report.roles_without_snapshot == ()
 
@@ -80,10 +109,8 @@ def test_compaction_plan_uses_both_endpoint_and_journal_floors(tmp_path):
     path = str(tmp_path / "deployment.sqlite")
     _collectable_store(path)
 
-    plan = plan_store_compaction(path, trace_keep=2)
+    plan = plan_store_compaction(path)
 
-    assert plan.trace_events == 5
-    assert plan.removable_traces == 3
     assert plan.removable_messages == 1
     assert plan.removable_journal == 1
     assert plan.roles_without_snapshot == ()
@@ -93,19 +120,17 @@ def test_compaction_preserves_recovery_high_water_and_seed_rows(tmp_path):
     path = str(tmp_path / "deployment.sqlite")
     message, journal = _collectable_store(path)
     before = open_store(path)
-    recent_trace_ids = [
+    trace_ids = [
         int(row[0])
         for row in before.execute(
-            "SELECT rowid FROM events WHERE kind='trace' "
-            "ORDER BY rowid DESC LIMIT 2"
+            "SELECT rowid FROM events WHERE kind='trace' ORDER BY rowid"
         ).fetchall()
     ]
     before.close()
 
-    result = compact_store(path, trace_keep=2)
+    result = compact_store(path)
     conn = open_store(path)
 
-    assert result.deleted_traces == 3
     assert result.deleted_messages == 1
     assert result.deleted_journal == 1
     assert conn.execute(
@@ -113,13 +138,13 @@ def test_compaction_preserves_recovery_high_water_and_seed_rows(tmp_path):
     ).fetchone()[0] == 2
     assert conn.execute(
         "SELECT COUNT(*) FROM events WHERE kind='trace'"
-    ).fetchone()[0] == 2
+    ).fetchone()[0] == 5
     assert [
         int(row[0])
         for row in conn.execute(
-            "SELECT rowid FROM events WHERE kind='trace' ORDER BY rowid DESC"
+            "SELECT rowid FROM events WHERE kind='trace' ORDER BY rowid"
         ).fetchall()
-    ] == recent_trace_ids
+    ] == trace_ids
     assert recovery_high_water(conn, "A") == {
         "out": message,
         "journal": journal,
@@ -134,7 +159,7 @@ def test_compaction_preserves_recovery_high_water_and_seed_rows(tmp_path):
     ).position()["out"] == message
 
 
-def test_roles_without_snapshots_block_core_but_not_trace_cleanup(tmp_path):
+def test_roles_without_snapshots_block_core_compaction(tmp_path):
     path = str(tmp_path / "deployment.sqlite")
     conn = open_store(path)
     conn.execute(
@@ -145,9 +170,13 @@ def test_roles_without_snapshots_block_core_but_not_trace_cleanup(tmp_path):
         record_trace_event(conn, "A", {"type": "idle", "index": index})
     conn.close()
 
-    plan = plan_store_compaction(path, trace_keep=1)
-    result = compact_store(path, trace_keep=1)
+    plan = plan_store_compaction(path)
+    result = compact_store(path)
 
     assert plan.roles_without_snapshot == ("A",)
     assert plan.removable_core == 0
-    assert result.deleted_traces == 2
+    assert result.deleted_total == 0
+    conn = open_store(path)
+    assert conn.execute(
+        "SELECT COUNT(*) FROM events WHERE kind='trace'"
+    ).fetchone()[0] == 3

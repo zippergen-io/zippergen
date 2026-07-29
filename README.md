@@ -380,11 +380,15 @@ not alter a running deployment. Redeploy to apply those changes.
 
 `deploy storage` shows the size of the durable store, WAL, active log, and log
 archives. It also shows event counts, snapshot coverage, and how much history
-can be removed safely. After stopping the deployment,
-`deploy storage compact NAME` keeps the newest 10,000 diagnostic trace events,
-removes completed events that are covered by recovery snapshots, rotates the
-active log, and keeps the three newest log archives. Seed inputs, pending
-work, and events still needed for recovery remain.
+can be removed safely. Diagnostic traces are pruned online in batches. The
+target is 10,000 traces and the store never keeps more than 10,999. This does
+not stop the service. Completed human tasks, tokens, and notifications remain
+as audit records.
+
+After stopping the deployment, `deploy storage compact NAME` removes completed
+events that are covered by recovery snapshots, rotates the active log, and
+keeps the three newest log archives. Seed inputs, pending work, and events
+still needed for recovery remain.
 Studio then compacts the database file and truncates the WAL while preserving
 the stable event identifiers used for recovery.
 Deployments created before this feature must be redeployed once before safe

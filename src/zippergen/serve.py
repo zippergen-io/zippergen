@@ -102,6 +102,7 @@ from zippergen.syntax import (
 from zippergen.projection import project
 from zippergen.store import (
     RECOVERY_COMPACTION_VERSION,
+    TRACE_RETENTION_VERSION,
     complete_human_task,
     ensure_human_task_token,
     list_workflow_results,
@@ -3123,6 +3124,7 @@ def _prepare_deployment_environment(
     profile["zippergen_extras"] = list(zippergen_extras)
     profile["zippergen_runtime"] = _zippergen_runtime_provenance()
     profile["recovery_compaction_version"] = RECOVERY_COMPACTION_VERSION
+    profile["trace_retention_version"] = TRACE_RETENTION_VERSION
     if skip_install:
         profile["python"] = str(profile.get("python") or sys.executable)
         return
@@ -3640,6 +3642,7 @@ def _deploy_local_command(args) -> int:
         "timeout": args.timeout,
         "execution": "sqlite",
         "recovery_compaction_version": RECOVERY_COMPACTION_VERSION,
+        "trace_retention_version": TRACE_RETENTION_VERSION,
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "python": sys.executable,
     }

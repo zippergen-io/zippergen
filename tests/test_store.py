@@ -241,6 +241,45 @@ def test_trace_event_lifecycle(tmp_path):
         {"rowid": second, "event": {"type": "recv", "from": "A", "to": "B", "bindings": {"n": 1}}},
     ]
 
+
+def test_trace_events_are_pruned_online_in_bounded_batches(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setattr("zippergen.store.TRACE_RETENTION_KEEP", 3)
+    monkeypatch.setattr("zippergen.store.TRACE_RETENTION_BATCH", 2)
+    conn = open_store(str(tmp_path / "bounded-trace.sqlite"))
+    conn.execute(
+        "INSERT INTO events(sender,receiver,channel,kind,payload) "
+        "VALUES('A',NULL,NULL,'seed','{}')"
+    )
+
+    first = record_trace_event(
+        conn,
+        "A",
+        {"type": "step", "index": 0},
+    )
+    assert conn.execute(
+        "SELECT value FROM maintenance_state "
+        "WHERE key='trace_since_prune'"
+    ).fetchone() == (1,)
+
+    rowids = [first, *[
+        record_trace_event(conn, "A", {"type": "step", "index": index})
+        for index in range(1, 6)
+    ]]
+
+    retained = list_trace_events(conn)
+    assert [event["rowid"] for event in retained] == rowids[-3:]
+    assert [event["event"]["index"] for event in retained] == [3, 4, 5]
+    assert conn.execute(
+        "SELECT COUNT(*) FROM events WHERE kind='seed'"
+    ).fetchone() == (1,)
+    assert conn.execute(
+        "SELECT value FROM maintenance_state "
+        "WHERE key='trace_since_prune'"
+    ).fetchone() == (0,)
+
 from collections import deque
 from zippergen.store import DurableChannel
 

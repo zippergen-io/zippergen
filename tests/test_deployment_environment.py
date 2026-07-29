@@ -47,6 +47,7 @@ def test_managed_environment_uses_uv_and_replaces_an_old_environment_atomically(
     assert Path(str(profile["python"])) == environment / "bin" / "python"
     assert isinstance(profile["zippergen_runtime"], dict)
     assert profile["recovery_compaction_version"] == 1
+    assert profile["trace_retention_version"] == 1
     assert (environment / "bin" / "python").read_text() == "managed python\n"
     assert not (environment / "old-environment").exists()
     assert not list((home / "environments").glob(".*-building-*"))

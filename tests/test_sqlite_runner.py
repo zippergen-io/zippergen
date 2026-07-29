@@ -681,6 +681,101 @@ def test_role_runner_waits_for_existing_pending_human_task(tmp_path):
     assert conn.execute("SELECT COUNT(*) FROM events WHERE kind='act'").fetchone()[0] == 1
 
 
+def test_trace_pruning_commits_after_pending_human_and_preserves_replay(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setattr("zippergen.store.TRACE_RETENTION_KEEP", 2)
+    monkeypatch.setattr("zippergen.store.TRACE_RETENTION_BATCH", 2)
+    path = str(tmp_path / "human-trace-retention.sqlite")
+    conn = open_store(path)
+    for index in range(5):
+        conn.execute(
+            "INSERT INTO events(sender,receiver,channel,kind,payload) "
+            "VALUES(?,NULL,NULL,'trace',?)",
+            ("PHuman", json.dumps({"type": "old", "index": index})),
+        )
+    conn.execute(
+        "INSERT INTO maintenance_state(key,value) "
+        "VALUES('trace_since_prune',1)"
+    )
+
+    backend_calls = {"n": 0}
+
+    def backend(action, inputs):
+        backend_calls["n"] += 1
+        raise AssertionError("pending task must be answered through SQLite")
+
+    setattr(backend, "uses_sqlite_human_tasks", True)
+    result_box = {}
+
+    def run_role():
+        role_conn = open_store(path)
+        try:
+            result_box["env"] = RoleRunner(
+                role_conn,
+                "PHuman",
+                project(sqlite_human_round, PHuman),
+                {"prompt": "plan"},
+                sqlite_human_round.ns,
+                human_backend=backend,
+            ).run()
+        finally:
+            role_conn.close()
+
+    thread = threading.Thread(target=run_role)
+    thread.start()
+    task_id = None
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        row = conn.execute(
+            "SELECT task_id FROM human_tasks WHERE status='pending'"
+        ).fetchone()
+        if row is not None:
+            task_id = str(row[0])
+            break
+        time.sleep(0.01)
+
+    assert task_id is not None
+    assert conn.execute(
+        "SELECT COUNT(*) FROM events WHERE kind='trace'"
+    ).fetchone() == (5,)
+    assert conn.execute(
+        "SELECT value FROM maintenance_state "
+        "WHERE key='trace_since_prune'"
+    ).fetchone() == (1,)
+
+    complete_human_task(conn, task_id, {"p_approved": True})
+    thread.join(timeout=10)
+
+    assert not thread.is_alive()
+    assert result_box["env"]["p_approved"] is True
+    assert backend_calls["n"] == 0
+    assert conn.execute(
+        "SELECT COUNT(*) FROM events WHERE kind='trace'"
+    ).fetchone() == (3,)
+
+    replay_conn = open_store(path)
+    try:
+        replayed = RoleRunner(
+            replay_conn,
+            "PHuman",
+            project(sqlite_human_round, PHuman),
+            {"prompt": "plan"},
+            sqlite_human_round.ns,
+            human_backend=backend,
+        ).run()
+    finally:
+        replay_conn.close()
+
+    assert replayed["p_approved"] is True
+    assert backend_calls["n"] == 0
+    assert conn.execute(
+        "SELECT COUNT(*) FROM events WHERE kind='trace'"
+    ).fetchone() == (3,)
+    conn.close()
+
+
 def test_role_runner_terminal_backend_claims_existing_pending_human_task(tmp_path):
     path = str(tmp_path / "inline-resumed-human.sqlite")
     local = project(sqlite_human_round, PHuman)

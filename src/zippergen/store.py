@@ -13,6 +13,9 @@ from collections import deque
 
 
 RECOVERY_COMPACTION_VERSION = 1
+TRACE_RETENTION_VERSION = 1
+TRACE_RETENTION_KEEP = 10_000
+TRACE_RETENTION_BATCH = 1_000
 
 
 class ReplayMismatch(Exception):
@@ -39,6 +42,8 @@ CREATE TABLE IF NOT EXISTS events (
 );
 CREATE INDEX IF NOT EXISTS events_by_channel
   ON events(receiver, sender, channel, rowid);
+CREATE INDEX IF NOT EXISTS events_trace_rowid
+  ON events(rowid) WHERE kind='trace';
 
 CREATE TABLE IF NOT EXISTS cursors (
   role     TEXT NOT NULL,
@@ -59,6 +64,11 @@ CREATE TABLE IF NOT EXISTS recovery_high_water (
   role    TEXT PRIMARY KEY,
   out     INTEGER NOT NULL DEFAULT 0,
   journal INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS maintenance_state (
+  key   TEXT PRIMARY KEY,
+  value INTEGER NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS execution_states (
@@ -362,13 +372,61 @@ def list_workflow_results(conn) -> list[dict]:
     ]
 
 
+def prune_trace_events(
+    conn,
+    *,
+    keep: int = TRACE_RETENTION_KEEP,
+) -> int:
+    """Keep only the newest diagnostic traces without touching replay data."""
+
+    if keep < 0:
+        raise ValueError("keep must be zero or greater")
+    if keep == 0:
+        cursor = conn.execute("DELETE FROM events WHERE kind='trace'")
+    else:
+        cutoff = conn.execute(
+            "SELECT rowid FROM events WHERE kind='trace' "
+            "ORDER BY rowid DESC LIMIT 1 OFFSET ?",
+            (keep - 1,),
+        ).fetchone()
+        cursor = (
+            conn.execute(
+                "DELETE FROM events WHERE kind='trace' AND rowid<?",
+                (int(cutoff[0]),),
+            )
+            if cutoff is not None
+            else None
+        )
+    conn.execute(
+        "INSERT INTO maintenance_state(key,value) "
+        "VALUES('trace_since_prune',0) "
+        "ON CONFLICT(key) DO UPDATE SET value=0"
+    )
+    if cursor is None:
+        return 0
+    return int(cursor.rowcount) if cursor.rowcount >= 0 else 0
+
+
 def record_trace_event(conn, role: str, event: dict) -> int:
     cur = conn.execute(
         "INSERT INTO events(sender,receiver,channel,kind,payload,causal_stamp) "
         "VALUES(?,?,?,?,?,?)",
         (role, None, None, "trace", json.dumps(_json_safe(event)), None),
     )
-    return _lastrowid(cur)
+    rowid = _lastrowid(cur)
+    conn.execute(
+        "INSERT INTO maintenance_state(key,value) "
+        "VALUES('trace_since_prune',?) "
+        "ON CONFLICT(key) DO UPDATE SET value=value+1",
+        (1,),
+    )
+    pending = conn.execute(
+        "SELECT value FROM maintenance_state "
+        "WHERE key='trace_since_prune'"
+    ).fetchone()
+    if pending is not None and int(pending[0]) >= TRACE_RETENTION_BATCH:
+        prune_trace_events(conn, keep=TRACE_RETENTION_KEEP)
+    return rowid
 
 
 def list_trace_events(conn, after_rowid: int = 0) -> list[dict]:

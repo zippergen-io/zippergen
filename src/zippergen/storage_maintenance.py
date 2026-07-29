@@ -20,6 +20,8 @@ class StorageReport:
     event_counts: dict[str, int]
     completed_tasks: int
     pending_tasks: int
+    task_tokens: int
+    task_notifications: int
     snapshot_roles: tuple[str, ...]
     roles_without_snapshot: tuple[str, ...]
 
@@ -34,9 +36,6 @@ class StorageReport:
 
 @dataclass(frozen=True)
 class CompactionPlan:
-    trace_keep: int
-    trace_events: int
-    removable_traces: int
     removable_messages: int
     removable_journal: int
     roles_without_snapshot: tuple[str, ...]
@@ -45,15 +44,10 @@ class CompactionPlan:
     def removable_core(self) -> int:
         return self.removable_messages + self.removable_journal
 
-    @property
-    def removable_total(self) -> int:
-        return self.removable_traces + self.removable_core
-
 
 @dataclass(frozen=True)
 class CompactionResult:
     plan: CompactionPlan
-    deleted_traces: int
     deleted_messages: int
     deleted_journal: int
     before_bytes: int
@@ -63,11 +57,7 @@ class CompactionResult:
 
     @property
     def deleted_total(self) -> int:
-        return (
-            self.deleted_traces
-            + self.deleted_messages
-            + self.deleted_journal
-        )
+        return self.deleted_messages + self.deleted_journal
 
 
 def _file_size(path: Path) -> int:
@@ -109,6 +99,8 @@ def inspect_store_storage(path: str | Path) -> StorageReport:
             event_counts={},
             completed_tasks=0,
             pending_tasks=0,
+            task_tokens=0,
+            task_notifications=0,
             snapshot_roles=(),
             roles_without_snapshot=(),
         )
@@ -155,6 +147,24 @@ def inspect_store_storage(path: str | Path) -> StorageReport:
             if _table_exists(conn, "human_tasks")
             else {}
         )
+        task_tokens = (
+            int(
+                conn.execute(
+                    "SELECT COUNT(*) FROM human_task_tokens"
+                ).fetchone()[0]
+            )
+            if _table_exists(conn, "human_task_tokens")
+            else 0
+        )
+        task_notifications = (
+            int(
+                conn.execute(
+                    "SELECT COUNT(*) FROM human_task_notifications"
+                ).fetchone()[0]
+            )
+            if _table_exists(conn, "human_task_notifications")
+            else 0
+        )
         page_size = int(conn.execute("PRAGMA page_size").fetchone()[0])
         free_pages = int(conn.execute("PRAGMA freelist_count").fetchone()[0])
     finally:
@@ -169,6 +179,8 @@ def inspect_store_storage(path: str | Path) -> StorageReport:
         event_counts=event_counts,
         completed_tasks=task_counts.get("done", 0),
         pending_tasks=task_counts.get("pending", 0),
+        task_tokens=task_tokens,
+        task_notifications=task_notifications,
         snapshot_roles=tuple(sorted(snapshot_roles)),
         roles_without_snapshot=tuple(sorted(seed_roles - snapshot_roles)),
     )
@@ -195,13 +207,7 @@ def _snapshot_floors(conn: sqlite3.Connection) -> dict[str, dict]:
     return floors
 
 
-def _collectable_counts(
-    conn: sqlite3.Connection,
-    *,
-    trace_keep: int,
-) -> CompactionPlan:
-    if trace_keep < 0:
-        raise ValueError("trace_keep must be zero or greater")
+def _collectable_counts(conn: sqlite3.Connection) -> CompactionPlan:
     floors = _snapshot_floors(conn)
     seed_roles = {
         str(row[0])
@@ -209,12 +215,6 @@ def _collectable_counts(
             "SELECT DISTINCT sender FROM events WHERE kind='seed'"
         ).fetchall()
     }
-    trace_events = int(
-        conn.execute(
-            "SELECT COUNT(*) FROM events WHERE kind='trace'"
-        ).fetchone()[0]
-    )
-    removable_traces = max(0, trace_events - trace_keep)
     removable_messages = 0
     removable_journal = 0
     for rowid, sender, receiver, channel, kind in conn.execute(
@@ -240,36 +240,25 @@ def _collectable_counts(
         elif rowid <= int(sender_floor["journal"]):
             removable_journal += 1
     return CompactionPlan(
-        trace_keep=trace_keep,
-        trace_events=trace_events,
-        removable_traces=removable_traces,
         removable_messages=removable_messages,
         removable_journal=removable_journal,
         roles_without_snapshot=tuple(sorted(seed_roles - set(floors))),
     )
 
 
-def plan_store_compaction(
-    path: str | Path,
-    *,
-    trace_keep: int = 10_000,
-) -> CompactionPlan:
+def plan_store_compaction(path: str | Path) -> CompactionPlan:
     store = Path(path).expanduser()
     if not store.is_file():
         raise FileNotFoundError(store)
     conn = sqlite3.connect(f"file:{store.resolve()}?mode=ro", uri=True)
     try:
-        return _collectable_counts(conn, trace_keep=trace_keep)
+        return _collectable_counts(conn)
     finally:
         conn.close()
 
 
-def compact_store(
-    path: str | Path,
-    *,
-    trace_keep: int = 10_000,
-) -> CompactionResult:
-    """Delete only diagnostic traces and events covered by durable floors."""
+def compact_store(path: str | Path) -> CompactionResult:
+    """Delete only recovery events covered by durable snapshot floors."""
 
     store = Path(path).expanduser()
     if not store.is_file():
@@ -278,29 +267,10 @@ def compact_store(
     before_report = inspect_store_storage(store)
     conn = open_store(str(store))
     try:
-        plan = _collectable_counts(conn, trace_keep=trace_keep)
+        plan = _collectable_counts(conn)
         conn.execute("BEGIN IMMEDIATE")
         try:
             backfill_recovery_high_water(conn)
-            if trace_keep == 0:
-                trace_cursor = conn.execute(
-                    "DELETE FROM events WHERE kind='trace'"
-                )
-            else:
-                cutoff = conn.execute(
-                    "SELECT rowid FROM events WHERE kind='trace' "
-                    "ORDER BY rowid DESC LIMIT 1 OFFSET ?",
-                    (trace_keep - 1,),
-                ).fetchone()
-                trace_cursor = (
-                    conn.execute(
-                        "DELETE FROM events WHERE kind='trace' AND rowid<?",
-                        (int(cutoff[0]),),
-                    )
-                    if cutoff is not None
-                    else None
-                )
-
             floors = _snapshot_floors(conn)
             conn.execute(
                 "CREATE TEMP TABLE collectable_events("
@@ -370,11 +340,6 @@ def compact_store(
     after_report = inspect_store_storage(store)
     return CompactionResult(
         plan=plan,
-        deleted_traces=(
-            int(trace_cursor.rowcount)
-            if trace_cursor is not None and trace_cursor.rowcount >= 0
-            else plan.removable_traces
-        ),
         deleted_messages=deleted_messages,
         deleted_journal=deleted_journal,
         before_bytes=before_bytes,

@@ -4,7 +4,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from zippergen.store import RECOVERY_COMPACTION_VERSION
+from zippergen.store import (
+    RECOVERY_COMPACTION_VERSION,
+    TRACE_RETENTION_BATCH,
+    TRACE_RETENTION_KEEP,
+    TRACE_RETENTION_VERSION,
+)
 
 # This mixin uses Studio's rendering, selection, and confirmation interface.
 # Keeping the storage surface here prevents the main command shell from
@@ -106,6 +111,10 @@ class StudioStorageMixin:
                 profile.get("recovery_compaction_version")
                 == RECOVERY_COMPACTION_VERSION
             )
+            trace_retention_ready = (
+                profile.get("trace_retention_version")
+                == TRACE_RETENTION_VERSION
+            )
             snapshot_total = (
                 len(report.snapshot_roles)
                 + len(report.roles_without_snapshot)
@@ -137,11 +146,16 @@ class StudioStorageMixin:
                             else "success"
                         ),
                     ),
-                    ("Default trace tail", f"{plan.trace_keep:,}", None),
                     (
-                        "Removable traces",
-                        f"{plan.removable_traces:,}",
-                        "warning" if plan.removable_traces else "success",
+                        "Trace retention",
+                        (
+                            f"automatic online · target "
+                            f"{TRACE_RETENTION_KEEP:,} · batch "
+                            f"{TRACE_RETENTION_BATCH:,}"
+                            if trace_retention_ready
+                            else "redeploy once to enable online retention"
+                        ),
+                        "success" if trace_retention_ready else "warning",
                     ),
                     (
                         "Recovery-safe events",
@@ -159,13 +173,25 @@ class StudioStorageMixin:
                     ),
                     (
                         "Human tasks",
-                        f"{report.pending_tasks} pending · "
-                        f"{report.completed_tasks} completed",
+                        f"{report.pending_tasks} pending",
                         "warning" if report.pending_tasks else None,
+                    ),
+                    (
+                        "Task audit",
+                        f"{report.completed_tasks} completed · "
+                        f"{report.task_tokens} tokens · "
+                        f"{report.task_notifications} notifications · "
+                        "retained by design",
+                        None,
                     ),
                 ],
             )
         if (
+            profile.get("trace_retention_version")
+            != TRACE_RETENTION_VERSION
+        ):
+            self._emit_next(f"deploy {name} · deploy show {name}")
+        elif (
             profile.get("recovery_compaction_version")
             == RECOVERY_COMPACTION_VERSION
         ):
@@ -177,39 +203,17 @@ class StudioStorageMixin:
 
     def compact_deployment_storage(self, args: list[str]) -> None:
         yes = False
-        trace_keep = 10_000
         names: list[str] = []
-        index = 0
-        while index < len(args):
-            value = args[index]
+        for value in args:
             if value == "--yes":
                 yes = True
-            elif value == "--trace-keep":
-                if index + 1 >= len(args):
-                    raise SystemExit(
-                        "Use deploy storage compact [NAME] "
-                        "[--trace-keep N] [--yes]."
-                    )
-                index += 1
-                try:
-                    trace_keep = int(args[index])
-                except ValueError as exc:
-                    raise SystemExit(
-                        "--trace-keep must be an integer."
-                    ) from exc
-                if trace_keep < 0:
-                    raise SystemExit(
-                        "--trace-keep must be zero or greater."
-                    )
             elif value.startswith("-"):
                 raise SystemExit(f"Unknown storage option: {value}")
             else:
                 names.append(value)
-            index += 1
         if len(names) > 1:
             raise SystemExit(
-                "Use deploy storage compact [NAME] "
-                "[--trace-keep N] [--yes]."
+                "Use deploy storage compact [NAME] [--yes]."
             )
         name = self._deployment_name(names[0] if names else None)
         from zippergen.serve import (
@@ -237,7 +241,7 @@ class StudioStorageMixin:
             raise SystemExit(
                 f"Deployment {name} has no durable store to compact."
             )
-        plan = plan_store_compaction(store_path, trace_keep=trace_keep)
+        plan = plan_store_compaction(store_path)
         log_path = Path(str(profile.get("log") or "")).expanduser()
         log_bytes = log_path.stat().st_size if log_path.is_file() else 0
         archive_root = _zippergen_home() / "trash" / "deployment-logs"
@@ -256,8 +260,6 @@ class StudioStorageMixin:
             [
                 ("Deployment", name, None),
                 ("Store", store_path, None),
-                ("Keep traces", f"{trace_keep:,} most recent", None),
-                ("Remove traces", f"{plan.removable_traces:,}", None),
                 (
                     "Remove communications",
                     f"{plan.removable_messages:,}",
@@ -298,10 +300,18 @@ class StudioStorageMixin:
                     "durable recovery floor remain",
                     "success",
                 ),
+                (
+                    "Traces",
+                    f"pruned online around {TRACE_RETENTION_KEEP:,} · "
+                    f"never more than "
+                    f"{TRACE_RETENTION_KEEP + TRACE_RETENTION_BATCH - 1:,} · "
+                    "no service stop required",
+                    "success",
+                ),
             ],
         )
         if (
-            plan.removable_total == 0
+            plan.removable_core == 0
             and log_bytes == 0
             and prunable_archives == 0
         ):
@@ -323,7 +333,7 @@ class StudioStorageMixin:
             default=False,
         ):
             return
-        result = compact_store(store_path, trace_keep=trace_keep)
+        result = compact_store(store_path)
         from zippergen.studio_deployments import compact_deployment_logs
 
         log_result = compact_deployment_logs(
@@ -335,7 +345,6 @@ class StudioStorageMixin:
         self._emit_table(
             "Compaction result",
             [
-                ("Removed traces", f"{result.deleted_traces:,}", "success"),
                 (
                     "Removed communications",
                     f"{result.deleted_messages:,}",

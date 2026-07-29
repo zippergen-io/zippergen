@@ -424,8 +424,8 @@ COMMANDS: tuple[CommandSpec, ...] = (
     ),
     CommandSpec(
         ("deploy", "storage", "compact"),
-        "deploy storage compact [NAME] [--trace-keep N] [--yes]",
-        "prune traces and recovery-safe completed events",
+        "deploy storage compact [NAME] [--yes]",
+        "compact recovery-safe events and stopped-service logs",
         "destructive",
     ),
     CommandSpec(

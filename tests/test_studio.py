@@ -314,9 +314,9 @@ def test_studio_completion_is_context_and_project_aware(tmp_path):
     assert "trace" in _completions(studio, "deploy ")
     assert "storage" in _completions(studio, "deploy ")
     assert _completions(studio, "deploy storage ") == ["compact"]
-    assert "--trace-keep" in _completions(
+    assert _completions(
         studio, "deploy storage compact "
-    )
+    ) == ["--yes"]
     assert "remove" in _completions(studio, "deploy ")
     assert _completions(studio, "run inspect W") == ["Writer"]
     assert "--watch" in _completions(studio, "run inspect ")
@@ -4637,6 +4637,7 @@ def test_studio_shows_and_compacts_deployment_storage(
         "store": str(store),
         "log": str(log),
         "recovery_compaction_version": 1,
+        "trace_retention_version": 1,
     }
     (deployments / "reviewed-answer.json").write_text(json.dumps(profile))
     workspace.update(last_deployment="reviewed-answer")
@@ -4658,19 +4659,20 @@ def test_studio_shows_and_compacts_deployment_storage(
     assert any(line == "Deployment storage" for line in output)
     assert any("Without snapshot" in line and "Writer" in line for line in output)
     assert any("trace" in line and "3" in line for line in output)
+    assert any(
+        "Task audit" in line and "retained by design" in line
+        for line in output
+    )
     output.clear()
 
-    studio.execute(
-        "deploy storage compact reviewed-answer --trace-keep 1 --yes"
-    )
+    studio.execute("deploy storage compact reviewed-answer --yes")
 
     connection = open_store(str(store))
     assert connection.execute(
         "SELECT COUNT(*) FROM events WHERE kind='trace'"
-    ).fetchone()[0] == 1
+    ).fetchone()[0] == 3
     connection.close()
     assert log.read_bytes() == b""
-    assert any("Removed traces" in line and "2" in line for line in output)
     assert any("Log archived" in line for line in output)
 
 
@@ -4678,7 +4680,7 @@ def test_studio_requires_redeploy_before_compacting_an_older_bundle(
     tmp_path,
     monkeypatch,
 ):
-    studio, workspace, _output = _studio(tmp_path)
+    studio, workspace, output = _studio(tmp_path)
     monkeypatch.setenv("ZIPPERGEN_HOME", str(workspace.home))
     deployments = workspace.home / "deployments"
     deployments.mkdir(parents=True)
@@ -4697,6 +4699,13 @@ def test_studio_requires_redeploy_before_compacting_an_older_bundle(
                 "log": str(workspace.home / "logs" / "legacy.log"),
             }
         )
+    )
+
+    studio.execute("deploy storage legacy")
+    assert any(
+        "Trace retention" in line
+        and "redeploy once to enable" in line
+        for line in output
     )
 
     with pytest.raises(SystemExit, match="Redeploy it once"):

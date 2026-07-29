@@ -105,31 +105,18 @@ def _valid_inspection_syntax(
 def _valid_storage_compact_syntax(args: list[str]) -> bool:
     positionals = 0
     yes = False
-    trace_keep = False
-    index = 0
-    while index < len(args):
-        value = args[index].casefold()
+    for raw_value in args:
+        value = raw_value.casefold()
         if value == "--yes":
             if yes:
                 return False
             yes = True
-        elif value == "--trace-keep":
-            if trace_keep or index + 1 >= len(args):
-                return False
-            trace_keep = True
-            index += 1
-            try:
-                if int(args[index]) < 0:
-                    return False
-            except ValueError:
-                return False
         elif value.startswith("-"):
             return False
         else:
             positionals += 1
             if positionals > 1:
                 return False
-        index += 1
     return True
 
 
@@ -1477,16 +1464,10 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
                 if len(args) == 2 and args[1].lower() == "compact":
                     return [
                         *self._deployment_completion_candidates(),
-                        ("--trace-keep", "number of recent trace events to keep"),
                         ("--yes", "confirm safe compaction"),
                     ]
                 if "compact" in {value.lower() for value in args[1:]}:
-                    if args[-1].lower() == "--trace-keep":
-                        return []
-                    return [
-                        ("--trace-keep", "number of recent trace events to keep"),
-                        ("--yes", "confirm safe compaction"),
-                    ]
+                    return [("--yes", "confirm safe compaction")]
                 return []
             if args[0].lower() == "remove":
                 if len(args) == 1:

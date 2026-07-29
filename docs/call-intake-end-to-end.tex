@@ -595,9 +595,10 @@ deploy storage compact call-intake-check
 \end{lstlisting}
 
 Stopping preserves the profile, immutable bundle, log, and durable store.
-The optional compaction command keeps the newest 10,000 trace events, removes
-only completed data covered by recovery snapshots, rotates the service log,
-and keeps three log archives. It requires the deployment to be stopped.
+Trace retention already runs online and does not require this stop. The
+optional compaction command removes only completed data covered by recovery
+snapshots, rotates the service log, and keeps three log archives. It requires
+the deployment to be stopped. Completed human tasks remain as audit records.
 Studio also compacts the SQLite file and truncates its WAL safely.
 The deployment can be started again with:
 

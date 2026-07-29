@@ -658,11 +658,15 @@ durable store.
 
 \texttt{deploy storage} shows the size of the store, SQLite side files,
 service log, and log archives. It also shows whether every participant has a
-recovery snapshot. After \texttt{deploy stop},
-\texttt{deploy storage compact} keeps the newest 10,000 diagnostic trace
-events, removes completed events covered by recovery snapshots, rotates the
-active log, and keeps three log archives. It never removes seed inputs,
-pending work, or events still needed for recovery.
+recovery snapshot. Diagnostic traces are pruned online in batches. The target
+is 10,000 traces and the store never keeps more than 10,999. This does not
+stop the service. Completed human tasks, tokens, and notifications remain as
+audit records.
+
+After \texttt{deploy stop}, \texttt{deploy storage compact} removes completed
+events covered by recovery snapshots, rotates the active log, and keeps three
+log archives. It never removes seed inputs, pending work, or events still
+needed for recovery.
 Studio then compacts the database file and truncates the WAL while preserving
 the stable event identifiers used for recovery.
 
