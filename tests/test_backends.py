@@ -16,6 +16,7 @@ from zippergen.backends import (
 
 ConfigUser = Lifeline("ConfigUser")
 ConfigConflictUser = Lifeline("ConfigConflictUser")
+ConfigObserver = Lifeline("ConfigObserver")
 
 
 @llm(system="Echo.", user="{topic}", parse="text", outputs=(("draft", str),))
@@ -26,6 +27,13 @@ def config_reply(topic: str) -> None: ...
 def config_workflow(topic: str @ ConfigUser) -> str:
     ConfigUser: draft = config_reply(topic)
     return draft @ ConfigUser
+
+
+@workflow
+def config_observed_workflow(topic: str @ ConfigUser) -> str:
+    ConfigUser: draft = config_reply(topic)
+    ConfigUser(draft) >> ConfigObserver(draft)
+    return draft @ ConfigObserver
 
 
 @workflow
@@ -280,6 +288,15 @@ def test_workflow_configure_accepts_positional_llm_spec():
     config_workflow.configure("mock", execution="memory", timeout=5)
 
     assert config_workflow(topic="hello") == "[config_reply:draft]"
+
+
+def test_workflow_configure_does_not_route_non_llm_participants():
+    config_observed_workflow.configure(
+        "local:qwen2.5:14b",
+        llm_idle_timeouts={"ConfigUser": 300},
+        execution="memory",
+        timeout=5,
+    )
 
 
 def test_workflow_configure_rejects_llm_and_llms_together():

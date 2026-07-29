@@ -5228,6 +5228,50 @@ def test_studio_assignment_listing_is_cached_and_check_is_targeted(
     )
 
 
+def test_studio_assignment_check_rejects_real_local_idle_policy_conflict(
+    tmp_path,
+    monkeypatch,
+):
+    studio, workspace, _output = _studio(tmp_path)
+    (workspace.root / "dual.py").write_text(TWO_LLM_PARTICIPANT_SOURCE)
+    workspace.select_workflow("dual.py:sample", cwd=workspace.root)
+    for name, idle_timeout in (
+        ("release-local", "300"),
+        ("resident-local", None),
+    ):
+        configuration = {
+            "provider": "local",
+            "model": "qwen2.5:14b",
+            "spec": "local:qwen2.5:14b",
+            "check_status": "available",
+        }
+        if idle_timeout is not None:
+            configuration["idle_timeout"] = idle_timeout
+        workspace.save_model_configuration(name, configuration)
+    workspace.save_model_assignment_profile(
+        "dual.py:sample",
+        default="release-local",
+        lifelines={"Reviewer": "resident-local"},
+    )
+    checks: list[str] = []
+    monkeypatch.setattr(
+        studio,
+        "_verify_model_spec",
+        lambda label, spec, for_save=False: checks.append(label),
+    )
+
+    with pytest.raises(
+        SystemExit,
+        match=(
+            "conflicting idle release policies: "
+            "Writer=300 s, Reviewer=never"
+        ),
+    ):
+        studio.execute("model assignments check")
+
+    assert checks == []
+
+
 def test_studio_models_inherit_removes_a_participant_assignment(tmp_path):
     studio, workspace, output = _studio(tmp_path)
     workspace.select_workflow("workflow.py:sample", cwd=workspace.root)

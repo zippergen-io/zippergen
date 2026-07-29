@@ -8357,6 +8357,11 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
                     "current files match its intent and semantics, so Studio "
                     "will deploy the current working tree."
                 )
+        self._validate_workflow_model_idle_policies(
+            current,
+            deployment_workflow,
+            deployment_module,
+        )
         spec = deployment_spec_from_module(deployment_module)
         self._emit_table(
             "Guided deployment",

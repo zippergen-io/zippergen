@@ -18,6 +18,7 @@ __all__ = [
     "make_openai_backend",
     "make_anthropic_backend",
     "make_lifeline_router",
+    "validate_local_idle_policies",
     "router_from_specs",
     "router_from_env",
 ]
@@ -628,6 +629,46 @@ def backend_from_spec(
     )
 
 
+def validate_local_idle_policies(
+    routes: Mapping[str, str | Callable],
+    *,
+    idle_timeout: float | None = None,
+    idle_timeouts: Mapping[str, float] | None = None,
+) -> None:
+    """Reject contradictory release policies for one physical local model."""
+
+    route_idle_timeouts = dict(idle_timeouts or {})
+    unknown_idle_routes = sorted(set(route_idle_timeouts) - set(routes))
+    if unknown_idle_routes:
+        raise ValueError(
+            "Idle release refers to unknown LLM route(s): "
+            + ", ".join(unknown_idle_routes)
+        )
+
+    policies: dict[str, list[tuple[str, float | None]]] = {}
+    for route, provider in routes.items():
+        if callable(provider):
+            continue
+        provider_name, model = _split_llm_spec(provider)
+        if provider_name not in {"local", "ollama"}:
+            continue
+        physical_spec = f"local:{model}" if model is not None else "local"
+        selected = route_idle_timeouts.get(route, idle_timeout)
+        policies.setdefault(physical_spec, []).append((route, selected))
+
+    for physical_spec, entries in policies.items():
+        if len({policy for _route, policy in entries}) <= 1:
+            continue
+        details = ", ".join(
+            f"{route}={'never' if policy is None else f'{policy:g} s'}"
+            for route, policy in entries
+        )
+        raise ValueError(
+            f"Local model {physical_spec!r} has conflicting idle release "
+            f"policies: {details}."
+        )
+
+
 def router_from_specs(
     routes: dict[str, str | Callable],
     *,
@@ -651,14 +692,12 @@ def router_from_specs(
     built_backends: dict[str, Callable] = {}
     labels: list[str] = []
     shared_backends: dict[tuple[str, float | None], tuple[Callable, str]] = {}
-    local_policies: dict[str, float | None] = {}
     route_idle_timeouts = dict(idle_timeouts or {})
-    unknown_idle_routes = sorted(set(route_idle_timeouts) - set(routes))
-    if unknown_idle_routes:
-        raise ValueError(
-            "Idle release refers to unknown LLM route(s): "
-            + ", ".join(unknown_idle_routes)
-        )
+    validate_local_idle_policies(
+        routes,
+        idle_timeout=idle_timeout,
+        idle_timeouts=route_idle_timeouts,
+    )
     for lifeline_name, provider in routes.items():
         if callable(provider):
             built_backends[lifeline_name] = provider
@@ -674,16 +713,6 @@ def router_from_specs(
             physical_spec = (
                 f"local:{model}" if model is not None else "local"
             ) if managed_local else provider
-            if managed_local:
-                if (
-                    physical_spec in local_policies
-                    and local_policies[physical_spec] != selected_idle_timeout
-                ):
-                    raise ValueError(
-                        f"Local model {physical_spec!r} has conflicting idle "
-                        "release policies."
-                    )
-                local_policies[physical_spec] = selected_idle_timeout
             cache_key = (
                 physical_spec,
                 selected_idle_timeout if managed_local else None,

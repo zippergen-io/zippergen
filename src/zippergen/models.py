@@ -33,7 +33,13 @@ def effective_llm_routes(
     default_spec: str,
     overrides: Mapping[str, str] | None = None,
 ) -> dict[str, str]:
-    """Expand defaults and validate participant or ``Participant.action`` routes."""
+    """Expand defaults for participants that actually contain LLM actions.
+
+    All participant names remain valid assignment targets so that a stored
+    profile can survive workflow edits.  The returned runtime routes are
+    deliberately narrower: participants without an LLM action never call an
+    LLM backend and therefore must not acquire model-lifecycle policy.
+    """
 
     default = str(default_spec).strip()
     if not default:
@@ -48,6 +54,15 @@ def effective_llm_routes(
         for site in sites
         if isinstance(site, dict) and site.get("kind") == "llm"
     }
+    active_participants = {
+        str(site["lifeline"])
+        for site in sites
+        if (
+            isinstance(site, dict)
+            and site.get("kind") == "llm"
+            and site.get("lifeline")
+        )
+    }
     selected = normalize_llm_overrides(overrides)
     known = {*names, *action_targets}
     unknown = sorted(set(selected) - known)
@@ -59,7 +74,11 @@ def effective_llm_routes(
             + ", ".join([*names, *sorted(action_targets)])
             + "."
         )
-    routes = {name: selected.get(name, default) for name in names}
+    routes = {
+        name: selected.get(name, default)
+        for name in names
+        if name in active_participants
+    }
     routes.update(
         {
             target: selected[target]

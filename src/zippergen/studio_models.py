@@ -11,7 +11,9 @@ from urllib import request
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlsplit, urlunsplit
 
+from zippergen.backends import validate_local_idle_policies
 from zippergen.dev import default_llm_spec
+from zippergen.models import effective_llm_routes
 from zippergen.rendering import StatusKind
 from zippergen.workspace import WorkspaceError
 
@@ -185,6 +187,72 @@ class StudioModelsMixin:
         lifelines.update(dict(profile.get("actions") or {}))
         return {"default": profile.get("default"), "lifelines": lifelines}
 
+    def _validate_workflow_model_idle_policies(
+        self,
+        current: str,
+        workflow,
+        module,
+        *,
+        default_override: str | None = None,
+    ) -> None:
+        """Validate local-model lifecycle policy before execution or deployment."""
+
+        assignments = self.workspace.model_assignment_profile(
+            current,
+            default=default_llm_spec(module),
+        )
+        configurations = self.workspace.model_configurations()
+        default_name = str(assignments["default"])
+        participant_overrides = assignments.get("lifelines") or {}
+        action_overrides = assignments.get("actions") or {}
+        assert isinstance(participant_overrides, dict)
+        assert isinstance(action_overrides, dict)
+
+        default_configuration = configurations.get(default_name)
+        if default_override is None and default_configuration is None:
+            raise SystemExit(
+                f"Default model configuration {default_name!r} no longer exists."
+            )
+        default_spec = (
+            default_override
+            if default_override is not None
+            else str(default_configuration["spec"])
+        )
+        spec_overrides: dict[str, str] = {}
+        for target, configuration_name in {
+            **participant_overrides,
+            **action_overrides,
+        }.items():
+            configuration = configurations.get(str(configuration_name))
+            if configuration is None:
+                raise SystemExit(
+                    f"Model configuration {configuration_name!r}, assigned to "
+                    f"{target}, no longer exists."
+                )
+            spec_overrides[str(target)] = str(configuration["spec"])
+        effective_routes = effective_llm_routes(
+            workflow,
+            default_spec,
+            spec_overrides,
+        )
+        idle_routes = self._model_idle_timeout_routes(
+            current,
+            workflow,
+            module,
+            default_override=default_override,
+        )
+        try:
+            validate_local_idle_policies(
+                effective_routes,
+                idle_timeouts=idle_routes,
+            )
+        except ValueError as exc:
+            raise SystemExit(
+                f"Model assignment check failed: {exc} "
+                "Use one idle-release policy for each physical local model. "
+                "Edit the named configurations with 'model config edit NAME'."
+            ) from exc
+
     def _check_workflow_models(
         self,
         current: str,
@@ -215,6 +283,13 @@ class StudioModelsMixin:
         action_overrides = assignments.get("actions") or {}
         assert isinstance(participant_overrides, dict)
         assert isinstance(action_overrides, dict)
+
+        self._validate_workflow_model_idle_policies(
+            current,
+            workflow,
+            module,
+            default_override=default_override,
+        )
 
         routes: list[tuple[str, str, str]] = []
         for participant, actions in active.items():

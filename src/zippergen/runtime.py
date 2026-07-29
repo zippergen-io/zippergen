@@ -1435,8 +1435,6 @@ def _workflow_configure(
     assistant_backend: object | None = None,
     assistant_root: str | None = None,
 ) -> Workflow:
-    lifelines = _ordered_workflow_lifelines(wf)
-
     if llm is not None and llms is not None:
         raise ValueError("Use either 'llm' or the legacy 'llms' option, not both.")
     if llm_idle_timeout is not None and (
@@ -1468,10 +1466,11 @@ def _workflow_configure(
 
     if llm_config is not None:
         from zippergen.backends import router_from_specs
+        from zippergen.models import effective_llm_routes
         if llm_config == "mock":
             routes: dict = {}
         elif isinstance(llm_config, str):
-            routes = {lifeline.name: llm_config for lifeline in lifelines}
+            routes = effective_llm_routes(wf, llm_config)
         else:
             routes = {str(k): v for k, v in llm_config.items()}
         built_backend, _label = router_from_specs(
