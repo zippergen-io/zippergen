@@ -8867,6 +8867,7 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
             raise SystemExit("Use deploy show [NAME].")
         name = self._deployment_name(args[0] if args else None)
         from zippergen.serve import (
+            _deployment_boot_status,
             _deployment_profile_path,
             _deployment_service_status,
             _doctor_checks,
@@ -8876,6 +8877,7 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
 
         profile = _load_deployment_profile(name)
         service = _deployment_service_status(name)
+        boot = _deployment_boot_status(name)
         store = _store_status(str(profile["store"]))
         bundle = Path(str(profile.get("bundle") or profile.get("cwd") or ""))
         checks = _doctor_checks(
@@ -8998,6 +9000,11 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
                     ),
                 ),
                 ("Service", service["detail"], service_kind),
+                (
+                    "Boot",
+                    boot["detail"],
+                    cast(StatusKind, boot["kind"]),
+                ),
                 ("Run", run_state, run_kind),
                 (
                     "Store",
@@ -9310,7 +9317,10 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
                 f"Use deploy {action} or deploy {action} NAME."
             )
         name = self._deployment_name(args[0] if args else None)
-        rc = self._run_project_cli([action, str(name)])
+        arguments = [action, str(name)]
+        if action == "start":
+            arguments.append("--enable")
+        rc = self._run_project_cli(arguments)
         if rc != 0:
             raise SystemExit(f"{action} failed for deployment {name}.")
         self.workspace.update(last_deployment=str(name))

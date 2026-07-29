@@ -123,7 +123,8 @@ source, selected participants, or one exact local projection.
 ### Understand a deployment
 
 `deploy show` separates the installed bundle, service process, workflow
-run, SQLite store, model routing, connectors, and likely failure cause.
+run, SQLite store, model routing, connectors, boot policy, and likely failure
+cause.
 
 ![ZipperGen Studio deployment state](assets/studio-deployment-show.svg)
 

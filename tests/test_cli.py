@@ -8,6 +8,7 @@ import pytest
 from zippergen.serve import (
     _launchd_service_status,
     _start_deployment_connector_workers,
+    _systemd_boot_status,
     main,
 )
 from zippergen.store import (
@@ -586,6 +587,53 @@ def test_start_deployment_dry_run_prints_launchd_commands(tmp_path, monkeypatch,
         ).read_bytes()
     )
     assert launchd["KeepAlive"] == {"SuccessfulExit": False}
+
+
+def test_systemd_boot_status_reports_server_boot_with_lingering(monkeypatch):
+    def fake_run(arguments, **_kwargs):
+        if "is-enabled" in arguments:
+            return subprocess.CompletedProcess(arguments, 0, stdout="enabled\n")
+        assert arguments[0] == "loginctl"
+        return subprocess.CompletedProcess(arguments, 0, stdout="yes\n")
+
+    monkeypatch.setattr("zippergen.serve.subprocess.run", fake_run)
+
+    status = _systemd_boot_status("reviewed-answer")
+
+    assert status["state"] == "server-boot"
+    assert status["kind"] == "success"
+    assert "automatic at server boot" in status["detail"]
+
+
+def test_systemd_boot_status_explains_when_lingering_is_disabled(monkeypatch):
+    def fake_run(arguments, **_kwargs):
+        if "is-enabled" in arguments:
+            return subprocess.CompletedProcess(arguments, 0, stdout="enabled\n")
+        return subprocess.CompletedProcess(arguments, 0, stdout="no\n")
+
+    monkeypatch.setattr("zippergen.serve.subprocess.run", fake_run)
+
+    status = _systemd_boot_status("reviewed-answer")
+
+    assert status["state"] == "user-login"
+    assert status["kind"] == "warning"
+    assert "requires account lingering" in status["detail"]
+
+
+def test_systemd_boot_status_explains_how_to_enable_manual_service(monkeypatch):
+    monkeypatch.setattr(
+        "zippergen.serve.subprocess.run",
+        lambda arguments, **_kwargs: subprocess.CompletedProcess(
+            arguments,
+            1,
+            stdout="disabled\n",
+        ),
+    )
+
+    status = _systemd_boot_status("reviewed-answer")
+
+    assert status["state"] == "manual"
+    assert "deploy start reviewed-answer" in status["detail"]
 
 
 @pytest.mark.parametrize("action", ["start", "restart"])

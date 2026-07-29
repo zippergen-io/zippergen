@@ -1101,6 +1101,144 @@ def _deployment_service_status(name: str) -> dict[str, object]:
     return _systemd_service_status(name)
 
 
+def _systemd_linger_state() -> bool | None:
+    """Return whether the current user's systemd manager starts at boot."""
+
+    try:
+        result = subprocess.run(
+            [
+                os.environ.get("ZIPPERGEN_LOGINCTL", "loginctl"),
+                "show-user",
+                str(os.getuid()),
+                "--property=Linger",
+                "--value",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    value = (result.stdout or "").strip().casefold()
+    if value == "yes":
+        return True
+    if value == "no":
+        return False
+    return None
+
+
+def _systemd_boot_status(name: str) -> dict[str, str]:
+    """Describe persistent startup for one systemd user service."""
+
+    unit = _systemd_unit_name(name)
+    try:
+        result = subprocess.run(
+            _systemctl_command("is-enabled", unit),
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except FileNotFoundError:
+        return {
+            "state": "unknown",
+            "kind": "warning",
+            "detail": "unknown; systemctl was not found",
+        }
+    except subprocess.TimeoutExpired:
+        return {
+            "state": "unknown",
+            "kind": "warning",
+            "detail": "unknown; systemctl timed out",
+        }
+
+    enabled_state = (
+        (result.stdout or result.stderr or "").strip().casefold()
+    )
+    if result.returncode != 0 or enabled_state not in {
+        "enabled",
+        "enabled-runtime",
+        "linked",
+        "linked-runtime",
+        "alias",
+    }:
+        return {
+            "state": "manual",
+            "kind": "warning",
+            "detail": (
+                "manual startup; use 'deploy start "
+                f"{_slug(name)}' to enable automatic startup"
+            ),
+        }
+    if enabled_state.endswith("-runtime"):
+        return {
+            "state": "current-session",
+            "kind": "warning",
+            "detail": (
+                "automatic only for the current user session; run "
+                f"'deploy start {_slug(name)}' to enable persistent startup"
+            ),
+        }
+
+    linger = _systemd_linger_state()
+    if linger is True:
+        detail = (
+            "automatic at server boot; systemd user service and account "
+            "lingering are enabled"
+        )
+        state = "server-boot"
+        kind = "success"
+    elif linger is False:
+        detail = (
+            "automatic after user login; unattended server boot requires "
+            "account lingering"
+        )
+        state = "user-login"
+        kind = "warning"
+    else:
+        detail = (
+            "automatic when the systemd user manager starts; unattended "
+            "server boot depends on account lingering"
+        )
+        state = "user-manager"
+        kind = "info"
+    return {"state": state, "kind": kind, "detail": detail}
+
+
+def _deployment_boot_status(name: str) -> dict[str, str]:
+    """Describe when an installed deployment will start automatically."""
+
+    try:
+        manager = _service_manager()
+    except SystemExit as exc:
+        return {
+            "state": "unsupported",
+            "kind": "warning",
+            "detail": str(exc),
+        }
+    if manager == "systemd":
+        return _systemd_boot_status(name)
+
+    target = _installed_launchd_path(name)
+    if target.is_file():
+        return {
+            "state": "user-login",
+            "kind": "success",
+            "detail": "automatic at user login; launchd RunAtLoad is enabled",
+        }
+    return {
+        "state": "manual",
+        "kind": "warning",
+        "detail": (
+            "manual startup; use 'deploy start "
+            f"{_slug(name)}' to install automatic startup"
+        ),
+    }
+
+
 def _call_doctor_hook(
     module: ModuleType,
     config: DoctorConfig,

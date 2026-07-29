@@ -611,9 +611,12 @@ deploy show call-intake-check
 deploy doctor call-intake-check
 \end{lstlisting}
 
-If the service stops when the final SSH session closes, ask the server
-administrator whether lingering is enabled for your account. The usual
-administrator command is:
+Read the \texttt{Boot} row. Studio's \texttt{deploy start} enables the
+deployment for automatic startup. If the row says
+\texttt{automatic at server boot}, no manual restart is needed after a server
+reboot. If it says \texttt{automatic after user login}, the service is enabled
+but account lingering is not. Ask the server administrator whether lingering
+can be enabled for your account. The usual administrator command is:
 
 \begin{lstlisting}[style=shell]
 loginctl enable-linger USERNAME
@@ -621,7 +624,9 @@ loginctl enable-linger USERNAME
 
 This is account-level server policy, so Studio does not change it
 automatically. It is not needed for a short test while the SSH session remains
-open.
+open. If only the workflow process crashes while the service manager is
+running, systemd restarts it automatically after ten seconds. Its durable
+SQLite state is preserved in both cases.
 
 \section{Compact command sheet}
 

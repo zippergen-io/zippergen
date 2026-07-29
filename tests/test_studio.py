@@ -4219,6 +4219,7 @@ def test_studio_deployment_show_separates_service_run_and_store(
     assert any(line == "Deployment state" for line in output)
     assert any("Bundle" in line and "installed" in line for line in output)
     assert any("Service" in line and "last exit code 1" in line for line in output)
+    assert any("Boot" in line and "startup" in line for line in output)
     assert any("Run" in line and "deployment store is missing" in line for line in output)
     assert any("Store" in line and "missing" in line for line in output)
     assert any("Cause" in line and "MISTRAL_API_KEY is not set" in line for line in output)
@@ -4906,7 +4907,19 @@ def test_studio_redeploy_keeps_existing_deployment_provider_key(
     assert all("existing-deployment-secret" not in line for line in output)
 
 
-def test_studio_operates_remembered_deployment(tmp_path, monkeypatch):
+@pytest.mark.parametrize(
+    ("action", "expected"),
+    [
+        ("start", ["start", "sample-test", "--enable"]),
+        ("restart", ["restart", "sample-test"]),
+    ],
+)
+def test_studio_operates_remembered_deployment(
+    action,
+    expected,
+    tmp_path,
+    monkeypatch,
+):
     studio, workspace, _output = _studio(tmp_path)
     workspace.update(last_deployment="sample-test")
     calls: list[list[str]] = []
@@ -4915,9 +4928,9 @@ def test_studio_operates_remembered_deployment(tmp_path, monkeypatch):
         lambda arguments: calls.append(arguments) or 0,
     )
 
-    studio.deployment_action("restart", [])
+    studio.deployment_action(action, [])
 
-    assert calls == [["restart", "sample-test"]]
+    assert calls == [expected]
 
 
 def test_studio_run_accepts_an_llm_override(tmp_path, monkeypatch):

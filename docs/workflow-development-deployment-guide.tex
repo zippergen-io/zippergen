@@ -1801,6 +1801,13 @@ deploy stop
 
 \texttt{deploy start} is the first command here that changes
 service-manager state. It reruns readiness checks immediately before doing so;
+\texttt{deploy start} in Studio also enables persistent automatic startup.
+The \texttt{Boot} row of \texttt{deploy show} states whether the deployment
+will start at server boot, after the user logs in, or only after a manual
+start. On Linux, automatic startup at server boot requires both an enabled
+systemd user service and account lingering. Studio reports these separately
+because enabling a deployment does not grant permission to change the
+server's account policy.
 \texttt{deploy restart} applies the same gate. A failed credential,
 workflow import, bundle, package, or workflow-specific doctor check blocks the
 operation before launchd/systemd is touched. Warnings remain informative and

@@ -585,7 +585,11 @@ deployment's stable SQLite store, and remembers the deployment name. The
 \texttt{--no-start} flag deliberately leaves the
 service stopped. \texttt{deploy doctor} runs detailed readiness checks.
 \texttt{deploy show} separates the immutable bundle, supervised service,
-workflow run, and SQLite store. Before the first start, the run is
+workflow run, and SQLite store. Its \texttt{Boot} row states whether the
+service starts automatically at server boot, after user login, or only after
+a manual start. Studio enables automatic startup when you use
+\texttt{deploy start}. On a Linux server, unattended startup at boot
+additionally requires account lingering. Before the first start, the run is
 \texttt{not started} and the store is \texttt{ready} with no run data.
 A missing first-run log and an uninstalled service are expected warnings; a
 red failure must be investigated. A selected API model whose private provider key
