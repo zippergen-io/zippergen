@@ -127,6 +127,54 @@ def test_run_command_loads_workflow_from_path(tmp_path, capsys):
     assert json.loads(captured.out) == {"result": "deploy!"}
 
 
+def test_connector_authorize_google_emits_checked_private_handoff(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    from zippergen.google_auth import (
+        GOOGLE_GMAIL_READONLY_SCOPE,
+        GoogleAuthorization,
+        decode_google_authorization,
+    )
+
+    client = tmp_path / "google-client.json"
+    client.write_text(json.dumps({
+        "installed": {
+            "client_id": "example.apps.googleusercontent.com",
+            "client_secret": "private-client-secret",
+            "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+            "token_uri": "https://oauth2.googleapis.com/token",
+        }
+    }))
+    monkeypatch.setattr("builtins.input", lambda prompt: str(client))
+    monkeypatch.setattr(
+        "zippergen.google_auth.authorize_google_client_result",
+        lambda value, *, scopes: GoogleAuthorization(
+            authorized_user_json=json.dumps({
+                "client_id": "example.apps.googleusercontent.com",
+                "refresh_token": "private-refresh-token",
+            }),
+            granted_scopes=tuple(scopes),
+            client_id="example.apps.googleusercontent.com",
+        ),
+    )
+
+    rc = main([
+        "connector",
+        "authorize",
+        "google",
+        "--scopes",
+        "gmail.readonly",
+    ])
+
+    assert rc == 0
+    lines = capsys.readouterr().out.strip().splitlines()
+    result = decode_google_authorization(lines[-1])
+    assert result.granted_scopes == (GOOGLE_GMAIL_READONLY_SCOPE,)
+    assert "private-refresh-token" not in "\n".join(lines[:-1])
+
+
 def test_run_command_loads_workflow_from_module(tmp_path, monkeypatch, capsys):
     workflow_path = tmp_path / "sample_module_workflow.py"
     workflow_path.write_text(WORKFLOW_SOURCE)

@@ -2796,12 +2796,12 @@ connector:
 For a workflow with one Google Sheets requirement, guided setup performs these
 steps:
 \begin{enumerate}
-  \item It imports the OAuth Desktop app JSON into private Studio storage. If
-        the file is on another computer, Studio creates a private temporary
-        destination and prints one complete \texttt{scp} command.
-  \item It opens the system browser for Google authorization. In an
-        interactive SSH session without a browser, it instead prints exact
-        loopback-forwarding commands and a URL to open on the local computer.
+  \item On a computer with a browser, it asks for the OAuth Desktop app JSON
+        path and opens Google authorization directly.
+  \item In an interactive SSH session without a browser, it prints one
+        \texttt{zippergen connector authorize google} command. Run that
+        command on the browser computer and paste its private result into
+        Studio's hidden prompt. No file upload or SSH tunnel is needed.
   \item It asks for a spreadsheet URL or ID and a tab name.
   \item It checks that the spreadsheet and tab are reachable.
   \item It binds the saved configuration to the logical requirement.
@@ -2818,12 +2818,12 @@ connector bind project-records project-records
 connector assignments check
 \end{lstlisting}
 
-The provider stores the OAuth client and authorization privately. It does not
-retain a user-managed client-file path. The configuration stores only the
-spreadsheet ID and tab. The workflow binding stores only the configuration
-name. During deployment, ZipperGen copies the resource metadata into the
-immutable deployment profile and copies the OAuth credential into the
-deployment's private secret file.
+The provider stores the authorization privately. It does not store the OAuth
+client file or retain a user-managed client-file path. The configuration
+stores only the spreadsheet ID and tab. The workflow binding stores only the
+configuration name. During deployment, ZipperGen copies the resource metadata
+into the immutable deployment profile and copies the OAuth credential into
+the deployment's private secret file.
 
 Studio derives Google scopes from each connector's declared
 \texttt{access}. A read-only Sheets requirement requests
@@ -2832,7 +2832,9 @@ Studio derives Google scopes from each connector's declared
 an arbitrary existing spreadsheet. The broader scope applies to the account's
 spreadsheet files, not only to the configured tab. Use a dedicated account,
 a dedicated spreadsheet, or protected ranges when a narrower operational
-boundary is required.
+boundary is required. Studio records the scopes that Google actually granted.
+Connector checks, runs, and deployments stop early if those scopes no longer
+cover the selected workflow.
 
 \subsection{Gmail and Sheets in one workflow}
 
@@ -2873,6 +2875,13 @@ operations. It then creates and checks two named configurations:
 \end{itemize}
 Both configurations may use the same Google provider authorization. They are
 still separate resources and may be rebound independently.
+
+If Studio runs on a server without a browser, copy the displayed authorization
+command to the computer that has the browser and downloaded Desktop app JSON.
+The local command opens Google and prints one private result. Paste that result
+into Studio's hidden prompt. The browser callback remains on the local
+computer. The server needs no browser, client file, callback tunnel, or direct
+connection from the browser computer.
 
 A read-only Gmail requirement requests \texttt{gmail.readonly}. A write or
 read-write Gmail requirement requests \texttt{gmail.modify}. The call-intake

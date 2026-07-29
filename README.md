@@ -417,10 +417,11 @@ deploy call-intake
 The default reply mode creates Gmail drafts. Change it to `send` only after
 testing with a dedicated account. Before setup, enable the Gmail and Google
 Sheets APIs in one Google Cloud project and download a Desktop app OAuth
-client. Studio imports that client into private storage. If it is on another
-computer, Studio prints one `scp` command and removes the temporary upload
-after import. On an SSH-only server, it also prints exact loopback-forwarding
-commands for completing authorization in the local browser. Read-only
+client. If Studio runs on a server without a browser, it prints one command to
+run on the computer that has the browser and client file. Paste the private
+result back into Studio through its hidden prompt. No client file, `scp`
+command, or SSH tunnel is needed on the server. Studio checks that Google
+actually granted every permission required by the workflow. Read-only
 connector requirements request read-only Google scopes.
 Writing to an existing spreadsheet requires Google's broader spreadsheets
 scope. See

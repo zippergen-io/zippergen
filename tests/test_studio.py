@@ -3155,13 +3155,21 @@ def test_studio_guides_google_sheet_setup_and_builds_private_runtime_context(
     )
     studio, workspace, output = _studio(
         tmp_path,
-        responses=["1", str(credentials), sheet_url, "Calls"],
+        responses=[str(credentials), sheet_url, "Calls"],
     )
     (workspace.root / "workflow.py").write_text(GOOGLE_SHEETS_SOURCE)
     workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
     monkeypatch.setattr(
-        "zippergen.google_auth.authorize_google_client",
-        lambda value, *, scopes: '{"refresh_token":"private-google-token"}',
+        "zippergen.google_auth.authorize_google_client_result",
+        lambda value, *, scopes: __import__(
+            "zippergen.google_auth", fromlist=["GoogleAuthorization"]
+        ).GoogleAuthorization(
+            authorized_user_json=(
+                '{"refresh_token":"private-google-token"}'
+            ),
+            granted_scopes=tuple(scopes),
+            client_id="example.apps.googleusercontent.com",
+        ),
     )
     monkeypatch.setattr(
         "zippergen.google_auth.check_google_authorization",
@@ -3192,11 +3200,14 @@ def test_studio_guides_google_sheet_setup_and_builds_private_runtime_context(
     ) == '{"refresh_token":"private-google-token"}'
     assert workspace.connector_provider_secret(
         "google", "oauth_client_json"
-    ) is not None
+    ) is None
     assert (
         workspace.connector_provider_profiles()["google"]["client_storage"]
-        == "private Studio storage"
+        == "not retained by Studio"
     )
+    assert workspace.connector_provider_profiles()["google"][
+        "granted_scopes"
+    ]
     assert "credentials_file" not in (
         workspace.connector_provider_profiles()["google"]
     )
@@ -3231,7 +3242,6 @@ def test_studio_guides_one_google_authorization_for_gmail_and_sheets(
     studio, workspace, _output = _studio(
         tmp_path,
         responses=[
-            "1",
             str(credentials),
             "is:unread label:Calls",
             "sheet-123",
@@ -3242,10 +3252,18 @@ def test_studio_guides_one_google_authorization_for_gmail_and_sheets(
     workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
     requested_scopes = []
     monkeypatch.setattr(
-        "zippergen.google_auth.authorize_google_client",
+        "zippergen.google_auth.authorize_google_client_result",
         lambda value, *, scopes: (
             requested_scopes.extend(scopes)
-            or '{"refresh_token":"private-google-token"}'
+            or __import__(
+                "zippergen.google_auth", fromlist=["GoogleAuthorization"]
+            ).GoogleAuthorization(
+                authorized_user_json=(
+                    '{"refresh_token":"private-google-token"}'
+                ),
+                granted_scopes=tuple(scopes),
+                client_id="example.apps.googleusercontent.com",
+            )
         ),
     )
     monkeypatch.setattr(
@@ -3308,93 +3326,34 @@ def test_studio_guides_one_google_authorization_for_gmail_and_sheets(
     )
 
 
-def test_studio_imports_and_removes_a_private_google_client_upload(
+def test_studio_receives_remote_google_authorization_as_hidden_handoff(
     tmp_path,
     monkeypatch,
 ):
-    studio, workspace, output = _studio(tmp_path)
-    upload_path = (
-        workspace.directory
-        / "uploads"
-        / "google-oauth-client-123456.json"
-    )
-    answers = iter(
-        [
-            "2",
-            "/Users/example/Downloads/google-client.json",
-            "lmf-gpu",
-            "",
-        ]
+    from zippergen.google_auth import (
+        GOOGLE_SHEETS_SCOPE,
+        GoogleAuthorization,
+        encode_google_authorization,
     )
 
-    def answer(prompt: str) -> str:
-        value = next(answers)
-        if prompt.startswith("Press Enter after the upload"):
-            upload_path.write_text(GOOGLE_DESKTOP_CLIENT)
-        return value
-
-    studio.input = answer
-    monkeypatch.setattr(
-        "zippergen.studio_connectors.time.time_ns",
-        lambda: 123456,
+    handoff = encode_google_authorization(
+        GoogleAuthorization(
+            authorized_user_json=(
+                '{"client_id":"example.apps.googleusercontent.com",'
+                '"refresh_token":"private-google-token"}'
+            ),
+            granted_scopes=(GOOGLE_SHEETS_SCOPE,),
+            client_id="example.apps.googleusercontent.com",
+        )
     )
-    monkeypatch.setattr(
-        "zippergen.google_auth.authorize_google_client",
-        lambda value, *, scopes: '{"refresh_token":"private-google-token"}',
-    )
-    monkeypatch.setattr(
-        "zippergen.google_auth.check_google_authorization",
-        lambda value, *, scopes: value,
-    )
-
-    studio.execute("connector provider configure google")
-
-    assert not upload_path.exists()
-    assert workspace.connector_provider_secret(
-        "google", "oauth_client_json"
-    ) == json.dumps(
-        json.loads(GOOGLE_DESKTOP_CLIENT),
-        sort_keys=True,
-        separators=(",", ":"),
-    )
-    assert any(
-        "scp /Users/example/Downloads/google-client.json" in line
-        and "lmf-gpu:" in line
-        for line in output
-    )
-    assert all("private-client-secret" not in line for line in output)
-
-
-def test_studio_guides_remote_google_authorization_through_ssh(
-    tmp_path,
-    monkeypatch,
-):
-    credentials = tmp_path / "google-desktop.json"
-    credentials.write_text(GOOGLE_DESKTOP_CLIENT)
     studio, workspace, output = _studio(
         tmp_path,
-        responses=["1", str(credentials), "lmf-gpu", ""],
+        secret_responses=[handoff],
     )
-    studio._prompt_toolkit_enabled = True
+    # Batch Studio commands do not use prompt_toolkit. SSH detection must
+    # still select the browser-computer handoff instead of run_local_server.
+    assert studio._prompt_toolkit_enabled is False
     monkeypatch.setenv("SSH_CONNECTION", "local remote")
-    monkeypatch.setattr(
-        "zippergen.google_auth.available_google_callback_port",
-        lambda: 48321,
-    )
-    authorization = {}
-
-    def authorize(value, *, scopes, open_browser=True, port=0):
-        authorization.update(
-            scopes=tuple(scopes),
-            open_browser=open_browser,
-            port=port,
-        )
-        return '{"refresh_token":"private-google-token"}'
-
-    monkeypatch.setattr(
-        "zippergen.google_auth.authorize_google_client",
-        authorize,
-    )
     monkeypatch.setattr(
         "zippergen.google_auth.check_google_authorization",
         lambda value, *, scopes: value,
@@ -3402,19 +3361,75 @@ def test_studio_guides_remote_google_authorization_through_ssh(
 
     studio.execute("connector provider configure google")
 
-    assert authorization["open_browser"] is False
-    assert authorization["port"] == 48321
-    assert any("ssh -O check lmf-gpu" in line for line in output)
+    assert workspace.connector_provider_secret(
+        "google", "authorized_user_json"
+    ) == (
+        '{"client_id":"example.apps.googleusercontent.com",'
+        '"refresh_token":"private-google-token"}'
+    )
     assert any(
-        "ssh -O forward -L 48321:127.0.0.1:48321 lmf-gpu" in line
+        "zippergen connector authorize google "
+        "--scopes spreadsheets" in line
         for line in output
     )
-    assert (
-        workspace.connector_provider_profiles()["google"][
-            "authorization_ssh_host"
-        ]
-        == "lmf-gpu"
+    assert any("no SSH tunnel" in line for line in output)
+    assert all("private-client-secret" not in line for line in output)
+    assert all("private-google-token" not in line for line in output)
+    profile = workspace.connector_provider_profiles()["google"]
+    assert "authorization_ssh_host" not in profile
+    assert json.loads(profile["granted_scopes"]) == [GOOGLE_SHEETS_SCOPE]
+
+
+def test_google_scope_drift_blocks_runtime_context_before_resource_access(
+    tmp_path,
+):
+    from zippergen.google_auth import (
+        GOOGLE_SHEETS_READONLY_SCOPE,
+        GOOGLE_SHEETS_SCOPE,
     )
+
+    studio, workspace, _output = _studio(tmp_path)
+    (workspace.root / "workflow.py").write_text(GOOGLE_SHEETS_SOURCE)
+    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    workspace.save_connector_provider_profile(
+        "google",
+        {
+            "kind": "google",
+            "scopes": json.dumps([GOOGLE_SHEETS_SCOPE]),
+            "granted_scopes": json.dumps(
+                [GOOGLE_SHEETS_READONLY_SCOPE]
+            ),
+            "check_status": "available",
+        },
+    )
+    workspace.save_connector_provider_secret(
+        "google",
+        "authorized_user_json",
+        '{"refresh_token":"private-google-token"}',
+    )
+    workspace.save_connector_configuration(
+        "call-records",
+        {
+            "provider": "google",
+            "kind": "google-sheets",
+            "spreadsheet_id": "sheet-123",
+            "tab": "Calls",
+            "check_status": "available",
+        },
+    )
+    workspace.bind_connector(
+        "workflow.py:sample",
+        "call-records",
+        "call-records",
+    )
+    current, workflow, module = studio._current_context()
+
+    with pytest.raises(SystemExit, match="missing spreadsheets"):
+        studio._workflow_connector_environment(
+            workflow_spec=current,
+            workflow=workflow,
+            module=module,
+        )
 
 
 def test_studio_human_connector_assignment_needs_no_extra_requirement(

@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import os
 import re
-import shlex
 import sys
 import time
 from pathlib import Path
@@ -42,99 +41,9 @@ class StudioConnectorsMixin:
         except GoogleConnectorError as exc:
             raise SystemExit(str(exc)) from exc
 
-    def _upload_google_client_json(self) -> str:
-        upload_directory = self.workspace.directory / "uploads"
-        upload_directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-        upload_directory.chmod(0o700)
-        upload_path = upload_directory / (
-            f"google-oauth-client-{time.time_ns()}.json"
-        )
-        local_path = self.input(
-            "Absolute JSON path on your local computer "
-            "[/local/path/downloaded-client.json]: "
-        ).strip() or "/local/path/downloaded-client.json"
-        ssh_host = self.input(
-            "SSH server or alias [AI_SERVER]: "
-        ).strip() or "AI_SERVER"
-        self._google_ssh_host_hint = ssh_host
-        command = (
-            f"scp {shlex.quote(local_path)} "
-            f"{shlex.quote(f'{ssh_host}:{upload_path}')}"
-        )
-        self._emit_table(
-            "Private Google client upload",
-            [
-                ("Run on", "your local computer", None),
-                ("Command", command, None),
-                (
-                    "Destination",
-                    "private temporary Studio storage",
-                    "success",
-                ),
-            ],
-        )
-        confirmation = self.input(
-            "Press Enter after the upload, or type 'cancel': "
-        ).strip()
-        if confirmation.casefold() == "cancel":
-            raise SystemExit("Google provider configuration cancelled.")
-        if not upload_path.is_file():
-            raise SystemExit(
-                "The uploaded Google OAuth client was not found. Run the "
-                "displayed scp command, then try again."
-            )
-        try:
-            upload_path.chmod(0o600)
-            return self._read_google_client_json(upload_path)
-        finally:
-            upload_path.unlink(missing_ok=True)
-
-    def _collect_google_client_json(self, profile: dict[str, str]) -> str:
-        stored = self.workspace.connector_provider_secret(
-            "google", "oauth_client_json"
-        )
-        choices = []
-        if stored:
-            choices.append("Use the client already stored privately")
-        choices.extend(
-            [
-                "Use a file already on this computer",
-                "Upload from another computer",
-            ]
-        )
-        selected = self._select(
-            "Google OAuth client",
-            choices,
-            prompt="Select client source",
-        )
-        assert isinstance(selected, str)
-        if selected == "Use the client already stored privately":
-            assert stored is not None
-            return stored
-        if selected == "Upload from another computer":
-            return self._upload_google_client_json()
-
-        legacy_path = str(profile.get("credentials_file") or "")
-        entered = self.input(
-            (
-                f"Google OAuth desktop client JSON [{legacy_path}]: "
-                if legacy_path
-                else "Google OAuth desktop client JSON path: "
-            )
-        ).strip()
-        selected_path = entered or legacy_path
-        if not selected_path:
-            raise SystemExit(
-                "Select the OAuth Desktop app JSON downloaded from Google "
-                "Cloud."
-            )
-        return self._read_google_client_json(Path(selected_path))
-
     def _needs_remote_google_browser(self) -> bool:
-        """Recognize an interactive Studio session on an SSH-only host."""
+        """Recognize when authorization must run on a browser computer."""
 
-        if not getattr(self, "_prompt_toolkit_enabled", False):
-            return False
         if os.environ.get("SSH_CONNECTION") or os.environ.get("SSH_TTY"):
             return True
         return (
@@ -145,98 +54,124 @@ class StudioConnectorsMixin:
 
     def _authorize_google_provider(
         self,
-        client_json: str,
         *,
         scopes: tuple[str, ...],
         service_names: str,
-        profile: dict[str, str],
-    ) -> tuple[str, str | None]:
+    ):
         from zippergen.google_auth import (
-            authorize_google_client,
-            available_google_callback_port,
+            GoogleConnectorError,
+            authorize_google_client_result,
+            decode_google_authorization,
+            google_authorization_summary,
+            google_scope_names,
+            google_scopes_cover,
         )
 
-        if not self._needs_remote_google_browser():
+        if self._needs_remote_google_browser():
+            scope_argument = ",".join(google_scope_names(scopes))
+            command = (
+                "zippergen connector authorize google "
+                f"--scopes {scope_argument}"
+            )
+            self._emit_table(
+                "Google authorization on your browser computer",
+                [
+                    ("Run on", "the computer with your browser", None),
+                    ("Command", command, None),
+                    (
+                        "OAuth client",
+                        "stays on that computer",
+                        "success",
+                    ),
+                    (
+                        "Connection",
+                        "no SSH tunnel or server access is required",
+                        "success",
+                    ),
+                ],
+            )
+            self._info(
+                f"The command asks for your Desktop app JSON, opens Google "
+                f"for {service_names}, and prints one private result."
+            )
+            private_result = self.secret_input(
+                "Paste the private Google authorization result: "
+            ).strip()
+            if not private_result:
+                raise SystemExit(
+                    "Google provider configuration cancelled. The private "
+                    "authorization result was empty."
+                )
+            try:
+                result = decode_google_authorization(private_result)
+            except GoogleConnectorError as exc:
+                raise SystemExit(str(exc)) from exc
+        else:
+            entered = self.input(
+                "Google OAuth Desktop app JSON path: "
+            ).strip()
+            if not entered:
+                raise SystemExit(
+                    "Select the OAuth Desktop app JSON downloaded from Google "
+                    "Cloud."
+                )
+            client_json = self._read_google_client_json(Path(entered))
             self._info(
                 f"A browser window will ask you to authorize {service_names}. "
-                "Studio stores the resulting token privately."
+                "The client file is not copied into Studio."
             )
-            return authorize_google_client(client_json, scopes=scopes), None
+            try:
+                result = authorize_google_client_result(
+                    client_json,
+                    scopes=scopes,
+                )
+            except GoogleConnectorError as exc:
+                raise SystemExit(str(exc)) from exc
 
-        default_host = str(
-            getattr(self, "_google_ssh_host_hint", "")
-            or profile.get("authorization_ssh_host")
-            or "AI_SERVER"
-        )
-        entered_host = self.input(
-            f"SSH server or alias used from your browser computer "
-            f"[{default_host}]: "
-        ).strip()
-        ssh_host = entered_host or default_host
-        port = available_google_callback_port()
-        forward = f"{port}:127.0.0.1:{port}"
-        quoted_host = shlex.quote(ssh_host)
+        if not google_scopes_cover(result.granted_scopes, scopes):
+            missing = [
+                name
+                for scope, name in zip(
+                    scopes, google_scope_names(scopes), strict=True
+                )
+                if not google_scopes_cover(
+                    result.granted_scopes, (scope,)
+                )
+            ]
+            raise SystemExit(
+                "Google authorization did not grant: "
+                + ", ".join(missing)
+                + ". Run authorization again and leave those permissions "
+                "selected on Google's consent screen."
+            )
+        granted, client, expiry = google_authorization_summary(result)
         self._emit_table(
-            "Remote Google authorization",
+            "Google authorization received",
             [
-                ("Browser", "your local computer", None),
-                (
-                    "Check",
-                    f"ssh -O check {quoted_host}",
-                    None,
-                ),
-                (
-                    "Forward",
-                    f"ssh -O forward -L {forward} {quoted_host}",
-                    None,
-                ),
-                (
-                    "Without a master",
-                    f"ssh -N -L {forward} {quoted_host}",
-                    None,
-                ),
-                (
-                    "Then",
-                    "return here; Studio prints the Google URL to open locally",
-                    None,
-                ),
+                ("Granted", granted, "success"),
+                ("OAuth client", client, None),
+                ("Expiry", expiry, None),
             ],
         )
-        confirmation = self.input(
-            "Press Enter after the SSH forwarding is ready, or type 'cancel': "
-        ).strip()
-        if confirmation.casefold() == "cancel":
-            raise SystemExit("Google provider configuration cancelled.")
-        self._info(
-            f"Open the authorization URL below in your local browser. "
-            f"The callback uses forwarded port {port}."
-        )
-        authorized = authorize_google_client(
-            client_json,
-            scopes=scopes,
-            open_browser=False,
-            port=port,
-        )
-        self._emit_table(
-            "Remote authorization cleanup",
-            [
-                (
-                    "Multiplexed tunnel",
-                    f"ssh -O cancel -L {forward} {quoted_host}",
-                    None,
-                ),
-                (
-                    "Standalone tunnel",
-                    "close the terminal running ssh -N -L",
-                    None,
-                ),
-            ],
-        )
-        return authorized, ssh_host
+        return result
 
     @staticmethod
     def _google_profile_scopes(profile) -> tuple[str, ...]:
         raw = profile.get("scopes") if profile else None
+        if isinstance(raw, (tuple, list)):
+            return tuple(str(value) for value in raw)
+        if isinstance(raw, str) and raw:
+            try:
+                value = json.loads(raw)
+            except json.JSONDecodeError:
+                value = raw.split(",")
+            if isinstance(value, list):
+                return tuple(str(item) for item in value)
+        return ()
+
+    @staticmethod
+    def _google_profile_granted_scopes(profile) -> tuple[str, ...]:
+        raw = profile.get("granted_scopes") if profile else None
         if isinstance(raw, (tuple, list)):
             return tuple(str(value) for value in raw)
         if isinstance(raw, str) and raw:
@@ -499,9 +434,34 @@ class StudioConnectorsMixin:
                     raise ValueError("Google authorization is missing")
                 from zippergen.google_auth import (
                     check_google_authorization,
+                    google_scope_names,
                 )
 
                 scopes = self._google_profile_scopes(profile)
+                granted_scopes = self._google_profile_granted_scopes(profile)
+                if not granted_scopes:
+                    raise ValueError(
+                        "granted scopes were not recorded; reauthorize with "
+                        "'connector provider configure google'"
+                    )
+                if not self._google_scopes_cover(granted_scopes, scopes):
+                    missing = [
+                        name
+                        for scope, name in zip(
+                            scopes,
+                            google_scope_names(scopes),
+                            strict=True,
+                        )
+                        if not self._google_scopes_cover(
+                            granted_scopes, (scope,)
+                        )
+                    ]
+                    raise ValueError(
+                        "authorization is missing "
+                        + ", ".join(missing)
+                        + "; reauthorize with 'connector provider configure "
+                        "google'"
+                    )
                 refreshed = check_google_authorization(
                     authorized_user,
                     scopes=scopes or self._google_scopes_for_requirements(
@@ -706,7 +666,9 @@ class StudioConnectorsMixin:
     ) -> None:
         name = provider.casefold()
         scopes: tuple[str, ...] = ()
-        authorization_ssh_host: str | None = None
+        granted_scopes: tuple[str, ...] = ()
+        client_id = ""
+        credential_expiry = ""
         if name not in {"telegram", "google"}:
             raise SystemExit(
                 "Supported connector providers are telegram and google."
@@ -737,10 +699,6 @@ class StudioConnectorsMixin:
             google_profile = (
                 self.workspace.connector_provider_profiles().get(name, {})
             )
-            client_json = self._collect_google_client_json(google_profile)
-            self.workspace.save_connector_provider_secret(
-                name, "oauth_client_json", client_json
-            )
             scopes = self._google_scopes_for_requirements(
                 google_requirements
             )
@@ -760,23 +718,27 @@ class StudioConnectorsMixin:
                 })
             )
             try:
-                authorized_user, authorization_ssh_host = (
-                    self._authorize_google_provider(
-                        client_json,
-                        scopes=scopes,
-                        service_names=service_names,
-                        profile=google_profile,
-                    )
+                authorization = self._authorize_google_provider(
+                    scopes=scopes,
+                    service_names=service_names,
                 )
             except Exception as exc:
                 raise SystemExit(str(exc)) from exc
             self.workspace.save_connector_provider_secret(
-                name, "authorized_user_json", authorized_user
+                name,
+                "authorized_user_json",
+                authorization.authorized_user_json,
             )
+            self.workspace.remove_connector_provider_secret(
+                name, "oauth_client_json"
+            )
+            granted_scopes = authorization.granted_scopes
+            client_id = authorization.client_id
+            credential_expiry = authorization.expiry or ""
             detail = "Google authorization changed"
             success = (
-                "Configured Google provider; the OAuth client and token are "
-                "stored privately."
+                "Configured Google provider; only the authorized credential "
+                "is stored privately."
             )
         self.workspace.save_connector_provider_profile(
             name,
@@ -784,17 +746,13 @@ class StudioConnectorsMixin:
                 "kind": "human-delivery" if name == "telegram" else "google",
                 **(
                     {
-                        "client_storage": "private Studio storage",
+                        "client_storage": "not retained by Studio",
                         "scopes": json.dumps(list(scopes)),
-                        **(
-                            {
-                                "authorization_ssh_host": (
-                                    authorization_ssh_host
-                                )
-                            }
-                            if authorization_ssh_host
-                            else {}
+                        "granted_scopes": json.dumps(
+                            list(granted_scopes)
                         ),
+                        "client_id": client_id,
+                        "credential_expiry": credential_expiry,
                     }
                     if name == "google"
                     else {}
@@ -895,7 +853,7 @@ class StudioConnectorsMixin:
             required_scopes = self._google_scopes_for_requirements(
                 requirement_pairs
             )
-            configured_scopes = self._google_profile_scopes(profile)
+            configured_scopes = self._google_profile_granted_scopes(profile)
             if not self._google_scopes_cover(
                 configured_scopes,
                 required_scopes,
@@ -1109,7 +1067,9 @@ class StudioConnectorsMixin:
                 required_scopes = self._google_scopes_for_requirements(
                     google_requirements
                 )
-                configured_scopes = self._google_profile_scopes(profile)
+                configured_scopes = (
+                    self._google_profile_granted_scopes(profile)
+                )
                 if profile is None or not self._google_scopes_cover(
                     configured_scopes,
                     required_scopes,

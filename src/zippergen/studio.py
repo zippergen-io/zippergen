@@ -501,7 +501,6 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
         color: bool | None = None,
     ) -> None:
         self.workspace = workspace
-        self.workspace.cleanup_stale_connector_uploads()
         self.input = input_func
         self.output = output_func
         self._prompt_toolkit_enabled = (
@@ -7134,6 +7133,7 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
                 + ". Use 'connector setup'."
             )
         configurations = self.workspace.connector_configurations()
+        google_requirements: list[tuple[str, str]] = []
         for requirement in requirements:
             configuration_name = bindings.get(requirement.name)
             if configuration_name is None:
@@ -7149,6 +7149,45 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
                     f"Connector {requirement.name} requires "
                     f"{requirement.kind}, but {configuration_name} is "
                     f"{configuration.get('kind') or 'unknown'}."
+                )
+            if requirement.kind in {"gmail", "google-sheets"}:
+                google_requirements.append(
+                    (requirement.kind, requirement.access)
+                )
+        if google_requirements:
+            from zippergen.google_auth import google_scope_names
+
+            required_scopes = self._google_scopes_for_requirements(
+                google_requirements
+            )
+            profile = self.workspace.connector_provider_profiles().get(
+                "google"
+            )
+            granted_scopes = self._google_profile_granted_scopes(profile)
+            if not granted_scopes:
+                raise SystemExit(
+                    "The stored Google credential predates scope recording "
+                    "and must be re-created with "
+                    "'connector provider configure google'."
+                )
+            if not self._google_scopes_cover(
+                granted_scopes, required_scopes
+            ):
+                missing = [
+                    name
+                    for scope, name in zip(
+                        required_scopes,
+                        google_scope_names(required_scopes),
+                        strict=True,
+                    )
+                    if not self._google_scopes_cover(
+                        granted_scopes, (scope,)
+                    )
+                ]
+                raise SystemExit(
+                    "Google authorization does not cover this workflow: "
+                    + ", ".join(missing)
+                    + ". Use 'connector provider configure google'."
                 )
         names = list(dict.fromkeys([
             *assignments["lifelines"].values(),
@@ -7839,6 +7878,50 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
                 + ", ".join(missing)
                 + ". Use connector bind."
             )
+        google_requirements = [
+            (item.kind, item.access)
+            for item in requirements
+            if (
+                item.name in bindings
+                and item.kind in {"gmail", "google-sheets"}
+            )
+        ]
+        if google_requirements:
+            from zippergen.google_auth import google_scope_names
+
+            required_scopes = self._google_scopes_for_requirements(
+                google_requirements
+            )
+            profile = self.workspace.connector_provider_profiles().get(
+                "google"
+            )
+            granted_scopes = self._google_profile_granted_scopes(profile)
+            if not granted_scopes:
+                raise SystemExit(
+                    "Google authorization has no verified granted-scope "
+                    "record. Use 'connector provider configure google' before "
+                    "running or deploying."
+                )
+            if not self._google_scopes_cover(
+                granted_scopes, required_scopes
+            ):
+                missing_scopes = [
+                    name
+                    for scope, name in zip(
+                        required_scopes,
+                        google_scope_names(required_scopes),
+                        strict=True,
+                    )
+                    if not self._google_scopes_cover(
+                        granted_scopes, (scope,)
+                    )
+                ]
+                raise SystemExit(
+                    "Google authorization is missing "
+                    + ", ".join(missing_scopes)
+                    + ". Use 'connector provider configure google' before "
+                    "running or deploying."
+                )
 
         snapshot: dict[str, dict[str, object]] = {}
         arguments: list[str] = []

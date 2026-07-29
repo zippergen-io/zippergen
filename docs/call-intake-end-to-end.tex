@@ -149,9 +149,10 @@ Three server details still matter:
 \begin{enumerate}
   \item The server needs outbound HTTPS access to Google and to any remote
         model provider.
-  \item Google authorization needs a browser callback. A server with a
-        desktop browser handles this directly. An SSH-only server needs the
-        small tunnel described in Section~\ref{sec:oauth}.
+  \item Google authorization needs a browser callback. On an SSH-only server,
+        Studio asks you to run one authorization command on the computer that
+        has the browser. You paste the private result back into Studio. No SSH
+        tunnel is needed.
   \item A persistent Linux deployment needs a working user
         \texttt{systemd} manager. Some servers require an administrator to
         enable lingering for the account.
@@ -177,9 +178,10 @@ uv python install 3.12
 uv sync --project zippergen --python 3.12 --extra google
 \end{lstlisting}
 
-The \texttt{google} extra is needed by the Studio process that performs OAuth
-and checks Gmail and Sheets. Managed deployments detect the same connector
-requirements and install this extra automatically.
+The \texttt{google} extra is needed by the Studio process that checks Gmail
+and Sheets. It is also needed by the one-time authorization command on the
+browser computer. Managed deployments detect the same connector requirements
+and install this extra automatically.
 
 Start Studio from the outer directory with the nested environment:
 
@@ -326,8 +328,8 @@ Use one Google account for Gmail and the test Sheet.
 \end{enumerate}
 
 Keep the downloaded JSON outside the application repository. Do not create a
-server directory, choose a permanent server filename, or change permissions
-yourself. Studio imports the client into its private storage.
+server directory, upload the file, or choose a permanent server filename.
+The file remains on the computer that performs browser authorization.
 
 \section{Configure Gmail and Sheets in Studio}
 \label{sec:oauth}
@@ -341,26 +343,49 @@ connector setup
 Studio asks for:
 
 \begin{enumerate}
-  \item whether the OAuth desktop client JSON is already on the AI server or
-        must be uploaded
-  \item Google authorization in a browser
+  \item Google authorization on the computer that has a browser
   \item a Gmail search query
   \item a spreadsheet URL or ID
   \item the tab name
 \end{enumerate}
 
-If the JSON is already on the AI server, select
-\emph{Use a file already on this computer} and enter its path. Studio validates
-and imports it, so the original file is not needed afterward.
+If Studio and the browser run on the same computer, Studio asks for the
+downloaded JSON path and opens the browser directly. It does not retain the
+client file.
 
-If the JSON is on your local computer, select
-\emph{Upload from another computer}. Enter its absolute local path and the SSH
-host or alias used for the AI server. Studio creates a private temporary
-destination and prints one complete \texttt{scp} command. Run that single
-command in a local terminal, then return to Studio and press Enter. Studio
-validates and imports the client and removes the temporary upload. Later
-authorization changes reuse the privately stored client, so no path is asked
-for again.
+If Studio runs on the AI server, it prints a command like:
+
+\begin{lstlisting}[style=shell]
+zippergen connector authorize google \
+  --scopes gmail.modify,spreadsheets
+\end{lstlisting}
+
+Run the displayed command on the computer that has the browser and downloaded
+JSON file. The command asks for the file path, opens Google's consent page,
+and prints the permissions that Google granted. It then prints one long
+private result line. Return to the waiting Studio prompt and paste that line.
+The Studio prompt is hidden because the result contains a refresh token.
+
+The browser computer needs ZipperGen with Google support. After a published
+installation, install it once with:
+
+\begin{lstlisting}[style=shell]
+pip install "zippergen[google]"
+\end{lstlisting}
+
+When testing the current source checkout before that release, run the same
+displayed arguments through that checkout:
+
+\begin{lstlisting}[style=shell]
+uv run --project /path/to/zippergen --extra google \
+  zippergen connector authorize google \
+  --scopes gmail.modify,spreadsheets
+\end{lstlisting}
+
+Use the exact scopes that the server displays. The private result has a
+checksum, so Studio rejects an incomplete paste immediately. After accepting
+it, Studio shows only non-secret confirmation such as granted scopes and a
+short OAuth client prefix.
 
 A useful test query is:
 
@@ -371,27 +396,19 @@ is:unread in:inbox to:call-intake+test@example.com
 Replace the address with the real test recipient. Later, enter the spreadsheet
 URL and tab \texttt{Calls}.
 
-\begin{notebox}{OAuth on an SSH-only server}
-Studio detects an interactive SSH session and chooses an available callback
-port before authorization starts. It prints exact commands for a multiplexed
-SSH connection. In a second terminal on the local computer, first check the
-master connection and then add the displayed forwarding rule:
-\begin{lstlisting}[style=shell]
-ssh -O check AI_SERVER
-ssh -O forward -L 48321:127.0.0.1:48321 AI_SERVER
-\end{lstlisting}
-If no SSH master is configured, Studio also displays the equivalent
-\texttt{ssh -N -L} command, which must remain open in its terminal. Return to
-Studio and press Enter. Copy the Google authorization URL that appears into
-the local browser. After Google redirects the browser to
-\texttt{localhost:48321}, the tunnel carries the callback to Studio. Studio
-prints the cleanup command after authorization. Use the actual port displayed
-by Studio, not \texttt{48321}.
+\begin{notebox}{Why no SSH tunnel is needed}
+The browser callback returns to the same computer that runs the authorization
+helper. That computer creates the portable credential and Studio receives it
+through the hidden paste. The browser computer does not need network access to
+the AI server. The OAuth client JSON never reaches the server.
 \end{notebox}
 
 Studio requests Gmail and Sheets scopes because this workflow reads and
-modifies both services. It stores the resulting refresh credential privately.
-The project files contain no token.
+modifies both services. It verifies the scopes that Google actually granted
+before storing the resulting refresh credential privately. The project files
+contain no token. If a later workflow change needs another Google permission,
+connector checks, runs, and deployments stop with a reauthorization command
+instead of failing inside the live workflow.
 
 Check the complete connector state:
 

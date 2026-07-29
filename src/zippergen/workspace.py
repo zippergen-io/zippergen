@@ -38,8 +38,6 @@ GLOBAL_SETTINGS_NAME = "settings.json"
 PROMPT_INDEX_NAME = "index.toml"
 PROJECT_TASK_DIRECTORY = ".zippergen"
 CURRENT_TASK_NAME = "current-task.md"
-GOOGLE_CLIENT_UPLOAD_PATTERN = re.compile(r"google-oauth-client-\d+\.json")
-STALE_CONNECTOR_UPLOAD_SECONDS = 24 * 60 * 60
 ASSISTANT_RESULT_NAME = "assistant-result.json"
 SPECIFICATION_FILE_NAME = "specification.md"
 PENDING_REFINEMENT_NAME = "pending-refinement.md"
@@ -324,45 +322,6 @@ class Workspace:
         """Return the ephemeral, project-local assistant result handoff path."""
 
         return self.root / PROJECT_TASK_DIRECTORY / ASSISTANT_RESULT_NAME
-
-    def cleanup_stale_connector_uploads(
-        self,
-        *,
-        now: float | None = None,
-        max_age_seconds: float = STALE_CONNECTOR_UPLOAD_SECONDS,
-    ) -> tuple[Path, ...]:
-        """Remove abandoned Studio-owned credential uploads.
-
-        Active uploads and unrelated files are deliberately left alone.  The
-        age threshold avoids interfering with another Studio process that is
-        currently waiting for the user's ``scp`` command to finish.
-        """
-
-        upload_directory = self.directory / "uploads"
-        if not upload_directory.is_dir():
-            return ()
-        try:
-            upload_directory.chmod(0o700)
-            candidates = tuple(upload_directory.iterdir())
-        except OSError:
-            return ()
-
-        cutoff = (time.time() if now is None else now) - max_age_seconds
-        removed: list[Path] = []
-        for path in candidates:
-            if GOOGLE_CLIENT_UPLOAD_PATTERN.fullmatch(path.name) is None:
-                continue
-            try:
-                metadata = path.lstat()
-                if metadata.st_mtime > cutoff:
-                    continue
-                if not (path.is_file() or path.is_symlink()):
-                    continue
-                path.unlink()
-            except OSError:
-                continue
-            removed.append(path)
-        return tuple(removed)
 
     @property
     def pending_refinement_path(self) -> Path:
@@ -2717,6 +2676,20 @@ class Workspace:
     ) -> None:
         secrets = self.load_secrets()
         secrets[self.connector_provider_secret_name(provider, field)] = value
+        self.save_secrets(secrets)
+
+    def remove_connector_provider_secret(
+        self,
+        provider: str,
+        field: str,
+    ) -> None:
+        """Remove one private provider field when it is no longer needed."""
+
+        secrets = self.load_secrets()
+        secrets.pop(
+            self.connector_provider_secret_name(provider, field),
+            None,
+        )
         self.save_secrets(secrets)
 
     def remove_connector_provider_profile(self, name: str) -> None:

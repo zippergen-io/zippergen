@@ -3733,6 +3733,72 @@ def _add_guided_deployment_arguments(
     parser.add_argument("--no-doctor", action="store_true", help="Skip readiness checks.")
 
 
+def _connector_authorize_google_command(args) -> int:
+    """Authorize Google on the computer that owns the browser."""
+
+    from zippergen.google_auth import (
+        GoogleConnectorError,
+        authorize_google_client_result,
+        encode_google_authorization,
+        google_authorization_summary,
+        google_scope_names,
+        google_scopes_cover,
+        normalize_google_client_json,
+        parse_google_scopes,
+    )
+
+    try:
+        scopes = parse_google_scopes(args.scopes)
+        entered = str(args.client or "").strip()
+        if not entered:
+            entered = input("Google OAuth Desktop app JSON path: ").strip()
+        if not entered:
+            raise GoogleConnectorError(
+                "Select the OAuth Desktop app JSON downloaded from Google "
+                "Cloud."
+            )
+        path = Path(entered).expanduser().resolve()
+        if not path.is_file():
+            raise GoogleConnectorError(
+                f"Google OAuth desktop client JSON does not exist: {path}"
+            )
+        client_json = normalize_google_client_json(path.read_text())
+        result = authorize_google_client_result(
+            client_json,
+            scopes=scopes,
+        )
+        if not google_scopes_cover(result.granted_scopes, scopes):
+            missing = [
+                name
+                for scope, name in zip(
+                    scopes, google_scope_names(scopes), strict=True
+                )
+                if not google_scopes_cover(
+                    result.granted_scopes, (scope,)
+                )
+            ]
+            raise GoogleConnectorError(
+                "Google authorization did not grant: "
+                + ", ".join(missing)
+                + ". Run the command again and leave those permissions "
+                "selected on Google's consent screen."
+            )
+        granted, client, expiry = google_authorization_summary(result)
+        print("Google authorization completed.")
+        print(f"Granted scopes: {granted}")
+        print(f"OAuth client: {client}")
+        print(f"Credential expiry: {expiry}")
+        print(
+            "Paste the private result below into the waiting Studio prompt. "
+            "It contains a refresh token, so do not share or save it in "
+            "shell history."
+        )
+        print(encode_google_authorization(result))
+        return 0
+    except (OSError, GoogleConnectorError, ValueError) as exc:
+        raise SystemExit(str(exc)) from exc
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="zippergen")
     sub = ap.add_subparsers(dest="cmd")
@@ -3744,6 +3810,39 @@ def main(argv=None) -> int:
         action="append",
         default=[],
         help="Execute one Studio command and exit; repeat for several commands.",
+    )
+
+    connector = sub.add_parser(
+        "connector",
+        help="authorize a connector on this computer",
+    )
+    connector_sub = connector.add_subparsers(
+        dest="connector_action",
+        required=True,
+    )
+    connector_authorize = connector_sub.add_parser(
+        "authorize",
+        help="create a private authorization handoff",
+    )
+    authorize_sub = connector_authorize.add_subparsers(
+        dest="connector_provider",
+        required=True,
+    )
+    authorize_google = authorize_sub.add_parser(
+        "google",
+        help="authorize Google with this computer's browser",
+    )
+    authorize_google.add_argument(
+        "--scopes",
+        required=True,
+        help=(
+            "Comma-separated scopes: gmail.readonly, gmail.modify, "
+            "spreadsheets.readonly, spreadsheets"
+        ),
+    )
+    authorize_google.add_argument(
+        "--client",
+        help="OAuth Desktop app JSON path; prompts when omitted.",
     )
 
     dev = sub.add_parser("dev", help="run a workflow durably with guided inputs and inline human tasks")
@@ -3976,6 +4075,12 @@ def main(argv=None) -> int:
         return _studio_command(argparse.Namespace(project=None, workflow=None, command=[]))
     if args.cmd == "studio":
         return _studio_command(args)
+    if (
+        args.cmd == "connector"
+        and args.connector_action == "authorize"
+        and args.connector_provider == "google"
+    ):
+        return _connector_authorize_google_command(args)
     if args.cmd == "dev":
         if args.run_id and not args.resume:
             raise SystemExit("--run-id requires --resume.")

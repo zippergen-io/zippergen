@@ -71,34 +71,6 @@ def test_workspace_state_lives_outside_checkout_and_remembers_workflow(tmp_path)
     assert not (root / ".zippergen").exists()
 
 
-def test_workspace_cleans_only_stale_studio_google_uploads(tmp_path):
-    root = tmp_path / "project"
-    root.mkdir()
-    workspace = Workspace(root, home=tmp_path / "state")
-    upload_directory = workspace.directory / "uploads"
-    upload_directory.mkdir(parents=True, mode=0o755)
-    stale = upload_directory / "google-oauth-client-123.json"
-    recent = upload_directory / "google-oauth-client-456.json"
-    unrelated = upload_directory / "keep-me.json"
-    stale.write_text("stale")
-    recent.write_text("recent")
-    unrelated.write_text("unrelated")
-    os.utime(stale, (1_000, 1_000))
-    os.utime(recent, (100_000, 100_000))
-    os.utime(unrelated, (1_000, 1_000))
-
-    removed = workspace.cleanup_stale_connector_uploads(
-        now=100_000,
-        max_age_seconds=10_000,
-    )
-
-    assert removed == (stale,)
-    assert not stale.exists()
-    assert recent.exists()
-    assert unrelated.exists()
-    assert upload_directory.stat().st_mode & 0o777 == 0o700
-
-
 def test_workspace_creates_unique_managed_runs(tmp_path):
     root = tmp_path / "project"
     root.mkdir()

@@ -5,11 +5,15 @@ from zippergen.google_auth import (
     GOOGLE_GMAIL_READONLY_SCOPE,
     GOOGLE_SHEETS_READONLY_SCOPE,
     GOOGLE_SHEETS_SCOPE,
-    available_google_callback_port,
+    GoogleAuthorization,
+    decode_google_authorization,
+    encode_google_authorization,
     google_scope_for_access,
+    google_scope_names,
     google_scopes_cover,
     google_scopes_for_access,
     normalize_google_client_json,
+    parse_google_scopes,
 )
 
 
@@ -89,7 +93,52 @@ def test_google_client_json_must_be_a_desktop_app():
         normalize_google_client_json('{"web":{"client_id":"example"}}')
 
 
-def test_google_callback_port_is_a_loopback_tcp_port():
-    port = available_google_callback_port()
+def test_google_scope_names_round_trip_from_cli_aliases():
+    scopes = parse_google_scopes("gmail.readonly,spreadsheets")
 
-    assert 0 < port < 65536
+    assert scopes == tuple(sorted((
+        GOOGLE_GMAIL_READONLY_SCOPE,
+        GOOGLE_SHEETS_SCOPE,
+    )))
+    assert google_scope_names(scopes) == tuple(sorted((
+        "gmail.readonly",
+        "spreadsheets",
+    )))
+
+
+def test_google_authorization_handoff_is_checked_and_round_trips():
+    result = GoogleAuthorization(
+        authorized_user_json=(
+            '{"client_id":"example.apps.googleusercontent.com",'
+            '"refresh_token":"private-token","token_uri":"https://token"}'
+        ),
+        granted_scopes=(
+            GOOGLE_GMAIL_READONLY_SCOPE,
+            GOOGLE_SHEETS_SCOPE,
+        ),
+        client_id="example.apps.googleusercontent.com",
+        expiry="2026-08-01T12:00:00Z",
+    )
+
+    encoded = encode_google_authorization(result)
+    decoded = decode_google_authorization(encoded)
+
+    assert encoded.startswith("zg-google-v1.")
+    assert decoded == result
+    assert "private-token" not in encoded
+
+
+def test_google_authorization_handoff_rejects_truncation():
+    encoded = encode_google_authorization(
+        GoogleAuthorization(
+            authorized_user_json=(
+                '{"client_id":"example.apps.googleusercontent.com",'
+                '"refresh_token":"private-token"}'
+            ),
+            granted_scopes=(GOOGLE_GMAIL_READONLY_SCOPE,),
+            client_id="example.apps.googleusercontent.com",
+        )
+    )
+
+    with pytest.raises(RuntimeError, match="truncated or changed"):
+        decode_google_authorization(encoded[:-1] + "0")

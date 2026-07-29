@@ -700,19 +700,18 @@ connector setup
 run
 \end{lstlisting}
 
-\texttt{connector setup} imports a Google OAuth Desktop app client into private
-Studio storage, guides browser authorization, asks for a spreadsheet and tab,
-checks access, and binds the result to the workflow's logical
-\texttt{project-records} requirement. If the client JSON is on another
-computer, Studio prints one \texttt{scp} command and waits for the upload. The
-Python file contains the table columns, stable key, and exact read and write
-operations. It contains no spreadsheet ID, OAuth client, or token.
+\texttt{connector setup} guides browser authorization, asks for a spreadsheet
+and tab, checks access, and binds the result to the workflow's logical
+\texttt{project-records} requirement. The Python file contains the table
+columns, stable key, and exact read and write operations. It contains no
+spreadsheet ID, OAuth client, or token.
 
-On an SSH-only server, Studio does not try to open a browser there. It selects
-a loopback callback port and prints exact \texttt{ssh -O check} and
-\texttt{ssh -O forward -L} commands for the computer that has the browser. It
-also shows an \texttt{ssh -N -L} alternative when no multiplexed SSH master is
-available.
+On an SSH-only server, Studio does not try to open a browser there. It prints
+one \texttt{zippergen connector authorize google} command to run on the
+computer that has the browser and downloaded Desktop app JSON. That command
+opens the browser and prints one private result. Paste the result into
+Studio's hidden prompt. The client file stays on the browser computer. No
+\texttt{scp} command or SSH tunnel is needed.
 
 The larger call-intake example uses the same command for two resources:
 
@@ -723,13 +722,14 @@ connector setup
 connector assignments check
 \end{lstlisting}
 
-Studio imports one Google OAuth Desktop app client. Later changes reuse that
-private copy. Local or SSH-guided browser authorization covers the Gmail and Google Sheets
-capabilities required by this workflow.
+Local browser authorization, or the private handoff for an SSH-only server,
+covers the Gmail and Google Sheets capabilities required by this workflow.
+Studio stores the resulting credential but not the Desktop app client file.
 Studio then asks for a Gmail search query, a spreadsheet, and a tab. The
 workflow source contains none of these machine-specific values. Its default
 reply mode creates Gmail drafts, so a first deployment does not send mail
-automatically. Read-only requirements request read-only scopes. Writing to an
+automatically. Studio records and checks the scopes that Google actually
+granted. Read-only requirements request read-only scopes. Writing to an
 existing spreadsheet requires Google's broader spreadsheets scope.
 
 Before this setup, enable both the Gmail API and Google Sheets API in the same
