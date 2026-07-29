@@ -531,6 +531,10 @@ deploy logs call-intake-check
 
 Repeat \texttt{deploy logs call-intake-check} when you want the newest log
 output. Reading the log does not stop the managed deployment.
+After troubleshooting, use
+\texttt{deploy logs reset call-intake-check} to archive the visible history
+and begin with an empty log view. This does not stop the deployment or alter
+its durable workflow state.
 
 In another Studio terminal opened from the same outer project directory, use:
 

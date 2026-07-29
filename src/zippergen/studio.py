@@ -175,6 +175,15 @@ def _is_explicit_studio_syntax(parts: list[str]) -> bool:
             return len(args) <= 3
         if action == "remove":
             return len(args) <= 4
+        if action == "logs" and len(args) >= 2:
+            return (
+                args[1].casefold() == "reset"
+                and len(args) <= 4
+                and all(
+                    not value.startswith("-") or value == "--yes"
+                    for value in args[2:]
+                )
+            )
         if action in {
             "list",
             "show",
@@ -352,6 +361,12 @@ def _is_allowed_natural_plan_command(parts: list[str]) -> bool:
                     and not args[1].startswith("-")
                     and lowered[2] == "--purge"
                 )
+            )
+        if lowered[:2] == ["logs", "reset"]:
+            return (
+                len(args) == 2
+                or len(args) == 3
+                and not args[2].startswith("-")
             )
         if (
             lowered[0]
@@ -1325,7 +1340,23 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
                 }
                 and len(args) == 1
             ):
-                return self._deployment_completion_candidates()
+                values = self._deployment_completion_candidates()
+                if args[0].lower() == "logs":
+                    values.insert(
+                        0,
+                        ("reset", "archive and reset visible log history"),
+                    )
+                return values
+            if (
+                len(args) >= 2
+                and args[0].lower() == "logs"
+                and args[1].lower() == "reset"
+            ):
+                if len(args) == 2:
+                    return self._deployment_completion_candidates()
+                if len(args) == 3:
+                    return [("--yes", "confirm log-history reset")]
+                return []
             if args[0].lower() == "inspect" and len(args) == 2:
                 return [
                     (name, "workflow participant")
@@ -3433,6 +3464,11 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
         if (
             tuple(lowered[:2]) == ("deploy", "remove")
             and "--purge" not in lowered
+            and "--yes" not in lowered
+        ):
+            parts.append("--yes")
+        if (
+            tuple(lowered[:3]) == ("deploy", "logs", "reset")
             and "--yes" not in lowered
         ):
             parts.append("--yes")
@@ -9135,6 +9171,9 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
         if action == "remove":
             self.remove_deployment(rest)
             return
+        if action == "logs" and rest and rest[0].casefold() == "reset":
+            self.reset_deployment_logs(rest[1:])
+            return
         if action in {"tasks", "approve", "trace"}:
             if len(rest) > 1:
                 raise SystemExit(
@@ -9163,6 +9202,94 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
             "Use deploy list, show, inspect, doctor, logs, tasks, approve, "
             "trace, start, restart, stop, or remove."
         )
+
+    def reset_deployment_logs(self, args: list[str]) -> None:
+        yes = False
+        names: list[str] = []
+        for argument in args:
+            if argument == "--yes":
+                yes = True
+            elif argument.startswith("--"):
+                raise SystemExit(
+                    "Use deploy logs reset [NAME] [--yes]."
+                )
+            else:
+                names.append(argument)
+        if len(names) > 1:
+            raise SystemExit("Use deploy logs reset [NAME] [--yes].")
+
+        name = self._deployment_name(names[0] if names else None)
+        from zippergen.serve import _load_deployment_profile
+        from zippergen.studio_deployments import (
+            DeploymentRemovalError,
+            reset_deployment_log,
+        )
+
+        profile = _load_deployment_profile(name)
+        log = Path(str(profile.get("log") or "")).expanduser()
+        size = log.stat().st_size if log.is_file() else 0
+        raw_offset = profile.get("log_generation_offset")
+        visible_size = (
+            size - raw_offset
+            if isinstance(raw_offset, int) and 0 <= raw_offset <= size
+            else size
+        )
+        self._emit_table(
+            "Deployment log reset",
+            [
+                ("Deployment", name, None),
+                ("Log", log, None),
+                ("Visible history", f"{visible_size:,} byte(s)", None),
+                (
+                    "Effect",
+                    "archive existing history; keep the service, workflow "
+                    "run, and durable store unchanged",
+                    "info",
+                ),
+            ],
+        )
+        if not yes and not self._confirm_action(
+            f"Archive and reset visible logs for {name}? [y/N]: ",
+            cancel_message=(
+                "Deployment log reset cancelled; nothing was changed."
+            ),
+            default=False,
+        ):
+            return
+        try:
+            result = reset_deployment_log(name, profile)
+        except DeploymentRemovalError as exc:
+            raise SystemExit(str(exc)) from exc
+
+        self.workspace.update(last_deployment=name)
+        self._success(f"Deployment log history reset: {name}")
+        self._emit_table(
+            "Log reset result",
+            [
+                ("Active log", result.log, None),
+                (
+                    "Archived",
+                    (
+                        f"{result.archived_bytes:,} byte(s) — "
+                        f"{result.archive}"
+                        if result.archive is not None
+                        else "none; the log was already empty"
+                    ),
+                    "success",
+                ),
+                (
+                    "Current history",
+                    "empty; future entries appear normally",
+                    "success",
+                ),
+                (
+                    "Service",
+                    "unchanged; no stop or restart was performed",
+                    "success",
+                ),
+            ],
+        )
+        self._emit_next(f"deploy logs {name} · deploy show {name}")
 
     def remove_deployment(self, args: list[str]) -> None:
         purge = False

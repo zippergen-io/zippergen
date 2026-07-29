@@ -1829,6 +1829,10 @@ stored instruction, draft, reviewer notes, and decision labels;
 no. \texttt{deploy trace} shows recent durable events without requiring a
 SQLite path.
 \texttt{deploy logs} shows the service output and returns;
+\texttt{deploy logs reset} archives the currently visible history and begins
+a fresh logical log generation without stopping the service or changing its
+workflow run and durable store. Studio asks for confirmation and reports the
+private archive path. New output continues in the active log normally.
 \texttt{deploy restart} deliberately proves that the same
 pending task survives a process restart. Then \texttt{deploy stop} prevents this
 finite tutorial workflow from being supervised indefinitely. Later chapters
@@ -1962,6 +1966,7 @@ deploy approve [NAME] # review and answer a pending decision
 deploy trace [NAME] # recent durable deployment events
 deploy doctor # detailed readiness checks
 deploy logs # recent service output
+deploy logs reset [NAME] # archive and reset visible log history
 deploy start # start the remembered installed service
 deploy restart # restart it
 deploy stop # stop it without deleting durable state

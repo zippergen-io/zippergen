@@ -54,6 +54,14 @@ class DeploymentRemovalResult:
     archive: Path | None
 
 
+@dataclass(frozen=True)
+class DeploymentLogResetResult:
+    name: str
+    log: Path
+    archived_bytes: int
+    archive: Path | None
+
+
 def _path_present(path: Path) -> bool:
     return path.exists() or path.is_symlink()
 
@@ -337,6 +345,91 @@ def _unique_removal_directory(name: str, *, purging: bool) -> Path:
         suffix += 1
     destination.mkdir(mode=0o700)
     return destination
+
+
+def _unique_log_archive(name: str) -> Path:
+    root = _zippergen_home() / "trash" / "deployment-logs"
+    root.mkdir(parents=True, exist_ok=True)
+    root.chmod(0o700)
+    timestamp = time.strftime("%Y%m%d-%H%M%S")
+    base = f"{_slug(name)}-{timestamp}.log"
+    destination = root / base
+    suffix = 2
+    while destination.exists():
+        destination = root / f"{_slug(name)}-{timestamp}-{suffix}.log"
+        suffix += 1
+    return destination
+
+
+def reset_deployment_log(
+    name: str,
+    profile: dict[str, object],
+) -> DeploymentLogResetResult:
+    """Archive visible log history and begin a new logical log generation."""
+
+    raw_log = profile.get("log")
+    if not raw_log:
+        raise DeploymentRemovalError(
+            f"Deployment {name} has no log path configured."
+        )
+    log = Path(str(raw_log)).expanduser()
+    if log.exists() and (not log.is_file() or log.is_symlink()):
+        raise DeploymentRemovalError(
+            f"Expected a regular deployment log file: {log}"
+        )
+
+    try:
+        boundary = log.stat().st_size if log.is_file() else 0
+    except OSError as exc:
+        raise DeploymentRemovalError(
+            f"Could not inspect deployment log {log}: {exc}"
+        ) from exc
+
+    raw_offset = profile.get("log_generation_offset")
+    start = (
+        raw_offset
+        if isinstance(raw_offset, int) and 0 <= raw_offset <= boundary
+        else 0
+    )
+    visible_bytes = boundary - start
+    archive: Path | None = None
+    try:
+        if visible_bytes:
+            archive = _unique_log_archive(name)
+            with log.open("rb") as source, archive.open("xb") as destination:
+                source.seek(start)
+                remaining = visible_bytes
+                while remaining:
+                    chunk = source.read(min(1024 * 1024, remaining))
+                    if not chunk:
+                        raise OSError(
+                            "the deployment log became shorter during archival"
+                        )
+                    destination.write(chunk)
+                    remaining -= len(chunk)
+            archive.chmod(0o600)
+
+        profile["log_generation_offset"] = boundary
+        profile["log_history_reset_at"] = time.strftime(
+            "%Y-%m-%dT%H:%M:%S%z"
+        )
+        _deployment_profile_path(name).write_text(
+            json.dumps(profile, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+    except Exception as exc:
+        if archive is not None:
+            archive.unlink(missing_ok=True)
+        raise DeploymentRemovalError(
+            f"Could not reset deployment log history safely: {exc}"
+        ) from exc
+
+    return DeploymentLogResetResult(
+        name=name,
+        log=log,
+        archived_bytes=visible_bytes,
+        archive=archive,
+    )
 
 
 def remove_deployment_artifacts(

@@ -1123,6 +1123,38 @@ def test_logs_command_tails_deployment_log(tmp_path, monkeypatch, capsys):
     assert captured.out.splitlines() == ["second", "third"]
 
 
+def test_logs_command_shows_only_the_current_log_generation(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    workflow_path = tmp_path / "deploy_workflow.py"
+    workflow_path.write_text(WORKFLOW_SOURCE)
+    zippergen_home = tmp_path / "zg-home"
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(zippergen_home))
+    main([
+        "deploy-local",
+        f"{workflow_path}:hello",
+        "--name",
+        "hello-prod",
+    ])
+    capsys.readouterr()
+    profile_path = zippergen_home / "deployments" / "hello-prod.json"
+    profile = json.loads(profile_path.read_text())
+    log_path = Path(profile["log"])
+    old = b"old failure\n"
+    current = b"current start\ncurrent ready\n"
+    log_path.write_bytes(old + current)
+    profile["log_generation_offset"] = len(old)
+    profile_path.write_text(json.dumps(profile))
+
+    rc = main(["logs", "hello-prod", "--tail", "80"])
+
+    captured = capsys.readouterr()
+    assert rc == 0
+    assert captured.out.splitlines() == ["current start", "current ready"]
+
+
 def test_doctor_reports_deployment_checks(tmp_path, monkeypatch, capsys):
     workflow_path = tmp_path / "deploy_workflow.py"
     workflow_path.write_text(WORKFLOW_SOURCE)

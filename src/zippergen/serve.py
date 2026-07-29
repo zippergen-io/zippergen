@@ -800,8 +800,21 @@ def _logs_command(args) -> int:
         print(f"Log does not exist yet: {log_path}")
         return 0
 
+    raw_offset = profile.get("log_generation_offset")
+    initial_offset = (
+        raw_offset
+        if isinstance(raw_offset, int)
+        and 0 <= raw_offset <= log_path.stat().st_size
+        else 0
+    )
+
+    def visible_lines() -> list[str]:
+        content = log_path.read_bytes()
+        offset = initial_offset if initial_offset <= len(content) else 0
+        return content[offset:].decode(errors="replace").splitlines()
+
     def print_tail() -> int:
-        lines = log_path.read_text(errors="replace").splitlines()
+        lines = visible_lines()
         for line in lines[-args.tail:]:
             print(line)
         return len(lines)
@@ -811,7 +824,7 @@ def _logs_command(args) -> int:
         return 0
     while True:
         time.sleep(args.interval)
-        lines = log_path.read_text(errors="replace").splitlines()
+        lines = visible_lines()
         for line in lines[seen:]:
             print(line)
         seen = len(lines)

@@ -279,6 +279,7 @@ def test_studio_completion_is_context_and_project_aware(tmp_path):
     assert _completions(studio, "workflow select wor") == [
         "workflow.py:sample"
     ]
+    assert "reset" in _completions(studio, "deploy logs ")
     assert _completions(studio, "workflow show agent W") == ["Writer"]
     assert _completions(studio, "model assign W") == [
         "Writer",
@@ -4352,6 +4353,59 @@ def test_deployment_log_cause_uses_current_generation_boundary(tmp_path):
             }
         )
         is None
+    )
+
+
+def test_studio_resets_deployment_log_without_touching_the_service(
+    tmp_path,
+    monkeypatch,
+):
+    studio, workspace, output = _studio(tmp_path, responses=("yes",))
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(workspace.home))
+    deployments = workspace.home / "deployments"
+    deployments.mkdir(parents=True)
+    log = workspace.home / "logs" / "reviewed-answer.log"
+    log.parent.mkdir(parents=True)
+    old = b"older generation\n"
+    current = b"current failure\ncurrent retry\n"
+    log.write_bytes(old + current)
+    profile_path = deployments / "reviewed-answer.json"
+    profile_path.write_text(
+        json.dumps(
+            {
+                "name": "reviewed-answer",
+                "project_root": str(workspace.root),
+                "workflow": "workflow.py:sample",
+                "cwd": str(workspace.root),
+                "store": str(
+                    workspace.home / "runs" / "reviewed-answer.sqlite"
+                ),
+                "log": str(log),
+                "log_generation_offset": len(old),
+            }
+        )
+    )
+    workspace.update(last_deployment="reviewed-answer")
+
+    studio.execute("deploy logs reset")
+
+    updated = json.loads(profile_path.read_text())
+    archives = list(
+        (workspace.home / "trash" / "deployment-logs").glob(
+            "reviewed-answer-*.log"
+        )
+    )
+    assert updated["log_generation_offset"] == len(old + current)
+    assert len(archives) == 1
+    assert archives[0].read_bytes() == current
+    assert log.read_bytes() == old + current
+    assert any(
+        "Service" in line and "no stop or restart" in line
+        for line in output
+    )
+    assert any(
+        "Current history" in line and "empty" in line
+        for line in output
     )
 
 

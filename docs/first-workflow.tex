@@ -628,8 +628,13 @@ deploy tasks
 deploy approve
 deploy trace
 deploy logs
+deploy logs reset
 deploy stop
 \end{lstlisting}
+
+\texttt{deploy logs reset} is optional. It archives the visible log history
+and begins a fresh log view without stopping the service or changing the
+durable store.
 
 The finite workflow should reach a waiting human task. Each named deployment
 owns one stable logical store, so normal operation never requires selecting or

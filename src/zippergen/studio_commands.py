@@ -393,6 +393,12 @@ COMMANDS: tuple[CommandSpec, ...] = (
         "read-only",
     ),
     CommandSpec(
+        ("deploy", "logs", "reset"),
+        "deploy logs reset [NAME] [--yes]",
+        "archive and reset visible deployment log history",
+        "destructive",
+    ),
+    CommandSpec(
         ("deploy", "tasks"),
         "deploy tasks [NAME]",
         "show pending decisions and their complete context",

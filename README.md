@@ -352,6 +352,7 @@ deploy tasks review-demo
 deploy approve review-demo
 deploy trace review-demo
 deploy logs review-demo
+deploy logs reset review-demo
 deploy restart review-demo
 deploy stop review-demo
 deploy remove review-demo
