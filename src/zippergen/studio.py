@@ -4831,10 +4831,22 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
         validation_kind: StatusKind = "warning"
         accepted = "not available"
         accepted_kind: StatusKind = "warning"
+        llm_action_count = 0
         if current:
             try:
                 _current, workflow, module = self._current_context()
                 workflow_name = f"{workflow.name} · {current}"
+                raw_action_sites = workflow_semantics(
+                    workflow,
+                    module,
+                ).get("action_sites")
+                if isinstance(raw_action_sites, list):
+                    llm_action_count = sum(
+                        1
+                        for site in raw_action_sites
+                        if isinstance(site, dict)
+                        and site.get("kind") == "llm"
+                    )
                 result = _validate_workflow(workflow, module)
                 validation = "valid" if result["valid"] else "invalid"
                 validation_kind = "success" if result["valid"] else "error"
@@ -4896,11 +4908,15 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
             f"{accepted}"
         )
 
-        model_count = 0
+        model_default = "none"
+        model_override_count = 0
         connector_count = 0
         if current:
             model_assignments = self.workspace.model_assignment_profile(current)
-            model_count = len(model_assignments.get("lifelines") or {}) + len(
+            model_default = str(model_assignments.get("default") or "none")
+            model_override_count = len(
+                model_assignments.get("lifelines") or {}
+            ) + len(
                 model_assignments.get("actions") or {}
             )
             connector_assignments = (
@@ -4912,8 +4928,11 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
                 self.workspace.connector_binding_profile(current)
             )
         self._emit(
-            f"├── Models · {model_count} explicit assignment"
-            f"{'' if model_count == 1 else 's'}"
+            f"├── Models · default {model_default} · "
+            f"{model_override_count} override"
+            f"{'' if model_override_count == 1 else 's'} · "
+            f"{llm_action_count} LLM action"
+            f"{'' if llm_action_count == 1 else 's'}"
         )
         self._emit(
             f"├── Connectors · {connector_count} assignment"

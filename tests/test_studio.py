@@ -3283,7 +3283,18 @@ def test_studio_current_is_a_complete_project_dashboard(tmp_path):
 def test_studio_project_is_the_headless_project_inventory(tmp_path):
     studio, workspace, output = _studio(tmp_path)
     workspace.initialize_project(name="Sample project")
-    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    current = workspace.select_workflow(
+        "workflow.py:sample",
+        cwd=workspace.root,
+    )
+    default_configuration = workspace.ensure_model_configuration(
+        "local:qwen2.5:14b"
+    )
+    workspace.save_model_assignment_profile(
+        current,
+        default=default_configuration,
+        lifelines={},
+    )
     workspace.specification_path.write_text("Create an echo workflow.\n")
 
     studio.execute("project")
@@ -3292,7 +3303,10 @@ def test_studio_project_is_the_headless_project_inventory(tmp_path):
     assert "Project · Sample project" in rendered
     assert "├── Workflow · sample · workflow.py:sample" in rendered
     assert "│   ├── Specification" in rendered
-    assert "├── Models" in rendered
+    assert (
+        f"├── Models · default {default_configuration} · "
+        "0 overrides · 1 LLM action"
+    ) in rendered
     assert "├── Connectors" in rendered
     assert "├── Runs" in rendered
     assert "└── Deployments" in rendered
@@ -3396,6 +3410,11 @@ def test_studio_guides_google_sheet_setup_and_builds_private_runtime_context(
     (workspace.root / "workflow.py").write_text(GOOGLE_SHEETS_SOURCE)
     workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
     monkeypatch.setattr(
+        studio,
+        "_needs_remote_google_browser",
+        lambda: False,
+    )
+    monkeypatch.setattr(
         "zippergen.google_auth.authorize_google_client_result",
         lambda value, *, scopes: __import__(
             "zippergen.google_auth", fromlist=["GoogleAuthorization"]
@@ -3486,6 +3505,11 @@ def test_studio_guides_one_google_authorization_for_gmail_and_sheets(
     )
     (workspace.root / "workflow.py").write_text(GMAIL_AND_SHEETS_SOURCE)
     workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    monkeypatch.setattr(
+        studio,
+        "_needs_remote_google_browser",
+        lambda: False,
+    )
     requested_scopes = []
     monkeypatch.setattr(
         "zippergen.google_auth.authorize_google_client_result",
@@ -3619,6 +3643,11 @@ def test_connector_setup_keeps_two_sheet_requirements_independent(
     )
     (workspace.root / "workflow.py").write_text(TWO_SHEETS_SOURCE)
     workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    monkeypatch.setattr(
+        studio,
+        "_needs_remote_google_browser",
+        lambda: False,
+    )
     monkeypatch.setattr(
         "zippergen.google_auth.authorize_google_client_result",
         lambda value, *, scopes: __import__(
