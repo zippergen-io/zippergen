@@ -22,6 +22,8 @@ def test_command_registry_has_unique_paths_and_derives_user_surfaces():
     assert ("deploy", "show") in paths
     assert ("deploy", "inspect") in paths
     assert ("deploy", "trace") in paths
+    assert ("deploy", "storage") in paths
+    assert ("deploy", "storage", "compact") in paths
     assert ("deploy", "remove") in paths
     assert not any(path[0] == "deployment" for path in paths)
     assert not any(
@@ -56,6 +58,8 @@ def test_command_registry_owns_risk_and_natural_language_catalog():
     assert command_spec(["workflow", "show", "protocol"]).risk == "read-only"
     assert command_spec(["run", "approve"]).risk == "execution"
     assert command_spec(["deploy", "trace"]).risk == "read-only"
+    assert command_spec(["deploy", "storage"]).risk == "read-only"
+    assert command_spec(["deploy", "storage", "compact"]).risk == "destructive"
     assert command_spec(["deploy", "remove"]).risk == "destructive"
     catalog = natural_command_catalog()
     assert "workflow discard" in catalog

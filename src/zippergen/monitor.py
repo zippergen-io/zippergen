@@ -243,6 +243,100 @@ class MonitorState:
         """Deep copy of the current field-view table."""
         return _copy_field_view(self.field_view)
 
+    def snapshot_state(self) -> dict[str, object]:
+        """Return JSON-safe bounded state for durable loop checkpoints."""
+
+        formula_indexes = {
+            id(formula): index
+            for index, formula in enumerate(self.subformulas)
+        }
+        return {
+            "version": 1,
+            "name": self.name,
+            "lifelines": list(self.lifelines),
+            "formulas": [repr(formula) for formula in self.subformulas],
+            "vc": dict(self.vc),
+            "view": {
+                lifeline: {
+                    str(formula_indexes[formula_id]): bool(value)
+                    for formula_id, value in values.items()
+                    if formula_id in formula_indexes
+                }
+                for lifeline, values in self.view.items()
+            },
+            "field_view": self.snapshot_field_view(),
+            "val": {
+                str(formula_indexes[formula_id]): bool(value)
+                for formula_id, value in self._val.items()
+                if formula_id in formula_indexes
+            },
+        }
+
+    def restore_state(self, state: dict[str, object]) -> None:
+        """Restore a state produced by snapshot_state after full validation."""
+
+        if state.get("version") != 1:
+            raise ValueError("Unsupported CPL monitor snapshot version.")
+        if state.get("name") != self.name:
+            raise ValueError("CPL monitor snapshot belongs to another lifeline.")
+        if state.get("lifelines") != self.lifelines:
+            raise ValueError("CPL monitor lifelines changed since the snapshot.")
+        formulas = [repr(formula) for formula in self.subformulas]
+        if state.get("formulas") != formulas:
+            raise ValueError("CPL formulas changed since the snapshot.")
+        raw_vc = state.get("vc")
+        raw_view = state.get("view")
+        raw_field_view = state.get("field_view")
+        raw_val = state.get("val")
+        if not isinstance(raw_vc, dict):
+            raise ValueError("CPL monitor snapshot has no vector clock.")
+        if not isinstance(raw_view, dict) or not isinstance(raw_field_view, dict):
+            raise ValueError("CPL monitor snapshot has invalid views.")
+        if not isinstance(raw_val, dict):
+            raise ValueError("CPL monitor snapshot has invalid formula values.")
+
+        formula_ids = [id(formula) for formula in self.subformulas]
+
+        def decode_values(raw: object) -> dict[int, bool]:
+            if not isinstance(raw, dict):
+                raise ValueError("CPL monitor formula view is invalid.")
+            decoded: dict[int, bool] = {}
+            for raw_index, value in raw.items():
+                try:
+                    index = int(str(raw_index))
+                    formula_id = formula_ids[index]
+                except (ValueError, IndexError) as exc:
+                    raise ValueError(
+                        "CPL monitor formula index is invalid."
+                    ) from exc
+                if not isinstance(value, bool):
+                    raise ValueError("CPL monitor formula value is invalid.")
+                decoded[formula_id] = value
+            return decoded
+
+        vc = {
+            lifeline: int(raw_vc.get(lifeline, 0))
+            for lifeline in self.lifelines
+        }
+        view = {
+            lifeline: decode_values(raw_view.get(lifeline, {}))
+            for lifeline in self.lifelines
+        }
+        field_view = {
+            lifeline: _copy_field_map(
+                raw_field_view.get(lifeline, {})
+                if isinstance(raw_field_view.get(lifeline, {}), dict)
+                else {}
+            )
+            for lifeline in self.lifelines
+        }
+        val = decode_values(raw_val)
+
+        self.vc = vc
+        self.view = view
+        self.field_view = field_view
+        self._val = val
+
 
 class _AttrProxy(dict):
     """Dict subclass that also supports attribute-style access.

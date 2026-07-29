@@ -593,7 +593,7 @@ def test_run_sqlite_formula_replays_persistent_store_without_duplicates(tmp_path
     assert conn.execute("SELECT COUNT(*) FROM workflow_results").fetchone()[0] == 1
 
 
-def test_run_sqlite_formula_loop_replays_without_monitor_unsafe_snapshots(tmp_path):
+def test_run_sqlite_formula_loop_replays_from_monitor_snapshot(tmp_path):
     path = str(tmp_path / "formula-loop.sqlite")
     first = run_sqlite(
         sqlite_formula_loop,
@@ -615,7 +615,12 @@ def test_run_sqlite_formula_loop_replays_without_monitor_unsafe_snapshots(tmp_pa
     after = conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
 
     assert first == 2 and second == 2
-    assert snapshots == 0
+    assert snapshots == 1
+    snapshot = conn.execute(
+        "SELECT monitor FROM snapshots WHERE role=?",
+        ("SQLiteFormulaLoopOwner",),
+    ).fetchone()
+    assert snapshot is not None and snapshot[0] is not None
     assert after == before
 
 

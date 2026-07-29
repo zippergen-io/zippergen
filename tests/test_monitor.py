@@ -189,6 +189,21 @@ def test_snapshot_view_is_deep_copy():
     assert m.view["A"][id(phi)] is True
 
 
+def test_monitor_state_roundtrip_uses_stable_formula_indexes():
+    phi = atom(lambda env: env.get("approved", False), src="approved")
+    guard = Y(phi)
+    first = make_monitor("A", ["A", "B"], guard)
+    first.on_event("act", {"approved": True})
+
+    state = first.snapshot_state()
+    second = make_monitor("A", ["A", "B"], guard)
+    second.restore_state(state)
+
+    assert second.snapshot_state() == state
+    second.on_event("act", {"approved": True})
+    assert second.guard_value(guard) is True
+
+
 def test_field_view_snapshots_mutable_local_values():
     phi = atom(lambda env: True)
     m = make_monitor("A", ["A"], phi)

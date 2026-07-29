@@ -18,8 +18,8 @@ Limitations (v1):
 - No snapshot fires inside a parallel region (the rebuilt residual changes
   identity each step), so a crash replays the region from the enclosing loop
   boundary; replay-length bounding inside parallel is a later refinement.
-- CPL Formula guards use full replay for now because role snapshots do not yet
-  persist monitor state.
+- CPL Formula monitor state is persisted with role loop snapshots, so recovery
+  can resume from the same bounded causal-past summary.
 - A blocking external act in one parallel branch stalls that role's other
   branches until it returns (no intra-role concurrency of external calls).
 
@@ -101,6 +101,7 @@ from zippergen.syntax import (
 )
 from zippergen.projection import project
 from zippergen.store import (
+    RECOVERY_COMPACTION_VERSION,
     complete_human_task,
     ensure_human_task_token,
     list_workflow_results,
@@ -3121,6 +3122,7 @@ def _prepare_deployment_environment(
     zippergen_extras = _deployment_zippergen_extras(profile)
     profile["zippergen_extras"] = list(zippergen_extras)
     profile["zippergen_runtime"] = _zippergen_runtime_provenance()
+    profile["recovery_compaction_version"] = RECOVERY_COMPACTION_VERSION
     if skip_install:
         profile["python"] = str(profile.get("python") or sys.executable)
         return
@@ -3637,6 +3639,7 @@ def _deploy_local_command(args) -> int:
         "inputs": inputs,
         "timeout": args.timeout,
         "execution": "sqlite",
+        "recovery_compaction_version": RECOVERY_COMPACTION_VERSION,
         "created_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
         "python": sys.executable,
     }

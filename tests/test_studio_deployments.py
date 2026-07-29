@@ -5,6 +5,7 @@ import pytest
 
 from zippergen.studio_deployments import (
     DeploymentRemovalError,
+    compact_deployment_logs,
     present_deployment_artifacts,
     remove_deployment_artifacts,
     unregister_deployment_service,
@@ -93,6 +94,68 @@ def test_remove_deployment_artifacts_purge_leaves_no_archive(
     trash = home / "trash" / "deployments"
     assert trash.is_dir()
     assert list(trash.iterdir()) == []
+
+
+def test_compact_deployment_logs_rotates_and_bounds_archives(
+    tmp_path,
+    monkeypatch,
+):
+    home, profile, _store, log = _deployment_fixture(
+        tmp_path,
+        monkeypatch,
+    )
+    log.write_bytes(b"current deployment log\n")
+    archive_root = home / "trash" / "deployment-logs"
+    archive_root.mkdir(parents=True)
+    for index in range(4):
+        archive = archive_root / f"review-demo-20260101-00000{index}.log"
+        archive.write_bytes(f"old-{index}".encode())
+        archive.touch()
+    monkeypatch.setattr(
+        "zippergen.studio_deployments._deployment_service_status",
+        lambda _name: {
+            "state": "not-loaded",
+            "detail": "service is stopped",
+        },
+    )
+
+    result = compact_deployment_logs(
+        "review-demo",
+        profile,
+        keep_archives=3,
+    )
+
+    assert result.archived_bytes == len(b"current deployment log\n")
+    assert result.removed_archives == 2
+    assert log.read_bytes() == b""
+    archives = sorted(archive_root.glob("review-demo-*.log"))
+    assert len(archives) == 3
+    assert result.archive in archives
+    stored = json.loads(
+        (home / "deployments" / "review-demo.json").read_text()
+    )
+    assert stored["log_generation_offset"] == 0
+    assert stored["log_compacted_at"]
+
+
+def test_compact_deployment_logs_refuses_a_running_service(
+    tmp_path,
+    monkeypatch,
+):
+    _home, profile, _store, _log = _deployment_fixture(
+        tmp_path,
+        monkeypatch,
+    )
+    monkeypatch.setattr(
+        "zippergen.studio_deployments._deployment_service_status",
+        lambda _name: {
+            "state": "running",
+            "detail": "service is running",
+        },
+    )
+
+    with pytest.raises(DeploymentRemovalError, match="Stop deployment"):
+        compact_deployment_logs("review-demo", profile)
 
 
 def test_remove_refuses_a_store_shared_with_another_deployment(

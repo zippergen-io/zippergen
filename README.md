@@ -359,10 +359,12 @@ deploy inspect review-demo --watch
 deploy tasks review-demo
 deploy approve review-demo
 deploy trace review-demo
+deploy storage review-demo
 deploy logs review-demo
 deploy logs reset review-demo
 deploy restart review-demo
 deploy stop review-demo
+deploy storage compact review-demo
 deploy remove review-demo
 ```
 
@@ -375,6 +377,18 @@ restore the Studio screen. The run or deployment keeps running.
 It reports changes to the specification, accepted workflow, models, idle
 policy, assistant, connectors, and local model endpoint. A changed project does
 not alter a running deployment. Redeploy to apply those changes.
+
+`deploy storage` shows the size of the durable store, WAL, active log, and log
+archives. It also shows event counts, snapshot coverage, and how much history
+can be removed safely. After stopping the deployment,
+`deploy storage compact NAME` keeps the newest 10,000 diagnostic trace events,
+removes completed events that are covered by recovery snapshots, rotates the
+active log, and keeps the three newest log archives. Seed inputs, pending
+work, and events still needed for recovery remain.
+Studio then compacts the database file and truncates the WAL while preserving
+the stable event identifiers used for recovery.
+Deployments created before this feature must be redeployed once before safe
+compaction is enabled.
 
 The service policy restarts failed workflows. It does not restart a finite
 workflow after successful completion. `deploy stop` preserves the deployment.

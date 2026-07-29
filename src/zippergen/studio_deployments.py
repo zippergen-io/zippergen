@@ -62,6 +62,16 @@ class DeploymentLogResetResult:
     archive: Path | None
 
 
+@dataclass(frozen=True)
+class DeploymentLogCompactionResult:
+    name: str
+    log: Path
+    archived_bytes: int
+    archive: Path | None
+    removed_archives: int
+    removed_archive_bytes: int
+
+
 def _path_present(path: Path) -> bool:
     return path.exists() or path.is_symlink()
 
@@ -429,6 +439,90 @@ def reset_deployment_log(
         log=log,
         archived_bytes=visible_bytes,
         archive=archive,
+    )
+
+
+def compact_deployment_logs(
+    name: str,
+    profile: dict[str, object],
+    *,
+    keep_archives: int = 3,
+) -> DeploymentLogCompactionResult:
+    """Rotate a stopped deployment log and retain a bounded archive set."""
+
+    if keep_archives < 0:
+        raise ValueError("keep_archives must be zero or greater")
+    service = _deployment_service_status(name)
+    if service["state"] not in {"not-loaded", "completed"}:
+        raise DeploymentRemovalError(
+            f"Stop deployment {name} before rotating its log. "
+            f"Current service state: {service['detail']}"
+        )
+
+    raw_log = profile.get("log")
+    if not raw_log:
+        raise DeploymentRemovalError(
+            f"Deployment {name} has no log path configured."
+        )
+    log = Path(str(raw_log)).expanduser()
+    if _path_present(log) and (
+        not log.is_file() or log.is_symlink()
+    ):
+        raise DeploymentRemovalError(
+            f"Expected a regular deployment log file: {log}"
+        )
+
+    archive: Path | None = None
+    archived_bytes = 0
+    removed_archives = 0
+    removed_archive_bytes = 0
+    try:
+        if log.is_file():
+            archived_bytes = log.stat().st_size
+        if archived_bytes:
+            archive = _unique_log_archive(name)
+            shutil.copyfile(log, archive)
+            archive.chmod(0o600)
+        log.parent.mkdir(parents=True, exist_ok=True)
+        log.parent.chmod(0o700)
+        log.write_bytes(b"")
+        log.chmod(0o600)
+
+        root = _zippergen_home() / "trash" / "deployment-logs"
+        candidates = sorted(
+            (
+                path
+                for path in root.glob(f"{_slug(name)}-*.log")
+                if path.is_file() and not path.is_symlink()
+            ),
+            key=lambda path: (path.stat().st_mtime_ns, path.name),
+            reverse=True,
+        ) if root.is_dir() else []
+        for old in candidates[keep_archives:]:
+            removed_archive_bytes += old.stat().st_size
+            old.unlink()
+            removed_archives += 1
+
+        profile["log_generation_offset"] = 0
+        profile["log_compacted_at"] = time.strftime(
+            "%Y-%m-%dT%H:%M:%S%z"
+        )
+        _deployment_profile_path(name).write_text(
+            json.dumps(profile, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+    except Exception as exc:
+        raise DeploymentRemovalError(
+            f"Could not rotate deployment logs safely: {exc}"
+        ) from exc
+
+    return DeploymentLogCompactionResult(
+        name=name,
+        log=log,
+        archived_bytes=archived_bytes,
+        archive=archive,
+        removed_archives=removed_archives,
+        removed_archive_bytes=removed_archive_bytes,
     )
 
 

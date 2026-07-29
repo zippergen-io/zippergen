@@ -29,6 +29,7 @@ from zippergen.store import (
     DurableChannel,
     load_snapshot,
     record_trace_event,
+    recovery_high_water,
     write_execution_state,
     write_snapshot,
 )
@@ -68,16 +69,20 @@ def _floor_coherent(conn, role: str, floor: dict) -> bool:
         out = floor["out"]; cursors = floor["cursors"]; journal = floor["journal"]
     except (KeyError, TypeError):
         return False
+    recorded = recovery_high_water(conn, role)
     max_out = conn.execute(
         "SELECT MAX(rowid) FROM events WHERE sender=? AND kind IN ('msg','ctrl')",
         (role,),
     ).fetchone()[0] or 0
+    max_out = max(int(max_out), recorded["out"])
     if out > max_out:
         return False
     max_journal = conn.execute(
-        "SELECT MAX(rowid) FROM events WHERE sender=? AND kind IN ('act','decision')",
+        "SELECT MAX(rowid) FROM events "
+        "WHERE sender=? AND kind IN ('act','decision','effect')",
         (role,),
     ).fetchone()[0] or 0
+    max_journal = max(int(max_journal), recorded["journal"])
     if journal > max_journal:
         return False
     durable = {ck: c for ck, c in conn.execute(
@@ -85,20 +90,45 @@ def _floor_coherent(conn, role: str, floor: dict) -> bool:
     return all(v <= durable.get(k, 0) for k, v in cursors.items())
 
 
-def _try_resume(conn, role: str, local_stmt, env: dict):
+def _try_resume(conn, role: str, local_stmt, env: dict, monitor=None):
     """Return (env, residual, since) from a valid snapshot, else (env, local_stmt, None)."""
     snap = load_snapshot(conn, role)
     if snap is None:
         return env, local_stmt, None
     node = resolve_path(local_stmt, snap["locator"])
-    if isinstance(node, (WhileStmt, WhileRecvStmt)) and _floor_coherent(conn, role, snap["floor"]):
+    if (
+        isinstance(node, (WhileStmt, WhileRecvStmt))
+        and _floor_coherent(conn, role, snap["floor"])
+    ):
+        if monitor is not None:
+            monitor_state = snap.get("monitor")
+            if not isinstance(monitor_state, dict):
+                return env, local_stmt, None
+            try:
+                monitor.restore_state(monitor_state)
+            except (TypeError, ValueError):
+                return env, local_stmt, None
         return dict(snap["env"]), node, snap["floor"]
     return env, local_stmt, None   # stale/invalid -> full replay from seed
 
 
-def _maybe_snapshot(conn, role: str, env: dict, locator: list, ch) -> None:
+def _maybe_snapshot(
+    conn,
+    role: str,
+    env: dict,
+    locator: list,
+    ch,
+    monitor=None,
+) -> None:
     try:
-        write_snapshot(conn, role, env, locator, ch.position())
+        write_snapshot(
+            conn,
+            role,
+            env,
+            locator,
+            ch.position(),
+            monitor.snapshot_state() if monitor is not None else None,
+        )
     except (TypeError, ValueError, sqlite3.OperationalError):
         # Best-effort: a snapshot is a rebuildable cache and must never fail a
         # healthy role — skip on a non-serializable env OR a transient store
@@ -220,13 +250,13 @@ class RoleRunner:
         self.stop = stop
 
         self.loop_paths = loop_node_paths(local_stmt)
-        if self.monitor is None:
-            self.env, self.residual, since = _try_resume(conn, role, local_stmt, env)
-        else:
-            # Snapshots do not persist monitor state yet. Monitored roles are
-            # still correct by full replay; resume snapshots once monitor
-            # snapshots are part of the store format.
-            self.env, self.residual, since = env, local_stmt, None
+        self.env, self.residual, since = _try_resume(
+            conn,
+            role,
+            local_stmt,
+            env,
+            self.monitor,
+        )
         self.channel = DurableChannel(conn, role, since=since)
         self.journal = JournalContext(self.channel, action_node_paths(local_stmt))
         self.trace = self._make_trace(trace)
@@ -474,13 +504,14 @@ class RoleRunner:
                 # pass 2 (no txn): consume the just-committed act row, apply env, advance
                 self.residual, resolved = self.step(self.residual, self.trace)
                 assert resolved, "durable resolve failed to consume the just-committed act row"
-                if self.monitor is None and id(self.residual) in self.loop_paths:
+                if id(self.residual) in self.loop_paths:
                     _maybe_snapshot(
                         self.conn,
                         self.role,
                         self.env,
                         self.loop_paths[id(self.residual)],
                         self.channel,
+                        self.monitor,
                     )
                 self._set_residual_state()
                 self._reset_idle_backoff()
@@ -491,13 +522,14 @@ class RoleRunner:
                 self._reset_idle_backoff()
                 # At a loop-iteration boundary the residual is (by identity) a loop
                 # node in the projected program; checkpoint env + position there.
-                if self.monitor is None and id(self.residual) in self.loop_paths:
+                if id(self.residual) in self.loop_paths:
                     _maybe_snapshot(
                         self.conn,
                         self.role,
                         self.env,
                         self.loop_paths[id(self.residual)],
                         self.channel,
+                        self.monitor,
                     )
                 self._set_residual_state()
             else:

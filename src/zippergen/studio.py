@@ -69,6 +69,7 @@ from zippergen.studio_models import (
     _canonical_provider,
     _validate_model_spec,
 )
+from zippergen.studio_storage import StudioStorageMixin
 from zippergen.view import ViewOptions, workflow_view_data
 from zippergen.workspace import (
     ASSISTANT_TASK_CONTRACT_VERSION,
@@ -99,6 +100,37 @@ def _valid_inspection_syntax(
     if any(value.startswith("-") and value != "--watch" for value in lowered):
         return False
     return len([value for value in lowered if value != "--watch"]) <= max_positionals
+
+
+def _valid_storage_compact_syntax(args: list[str]) -> bool:
+    positionals = 0
+    yes = False
+    trace_keep = False
+    index = 0
+    while index < len(args):
+        value = args[index].casefold()
+        if value == "--yes":
+            if yes:
+                return False
+            yes = True
+        elif value == "--trace-keep":
+            if trace_keep or index + 1 >= len(args):
+                return False
+            trace_keep = True
+            index += 1
+            try:
+                if int(args[index]) < 0:
+                    return False
+            except ValueError:
+                return False
+        elif value.startswith("-"):
+            return False
+        else:
+            positionals += 1
+            if positionals > 1:
+                return False
+        index += 1
+    return True
 
 
 @dataclass(frozen=True)
@@ -201,6 +233,13 @@ def _is_explicit_studio_syntax(parts: list[str]) -> bool:
                 args[1:],
                 max_positionals=2,
             )
+        if action == "storage":
+            rest = args[1:]
+            if not rest:
+                return True
+            if rest[0].casefold() != "compact":
+                return len(rest) == 1 and not rest[0].startswith("-")
+            return _valid_storage_compact_syntax(args[2:])
         if action == "remove":
             return len(args) <= 4
         if action == "logs" and len(args) >= 2:
@@ -379,6 +418,16 @@ def _is_allowed_natural_plan_command(parts: list[str]) -> bool:
             return True
         if lowered[0] == "inspect":
             return len(args) <= 3
+        if lowered[0] == "storage":
+            if len(args) <= 2 and (
+                len(args) == 1 or lowered[1] != "compact"
+            ):
+                return True
+            return (
+                len(args) >= 2
+                and lowered[1] == "compact"
+                and _valid_storage_compact_syntax(args[2:])
+            )
         if lowered[0] == "remove":
             return (
                 (
@@ -407,6 +456,7 @@ def _is_allowed_natural_plan_command(parts: list[str]) -> bool:
                 "tasks",
                 "approve",
                 "trace",
+                "storage",
                 "start",
                 "restart",
                 "stop",
@@ -534,7 +584,7 @@ class StudioCompleter(Completer):
             )
 
 
-class Studio(StudioModelsMixin, StudioConnectorsMixin):
+class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
     def __init__(
         self,
         workspace: Workspace,
@@ -695,12 +745,19 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
                 "tasks",
                 "approve",
                 "trace",
+                "storage",
                 "start",
                 "restart",
                 "stop",
                 "remove",
             }
         ):
+            if (
+                parts[1].casefold() == "storage"
+                and len(parts) > 2
+                and parts[2].casefold() == "compact"
+            ):
+                return "deploy storage compact"
             return f"deploy {parts[1].casefold()}"
         if len(parts) > 1 and command in {
             "workflow",
@@ -1363,6 +1420,7 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
                     "tasks",
                     "approve",
                     "trace",
+                    "storage",
                     "start",
                     "restart",
                     "stop",
@@ -1379,6 +1437,11 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
                     values.insert(
                         0,
                         ("--watch", "refresh participant positions every second"),
+                    )
+                elif args[0].lower() == "storage":
+                    values.insert(
+                        0,
+                        ("compact", "show or apply a safe compaction plan"),
                     )
                 return values
             if (
@@ -1408,6 +1471,21 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
                 if len(positionals) == 2:
                     return [
                         ("--watch", "refresh participant positions every second")
+                    ]
+                return []
+            if args[0].lower() == "storage":
+                if len(args) == 2 and args[1].lower() == "compact":
+                    return [
+                        *self._deployment_completion_candidates(),
+                        ("--trace-keep", "number of recent trace events to keep"),
+                        ("--yes", "confirm safe compaction"),
+                    ]
+                if "compact" in {value.lower() for value in args[1:]}:
+                    if args[-1].lower() == "--trace-keep":
+                        return []
+                    return [
+                        ("--trace-keep", "number of recent trace events to keep"),
+                        ("--yes", "confirm safe compaction"),
                     ]
                 return []
             if args[0].lower() == "remove":
@@ -3119,6 +3197,7 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
                 "tasks",
                 "approve",
                 "trace",
+                "storage",
                 "start",
                 "restart",
                 "stop",
@@ -3558,6 +3637,11 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
             parts.append("--yes")
         if (
             tuple(lowered[:3]) == ("deploy", "logs", "reset")
+            and "--yes" not in lowered
+        ):
+            parts.append("--yes")
+        if (
+            tuple(lowered[:3]) == ("deploy", "storage", "compact")
             and "--yes" not in lowered
         ):
             parts.append("--yes")
@@ -9970,6 +10054,12 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
         if action == "inspect":
             self.inspect_deployment(rest)
             return
+        if action == "storage":
+            if rest and rest[0].casefold() == "compact":
+                self.compact_deployment_storage(rest[1:])
+            else:
+                self.show_deployment_storage(rest)
+            return
         if action == "remove":
             self.remove_deployment(rest)
             return
@@ -10002,7 +10092,7 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
             return
         raise SystemExit(
             "Use deploy list, show, inspect, doctor, logs, tasks, approve, "
-            "trace, start, restart, stop, or remove."
+            "trace, storage, start, restart, stop, or remove."
         )
 
     def reset_deployment_logs(self, args: list[str]) -> None:

@@ -12,6 +12,9 @@ import time
 from collections import deque
 
 
+RECOVERY_COMPACTION_VERSION = 1
+
+
 class ReplayMismatch(Exception):
     """A step re-executing during replay diverged from the committed log
     (different payload/locator/kind). Raised loudly rather than corrupting state."""
@@ -48,7 +51,14 @@ CREATE TABLE IF NOT EXISTS snapshots (
   role    TEXT PRIMARY KEY,
   env     BLOB NOT NULL,            -- json-encoded local env (scalars)
   locator BLOB NOT NULL,            -- json-encoded child-index path to the loop node
-  floor   BLOB NOT NULL            -- json-encoded per-channel replay floor
+  floor   BLOB NOT NULL,            -- json-encoded per-channel replay floor
+  monitor BLOB                     -- optional json-encoded CPL monitor state
+);
+
+CREATE TABLE IF NOT EXISTS recovery_high_water (
+  role    TEXT PRIMARY KEY,
+  out     INTEGER NOT NULL DEFAULT 0,
+  journal INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS execution_states (
@@ -146,6 +156,16 @@ def open_store(path: str) -> sqlite3.Connection:
             time.sleep(0.05)
 
     conn.executescript(SCHEMA)
+    columns = {
+        str(row[1])
+        for row in conn.execute("PRAGMA table_info(snapshots)").fetchall()
+    }
+    if "monitor" not in columns:
+        try:
+            conn.execute("ALTER TABLE snapshots ADD COLUMN monitor BLOB")
+        except sqlite3.OperationalError as exc:
+            if "duplicate column name" not in str(exc).lower():
+                raise
     return conn
 
 
@@ -153,16 +173,31 @@ def chan_key(sender: str, receiver: str, channel: str) -> str:
     return f"{sender}|{receiver}|{channel}"
 
 
-def write_snapshot(conn, role: str, env: dict, locator: list, floor: dict) -> None:
+def write_snapshot(
+    conn,
+    role: str,
+    env: dict,
+    locator: list,
+    floor: dict,
+    monitor: dict | None = None,
+) -> None:
     # Serialize BEFORE opening the transaction so a non-serializable env raises
     # here (caller skips the snapshot) without leaving a dangling transaction.
-    payload = (role, json.dumps(env), json.dumps(locator), json.dumps(floor))
+    payload = (
+        role,
+        json.dumps(env),
+        json.dumps(locator),
+        json.dumps(floor),
+        json.dumps(monitor) if monitor is not None else None,
+    )
     conn.execute("BEGIN IMMEDIATE")
     try:
         conn.execute(
-            "INSERT INTO snapshots(role, env, locator, floor) VALUES(?,?,?,?) "
+            "INSERT INTO snapshots(role, env, locator, floor, monitor) "
+            "VALUES(?,?,?,?,?) "
             "ON CONFLICT(role) DO UPDATE SET env=excluded.env, "
-            "locator=excluded.locator, floor=excluded.floor",
+            "locator=excluded.locator, floor=excluded.floor, "
+            "monitor=excluded.monitor",
             payload,
         )
         conn.execute("COMMIT")
@@ -173,12 +208,64 @@ def write_snapshot(conn, role: str, env: dict, locator: list, floor: dict) -> No
 
 def load_snapshot(conn, role: str) -> dict | None:
     row = conn.execute(
-        "SELECT env, locator, floor FROM snapshots WHERE role=?", (role,)
+        "SELECT env, locator, floor, monitor FROM snapshots WHERE role=?",
+        (role,),
     ).fetchone()
     if row is None:
         return None
-    return {"env": json.loads(row[0]), "locator": json.loads(row[1]),
-            "floor": json.loads(row[2])}
+    snapshot = {
+        "env": json.loads(row[0]),
+        "locator": json.loads(row[1]),
+        "floor": json.loads(row[2]),
+    }
+    if row[3] is not None:
+        snapshot["monitor"] = json.loads(row[3])
+    return snapshot
+
+
+def _update_recovery_high_water(
+    conn,
+    role: str,
+    *,
+    out: int = 0,
+    journal: int = 0,
+) -> None:
+    conn.execute(
+        "INSERT INTO recovery_high_water(role,out,journal) VALUES(?,?,?) "
+        "ON CONFLICT(role) DO UPDATE SET "
+        "out=MAX(recovery_high_water.out, excluded.out), "
+        "journal=MAX(recovery_high_water.journal, excluded.journal)",
+        (role, out, journal),
+    )
+
+
+def backfill_recovery_high_water(conn) -> None:
+    """Preserve monotonic replay high-water marks before event compaction."""
+
+    for role, out, journal in conn.execute(
+        "SELECT sender, "
+        "MAX(CASE WHEN kind IN ('msg','ctrl') THEN rowid ELSE 0 END), "
+        "MAX(CASE WHEN kind IN ('act','decision','effect') "
+        "THEN rowid ELSE 0 END) "
+        "FROM events GROUP BY sender"
+    ).fetchall():
+        _update_recovery_high_water(
+            conn,
+            str(role),
+            out=int(out or 0),
+            journal=int(journal or 0),
+        )
+
+
+def recovery_high_water(conn, role: str) -> dict[str, int]:
+    row = conn.execute(
+        "SELECT out,journal FROM recovery_high_water WHERE role=?",
+        (role,),
+    ).fetchone()
+    return {
+        "out": int(row[0]) if row is not None else 0,
+        "journal": int(row[1]) if row is not None else 0,
+    }
 
 
 def write_execution_state(
@@ -651,15 +738,16 @@ class DurableChannel:
         return bool(self._replay_outbox) or any(self._replay_inbox.values())
 
     def position(self) -> dict:
-        """The committed replay floor: own-send high-water + per-channel cursors."""
+        """Committed own-send, receive-cursor, and journal replay floors."""
         row = self.conn.execute(
             "SELECT MAX(rowid) FROM events WHERE sender=? AND kind IN ('msg','ctrl')",
             (self.role,),
         ).fetchone()
+        durable = recovery_high_water(self.conn, self.role)
         return {
-            "out": row[0] or 0,
+            "out": max(int(row[0] or 0), durable["out"]),
             "cursors": {chan_key(*key): rowid for key, rowid in self._consumed.items()},
-            "journal": self._journal_consumed,
+            "journal": max(self._journal_consumed, durable["journal"]),
         }
 
     def journal_position(self) -> int:
@@ -674,7 +762,13 @@ class DurableChannel:
             "VALUES(?,?,?,?,?,?)",
             (self.role, None, None, "act", json.dumps(payload), None),
         )
-        return _lastrowid(cur)
+        rowid = _lastrowid(cur)
+        _update_recovery_high_water(
+            self.conn,
+            self.role,
+            journal=rowid,
+        )
+        return rowid
 
     def record_decision(self, payload: dict) -> int:
         """INSERT a decision-journal row and advance the cursor past it (the
@@ -685,6 +779,11 @@ class DurableChannel:
             (self.role, None, None, "decision", json.dumps(payload), None),
         )
         rowid = _lastrowid(cur)
+        _update_recovery_high_water(
+            self.conn,
+            self.role,
+            journal=rowid,
+        )
         self._journal_seen.add(rowid)
         self._journal_consumed = max(self._journal_consumed, rowid)
         return rowid
@@ -761,7 +860,13 @@ class DurableChannel:
             (sender, receiver, channel, "msg", json.dumps(list(values)),
              _encode_causal_stamp(vc, view, field_view)),
         )
-        return _lastrowid(cur)
+        rowid = _lastrowid(cur)
+        _update_recovery_high_water(
+            self.conn,
+            sender,
+            out=rowid,
+        )
+        return rowid
 
     def try_get(self, sender: str, receiver: str, channel: str) -> Item | None:
         key = (sender, receiver, channel)

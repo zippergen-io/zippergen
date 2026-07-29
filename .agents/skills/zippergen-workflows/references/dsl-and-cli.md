@@ -410,6 +410,8 @@ Studio can also inspect the durable current position of projected programs:
 ```text
 run inspect [PARTICIPANT]
 deploy inspect [NAME] [PARTICIPANT]
+deploy storage [NAME]
+deploy storage compact [NAME] [--trace-keep N]
 ```
 
 These commands read diagnostic per-participant locators from the SQLite store
@@ -417,6 +419,13 @@ and render the matching local projection with active pointers. The locators
 are observation data, not recovery snapshots. Do not add workflow variables,
 action inputs, provider credentials, or other environment values to the
 default position view.
+
+`deploy storage` reports store, WAL, log, event, and snapshot sizes without
+changing them. `deploy storage compact` requires a stopped deployment. It
+keeps the requested recent trace tail and removes only events covered by
+durable recovery snapshots.
+The events table has an explicit integer primary key. Database compaction must
+preserve these stable event identifiers because recovery floors refer to them.
 
 ## Studio natural-language commands
 

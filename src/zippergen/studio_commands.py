@@ -417,6 +417,18 @@ COMMANDS: tuple[CommandSpec, ...] = (
         "read-only",
     ),
     CommandSpec(
+        ("deploy", "storage"),
+        "deploy storage [NAME]",
+        "show durable-store, log, and recovery storage",
+        "read-only",
+    ),
+    CommandSpec(
+        ("deploy", "storage", "compact"),
+        "deploy storage compact [NAME] [--trace-keep N] [--yes]",
+        "prune traces and recovery-safe completed events",
+        "destructive",
+    ),
+    CommandSpec(
         ("deploy", "start"),
         "deploy start [NAME]",
         "start a deployment",

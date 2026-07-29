@@ -312,6 +312,11 @@ def test_studio_completion_is_context_and_project_aware(tmp_path):
         _completions(studio, "run ")
     )
     assert "trace" in _completions(studio, "deploy ")
+    assert "storage" in _completions(studio, "deploy ")
+    assert _completions(studio, "deploy storage ") == ["compact"]
+    assert "--trace-keep" in _completions(
+        studio, "deploy storage compact "
+    )
     assert "remove" in _completions(studio, "deploy ")
     assert _completions(studio, "run inspect W") == ["Writer"]
     assert "--watch" in _completions(studio, "run inspect ")
@@ -4595,6 +4600,107 @@ def test_studio_resets_deployment_log_without_touching_the_service(
         "Current history" in line and "empty" in line
         for line in output
     )
+
+
+def test_studio_shows_and_compacts_deployment_storage(
+    tmp_path,
+    monkeypatch,
+):
+    studio, workspace, output = _studio(tmp_path)
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(workspace.home))
+    deployments = workspace.home / "deployments"
+    deployments.mkdir(parents=True)
+    store = workspace.home / "runs" / "reviewed-answer.sqlite"
+    store.parent.mkdir(parents=True)
+    log = workspace.home / "logs" / "reviewed-answer.log"
+    log.parent.mkdir(parents=True)
+    log.write_text("old deployment output\n")
+    from zippergen.store import open_store, record_trace_event
+
+    connection = open_store(str(store))
+    connection.execute(
+        "INSERT INTO events(sender,receiver,channel,kind,payload) "
+        "VALUES('Writer',NULL,NULL,'seed','{}')"
+    )
+    for index in range(3):
+        record_trace_event(
+            connection,
+            "Writer",
+            {"type": "step", "index": index},
+        )
+    connection.close()
+    profile = {
+        "name": "reviewed-answer",
+        "project_root": str(workspace.root),
+        "workflow": "workflow.py:sample",
+        "cwd": str(workspace.root),
+        "store": str(store),
+        "log": str(log),
+        "recovery_compaction_version": 1,
+    }
+    (deployments / "reviewed-answer.json").write_text(json.dumps(profile))
+    workspace.update(last_deployment="reviewed-answer")
+    service = {
+        "state": "not-loaded",
+        "detail": "service is stopped",
+    }
+    monkeypatch.setattr(
+        "zippergen.serve._deployment_service_status",
+        lambda _name: service,
+    )
+    monkeypatch.setattr(
+        "zippergen.studio_deployments._deployment_service_status",
+        lambda _name: service,
+    )
+
+    studio.execute("deploy storage reviewed-answer")
+
+    assert any(line == "Deployment storage" for line in output)
+    assert any("Without snapshot" in line and "Writer" in line for line in output)
+    assert any("trace" in line and "3" in line for line in output)
+    output.clear()
+
+    studio.execute(
+        "deploy storage compact reviewed-answer --trace-keep 1 --yes"
+    )
+
+    connection = open_store(str(store))
+    assert connection.execute(
+        "SELECT COUNT(*) FROM events WHERE kind='trace'"
+    ).fetchone()[0] == 1
+    connection.close()
+    assert log.read_bytes() == b""
+    assert any("Removed traces" in line and "2" in line for line in output)
+    assert any("Log archived" in line for line in output)
+
+
+def test_studio_requires_redeploy_before_compacting_an_older_bundle(
+    tmp_path,
+    monkeypatch,
+):
+    studio, workspace, _output = _studio(tmp_path)
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(workspace.home))
+    deployments = workspace.home / "deployments"
+    deployments.mkdir(parents=True)
+    store = workspace.home / "runs" / "legacy.sqlite"
+    store.parent.mkdir(parents=True)
+    from zippergen.store import open_store
+
+    open_store(str(store)).close()
+    (deployments / "legacy.json").write_text(
+        json.dumps(
+            {
+                "name": "legacy",
+                "workflow": "workflow.py:sample",
+                "cwd": str(workspace.root),
+                "store": str(store),
+                "log": str(workspace.home / "logs" / "legacy.log"),
+            }
+        )
+    )
+
+    with pytest.raises(SystemExit, match="Redeploy it once"):
+        studio.execute("deploy storage compact legacy --yes")
 
 
 def test_studio_operates_human_tasks_through_the_deployment(
