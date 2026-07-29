@@ -330,6 +330,7 @@ Inside Studio:
 run
 run inspect
 run inspect Reviewer
+run inspect Reviewer --watch
 run tasks
 run approve
 run trace
@@ -354,6 +355,7 @@ deploy doctor review-demo
 deploy show review-demo
 deploy start review-demo
 deploy inspect review-demo
+deploy inspect review-demo --watch
 deploy tasks review-demo
 deploy approve review-demo
 deploy trace review-demo
@@ -363,6 +365,10 @@ deploy restart review-demo
 deploy stop review-demo
 deploy remove review-demo
 ```
+
+`--watch` redraws the participant positions and focused local projection once
+per second. Press Ctrl-C to close the live view. The run or deployment keeps
+running.
 
 `deploy show` also compares the installed deployment with the current project.
 It reports changes to the specification, accepted workflow, models, idle

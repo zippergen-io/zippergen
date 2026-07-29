@@ -329,8 +329,8 @@ COMMANDS: tuple[CommandSpec, ...] = (
     ),
     CommandSpec(
         ("run", "inspect"),
-        "run inspect [PARTICIPANT]",
-        "show durable participant positions and a live local projection",
+        "run inspect [PARTICIPANT] [--watch]",
+        "show participant positions once or refresh them every second",
         "read-only",
     ),
     CommandSpec(
@@ -376,8 +376,8 @@ COMMANDS: tuple[CommandSpec, ...] = (
     ),
     CommandSpec(
         ("deploy", "inspect"),
-        "deploy inspect [NAME] [PARTICIPANT]",
-        "show durable participant positions and a live local projection",
+        "deploy inspect [NAME] [PARTICIPANT] [--watch]",
+        "show participant positions once or refresh them every second",
         "read-only",
     ),
     CommandSpec(

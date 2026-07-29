@@ -539,12 +539,13 @@ its durable workflow state.
 In another Studio terminal opened from the same outer project directory, use:
 
 \begin{lstlisting}[style=shell]
-deploy inspect call-intake-check
+deploy inspect call-intake-check --watch
 deploy trace call-intake-check
 \end{lstlisting}
 
-The inspection view shows the latest durable local-program position for each
-participant. During normal polling, Mailbox may be waiting in
+The inspection view refreshes the durable local-program position for each
+participant once per second. Press Ctrl-C to close this view. The deployment
+continues running. During normal polling, Mailbox may be waiting in
 \texttt{wait\_briefly}. While the model is active, Extractor may be at an LLM
 action. Table appears at the Sheets effect while a row is written.
 

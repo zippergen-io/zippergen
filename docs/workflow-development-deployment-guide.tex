@@ -1234,11 +1234,21 @@ For a live foreground run, keep its terminal untouched and open another
 terminal at the project root:
 
 \begin{lstlisting}[style=shell]
+zippergen
+run inspect Reviewer --watch
+\end{lstlisting}
+
+The second Studio process performs read-only inspection. It refreshes the
+positions once per second. Press Ctrl-C to close this view and return to its
+Studio prompt. The development run is not interrupted. For a single
+non-interactive snapshot, use:
+
+\begin{lstlisting}[style=shell]
 zippergen studio --command "run inspect Reviewer"
 \end{lstlisting}
 
-The second Studio process performs a read-only inspection and exits; the first
-process continues to own terminal input and any inline human decision.
+The first process continues to own terminal input and any inline human
+decision.
 The first command reads the current development run's durable observation
 rows and shows one participant per line. States distinguish running,
 receive-blocked, human/model/assistant/effect activity, completion,
@@ -1791,6 +1801,7 @@ deploy start
 deploy show
 deploy inspect
 deploy inspect Reviewer
+deploy inspect Reviewer --watch
 deploy tasks
 deploy approve
 deploy logs
@@ -1823,6 +1834,8 @@ deployment operation requires no store selection or copied path.
 and projects the workflow from the immutable deployment bundle, so later
 working-tree edits cannot change what is displayed. With no name it uses the
 remembered deployment; a participant can be supplied as the final argument.
+Add \texttt{--watch} to refresh the positions and focused projection once per
+second. Ctrl-C closes only the live view and does not stop the deployment.
 \texttt{deploy tasks} shows the full
 stored instruction, draft, reviewer notes, and decision labels;
 \texttt{deploy approve} repeats them immediately before accepting yes or
@@ -1950,7 +1963,7 @@ connector assign PARTICIPANT.ACTION NAME # override one human action
 connector assignments # show every effective human route
 connector assignments check # check only configurations used here
 run            # fresh guided, durable development run
-run inspect [PARTICIPANT] # current states and focused local projection
+run inspect [PARTICIPANT] [--watch] # current or live local position
 run tasks      # pending decisions for the current development run
 run approve    # review and answer a pending run decision
 run trace      # recent events for the current development run
@@ -1960,7 +1973,7 @@ project reset  # choose fresh design, state-only reset, or cancel
 deploy         # create or update a guided named deployment
 deploy list    # list named deployments
 deploy show [NAME] # bundle, service, run, and stable store
-deploy inspect [NAME] [PARTICIPANT] # durable local program positions
+deploy inspect [NAME] [PARTICIPANT] [--watch] # durable local positions
 deploy tasks [NAME] # pending decisions with complete context
 deploy approve [NAME] # review and answer a pending decision
 deploy trace [NAME] # recent durable deployment events

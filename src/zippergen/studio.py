@@ -77,6 +77,22 @@ OutputFunc = Callable[[str], object]
 SecretInputFunc = Callable[[str], str]
 AssistantVerification = Literal["passed", "failed", "incomplete"]
 _ASSISTANT_HEARTBEAT_SECONDS = 10.0
+_INSPECTION_WATCH_SECONDS = 1.0
+
+
+def _valid_inspection_syntax(
+    args: list[str],
+    *,
+    max_positionals: int,
+) -> bool:
+    """Recognize an inspection command with one optional watch flag."""
+
+    lowered = [value.casefold() for value in args]
+    if lowered.count("--watch") > 1:
+        return False
+    if any(value.startswith("-") and value != "--watch" for value in lowered):
+        return False
+    return len([value for value in lowered if value != "--watch"]) <= max_positionals
 
 
 @dataclass(frozen=True)
@@ -153,7 +169,10 @@ def _is_explicit_studio_syntax(parts: list[str]) -> bool:
             return True
         action = args[0].casefold()
         if action == "inspect":
-            return len(args) <= 2
+            return _valid_inspection_syntax(
+                args[1:],
+                max_positionals=1,
+            )
         if action in {"tasks", "trace"}:
             return len(args) == 1
         if action == "approve":
@@ -172,7 +191,10 @@ def _is_explicit_studio_syntax(parts: list[str]) -> bool:
             return True
         action = args[0].casefold()
         if action == "inspect":
-            return len(args) <= 3
+            return _valid_inspection_syntax(
+                args[1:],
+                max_positionals=2,
+            )
         if action == "remove":
             return len(args) <= 4
         if action == "logs" and len(args) >= 2:
@@ -1347,6 +1369,11 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
                         0,
                         ("reset", "archive and reset visible log history"),
                     )
+                elif args[0].lower() == "inspect":
+                    values.insert(
+                        0,
+                        ("--watch", "refresh participant positions every second"),
+                    )
                 return values
             if (
                 len(args) >= 2
@@ -1358,11 +1385,25 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
                 if len(args) == 3:
                     return [("--yes", "confirm log-history reset")]
                 return []
-            if args[0].lower() == "inspect" and len(args) == 2:
-                return [
-                    (name, "workflow participant")
-                    for name in self._completion_lifelines()
+            if args[0].lower() == "inspect":
+                if "--watch" in {value.lower() for value in args[1:]}:
+                    return []
+                positionals = [
+                    value for value in args[1:] if value.lower() != "--watch"
                 ]
+                if len(positionals) <= 1:
+                    return [
+                        ("--watch", "refresh participant positions every second"),
+                        *[
+                            (name, "workflow participant")
+                            for name in self._completion_lifelines()
+                        ],
+                    ]
+                if len(positionals) == 2:
+                    return [
+                        ("--watch", "refresh participant positions every second")
+                    ]
+                return []
             if args[0].lower() == "remove":
                 if len(args) == 1:
                     return self._deployment_completion_candidates()
@@ -1378,9 +1419,18 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
         if command == "run":
             action = args[0].lower()
             if action == "inspect":
+                if "--watch" in {value.lower() for value in args[1:]}:
+                    return []
+                if len(args) > 1:
+                    return [
+                        ("--watch", "refresh participant positions every second")
+                    ]
                 return [
-                    (name, "workflow participant")
-                    for name in self._completion_lifelines()
+                    ("--watch", "refresh participant positions every second"),
+                    *[
+                        (name, "workflow participant")
+                        for name in self._completion_lifelines()
+                    ],
                 ]
             if action == "approve":
                 if len(args) == 1:
@@ -6577,7 +6627,11 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
                         run.get("assistant") or "none selected",
                         None,
                     ),
-                    ("Run inspection", "run inspect [PARTICIPANT]", None),
+                    (
+                        "Run inspection",
+                        "run inspect [PARTICIPANT] [--watch]",
+                        None,
+                    ),
                 ]
             )
         deployment = state.get("last_deployment")
@@ -7755,37 +7809,114 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
             )
         self._emit_next(next_commands)
 
+    @staticmethod
+    def _inspection_options(
+        args: list[str],
+        *,
+        max_positionals: int,
+        usage: str,
+    ) -> tuple[list[str], bool]:
+        positionals: list[str] = []
+        watch = False
+        for value in args:
+            if value.casefold() == "--watch":
+                if watch:
+                    raise SystemExit(f"Use {usage}.")
+                watch = True
+            elif value.startswith("-"):
+                raise SystemExit(
+                    f"Unknown inspection option {value!r}. Use {usage}."
+                )
+            else:
+                positionals.append(value)
+        if len(positionals) > max_positionals:
+            raise SystemExit(f"Use {usage}.")
+        return positionals, watch
+
+    @staticmethod
+    def _clear_watch_screen() -> None:
+        sys.stdout.write("\033[2J\033[H")
+        sys.stdout.flush()
+
+    def _watch_execution(
+        self,
+        render_once: Callable[[], None],
+        *,
+        command: str,
+        subject: str,
+    ) -> None:
+        if not self._prompt_toolkit_enabled:
+            raise SystemExit(
+                "--watch requires an interactive terminal. Open Studio normally "
+                f"and use '{command}'."
+            )
+        try:
+            while True:
+                self._clear_watch_screen()
+                self._emit_studio_banner(command)
+                self._info(
+                    "Refreshing once per second. Press Ctrl-C to close this "
+                    f"view. The {subject} will keep running."
+                )
+                render_once()
+                time.sleep(_INSPECTION_WATCH_SECONDS)
+        except KeyboardInterrupt:
+            self._info(
+                f"Stopped watching. The {subject} was not interrupted."
+            )
+
     def inspect_run(self, args: list[str]) -> None:
-        if len(args) > 1:
-            raise SystemExit("Use run inspect [PARTICIPANT].")
+        positionals, watch = self._inspection_options(
+            args,
+            max_positionals=1,
+            usage="run inspect [PARTICIPANT] [--watch]",
+        )
         record = self.workspace.current_run()
         if record is None:
             raise SystemExit(
                 "There is no current development run. Start one with 'run'."
             )
-        workflow_spec = str(record.get("workflow_spec") or "")
-        if not workflow_spec:
-            raise SystemExit("The current run has no recorded workflow.")
-        from zippergen.serve import load_workflow_spec
+        run_id = str(record.get("run_id") or "")
+        participant = positionals[0] if positionals else None
 
-        workflow, _module = load_workflow_spec(
-            self.workspace.absolute_spec(workflow_spec)
-        )
-        self._inspect_execution(
-            workflow=workflow,
-            store=str(record.get("store") or ""),
-            source_rows=[
-                ("Run", record.get("run_id") or "unknown", None),
-                ("Workflow", workflow_spec, None),
-                ("Run status", record.get("status") or "unknown", None),
-            ],
-            participant=args[0] if args else None,
-            next_commands=(
-                f"run inspect {args[0]} · runs · resume"
-                if args
-                else "run inspect PARTICIPANT · runs · resume"
-            ),
-        )
+        def render_once() -> None:
+            current = self.workspace.load_run(run_id)
+            workflow_spec = str(current.get("workflow_spec") or "")
+            if not workflow_spec:
+                raise SystemExit("The current run has no recorded workflow.")
+            from zippergen.serve import load_workflow_spec
+
+            workflow, _module = load_workflow_spec(
+                self.workspace.absolute_spec(workflow_spec)
+            )
+            self._inspect_execution(
+                workflow=workflow,
+                store=str(current.get("store") or ""),
+                source_rows=[
+                    ("Run", current.get("run_id") or "unknown", None),
+                    ("Workflow", workflow_spec, None),
+                    ("Run status", current.get("status") or "unknown", None),
+                ],
+                participant=participant,
+                next_commands=(
+                    f"run inspect {participant} · runs · resume"
+                    if participant
+                    else "run inspect PARTICIPANT · runs · resume"
+                ),
+            )
+
+        if watch:
+            command = "run inspect"
+            if participant:
+                command += f" {participant}"
+            command += " --watch"
+            self._watch_execution(
+                render_once,
+                command=command,
+                subject="development run",
+            )
+        else:
+            render_once()
 
     @staticmethod
     def _store_updated(value: float | None) -> str:
@@ -9653,10 +9784,11 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
         )
 
     def inspect_deployment(self, args: list[str]) -> None:
-        if len(args) > 2:
-            raise SystemExit(
-                "Use deploy inspect [NAME] [PARTICIPANT]."
-            )
+        positionals, watch = self._inspection_options(
+            args,
+            max_positionals=2,
+            usage="deploy inspect [NAME] [PARTICIPANT] [--watch]",
+        )
         from zippergen.serve import (
             _deployment_profile_path,
             _deployment_service_status,
@@ -9665,57 +9797,75 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
         )
 
         participant: str | None = None
-        if len(args) == 2:
-            name = self._deployment_name(args[0])
-            participant = args[1]
-        elif len(args) == 1 and _deployment_profile_path(args[0]).exists():
-            name = self._deployment_name(args[0])
-        elif len(args) == 1:
+        if len(positionals) == 2:
+            name = self._deployment_name(positionals[0])
+            participant = positionals[1]
+        elif (
+            len(positionals) == 1
+            and _deployment_profile_path(positionals[0]).exists()
+        ):
+            name = self._deployment_name(positionals[0])
+        elif len(positionals) == 1:
             name = self._deployment_name(None)
-            participant = args[0]
+            participant = positionals[0]
         else:
             name = self._deployment_name(None)
-        profile = _load_deployment_profile(name)
-        workflow_ref = str(profile.get("workflow") or "")
-        cwd = Path(str(profile.get("cwd") or profile.get("bundle") or ""))
-        module_ref, separator, workflow_name = workflow_ref.partition(":")
-        module_path = Path(module_ref).expanduser()
-        if not module_path.is_absolute():
-            module_path = cwd / module_path
-        target = str(module_path)
-        if separator:
-            target += f":{workflow_name}"
-        workflow, _module = load_workflow_spec(target)
-        service = _deployment_service_status(name)
-        service_kind: StatusKind = (
-            "success"
-            if service["state"] in {"running", "completed"}
-            else "error"
-            if service["state"] == "restarting"
-            else "warning"
-        )
-        self._inspect_execution(
-            workflow=workflow,
-            store=str(profile.get("store") or ""),
-            source_rows=[
-                ("Deployment", name, None),
-                ("Workflow", workflow_ref, None),
-                ("Service", service["detail"], service_kind),
-                (
-                    "Bundle",
-                    cwd,
-                    "success" if cwd.is_dir() else "error",
+
+        def render_once() -> None:
+            profile = _load_deployment_profile(name)
+            workflow_ref = str(profile.get("workflow") or "")
+            cwd = Path(str(profile.get("cwd") or profile.get("bundle") or ""))
+            module_ref, separator, workflow_name = workflow_ref.partition(":")
+            module_path = Path(module_ref).expanduser()
+            if not module_path.is_absolute():
+                module_path = cwd / module_path
+            target = str(module_path)
+            if separator:
+                target += f":{workflow_name}"
+            workflow, _module = load_workflow_spec(target)
+            service = _deployment_service_status(name)
+            service_kind: StatusKind = (
+                "success"
+                if service["state"] in {"running", "completed"}
+                else "error"
+                if service["state"] == "restarting"
+                else "warning"
+            )
+            self._inspect_execution(
+                workflow=workflow,
+                store=str(profile.get("store") or ""),
+                source_rows=[
+                    ("Deployment", name, None),
+                    ("Workflow", workflow_ref, None),
+                    ("Service", service["detail"], service_kind),
+                    (
+                        "Bundle",
+                        cwd,
+                        "success" if cwd.is_dir() else "error",
+                    ),
+                ],
+                participant=participant,
+                next_commands=(
+                    f"deploy inspect {name} {participant} · "
+                    f"deploy tasks {name} · deploy logs {name}"
+                    if participant
+                    else f"deploy inspect {name} PARTICIPANT · "
+                    f"deploy tasks {name} · deploy logs {name}"
                 ),
-            ],
-            participant=participant,
-            next_commands=(
-                f"deploy inspect {name} {participant} · "
-                f"deploy tasks {name} · deploy logs {name}"
-                if participant
-                else f"deploy inspect {name} PARTICIPANT · "
-                f"deploy tasks {name} · deploy logs {name}"
-            ),
-        )
+            )
+
+        if watch:
+            command = f"deploy inspect {name}"
+            if participant:
+                command += f" {participant}"
+            command += " --watch"
+            self._watch_execution(
+                render_once,
+                command=command,
+                subject="deployment",
+            )
+        else:
+            render_once()
 
     def manage_deploy(self, args: list[str]) -> None:
         if not args:

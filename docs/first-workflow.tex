@@ -490,11 +490,14 @@ To inspect without interrupting an active foreground run, open a second
 terminal in the project root and enter:
 
 \begin{lstlisting}[style=shell]
-zippergen studio --command "run inspect HumanApprover"
+zippergen
+run inspect HumanApprover --watch
 \end{lstlisting}
 
-The foreground terminal continues to own its input and human-approval prompt;
-the second command only reads the durable observation state.
+The foreground terminal continues to own its input and human-approval prompt.
+The second Studio process only reads the durable observation state. The live
+view refreshes once per second. Press Ctrl-C to close the view and return to
+the Studio prompt. This does not interrupt the development run.
 The first command shows one bounded row per participant: running, waiting to
 receive, waiting for a human, executing an external action, completed, or
 failed. It automatically focuses the participant most likely to need
@@ -635,6 +638,7 @@ deploy start
 deploy show
 deploy inspect
 deploy inspect HumanApprover
+deploy inspect HumanApprover --watch
 deploy tasks
 deploy approve
 deploy trace
@@ -655,6 +659,8 @@ say \texttt{starting, no durable events recorded yet}. The store remains
 deployment name; with one argument that is not a deployment name, Studio
 treats it as the participant to focus. It reads the durable positions from the
 deployment store, so no debugger connection is required.
+The optional \texttt{--watch} form refreshes once per second. Ctrl-C closes
+only the live view. The deployment keeps running.
 \texttt{deploy tasks} displays the proposed draft,
 reviewer notes, instruction, and decision labels.
 \texttt{deploy approve} repeats that evidence immediately before asking

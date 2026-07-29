@@ -312,6 +312,12 @@ def test_studio_completion_is_context_and_project_aware(tmp_path):
     assert "trace" in _completions(studio, "deploy ")
     assert "remove" in _completions(studio, "deploy ")
     assert _completions(studio, "run inspect W") == ["Writer"]
+    assert "--watch" in _completions(studio, "run inspect ")
+    assert _completions(studio, "run inspect Writer ") == ["--watch"]
+    assert "--watch" in _completions(studio, "deploy inspect ")
+    assert _completions(
+        studio, "deploy inspect review-demo Reviewer "
+    ) == ["--watch"]
     assert _completions(studio, "workflow create --file req") == [
         "requirements.md"
     ]
@@ -483,6 +489,69 @@ def test_studio_inspects_current_run_with_a_local_program_pointer(tmp_path):
     assert any("Writer" in line and "running model action" in line for line in output)
     assert any("▶" in line and "result = echo(value)" in line for line in output)
     assert any("workflow variables and action inputs" in line for line in output)
+
+
+def test_studio_watches_current_run_once_per_second_without_stopping_it(
+    tmp_path,
+    monkeypatch,
+):
+    studio, workspace, output = _studio(tmp_path)
+    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    record = workspace.new_run(
+        workflow_spec="workflow.py:sample",
+        workflow_name="sample",
+        fingerprint="test",
+        inputs={"value": "hello"},
+        llm="mock",
+    )
+    workspace.update_run(str(record["run_id"]), status="running")
+    studio._prompt_toolkit_enabled = True
+    clears: list[bool] = []
+    sleeps: list[float] = []
+
+    monkeypatch.setattr(
+        studio,
+        "_clear_watch_screen",
+        lambda: clears.append(True),
+    )
+
+    def stop_after_second_refresh(seconds: float) -> None:
+        sleeps.append(seconds)
+        if len(sleeps) == 2:
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr("zippergen.studio.time.sleep", stop_after_second_refresh)
+
+    studio.execute("run inspect Writer --watch")
+
+    assert clears == [True, True]
+    assert sleeps == [1.0, 1.0]
+    assert sum(line == "Execution context" for line in output) == 2
+    assert any(
+        "Refreshing once per second" in line
+        and "development run will keep running" in line
+        for line in output
+    )
+    assert any(
+        "Stopped watching. The development run was not interrupted." in line
+        for line in output
+    )
+    assert workspace.load_run(str(record["run_id"]))["status"] == "running"
+
+
+def test_studio_rejects_watch_mode_outside_an_interactive_terminal(tmp_path):
+    studio, workspace, _output = _studio(tmp_path)
+    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    workspace.new_run(
+        workflow_spec="workflow.py:sample",
+        workflow_name="sample",
+        fingerprint="test",
+        inputs={"value": "hello"},
+        llm="mock",
+    )
+
+    with pytest.raises(SystemExit, match="requires an interactive terminal"):
+        studio.execute("run inspect --watch")
 
 
 def test_studio_explains_a_single_completion_match(tmp_path):
@@ -4651,6 +4720,36 @@ def test_studio_operates_human_tasks_through_the_deployment(
     )
     assert any(
         "▶" in line and "result = process(draft)" in line
+        for line in output
+    )
+
+    watched: list[tuple[str, str]] = []
+
+    def render_watched_deployment(
+        render_once,
+        *,
+        command: str,
+        subject: str,
+    ) -> None:
+        watched.append((command, subject))
+        render_once()
+
+    monkeypatch.setattr(
+        studio,
+        "_watch_execution",
+        render_watched_deployment,
+    )
+    output.clear()
+    studio.execute("deploy inspect reviewed-answer Reviewer --watch")
+
+    assert watched == [
+        (
+            "deploy inspect reviewed-answer Reviewer --watch",
+            "deployment",
+        )
+    ]
+    assert any(
+        "Reviewer" in line and "running model action" in line
         for line in output
     )
 
