@@ -9,6 +9,8 @@ from urllib.error import HTTPError, URLError
 import pytest
 from prompt_toolkit.completion import CompleteEvent
 from prompt_toolkit.document import Document
+from prompt_toolkit.input import create_pipe_input
+from prompt_toolkit.output import DummyOutput
 
 from zippergen.studio import Studio, StudioCompleter
 from zippergen.workspace import Workspace
@@ -506,42 +508,24 @@ def test_studio_watches_current_run_once_per_second_without_stopping_it(
     )
     workspace.update_run(str(record["run_id"]), status="running")
     studio._prompt_toolkit_enabled = True
-    screen_events: list[str] = []
-    sleeps: list[float] = []
+    frames: list[str] = []
 
-    monkeypatch.setattr(
-        studio,
-        "_enter_watch_screen",
-        lambda: screen_events.append("enter"),
-    )
-    monkeypatch.setattr(
-        studio,
-        "_refresh_watch_screen",
-        lambda: screen_events.append("refresh"),
-    )
-    monkeypatch.setattr(
-        studio,
-        "_leave_watch_screen",
-        lambda: screen_events.append("leave"),
-    )
+    def display_twice(frame_provider) -> bool:
+        frames.extend([frame_provider(), frame_provider()])
+        return True
 
-    def stop_after_second_refresh(seconds: float) -> None:
-        sleeps.append(seconds)
-        if len(sleeps) == 2:
-            raise KeyboardInterrupt
-
-    monkeypatch.setattr("zippergen.studio.time.sleep", stop_after_second_refresh)
+    monkeypatch.setattr(studio, "_run_watch_display", display_twice)
 
     studio.execute("run inspect Writer --watch")
 
-    assert screen_events == ["enter", "refresh", "refresh", "leave"]
-    assert sleeps == [1.0, 1.0]
-    assert sum(line == "Execution context" for line in output) == 2
-    assert any(
-        "Refreshing once per second" in line
-        and "development run will keep running" in line
-        for line in output
+    assert len(frames) == 2
+    assert all("Execution context" in frame for frame in frames)
+    assert all("Refreshing once per second" in frame for frame in frames)
+    assert all(
+        "development run will keep running" in frame
+        for frame in frames
     )
+    assert not any(line == "Execution context" for line in output)
     assert any(
         "Stopped watching. The development run was not interrupted." in line
         for line in output
@@ -549,25 +533,40 @@ def test_studio_watches_current_run_once_per_second_without_stopping_it(
     assert workspace.load_run(str(record["run_id"]))["status"] == "running"
 
 
-def test_studio_restores_watch_screen_when_rendering_fails(tmp_path):
+def test_studio_restores_renderer_output_when_watch_capture_fails(tmp_path):
     studio, _workspace, _output = _studio(tmp_path)
-    studio._prompt_toolkit_enabled = True
-    screen_events: list[str] = []
-    studio._enter_watch_screen = lambda: screen_events.append("enter")
-    studio._refresh_watch_screen = lambda: screen_events.append("refresh")
-    studio._leave_watch_screen = lambda: screen_events.append("leave")
+    original_output = studio._renderer.output
 
     def fail() -> None:
         raise RuntimeError("inspection failed")
 
     with pytest.raises(RuntimeError, match="inspection failed"):
-        studio._watch_execution(
+        studio._capture_watch_frame(
             fail,
             command="run inspect --watch",
             subject="development run",
         )
 
-    assert screen_events == ["enter", "refresh", "leave"]
+    assert studio._renderer.output is original_output
+
+
+def test_studio_watch_display_exits_on_control_c(monkeypatch):
+    from zippergen import studio as studio_module
+
+    real_application = studio_module.Application
+    with create_pipe_input() as pipe_input:
+        pipe_input.send_text("\x03")
+
+        def test_application(**kwargs):
+            return real_application(
+                input=pipe_input,
+                output=DummyOutput(),
+                **kwargs,
+            )
+
+        monkeypatch.setattr(studio_module, "Application", test_application)
+
+        assert Studio._run_watch_display(lambda: "Stable frame") is True
 
 
 def test_studio_rejects_watch_mode_outside_an_interactive_terminal(tmp_path):

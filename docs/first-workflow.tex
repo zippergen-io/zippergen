@@ -497,8 +497,10 @@ run inspect HumanApprover --watch
 The foreground terminal continues to own its input and human-approval prompt.
 The second Studio process only reads the durable observation state. The live
 view refreshes once per second in one fixed terminal screen instead of
-appending repeated output. Press Ctrl-C to restore the Studio screen and
-return to the prompt. This does not interrupt the development run.
+appending repeated output. Studio redraws only terminal cells that changed, so
+the pointer can move without clearing the complete screen. Press Ctrl-C to
+restore the Studio screen and return to the prompt. This does not interrupt
+the development run.
 The first command shows one bounded row per participant: running, waiting to
 receive, waiting for a human, executing an external action, completed, or
 failed. It automatically focuses the participant most likely to need

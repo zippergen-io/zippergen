@@ -1240,8 +1240,10 @@ run inspect Reviewer --watch
 
 The second Studio process performs read-only inspection. It refreshes the
 positions once per second in one fixed terminal screen, without appending
-repeated output. Press Ctrl-C to restore the Studio screen and return to its
-prompt. The development run is not interrupted. For a single
+repeated output. Its differential renderer updates only changed terminal
+cells, so pointer movement does not clear and repaint the complete screen.
+Press Ctrl-C to restore the Studio screen and return to its prompt. The
+development run is not interrupted. For a single
 non-interactive snapshot, use:
 
 \begin{lstlisting}[style=shell]

@@ -19,11 +19,17 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, cast
 from prompt_toolkit import PromptSession
+from prompt_toolkit.application import Application
 from prompt_toolkit.application.current import get_app
 from prompt_toolkit.auto_suggest import AutoSuggestFromHistory
 from prompt_toolkit.completion import Completer, Completion, CompleteEvent
+from prompt_toolkit.data_structures import Point
 from prompt_toolkit.document import Document
+from prompt_toolkit.formatted_text import ANSI
 from prompt_toolkit.history import FileHistory
+from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.layout import Layout, Window
+from prompt_toolkit.layout.controls import FormattedTextControl
 
 from zippergen.dev import default_llm_spec, run_dev
 from zippergen.models import normalize_llm_overrides
@@ -7833,26 +7839,93 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
             raise SystemExit(f"Use {usage}.")
         return positionals, watch
 
+    def _capture_watch_frame(
+        self,
+        render_once: Callable[[], None],
+        *,
+        command: str,
+        subject: str,
+    ) -> str:
+        """Capture one ordinary Studio rendering for a full-screen display."""
+
+        lines: list[str] = []
+        original_output = self._renderer.output
+
+        def capture(value: str) -> None:
+            text = str(value)
+            lines.extend(text.splitlines() if text else [""])
+
+        self._renderer.output = capture
+        try:
+            self._emit_studio_banner(command)
+            self._info(
+                "Refreshing once per second. Press Ctrl-C to close this "
+                f"view. The {subject} will keep running."
+            )
+            render_once()
+        finally:
+            self._renderer.output = original_output
+        return "\n".join(lines)
+
     @staticmethod
-    def _enter_watch_screen() -> None:
-        """Enter a private full-screen buffer and hide the cursor."""
+    def _run_watch_display(frame_provider: Callable[[], str]) -> bool:
+        """Run a differential full-screen display until Ctrl-C."""
 
-        sys.stdout.write("\033[?1049h\033[?25l\033[2J\033[H")
-        sys.stdout.flush()
+        state = {"frame": frame_provider()}
+        failure: list[BaseException] = []
+        last_refresh = time.monotonic()
+        bindings = KeyBindings()
 
-    @staticmethod
-    def _refresh_watch_screen() -> None:
-        """Replace the current watch frame without growing terminal output."""
+        @bindings.add("c-c")
+        def close_watch(event) -> None:
+            event.app.exit(result="interrupted")
 
-        sys.stdout.write("\033[2J\033[H")
-        sys.stdout.flush()
+        def pointer_position() -> Point:
+            pointer_lines = [
+                index
+                for index, line in enumerate(state["frame"].splitlines())
+                if "▶" in line
+            ]
+            return Point(x=0, y=pointer_lines[-1] if pointer_lines else 0)
 
-    @staticmethod
-    def _leave_watch_screen() -> None:
-        """Restore the cursor and the Studio screen shown before watch mode."""
+        control = FormattedTextControl(
+            text=lambda: ANSI(state["frame"]),
+            focusable=True,
+            show_cursor=False,
+            get_cursor_position=pointer_position,
+        )
 
-        sys.stdout.write("\033[?25h\033[?1049l")
-        sys.stdout.flush()
+        def refresh_frame(application: Application[str]) -> None:
+            nonlocal last_refresh
+            now = time.monotonic()
+            if now - last_refresh < _INSPECTION_WATCH_SECONDS * 0.9:
+                return
+            try:
+                state["frame"] = frame_provider()
+            except BaseException as exc:
+                failure.append(exc)
+                application.exit(result="failed")
+                return
+            last_refresh = now
+
+        application: Application[str] = Application(
+            layout=Layout(
+                Window(
+                    content=control,
+                    wrap_lines=True,
+                    always_hide_cursor=True,
+                )
+            ),
+            key_bindings=bindings,
+            full_screen=True,
+            mouse_support=False,
+            refresh_interval=_INSPECTION_WATCH_SECONDS,
+            before_render=refresh_frame,
+        )
+        result = application.run()
+        if failure:
+            raise failure[0]
+        return result == "interrupted"
 
     def _watch_execution(
         self,
@@ -7866,25 +7939,13 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
                 "--watch requires an interactive terminal. Open Studio normally "
                 f"and use '{command}'."
             )
-        interrupted = False
-        entered_screen = False
-        try:
-            entered_screen = True
-            self._enter_watch_screen()
-            while True:
-                self._refresh_watch_screen()
-                self._emit_studio_banner(command)
-                self._info(
-                    "Refreshing once per second. Press Ctrl-C to close this "
-                    f"view. The {subject} will keep running."
-                )
-                render_once()
-                time.sleep(_INSPECTION_WATCH_SECONDS)
-        except KeyboardInterrupt:
-            interrupted = True
-        finally:
-            if entered_screen:
-                self._leave_watch_screen()
+        interrupted = self._run_watch_display(
+            lambda: self._capture_watch_frame(
+                render_once,
+                command=command,
+                subject=subject,
+            )
+        )
         if interrupted:
             self._info(
                 f"Stopped watching. The {subject} was not interrupted."
