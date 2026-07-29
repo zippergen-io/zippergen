@@ -4126,6 +4126,10 @@ def test_studio_deployment_list_includes_an_expected_missing_state(
     studio.execute("deploy list")
 
     assert any(
+        "Selected" in line and "Deployment" in line
+        for line in output
+    )
+    assert any(
         "reviewed-answer" in line
         and "missing" in line
         for line in output

@@ -9058,7 +9058,7 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
             )
         self._emit_columns(
             "Deployments",
-            ("Current", "Deployment", "Service", "Store", "Workflow"),
+            ("Selected", "Deployment", "Service", "Store", "Workflow"),
             rows,
         )
         self._emit_next(

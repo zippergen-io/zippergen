@@ -548,7 +548,7 @@ def deterministic_plan(
         deployment = bool(re.search(r"\b(deployment|service)\b", text))
         return NaturalCommandPlan(
             (
-                "Show pending decisions for the current deployment."
+                "Show pending decisions for the selected deployment."
                 if deployment
                 else "Show pending decisions for the current development run."
             ),
@@ -563,7 +563,7 @@ def deterministic_plan(
         deployment = bool(re.search(r"\b(deployment|service)\b", text))
         return NaturalCommandPlan(
             (
-                "Show recent events for the current deployment."
+                "Show recent events for the selected deployment."
                 if deployment
                 else "Show recent events for the current development run."
             ),
