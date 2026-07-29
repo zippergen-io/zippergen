@@ -4273,6 +4273,87 @@ def test_studio_deployment_show_separates_ready_store_from_starting_run(
     )
 
 
+def test_studio_deployment_show_labels_old_log_error_as_historical(
+    tmp_path,
+    monkeypatch,
+):
+    studio, workspace, output = _studio(tmp_path)
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(workspace.home))
+    deployments = workspace.home / "deployments"
+    deployments.mkdir(parents=True)
+    bundle = workspace.home / "apps" / "reviewed-answer" / "version"
+    bundle.mkdir(parents=True)
+    log = workspace.home / "logs" / "reviewed-answer.log"
+    log.parent.mkdir(parents=True)
+    log.write_text(
+        "ValueError: Local model 'local:qwen2.5:14b' has conflicting "
+        "idle release policies.\n"
+    )
+    profile = {
+        "name": "reviewed-answer",
+        "project_root": str(workspace.root),
+        "workflow": "workflow.py:sample",
+        "cwd": str(bundle),
+        "bundle": str(bundle),
+        "store": str(workspace.home / "runs" / "reviewed-answer.sqlite"),
+        "log": str(log),
+        "llm": "mock",
+        "llms": {},
+        "zippergen_runtime": {
+            "kind": "source-checkout",
+            "version": "0.1.0a2",
+            "revision": "c0089d5f00d123456789",
+        },
+    }
+    (deployments / "reviewed-answer.json").write_text(json.dumps(profile))
+    monkeypatch.setattr(
+        "zippergen.serve._deployment_service_status",
+        lambda _name: {
+            "state": "running",
+            "detail": "service is running",
+        },
+    )
+    monkeypatch.setattr("zippergen.serve._doctor_checks", lambda *a, **k: [])
+
+    studio.execute("deploy show reviewed-answer")
+
+    assert any(
+        "Runtime" in line and "c0089d5f00d1" in line
+        for line in output
+    )
+    assert any(
+        "Cause" in line and "no immediate failure detected" in line
+        for line in output
+    )
+    assert any(
+        "Previous failure" in line
+        and "historical log entry" in line
+        for line in output
+    )
+
+
+def test_deployment_log_cause_uses_current_generation_boundary(tmp_path):
+    log = tmp_path / "deployment.log"
+    old = "ValueError: old failure\n"
+    log.write_text(old + "service started\nRuntimeError: current failure\n")
+
+    assert Studio._deployment_log_cause(
+        {
+            "log": str(log),
+            "log_generation_offset": len(old.encode()),
+        }
+    ) == "RuntimeError: current failure"
+    assert (
+        Studio._deployment_log_cause(
+            {
+                "log": str(log),
+                "log_generation_offset": log.stat().st_size,
+            }
+        )
+        is None
+    )
+
+
 def test_studio_operates_human_tasks_through_the_deployment(
     tmp_path,
     monkeypatch,

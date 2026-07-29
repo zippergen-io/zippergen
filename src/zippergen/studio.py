@@ -8763,9 +8763,13 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
         if not path.is_file():
             return None
         try:
-            lines = path.read_text(errors="replace").splitlines()
+            content = path.read_bytes()
         except OSError:
             return None
+        raw_offset = profile.get("log_generation_offset")
+        if isinstance(raw_offset, int) and 0 <= raw_offset <= len(content):
+            content = content[raw_offset:]
+        lines = content.decode(errors="replace").splitlines()
         for line in reversed(lines[-200:]):
             stripped = line.strip()
             if (
@@ -8783,6 +8787,22 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
             ):
                 return stripped[:300]
         return None
+
+    @staticmethod
+    def _deployment_runtime_summary(profile: dict[str, object]) -> str:
+        raw = profile.get("zippergen_runtime")
+        if not isinstance(raw, dict):
+            return "not recorded; redeploy to record the runtime revision"
+        version = str(raw.get("version") or "unknown version")
+        revision = str(raw.get("revision") or "").strip()
+        source_hash = str(raw.get("source_sha256") or "").strip()
+        kind = str(raw.get("kind") or "runtime")
+        if revision:
+            summary = f"{version} · {kind} {revision[:12]}"
+            if source_hash:
+                summary += f" · source {source_hash[:12]}"
+            return summary
+        return f"{version} · {kind}"
 
     def _deployment_model_routes(self, profile: dict[str, object]) -> str:
         """Describe effective LLM-active routes, omitting unused fallbacks."""
@@ -8866,10 +8886,13 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
         failures = [
             check for check in checks if check.get("status") == "fail"
         ]
+        log_cause = self._deployment_log_cause(profile)
         cause = (
             f"{failures[0]['name']}: {failures[0]['detail']}"
             if failures
-            else self._deployment_log_cause(profile)
+            else log_cause
+            if service["state"] == "restarting"
+            else None
         )
         service_kind: StatusKind = (
             "success"
@@ -8965,6 +8988,15 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
                     f"installed — {bundle}" if bundle.is_dir() else f"missing — {bundle}",
                     "success" if bundle.is_dir() else "error",
                 ),
+                (
+                    "Runtime",
+                    self._deployment_runtime_summary(profile),
+                    (
+                        "success"
+                        if isinstance(profile.get("zippergen_runtime"), dict)
+                        else "warning"
+                    ),
+                ),
                 ("Service", service["detail"], service_kind),
                 ("Run", run_state, run_kind),
                 (
@@ -8985,6 +9017,17 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
                     "Cause",
                     cause or "no immediate failure detected",
                     "error" if cause else "success",
+                ),
+                *(
+                    [
+                        (
+                            "Previous failure",
+                            f"historical log entry — {log_cause}",
+                            "warning",
+                        )
+                    ]
+                    if log_cause and not cause
+                    else []
                 ),
                 ("Profile", _deployment_profile_path(name), None),
                 ("Log", profile.get("log") or "not configured", None),

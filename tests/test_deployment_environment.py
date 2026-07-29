@@ -43,7 +43,9 @@ def test_managed_environment_uses_uv_and_replaces_an_old_environment_atomically(
 
     assert calls[0][0:3] == ["/tools/uv", "venv", "--python"]
     assert calls[1][0:3] == ["/tools/uv", "pip", "install"]
+    assert calls[1][3:5] == ["--refresh-package", "zippergen"]
     assert Path(str(profile["python"])) == environment / "bin" / "python"
+    assert isinstance(profile["zippergen_runtime"], dict)
     assert (environment / "bin" / "python").read_text() == "managed python\n"
     assert not (environment / "old-environment").exists()
     assert not list((home / "environments").glob(".*-building-*"))
@@ -127,6 +129,6 @@ def test_google_connector_deployment_installs_the_optional_extra(
         skip_install=False,
     )
 
-    install_requirement = calls[1][5]
+    install_requirement = calls[1][-1]
     assert install_requirement.endswith("[google]")
     assert profile["zippergen_extras"] == ["google"]

@@ -539,6 +539,14 @@ For a packaged installation, Studio explains that the corresponding package
 manager must perform the update. Do not confuse either Studio process command
 with \texttt{deploy restart [NAME]}, which restarts an installed deployment.
 
+Every newly prepared deployment records the ZipperGen version and, for a
+source checkout, the Git revision installed into its managed environment.
+\texttt{deploy show NAME} displays that runtime provenance. It reports a log
+exception as the current \texttt{Cause} only while the current service is
+failing. An error left by an older deployment generation is labelled
+\texttt{Previous failure}. Preparing a deployment also establishes a new log
+generation boundary without deleting the earlier log history.
+
 Press Tab at any point while entering a command. Studio completes commands and
 subcommands and, where relevant, offers the workflows, participants,
 LLM-active participants, providers, remembered deployment, and project files

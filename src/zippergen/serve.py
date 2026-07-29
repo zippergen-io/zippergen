@@ -2859,6 +2859,92 @@ def _zippergen_install_requirement(
     return requirement
 
 
+def _checkout_revision(project_root: Path) -> str | None:
+    """Read a checkout revision without invoking Git or contacting a remote."""
+
+    git_marker = project_root / ".git"
+    try:
+        if git_marker.is_file():
+            marker = git_marker.read_text().strip()
+            if not marker.startswith("gitdir:"):
+                return None
+            git_dir = Path(marker.partition(":")[2].strip())
+            if not git_dir.is_absolute():
+                git_dir = (project_root / git_dir).resolve()
+        elif git_marker.is_dir():
+            git_dir = git_marker
+        else:
+            return None
+        head = (git_dir / "HEAD").read_text().strip()
+        if not head.startswith("ref:"):
+            return head if len(head) >= 12 else None
+        reference = head.partition(":")[2].strip()
+        loose = git_dir / reference
+        if loose.is_file():
+            return loose.read_text().strip()
+        packed = git_dir / "packed-refs"
+        if packed.is_file():
+            for line in packed.read_text().splitlines():
+                if not line or line.startswith(("#", "^")):
+                    continue
+                revision, _, name = line.partition(" ")
+                if name == reference:
+                    return revision
+    except OSError:
+        return None
+    return None
+
+
+def _zippergen_runtime_provenance() -> dict[str, str]:
+    """Describe the ZipperGen source selected for a deployment environment."""
+
+    from importlib.metadata import PackageNotFoundError, version
+
+    project_root = Path(__file__).resolve().parents[2]
+    try:
+        installed_version = version("zippergen")
+    except PackageNotFoundError:
+        installed_version = "unknown"
+    if (project_root / "pyproject.toml").is_file():
+        provenance = {
+            "kind": "source-checkout",
+            "version": installed_version,
+            "source": str(project_root),
+        }
+        digest = hashlib.sha256()
+        package_root = project_root / "src" / "zippergen"
+        source_files = (
+            [
+                path
+                for path in package_root.rglob("*")
+                if path.is_file()
+                and "__pycache__" not in path.parts
+                and path.suffix != ".pyc"
+            ]
+            if package_root.is_dir()
+            else []
+        )
+        for path in [project_root / "pyproject.toml", *sorted(source_files)]:
+            try:
+                relative = path.relative_to(project_root)
+                digest.update(str(relative).encode())
+                digest.update(b"\0")
+                digest.update(path.read_bytes())
+                digest.update(b"\0")
+            except OSError:
+                continue
+        provenance["source_sha256"] = digest.hexdigest()
+        revision = _checkout_revision(project_root)
+        if revision:
+            provenance["revision"] = revision
+        return provenance
+    return {
+        "kind": "package",
+        "version": installed_version,
+        "source": "installed package",
+    }
+
+
 def _deployment_zippergen_extras(
     profile: dict[str, object],
 ) -> tuple[str, ...]:
@@ -2883,6 +2969,7 @@ def _prepare_deployment_environment(
     profile["packages"] = requirements
     zippergen_extras = _deployment_zippergen_extras(profile)
     profile["zippergen_extras"] = list(zippergen_extras)
+    profile["zippergen_runtime"] = _zippergen_runtime_provenance()
     if skip_install:
         profile["python"] = str(profile.get("python") or sys.executable)
         return
@@ -2916,6 +3003,8 @@ def _prepare_deployment_environment(
                 uv,
                 "pip",
                 "install",
+                "--refresh-package",
+                "zippergen",
                 "--python",
                 str(build_python),
                 _zippergen_install_requirement(extras=zippergen_extras),
@@ -3228,6 +3317,16 @@ def _finalize_guided_deployment(
         profile["secret_names"] = sorted(secrets)
     profile["deployment_spec"] = spec.as_dict()
     profile["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
+    log_path = Path(
+        str(profile.get("log") or _default_deployment_log_path(name))
+    ).expanduser()
+    try:
+        profile["log_generation_offset"] = (
+            log_path.stat().st_size if log_path.is_file() else 0
+        )
+    except OSError:
+        profile["log_generation_offset"] = 0
+    profile["deployment_generation_at"] = profile["updated_at"]
 
     if not args.no_bundle:
         _bundle_deployment(profile, spec, workflow)
