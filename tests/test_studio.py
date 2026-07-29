@@ -3280,6 +3280,25 @@ def test_studio_current_is_a_complete_project_dashboard(tmp_path):
     assert any("Deployment" in line and "none" in line for line in output)
 
 
+def test_studio_project_is_the_headless_project_inventory(tmp_path):
+    studio, workspace, output = _studio(tmp_path)
+    workspace.initialize_project(name="Sample project")
+    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    workspace.specification_path.write_text("Create an echo workflow.\n")
+
+    studio.execute("project")
+
+    rendered = "\n".join(output)
+    assert "Project · Sample project" in rendered
+    assert "├── Workflow · sample · workflow.py:sample" in rendered
+    assert "│   ├── Specification" in rendered
+    assert "├── Models" in rendered
+    assert "├── Connectors" in rendered
+    assert "├── Runs" in rendered
+    assert "└── Deployments" in rendered
+    assert "show" not in _completions(studio, "project ")
+
+
 def test_studio_current_is_explicit_before_a_workflow_exists(tmp_path):
     studio, _workspace, output = _studio(tmp_path)
 
@@ -3540,6 +3559,44 @@ def test_studio_guides_one_google_authorization_for_gmail_and_sheets(
     assert records["access"] == "write"
     assert environment[mailbox["credential_env"]] == (
         '{"refresh_token":"private-google-token"}'
+    )
+
+
+def test_connector_removal_names_deployments_that_keep_snapshots(tmp_path):
+    studio, workspace, output = _studio(tmp_path)
+    workspace.save_connector_configuration(
+        "old-route",
+        {
+            "kind": "telegram",
+            "provider": "telegram",
+            "chat_id": "123",
+        },
+    )
+    deployments = workspace.home / "deployments"
+    deployments.mkdir(parents=True)
+    (deployments / "review-demo.json").write_text(
+        json.dumps(
+            {
+                "name": "review-demo",
+                "project_root": str(workspace.root),
+                "store": str(workspace.home / "runs" / "review-demo.sqlite"),
+                "connectors": {
+                    "human:Reviewer": {
+                        "type": "human",
+                        "configuration": "old-route",
+                    }
+                },
+            }
+        )
+    )
+
+    studio.execute("connector config remove old-route")
+
+    assert "old-route" not in workspace.connector_configurations()
+    assert any(
+        "Existing deployments keep their private connector snapshots: "
+        "review-demo" in line
+        for line in output
     )
 
 
@@ -4067,7 +4124,6 @@ def test_studio_deploy_remove_archives_the_deployment_and_clears_selection(
     (deployments / "reviewed-answer.json").write_text(json.dumps(profile))
     workspace.update(
         last_deployment="reviewed-answer",
-        current_store=str(store),
     )
     monkeypatch.setattr(
         "zippergen.serve._deployment_service_status",
@@ -4092,7 +4148,7 @@ def test_studio_deploy_remove_archives_the_deployment_and_clears_selection(
     assert (archives[0] / "profile/deployment.json").exists()
     state = workspace.load()
     assert state["last_deployment"] is None
-    assert state["current_store"] is None
+    assert "current_store" not in state
     assert any(
         "Deployment removed from active use: reviewed-answer" in line
         for line in output
@@ -4536,7 +4592,7 @@ def test_studio_operates_human_tasks_through_the_deployment(
 
     output.clear()
     studio.execute("current")
-    assert any(
+    assert not any(
         "Deployment" in line and "reviewed-answer" in line
         for line in output
     )
@@ -4549,7 +4605,6 @@ def test_studio_operates_human_tasks_through_the_deployment(
     assert any("Missing citation." in line for line in output)
     assert any("deploy approve reviewed-answer" in line for line in output)
     assert workspace.load()["last_deployment"] == "reviewed-answer"
-    assert workspace.load()["current_store"] == str(store)
 
     output.clear()
     studio.execute("deploy trace reviewed-answer")
@@ -4594,24 +4649,142 @@ def test_studio_deploys_current_workflow_and_remembers_name(tmp_path, monkeypatc
 
     studio.deploy_workflow(["sample-test"])
 
-    assert calls == [[
+    assert len(calls) == 1
+    assert calls[0][:6] == [
         "deploy",
         str(workspace.root / "workflow.py") + ":sample",
         "--name",
         "sample-test",
         "--project-root",
         str(workspace.root),
-        "--concise",
-        "--llm",
-        "mock",
-        "--llm-idle-timeouts-json",
-        "{}",
-    ]]
+    ]
+    assert "--project-alignment-json" in calls[0]
+    assert "--concise" in calls[0]
+    assert ["--llm", "mock"] == calls[0][
+        calls[0].index("--llm"):calls[0].index("--llm") + 2
+    ]
+    assert ["--assistant", "codex"] == calls[0][
+        calls[0].index("--assistant"):calls[0].index("--assistant") + 2
+    ]
+    assert calls[0][-2:] == ["--llm-idle-timeouts-json", "{}"]
     assert workspace.load()["last_deployment"] == "sample-test"
     assert output[-1] == "✓ Deployment completed: sample-test"
     assert any(
         "No Studio acceptance is recorded" in line for line in output
     )
+
+
+def test_studio_resume_uses_recorded_connector_routing(tmp_path, monkeypatch):
+    studio, workspace, _output = _studio(tmp_path)
+    snapshot = {
+        "human:Writer.echo": {
+            "type": "human",
+            "target": "Writer.echo",
+            "participant": "Writer",
+            "action": "echo",
+            "kind": "telegram",
+            "provider": "telegram",
+            "configuration": "old-route",
+            "chat_id": "123",
+            "channel": "telegram:old-route",
+            "token_env": "ZIPPERGEN_CONNECTOR_TELEGRAM_TOKEN",
+        }
+    }
+    workspace.save_connector_provider_secret(
+        "telegram",
+        "bot_token",
+        "private-token",
+    )
+    run = workspace.new_run(
+        workflow_spec="workflow.py:sample",
+        workflow_name="sample",
+        fingerprint="unused-by-mocked-run",
+        inputs={"value": "hello"},
+        llm="mock",
+        connectors=snapshot,
+    )
+    workspace.update_run(str(run["run_id"]), status="waiting")
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        "zippergen.studio.run_dev",
+        lambda _workspace, **kwargs: calls.append(kwargs) or {},
+    )
+
+    studio.execute("resume")
+
+    assert calls[0]["connector_environment"] == {
+        "ZIPPERGEN_CONNECTORS_JSON": json.dumps(
+            snapshot,
+            sort_keys=True,
+        ),
+        "ZIPPERGEN_CONNECTOR_TELEGRAM_TOKEN": "private-token",
+    }
+    assert callable(calls[0]["human_connector_factory"])
+
+
+def test_deployment_alignment_covers_review_and_configuration(tmp_path):
+    from zippergen.semantic import semantic_snapshot
+    from zippergen.serve import load_workflow_spec
+
+    studio, workspace, _output = _studio(tmp_path)
+    current = workspace.select_workflow(
+        "workflow.py:sample",
+        cwd=workspace.root,
+    )
+    workspace.specification_path.write_text("Create an echo workflow.\n")
+    workflow, module = load_workflow_spec(
+        workspace.absolute_spec(current)
+    )
+    semantics = semantic_snapshot(workflow, module)
+    specification = workspace.specification()
+    assert specification is not None
+    specification_fingerprint = workspace.specification_fingerprint(
+        include_pending=False
+    )
+    workspace.record_accepted_review(
+        current,
+        specification=specification,
+        specification_fingerprint=specification_fingerprint,
+        semantic_snapshot=semantics,
+        request_id=None,
+        accepted_source={"root": str(workspace.root)},
+    )
+    profile: dict[str, object] = {
+        "project_root": str(workspace.root),
+        "workflow": "workflow.py:sample",
+        "llm": "mock",
+        "llms": {},
+        "llm_idle_timeouts": {},
+        "assistant": "codex",
+        "connectors": {},
+        "environment": {},
+        "project_alignment": {
+            "schema_version": 1,
+            "workflow_spec": current,
+            "specification_fingerprint": specification_fingerprint,
+            "semantic_fingerprint": (
+                studio._semantic_snapshot_fingerprint(semantics)
+            ),
+            "review": "accepted",
+        },
+    }
+
+    message, kind, changed = studio._deployment_project_alignment(profile)
+
+    assert kind == "success"
+    assert changed == ()
+    assert "matches current specification" in message
+
+    workspace.save_model_profile(
+        current,
+        default="openai:gpt-4o-mini",
+        lifelines={},
+    )
+    message, kind, changed = studio._deployment_project_alignment(profile)
+
+    assert kind == "warning"
+    assert "models" in changed
+    assert "Redeploy" in message
 
 
 def test_studio_deploys_the_immutable_accepted_source_by_default(
@@ -4775,20 +4948,18 @@ def test_studio_can_prepare_deployment_without_starting_it(tmp_path, monkeypatch
 
     studio.deploy_workflow(["sample-test", "--no-start"])
 
-    assert calls[0] == [
+    assert calls[0][:6] == [
         "deploy",
         str(workspace.root / "workflow.py") + ":sample",
         "--name",
         "sample-test",
         "--project-root",
         str(workspace.root),
-        "--concise",
-        "--no-start",
-        "--llm",
-        "mock",
-        "--llm-idle-timeouts-json",
-        "{}",
     ]
+    assert "--project-alignment-json" in calls[0]
+    assert "--concise" in calls[0]
+    assert "--no-start" in calls[0]
+    assert calls[0][-2:] == ["--llm-idle-timeouts-json", "{}"]
 
 
 def test_studio_offers_private_provider_key_reuse_for_first_deployment(
@@ -5876,14 +6047,21 @@ def test_studio_model_profile_is_used_for_run_and_deploy(tmp_path, monkeypatch):
     assert run_calls[0]["llms"] == {
         "Writer": "claude:claude-sonnet-4-6"
     }
-    assert cli_calls[0][-6:] == [
-        "--llm",
-        "mock",
+    assert ["--llm", "mock"] == cli_calls[0][
+        cli_calls[0].index("--llm"):cli_calls[0].index("--llm") + 2
+    ]
+    assert [
         "--llm-for",
         "Writer=anthropic:claude-sonnet-4-6",
-        "--llm-idle-timeouts-json",
-        "{}",
+    ] == cli_calls[0][
+        cli_calls[0].index("--llm-for"):
+        cli_calls[0].index("--llm-for") + 2
     ]
+    assert ["--assistant", "codex"] == cli_calls[0][
+        cli_calls[0].index("--assistant"):
+        cli_calls[0].index("--assistant") + 2
+    ]
+    assert cli_calls[0][-2:] == ["--llm-idle-timeouts-json", "{}"]
 
 
 def test_studio_propagates_local_configuration_idle_release(

@@ -562,6 +562,13 @@ The first successful message should produce all of the following:
   \item \texttt{deploy trace call-intake-check} shows the participant events.
 \end{enumerate}
 
+The \texttt{Project alignment} row in \texttt{deploy show} compares this
+deployment with the current project. It covers the specification, accepted
+workflow, models, idle policy, assistant, connectors, and local model
+endpoint. Changing the project does not change the running service. Redeploy
+to apply a reported difference. Enter \texttt{project} to see the workflow,
+runs, and deployments together.
+
 If the Sheet row exists but no draft appears, inspect:
 
 \begin{lstlisting}[style=shell]

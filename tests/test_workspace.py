@@ -71,6 +71,20 @@ def test_workspace_state_lives_outside_checkout_and_remembers_workflow(tmp_path)
     assert not (root / ".zippergen").exists()
 
 
+def test_workspace_discards_legacy_current_store_pointer(tmp_path):
+    root = tmp_path / "project"
+    root.mkdir()
+    workspace = Workspace(root, home=tmp_path / "state")
+    state = workspace.load()
+    state["current_store"] = str(tmp_path / "ambiguous.sqlite")
+    workspace.state_path.parent.mkdir(parents=True, exist_ok=True)
+    workspace.state_path.write_text(json.dumps(state))
+
+    loaded = workspace.load()
+
+    assert "current_store" not in loaded
+
+
 def test_workspace_creates_unique_managed_runs(tmp_path):
     root = tmp_path / "project"
     root.mkdir()

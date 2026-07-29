@@ -289,7 +289,7 @@ The same concepts appear in interactive and noninteractive forms.
 
 ```text
 project init [NAME]
-project show
+project
 project reset [--yes]
 current
 use
@@ -297,9 +297,8 @@ use path/to/workflow.py:workflow
 runs
 ```
 
-`current` reports the project and manifest, prompt counts, current workflow and
-semantic name, participants, human actions, effects, validation state,
-effective model routes, provider readiness, current run, and deployment.
+`project` reports what exists in the project. `current` reports what the user
+was most recently working on.
 
 `use` without an argument discovers top-level `@workflow` functions with AST
 inspection, avoiding imports and their possible side effects, and opens a

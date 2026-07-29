@@ -107,8 +107,11 @@ period. The workflow stays active, and the model loads again automatically at
 the next LLM action.
 
 Tab completion shows valid commands, workflows, participants, model
-configurations, and deployments. `current` gives one project summary. Every
-structured result ends with a useful `Next` section.
+configurations, and deployments. `project` shows the whole inventory as one
+tree. The workflow, specification, models, connectors, runs, and deployments
+are visible in one place. `current` answers a different question. It shows
+what you were most recently working on. Every structured result ends with a
+useful `Next` section.
 
 ### Read the communication protocol
 
@@ -335,7 +338,10 @@ runs
 ```
 
 Every new development run gets its own managed durable state. Users work with
-the run and do not need to manage SQLite files.
+the run and do not need to manage SQLite files. The run records its model,
+assistant, and connector routing when it starts. `resume` uses that recorded
+routing. Later project configuration changes do not silently redirect an
+incomplete run.
 
 A named deployment owns one stable logical store and an immutable source
 bundle. The store is initialized when the deployment is prepared, even when
@@ -357,6 +363,11 @@ deploy restart review-demo
 deploy stop review-demo
 deploy remove review-demo
 ```
+
+`deploy show` also compares the installed deployment with the current project.
+It reports changes to the specification, accepted workflow, models, idle
+policy, assistant, connectors, and local model endpoint. A changed project does
+not alter a running deployment. Redeploy to apply those changes.
 
 The service policy restarts failed workflows. It does not restart a finite
 workflow after successful completion. `deploy stop` preserves the deployment.

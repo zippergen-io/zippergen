@@ -201,6 +201,11 @@ machine-specific runs and secrets outside the repository, so this tutorial
 does not require a \texttt{ZIPPERGEN\_HOME} export or a hand-written SQLite
 path.
 
+Enter \texttt{project} at any time to see what exists. It shows the workflow
+and specification, model and connector assignments, development runs, and
+deployments as one project tree. Use \texttt{current} when you instead want to
+see what you were most recently working on.
+
 From now on, commands such as \texttt{workflow create}, \texttt{run}, and
 \texttt{deploy} are Studio commands. Do not prefix them with
 \texttt{zippergen}. Press Tab for completion or enter \texttt{help} if the next
@@ -553,6 +558,12 @@ If the specification or workflow semantics later change, \texttt{current},
 baseline. Development runs may still exercise the candidate. Deployment stops
 and offers the immutable accepted version, return to review, an audited
 unreviewed override, or cancellation.
+
+A development run records its model, assistant, and connector routing when it
+starts. Therefore \texttt{resume} cannot silently redirect an old run after
+project configuration changes. A deployment keeps its own immutable source
+and configuration snapshot. \texttt{deploy show NAME} compares that snapshot
+with the current project and tells you when redeployment is needed.
 
 In an ordinary terminal, inspect the versioned result:
 

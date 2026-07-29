@@ -137,10 +137,6 @@ def discover_stores(workspace: Workspace) -> list[StoreRecord]:
         for path in directory.glob("*.sqlite"):
             include(path, project_owned=project_owned)
 
-    current_store = workspace.load().get("current_store")
-    if current_store:
-        include(current_store)
-
     from zippergen.serve import _store_status
 
     records: list[StoreRecord] = []
@@ -227,15 +223,6 @@ def resolve_store(
             "'deploy list' to inspect its owner."
         )
 
-    current = workspace.load().get("current_store")
-    if current:
-        key = _path_key(Path(str(current)))
-        match = next(
-            (record for record in records if _path_key(record.path) == key),
-            None,
-        )
-        if match is not None:
-            return match
     current_run = workspace.current_run()
     if current_run and current_run.get("store"):
         key = _path_key(Path(str(current_run["store"])))
@@ -272,7 +259,6 @@ def create_store(workspace: Workspace, name: str) -> StoreRecord:
     path.parent.mkdir(parents=True, exist_ok=True)
     connection = open_store(str(path))
     connection.close()
-    workspace.update(current_store=str(path))
     return resolve_store(workspace, str(path))
 
 
@@ -352,8 +338,6 @@ def rename_store(
         for path, profile in affected_profiles:
             profile["store"] = str(destination)
             _atomic_json(path, profile)
-        if workspace.load().get("current_store") == str(record.path):
-            workspace.update(current_store=str(destination))
     except Exception:
         for old, new in reversed(moved):
             if new.exists() and not old.exists():

@@ -1336,8 +1336,29 @@ class StudioConnectorsMixin:
                 return
             if subaction == "remove" and len(values) == 1:
                 name = self._connector_configuration_name(values[0])
+                from zippergen.studio_stores import deployment_profiles
+
+                retained_by: list[str] = []
+                for _path, profile in deployment_profiles(self.workspace):
+                    raw_connectors = profile.get("connectors")
+                    if not isinstance(raw_connectors, dict):
+                        continue
+                    if any(
+                        isinstance(record, dict)
+                        and record.get("configuration") == name
+                        for record in raw_connectors.values()
+                    ):
+                        retained_by.append(str(profile.get("name")))
+                retained_by.sort()
                 self.workspace.remove_connector_configuration(name)
                 self._success(f"Removed connector configuration: {name}")
+                if retained_by:
+                    self._warning(
+                        "Existing deployments keep their private connector "
+                        "snapshots: "
+                        + ", ".join(retained_by)
+                        + ". Redeploy or remove them to eliminate those copies."
+                    )
                 return
             raise SystemExit(
                 "Use connector config list, create [NAME], edit NAME, "

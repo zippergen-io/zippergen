@@ -224,8 +224,9 @@ def _is_allowed_natural_plan_command(parts: list[str]) -> bool:
         return not args
     if command == "project":
         return (
-            len(args) == 1
-            and lowered[0] in {"show", "reset"}
+            not args
+            or len(args) == 1
+            and lowered[0] == "reset"
             or 1 <= len(args) <= 2
             and lowered[0] in {"init", "rename"}
             or len(args) == 2
@@ -2963,8 +2964,18 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
                 module,
                 default_override=run_args[0] if run_args else None,
             )
-            human_connector_factory = self._human_connector_factory(
-                current, workflow, module
+            connector_snapshot, connector_environment = (
+                self._workflow_connector_runtime(
+                    workflow_spec=current,
+                    workflow=workflow,
+                    module=module,
+                )
+            )
+            human_connector_factory = (
+                self._human_connector_factory_from_snapshot(
+                    connector_snapshot,
+                    connector_environment,
+                )
             )
             try:
                 run_dev(
@@ -2978,13 +2989,8 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
                     output_func=self.output,
                     renderer=self._renderer,
                     human_connector_factory=human_connector_factory,
-                    connector_environment=(
-                        self._workflow_connector_environment(
-                            workflow_spec=current,
-                            workflow=workflow,
-                            module=module,
-                        )
-                    ),
+                    connector_environment=connector_environment,
+                    connector_snapshot=connector_snapshot,
                 )
             except RuntimeError as exc:
                 raise SystemExit(
@@ -2995,12 +3001,41 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
             if args:
                 raise SystemExit("Studio 'resume' takes no arguments.")
             current, workflow, module = self._current_context()
-            self._check_workflow_connectors(
-                current,
-                workflow,
-                module,
-                for_run=True,
-            )
+            run_record = self.workspace.current_run()
+            if run_record is None:
+                raise SystemExit("There is no current development run to resume.")
+            raw_snapshot = run_record.get("connectors")
+            connector_snapshot: dict[str, object]
+            if isinstance(raw_snapshot, dict):
+                connector_snapshot = {
+                    str(name): cast(object, dict(record))
+                    for name, record in raw_snapshot.items()
+                    if isinstance(record, dict)
+                }
+                connector_environment = (
+                    self._connector_environment_from_snapshot(
+                        connector_snapshot
+                    )
+                )
+            else:
+                self._warning(
+                    "This run predates connector snapshots. Studio will use "
+                    "the current connector assignments once. Start a new run "
+                    "to make future resumes independent of project changes."
+                )
+                self._check_workflow_connectors(
+                    current,
+                    workflow,
+                    module,
+                    for_run=True,
+                )
+                connector_snapshot, connector_environment = (
+                    self._workflow_connector_runtime(
+                        workflow_spec=current,
+                        workflow=workflow,
+                        module=module,
+                    )
+                )
             run_dev(
                 self.workspace,
                 resume=True,
@@ -3008,14 +3043,13 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
                 input_func=self.input,
                 output_func=self.output,
                 renderer=self._renderer,
-                human_connector_factory=self._human_connector_factory(
-                    current, workflow, module
+                human_connector_factory=(
+                    self._human_connector_factory_from_snapshot(
+                        connector_snapshot,
+                        connector_environment,
+                    )
                 ),
-                connector_environment=self._workflow_connector_environment(
-                    workflow_spec=current,
-                    workflow=workflow,
-                    module=module,
-                ),
+                connector_environment=connector_environment,
             )
         elif command == "runs":
             self.show_runs()
@@ -3295,7 +3329,6 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
                 in self.workspace.model_configurations().items()
             },
             "current_run": state.get("current_run"),
-            "current_store": state.get("current_store"),
             "last_deployment": state.get("last_deployment"),
             "current_task": current_request,
         }
@@ -4688,42 +4721,8 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
         return current, workflow, module
 
     def configure_project(self, args: list[str]) -> None:
-        if not args or args == ["show"]:
-            manifest = self.workspace.project_manifest()
-            self._emit_table(
-                "Project",
-                [
-                    ("Name", manifest["name"], None),
-                    ("Root", self.workspace.root, None),
-                    (
-                        "Manifest",
-                        f"{self.workspace.manifest_path} "
-                        f"({'present' if manifest['exists'] else 'not created'})",
-                        "success" if manifest["exists"] else "warning",
-                    ),
-                    (
-                        "Specification",
-                        self.workspace.specification_path,
-                        "success"
-                        if self.workspace.specification() is not None
-                        else "warning",
-                    ),
-                    (
-                        "Pending",
-                        ".zippergen/pending-refinement.md"
-                        if self.workspace.pending_refinement() is not None
-                        else "none",
-                        "warning"
-                        if self.workspace.pending_refinement() is not None
-                        else None,
-                    ),
-                    (
-                        "Framework checkout",
-                        manifest.get("framework_directory") or "none",
-                        None,
-                    ),
-                ],
-            )
+        if not args:
+            self._show_project_inventory()
             return
         if args[0] == "rename":
             if len(args) != 2:
@@ -4790,7 +4789,7 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
             return
         if args[0] != "init" or len(args) > 2:
             raise SystemExit(
-                "Use project show, project init [NAME], project rename NAME, "
+                "Use project, project init [NAME], project rename NAME, "
                 "project reset, project reset fresh [--yes], or "
                 "project reset state [--yes]."
             )
@@ -4815,6 +4814,144 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
                     None,
                 ),
             ],
+        )
+
+    def _show_project_inventory(self) -> None:
+        """Show what belongs to this project without changing any selection."""
+
+        from zippergen.serve import _deployment_service_status, _validate_workflow
+        from zippergen.studio_stores import deployment_profiles
+
+        manifest = self.workspace.project_manifest()
+        specification = self.workspace.specification()
+        pending = self.workspace.pending_refinement()
+        current = self.workspace.current_workflow
+        workflow_name = "none selected"
+        validation = "not available"
+        validation_kind: StatusKind = "warning"
+        accepted = "not available"
+        accepted_kind: StatusKind = "warning"
+        if current:
+            try:
+                _current, workflow, module = self._current_context()
+                workflow_name = f"{workflow.name} · {current}"
+                result = _validate_workflow(workflow, module)
+                validation = "valid" if result["valid"] else "invalid"
+                validation_kind = "success" if result["valid"] else "error"
+                accepted, accepted_kind = self._accepted_review_status(
+                    current,
+                    workflow,
+                    module,
+                )
+            except (Exception, SystemExit) as exc:
+                workflow_name = f"{current} · cannot load"
+                validation = str(exc)
+                validation_kind = "error"
+
+        runs = self.workspace.list_runs()
+        newest_run = runs[0] if runs else None
+        deployments = deployment_profiles(self.workspace)
+
+        self._emit_section_title(
+            f"Project · {manifest['name']}",
+            major=True,
+        )
+        self._emit()
+        self._emit(
+            f"Root  {self.workspace.root}"
+        )
+        self._emit(
+            "Manifest  "
+            + (
+                f"{self._status_mark('success')} {self.workspace.manifest_path}"
+                if manifest["exists"]
+                else f"{self._status_mark('warning')} not created"
+            )
+        )
+        self._emit()
+        self._emit(f"├── Workflow · {workflow_name}")
+        self._emit(
+            "│   ├── Specification · "
+            + (
+                f"{self._status_mark('success')} "
+                f"{self.workspace.specification_path.name}"
+                if specification is not None
+                else f"{self._status_mark('warning')} not written"
+            )
+        )
+        self._emit(
+            "│   ├── Refinement · "
+            + (
+                f"{self._status_mark('warning')} pending"
+                if pending is not None
+                else "none"
+            )
+        )
+        self._emit(
+            f"│   ├── Validation · {self._status_mark(validation_kind)} "
+            f"{validation}"
+        )
+        self._emit(
+            f"│   └── Accepted review · {self._status_mark(accepted_kind)} "
+            f"{accepted}"
+        )
+
+        model_count = 0
+        connector_count = 0
+        if current:
+            model_assignments = self.workspace.model_assignment_profile(current)
+            model_count = len(model_assignments.get("lifelines") or {}) + len(
+                model_assignments.get("actions") or {}
+            )
+            connector_assignments = (
+                self.workspace.connector_assignment_profile(current)
+            )
+            connector_count = len(
+                connector_assignments.get("lifelines") or {}
+            ) + len(connector_assignments.get("actions") or {}) + len(
+                self.workspace.connector_binding_profile(current)
+            )
+        self._emit(
+            f"├── Models · {model_count} explicit assignment"
+            f"{'' if model_count == 1 else 's'}"
+        )
+        self._emit(
+            f"├── Connectors · {connector_count} assignment"
+            f"{'' if connector_count == 1 else 's'}"
+        )
+        run_summary = "none"
+        if newest_run is not None:
+            run_summary = (
+                f"{len(runs)} · newest {newest_run['run_id']} "
+                f"({newest_run['status']})"
+            )
+        self._emit(f"├── Runs · {run_summary}")
+        if not deployments:
+            self._emit("└── Deployments · none")
+        else:
+            self._emit(
+                f"└── Deployments · {len(deployments)}"
+            )
+            for index, (_path, profile) in enumerate(deployments):
+                name = str(profile.get("name") or "unknown")
+                service = _deployment_service_status(name)
+                alignment, alignment_kind, changed = (
+                    self._deployment_project_alignment(profile)
+                )
+                tree_alignment = (
+                    "differs from current project"
+                    if changed
+                    else "matches current project"
+                    if alignment_kind == "success"
+                    else alignment
+                )
+                branch = "    └──" if index == len(deployments) - 1 else "    ├──"
+                self._emit(
+                    f"{branch} {name} · {service['state']} · "
+                    f"{self._status_mark(alignment_kind)} {tree_alignment}"
+                )
+        self._emit_next(
+            "workflow status · model · connector · runs · deploy list"
         )
 
     def reset_project(
@@ -7279,50 +7416,55 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
         workflow,
         module,
     ):
-        assignments = self.workspace.connector_assignment_profile(current)
-        selected = {
-            *assignments["lifelines"].values(),
-            *assignments["actions"].values(),
-        }
-        if not selected:
-            return None
-        configurations = self.workspace.connector_configurations()
-        routes: dict[str, dict[str, object]] = {}
-        for name in selected:
-            configuration = configurations.get(name)
-            if configuration is None:
-                raise SystemExit(
-                    f"Assigned connector configuration no longer exists: "
-                    f"{name}."
-                )
-            provider = str(
-                configuration.get("provider")
-                or configuration.get("kind")
-                or ""
-            )
-            if provider != "telegram":
-                raise SystemExit(
-                    f"Development human delivery is not implemented for "
-                    f"{provider or 'unknown'}."
-                )
-            routes[name] = {
-                **configuration,
-                "configuration": name,
-                "channel": configuration.get("channel")
-                or f"telegram:{name}",
-            }
-        token = self.workspace.connector_provider_secret(
-            "telegram", "bot_token"
+        snapshot, environment = self._workflow_connector_runtime(
+            workflow_spec=current,
+            workflow=workflow,
+            module=module,
         )
-        if not token:
-            raise SystemExit(
-                "Telegram provider token is missing. Use "
-                "'connector provider configure telegram'."
-            )
-        route_assignments = {
-            **assignments["lifelines"],
-            **assignments["actions"],
-        }
+        return self._human_connector_factory_from_snapshot(
+            snapshot,
+            environment,
+        )
+
+    def _human_connector_factory_from_snapshot(
+        self,
+        snapshot: dict[str, object],
+        environment: dict[str, str],
+    ):
+        human_records = [
+            value
+            for value in snapshot.values()
+            if isinstance(value, dict) and value.get("type") == "human"
+        ]
+        if not human_records:
+            return None
+        routes: dict[str, dict[str, object]] = {}
+        route_assignments: dict[str, str] = {}
+        token: str | None = None
+        for record in human_records:
+            configuration = str(record.get("configuration") or "")
+            target = str(record.get("target") or "")
+            token_env = str(record.get("token_env") or "")
+            if not configuration or not target or not token_env:
+                raise SystemExit(
+                    "Recorded human connector routing is incomplete. Start a "
+                    "new run after checking connector assignments."
+                )
+            candidate = environment.get(token_env)
+            if not candidate:
+                raise SystemExit(
+                    f"Private credential for connector {configuration} is "
+                    "unavailable. Configure its provider, then resume."
+                )
+            if token is not None and candidate != token:
+                raise SystemExit(
+                    "A development run cannot use multiple Telegram provider "
+                    "credentials for human delivery."
+                )
+            token = candidate
+            routes[configuration] = dict(record)
+            route_assignments[target] = configuration
+        assert token is not None
 
         def factory(store_path: str):
             from zippergen.telegram_notify import (
@@ -7650,7 +7792,6 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
         if not store:
             raise SystemExit("The current development run has no durable state.")
         record = self._store_record(store)
-        self.workspace.update(current_store=str(record.path))
         return record
 
     def _emit_human_task_detail(self, task: dict[str, object]) -> None:
@@ -8346,12 +8487,29 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
     ) -> dict[str, str]:
         """Build the same private connector context used by deployments."""
 
+        _snapshot, environment = self._workflow_connector_runtime(
+            workflow_spec=workflow_spec,
+            workflow=workflow,
+            module=module,
+        )
+        return environment
+
+    def _workflow_connector_runtime(
+        self,
+        *,
+        workflow_spec: str,
+        workflow,
+        module,
+    ) -> tuple[dict[str, object], dict[str, str]]:
+        """Return durable non-secret routing plus its current private values."""
+
         arguments = self._deployment_connector_arguments(
             workflow_spec=workflow_spec,
             workflow=workflow,
             module=module,
         )
         environment: dict[str, str] = {}
+        snapshot: dict[str, object] = {}
         index = 0
         while index < len(arguments):
             option = arguments[index]
@@ -8362,10 +8520,67 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
             index += 1
             if option == "--connectors-json":
                 environment["ZIPPERGEN_CONNECTORS_JSON"] = value
+                raw = json.loads(value)
+                if not isinstance(raw, dict):
+                    raise SystemExit("Connector routing snapshot is invalid.")
+                snapshot = {
+                    str(name): dict(record)
+                    for name, record in raw.items()
+                    if isinstance(record, dict)
+                }
             elif option == "--connector-secret":
                 name, separator, secret = value.partition("=")
                 if separator and name:
                     environment[name] = secret
+        return snapshot, environment
+
+    def _connector_environment_from_snapshot(
+        self,
+        snapshot: dict[str, object],
+    ) -> dict[str, str]:
+        """Resolve current private credentials for recorded connector routing."""
+
+        if not snapshot:
+            return {}
+        environment = {
+            "ZIPPERGEN_CONNECTORS_JSON": json.dumps(
+                snapshot,
+                sort_keys=True,
+            )
+        }
+        for value in snapshot.values():
+            if not isinstance(value, dict):
+                continue
+            provider = str(value.get("provider") or value.get("kind") or "")
+            configuration = str(value.get("configuration") or "")
+            token_env = str(value.get("token_env") or "")
+            credential_env = str(value.get("credential_env") or "")
+            if token_env:
+                secret = self.workspace.connector_provider_secret(
+                    provider,
+                    "bot_token",
+                ) or self.workspace.connector_secret(
+                    configuration,
+                    "bot_token",
+                )
+                if not secret:
+                    raise SystemExit(
+                        f"Private credential for connector {configuration} is "
+                        "unavailable. Configure its provider, then resume."
+                    )
+                environment[token_env] = secret
+            if credential_env:
+                secret = self.workspace.connector_provider_secret(
+                    provider,
+                    "authorized_user_json",
+                )
+                if not secret:
+                    raise SystemExit(
+                        f"Private Google authorization for connector "
+                        f"{configuration} is unavailable. Use 'connector "
+                        "provider configure google', then resume."
+                    )
+                environment[credential_env] = secret
         return environment
 
     def deploy_workflow(self, args: list[str]) -> None:
@@ -8622,6 +8837,47 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
         if names:
             arguments.extend(["--name", name])
         arguments.extend(["--project-root", str(self.workspace.root)])
+        deployed_semantics = semantic_snapshot(
+            deployment_workflow,
+            deployment_module,
+        )
+        deployed_semantic_fingerprint = (
+            self._semantic_snapshot_fingerprint(deployed_semantics)
+        )
+        uses_accepted_source = deployment_source.startswith(
+            "immutable accepted"
+        )
+        alignment_metadata = {
+            "schema_version": 1,
+            "workflow_spec": current,
+            "specification_fingerprint": (
+                accepted.get("specification_fingerprint")
+                if uses_accepted_source and accepted is not None
+                else self.workspace.specification_fingerprint(
+                    include_pending=False
+                )
+            ),
+            "semantic_fingerprint": deployed_semantic_fingerprint,
+            "review": (
+                "accepted"
+                if (
+                    override_audit is None
+                    and (
+                        comparison == "match"
+                        or review_mode == "accepted"
+                    )
+                )
+                else "override"
+                if override_audit is not None
+                else "manual"
+            ),
+        }
+        arguments.extend(
+            [
+                "--project-alignment-json",
+                json.dumps(alignment_metadata, sort_keys=True),
+            ]
+        )
         arguments.append("--concise")
         if no_start:
             arguments.append("--no-start")
@@ -8630,6 +8886,12 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
             default=default_llm_spec(deployment_module),
         )
         arguments.extend(["--llm", str(profile["default"])])
+        arguments.extend(
+            [
+                "--assistant",
+                str(self._global_settings()["assistant"]),
+            ]
+        )
         overrides = profile.get("lifelines") or {}
         action_overrides = profile.get("actions") or {}
         selected_specs = [str(profile["default"])]
@@ -8686,13 +8948,7 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
         deployed_profile: dict[str, object] | None = None
         if _deployment_profile_path(name).exists():
             deployed_profile = _load_deployment_profile(name)
-            if deployed_profile.get("store"):
-                self.workspace.update(
-                    last_deployment=name,
-                    current_store=str(deployed_profile["store"]),
-                )
-            else:
-                self.workspace.update(last_deployment=name)
+            self.workspace.update(last_deployment=name)
         else:
             self.workspace.update(last_deployment=name)
         outcome = "prepared" if no_start else "completed"
@@ -8743,10 +8999,7 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
                 f"Deployment {name} has no durable state configured."
             )
         record = self._store_record(str(store))
-        self.workspace.update(
-            last_deployment=name,
-            current_store=str(record.path),
-        )
+        self.workspace.update(last_deployment=name)
         return record
 
     def show_deployments(self) -> None:
@@ -8898,6 +9151,304 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
             )
         return " · ".join(routes)
 
+    @staticmethod
+    def _normalized_connector_snapshot(
+        raw: object,
+    ) -> dict[str, dict[str, object]]:
+        """Keep only non-secret routing and target values for comparison."""
+
+        if not isinstance(raw, dict):
+            return {}
+        fields = {
+            "type",
+            "target",
+            "participant",
+            "action",
+            "name",
+            "kind",
+            "provider",
+            "configuration",
+            "access",
+            "capabilities",
+            "channel",
+            "chat_id",
+            "spreadsheet_id",
+            "tab",
+            "account",
+            "query",
+        }
+        return {
+            str(name): {
+                str(key): value
+                for key, value in value.items()
+                if key in fields
+            }
+            for name, value in raw.items()
+            if isinstance(value, dict)
+        }
+
+    def _current_connector_snapshot(
+        self,
+        workflow_spec: str,
+        workflow,
+        module,
+    ) -> dict[str, dict[str, object]]:
+        """Build current non-secret connector routing without readiness checks."""
+
+        from zippergen.connectors import connector_requirements_from_module
+
+        configurations = self.workspace.connector_configurations()
+        human_assignments = self.workspace.connector_assignment_profile(
+            workflow_spec
+        )
+        bindings = self.workspace.connector_binding_profile(workflow_spec)
+        snapshot: dict[str, dict[str, object]] = {}
+        for target, configuration_name in [
+            *human_assignments["lifelines"].items(),
+            *human_assignments["actions"].items(),
+        ]:
+            configuration = configurations.get(configuration_name) or {}
+            provider = str(
+                configuration.get("provider")
+                or configuration.get("kind")
+                or ""
+            )
+            snapshot[f"human:{target}"] = {
+                "type": "human",
+                "target": target,
+                "participant": target.partition(".")[0],
+                "action": target.partition(".")[2] or None,
+                "kind": provider,
+                "provider": provider,
+                "configuration": configuration_name,
+                "chat_id": configuration.get("chat_id"),
+                "channel": configuration.get("channel")
+                or f"telegram:{configuration_name}",
+            }
+        for requirement in connector_requirements_from_module(module):
+            configuration_name = bindings.get(requirement.name)
+            if configuration_name is None:
+                continue
+            configuration = configurations.get(configuration_name) or {}
+            provider = str(
+                configuration.get("provider")
+                or configuration.get("kind")
+                or ""
+            )
+            record: dict[str, object] = {
+                **requirement.as_dict(),
+                "provider": provider,
+                "configuration": configuration_name,
+                "channel": configuration.get("channel") or requirement.name,
+            }
+            if requirement.kind == "telegram":
+                record["chat_id"] = configuration.get("chat_id")
+            elif requirement.kind == "google-sheets":
+                record.update(
+                    {
+                        "spreadsheet_id": configuration.get("spreadsheet_id"),
+                        "tab": configuration.get("tab"),
+                    }
+                )
+            elif requirement.kind == "gmail":
+                record.update(
+                    {
+                        "account": configuration.get("account") or "me",
+                        "query": configuration.get("query")
+                        or "is:unread in:inbox",
+                    }
+                )
+            snapshot[f"requirement:{requirement.name}"] = record
+        return self._normalized_connector_snapshot(snapshot)
+
+    @staticmethod
+    def _semantic_snapshot_fingerprint(value: dict[str, object]) -> str:
+        return hashlib.sha256(
+            json.dumps(
+                value,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest()
+
+    def _deployment_project_alignment(
+        self,
+        profile: dict[str, object],
+    ) -> tuple[str, StatusKind, tuple[str, ...]]:
+        """Compare an immutable deployment snapshot with the current project."""
+
+        baseline = profile.get("project_alignment")
+        if not isinstance(baseline, dict):
+            return (
+                "not recorded; redeploy once to enable comparison",
+                "warning",
+                (),
+            )
+        if str(profile.get("project_root") or "") != str(self.workspace.root):
+            return (
+                "belongs to a different project root",
+                "warning",
+                ("project root",),
+            )
+        workflow_spec = str(baseline.get("workflow_spec") or "")
+        if not workflow_spec:
+            return (
+                "record is incomplete; redeploy to refresh it",
+                "warning",
+                (),
+            )
+        try:
+            from zippergen.serve import load_workflow_spec
+
+            workflow, module = load_workflow_spec(
+                self.workspace.absolute_spec(workflow_spec)
+            )
+        except (Exception, SystemExit):
+            return (
+                "selected workflow can no longer be loaded",
+                "warning",
+                ("workflow",),
+            )
+
+        changed: list[str] = []
+        current_semantic_fingerprint = self._semantic_snapshot_fingerprint(
+            semantic_snapshot(workflow, module)
+        )
+        if (
+            baseline.get("semantic_fingerprint")
+            != current_semantic_fingerprint
+        ):
+            changed.append("workflow")
+        if (
+            baseline.get("specification_fingerprint")
+            != self.workspace.specification_fingerprint(
+                include_pending=False
+            )
+        ):
+            changed.append("specification")
+        review_comparison, _review_changed, _accepted = (
+            self._accepted_review_comparison(
+                workflow_spec,
+                workflow,
+                module,
+            )
+        )
+        if (
+            baseline.get("review") != "accepted"
+            or review_comparison != "match"
+        ):
+            changed.append("accepted review")
+
+        current_models = self.workspace.model_profile(
+            workflow_spec,
+            default=default_llm_spec(module),
+        )
+        deployed_models = {
+            "default": str(profile.get("llm") or "mock"),
+            "lifelines": normalize_llm_overrides(profile.get("llms")),
+        }
+        deployed_lifelines = {
+            key: value
+            for key, value in deployed_models["lifelines"].items()
+            if "." not in key
+        }
+        deployed_actions = {
+            key: value
+            for key, value in deployed_models["lifelines"].items()
+            if "." in key
+        }
+        deployed_models["lifelines"] = deployed_lifelines
+        if deployed_actions:
+            deployed_models["actions"] = deployed_actions
+        normalized_current_models: dict[str, object] = {
+            "default": str(current_models.get("default") or "mock"),
+            "lifelines": dict(current_models.get("lifelines") or {}),
+        }
+        if current_models.get("actions"):
+            normalized_current_models["actions"] = dict(
+                current_models["actions"]
+            )
+        if deployed_models != normalized_current_models:
+            changed.append("models")
+
+        current_idle = self._model_idle_timeout_routes(
+            workflow_spec,
+            workflow,
+            module,
+        )
+        raw_deployed_idle = profile.get("llm_idle_timeouts")
+        deployed_idle = (
+            {
+                str(target): float(value)
+                for target, value in raw_deployed_idle.items()
+            }
+            if isinstance(raw_deployed_idle, dict)
+            else {}
+        )
+        if current_idle != deployed_idle:
+            changed.append("model idle policy")
+        if str(profile.get("assistant") or "codex") != str(
+            self._global_settings().get("assistant") or "codex"
+        ):
+            changed.append("assistant")
+
+        current_connectors = self._current_connector_snapshot(
+            workflow_spec,
+            workflow,
+            module,
+        )
+        deployed_connectors = self._normalized_connector_snapshot(
+            profile.get("connectors")
+        )
+        if current_connectors != deployed_connectors:
+            changed.append("connectors")
+
+        selected_specs = {
+            str(normalized_current_models["default"]),
+            *(
+                str(value)
+                for value in cast(
+                    dict[str, object],
+                    normalized_current_models["lifelines"],
+                ).values()
+            ),
+            *(
+                str(value)
+                for value in cast(
+                    dict[str, object],
+                    normalized_current_models.get("actions") or {},
+                ).values()
+            ),
+        }
+        if any(_canonical_provider(spec) == "local" for spec in selected_specs):
+            current_endpoint = self.workspace.provider_profiles().get(
+                "local", {}
+            ).get("base_url", "http://127.0.0.1:11434/v1")
+            deployed_environment = profile.get("environment") or {}
+            deployed_endpoint = (
+                deployed_environment.get("OLLAMA_BASE_URL")
+                if isinstance(deployed_environment, dict)
+                else None
+            )
+            if str(deployed_endpoint or "") != str(current_endpoint):
+                changed.append("local provider endpoint")
+
+        unique_changed = tuple(dict.fromkeys(changed))
+        if unique_changed:
+            return (
+                "differs from current project: "
+                + ", ".join(unique_changed)
+                + ". Redeploy to apply project changes",
+                "warning",
+                unique_changed,
+            )
+        return (
+            "matches current specification, accepted workflow, and "
+            "configuration",
+            "success",
+            (),
+        )
+
     def show_deployment(self, args: list[str]) -> None:
         if len(args) > 1:
             raise SystemExit("Use deploy show [NAME].")
@@ -8991,6 +9542,9 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
             )
         selected_models = self._deployment_model_routes(profile)
         selected_connectors = self._deployment_connector_routes(profile)
+        alignment, alignment_kind, _alignment_changed = (
+            self._deployment_project_alignment(profile)
+        )
         missing_provider = next(
             (
                 provider
@@ -9056,6 +9610,7 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
                     None,
                 ),
                 ("Connectors", selected_connectors, None),
+                ("Project alignment", alignment, alignment_kind),
                 (
                     "Cause",
                     cause or "no immediate failure detected",
@@ -9076,10 +9631,6 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
                 ("Log", profile.get("log") or "not configured", None),
                 ("Next", next_action, None),
             ],
-        )
-        self.workspace.update(
-            last_deployment=name,
-            current_store=str(profile["store"]),
         )
 
     def inspect_deployment(self, args: list[str]) -> None:
@@ -9145,10 +9696,6 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
                 else f"deploy inspect {name} PARTICIPANT · "
                 f"deploy tasks {name} · deploy logs {name}"
             ),
-        )
-        self.workspace.update(
-            last_deployment=name,
-            current_store=str(profile.get("store") or ""),
         )
 
     def manage_deploy(self, args: list[str]) -> None:
@@ -9413,9 +9960,6 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
         updates: dict[str, object] = {}
         if str(state.get("last_deployment") or "").casefold() == name.casefold():
             updates["last_deployment"] = None
-        store = str(profile.get("store") or "")
-        if store and str(state.get("current_store") or "") == store:
-            updates["current_store"] = None
         if updates:
             self.workspace.update(**updates)
 

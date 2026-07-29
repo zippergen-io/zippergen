@@ -1894,7 +1894,7 @@ durable state; and \texttt{deploy} for installed operation. The important
 commands are:
 
 \begin{lstlisting}[style=shell]
-project show   # visible manifest and automatic specification path
+project        # complete project inventory
 project rename "NEW NAME" # logical name only; root stays unchanged
 settings       # global learning, interpreter, assistant, editor, output
 settings set learning off # applies to every local project
@@ -4235,9 +4235,10 @@ Record the observed result next to every item:
 \endhead
 $\square$ & Studio opens the tutorial workflow without a
 \texttt{ZIPPERGEN\_HOME} export or explicit store path. & \\
-$\square$ & \texttt{project show} reports the parent project, nested framework
-checkout, and automatic \path{specification.md} path; the visible files contain
-no private runtime state. & \\
+$\square$ & \texttt{project} reports the workflow, specification, model and
+connector assignments, runs, and deployments. It also reports the project root
+and automatic \path{specification.md} path. The visible files contain no
+private runtime state. & \\
 $\square$ & \texttt{current}, \texttt{workflow list},
 \texttt{workflow select}, and the selectable
 \texttt{workflow show}
@@ -4331,7 +4332,7 @@ Enter the following only after the \texttt{zippergen [workflow]>} prompt
 appears; do not prefix them with \texttt{zippergen}:
 
 \begin{lstlisting}[style=shell]
-project show
+project
 project rename "Reviewed Answer Tutorial" # optional logical rename
 settings
 settings set learning on

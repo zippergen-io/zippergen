@@ -1475,7 +1475,6 @@ class Workspace:
             "project_root": str(self.root),
             "current_workflow": None,
             "current_run": None,
-            "current_store": None,
             "last_deployment": None,
             "last_view": "protocol",
             "current_request": None,
@@ -1534,7 +1533,6 @@ class Workspace:
         return {
             "current_workflow": state.get("current_workflow"),
             "current_run": state.get("current_run"),
-            "current_store": state.get("current_store"),
             "last_deployment": state.get("last_deployment"),
             "runs": len(list(self.runs_directory.glob("*.json"))),
             "requests": len(list(self.requests_directory.glob("*.json"))),
@@ -1762,7 +1760,9 @@ class Workspace:
         # This field was added additively so existing workspaces keep working
         # without a schema migration.
         state.setdefault("current_request", None)
-        state.setdefault("current_store", None)
+        # Durable state is resolved through its owning run or deployment.
+        # Remove the former ambiguous navigation pointer from old workspaces.
+        state.pop("current_store", None)
         state.setdefault("task_cleared", False)
         state.setdefault("pending_specification_fingerprint", None)
         state.setdefault("pending_specification_baseline", None)
@@ -2496,6 +2496,7 @@ class Workspace:
         assistant: str | None = None,
         options: dict[str, object] | None = None,
         services: str | None = None,
+        connectors: dict[str, object] | None = None,
     ) -> dict[str, Any]:
         created_at_ns = time.time_ns()
         base = (
@@ -2526,6 +2527,7 @@ class Workspace:
             "assistant": assistant,
             "options": dict(options or {}),
             "services": services,
+            "connectors": dict(connectors or {}),
             "status": "created",
             "result": None,
             "error": None,
@@ -2537,7 +2539,6 @@ class Workspace:
         self.update(
             current_workflow=record["workflow_spec"],
             current_run=run_id,
-            current_store=str(store),
         )
         return record
 

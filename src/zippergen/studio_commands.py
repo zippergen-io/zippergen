@@ -466,7 +466,12 @@ COMMANDS: tuple[CommandSpec, ...] = (
         "fast-forward a source checkout, synchronize it, and restart Studio",
         "execution",
     ),
-    CommandSpec(("project",), "project", "show project configuration", "read-only"),
+    CommandSpec(
+        ("project",),
+        "project",
+        "show the project inventory",
+        "read-only",
+    ),
     CommandSpec(
         ("project", "init"),
         "project init [NAME]",
@@ -478,12 +483,6 @@ COMMANDS: tuple[CommandSpec, ...] = (
         "project rename NAME",
         "change the logical project name",
         "configuration",
-    ),
-    CommandSpec(
-        ("project", "show"),
-        "project show",
-        "show visible project configuration",
-        "read-only",
     ),
     CommandSpec(
         ("project", "reset"),

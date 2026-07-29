@@ -3351,6 +3351,19 @@ def _apply_deploy_arguments(
     project_root = getattr(args, "project_root", None)
     if project_root:
         profile["project_root"] = str(Path(project_root).expanduser().resolve())
+    project_alignment_json = getattr(args, "project_alignment_json", None)
+    if project_alignment_json is not None:
+        try:
+            project_alignment = json.loads(project_alignment_json)
+        except json.JSONDecodeError as exc:
+            raise SystemExit(
+                f"Project alignment metadata is not valid JSON: {exc}"
+            ) from exc
+        if not isinstance(project_alignment, dict):
+            raise SystemExit(
+                "Project alignment metadata must be a JSON object."
+            )
+        profile["project_alignment"] = project_alignment
     provider_environment = _parse_inputs(getattr(args, "provider_env", []))
     unsupported_provider_environment = sorted(
         set(provider_environment) - {"OLLAMA_BASE_URL"}
@@ -3977,6 +3990,7 @@ def _add_guided_deployment_arguments(
         help=argparse.SUPPRESS,
     )
     parser.add_argument("--project-root", help=argparse.SUPPRESS)
+    parser.add_argument("--project-alignment-json", help=argparse.SUPPRESS)
     parser.add_argument("--connectors-json", help=argparse.SUPPRESS)
     parser.add_argument(
         "--connector-secret",

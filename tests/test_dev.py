@@ -135,6 +135,38 @@ def test_dev_collects_multiple_inputs_and_reviews_inline(tmp_path):
     assert output[-2] == "Result: [revise_reply:draft]"
 
 
+def test_development_run_records_non_secret_connector_routing(tmp_path):
+    workspace = Workspace(_repository_root(), home=tmp_path / "home")
+    responses = iter(
+        [
+            "Explain durable execution.",
+            "1",
+            "y",
+        ]
+    )
+    snapshot = {
+        "human:Reviewer.approve_reply": {
+            "type": "human",
+            "target": "Reviewer.approve_reply",
+            "configuration": "telegram-review",
+            "provider": "telegram",
+            "chat_id": "123",
+            "token_env": "ZIPPERGEN_CONNECTOR_TELEGRAM_TOKEN",
+        }
+    }
+
+    record = run_dev(
+        workspace,
+        workflow_spec=TUTORIAL_SPEC,
+        input_func=lambda prompt: next(responses),
+        output_func=lambda _line: None,
+        connector_snapshot=snapshot,
+    )
+
+    stored = workspace.load_run(str(record["run_id"]))
+    assert stored["connectors"] == snapshot
+
+
 def test_dev_uses_shared_renderer_when_invoked_by_studio(tmp_path):
     workspace = Workspace(_repository_root(), home=tmp_path / "home")
     responses = iter(["Explain durable execution.", "1", "y"])

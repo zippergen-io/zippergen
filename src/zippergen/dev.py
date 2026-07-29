@@ -384,6 +384,7 @@ def run_dev(
     renderer: TerminalRenderer | None = None,
     human_connector_factory: Callable[[str], object] | None = None,
     connector_environment: dict[str, str] | None = None,
+    connector_snapshot: dict[str, object] | None = None,
 ) -> dict[str, Any]:
     """Create or resume one managed durable development run."""
 
@@ -397,6 +398,7 @@ def run_dev(
         or assistant is not None
         or options
         or services is not None
+        or connector_snapshot is not None
     ):
         raise SystemExit(
             "A resumed run uses its recorded workflow inputs and configuration."
@@ -485,6 +487,7 @@ def run_dev(
             assistant=selected_assistant,
             options=run_options,
             services=run_services,
+            connectors=connector_snapshot,
         )
         selected_run_id = str(record["run_id"])
         if renderer is None:
