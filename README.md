@@ -367,8 +367,8 @@ deploy remove review-demo
 ```
 
 `--watch` redraws the participant positions and focused local projection once
-per second. Press Ctrl-C to close the live view. The run or deployment keeps
-running.
+per second in one fixed terminal view. It does not append repeated output.
+Press Ctrl-C to restore the Studio screen. The run or deployment keeps running.
 
 `deploy show` also compares the installed deployment with the current project.
 It reports changes to the specification, accepted workflow, models, idle

@@ -506,13 +506,23 @@ def test_studio_watches_current_run_once_per_second_without_stopping_it(
     )
     workspace.update_run(str(record["run_id"]), status="running")
     studio._prompt_toolkit_enabled = True
-    clears: list[bool] = []
+    screen_events: list[str] = []
     sleeps: list[float] = []
 
     monkeypatch.setattr(
         studio,
-        "_clear_watch_screen",
-        lambda: clears.append(True),
+        "_enter_watch_screen",
+        lambda: screen_events.append("enter"),
+    )
+    monkeypatch.setattr(
+        studio,
+        "_refresh_watch_screen",
+        lambda: screen_events.append("refresh"),
+    )
+    monkeypatch.setattr(
+        studio,
+        "_leave_watch_screen",
+        lambda: screen_events.append("leave"),
     )
 
     def stop_after_second_refresh(seconds: float) -> None:
@@ -524,7 +534,7 @@ def test_studio_watches_current_run_once_per_second_without_stopping_it(
 
     studio.execute("run inspect Writer --watch")
 
-    assert clears == [True, True]
+    assert screen_events == ["enter", "refresh", "refresh", "leave"]
     assert sleeps == [1.0, 1.0]
     assert sum(line == "Execution context" for line in output) == 2
     assert any(
@@ -537,6 +547,27 @@ def test_studio_watches_current_run_once_per_second_without_stopping_it(
         for line in output
     )
     assert workspace.load_run(str(record["run_id"]))["status"] == "running"
+
+
+def test_studio_restores_watch_screen_when_rendering_fails(tmp_path):
+    studio, _workspace, _output = _studio(tmp_path)
+    studio._prompt_toolkit_enabled = True
+    screen_events: list[str] = []
+    studio._enter_watch_screen = lambda: screen_events.append("enter")
+    studio._refresh_watch_screen = lambda: screen_events.append("refresh")
+    studio._leave_watch_screen = lambda: screen_events.append("leave")
+
+    def fail() -> None:
+        raise RuntimeError("inspection failed")
+
+    with pytest.raises(RuntimeError, match="inspection failed"):
+        studio._watch_execution(
+            fail,
+            command="run inspect --watch",
+            subject="development run",
+        )
+
+    assert screen_events == ["enter", "refresh", "leave"]
 
 
 def test_studio_rejects_watch_mode_outside_an_interactive_terminal(tmp_path):

@@ -7834,8 +7834,24 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
         return positionals, watch
 
     @staticmethod
-    def _clear_watch_screen() -> None:
+    def _enter_watch_screen() -> None:
+        """Enter a private full-screen buffer and hide the cursor."""
+
+        sys.stdout.write("\033[?1049h\033[?25l\033[2J\033[H")
+        sys.stdout.flush()
+
+    @staticmethod
+    def _refresh_watch_screen() -> None:
+        """Replace the current watch frame without growing terminal output."""
+
         sys.stdout.write("\033[2J\033[H")
+        sys.stdout.flush()
+
+    @staticmethod
+    def _leave_watch_screen() -> None:
+        """Restore the cursor and the Studio screen shown before watch mode."""
+
+        sys.stdout.write("\033[?25h\033[?1049l")
         sys.stdout.flush()
 
     def _watch_execution(
@@ -7850,9 +7866,13 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
                 "--watch requires an interactive terminal. Open Studio normally "
                 f"and use '{command}'."
             )
+        interrupted = False
+        entered_screen = False
         try:
+            entered_screen = True
+            self._enter_watch_screen()
             while True:
-                self._clear_watch_screen()
+                self._refresh_watch_screen()
                 self._emit_studio_banner(command)
                 self._info(
                     "Refreshing once per second. Press Ctrl-C to close this "
@@ -7861,6 +7881,11 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
                 render_once()
                 time.sleep(_INSPECTION_WATCH_SECONDS)
         except KeyboardInterrupt:
+            interrupted = True
+        finally:
+            if entered_screen:
+                self._leave_watch_screen()
+        if interrupted:
             self._info(
                 f"Stopped watching. The {subject} was not interrupted."
             )
