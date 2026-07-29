@@ -89,7 +89,7 @@
 {\vspace{5pt}\color{WarningBorder}\hrule\end{minipage}\end{center}}
 
 \title{\color{ZipperInk}\Huge\textbf{Call Intake with ZipperGen Studio}\\[5pt]
-\Large A small end-to-end check on a local or remote AI server}
+\Large A small end-to-end check on a local or remote deployment host}
 \author{The ZipperGen Authors}
 \date{Test guide: 28 July 2026}
 
@@ -137,7 +137,7 @@ ZipperGen also records where the Mailbox, Gatekeeper, Extractor, and Table
 participants are in their projected programs. The deployment owns one
 SQLite store and one immutable source bundle.
 
-\section{Does running on the AI server matter?}
+\section{Does running on a remote server matter?}
 
 For ordinary Studio commands, it does not matter. Run Studio on the same
 machine that will host the deployment. Paths, model settings, connector
@@ -158,7 +158,7 @@ Three server details still matter:
         enable lingering for the account.
 \end{enumerate}
 
-If Ollama runs on the same AI server, use
+If Ollama runs on the same server as Studio, use
 \texttt{http://127.0.0.1:11434/v1}. No model tunnel is needed. A tunnel is
 needed only when Ollama runs on a different machine.
 
@@ -275,7 +275,7 @@ source snapshot. It does not run or deploy anything.
 The only LLM participant is \texttt{Extractor}. Use one real model so that
 the extracted Sheet row is meaningful.
 
-\subsection{Option A: Ollama on the same AI server}
+\subsection{Option A: Ollama on the same server as Studio}
 
 \begin{lstlisting}[style=shell]
 model provider configure local
@@ -353,7 +353,7 @@ If Studio and the browser run on the same computer, Studio asks for the
 downloaded JSON path and opens the browser directly. It does not retain the
 client file.
 
-If Studio runs on the AI server, it prints a command like:
+If Studio runs on a remote server, it prints a command like:
 
 \begin{lstlisting}[style=shell]
 zippergen connector authorize google \
@@ -400,7 +400,7 @@ URL and tab \texttt{Calls}.
 The browser callback returns to the same computer that runs the authorization
 helper. That computer creates the portable credential and Studio receives it
 through the hidden paste. The browser computer does not need network access to
-the AI server. The OAuth client JSON never reaches the server.
+the remote server. The OAuth client JSON never reaches the server.
 \end{notebox}
 
 Studio requests Gmail and Sheets scopes because this workflow reads and

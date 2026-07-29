@@ -27,7 +27,7 @@ Modes
 
 (default)     Use a local Ollama server:
 
-                  # On your GPU server:
+                  # On the host that runs your local model:
                   ollama serve && ollama pull qwen2.5:7b
 
                   # SSH tunnel from your laptop:

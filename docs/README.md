@@ -4,7 +4,7 @@ The documentation is deliberately split by reader and purpose:
 
 - `docs/first-workflow.tex` — the short, linear first-workflow tutorial;
 - `docs/call-intake-end-to-end.tex` — a focused Gmail and Google Sheets
-  deployment check for a local or remote AI server;
+  deployment check for a local or remote server;
 - `docs/workflow-development-deployment-guide.tex` — the comprehensive
   development and deployment manual;
 - `examples/tutorial_review.py` — complete fallback source imported by the
