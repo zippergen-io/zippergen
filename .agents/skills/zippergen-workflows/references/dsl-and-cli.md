@@ -9,7 +9,7 @@ Keep decorated workflow functions at module top level. The builder reads their
 source and rewrites ZipperGen's Python-shaped protocol syntax.
 
 ```python
-from zippergen import Lifeline, llm, workflow
+from zippergen import Json, Lifeline, llm, workflow
 
 User = Lifeline("User")
 Writer = Lifeline("Writer")
@@ -35,7 +35,11 @@ def answer(topic: str @ User) -> str:
 An annotated input such as `topic: str @ User` states initial ownership. A
 return such as `draft @ User` states final ownership. A message binds values at
 the receiver. Use supported coordination types (`str`, `bool`, `int`, `float`,
-and supported tuples) at protocol boundaries.
+`Json`, and supported tuples) at protocol boundaries. `Json` means an ordinary
+portable JSON value made from `None`, booleans, numbers, strings, lists, and
+dictionaries with string keys. Use it for structured records and tool results.
+ZipperGen validates the whole value before durable execution. Do not pass
+arbitrary Python objects through workflow variables.
 
 ## Action selection
 

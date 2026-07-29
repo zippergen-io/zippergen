@@ -22,12 +22,14 @@ from zippergen.syntax import (
     EmptyStmt, SendStmt, RecvStmt, ReceiveAnyStmt, SelfAssignStmt, ActStmt, SkipStmt,
     SeqStmt, IfStmt, WhileStmt, IfRecvStmt, WhileRecvStmt,
     ParallelStmt, ParallelLocalStmt,
-    VarExpr, LitExpr, Var,
+    VarExpr, LitExpr, Var, Json,
     LLMAction, PureAction, EffectAction, AssistantAction, PlannerAction, HumanAction,
     Lifeline, Workflow, LocalStmt, AnyStmt,
     is_kappa_ctrl,
+    _clone_zvalue,
     _ordered_workflow_lifelines,
     seq,
+    validate_zvalue,
 )
 from zippergen.projection import project
 from zippergen.formula import Formula as _Formula, subformulas as _subformulas
@@ -73,6 +75,8 @@ def mock_llm(action: LLMAction, inputs: dict[str, object], *,
             result[name] = random.uniform(0.0, 10.0)
         elif ztype is str:
             result[name] = f"[{action.name}:{name}]"
+        elif ztype is Json:
+            result[name] = {}
         else:
             result[name] = None
     return result
@@ -379,9 +383,39 @@ def _with_parallel_branch(trace, label: str):
 
 def _python_action_out_map(action, values: tuple, outs) -> dict:
     raw = action.fn(*values)
-    return {outs[0].name: raw} if len(outs) == 1 else {
+    result = {outs[0].name: raw} if len(outs) == 1 else {
         var.name: val for var, val in zip(outs, cast(tuple, raw))
     }
+    return _validate_action_out_map(
+        action,
+        result,
+        outs,
+        source="Python action",
+    )
+
+
+def _validate_action_out_map(
+    action,
+    values: dict[str, object],
+    outs,
+    *,
+    source: str,
+) -> dict[str, object]:
+    result: dict[str, object] = {}
+    for (action_name, expected_type), var in zip(action.outputs, outs):
+        if var.name not in values:
+            raise RuntimeError(
+                f"{source} for '{action.name}' did not return required output "
+                f"{action_name!r}."
+            )
+        result[var.name] = validate_zvalue(
+            values[var.name],
+            expected_type,
+            context=(
+                f"{source} for '{action.name}' output {action_name!r}"
+            ),
+        )
+    return result
 
 
 def _assistant_action_out_map(action, named_outputs, outs) -> dict:
@@ -393,13 +427,14 @@ def _assistant_action_out_map(action, named_outputs, outs) -> dict:
                 f"required output {action_name!r}."
             )
         value = named_outputs[action_name]
-        if type(value) is not expected_type:
-            raise TypeError(
-                f"Assistant backend for '{action.name}' returned "
-                f"{type(value).__name__} for {action_name!r}; expected "
-                f"{expected_type.__name__}."
-            )
-        result[var.name] = value
+        result[var.name] = validate_zvalue(
+            value,
+            expected_type,
+            context=(
+                f"Assistant backend for '{action.name}' output "
+                f"{action_name!r}"
+            ),
+        )
     return result
 
 
@@ -420,7 +455,21 @@ def external_out_map(
         values = tuple(named_inputs[name] for name, _ in action.inputs)
         return _python_action_out_map(action, values, outs)
     if isinstance(action, PlannerAction):
-        return {outs[0].name: _exec_planner(action, named_inputs, llm_backend, None, _next_act_seq())}
+        result = {
+            outs[0].name: _exec_planner(
+                action,
+                named_inputs,
+                llm_backend,
+                None,
+                _next_act_seq(),
+            )
+        }
+        return _validate_action_out_map(
+            action,
+            result,
+            outs,
+            source="Planner action",
+        )
     if isinstance(action, AssistantAction):
         named_outputs = assistant_backend(action, named_inputs)
         return _assistant_action_out_map(action, named_outputs, outs)
@@ -429,9 +478,27 @@ def external_out_map(
             default = True if action.output_type is bool else ""
             return {outs[0].name: default}
         named_outputs = human_backend(action, named_inputs)
-        return {outs[0].name: named_outputs[action.output]}
+        return {
+            outs[0].name: validate_zvalue(
+                named_outputs[action.output],
+                action.output_type,
+                context=(
+                    f"Human backend for '{action.name}' output "
+                    f"{action.output!r}"
+                ),
+            )
+        }
     named_outputs = llm_backend(action, named_inputs)   # LLMAction
-    return {var.name: named_outputs.get(aname) for (aname, _), var in zip(action.outputs, outs)}
+    result = {
+        var.name: named_outputs.get(aname)
+        for (aname, _), var in zip(action.outputs, outs)
+    }
+    return _validate_action_out_map(
+        action,
+        result,
+        outs,
+        source="LLM backend",
+    )
 
 
 def _input_hash(named_inputs: dict) -> str | None:
@@ -945,13 +1012,16 @@ def _exec(
                     "inputs": {k: _jsonify(v) for k, v in display_inputs.items()},
                     "seq": seq,
                 })
+            out_map: dict[str, object]
             if isinstance(action, (PureAction, EffectAction)):
                 out_map = _python_action_out_map(action, in_vals, outs)
             elif isinstance(action, PlannerAction):
                 out_map = {outs[0].name: _exec_planner(action, named_inputs, llm_backend, trace, seq)}
             elif isinstance(action, HumanAction):
                 if not action.visible:
-                    default = True if action.output_type is bool else ""
+                    default: object = (
+                        True if action.output_type is bool else ""
+                    )
                     out_map = {outs[0].name: default}
                 else:
                     named_outputs = human_backend(action, named_inputs)
@@ -965,6 +1035,30 @@ def _exec(
                     var.name: named_outputs.get(aname)
                     for (aname, _), var in zip(action.outputs, outs)
                 }
+            if isinstance(action, HumanAction):
+                out_map[outs[0].name] = validate_zvalue(
+                    out_map[outs[0].name],
+                    action.output_type,
+                    context=(
+                        f"Human backend for '{action.name}' output "
+                        f"{action.output!r}"
+                    ),
+                )
+            else:
+                out_map = _validate_action_out_map(
+                    action,
+                    out_map,
+                    outs,
+                    source=(
+                        "Python action"
+                        if isinstance(action, (PureAction, EffectAction))
+                        else "Planner action"
+                        if isinstance(action, PlannerAction)
+                        else "Assistant backend"
+                        if isinstance(action, AssistantAction)
+                        else "LLM backend"
+                    ),
+                )
             env.update(out_map)
             if monitor:
                 monitor.on_event("act", env)
@@ -1293,8 +1387,27 @@ def run(
         local_stmt = project(wf, ll)
         # Seed env with Var defaults so conditions see proper values before
         # any assignment has run, then override with caller-supplied values.
-        env = {k: v.default for k, v in wf.ns.items() if isinstance(v, Var)}
-        env.update(initial_envs.get(ll.name, {}))
+        env = {
+            k: _clone_zvalue(v.default, v.type)
+            for k, v in wf.ns.items()
+            if isinstance(v, Var)
+        }
+        supplied = initial_envs.get(ll.name, {})
+        env.update(supplied)
+        for name, ztype, owner in wf.inputs:
+            if (
+                owner is not None
+                and owner.name == ll.name
+                and name in supplied
+            ):
+                env[name] = _clone_zvalue(
+                    validate_zvalue(
+                        supplied[name],
+                        ztype,
+                        context=f"{wf.name} input {name!r}",
+                    ),
+                    ztype,
+                )
         box: list = []
         result_boxes[ll.name] = box
 
@@ -1521,7 +1634,7 @@ def _workflow_configure(
 
 def _workflow_run_once(wf: Workflow, kwargs: dict[str, object]) -> object:
     initial_envs: dict[str, dict[str, object]] = {}
-    for name, _ztype, lifeline in wf.inputs:
+    for name, ztype, lifeline in wf.inputs:
         if lifeline is None:
             raise TypeError(
                 f"{wf.name}(): input '{name}' has no lifeline declared. "
@@ -1529,7 +1642,15 @@ def _workflow_run_once(wf: Workflow, kwargs: dict[str, object]) -> object:
             )
         if name not in kwargs:
             raise TypeError(f"{wf.name}() missing argument: '{name}'")
-        initial_envs.setdefault(lifeline.name, {})[name] = kwargs[name]
+        value = validate_zvalue(
+            kwargs[name],
+            ztype,
+            context=f"{wf.name}() input {name!r}",
+        )
+        initial_envs.setdefault(lifeline.name, {})[name] = _clone_zvalue(
+            value,
+            ztype,
+        )
 
     lifelines = _ordered_workflow_lifelines(wf)
     backend = wf._rt._backend if wf._rt._backend is not None else mock_llm

@@ -1,13 +1,14 @@
 """Tests for Layer 1: IR nodes, participation_set, and seq."""
 
 import inspect
+import math
 import pytest
 
 from zippergen.syntax import (
     EmptyStmt, MsgStmt, CoregionStmt, ActStmt, SkipStmt, SeqStmt, IfStmt, WhileStmt,
     SendStmt, RecvStmt, ReceiveAnyStmt, IfRecvStmt, WhileRecvStmt,
-    Lifeline, Var, VarExpr, LitExpr, Workflow,
-    participation_set, seq,
+    Json, Lifeline, Var, VarExpr, LitExpr, Workflow,
+    is_json_value, participation_set, seq, validate_zvalue,
 )
 
 
@@ -48,6 +49,69 @@ def test_var_equality():
     assert Var("x", int) == Var("x", int)
     assert Var("x", int) != Var("x", str)
     assert Var("x", int) != Var("y", int)
+
+
+def test_json_is_a_first_class_coordination_type():
+    value = {
+        "title": "Call",
+        "attempts": 2,
+        "approved": False,
+        "notes": None,
+        "slots": ["Thursday", {"hour": 11.5}],
+    }
+
+    annotation = Json @ A
+    variable = Var("payload", Json, default=value)
+
+    assert annotation.type is Json
+    assert annotation.lifeline == A
+    assert is_json_value(value)
+    assert validate_zvalue(value, Json) is value
+    assert hash(variable) == hash(Var("payload", Json, default=value))
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        {"bad": (1, 2)},
+        {1: "non-string key"},
+        {"number": math.inf},
+        object(),
+    ],
+)
+def test_json_rejects_values_that_do_not_round_trip_portably(value):
+    assert not is_json_value(value)
+    with pytest.raises(TypeError, match="valid Json value"):
+        validate_zvalue(value, Json)
+
+
+def test_json_rejects_circular_values():
+    value = []
+    value.append(value)
+
+    assert not is_json_value(value)
+    with pytest.raises(TypeError, match="circular reference"):
+        Var("payload", Json, default=value)
+
+
+def test_json_nesting_is_bounded_without_recursion_error():
+    accepted = None
+    for _ in range(128):
+        accepted = [accepted]
+    too_deep = [accepted]
+
+    assert is_json_value(accepted)
+    assert not is_json_value(too_deep)
+    with pytest.raises(TypeError, match="nests deeper than 128 levels"):
+        validate_zvalue(too_deep, Json)
+
+
+def test_json_rejects_container_subclasses():
+    class CustomList(list):
+        pass
+
+    with pytest.raises(TypeError, match="expected a built-in"):
+        validate_zvalue(CustomList([1, 2]), Json)
 
 
 # ---------------------------------------------------------------------------

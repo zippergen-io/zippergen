@@ -9,7 +9,7 @@ import subprocess
 from collections.abc import Callable
 from pathlib import Path
 
-from zippergen.syntax import AssistantAction
+from zippergen.syntax import AssistantAction, Json, validate_zvalue
 
 __all__ = [
     "AssistantExecutionError",
@@ -81,6 +81,15 @@ def _coerce_result(action: AssistantAction, stdout: str) -> object:
             f"Assistant action '{action.name}' returned invalid JSON for "
             f"{output_type.__name__}: {text[:200]!r}"
         ) from exc
+    if output_type is Json:
+        try:
+            return validate_zvalue(
+                value,
+                Json,
+                context=f"Assistant action '{action.name}' result",
+            )
+        except TypeError as exc:
+            raise AssistantExecutionError(str(exc)) from exc
     if output_type is tuple and isinstance(value, list):
         return tuple(value)
     if type(value) is not output_type:

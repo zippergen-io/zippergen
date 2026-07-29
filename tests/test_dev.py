@@ -4,7 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from zippergen.dev import run_dev
+from zippergen import Json
+from zippergen.dev import _coerce_input, _parse_guided_value, run_dev
 from zippergen.rendering import TerminalRenderer
 from zippergen.store import open_store
 from zippergen.workspace import Workspace
@@ -98,6 +99,22 @@ def routed(value: str @ User) -> str:
 
 def _repository_root() -> Path:
     return Path(__file__).resolve().parents[1]
+
+
+def test_guided_input_accepts_structured_json_values():
+    parsed = _parse_guided_value(
+        '{"caller":"Alice","slots":["Thursday",null]}'
+    )
+
+    assert _coerce_input("record", parsed, Json) == {
+        "caller": "Alice",
+        "slots": ["Thursday", None],
+    }
+
+
+def test_guided_input_rejects_non_json_values():
+    with pytest.raises(SystemExit, match="not a valid Json value"):
+        _coerce_input("record", {"bad": (1, 2)}, Json)
 
 
 def test_dev_collects_multiple_inputs_and_reviews_inline(tmp_path):

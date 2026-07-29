@@ -166,6 +166,30 @@ Charts](https://en.wikipedia.org/wiki/Message_sequence_chart) and
 Message Sequence Charts are useful for explaining a short protocol. Local
 projections are better for inspecting long-running loops.
 
+### Structured workflow data
+
+Workflow variables can carry structured data directly with the `Json` type:
+
+```python
+from zippergen import Json, Lifeline, workflow
+
+Requester = Lifeline("Requester")
+Worker = Lifeline("Worker")
+
+
+@workflow
+def process_record(record: Json @ Requester) -> Json:
+    Requester(record) >> Worker(record)
+    Worker(record) >> Requester(record)
+    return record @ Requester
+```
+
+A `Json` value is normal Python data made from `None`, booleans, numbers,
+strings, lists, and dictionaries with string keys. ZipperGen validates nested
+values before durable execution. It preserves them across messages, crashes,
+and resume. Arbitrary Python objects and pickle data are deliberately not
+supported. Lists and dictionaries must be ordinary built-in containers.
+
 ## Hello, ZipperGen
 
 This workflow has two lifelines, one LLM action, and two messages:

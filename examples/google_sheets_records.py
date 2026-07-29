@@ -14,6 +14,7 @@ from zippergen import (
     ConnectorRequirement,
     DeploymentField,
     DeploymentSpec,
+    Json,
     Lifeline,
     effect,
     pure,
@@ -46,16 +47,14 @@ zippergen_deployment = DeploymentSpec(
     ),
     fields=(
         DeploymentField(
-            "record_json",
+            "record",
             "JSON record",
             target="input",
-            default=json.dumps(
-                {
-                    "record_id": "demo-1",
-                    "title": "First record",
-                    "status": "new",
-                }
-            ),
+            default={
+                "record_id": "demo-1",
+                "title": "First record",
+                "status": "new",
+            },
             required=True,
         ),
     ),
@@ -64,39 +63,35 @@ zippergen_deployment = DeploymentSpec(
 
 
 @effect(connector="project-records", operation="upsert-json-row")
-def write_record(record_json: str) -> str:
+def write_record(record: Json) -> str:
     return upsert_json_row(
         "project-records",
-        record_json,
+        json.dumps(record, sort_keys=True),
         columns=RECORD_COLUMNS,
         key_field="record_id",
     )
 
 
 @effect(connector="project-records", operation="read-json-rows")
-def read_records() -> str:
-    return read_json_rows(
-        "project-records",
-        columns=RECORD_COLUMNS,
+def read_records() -> Json:
+    return json.loads(
+        read_json_rows(
+            "project-records",
+            columns=RECORD_COLUMNS,
+        )
     )
 
 
 @pure
-def result_json(write_status: str, rows_json: str) -> str:
-    return json.dumps(
-        {
-            "write_status": write_status,
-            "rows": json.loads(rows_json),
-        },
-        sort_keys=True,
-    )
+def result_record(write_status: str, rows: Json) -> Json:
+    return {"write_status": write_status, "rows": rows}
 
 
 @workflow
-def google_sheet_records(record_json: str @ Requester) -> str:
-    Requester(record_json) >> Records(record_json)
-    Records: write_status = write_record(record_json)
-    Records: rows_json = read_records()
-    Records: result = result_json(write_status, rows_json)
+def google_sheet_records(record: Json @ Requester) -> Json:
+    Requester(record) >> Records(record)
+    Records: write_status = write_record(record)
+    Records: rows = read_records()
+    Records: result = result_record(write_status, rows)
     Records(result) >> Requester(result)
     return result @ Requester

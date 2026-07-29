@@ -54,7 +54,7 @@ CREATE TABLE IF NOT EXISTS cursors (
 
 CREATE TABLE IF NOT EXISTS snapshots (
   role    TEXT PRIMARY KEY,
-  env     BLOB NOT NULL,            -- json-encoded local env (scalars)
+  env     BLOB NOT NULL,            -- json-encoded local environment
   locator BLOB NOT NULL,            -- json-encoded child-index path to the loop node
   floor   BLOB NOT NULL,            -- json-encoded per-channel replay floor
   monitor BLOB                     -- optional json-encoded CPL monitor state

@@ -135,6 +135,8 @@ def test_google_sheets_records_example_is_valid_and_connector_explicit():
     assert semantics["action_definitions"]["read_records"]["operation"] == (
         "read-json-rows"
     )
+    assert semantics["inputs"]["record"]["type"] == "Json"
+    assert semantics["outputs"]["result@Requester"]["type"] == "Json"
 
 
 def test_validation_rejects_connector_effect_on_the_wrong_participant(

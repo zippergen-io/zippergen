@@ -10,7 +10,7 @@ from zippergen.syntax import (
     EmptyStmt, MsgStmt, CoregionStmt, ActStmt, SkipStmt, SeqStmt, IfStmt, WhileStmt,
     ParallelStmt,
     SendStmt, RecvStmt,
-    Lifeline, Var, VarExpr, LitExpr,
+    Json, Lifeline, Var, VarExpr, LitExpr,
     Workflow, participation_set,
 )
 from zippergen.actions import effect, pure, llm
@@ -62,6 +62,26 @@ def test_llm_produces_llm_action():
     assert my_action.outputs == (("result", str),)
     assert my_action.system_prompt == "sys"
     assert my_action.parse_format == "json"
+
+
+def test_actions_accept_json_inputs_and_outputs():
+    @pure
+    def add_status(payload: Json) -> Json:
+        return {**payload, "status": "ready"}
+
+    assert add_status.inputs == (("payload", Json),)
+    assert add_status.outputs == (("add_status", Json),)
+
+
+def test_llm_rejects_an_unsupported_output_type():
+    with pytest.raises(TypeError, match="supported coordination type"):
+        @llm(
+            system="sys",
+            user="{x}",
+            parse="json",
+            outputs=(("result", dict),),
+        )
+        def bad_output(x: str) -> None: ...
 
 
 def test_pure_missing_annotation_raises():

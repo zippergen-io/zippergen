@@ -20,7 +20,8 @@ from __future__ import annotations
 import threading
 
 from zippergen.syntax import (
-    LLMAction, PureAction, EffectAction, AssistantAction, PlannerAction, HumanAction,
+    Json, LLMAction, PureAction, EffectAction, AssistantAction, PlannerAction,
+    HumanAction,
 )
 
 __all__ = ["_exec_planner", "_validate_planner_spec"]
@@ -113,7 +114,7 @@ formatting, parsing, or combining strings.
     def join_results(a: str, b: str) -> str:
         return a + "\\n\\n" + b
 
-Supported parameter and return types: str, int, float, bool.
+Supported parameter and return types: str, int, float, bool, Json.
 """
 
 
@@ -231,7 +232,14 @@ Example — iterate draft/critique until done or 3 rounds:
 # Spec helpers
 # ---------------------------------------------------------------------------
 
-_TYPE_MAP: dict[str, type] = {"str": str, "int": int, "bool": bool, "float": float, "tuple": tuple}
+_TYPE_MAP: dict[str, type] = {
+    "str": str,
+    "int": int,
+    "bool": bool,
+    "float": float,
+    "Json": Json,
+    "tuple": tuple,
+}
 
 
 def _type_from_annotation(node) -> type | None:
@@ -1071,7 +1079,7 @@ Current (broken) workflow:
         known_action_outputs,
     )
     preamble_lines = [
-        "from zippergen.syntax import Lifeline, Var",
+        "from zippergen.syntax import Json, Lifeline, Var",
         "from zippergen.builder import workflow",
         "from zippergen.actions import llm, pure, planner",
         "",

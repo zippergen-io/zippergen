@@ -10,7 +10,7 @@ from zippergen.store import (
     load_workflow_result,
     open_store,
 )
-from zippergen import Lifeline, Var, workflow, branch, parallel
+from zippergen import Json, Lifeline, Var, workflow, branch, parallel
 from zippergen.actions import effect, human, llm, pure
 from zippergen.formula import atom, At, Here, Y
 from zippergen.locator import action_node_paths
@@ -34,6 +34,8 @@ PAsk = Lifeline("PAsk")
 PAnswer = Lifeline("PAnswer")
 
 PHuman = Lifeline("PHuman")
+JSONSource = Lifeline("JSONSource")
+JSONWorker = Lifeline("JSONWorker")
 
 SQLiteCPLPlanner = Lifeline("SQLiteCPLPlanner")
 SQLiteCPLExecutor = Lifeline("SQLiteCPLExecutor")
@@ -94,6 +96,22 @@ def p_no() -> str:
 @pure
 def p_inc(n: int) -> int:
     return n + 1
+
+
+@pure
+def add_json_status(payload: Json) -> Json:
+    return {
+        **payload,
+        "status": "ready",
+        "history": [*payload.get("history", []), {"step": 1}],
+    }
+
+
+@workflow
+def sqlite_json_round(payload: Json @ JSONSource) -> Json:
+    JSONSource(payload) >> JSONWorker(payload)
+    JSONWorker: result = add_json_status(payload)
+    return result @ JSONWorker
 
 
 _sqlite_approved_atom = atom(lambda env: env.get("approved", False))
@@ -177,6 +195,67 @@ def test_run_sqlite_two_role_branch_matches_inprocess():
     wf = _two_role_branch_workflow()
     initial = {"A": {"x": 7}}
     assert run_sqlite(wf, [A, B], initial, timeout=10) == run(wf, [A, B], initial, timeout=10)
+
+
+def test_run_sqlite_preserves_structured_json_across_messages_and_results(
+    tmp_path,
+):
+    path = str(tmp_path / "json.sqlite")
+    payload = {
+        "caller": "Alice",
+        "attempts": 2,
+        "approved": False,
+        "notes": None,
+        "history": [{"source": "email"}],
+    }
+
+    result = run_sqlite(
+        sqlite_json_round,
+        [JSONSource, JSONWorker],
+        {"JSONSource": {"payload": payload}},
+        store_path=path,
+        timeout=10,
+    )
+    memory_result = run(
+        sqlite_json_round,
+        [JSONSource, JSONWorker],
+        {"JSONSource": {"payload": payload}},
+        timeout=10,
+    )
+
+    assert result == {
+        **payload,
+        "status": "ready",
+        "history": [{"source": "email"}, {"step": 1}],
+    }
+    assert memory_result == result
+    assert payload["history"] == [{"source": "email"}]
+    assert result is not payload
+    conn = open_store(path)
+    message = conn.execute(
+        "SELECT payload FROM events "
+        "WHERE kind='msg' AND sender='JSONSource'"
+    ).fetchone()
+    assert json.loads(message[0]) == [payload]
+    assert load_workflow_result(conn, "sqlite_json_round") == result
+    conn.close()
+
+
+def test_run_sqlite_rejects_non_json_input_before_writing_the_store(tmp_path):
+    path = str(tmp_path / "invalid-json.sqlite")
+
+    with pytest.raises(TypeError, match="not a valid Json value"):
+        run_sqlite(
+            sqlite_json_round,
+            [JSONSource, JSONWorker],
+            {"JSONSource": {"payload": {"bad": (1, 2)}}},
+            store_path=path,
+            timeout=10,
+        )
+
+    conn = open_store(path)
+    assert conn.execute("SELECT COUNT(*) FROM events").fetchone() == (0,)
+    conn.close()
 
 
 def test_run_sqlite_two_role_branch_false_matches_inprocess():

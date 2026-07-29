@@ -17,7 +17,14 @@ from zippergen.projection import project
 from zippergen.role_runner import RoleRunner
 from zippergen.runtime import _build_formula_monitors, console_trace, mock_llm
 from zippergen.store import open_store, write_workflow_result
-from zippergen.syntax import Lifeline, Var, Workflow, _ordered_workflow_lifelines
+from zippergen.syntax import (
+    Lifeline,
+    Var,
+    Workflow,
+    _clone_zvalue,
+    _ordered_workflow_lifelines,
+    validate_zvalue,
+)
 
 __all__ = ["LocalSupervisor", "run_sqlite"]
 
@@ -25,7 +32,11 @@ _NO_RESULT = object()
 
 
 def _default_env(wf: Workflow) -> dict:
-    return {k: v.default for k, v in wf.ns.items() if isinstance(v, Var)}
+    return {
+        k: _clone_zvalue(v.default, v.type)
+        for k, v in wf.ns.items()
+        if isinstance(v, Var)
+    }
 
 
 def _seed_role_env(conn, role: str, env: dict) -> dict:
@@ -106,7 +117,24 @@ class LocalSupervisor:
         try:
             for lifeline in self.lifelines:
                 env = _default_env(self.wf)
-                env.update(self.initial_envs.get(lifeline.name, {}))
+                supplied = self.initial_envs.get(lifeline.name, {})
+                env.update(supplied)
+                for name, ztype, owner in self.wf.inputs:
+                    if (
+                        owner is not None
+                        and owner.name == lifeline.name
+                        and name in supplied
+                    ):
+                        env[name] = _clone_zvalue(
+                            validate_zvalue(
+                                supplied[name],
+                                ztype,
+                                context=(
+                                    f"{self.wf.name} input {name!r}"
+                                ),
+                            ),
+                            ztype,
+                        )
                 seeded[lifeline.name] = _seed_role_env(conn, lifeline.name, env)
         finally:
             conn.close()

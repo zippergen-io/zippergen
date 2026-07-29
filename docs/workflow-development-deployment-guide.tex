@@ -2800,8 +2800,11 @@ A repository-aware assistant can translate that requirement into the visible
 workflow declaration and effects below:
 
 \begin{lstlisting}[style=python]
+import json
+
 from zippergen import (
     ConnectorRequirement,
+    Json,
     effect,
     read_json_rows,
     upsert_json_row,
@@ -2823,10 +2826,10 @@ COLUMNS = ("record_id", "title", "status")
     connector="project-records",
     operation="upsert-json-row",
 )
-def write_record(record_json: str) -> str:
+def write_record(record: Json) -> str:
     return upsert_json_row(
         "project-records",
-        record_json,
+        json.dumps(record, sort_keys=True),
         columns=COLUMNS,
         key_field="record_id",
     )
@@ -2835,16 +2838,27 @@ def write_record(record_json: str) -> str:
     connector="project-records",
     operation="read-json-rows",
 )
-def read_records() -> str:
-    return read_json_rows(
-        "project-records",
-        columns=COLUMNS,
+def read_records() -> Json:
+    return json.loads(
+        read_json_rows(
+            "project-records",
+            columns=COLUMNS,
+        )
     )
 \end{lstlisting}
 
 The stable key is important. Durable execution can retry an effect after a
 process failure. A blind append could create the same row twice. The upsert
 checks the key and replaces the existing row when needed.
+
+The \texttt{Json} coordination type keeps the record structured inside the
+workflow. It accepts ordinary Python values made from \texttt{None}, booleans,
+numbers, strings, lists, and dictionaries with string keys. ZipperGen validates
+the full nested value before durable execution and preserves it across
+messages, crashes, and resume. The Google helper still receives JSON text at
+the external API boundary. Arbitrary Python objects and pickle data are not
+accepted as workflow variables.
+Lists and dictionaries must be ordinary built-in containers, not subclasses.
 
 The user configures the environment after selecting the workflow:
 

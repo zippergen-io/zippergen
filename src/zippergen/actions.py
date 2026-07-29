@@ -46,7 +46,7 @@ def _extract_inputs(fn: Callable) -> tuple[tuple[str, ZType], ...]:
             raise TypeError(
                 f"@action '{fn.__name__}': annotation for '{name}' "
                 f"must be a supported coordination type "
-                f"(str, bool, int, float, or tuple), "
+                f"(str, bool, int, float, Json, or tuple), "
                 f"got {ann!r}."
             )
         inputs.append((name, ann))
@@ -66,6 +66,25 @@ def _single_output_from_return(fn: Callable) -> tuple[tuple[str, ZType], ...]:
             f"coordination type (e.g. -> bool)."
         )
     return ((fn.__name__, ret),)
+
+
+def _validate_output_specs(
+    action_name: str,
+    outputs: OutputSpec,
+) -> tuple[tuple[str, ZType], ...]:
+    normalized = tuple(outputs)
+    for name, output_type in normalized:
+        if not name:
+            raise TypeError(
+                f"@action '{action_name}': output names must not be empty."
+            )
+        if not is_ztype(output_type):
+            raise TypeError(
+                f"@action '{action_name}': output '{name}' must use a "
+                "supported coordination type "
+                "(str, bool, int, float, Json, or tuple)."
+            )
+    return normalized
 
 
 # ---------------------------------------------------------------------------
@@ -98,7 +117,7 @@ def llm(
         return LLMAction(
             name=fn.__name__,
             inputs=inputs,
-            outputs=tuple(outputs),
+            outputs=_validate_output_specs(fn.__name__, outputs),
             system_prompt=system,
             user_prompt=user,
             parse_format=parse,
@@ -175,7 +194,7 @@ def planner(
         if ret is None or not is_ztype(ret):
             raise TypeError(
                 f"@planner '{fn.__name__}': return annotation must be a supported "
-                f"coordination type (str, bool, int, float, or tuple)."
+                f"coordination type (str, bool, int, float, Json, or tuple)."
             )
         outputs = ((fn.__name__, ret),)
         _allow = tuple(allow) if allow else ()

@@ -13,14 +13,14 @@ from collections.abc import Callable
 from typing import cast
 
 from zippergen.syntax import (
-    ZType, Lifeline, Var,
+    ZType, Json, Lifeline, Var,
     ZTypeAtLifeline,
     Expr, VarExpr, LitExpr,
     Stmt, AnyStmt, EmptyStmt, MsgStmt, CoregionStmt, ActStmt, SkipStmt, SeqStmt, IfStmt, WhileStmt,
     ParallelStmt,
     LLMAction, PureAction, EffectAction, AssistantAction, PlannerAction, HumanAction,
     Workflow,
-    seq, is_ztype,
+    seq, is_json_value, is_ztype,
 )
 
 __all__ = [
@@ -106,6 +106,12 @@ def _to_expr(x: object) -> Expr:
         return LitExpr(x, float)
     if isinstance(x, str):
         return LitExpr(x, str)
+    if x is None or type(x) in {list, dict}:
+        if not is_json_value(x):
+            raise TypeError(
+                "Structured workflow literals must be valid Json values."
+            )
+        return LitExpr(x, Json)
     return x  # type: ignore[return-value]
 
 

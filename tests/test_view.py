@@ -3,6 +3,7 @@ import json
 from zippergen import (
     DeploymentField,
     DeploymentSpec,
+    Json,
     Lifeline,
     Var,
     effect,
@@ -52,6 +53,12 @@ def editorial(text: str @ Author, approved: bool @ Author) -> str:
     return published @ Publisher
 
 
+@workflow
+def structured_handoff(payload: Json @ Author) -> Json:
+    Author(payload) >> Editor(payload)
+    return payload @ Editor
+
+
 zippergen_deployment = DeploymentSpec(
     name="editorial",
     fields=(DeploymentField("channel", "Publishing channel", default="draft"),),
@@ -67,6 +74,15 @@ def test_global_protocol_view_is_source_like_code():
     assert "Editor: edited = edit_text(text)" in code
     assert "if (approved) @ Author:" in code
     assert "return published @ Publisher" in code
+
+
+def test_json_type_is_visible_in_code_and_structured_views():
+    code = render_workflow(structured_handoff, options=ViewOptions())
+    data = json.loads(render_workflow_json(structured_handoff))
+
+    assert "def structured_handoff(payload: Json @ Author) -> Json:" in code
+    assert data["inputs"][0]["type"] == "Json"
+    assert data["outputs"][0]["type"] == "Json"
 
 
 def test_communications_view_erases_actions_but_keeps_control_structure():

@@ -11,6 +11,8 @@ from collections.abc import Callable, Mapping
 from urllib import request
 from urllib.error import HTTPError, URLError
 
+from zippergen.syntax import Json, validate_zvalue
+
 __all__ = [
     "ManagedBackend",
     "backend_from_spec",
@@ -37,6 +39,11 @@ def _coerce_bool(value: object) -> bool:
 
 
 def _coerce_output(value: object, type_: type) -> object:
+    if type_ is Json:
+        try:
+            return validate_zvalue(value, Json)
+        except TypeError as exc:
+            raise ValueError(str(exc)) from exc
     if type_ is bool:
         return _coerce_bool(value)
     if type_ is str:
@@ -83,7 +90,13 @@ def _retry_json_request(req: request.Request, *, timeout: float, max_retries: in
     raise RuntimeError("Unreachable.")
 
 
-_TYPE_NAMES = {bool: "boolean (true or false)", str: "string", int: "integer", float: "number"}
+_TYPE_NAMES = {
+    bool: "boolean (true or false)",
+    str: "string",
+    int: "integer",
+    float: "number",
+    Json: "JSON value",
+}
 
 
 def _json_instruction(action) -> str:

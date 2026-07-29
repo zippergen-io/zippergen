@@ -4,8 +4,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from zippergen import Lifeline, llm, workflow
+from zippergen import Json, Lifeline, llm, workflow
 from zippergen.backends import (
+    _parse_response,
     ManagedBackend,
     backend_from_spec,
     make_lifeline_router,
@@ -85,6 +86,37 @@ def test_openai_backend_accepts_custom_base_url(monkeypatch):
     assert seen["timeout"] == 12
     assert seen["auth"] == "Bearer EMPTY"
     assert seen["payload"]["model"] == "Qwen/Qwen2.5-7B-Instruct"
+
+
+def test_backend_parses_nested_json_output_without_stringifying_it():
+    action = SimpleNamespace(
+        name="extract",
+        outputs=(("record", Json),),
+        parse_format="json",
+    )
+    content = json.dumps(
+        {
+            "record": {
+                "caller": "Alice",
+                "slots": ["Thursday", {"hour": 11}],
+                "confirmed": False,
+                "note": None,
+            }
+        }
+    )
+
+    assert _parse_response(action, content) == json.loads(content)
+
+
+def test_backend_rejects_non_finite_json_output():
+    action = SimpleNamespace(
+        name="extract",
+        outputs=(("record", Json),),
+        parse_format="json",
+    )
+
+    with pytest.raises(RuntimeError, match="not a finite number"):
+        _parse_response(action, '{"record": {"score": NaN}}')
 
 
 def test_managed_backend_is_lazy_and_releases_after_call():

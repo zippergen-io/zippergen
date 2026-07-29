@@ -23,7 +23,7 @@ from zippergen.models import (
 )
 from zippergen.rendering import StatusKind, TerminalRenderer
 from zippergen.semantic import semantic_snapshot, workflow_semantics
-from zippergen.syntax import Workflow
+from zippergen.syntax import Json, Workflow, validate_zvalue
 from zippergen.workspace import Workspace
 
 InputFunc = Callable[[str], str]
@@ -221,6 +221,15 @@ def _parse_guided_value(raw: str) -> object:
 
 
 def _coerce_input(name: str, value: object, expected: type) -> object:
+    if expected is Json:
+        try:
+            return validate_zvalue(
+                value,
+                Json,
+                context=f"Input {name!r}",
+            )
+        except TypeError as exc:
+            raise SystemExit(str(exc)) from exc
     if expected is str:
         return value if isinstance(value, str) else str(value)
     if expected is bool:
