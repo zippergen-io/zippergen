@@ -406,9 +406,34 @@ def credentials_from_json(value: str, *, scopes: Iterable[str]):
         info = json.loads(value)
         if not isinstance(info, dict):
             raise TypeError("credential JSON must be an object")
+        # The refresh token already represents the scopes granted during the
+        # browser authorization.  Google refresh requests do not need to
+        # renegotiate them, and some Google OAuth clients reject a repeated
+        # scope parameter with ``invalid_scope``.  Studio keeps the verified
+        # grant separately in the private provider profile, so remove any
+        # serialized scope hint before reconstructing the credential.
+        serialized_scopes = info.pop("scopes", None)
+        if serialized_scopes:
+            if isinstance(serialized_scopes, str):
+                recorded = tuple(serialized_scopes.split())
+            elif isinstance(serialized_scopes, (tuple, list)):
+                recorded = tuple(str(scope) for scope in serialized_scopes)
+            else:
+                raise TypeError("credential scopes must be a list or string")
+            if not google_scopes_cover(recorded, requested):
+                missing = ", ".join(
+                    google_scope_names(
+                        scope
+                        for scope in requested
+                        if not google_scopes_cover(recorded, (scope,))
+                    )
+                )
+                raise ValueError(
+                    "stored credential does not cover required scope(s): "
+                    + missing
+                )
         credentials = credentials_type.from_authorized_user_info(
             info,
-            scopes=list(requested),
         )
         if not credentials.valid:
             credentials.refresh(request_type())

@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from zippergen.google_auth import (
@@ -142,3 +144,78 @@ def test_google_authorization_handoff_rejects_truncation():
 
     with pytest.raises(RuntimeError, match="truncated or changed"):
         decode_google_authorization(encoded[:-1] + "0")
+
+
+def test_google_refresh_uses_existing_grant_without_resending_scopes(
+    monkeypatch,
+):
+    from zippergen.google_auth import credentials_from_json
+
+    constructed: dict[str, object] = {}
+
+    class FakeCredentials:
+        valid = False
+
+        @classmethod
+        def from_authorized_user_info(cls, info, scopes=None):
+            constructed["info"] = info
+            constructed["scopes"] = scopes
+            return cls()
+
+        def refresh(self, transport):
+            constructed["transport"] = transport
+            self.valid = True
+
+    class FakeRequest:
+        pass
+
+    monkeypatch.setattr(
+        "zippergen.google_auth.google_imports",
+        lambda: (object, FakeRequest, FakeCredentials, object),
+    )
+    credential = credentials_from_json(
+        json.dumps(
+            {
+                "client_id": "client",
+                "client_secret": "secret",
+                "refresh_token": "refresh",
+                "scopes": [
+                    GOOGLE_GMAIL_MODIFY_SCOPE,
+                    GOOGLE_SHEETS_SCOPE,
+                ],
+            }
+        ),
+        scopes=(GOOGLE_GMAIL_MODIFY_SCOPE, GOOGLE_SHEETS_SCOPE),
+    )
+
+    assert isinstance(credential, FakeCredentials)
+    assert "scopes" not in constructed["info"]
+    assert constructed["scopes"] is None
+    assert isinstance(constructed["transport"], FakeRequest)
+
+
+def test_google_refresh_rejects_a_serialized_grant_missing_required_scope(
+    monkeypatch,
+):
+    from zippergen.google_auth import credentials_from_json
+
+    monkeypatch.setattr(
+        "zippergen.google_auth.google_imports",
+        lambda: (object, object, object, object),
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="does not cover required scope.*spreadsheets",
+    ):
+        credentials_from_json(
+            json.dumps(
+                {
+                    "client_id": "client",
+                    "client_secret": "secret",
+                    "refresh_token": "refresh",
+                    "scopes": [GOOGLE_GMAIL_MODIFY_SCOPE],
+                }
+            ),
+            scopes=(GOOGLE_GMAIL_MODIFY_SCOPE, GOOGLE_SHEETS_SCOPE),
+        )
