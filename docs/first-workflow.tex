@@ -707,11 +707,12 @@ columns, stable key, and exact read and write operations. It contains no
 spreadsheet ID, OAuth client, or token.
 
 On an SSH-only server, Studio does not try to open a browser there. It prints
-one \texttt{zippergen connector authorize google} command to run on the
-computer that has the browser and downloaded Desktop app JSON. That command
-opens the browser and prints one private result. Paste the result into
-Studio's hidden prompt. The client file stays on the browser computer. No
-\texttt{scp} command or SSH tunnel is needed.
+one \texttt{uvx} command to run on your own computer, not on the server.
+\texttt{uvx} fetches the helper without a local ZipperGen installation. The
+helper asks for the downloaded Desktop app JSON, opens the browser, and prints
+one long line starting with \texttt{zg-google-v1.} Copy that complete line
+back to Studio's hidden prompt. No \texttt{scp} command or SSH tunnel is
+needed.
 
 The larger call-intake example uses the same command for two resources:
 

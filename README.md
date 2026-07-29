@@ -418,11 +418,12 @@ The default reply mode creates Gmail drafts. Change it to `send` only after
 testing with a dedicated account. Before setup, enable the Gmail and Google
 Sheets APIs in one Google Cloud project and download a Desktop app OAuth
 client. If Studio runs on a server without a browser, it prints one command to
-run on the computer that has the browser and client file. Paste the private
-result back into Studio through its hidden prompt. No client file, `scp`
-command, or SSH tunnel is needed on the server. Studio checks that Google
-actually granted every permission required by the workflow. Read-only
-connector requirements request read-only Google scopes.
+run on your own computer, not on the server. `uvx` fetches the helper without
+a local ZipperGen installation. Copy the complete `zg-google-v1...` line it
+produces into Studio's hidden prompt. No client file, `scp` command, or SSH
+tunnel is needed on the server. Studio checks that Google actually granted
+every permission required by the workflow. Read-only connector requirements
+request read-only Google scopes.
 Writing to an existing spreadsheet requires Google's broader spreadsheets
 scope. See
 [`google_sheets_records.py`](examples/google_sheets_records.py) for a complete

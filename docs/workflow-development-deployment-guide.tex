@@ -2799,9 +2799,10 @@ steps:
   \item On a computer with a browser, it asks for the OAuth Desktop app JSON
         path and opens Google authorization directly.
   \item In an interactive SSH session without a browser, it prints one
-        \texttt{zippergen connector authorize google} command. Run that
-        command on the browser computer and paste its private result into
-        Studio's hidden prompt. No file upload or SSH tunnel is needed.
+        \texttt{uvx} command. Run that command on your own computer, not on
+        the server. It needs no local ZipperGen installation. Copy the whole
+        \texttt{zg-google-v1.}\ line it produces into Studio's hidden prompt.
+        No file upload or SSH tunnel is needed.
   \item It asks for a spreadsheet URL or ID and a tab name.
   \item It checks that the spreadsheet and tab are reachable.
   \item It binds the saved configuration to the logical requirement.
@@ -2877,11 +2878,12 @@ Both configurations may use the same Google provider authorization. They are
 still separate resources and may be rebound independently.
 
 If Studio runs on a server without a browser, copy the displayed authorization
-command to the computer that has the browser and downloaded Desktop app JSON.
-The local command opens Google and prints one private result. Paste that result
-into Studio's hidden prompt. The browser callback remains on the local
-computer. The server needs no browser, client file, callback tunnel, or direct
-connection from the browser computer.
+command to your own computer, not to another server terminal. \texttt{uvx}
+fetches the helper without a local ZipperGen installation. The command asks
+for the downloaded Desktop app JSON, opens Google, and prints one long line
+starting with \texttt{zg-google-v1.} Copy that whole line into Studio's hidden
+prompt. The server needs no browser, client file, callback tunnel, or direct
+connection from your own computer.
 
 A read-only Gmail requirement requests \texttt{gmail.readonly}. A write or
 read-write Gmail requirement requests \texttt{gmail.modify}. The call-intake

@@ -180,7 +180,7 @@ uv sync --project zippergen --python 3.12 --extra google
 
 The \texttt{google} extra is needed by the Studio process that checks Gmail
 and Sheets. It is also needed by the one-time authorization command on the
-browser computer. Managed deployments detect the same connector requirements
+user's own computer. Managed deployments detect the same connector requirements
 and install this extra automatically.
 
 Start Studio from the outer directory with the nested environment:
@@ -343,7 +343,7 @@ connector setup
 Studio asks for:
 
 \begin{enumerate}
-  \item Google authorization on the computer that has a browser
+  \item Google authorization on your own computer
   \item a Gmail search query
   \item a spreadsheet URL or ID
   \item the tab name
@@ -356,31 +356,22 @@ client file.
 If Studio runs on a remote server, it prints a command like:
 
 \begin{lstlisting}[style=shell]
-zippergen connector authorize google \
-  --scopes gmail.modify,spreadsheets
-\end{lstlisting}
-
-Run the displayed command on the computer that has the browser and downloaded
-JSON file. The command asks for the file path, opens Google's consent page,
-and prints the permissions that Google granted. It then prints one long
-private result line. Return to the waiting Studio prompt and paste that line.
-The Studio prompt is hidden because the result contains a refresh token.
-
-The browser computer needs ZipperGen with Google support. After a published
-installation, install it once with:
-
-\begin{lstlisting}[style=shell]
-pip install "zippergen[google]"
-\end{lstlisting}
-
-When testing the current source checkout before that release, run the same
-displayed arguments through that checkout:
-
-\begin{lstlisting}[style=shell]
-uv run --project /path/to/zippergen --extra google \
+uvx --from \
+  'zippergen[google] @ git+https://github.com/zippergen-io/zippergen.git@main' \
   zippergen connector authorize google \
   --scopes gmail.modify,spreadsheets
 \end{lstlisting}
+
+Run exactly the displayed command on your own computer, not on the remote
+server. \texttt{uvx} fetches the current helper into a temporary cached
+environment, so that computer does not need a ZipperGen checkout or permanent
+installation. The command asks for the downloaded JSON path, opens Google's
+consent page, and prints the permissions that Google granted. It then prints
+one long line starting with \texttt{zg-google-v1.}
+
+Copy that whole line and return to Studio. Studio says that nothing will
+appear while you paste. This is expected because the hidden prompt protects
+the refresh token inside the result. Press Enter after pasting.
 
 Use the exact scopes that the server displays. The private result has a
 checksum, so Studio rejects an incomplete paste immediately. After accepting
@@ -399,7 +390,7 @@ URL and tab \texttt{Calls}.
 \begin{notebox}{Why no SSH tunnel is needed}
 The browser callback returns to the same computer that runs the authorization
 helper. That computer creates the portable credential and Studio receives it
-through the hidden paste. The browser computer does not need network access to
+through the hidden paste. Your own computer does not need network access to
 the remote server. The OAuth client JSON never reaches the server.
 \end{notebox}
 

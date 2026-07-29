@@ -42,7 +42,7 @@ class StudioConnectorsMixin:
             raise SystemExit(str(exc)) from exc
 
     def _needs_remote_google_browser(self) -> bool:
-        """Recognize when authorization must run on a browser computer."""
+        """Recognize when authorization must run on the user's own computer."""
 
         if os.environ.get("SSH_CONNECTION") or os.environ.get("SSH_TTY"):
             return True
@@ -70,32 +70,45 @@ class StudioConnectorsMixin:
         if self._needs_remote_google_browser():
             scope_argument = ",".join(google_scope_names(scopes))
             command = (
+                "uvx --from 'zippergen[google] @ "
+                "git+https://github.com/zippergen-io/zippergen.git@main' "
                 "zippergen connector authorize google "
                 f"--scopes {scope_argument}"
             )
-            self._emit_table(
-                "Google authorization on your browser computer",
-                [
-                    ("Run on", "the computer with your browser", None),
-                    ("Command", command, None),
-                    (
-                        "OAuth client",
-                        "stays on that computer",
-                        "success",
-                    ),
-                    (
-                        "Connection",
-                        "no SSH tunnel or server access is required",
-                        "success",
-                    ),
-                ],
+            self._emit_section_title(
+                "Authorize Google on your own computer"
             )
-            self._info(
-                f"The command asks for your Desktop app JSON, opens Google "
-                f"for {service_names}, and prints one private result."
+            self._emit()
+            self._emit(
+                "This server has no browser. Complete Google sign-in on "
+                "your own computer."
+            )
+            self._emit()
+            self._emit(
+                "1. Open a terminal on your own computer (not this server)."
+            )
+            self._emit()
+            self._emit("2. Run this one command:")
+            self._emit()
+            # Keep this as one logical output line. Terminal soft wrapping is
+            # harmless, while renderer-inserted newlines would break copying.
+            self._emit(command)
+            self._emit()
+            self._emit(
+                "It asks for the Desktop app JSON downloaded from Google "
+                f"Cloud, opens sign-in for {service_names}, and prints one "
+                "long line starting with zg-google-v1."
+            )
+            self._emit()
+            self._emit(
+                "3. Copy that whole zg-google-v1... line and return here."
+            )
+            self._emit()
+            self._emit(
+                "Nothing appears on screen while you paste. This is expected."
             )
             private_result = self.secret_input(
-                "Paste the private Google authorization result: "
+                "Paste the complete zg-google-v1... line: "
             ).strip()
             if not private_result:
                 raise SystemExit(

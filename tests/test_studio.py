@@ -3350,8 +3350,15 @@ def test_studio_receives_remote_google_authorization_as_hidden_handoff(
         tmp_path,
         secret_responses=[handoff],
     )
+    secret_prompts: list[str] = []
+
+    def paste_handoff(prompt: str) -> str:
+        secret_prompts.append(prompt)
+        return handoff
+
+    studio.secret_input = paste_handoff
     # Batch Studio commands do not use prompt_toolkit. SSH detection must
-    # still select the browser-computer handoff instead of run_local_server.
+    # still select the local authorization handoff instead of run_local_server.
     assert studio._prompt_toolkit_enabled is False
     monkeypatch.setenv("SSH_CONNECTION", "local remote")
     monkeypatch.setattr(
@@ -3368,11 +3375,22 @@ def test_studio_receives_remote_google_authorization_as_hidden_handoff(
         '"refresh_token":"private-google-token"}'
     )
     assert any(
-        "zippergen connector authorize google "
-        "--scopes spreadsheets" in line
+        line == (
+            "uvx --from 'zippergen[google] @ "
+            "git+https://github.com/zippergen-io/zippergen.git@main' "
+            "zippergen connector authorize google --scopes spreadsheets"
+        )
         for line in output
     )
-    assert any("no SSH tunnel" in line for line in output)
+    assert any(
+        line == "1. Open a terminal on your own computer (not this server)."
+        for line in output
+    )
+    assert any(
+        line == "3. Copy that whole zg-google-v1... line and return here."
+        for line in output
+    )
+    assert secret_prompts == ["Paste the complete zg-google-v1... line: "]
     assert all("private-client-secret" not in line for line in output)
     assert all("private-google-token" not in line for line in output)
     profile = workspace.connector_provider_profiles()["google"]
