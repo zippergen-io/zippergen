@@ -515,16 +515,29 @@ not contact OpenAI, Anthropic, Mistral, or a local model endpoint. Codex and
 Claude are optional external programs with their own installation and login;
 they are deliberately not Python dependencies of ZipperGen.
 
-The other deliberately explicit process command is
-\texttt{studio restart}. After pulling changes to the editable ZipperGen
-checkout in another terminal, enter it to replace the running Studio process
-and import the updated source. The replacement keeps the current directory and
-reloads the project context saved on disk; it does not open a nested Studio.
-It does not run \texttt{git pull}, install packages, or synchronize the Python
-environment. If dependency metadata changed, leave Studio, run
-\texttt{uv sync} or reinstall the editable tool, and then start
-\texttt{zippergen} again. Do not confuse this with
-\texttt{deploy restart [NAME]}, which restarts an installed deployment.
+Two deliberately explicit process commands cover reloading and updating
+Studio. Use \texttt{studio restart} to replace the running process and import
+source that is already installed. The replacement keeps the current directory
+and reloads the project context saved on disk. It does not open a nested
+Studio.
+
+When Studio is running from the ZipperGen Git checkout, use:
+
+\begin{lstlisting}[style=studio]
+studio update
+\end{lstlisting}
+
+This command finds the actual ZipperGen source checkout. It does not assume
+that the checkout is named \texttt{zippergen} or that it is directly below the
+project directory. It refuses tracked local changes and detached-HEAD state,
+runs \texttt{git pull --ff-only}, synchronizes the environment with
+\texttt{uv} when dependency metadata changed, and then restarts the same
+Studio session. The application project remains the current project. Existing
+deployment bundles remain immutable and are not restarted or replaced.
+
+For a packaged installation, Studio explains that the corresponding package
+manager must perform the update. Do not confuse either Studio process command
+with \texttt{deploy restart [NAME]}, which restarts an installed deployment.
 
 Press Tab at any point while entering a command. Studio completes commands and
 subcommands and, where relevant, offers the workflows, participants,

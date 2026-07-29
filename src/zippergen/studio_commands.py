@@ -454,6 +454,12 @@ COMMANDS: tuple[CommandSpec, ...] = (
         "replace this process and reload installed source",
         "execution",
     ),
+    CommandSpec(
+        ("studio", "update"),
+        "studio update",
+        "fast-forward a source checkout, synchronize it, and restart Studio",
+        "execution",
+    ),
     CommandSpec(("project",), "project", "show project configuration", "read-only"),
     CommandSpec(
         ("project", "init"),

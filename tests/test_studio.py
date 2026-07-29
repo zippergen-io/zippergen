@@ -614,6 +614,183 @@ def test_studio_restart_failure_keeps_the_current_session(
         studio.execute("studio restart")
 
 
+def test_studio_update_fast_forwards_and_restarts_same_project(
+    tmp_path,
+    monkeypatch,
+):
+    studio, workspace, output = _studio(tmp_path)
+    checkout = tmp_path / "zippergen-source"
+    checkout.mkdir()
+    calls: list[tuple[list[str], str]] = []
+    restarted: list[Path] = []
+    before = "1" * 40
+    after = "2" * 40
+
+    monkeypatch.setattr(
+        studio,
+        "_studio_source_checkout",
+        lambda: checkout,
+    )
+    monkeypatch.setattr(
+        "zippergen.studio.shutil.which",
+        lambda command: f"/tools/{command}",
+    )
+
+    def run(arguments, *, operation):
+        calls.append((list(arguments), operation))
+        tail = arguments[3:]
+        if tail == ["status", "--porcelain", "--untracked-files=no"]:
+            stdout = ""
+        elif tail == ["rev-parse", "--abbrev-ref", "HEAD"]:
+            stdout = "main\n"
+        elif tail == [
+            "rev-parse",
+            "--abbrev-ref",
+            "--symbolic-full-name",
+            "@{upstream}",
+        ]:
+            stdout = "origin/main\n"
+        elif tail == ["rev-parse", "HEAD"]:
+            stdout = before + "\n" if sum(
+                item[0][3:] == ["rev-parse", "HEAD"] for item in calls
+            ) == 1 else after + "\n"
+        elif tail == ["pull", "--ff-only"]:
+            stdout = "Updating source\nFast-forward\n"
+        elif tail == [
+            "diff",
+            "--name-only",
+            before,
+            after,
+            "--",
+            "pyproject.toml",
+            "uv.lock",
+        ]:
+            stdout = ""
+        else:
+            raise AssertionError(arguments)
+        return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(studio, "_update_subprocess", run)
+    monkeypatch.setattr(
+        studio,
+        "restart_studio",
+        lambda: restarted.append(workspace.root),
+    )
+
+    studio.execute("studio update")
+
+    assert restarted == [workspace.root]
+    assert any("fast-forwarded successfully" in line for line in output)
+    assert any("installed bundles remain immutable" in line for line in output)
+    assert not any(call[0][0] == "/tools/uv" for call in calls)
+
+
+def test_studio_update_synchronizes_changed_dependency_metadata(
+    tmp_path,
+    monkeypatch,
+):
+    studio, workspace, output = _studio(tmp_path)
+    checkout = tmp_path / "zippergen-source"
+    checkout.mkdir()
+    (checkout / "uv.lock").write_text("locked")
+    before = "a" * 40
+    after = "b" * 40
+    head_reads = 0
+    calls: list[list[str]] = []
+
+    monkeypatch.setattr(
+        studio,
+        "_studio_source_checkout",
+        lambda: checkout,
+    )
+    monkeypatch.setattr(
+        "zippergen.studio.shutil.which",
+        lambda command: f"/tools/{command}",
+    )
+
+    def run(arguments, *, operation):
+        nonlocal head_reads
+        calls.append(list(arguments))
+        if arguments[0] == "/tools/uv":
+            return SimpleNamespace(returncode=0, stdout="", stderr="")
+        tail = arguments[3:]
+        if tail == ["status", "--porcelain", "--untracked-files=no"]:
+            stdout = ""
+        elif tail == ["rev-parse", "--abbrev-ref", "HEAD"]:
+            stdout = "main\n"
+        elif tail == [
+            "rev-parse",
+            "--abbrev-ref",
+            "--symbolic-full-name",
+            "@{upstream}",
+        ]:
+            stdout = "origin/main\n"
+        elif tail == ["rev-parse", "HEAD"]:
+            head_reads += 1
+            stdout = (before if head_reads == 1 else after) + "\n"
+        elif tail == ["pull", "--ff-only"]:
+            stdout = "Fast-forward\n"
+        elif tail[:2] == ["diff", "--name-only"]:
+            stdout = "pyproject.toml\n"
+        else:
+            raise AssertionError(arguments)
+        return SimpleNamespace(returncode=0, stdout=stdout, stderr="")
+
+    monkeypatch.setattr(studio, "_update_subprocess", run)
+    monkeypatch.setattr(studio, "restart_studio", lambda: None)
+
+    studio.execute("studio update")
+
+    assert [
+        "/tools/uv",
+        "sync",
+        "--locked",
+        "--project",
+        str(checkout),
+    ] in calls
+    assert any("synchronized with uv" in line for line in output)
+
+
+def test_studio_update_refuses_tracked_checkout_changes(
+    tmp_path,
+    monkeypatch,
+):
+    studio, _workspace, _output = _studio(tmp_path)
+    checkout = tmp_path / "zippergen-source"
+    checkout.mkdir()
+    calls: list[list[str]] = []
+
+    monkeypatch.setattr(
+        studio,
+        "_studio_source_checkout",
+        lambda: checkout,
+    )
+    monkeypatch.setattr(
+        "zippergen.studio.shutil.which",
+        lambda command: f"/tools/{command}",
+    )
+
+    def run(arguments, *, operation):
+        calls.append(list(arguments))
+        return SimpleNamespace(
+            returncode=0,
+            stdout=" M src/zippergen/studio.py\n",
+            stderr="",
+        )
+
+    monkeypatch.setattr(studio, "_update_subprocess", run)
+
+    with pytest.raises(SystemExit, match="tracked local changes"):
+        studio.execute("studio update")
+
+    assert len(calls) == 1
+    assert calls[0][3:] == [
+        "status",
+        "--porcelain",
+        "--untracked-files=no",
+    ]
+
+
 def test_studio_run_uses_prompt_toolkit_session_when_interactive(tmp_path):
     studio, _workspace, output = _studio(tmp_path)
     prompts: list[tuple[str, bool]] = []

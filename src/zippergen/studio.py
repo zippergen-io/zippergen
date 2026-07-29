@@ -2488,6 +2488,197 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
                 "is still running."
             ) from exc
 
+    @staticmethod
+    def _studio_source_checkout() -> Path:
+        """Locate the Git checkout that supplies this imported Studio module."""
+
+        source = Path(__file__).resolve()
+        for candidate in source.parents:
+            checkout_source = candidate / "src" / "zippergen" / "studio.py"
+            try:
+                same_source = checkout_source.samefile(source)
+            except OSError:
+                same_source = False
+            if (
+                same_source
+                and (candidate / ".git").exists()
+                and (candidate / "pyproject.toml").is_file()
+            ):
+                return candidate
+        raise SystemExit(
+            "Studio update is available only when ZipperGen is running from "
+            "its Git source checkout. Update a packaged installation with the "
+            "package manager that installed it."
+        )
+
+    @staticmethod
+    def _update_subprocess(
+        arguments: list[str],
+        *,
+        operation: str,
+    ) -> subprocess.CompletedProcess[str]:
+        try:
+            completed = subprocess.run(
+                arguments,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except OSError as exc:
+            raise SystemExit(f"{operation} could not start: {exc}.") from exc
+        if completed.returncode != 0:
+            detail = (completed.stderr or completed.stdout).strip()
+            raise SystemExit(
+                f"{operation} failed"
+                + (f": {detail}" if detail else ".")
+            )
+        return completed
+
+    def update_studio(self) -> None:
+        """Safely fast-forward an editable source checkout and restart Studio."""
+
+        checkout = self._studio_source_checkout()
+        git = shutil.which("git")
+        if git is None:
+            raise SystemExit(
+                "Studio update needs Git, but 'git' was not found. Install Git "
+                "or update the checkout in another terminal."
+            )
+
+        def git_output(*arguments: str, operation: str) -> str:
+            completed = self._update_subprocess(
+                [git, "-C", str(checkout), *arguments],
+                operation=operation,
+            )
+            return completed.stdout.strip()
+
+        changes = git_output(
+            "status",
+            "--porcelain",
+            "--untracked-files=no",
+            operation="Checking the ZipperGen working tree",
+        )
+        if changes:
+            preview = ", ".join(
+                line[3:].strip() or line.strip()
+                for line in changes.splitlines()[:5]
+            )
+            raise SystemExit(
+                "Studio update stopped because the ZipperGen checkout has "
+                f"tracked local changes: {preview}. Commit, restore, or move "
+                "those changes before updating. Project files and deployments "
+                "were not touched."
+            )
+
+        branch = git_output(
+            "rev-parse",
+            "--abbrev-ref",
+            "HEAD",
+            operation="Reading the ZipperGen branch",
+        )
+        if branch == "HEAD":
+            raise SystemExit(
+                "Studio update stopped because the ZipperGen checkout is in "
+                "detached-HEAD state. Check out a branch before updating."
+            )
+        upstream = git_output(
+            "rev-parse",
+            "--abbrev-ref",
+            "--symbolic-full-name",
+            "@{upstream}",
+            operation="Finding the ZipperGen upstream branch",
+        )
+        before = git_output(
+            "rev-parse",
+            "HEAD",
+            operation="Reading the current ZipperGen revision",
+        )
+        self._emit_table(
+            "Studio update",
+            [
+                ("Checkout", checkout, None),
+                ("Branch", f"{branch} → {upstream}", None),
+                ("Current", before[:12], None),
+                ("Project", f"preserved — {self.workspace.root}", "success"),
+                (
+                    "Deployments",
+                    "unchanged; installed bundles remain immutable",
+                    "success",
+                ),
+            ],
+        )
+        self._info("Pulling a fast-forward update from the configured upstream.")
+        pull = self._update_subprocess(
+            [git, "-C", str(checkout), "pull", "--ff-only"],
+            operation="Updating the ZipperGen checkout",
+        )
+        after = git_output(
+            "rev-parse",
+            "HEAD",
+            operation="Reading the updated ZipperGen revision",
+        )
+        metadata_changed = False
+        if before != after:
+            changed_metadata = git_output(
+                "diff",
+                "--name-only",
+                before,
+                after,
+                "--",
+                "pyproject.toml",
+                "uv.lock",
+                operation="Checking updated dependency metadata",
+            )
+            metadata_changed = bool(changed_metadata)
+
+        environment_status = "unchanged; synchronization not needed"
+        if metadata_changed:
+            uv = shutil.which("uv")
+            if uv is None:
+                raise SystemExit(
+                    "ZipperGen source was updated, but dependency metadata also "
+                    "changed and 'uv' was not found. Run 'uv sync --project "
+                    f"{checkout}' and then restart Studio."
+                )
+            sync_arguments = [uv, "sync", "--project", str(checkout)]
+            if (checkout / "uv.lock").is_file():
+                sync_arguments.insert(2, "--locked")
+            self._info("Synchronizing the updated ZipperGen environment.")
+            self._update_subprocess(
+                sync_arguments,
+                operation="Synchronizing the ZipperGen environment",
+            )
+            environment_status = "synchronized with uv"
+
+        pull_detail = (pull.stdout or pull.stderr).strip().splitlines()
+        self._emit_table(
+            "Update complete",
+            [
+                ("Previous", before[:12], None),
+                (
+                    "Current",
+                    after[:12],
+                    "success",
+                ),
+                (
+                    "Source",
+                    (
+                        "already up to date"
+                        if before == after
+                        else "fast-forwarded successfully"
+                    ),
+                    "success",
+                ),
+                ("Environment", environment_status, "success"),
+                (
+                    "Git",
+                    pull_detail[-1] if pull_detail else "completed",
+                    None,
+                ),
+            ],
+        )
+        self.restart_studio()
+
     def _is_explicit_command(self, parts: list[str]) -> bool:
         """Resolve ambiguous short verbs against known project objects."""
 
@@ -2665,8 +2856,12 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin):
                 self.studio_doctor()
             elif args == ["restart"]:
                 self.restart_studio()
+            elif args == ["update"]:
+                self.update_studio()
             else:
-                raise SystemExit("Use studio doctor or studio restart.")
+                raise SystemExit(
+                    "Use studio doctor, studio restart, or studio update."
+                )
         elif command == "model":
             self.configure_models(args)
         elif command == "connector":
