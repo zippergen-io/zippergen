@@ -535,10 +535,13 @@ workflows in the supported formal model.
 The main theorems are machine-checked in Lean 4. The formal results are
 described in these papers:
 
-- [Provable Coordination for LLM Agents via Message Sequence
-  Charts](https://arxiv.org/abs/2604.17612)
-- [Causal Past Logic for Runtime Verification of Distributed LLM Agent
-  Workflows](https://arxiv.org/abs/2605.20923)
+- Bollig, Függer, and Bollig. [Provable Coordination for LLM Agents via
+  Message Sequence Charts](https://arxiv.org/abs/2604.17612). Accepted at
+  ISoLA 2026.
+- Bollig. *Deadlock-Free Parallel Regions for Projected Workflows*. Accepted
+  at EXPRESS/SOS 2026. Public preprint forthcoming.
+- Bollig. [Causal Past Logic for Runtime Verification of Distributed LLM Agent
+  Workflows](https://arxiv.org/abs/2605.20923). Under submission.
 
 Causal Past Logic supports runtime conditions over causally visible distributed
 state. It complements the design-time protocol and projection guarantees.
