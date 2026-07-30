@@ -619,9 +619,13 @@ def render_local_projection_with_pointers(
     workflow: Workflow,
     participant: str,
     active_paths: tuple[tuple[int, ...], ...] | list[list[int]],
+    *,
+    indent: int = 0,
 ) -> str:
     """Render one projected program with one or more current pointers."""
 
+    if indent < 0:
+        raise ValueError("projection indentation must not be negative")
     lifeline = next(
         (
             item
@@ -655,7 +659,8 @@ def render_local_projection_with_pointers(
             ("▶ " if path is not None and path in active else "  ") + line
             for path, line in body
         )
-    return "\n".join(lines)
+    prefix = " " * indent
+    return "\n".join(prefix + line if line else "" for line in lines)
 
 
 def _workflow_signature(workflow: Workflow, *, agent: str | None = None) -> str:

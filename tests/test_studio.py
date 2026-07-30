@@ -4863,9 +4863,14 @@ def test_studio_operates_human_tasks_through_the_deployment(
         "Reviewer" in line and "running model action" in line
         for line in output
     )
+    projection_lines = [
+        line
+        for block in output
+        for line in block.splitlines()
+    ]
     assert any(
-        "▶" in line and "result = process(draft)" in line
-        for line in output
+        line.startswith("▶") and "result = process(draft)" in line
+        for line in projection_lines
     )
 
     watched: list[tuple[str, str]] = []
@@ -4896,6 +4901,15 @@ def test_studio_operates_human_tasks_through_the_deployment(
     assert any(
         "Reviewer" in line and "running model action" in line
         for line in output
+    )
+    projection_lines = [
+        line
+        for block in output
+        for line in block.splitlines()
+    ]
+    assert any(
+        line.startswith(" ▶") and "result = process(draft)" in line
+        for line in projection_lines
     )
 
     prompts: list[str] = []

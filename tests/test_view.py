@@ -126,6 +126,20 @@ def test_live_agent_view_marks_the_stable_local_statement_path():
 
     assert "▶     edited = edit_text(text)" in code
     assert "  " + "    text = recv('Author')" in code
+    assert code.startswith(
+        "# Live local projection for Editor; read-only observation."
+    )
+
+    watched = render_local_projection_with_pointers(
+        editorial,
+        "Editor",
+        [action_path],
+        indent=1,
+    )
+    assert " ▶     edited = edit_text(text)" in watched
+    assert watched.startswith(
+        " # Live local projection for Editor; read-only observation."
+    )
 
 
 def test_selected_agent_view_preserves_hidden_agents_as_boundaries():

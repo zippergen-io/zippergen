@@ -7777,6 +7777,7 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
         source_rows: list[tuple[str, object, StatusKind | None]],
         participant: str | None,
         next_commands: str,
+        projection_indent: int = 0,
     ) -> None:
         from zippergen.execution_inspection import (
             default_focus,
@@ -7876,6 +7877,7 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
                     workflow,
                     focus,
                     selected.locators,
+                    indent=projection_indent,
                 )
             )
         self._emit_next(next_commands)
@@ -8054,6 +8056,7 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
                     if participant
                     else "run inspect PARTICIPANT · runs · resume"
                 ),
+                projection_indent=1 if watch else 0,
             )
 
         if watch:
@@ -10003,6 +10006,7 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
                     else f"deploy inspect {name} PARTICIPANT · "
                     f"deploy tasks {name} · deploy logs {name}"
                 ),
+                projection_indent=1 if watch else 0,
             )
 
         if watch:
