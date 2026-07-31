@@ -531,9 +531,7 @@ Documentation:
 
 - [Your First ZipperGen Workflow](docs/first-workflow.pdf)
 - [Development and Deployment Manual](docs/workflow-development-deployment-guide.pdf)
-- [Call Intake end-to-end TeX source](docs/call-intake-end-to-end.tex)
-- [Tutorial TeX source](docs/first-workflow.tex)
-- [Manual TeX source](docs/workflow-development-deployment-guide.tex)
+- [Call Intake End to End](docs/call-intake-end-to-end.pdf)
 - [Workflow authoring skill](.agents/skills/zippergen-workflows/SKILL.md)
 
 The first document is the shortest complete path. The manual contains the

@@ -530,7 +530,7 @@ Studio.
 
 When Studio is running from the ZipperGen Git checkout, use:
 
-\begin{lstlisting}[style=studio]
+\begin{lstlisting}[style=shell]
 studio update
 \end{lstlisting}
 
@@ -2484,6 +2484,93 @@ explore the menu. Read the deployment chapters first, remain on mock/fake
 services, and understand the declared setup and effects. The \texttt{workflow show full}
 view exposes prompts and deployment requirements before this transition.
 \end{warningbox}
+
+\section{Moving a workflow to a server}
+
+\texttt{deploy} installs a service on the machine Studio is running on. There is
+no remote deployment command. A server deployment therefore begins with a step
+that is easy to overlook: the workflow source has to reach the server, and
+Studio has to run there. This section covers that step. Everything earlier in
+this chapter then applies unchanged on the server itself.
+
+\subsection{Clone for ongoing work, import for a single file}
+
+Two arrangements work. Prefer the first for any workflow you will change again.
+
+Keep the workflow in a repository, clone it on the server, and use the clone as
+the project root. Updates are then an ordinary \texttt{git pull}, and no import
+step is required at all:
+
+\begin{lstlisting}[style=shell]
+git clone git@github.com:you/your-workflows.git ~/workflows
+cd ~/workflows
+zippergen studio
+\end{lstlisting}
+
+Use \texttt{workflow import} when you want to pull one external file into an
+existing project --- a shipped example, or a workflow kept outside the
+repository:
+
+\begin{lstlisting}[style=shell]
+scp -r ./call-intake user@server:~/staging/
+\end{lstlisting}
+
+Then, in Studio on the server:
+
+\begin{lstlisting}[style=shell]
+workflow import ~/staging/call-intake/call_intake.py:call_intake
+\end{lstlisting}
+
+\subsection{Copy the directory, not only the entry file}
+
+A workflow may name local files in its declarations: connector configuration,
+prompt text, or data an action reads. \texttt{workflow import} reads the source
+and copies those files together with the entry module. A manual \texttt{scp} of
+one \texttt{.py} file does not. When you copy by hand, copy the directory that
+contains the workflow rather than the file alone.
+
+\subsection{Credentials stay on the machine that created them}
+
+Copying a project directory moves no secret. Provider keys, connector tokens,
+and Google credentials are stored below \path{ZIPPERGEN_HOME/workspaces} with
+owner-only permissions, outside the project directory. A project directory can
+therefore be copied, pushed to a repository, or handed to somebody else without
+carrying credentials with it.
+
+Model and connector assignments are held in the same private workspace state, so
+they do not travel either. After the source arrives, configure them on the
+server exactly as you did locally:
+
+\begin{lstlisting}[style=shell]
+model setup
+connector setup
+\end{lstlisting}
+
+This is expected rather than a missing step. Each machine holds its own
+credentials, and a workflow file that reached the server by any route cannot
+bring another machine's secrets with it.
+
+\subsection{Validate on the server before deploying}
+
+Run the ordinary inspection commands once on the server before the first
+deployment. They load the module in that environment and fail early if a
+resource file did not arrive or an import does not resolve there:
+
+\begin{lstlisting}[style=shell]
+workflow validate
+workflow show
+\end{lstlisting}
+
+Only then continue with model and connector configuration and, finally,
+\texttt{deploy}.
+
+\begin{notebox}{The same Studio, different commands}
+Studio behaves identically on both machines. Authoring commands such as
+\texttt{ask}, \texttt{plan}, and \texttt{workflow refine} use a coding assistant
+and are normally run on your own computer, where a browser is available for its
+sign-in. \texttt{workflow validate}, \texttt{run}, \texttt{deploy}, and every
+inspection command work on the server without any assistant installed.
+\end{notebox}
 
 \section{Studio and scriptable CLI equivalents}
 
