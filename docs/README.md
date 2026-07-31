@@ -20,15 +20,18 @@ From the ZipperGen Git root, run:
 make docs
 ```
 
-The command first checks the compiler and required packages. It then creates:
+The command first checks the compiler and required packages. It then builds each
+document under `docs/_build/` and copies the finished PDF next to its source:
 
 ```text
-docs/_build/first-workflow.pdf
-docs/_build/call-intake-end-to-end.pdf
-docs/_build/workflow-development-deployment-guide.pdf
+docs/first-workflow.pdf
+docs/call-intake-end-to-end.pdf
+docs/workflow-development-deployment-guide.pdf
 ```
 
-All auxiliary files stay under the ignored `docs/_build/` directory.
+Those three files are committed and are the ones the project README links, so
+rebuild them whenever you change a `.tex` source. All auxiliary files stay under
+the ignored `docs/_build/` directory.
 
 Build only one document with:
 
@@ -62,7 +65,8 @@ latexmk -pdf -interaction=nonstopmode -halt-on-error \
 
 The source paths are intentionally relative to `docs/`, so this works whether
 it is launched manually or by an editor whose working directory is the source
-file's directory.
+file's directory. These direct commands leave the result in `docs/_build/` only;
+use `make docs` when you intend to update the committed PDFs.
 
 If `latexmk` is not found after installing MacTeX, start a new terminal and
 check:

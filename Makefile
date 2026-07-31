@@ -19,7 +19,9 @@ docs-first-workflow: docs-check
 		-file-line-error \
 		-outdir=_build \
 		"$(FIRST_WORKFLOW_DOC).tex"
-	@printf 'Built %s/%s.pdf\n' "$(DOC_BUILD_DIR)" "$(FIRST_WORKFLOW_DOC)"
+	@cp "$(DOC_BUILD_DIR)/$(FIRST_WORKFLOW_DOC).pdf" \
+		"$(DOC_DIR)/$(FIRST_WORKFLOW_DOC).pdf"
+	@printf 'Built %s/%s.pdf\n' "$(DOC_DIR)" "$(FIRST_WORKFLOW_DOC)"
 
 docs-manual: docs-check
 	@mkdir -p "$(DOC_BUILD_DIR)"
@@ -30,7 +32,9 @@ docs-manual: docs-check
 		-file-line-error \
 		-outdir=_build \
 		"$(MANUAL_DOC).tex"
-	@printf 'Built %s/%s.pdf\n' "$(DOC_BUILD_DIR)" "$(MANUAL_DOC)"
+	@cp "$(DOC_BUILD_DIR)/$(MANUAL_DOC).pdf" \
+		"$(DOC_DIR)/$(MANUAL_DOC).pdf"
+	@printf 'Built %s/%s.pdf\n' "$(DOC_DIR)" "$(MANUAL_DOC)"
 
 docs-call-intake: docs-check
 	@mkdir -p "$(DOC_BUILD_DIR)"
@@ -41,7 +45,9 @@ docs-call-intake: docs-check
 		-file-line-error \
 		-outdir=_build \
 		"$(CALL_INTAKE_DOC).tex"
-	@printf 'Built %s/%s.pdf\n' "$(DOC_BUILD_DIR)" "$(CALL_INTAKE_DOC)"
+	@cp "$(DOC_BUILD_DIR)/$(CALL_INTAKE_DOC).pdf" \
+		"$(DOC_DIR)/$(CALL_INTAKE_DOC).pdf"
+	@printf 'Built %s/%s.pdf\n' "$(DOC_DIR)" "$(CALL_INTAKE_DOC)"
 
 docs-check:
 	@command -v latexmk >/dev/null 2>&1 || { \
