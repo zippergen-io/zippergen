@@ -24,6 +24,8 @@ class StorageReport:
     task_notifications: int
     snapshot_roles: tuple[str, ...]
     roles_without_snapshot: tuple[str, ...]
+    integrity_ok: bool | None
+    integrity_detail: str
 
     @property
     def total_bytes(self) -> int:
@@ -60,6 +62,12 @@ class CompactionResult:
         return self.deleted_messages + self.deleted_journal
 
 
+@dataclass(frozen=True)
+class StoreIntegrity:
+    ok: bool
+    detail: str
+
+
 def _file_size(path: Path) -> int:
     try:
         return path.stat().st_size if path.is_file() else 0
@@ -86,6 +94,33 @@ def _table_exists(conn: sqlite3.Connection, name: str) -> bool:
     )
 
 
+def check_store_integrity(path: str | Path) -> StoreIntegrity:
+    """Run SQLite's bounded diagnostic check through a read-only connection."""
+
+    store = Path(path).expanduser()
+    if not store.is_file():
+        return StoreIntegrity(False, f"store does not exist: {store}")
+    try:
+        conn = sqlite3.connect(
+            f"file:{store.resolve()}?mode=ro",
+            uri=True,
+            timeout=5.0,
+        )
+        try:
+            rows = conn.execute("PRAGMA quick_check(1)").fetchall()
+        finally:
+            conn.close()
+    except (OSError, sqlite3.DatabaseError) as exc:
+        return StoreIntegrity(False, f"{type(exc).__name__}: {exc}")
+    details = [str(row[0]) for row in rows if row]
+    if details == ["ok"]:
+        return StoreIntegrity(True, "SQLite quick check passed")
+    return StoreIntegrity(
+        False,
+        details[0] if details else "SQLite quick check returned no result",
+    )
+
+
 def inspect_store_storage(path: str | Path) -> StorageReport:
     store = Path(path).expanduser()
     database_bytes, wal_bytes, shm_bytes = sqlite_family_size(store)
@@ -103,6 +138,27 @@ def inspect_store_storage(path: str | Path) -> StorageReport:
             task_notifications=0,
             snapshot_roles=(),
             roles_without_snapshot=(),
+            integrity_ok=None,
+            integrity_detail="store does not exist",
+        )
+
+    integrity = check_store_integrity(store)
+    if not integrity.ok:
+        return StorageReport(
+            path=store,
+            database_bytes=database_bytes,
+            wal_bytes=wal_bytes,
+            shm_bytes=shm_bytes,
+            reusable_bytes=0,
+            event_counts={},
+            completed_tasks=0,
+            pending_tasks=0,
+            task_tokens=0,
+            task_notifications=0,
+            snapshot_roles=(),
+            roles_without_snapshot=(),
+            integrity_ok=False,
+            integrity_detail=integrity.detail,
         )
 
     conn = sqlite3.connect(f"file:{store.resolve()}?mode=ro", uri=True)
@@ -183,6 +239,8 @@ def inspect_store_storage(path: str | Path) -> StorageReport:
         task_notifications=task_notifications,
         snapshot_roles=tuple(sorted(snapshot_roles)),
         roles_without_snapshot=tuple(sorted(seed_roles - snapshot_roles)),
+        integrity_ok=True,
+        integrity_detail=integrity.detail,
     )
 
 
@@ -263,6 +321,11 @@ def compact_store(path: str | Path) -> CompactionResult:
     store = Path(path).expanduser()
     if not store.is_file():
         raise FileNotFoundError(store)
+    integrity = check_store_integrity(store)
+    if not integrity.ok:
+        raise ValueError(
+            f"Store integrity check failed before compaction: {integrity.detail}"
+        )
     before_bytes = sum(sqlite_family_size(store))
     before_report = inspect_store_storage(store)
     conn = open_store(str(store))

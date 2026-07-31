@@ -4,8 +4,9 @@ ZipperGen — Planner subsystem.
 Handles LLM-driven dynamic workflow generation (PlannerAction). Given a
 PlannerAction node, _exec_planner builds a system prompt from the action's
 vocabulary and constraints, calls the LLM to generate a ZipperGen workflow
-spec, validates it, writes the spec to a temp file, imports it as a module,
-and runs the resulting Workflow.
+spec, validates it against a fail-closed executable grammar, writes the
+validated spec to a temp file, imports it as a module, and runs the resulting
+Workflow.
 
 Public surface:
   _validate_planner_spec  — structural validator (returns None or error string)
@@ -102,19 +103,6 @@ def generated_workflow(doc1: str @ Worker1, doc2: str @ Worker2) -> str:
     Worker2(summary2) >> Aggregator(summary2)
     Aggregator: merged = merge(summary1, summary2)
     return merged @ Aggregator
-"""
-
-
-_PLANNER_ALLOW_PURE = """\
-You may define @pure helper functions before the workflow. Pure functions are
-plain Python — no LLM calls, no side effects, no imports. Use them for
-formatting, parsing, or combining strings.
-
-    @pure
-    def join_results(a: str, b: str) -> str:
-        return a + "\\n\\n" + b
-
-Supported parameter and return types: str, int, float, bool, Json.
 """
 
 
@@ -311,7 +299,7 @@ def _parse_output_types(node) -> tuple[type, ...] | None:
 
 
 def _defined_action_output_types(tree) -> dict[str, tuple[type, ...]]:
-    """Read output types of @pure/@llm actions defined in a generated spec."""
+    """Read output types of @llm actions defined in a generated spec."""
     import ast as _ast
 
     outputs: dict[str, tuple[type, ...]] = {}
@@ -319,16 +307,8 @@ def _defined_action_output_types(tree) -> dict[str, tuple[type, ...]]:
         if not isinstance(fn_node, _ast.FunctionDef) or fn_node.name == "generated_workflow":
             continue
         for deco in fn_node.decorator_list:
-            if isinstance(deco, _ast.Name) and deco.id == "pure":
-                ret = _type_from_annotation(fn_node.returns)
-                if ret is not None:
-                    outputs[fn_node.name] = (ret,)
-            elif isinstance(deco, _ast.Call) and isinstance(deco.func, _ast.Name):
-                if deco.func.id == "pure":
-                    ret = _type_from_annotation(fn_node.returns)
-                    if ret is not None:
-                        outputs[fn_node.name] = (ret,)
-                elif deco.func.id == "llm":
+            if isinstance(deco, _ast.Call) and isinstance(deco.func, _ast.Name):
+                if deco.func.id == "llm":
                     for kw in deco.keywords:
                         if kw.arg == "outputs":
                             parsed = _parse_output_types(kw.value)
@@ -467,6 +447,332 @@ def _extract_intermediate_var_types(
     return var_types
 
 
+def _planner_arguments_error(args, *, workflow: bool) -> str | None:
+    """Reject every signature feature that could evaluate generated code."""
+
+    if (
+        args.posonlyargs
+        or args.vararg is not None
+        or args.kwonlyargs
+        or args.kw_defaults
+        or args.kwarg is not None
+        or args.defaults
+    ):
+        return "generated functions may use only required positional parameters"
+    import ast as _ast
+
+    for arg in args.args:
+        annotation = arg.annotation
+        if workflow:
+            if not (
+                isinstance(annotation, _ast.BinOp)
+                and isinstance(annotation.op, _ast.MatMult)
+                and isinstance(annotation.left, _ast.Name)
+                and annotation.left.id in _TYPE_MAP
+                and isinstance(annotation.right, _ast.Name)
+            ):
+                return (
+                    f"workflow parameter {arg.arg!r} must use "
+                    "`type @ Lifeline` with a supported coordination type"
+                )
+        elif not (
+            isinstance(annotation, _ast.Name)
+            and annotation.id in _TYPE_MAP
+        ):
+            return (
+                f"generated LLM parameter {arg.arg!r} must use a supported "
+                "coordination type"
+            )
+    return None
+
+
+def _planner_literal(node) -> bool:
+    """Return whether an action argument is a non-evaluating literal."""
+
+    import ast as _ast
+
+    if isinstance(node, _ast.Constant):
+        return type(node.value) in {str, bool, int, float}
+    return (
+        isinstance(node, _ast.UnaryOp)
+        and isinstance(node.op, (_ast.USub, _ast.UAdd))
+        and isinstance(node.operand, _ast.Constant)
+        and type(node.operand.value) in {int, float}
+    )
+
+
+def _planner_condition_is_safe(node) -> bool:
+    """Recognize the small non-calling expression grammar for conditions."""
+
+    import ast as _ast
+
+    if isinstance(node, _ast.Name):
+        return True
+    if isinstance(node, _ast.Constant):
+        return type(node.value) in {str, bool, int, float} or node.value is None
+    if isinstance(node, _ast.UnaryOp):
+        return isinstance(node.op, (_ast.Not, _ast.USub, _ast.UAdd)) and (
+            _planner_condition_is_safe(node.operand)
+        )
+    if isinstance(node, _ast.BoolOp):
+        return isinstance(node.op, (_ast.And, _ast.Or)) and all(
+            _planner_condition_is_safe(value) for value in node.values
+        )
+    if isinstance(node, _ast.Compare):
+        return (
+            all(
+                isinstance(
+                    operator,
+                    (_ast.Eq, _ast.NotEq, _ast.Lt, _ast.LtE, _ast.Gt, _ast.GtE),
+                )
+                for operator in node.ops
+            )
+            and _planner_condition_is_safe(node.left)
+            and all(
+                _planner_condition_is_safe(value)
+                for value in node.comparators
+            )
+        )
+    return False
+
+
+def _planner_llm_definition_error(fn_node) -> str | None:
+    """Validate a generated @llm definition without evaluating any part of it."""
+
+    import ast as _ast
+
+    if len(fn_node.decorator_list) != 1:
+        return f"generated action {fn_node.name!r} must have only an @llm decorator"
+    decorator = fn_node.decorator_list[0]
+    if not (
+        isinstance(decorator, _ast.Call)
+        and isinstance(decorator.func, _ast.Name)
+        and decorator.func.id == "llm"
+        and not decorator.args
+    ):
+        if isinstance(decorator, _ast.Name) and decorator.id == "pure":
+            return (
+                "generated @pure actions are disabled; define the reviewed "
+                "@pure action in source and pass it through planner actions="
+            )
+        return f"generated action {fn_node.name!r} must use @llm(...)"
+
+    argument_error = _planner_arguments_error(fn_node.args, workflow=False)
+    if argument_error is not None:
+        return argument_error
+    if fn_node.returns is not None and not (
+        isinstance(fn_node.returns, _ast.Constant)
+        and fn_node.returns.value is None
+    ):
+        return f"generated LLM action {fn_node.name!r} must not return Python code"
+    if not (
+        len(fn_node.body) == 1
+        and isinstance(fn_node.body[0], _ast.Expr)
+        and isinstance(fn_node.body[0].value, _ast.Constant)
+        and fn_node.body[0].value.value is Ellipsis
+    ):
+        return f"generated LLM action {fn_node.name!r} body must be exactly `...`"
+
+    if any(keyword.arg is None for keyword in decorator.keywords):
+        return "generated @llm configuration may not use ** expansion"
+    keywords = {keyword.arg: keyword.value for keyword in decorator.keywords}
+    required = {"system", "user", "parse", "outputs"}
+    if len(keywords) != len(decorator.keywords) or set(keywords) != required:
+        return (
+            "generated @llm requires exactly system=, user=, parse=, and outputs="
+        )
+    for name in ("system", "user", "parse"):
+        value = keywords[name]
+        if not isinstance(value, _ast.Constant) or type(value.value) is not str:
+            return f"generated @llm {name}= must be a constant string"
+    parse_node = keywords["parse"]
+    if not isinstance(parse_node, _ast.Constant):
+        return "generated @llm parse= must be a constant string"
+    parse_format = parse_node.value
+    if parse_format not in {"text", "json", "bool"}:
+        return "generated @llm parse= must be text, json, or bool"
+
+    raw_outputs = keywords["outputs"]
+    if not isinstance(raw_outputs, (_ast.Tuple, _ast.List)) or not raw_outputs.elts:
+        return "generated @llm outputs= must be a non-empty literal sequence"
+    output_names: set[str] = set()
+    output_types: list[type] = []
+    for item in raw_outputs.elts:
+        if not (
+            isinstance(item, _ast.Tuple)
+            and len(item.elts) == 2
+            and isinstance(item.elts[0], _ast.Constant)
+            and type(item.elts[0].value) is str
+            and bool(item.elts[0].value)
+            and isinstance(item.elts[1], _ast.Name)
+            and item.elts[1].id in _TYPE_MAP
+        ):
+            return (
+                "generated @llm outputs= entries must be constant "
+                "(`name`, supported_type) pairs"
+            )
+        output_name = item.elts[0].value
+        if output_name in output_names:
+            return f"generated @llm output name {output_name!r} is duplicated"
+        output_names.add(output_name)
+        output_types.append(_TYPE_MAP[item.elts[1].id])
+    if parse_format == "text" and output_types != [str]:
+        return "generated @llm parse='text' requires one str output"
+    if parse_format == "bool" and output_types != [bool]:
+        return "generated @llm parse='bool' requires one bool output"
+    return None
+
+
+def _planner_workflow_statement_error(
+    statement,
+    *,
+    allowed_extensions: set[str] | None,
+) -> str | None:
+    """Validate one generated workflow statement against the executable DSL."""
+
+    import ast as _ast
+
+    if isinstance(statement, _ast.Pass):
+        return None
+    if isinstance(statement, _ast.AnnAssign):
+        outputs = (
+            [statement.annotation]
+            if isinstance(statement.annotation, _ast.Name)
+            else list(statement.annotation.elts)
+            if isinstance(statement.annotation, _ast.Tuple)
+            else []
+        )
+        if (
+            isinstance(statement.value, _ast.Call)
+            and any(isinstance(argument, _ast.Call) for argument in statement.value.args)
+        ):
+            return "nested action calls are forbidden in workflow action arguments"
+        if not (
+            isinstance(statement.target, _ast.Name)
+            and statement.simple == 1
+            and outputs
+            and all(isinstance(output, _ast.Name) for output in outputs)
+            and isinstance(statement.value, _ast.Call)
+            and isinstance(statement.value.func, _ast.Name)
+            and not statement.value.keywords
+            and all(
+                isinstance(argument, _ast.Name) or _planner_literal(argument)
+                for argument in statement.value.args
+            )
+        ):
+            return "workflow actions must use `Lifeline: output = action(arguments)`"
+        return None
+    if isinstance(statement, _ast.Expr):
+        value = statement.value
+        if not (
+            isinstance(value, _ast.BinOp)
+            and isinstance(value.op, _ast.RShift)
+            and isinstance(value.left, _ast.Call)
+            and isinstance(value.left.func, _ast.Name)
+            and not value.left.keywords
+            and all(isinstance(argument, _ast.Name) for argument in value.left.args)
+            and isinstance(value.right, _ast.Call)
+            and isinstance(value.right.func, _ast.Name)
+            and not value.right.keywords
+            and all(isinstance(argument, _ast.Name) for argument in value.right.args)
+        ):
+            return "workflow expressions may only be `Sender(values) >> Receiver(bindings)`"
+        return None
+    if isinstance(statement, (_ast.If, _ast.While)):
+        extension = "if" if isinstance(statement, _ast.If) else "while"
+        if allowed_extensions is not None and extension not in allowed_extensions:
+            return f"generated {extension} control flow is not enabled by planner allow="
+        if not (
+            isinstance(statement.test, _ast.BinOp)
+            and isinstance(statement.test.op, _ast.MatMult)
+            and isinstance(statement.test.right, _ast.Name)
+            and _planner_condition_is_safe(statement.test.left)
+        ):
+            return (
+                f"Condition for generated {extension} must be a non-calling "
+                "boolean expression followed by `@ Lifeline`; function calls "
+                "are forbidden"
+            )
+        for nested in (*statement.body, *statement.orelse):
+            error = _planner_workflow_statement_error(
+                nested,
+                allowed_extensions=allowed_extensions,
+            )
+            if error is not None:
+                return error
+        return None
+    if isinstance(statement, _ast.Return):
+        if not (
+            isinstance(statement.value, _ast.BinOp)
+            and isinstance(statement.value.op, _ast.MatMult)
+            and isinstance(statement.value.left, _ast.Name)
+            and isinstance(statement.value.right, _ast.Name)
+        ):
+            return "workflow return must have the form `return var @ Lifeline`"
+        return None
+    return (
+        f"generated workflow statement {type(statement).__name__} is not "
+        "part of the allowed ZipperGen planner grammar"
+    )
+
+
+def _validate_generated_program_safety(
+    tree,
+    *,
+    allowed_extensions: set[str] | None,
+    protected_names: set[str],
+) -> str | None:
+    """Reject generated Python outside the small planner DSL before import."""
+
+    import ast as _ast
+
+    if any(not isinstance(node, _ast.FunctionDef) for node in tree.body):
+        return (
+            "generated planner output may contain only @llm definitions and "
+            "the @workflow definition; imports and module-level code are forbidden"
+        )
+    functions = list(tree.body)
+    names = [node.name for node in functions]
+    if len(names) != len(set(names)):
+        return "generated planner function names must be unique"
+    collisions = (set(names) - {"generated_workflow"}) & protected_names
+    if collisions:
+        return (
+            "generated action names may not replace trusted bindings: "
+            + ", ".join(sorted(collisions))
+        )
+    for fn_node in functions:
+        if fn_node.name != "generated_workflow":
+            if allowed_extensions is not None and "llm" not in allowed_extensions:
+                return "generated @llm actions are not enabled by planner allow="
+            error = _planner_llm_definition_error(fn_node)
+            if error is not None:
+                return error
+            continue
+        if not (
+            len(fn_node.decorator_list) == 1
+            and isinstance(fn_node.decorator_list[0], _ast.Name)
+            and fn_node.decorator_list[0].id == "workflow"
+        ):
+            return "generated_workflow must have only the @workflow decorator"
+        argument_error = _planner_arguments_error(fn_node.args, workflow=True)
+        if argument_error is not None:
+            return argument_error
+        if not (
+            isinstance(fn_node.returns, _ast.Name)
+            and fn_node.returns.id in _TYPE_MAP
+        ):
+            return "generated_workflow must return a supported coordination type"
+        for statement in fn_node.body:
+            error = _planner_workflow_statement_error(
+                statement,
+                allowed_extensions=allowed_extensions,
+            )
+            if error is not None:
+                return error
+    return None
+
+
 def _validate_planner_spec(
     spec: str,
     caller: str,
@@ -474,6 +780,7 @@ def _validate_planner_spec(
     expected_input_types: dict[str, type] | None = None,
     expected_output_type: type | None = None,
     allowed_lifelines: set[str] | None = None,
+    allowed_extensions: set[str] | None = None,
 ) -> str | None:
     """Check structural invariants on a generated workflow spec.
 
@@ -507,6 +814,18 @@ def _validate_planner_spec(
     )
     if fn_node is None:
         return "No `generated_workflow` function found."
+
+    safety_error = _validate_generated_program_safety(
+        tree,
+        allowed_extensions=allowed_extensions,
+        protected_names=(
+            set(known_actions or {})
+            | set(allowed_lifelines or ())
+            | {caller, "workflow", "llm", "Lifeline", "Var", *_TYPE_MAP}
+        ),
+    )
+    if safety_error is not None:
+        return f"Unsafe generated planner code: {safety_error}."
 
     has_workflow_deco = any(
         (isinstance(d, _ast.Name) and d.id == "workflow")
@@ -925,8 +1244,6 @@ def _exec_planner(action: PlannerAction, named_inputs: dict, llm_backend, trace=
     worker_names = [ll.name for ll in action.lifelines]
 
     allow_sections: list[str] = []
-    if "pure" in action.allow:
-        allow_sections.append("Defining @pure actions:\n" + _PLANNER_ALLOW_PURE)
     if "llm" in action.allow:
         allow_sections.append("Defining @llm actions:\n" + _PLANNER_ALLOW_LLM)
 
@@ -1028,6 +1345,7 @@ def _exec_planner(action: PlannerAction, named_inputs: dict, llm_backend, trace=
             input_types,
             output_type,
             allowed_lifelines,
+            set(action.allow),
         )
         if error is None:
             attempts_used = attempt
@@ -1047,7 +1365,7 @@ do NOT self-forward those back. Only send variables from OTHER lifelines.
 
   {error}
 {hint}
-Return the complete corrected output (all @llm/@pure definitions + @workflow).
+Return the complete corrected output (all @llm definitions + @workflow).
 Key rules:
   - Each parameter annotated with its owner: `name: type @ Lifeline`
   - Last statement: `return var @ Lifeline` where var is in scope
@@ -1081,7 +1399,7 @@ Current (broken) workflow:
     preamble_lines = [
         "from zippergen.syntax import Json, Lifeline, Var",
         "from zippergen.builder import workflow",
-        "from zippergen.actions import llm, pure, planner",
+        "from zippergen.actions import llm",
         "",
         f'{outer_lifeline_name} = Lifeline("{outer_lifeline_name}")',
     ] + [f'{ll.name} = Lifeline("{ll.name}")' for ll in action.lifelines] + [

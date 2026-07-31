@@ -298,10 +298,17 @@ typed inputs, owner, and result remain inspectable and durable. \\
 and typed outputs. \\
 \texttt{@human} & Confirmation, edit, selection, acknowledgement, or input &
 Creates a durable task in SQLite execution. \\
-\texttt{@planner} & A model-generated allowed sub-workflow at runtime & Not the
-normal mechanism for coding-assistant source generation. \\
+\texttt{@planner} & A model-generated allowed sub-workflow at runtime & Uses a
+fail-closed statement grammar. Generated imports, Python bodies, and
+\texttt{@pure} helpers are rejected before import. \\
 \bottomrule
 \end{tabularx}
+
+A planner may generate schema-checked \texttt{@llm} actions when its
+\texttt{allow} declaration includes \texttt{llm}. Deterministic
+\texttt{@pure} helpers must be defined in reviewed source and passed through
+the planner's \texttt{actions} argument. A planner is not the normal mechanism
+for coding-assistant source generation.
 
 \section{Project setup and Studio orientation}
 \label{sec:studio}
@@ -1073,8 +1080,9 @@ being discussed. Validation additionally checks the global protocol, input
 ownership, every local projection, action metadata, referenced resources, and
 deployment declarations. Every successful check begins with a green check
 mark; a red cross identifies a failure and is followed by its explanation.
-\texttt{current} then shows the complete project dashboard, including the
-fresh validation summary, model routing, run, and deployment state.
+\texttt{current} then shows the active workflow and execution context,
+including the fresh validation summary, model routing, latest run, and selected
+deployment. Use \texttt{project} when you want the complete project inventory.
 
 \begin{notebox}{Do not confuse validation with acceptance}
 \texttt{workflow validate} asks a technical question about the current code:
@@ -1847,7 +1855,11 @@ stored instruction, draft, reviewer notes, and decision labels;
 no. \texttt{deploy trace} shows recent durable events without requiring a
 SQLite path.
 \texttt{deploy storage} shows the store, WAL, logs, event counts, recovery
-snapshot coverage, and the amount of history that can be removed safely.
+snapshot coverage, and the amount of history that can be removed safely. It
+first runs SQLite's structural quick check. The explicit
+\texttt{deploy doctor} command runs the same check and reports a failure if the
+store is malformed. Normal start and restart readiness checks do not rescan a
+large healthy store.
 Diagnostic traces are pruned online in batches. The target is 10,000 traces
 and the store never keeps more than 10,999. This requires no service stop.
 Completed human tasks, tokens, and notifications remain as audit records.
@@ -1868,6 +1880,47 @@ the stable event identifiers used for recovery.
 Deployments created before this feature must be redeployed once before safe
 compaction is enabled. Studio reports this instead of touching an older
 runtime bundle.
+
+\begin{warningbox}{Keep durable stores private and on local storage}
+ZipperGen creates a store with owner-only mode \texttt{0600}, uses WAL, and
+explicitly requests \texttt{synchronous=FULL} on every durable protocol writer
+connection. The store must remain on a local filesystem with reliable SQLite file locking and
+\texttt{fsync}. Do not put it on NFS, a synchronized folder, or a remote
+container volume whose SQLite guarantees are unknown. Do not edit rows with a
+SQL client.
+
+The quick check finds structural database damage. It cannot detect a row that
+was deliberately deleted from an otherwise valid database. Compaction is the
+only supported row-deletion path. It uses participant recovery floors and may
+legitimately remove completed rows. Therefore, an always-increasing row count
+is not a valid integrity test.
+\end{warningbox}
+
+The alpha does not yet have a managed restore command. To make a consistent
+online backup, take the store path from \texttt{deploy storage}, choose an
+owner-private destination, and use SQLite's backup command:
+
+\begin{lstlisting}[style=shell]
+mkdir -p "$HOME/.zippergen/backups"
+chmod 700 "$HOME/.zippergen/backups"
+(
+  umask 077
+  sqlite3 "/PATH/TO/DEPLOYMENT.sqlite" \
+    ".backup '$HOME/.zippergen/backups/DEPLOYMENT.sqlite'"
+)
+\end{lstlisting}
+
+This backup may be taken while the deployment runs. Do not restore it by
+copying over a live store. A backup contains workflow data and human approval
+tokens, so keep it mode \texttt{0600} and outside Git. A future managed restore
+flow will stop the service, verify the backup, archive the current store, and
+state the recovery window before replacement.
+
+Restoring an older store can repeat external work that succeeded after the
+backup but whose journal entry is absent from the backup. This includes model
+calls, email sends, sheet appends, and other \texttt{@effect} or connector
+operations. Use stable idempotency keys or idempotent remote operations whenever
+duplicates matter.
 \texttt{deploy restart} deliberately proves that the same
 pending task survives a process restart. Then \texttt{deploy stop} prevents this
 finite tutorial workflow from being supervised indefinitely. Later chapters

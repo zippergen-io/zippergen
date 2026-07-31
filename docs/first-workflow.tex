@@ -657,11 +657,11 @@ and begins a fresh log view without stopping the service or changing the
 durable store.
 
 \texttt{deploy storage} shows the size of the store, SQLite side files,
-service log, and log archives. It also shows whether every participant has a
-recovery snapshot. Diagnostic traces are pruned online in batches. The target
-is 10,000 traces and the store never keeps more than 10,999. This does not
-stop the service. Completed human tasks, tokens, and notifications remain as
-audit records.
+service log, and log archives. It runs a structural quick check and shows
+whether every participant has a recovery snapshot. Diagnostic traces are
+pruned online in batches. The target is 10,000 traces and the store never keeps
+more than 10,999. This does not stop the service. Completed human tasks, tokens,
+and notifications remain as audit records.
 
 After \texttt{deploy stop}, \texttt{deploy storage compact} removes completed
 events covered by recovery snapshots, rotates the active log, and keeps three
@@ -669,6 +669,11 @@ log archives. It never removes seed inputs, pending work, or events still
 needed for recovery.
 Studio then compacts the database file and truncates the WAL while preserving
 the stable event identifiers used for recovery.
+
+Keep the deployment store on a local filesystem. Do not move it to NFS, a
+synchronized folder, or an unverified remote container volume. Do not edit its
+rows directly. The complete filesystem, backup, idempotency, and recovery
+constraints are explained in the manual.
 
 The finite workflow should reach a waiting human task. Each named deployment
 owns one stable logical store, so normal operation never requires selecting or

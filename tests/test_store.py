@@ -1,4 +1,6 @@
 import sqlite3
+from pathlib import Path
+
 import pytest
 from zippergen.store import (
     complete_human_task,
@@ -62,8 +64,12 @@ def test_execution_state_is_non_sensitive_and_replaces_current_position(tmp_path
     assert current[0]["locators"] == []
 
 def test_open_store_is_wal(tmp_path):
-    conn = open_store(str(tmp_path / "s.sqlite"))
+    path = tmp_path / "s.sqlite"
+    conn = open_store(str(path))
     assert conn.execute("PRAGMA journal_mode").fetchone()[0].lower() == "wal"
+    assert conn.execute("PRAGMA synchronous").fetchone()[0] == 2
+    for family_path in (path, Path(f"{path}-wal"), Path(f"{path}-shm")):
+        assert family_path.stat().st_mode & 0o777 == 0o600
 
 def test_insert_event_autoincrements_rowid(tmp_path):
     conn = open_store(str(tmp_path / "s.sqlite"))

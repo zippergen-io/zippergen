@@ -81,6 +81,17 @@ class StudioStorageMixin:
                     self._storage_size(report.reusable_bytes),
                     None,
                 ),
+                (
+                    "Integrity",
+                    report.integrity_detail,
+                    (
+                        "success"
+                        if report.integrity_ok
+                        else "error"
+                        if report.integrity_ok is False
+                        else "warning"
+                    ),
+                ),
                 ("Store total", self._storage_size(report.total_bytes), None),
                 ("Active log", self._storage_size(log_bytes), None),
                 (
@@ -90,7 +101,18 @@ class StudioStorageMixin:
                 ),
             ],
         )
-        if report.event_counts:
+        if report.integrity_ok is False:
+            self._emit_table(
+                "Durable event inventory",
+                [
+                    (
+                        "Events",
+                        "unavailable until the store is recovered",
+                        "error",
+                    )
+                ],
+            )
+        elif report.event_counts:
             self._emit_columns(
                 "Durable event inventory",
                 ("Kind", "Rows"),
@@ -105,7 +127,7 @@ class StudioStorageMixin:
                 "Durable event inventory",
                 [("Events", "none", "warning")],
             )
-        if store_path.is_file():
+        if store_path.is_file() and report.integrity_ok:
             plan = plan_store_compaction(store_path)
             compaction_ready = (
                 profile.get("recovery_compaction_version")
@@ -186,7 +208,11 @@ class StudioStorageMixin:
                     ),
                 ],
             )
-        if (
+        if report.integrity_ok is False:
+            self._emit_next(
+                f"deploy doctor {name} · deploy stop {name}"
+            )
+        elif (
             profile.get("trace_retention_version")
             != TRACE_RETENTION_VERSION
         ):
@@ -223,6 +249,7 @@ class StudioStorageMixin:
             _zippergen_home,
         )
         from zippergen.storage_maintenance import (
+            check_store_integrity,
             compact_store,
             plan_store_compaction,
         )
@@ -240,6 +267,12 @@ class StudioStorageMixin:
         if not store_path.is_file():
             raise SystemExit(
                 f"Deployment {name} has no durable store to compact."
+            )
+        integrity = check_store_integrity(store_path)
+        if not integrity.ok:
+            raise SystemExit(
+                "Storage compaction stopped because the SQLite integrity "
+                f"check failed: {integrity.detail}"
             )
         plan = plan_store_compaction(store_path)
         log_path = Path(str(profile.get("log") or "")).expanduser()

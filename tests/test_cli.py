@@ -1180,6 +1180,8 @@ def test_doctor_reports_deployment_checks(tmp_path, monkeypatch, capsys):
     assert checks["systemd template"]["status"] == "ok"
     assert checks["sqlite store"]["status"] == "ok"
     assert "initialized but empty" in checks["sqlite store"]["detail"]
+    assert checks["sqlite integrity"]["status"] == "ok"
+    assert checks["sqlite integrity"]["detail"] == "SQLite quick check passed"
 
 
 def test_doctor_returns_failure_for_broken_profile(tmp_path, monkeypatch, capsys):

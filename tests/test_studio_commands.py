@@ -50,6 +50,12 @@ def test_command_registry_has_unique_paths_and_derives_user_surfaces():
     assert ("doctor", "check local Studio readiness") in (
         subcommand_completions("studio")
     )
+    assert command_spec(["current"]).summary == (
+        "show the active workflow and execution context"
+    )
+    assert command_spec(["project"]).summary == (
+        "show everything recorded in this project"
+    )
 
 
 def test_command_registry_owns_risk_and_natural_language_catalog():

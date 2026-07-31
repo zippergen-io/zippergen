@@ -1293,6 +1293,7 @@ def _doctor_checks(
     *,
     include_systemd: bool = True,
     live_connectors: bool = True,
+    check_store_integrity: bool = False,
 ) -> list[dict[str, object]]:
     profile_path = _deployment_profile_path(name)
     checks: list[dict[str, object]] = []
@@ -1324,6 +1325,19 @@ def _doctor_checks(
             checks.append(_doctor_check("fail", "sqlite store", f"{type(exc).__name__}: {exc}"))
         else:
             checks.append(_doctor_check("ok", "sqlite store", str(status["summary"]), state=status["state"]))
+            if check_store_integrity:
+                from zippergen.storage_maintenance import (
+                    check_store_integrity as inspect_integrity,
+                )
+
+                integrity = inspect_integrity(store_path)
+                checks.append(
+                    _doctor_check(
+                        "ok" if integrity.ok else "fail",
+                        "sqlite integrity",
+                        integrity.detail,
+                    )
+                )
     else:
         checks.append(_doctor_check("warn", "sqlite store", f"store does not exist yet: {store_path}"))
 
@@ -1831,7 +1845,11 @@ def _print_doctor_summary(
 
 
 def _doctor_command(args) -> int:
-    checks = _doctor_checks(args.name, include_systemd=not args.no_systemd)
+    checks = _doctor_checks(
+        args.name,
+        include_systemd=not args.no_systemd,
+        check_store_integrity=True,
+    )
     if args.json:
         print(json.dumps({"deployment": args.name, "checks": checks}, default=str, sort_keys=True))
     else:

@@ -452,7 +452,12 @@ COMMANDS: tuple[CommandSpec, ...] = (
         "archive or permanently purge a deployment",
         "destructive",
     ),
-    CommandSpec(("current",), "current", "show complete project context", "read-only"),
+    CommandSpec(
+        ("current",),
+        "current",
+        "show the active workflow and execution context",
+        "read-only",
+    ),
     CommandSpec(
         ("studio",),
         "studio",
@@ -481,7 +486,7 @@ COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec(
         ("project",),
         "project",
-        "show the project inventory",
+        "show everything recorded in this project",
         "read-only",
     ),
     CommandSpec(

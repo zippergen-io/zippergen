@@ -56,8 +56,10 @@ Choose an action by semantics, not convenience:
   typed outputs explicitly.
 - `@human`: a durable human input, confirmation, edit, selection, or
   acknowledgement.
-- `@planner`: runtime generation of an allowed sub-workflow; do not use it for
-  ordinary prompt-to-source authoring by a coding assistant.
+- `@planner`: runtime generation of an allowed sub-workflow. Generated output
+  is restricted to validated workflow statements and schema-checked `@llm`
+  declarations. Define `@pure` helpers in reviewed source and pass them through
+  `actions=`. Do not use a planner for ordinary prompt-to-source authoring.
 
 Typical deterministic and effect actions:
 
@@ -424,11 +426,15 @@ are observation data, not recovery snapshots. Do not add workflow variables,
 action inputs, provider credentials, or other environment values to the
 default position view.
 
-`deploy storage` reports store, WAL, log, event, and snapshot sizes without
-changing them. Diagnostic traces are retained online in bounded batches and
-do not require a service stop. `deploy storage compact` requires a stopped
-deployment and removes only events covered by durable recovery snapshots.
-Completed human tasks and connector notifications remain as audit records.
+`deploy storage` runs SQLite's structural quick check, then reports store, WAL,
+log, event, and snapshot sizes without changing them. Diagnostic traces are
+retained online in bounded batches and do not require a service stop.
+`deploy storage compact` requires a stopped deployment and removes only events
+covered by durable recovery snapshots. Completed human tasks and connector
+notifications remain as audit records. Keep stores owner-private on a local
+filesystem with reliable SQLite locking and `fsync`. Never edit durable rows
+directly. External effects must be idempotent because crash recovery or a
+future restore from an older backup can repeat unjournaled remote work.
 The events table has an explicit integer primary key. Database compaction must
 preserve these stable event identifiers because recovery floors refer to them.
 

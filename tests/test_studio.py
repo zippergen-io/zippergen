@@ -4657,6 +4657,7 @@ def test_studio_shows_and_compacts_deployment_storage(
     studio.execute("deploy storage reviewed-answer")
 
     assert any(line == "Deployment storage" for line in output)
+    assert any("Integrity" in line and "quick check passed" in line for line in output)
     assert any("Without snapshot" in line and "Writer" in line for line in output)
     assert any("trace" in line and "3" in line for line in output)
     assert any(

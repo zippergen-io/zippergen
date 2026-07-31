@@ -1,5 +1,8 @@
+import pytest
+
 from zippergen.role_runner import _floor_coherent
 from zippergen.storage_maintenance import (
+    check_store_integrity,
     compact_store,
     inspect_store_storage,
     plan_store_compaction,
@@ -103,6 +106,23 @@ def test_storage_report_counts_files_events_and_snapshot_coverage(tmp_path):
     assert report.task_notifications == 1
     assert report.snapshot_roles == ("A", "B")
     assert report.roles_without_snapshot == ()
+    assert report.integrity_ok is True
+    assert report.integrity_detail == "SQLite quick check passed"
+
+
+def test_integrity_check_reports_a_malformed_database(tmp_path):
+    path = tmp_path / "damaged.sqlite"
+    path.write_bytes(b"not a sqlite database")
+
+    integrity = check_store_integrity(path)
+    report = inspect_store_storage(path)
+
+    assert integrity.ok is False
+    assert "DatabaseError" in integrity.detail
+    assert report.integrity_ok is False
+    assert report.event_counts == {}
+    with pytest.raises(ValueError, match="integrity check failed"):
+        compact_store(path)
 
 
 def test_compaction_plan_uses_both_endpoint_and_journal_floors(tmp_path):

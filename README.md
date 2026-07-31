@@ -342,6 +342,13 @@ push, or modify unrelated systems. The static instruction should state those
 boundaries. Validation warns when a write workspace contains the executing
 workflow itself.
 
+Runtime `@planner` actions use a separate fail-closed boundary. Generated text
+may contain only the supported workflow statements and schema-checked `@llm`
+declarations. Imports, module-level code, Python function bodies, and generated
+`@pure` helpers are rejected before the text is imported. A generated workflow
+can call only the reviewed actions passed through `actions=` and the generated
+`@llm` actions explicitly enabled by `allow=`.
+
 ## Durable runs and deployment
 
 Development runs use SQLite by default. Messages, completed actions, human
@@ -403,11 +410,12 @@ policy, assistant, connectors, and local model endpoint. A changed project does
 not alter a running deployment. Redeploy to apply those changes.
 
 `deploy storage` shows the size of the durable store, WAL, active log, and log
-archives. It also shows event counts, snapshot coverage, and how much history
-can be removed safely. Diagnostic traces are pruned online in batches. The
-target is 10,000 traces and the store never keeps more than 10,999. This does
-not stop the service. Completed human tasks, tokens, and notifications remain
-as audit records.
+archives. It runs SQLite's structural quick check, then shows event counts,
+snapshot coverage, and how much history can be removed safely. `deploy doctor`
+runs the same integrity check when requested explicitly. Diagnostic traces are
+pruned online in batches. The target is 10,000 traces and the store never keeps
+more than 10,999. This does not stop the service. Completed human tasks, tokens,
+and notifications remain as audit records.
 
 After stopping the deployment, `deploy storage compact NAME` removes completed
 events that are covered by recovery snapshots, rotates the active log, and
@@ -417,6 +425,18 @@ Studio then compacts the database file and truncates the WAL while preserving
 the stable event identifiers used for recovery.
 Deployments created before this feature must be redeployed once before safe
 compaction is enabled.
+
+Durable stores must live on a local filesystem with reliable SQLite locking and
+`fsync`. Do not place them on NFS, a synchronized folder, or an unverified
+remote container volume. ZipperGen creates store files with owner-only
+permissions and explicitly uses WAL with `synchronous=FULL`. Do not edit the
+database directly. Compaction legitimately removes recovery-safe rows, so an
+ever-increasing row count is not a validity check.
+
+External effects have a different boundary. A crash or restoration from an
+older backup can repeat an effect whose remote result was not present in the
+restored journal. Gmail sends, payments, appends, and similar operations should
+use stable idempotency keys or an idempotent API.
 
 The service policy restarts failed workflows. It does not restart a finite
 workflow after successful completion. `deploy stop` preserves the deployment.

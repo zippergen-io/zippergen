@@ -378,3 +378,204 @@ def generated_workflow(text: str @ Planner) -> float:
     result = _validate_planner_spec(spec, CALLER, KNOWN, {"text": str}, float)
     assert result is not None
     assert "return var @ Lifeline" in result
+
+
+# ---------------------------------------------------------------------------
+# Generated-code safety boundary
+# ---------------------------------------------------------------------------
+
+def _generated_llm_spec(*, system: str = '"Draft safely."') -> str:
+    return f'''\
+@llm(
+    system={system},
+    user="{{text}}",
+    parse="text",
+    outputs=(("draft", str),),
+)
+def draft(text: str): ...
+
+@workflow
+def generated_workflow(text: str @ Planner) -> str:
+    Planner(text) >> Worker1(text)
+    Worker1: draft_value = draft(text)
+    Worker1(draft_value) >> Planner(draft_value)
+    return draft_value @ Planner
+'''
+
+
+def test_safe_generated_llm_definition_is_accepted():
+    result = _validate_planner_spec(
+        _generated_llm_spec(),
+        CALLER,
+        {},
+        {"text": str},
+        str,
+        {"Planner", "Worker1"},
+        {"llm"},
+    )
+    assert result is None
+
+
+def test_module_import_is_rejected_before_execution():
+    result = _validate_planner_spec(
+        "import os\n" + _linear_spec(),
+        CALLER,
+        KNOWN,
+    )
+    assert result is not None
+    assert "Unsafe generated planner code" in result
+    assert "module-level code" in result
+
+
+def test_module_call_is_rejected_before_execution():
+    result = _validate_planner_spec(
+        'open("marker", "w").write("owned")\n' + _linear_spec(),
+        CALLER,
+        KNOWN,
+    )
+    assert result is not None
+    assert "Unsafe generated planner code" in result
+    assert "module-level code" in result
+
+
+def test_workflow_body_python_call_is_rejected_before_execution():
+    spec = '''\
+@workflow
+def generated_workflow(text: str @ Planner) -> str:
+    open("marker", "w").write("owned")
+    Planner(text) >> Worker1(text)
+    Worker1: draft = write(text)
+    Worker1(draft) >> Planner(draft)
+    return draft @ Planner
+'''
+    result = _validate_planner_spec(spec, CALLER, KNOWN)
+    assert result is not None
+    assert "Unsafe generated planner code" in result
+    assert "workflow expressions" in result
+
+
+def test_generated_default_expression_is_rejected_before_execution():
+    spec = '''\
+@workflow
+def generated_workflow(
+    text: str @ Planner = open("marker", "w").write("owned"),
+) -> str:
+    Planner(text) >> Worker1(text)
+    Worker1: draft = write(text)
+    Worker1(draft) >> Planner(draft)
+    return draft @ Planner
+'''
+    result = _validate_planner_spec(spec, CALLER, KNOWN)
+    assert result is not None
+    assert "Unsafe generated planner code" in result
+    assert "required positional parameters" in result
+
+
+def test_generated_llm_configuration_must_be_constant():
+    result = _validate_planner_spec(
+        _generated_llm_spec(system='open("marker", "w").write("owned")'),
+        CALLER,
+        {},
+        {"text": str},
+        str,
+        {"Planner", "Worker1"},
+        {"llm"},
+    )
+    assert result is not None
+    assert "Unsafe generated planner code" in result
+    assert "system= must be a constant string" in result
+
+
+def test_generated_llm_body_must_be_ellipsis():
+    spec = _generated_llm_spec().replace(
+        "def draft(text: str): ...",
+        'def draft(text: str):\n    return open("marker", "w").write("owned")',
+    )
+    result = _validate_planner_spec(
+        spec,
+        CALLER,
+        {},
+        {"text": str},
+        str,
+        {"Planner", "Worker1"},
+        {"llm"},
+    )
+    assert result is not None
+    assert "Unsafe generated planner code" in result
+    assert "body must be exactly `...`" in result
+
+
+def test_generated_pure_action_is_rejected():
+    spec = '''\
+@pure
+def draft(text: str) -> str:
+    return open("marker", "w").write("owned")
+
+@workflow
+def generated_workflow(text: str @ Planner) -> str:
+    Planner(text) >> Worker1(text)
+    Worker1: draft_value = draft(text)
+    Worker1(draft_value) >> Planner(draft_value)
+    return draft_value @ Planner
+'''
+    result = _validate_planner_spec(
+        spec,
+        CALLER,
+        {},
+        {"text": str},
+        str,
+        {"Planner", "Worker1"},
+        {"llm"},
+    )
+    assert result is not None
+    assert "Unsafe generated planner code" in result
+    assert "generated @pure actions are disabled" in result
+
+
+def test_generated_llm_requires_explicit_allow():
+    result = _validate_planner_spec(
+        _generated_llm_spec(),
+        CALLER,
+        {},
+        {"text": str},
+        str,
+        {"Planner", "Worker1"},
+        set(),
+    )
+    assert result is not None
+    assert "Unsafe generated planner code" in result
+    assert "generated @llm actions are not enabled" in result
+
+
+def test_generated_action_cannot_replace_predefined_action():
+    spec = _generated_llm_spec().replace("def draft(", "def write(").replace(
+        "draft(text)",
+        "write(text)",
+    )
+    result = _validate_planner_spec(
+        spec,
+        CALLER,
+        {"write": 1},
+        {"text": str},
+        str,
+        {"Planner", "Worker1"},
+        {"llm"},
+    )
+    assert result is not None
+    assert "Unsafe generated planner code" in result
+    assert "may not replace trusted bindings: write" in result
+
+
+def test_generated_control_flow_requires_explicit_allow():
+    result = _validate_planner_spec(
+        _if_spec(),
+        CALLER,
+        {"write": 2, "critique": 1},
+        {"text": str},
+        str,
+        {"Planner", "Worker1", "Worker2"},
+        set(),
+    )
+    assert result is not None
+    assert "Unsafe generated planner code" in result
+    assert "generated if control flow is not enabled" in result

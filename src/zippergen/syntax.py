@@ -491,7 +491,7 @@ class PlannerAction:
     system_prompt: str
     actions: tuple        # tuple of LLMAction | PureAction | EffectAction | PlannerAction | HumanAction
     lifelines: tuple      # tuple of Lifeline used in inner workflows
-    allow: tuple[str, ...] = ()          # enabled extensions: "pure", "llm", "if", "while"
+    allow: tuple[str, ...] = ()          # enabled extensions: "llm", "if", "while"
     instructions: str | None = None      # optional user guidance on worker roles
     max_retries: int = 3                 # max generated specs to validate
 

@@ -5,11 +5,13 @@ stream in one append-only table. All writes serialize through one file, so
 from __future__ import annotations
 
 import json
+import os
 import secrets
 import sqlite3
 import threading
 import time
 from collections import deque
+from pathlib import Path
 
 
 RECOVERY_COMPACTION_VERSION = 1
@@ -133,6 +135,17 @@ CREATE TABLE IF NOT EXISTS workflow_results (
 
 
 def open_store(path: str) -> sqlite3.Connection:
+    connection_path = path
+    if path != ":memory:" and not path.startswith("file:"):
+        store_path = Path(path).expanduser()
+        # The durable store contains workflow data and human approval tokens.
+        # Create it owner-private before SQLite first opens it, rather than
+        # relying on the process umask and tightening permissions afterward.
+        fd = os.open(store_path, os.O_RDWR | os.O_CREAT, 0o600)
+        os.close(fd)
+        store_path.chmod(0o600)
+        connection_path = str(store_path)
+
     # isolation_level=None -> autocommit; we drive BEGIN/COMMIT explicitly.
     # check_same_thread=False: a role's connection is created by the supervisor
     # and driven from the role's loop (a different thread in tests / deployment);
@@ -143,7 +156,10 @@ def open_store(path: str) -> sqlite3.Connection:
     # lock contention (e.g. the SCHEMA executescript below racing a peer's
     # first-open transaction).
     conn = sqlite3.connect(
-        path, isolation_level=None, check_same_thread=False, timeout=5.0
+        connection_path,
+        isolation_level=None,
+        check_same_thread=False,
+        timeout=5.0,
     )
     conn.execute("PRAGMA busy_timeout=5000")  # wait, don't fail, on concurrent writers
 
@@ -165,7 +181,20 @@ def open_store(path: str) -> sqlite3.Connection:
                 raise
             time.sleep(0.05)
 
+    # FULL is normally SQLite's default, but it is a per-connection setting
+    # whose compile-time default can vary. State the durability contract rather
+    # than inheriting an environmental assumption.
+    conn.execute("PRAGMA synchronous=FULL")
+
     conn.executescript(SCHEMA)
+    if path != ":memory:" and not path.startswith("file:"):
+        for family_path in (
+            Path(connection_path),
+            Path(f"{connection_path}-wal"),
+            Path(f"{connection_path}-shm"),
+        ):
+            if family_path.exists():
+                family_path.chmod(0o600)
     columns = {
         str(row[1])
         for row in conn.execute("PRAGMA table_info(snapshots)").fetchall()

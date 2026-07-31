@@ -165,7 +165,6 @@ def planner(
         from the calling lifeline's name.
     allow : list of str, optional
         What the LLM is permitted to use or define in the generated spec.
-        ``"pure"`` — may define ``@pure`` Python helper functions.
         ``"llm"``  — may define new ``@llm`` actions with custom prompts.
         ``"if"``   — may use ``if cond @ Owner:`` conditional branching.
         ``"while"``— may use ``while cond @ Owner:`` loops.
@@ -183,7 +182,7 @@ def planner(
             description="A workflow planner for text processing tasks.",
             actions=[summarise, translate],
             lifelines=["Worker1", "Worker2", "Aggregator"],
-            allow=["pure", "llm"],
+            allow=["llm"],
             instructions="Use Worker1 and Worker2 in parallel, then Aggregator to combine.",
         )
         def run_task(request: str, inputs_json: str) -> str: ...
@@ -198,9 +197,15 @@ def planner(
             )
         outputs = ((fn.__name__, ret),)
         _allow = tuple(allow) if allow else ()
-        _valid = {"pure", "llm", "if", "while"}
+        _valid = {"llm", "if", "while"}
         for kind in _allow:
             if kind not in _valid:
+                if kind == "pure":
+                    raise ValueError(
+                        f"@planner '{fn.__name__}': generated @pure actions are "
+                        "disabled. Define the reviewed @pure action in source "
+                        "and pass it through actions=."
+                    )
                 raise ValueError(
                     f"@planner '{fn.__name__}': unsupported allow value {kind!r}. "
                     f"Supported: {sorted(_valid)}"
