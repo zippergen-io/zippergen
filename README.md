@@ -550,8 +550,9 @@ The main result states that the projected local programs produce the same
 behaviors as the global workflow. Deadlock freedom follows for well-formed
 workflows in the supported formal model.
 
-The main theorems are machine-checked in Lean 4. The formal results are
-described in these papers:
+The main theorems are [machine-checked in Lean
+4](https://github.com/zippergen-io/zippergen-lean/tree/main/isola). The formal
+results are described in these papers:
 
 - Bollig, Függer, and Nowak. [Provable Coordination for LLM Agents via
   Message Sequence Charts](https://arxiv.org/abs/2604.17612). Accepted at
