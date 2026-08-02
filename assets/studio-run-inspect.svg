@@ -77,6 +77,6 @@
 <text class="text" x="18" y="1016" xml:space="preserve">          failure = review_exhausted(draft, max_retries)</text>
 <text class="text" x="18" y="1036" xml:space="preserve">          send(&#x27;Requester&#x27;, failure)</text>
 <text class="text" x="18" y="1056" xml:space="preserve">Next</text>
-<text class="text" x="18" y="1076" xml:space="preserve">────</text>
+<text class="text" x="18" y="1076" xml:space="preserve">════</text>
 <text class="text" x="18" y="1096" xml:space="preserve">  run inspect PARTICIPANT · runs · resume</text>
 </svg>

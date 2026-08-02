@@ -44,6 +44,6 @@
 <text class="text" x="18" y="356" xml:space="preserve">Log         /tmp/y/logs/review-demo.log</text>
 <text class="text" x="18" y="376" xml:space="preserve"></text>
 <text class="text" x="18" y="396" xml:space="preserve">Next</text>
-<text class="text" x="18" y="416" xml:space="preserve">────</text>
+<text class="text" x="18" y="416" xml:space="preserve">════</text>
 <text class="text" x="18" y="436" xml:space="preserve">  deploy inspect · deploy tasks</text>
 </svg>
