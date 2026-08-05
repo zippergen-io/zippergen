@@ -64,3 +64,6 @@ examples/medium_program.py
 .superpowers/
 experiments/
 uv.lock
+
+# Local design conversation (never committed)
+DESIGN-NOTES.md
