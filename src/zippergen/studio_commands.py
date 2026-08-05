@@ -108,14 +108,13 @@ COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec(
         ("workflow", "create"),
         "workflow create [DESCRIPTION|--file PATH|--edit]",
-        "write the initial accepted specification",
+        "write the initial specification",
         "configuration",
         primary=True,
     ),
     CommandSpec(
         ("workflow", "refine"),
-        "workflow refine [CHANGE|--file PATH|--edit] "
-        "[--implement [--review]]",
+        "workflow refine [CHANGE|--file PATH|--edit] [--implement]",
         "create or reopen the pending refinement",
         "configuration",
     ),
@@ -159,7 +158,7 @@ COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec(
         ("workflow", "diff"),
         "workflow diff",
-        "compare current intent and semantics with the review baseline",
+        "compare current intent and semantics with the available baseline",
         "read-only",
         primary=True,
     ),
@@ -171,28 +170,16 @@ COMMANDS: tuple[CommandSpec, ...] = (
     ),
     CommandSpec(
         ("workflow", "implement"),
-        "workflow implement [codex|claude] [--review]",
-        "run a coding assistant and return to Studio",
+        "workflow implement [codex|claude] [--rerun]",
+        "run a coding assistant and summarize the result",
         "execution",
         primary=True,
     ),
     CommandSpec(
-        ("workflow", "review"),
-        "workflow review",
-        "inspect, validate, run, and accept interactively",
-        "read-only",
-    ),
-    CommandSpec(
         ("workflow", "validate"),
         "workflow validate",
-        "check structural validity and every projection; does not accept",
+        "check structural validity and every projection",
         "read-only",
-    ),
-    CommandSpec(
-        ("workflow", "accept"),
-        "workflow accept [--yes]",
-        "record human approval and the accepted intent/semantic baseline",
-        "destructive",
     ),
     CommandSpec(
         ("workflow", "discard"),
@@ -357,8 +344,8 @@ COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec(("runs",), "runs", "list managed development runs", "read-only"),
     CommandSpec(
         ("deploy",),
-        "deploy [NAME] [--no-start] [--accepted|--unreviewed --reason TEXT]",
-        "deploy accepted source by default with a review gate",
+        "deploy [NAME] [--no-start]",
+        "deploy an implementation matching the current specification",
         "execution",
         primary=True,
     ),
@@ -669,7 +656,7 @@ def concise_help() -> str:
   1. project init
   2. workflow create
   3. workflow implement
-  4. workflow review
+  4. workflow validate
   5. run
   6. deploy
 

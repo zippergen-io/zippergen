@@ -2917,56 +2917,6 @@ def _bundle_deployment(
     bundle_root.mkdir(parents=True, exist_ok=False)
 
     sources = [module_path.resolve()]
-    accepted_manifest = source_cwd / ".zippergen-accepted.json"
-    if accepted_manifest.is_file():
-        try:
-            accepted_value = json.loads(
-                accepted_manifest.read_text(encoding="utf-8")
-            )
-            accepted_files = accepted_value.get("files")
-            if not isinstance(accepted_files, list):
-                raise ValueError("files must be a JSON array")
-            for value in accepted_files:
-                if not isinstance(value, dict):
-                    raise ValueError("each file must be a JSON object")
-                relative = Path(str(value.get("path") or ""))
-                path = (source_cwd / relative).resolve()
-                expected = str(value.get("sha256") or "")
-                if (
-                    not relative.parts
-                    or relative.is_absolute()
-                    or ".." in relative.parts
-                    or not path.is_file()
-                    or not path.is_relative_to(source_cwd)
-                    or hashlib.sha256(path.read_bytes()).hexdigest() != expected
-                ):
-                    raise ValueError(
-                        f"content check failed for {relative}"
-                    )
-                if path not in sources:
-                    sources.append(path)
-            accepted_specification = source_cwd / "specification.md"
-            if accepted_specification.is_file():
-                specification_hash = hashlib.sha256(
-                    accepted_specification.read_bytes()
-                ).hexdigest()
-                if specification_hash != str(
-                    accepted_value.get("specification_sha256") or ""
-                ):
-                    raise ValueError(
-                        "content check failed for specification.md"
-                    )
-                sources.append(accepted_specification)
-            sources.append(accepted_manifest)
-        except (
-            OSError,
-            UnicodeDecodeError,
-            json.JSONDecodeError,
-            ValueError,
-        ) as exc:
-            raise SystemExit(
-                f"Accepted source snapshot is invalid: {exc}"
-            ) from exc
     for declared in spec.files:
         path = Path(declared).expanduser()
         if not path.is_absolute():

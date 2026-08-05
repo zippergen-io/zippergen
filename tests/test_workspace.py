@@ -160,10 +160,10 @@ def test_workspace_updates_run_and_saves_assistant_request(tmp_path):
 
     workspace.update_request(
         str(request["request_id"]),
-        status="awaiting_review",
+        status="implemented",
         assistant="Codex",
     )
-    assert workspace.current_request()["status"] == "awaiting_review"
+    assert workspace.current_request()["status"] == "implemented"
     assert workspace.current_request()["assistant"] == "Codex"
 
     workspace.current_task_path.write_text("stale task\n")

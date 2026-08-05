@@ -361,13 +361,10 @@ def deterministic_plan(
             "deterministic",
         )
 
-    if re.search(
-        r"\b(review|inspect and accept)\b.*\b(workflow|implementation)\b",
-        text,
-    ):
+    if re.search(r"\breview\b.*\b(workflow|implementation)\b", text):
         return NaturalCommandPlan(
-            "Open the guided workflow review.",
-            ("workflow review",),
+            "Show the workflow changes for inspection.",
+            ("workflow diff",),
             "deterministic",
         )
 

@@ -82,21 +82,22 @@ Studio keeps the main path short:
 ```text
 workflow create
 workflow implement codex
-workflow review
+workflow validate
 run
 deploy
 ```
 
 `workflow create` opens one versioned `specification.md`. A coding assistant
 may implement that specification as ordinary Python code and focused tests.
-The assistant never deploys the result. Studio keeps validation, inspection,
-human acceptance, and deployment as explicit steps.
+The assistant never deploys the result. Studio summarizes the files changed,
+assistant checks, and assistant report when implementation finishes. Validation,
+inspection, running, and deployment remain explicit steps.
 
 Commands are grouped by purpose:
 
 | Area | What it covers |
 |---|---|
-| `workflow` | Specification, implementation, views, validation, review |
+| `workflow` | Specification, implementation, views, validation, and differences |
 | `model` | Providers, named configurations, checks, assignments |
 | `connector` | Provider credentials, reusable resources, human-action routes |
 | `run`, `resume`, and `runs` | Durable development execution, decisions, traces, recovery |
@@ -275,8 +276,6 @@ workflow show communications
 workflow show agent Reviewer
 workflow validate
 workflow diff
-workflow review
-workflow accept
 ```
 
 `workflow import` copies an existing workflow into the current project. It
@@ -285,16 +284,15 @@ declared by the workflow. Existing project files are never overwritten
 silently. If the imported file contains one workflow, Studio selects it. If it
 contains several, Studio displays the entry points for selection.
 
-Validation and acceptance answer different questions:
+`workflow validate` is a machine check. It checks structure, projection,
+metadata, and canonical rendering. `workflow diff` shows the available
+specification and semantic baseline again in detail.
 
-- `workflow validate` is a machine check. It checks structure, projection,
-  metadata, and canonical rendering.
-- `workflow accept` records a human decision that the reviewed intent and code
-  are ready.
-
-Running a candidate locally is useful. Deploying code that changed after human
-acceptance is blocked until the user reviews the difference or records an
-explicit override.
+Running never requires an implementation record. When Studio has a local
+implementation record, `deploy` blocks if the specification changed afterward
+and asks you to run `workflow implement` again. A fresh clone has no portable
+record yet, so Studio warns and proceeds after technical validation. Portable
+derivation is planned for the simplified authoring lifecycle.
 
 ## Assistant safety
 
@@ -405,7 +403,7 @@ so pointer movement remains stable instead of blinking. Press Ctrl-C to
 restore the Studio screen. The run or deployment keeps running.
 
 `deploy show` also compares the installed deployment with the current project.
-It reports changes to the specification, accepted workflow, models, idle
+It reports changes to the specification, workflow, models, idle
 policy, assistant, connectors, and local model endpoint. A changed project does
 not alter a running deployment. Redeploy to apply those changes.
 

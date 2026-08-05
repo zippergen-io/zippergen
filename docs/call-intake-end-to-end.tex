@@ -258,17 +258,21 @@ Watch a Gmail inbox for call announcements and corrections.
 - Limit automatic sending to at most ten messages per hour.
 \end{lstlisting}
 
-Save and leave the editor. Then review the recorded intent and the code:
+Save and leave the editor. Implement the current specification, then inspect
+and validate the result:
 
 \begin{lstlisting}[style=shell]
+workflow implement
 workflow show spec
 workflow show protocol
 workflow validate
-workflow accept
 \end{lstlisting}
 
-\texttt{workflow accept} records the reviewed specification, semantics, and
-source snapshot. It does not run or deploy anything.
+Studio summarizes the changed files, assistant checks, and assistant report.
+On this machine, deployment later uses the implementation record to detect a
+specification change. If the project is transferred without private Studio
+state, deployment warns that no record is available and proceeds after
+technical validation.
 
 \section{Configure the LLM}
 
@@ -660,10 +664,10 @@ uv run --no-sync --project zippergen zippergen
 project init call-intake-check
 workflow import zippergen/examples/call_intake.py:call_intake
 workflow edit spec
+workflow implement
 workflow show communications
 workflow show full
 workflow validate
-workflow accept
 
 model provider configure local
 model config create call-extractor

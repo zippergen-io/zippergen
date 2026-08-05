@@ -447,7 +447,7 @@ def test_fixture_runs_inprocess_to_known_result():
 - [ ] **Step 2: Run the fixture sanity test; fix the fixture until it passes**
 
 Run: `python -m pytest tests/test_snapshots.py::test_fixture_runs_inprocess_to_known_result -v`
-Expected: PASS returning `3`. If it errors, adjust the DSL in `tests/loop_fixture.py` to match the real builder syntax (compare to `examples/diagnosis.py`). The acceptance criterion: a 2-role, A-owned, deterministic bounded `while` loop whose result is the final counter.
+Expected: PASS returning `3`. If it errors, adjust the DSL in `tests/loop_fixture.py` to match the real builder syntax (compare to `examples/diagnosis.py`). The success criterion: a 2-role, A-owned, deterministic bounded `while` loop whose result is the final counter.
 
 - [ ] **Step 3: Write the snapshot integration tests (failing)**
 

@@ -724,7 +724,7 @@ class Workspace:
         return content or None
 
     def begin_pending_refinement(self) -> Path:
-        """Create the stable pending file and remember the accepted-spec baseline."""
+        """Create the stable pending file and remember the specification baseline."""
 
         if self.specification() is None:
             raise WorkspaceError(
@@ -906,187 +906,67 @@ class Workspace:
             "specification_after_path": after_path,
         }
 
-    def accepted_review(self, workflow_spec: str) -> dict[str, object] | None:
-        """Return the last human-accepted intent and semantic baseline."""
+    def retire_acceptance_state(self) -> Path | None:
+        """Archive retired source snapshots and remove approval-only state."""
 
-        reviews = self.load().get("accepted_reviews") or {}
-        if not isinstance(reviews, dict):
-            return None
-        value = reviews.get(self.canonical_spec(workflow_spec, cwd=self.root))
-        return dict(value) if isinstance(value, dict) else None
+        state: dict[str, Any] | None = None
+        if self.state_path.exists():
+            state = _read_json(self.state_path)
+            reviews = state.get("accepted_reviews")
+            if isinstance(reviews, dict):
+                for workflow_spec, value in reviews.items():
+                    if not isinstance(value, dict):
+                        continue
+                    request_id = value.get("request_id")
+                    if not request_id:
+                        continue
+                    request_path = self.request_path(str(request_id))
+                    if not request_path.exists():
+                        continue
+                    try:
+                        request = _read_json(request_path)
+                    except WorkspaceError:
+                        continue
+                    changed_request = False
+                    if not request.get("workflow_spec"):
+                        request["workflow_spec"] = str(workflow_spec)
+                        changed_request = True
+                    accepted_fingerprint = value.get(
+                        "specification_fingerprint"
+                    )
+                    if accepted_fingerprint:
+                        request["result_specification_fingerprint"] = (
+                            accepted_fingerprint
+                        )
+                        changed_request = True
+                    if changed_request:
+                        request["updated_at"] = _timestamp()
+                        _atomic_write_json(request_path, request)
 
-    @property
-    def accepted_sources_directory(self) -> Path:
-        return self.directory / "accepted"
+        source = self.directory / "accepted"
+        archived: Path | None = None
+        if source.exists() or source.is_symlink():
+            root = self.home / "trash" / "accepted"
+            root.mkdir(parents=True, exist_ok=True, mode=0o700)
+            root.chmod(0o700)
+            base = _identifier_timestamp()
+            archived = root / base
+            suffix = 2
+            while archived.exists() or archived.is_symlink():
+                archived = root / f"{base}-{suffix}"
+                suffix += 1
+            source.replace(archived)
 
-    def capture_accepted_source(
-        self,
-        workflow_spec: str,
-        *,
-        files: list[tuple[str, str]],
-        specification: str,
-        git_provenance: dict[str, object],
-    ) -> dict[str, object]:
-        """Create an immutable, content-addressed copy of reviewed source."""
-
-        canonical = self.canonical_spec(workflow_spec, cwd=self.root)
-        module_ref, separator, workflow_name = canonical.partition(":")
-        entry = Path(module_ref)
-        if entry.is_absolute() or ".." in entry.parts:
-            raise WorkspaceError(
-                "Accepted source requires a workflow entry point inside the "
-                "project root."
-            )
-        source_records: list[dict[str, object]] = []
-        source_paths: list[tuple[Path, Path, str]] = []
-        seen: set[Path] = set()
-        for relative_text, role in files:
-            relative = Path(relative_text)
-            source = (self.root / relative).resolve()
-            if (
-                relative.is_absolute()
-                or ".." in relative.parts
-                or not source.is_file()
-                or not source.is_relative_to(self.root)
-            ):
-                raise WorkspaceError(
-                    f"Cannot capture workflow file outside the project: "
-                    f"{relative_text}"
-                )
-            if source in seen:
-                continue
-            seen.add(source)
-            digest = hashlib.sha256(source.read_bytes()).hexdigest()
-            source_records.append(
-                {
-                    "path": relative.as_posix(),
-                    "role": role,
-                    "sha256": digest,
-                }
-            )
-            source_paths.append((source, relative, role))
-        if entry.as_posix() not in {
-            str(record["path"]) for record in source_records
-        }:
-            raise WorkspaceError(
-                f"Accepted workflow entry point was not captured: {entry}"
-            )
-
-        workflow_key = hashlib.sha256(canonical.encode()).hexdigest()[:12]
-        parent = self.accepted_sources_directory / workflow_key
-        parent.mkdir(parents=True, exist_ok=True)
-        version = (
-            f"{_identifier_timestamp()}-"
-            f"{time.time_ns() % 1_000_000_000:09d}"
-        )
-        final = parent / version
-        temporary = Path(
-            tempfile.mkdtemp(prefix=f".{version}-", dir=parent)
-        )
-        preserved_specification = specification.rstrip() + "\n"
-        try:
-            for source, relative, _role in source_paths:
-                target = temporary / relative
-                target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(source, target)
-            _atomic_write_text(
-                temporary / SPECIFICATION_FILE_NAME,
-                preserved_specification,
-            )
-            manifest = {
-                "schema_version": 1,
-                "accepted_at": _timestamp(),
-                "project_root": str(self.root),
-                "workflow_spec": canonical,
-                "accepted_workflow_spec": (
-                    entry.as_posix()
-                    + (f":{workflow_name}" if separator else "")
-                ),
-                "specification_sha256": hashlib.sha256(
-                    preserved_specification.encode("utf-8")
-                ).hexdigest(),
-                "files": source_records,
-                "git": git_provenance,
-            }
-            _atomic_write_json(
-                temporary / ".zippergen-accepted.json",
-                manifest,
-            )
-            os.replace(temporary, final)
-        except BaseException:
-            shutil.rmtree(temporary, ignore_errors=True)
-            raise
-        return {
-            "root": str(final),
-            "workflow_spec": manifest["accepted_workflow_spec"],
-            "manifest": str(final / ".zippergen-accepted.json"),
-            "files": source_records,
-            "git": git_provenance,
-        }
-
-    def record_accepted_review(
-        self,
-        workflow_spec: str,
-        *,
-        specification: str,
-        specification_fingerprint: str,
-        semantic_snapshot: dict[str, object],
-        request_id: str | None,
-        accepted_source: dict[str, object],
-    ) -> dict[str, object]:
-        """Persist the exact intent and semantics approved by a human."""
-
-        canonical = self.canonical_spec(workflow_spec, cwd=self.root)
-        state = self.load()
-        reviews = dict(state.get("accepted_reviews") or {})
-        semantic_encoded = json.dumps(
-            semantic_snapshot,
-            ensure_ascii=False,
-            separators=(",", ":"),
-            sort_keys=True,
-            default=str,
-        )
-        record: dict[str, object] = {
-            "workflow_spec": canonical,
-            "accepted_at": _timestamp(),
-            "request_id": request_id,
-            "specification": specification,
-            "specification_fingerprint": specification_fingerprint,
-            "semantic_snapshot": semantic_snapshot,
-            "semantic_fingerprint": hashlib.sha256(
-                semantic_encoded.encode("utf-8")
-            ).hexdigest(),
-            "accepted_source": accepted_source,
-        }
-        reviews[canonical] = record
-        self.update(accepted_reviews=reviews)
-        return record
-
-    def record_deployment_review_override(
-        self,
-        *,
-        deployment: str,
-        workflow_spec: str,
-        reason: str,
-        accepted_at: str | None,
-    ) -> dict[str, object]:
-        """Record an explicit decision to deploy a divergent candidate."""
-
-        state = self.load()
-        history = list(state.get("deployment_review_overrides") or [])
-        record: dict[str, object] = {
-            "recorded_at": _timestamp(),
-            "deployment": deployment,
-            "workflow_spec": self.canonical_spec(
-                workflow_spec,
-                cwd=self.root,
-            ),
-            "accepted_at": accepted_at,
-            "reason": reason,
-        }
-        history.append(record)
-        self.update(deployment_review_overrides=history[-100:])
-        return record
+        if state is not None:
+            changed = False
+            for field in ("accepted_reviews", "deployment_review_overrides"):
+                if field in state:
+                    state.pop(field, None)
+                    changed = True
+            if changed:
+                state["updated_at"] = _timestamp()
+                _atomic_write_json(self.state_path, state)
+        return archived
 
     def list_spec_history(self) -> list[dict[str, object]]:
         """Return reconciled/discarded refinements, newest first."""
@@ -1483,8 +1363,6 @@ class Workspace:
             "pending_specification_baseline": None,
             "pending_refinement_created_at": None,
             "pending_semantic_baseline": None,
-            "accepted_reviews": {},
-            "deployment_review_overrides": [],
             "editor_command": None,
             "model_profiles": {},
             "model_configurations": {},
@@ -1768,8 +1646,8 @@ class Workspace:
         state.setdefault("pending_specification_baseline", None)
         state.setdefault("pending_refinement_created_at", None)
         state.setdefault("pending_semantic_baseline", None)
-        state.setdefault("accepted_reviews", {})
-        state.setdefault("deployment_review_overrides", [])
+        state.pop("accepted_reviews", None)
+        state.pop("deployment_review_overrides", None)
         state.setdefault("editor_command", None)
         state.setdefault("model_profiles", {})
         state.setdefault("model_configurations", {})

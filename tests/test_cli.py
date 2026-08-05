@@ -986,66 +986,6 @@ def test_explicit_redeploy_replaces_the_named_deployment_source(
     assert json.loads(captured.out) == {"result": "updated?"}
 
 
-def test_deploy_bundle_carries_every_content_checked_accepted_file(
-    tmp_path,
-    monkeypatch,
-    capsys,
-):
-    project = tmp_path / "project"
-    project.mkdir()
-    (project / "workflow.py").write_text(WORKFLOW_SOURCE)
-    (project / "helper.py").write_text("VALUE = 'reviewed'\n")
-    workspace = Workspace(project, home=tmp_path / "studio-home")
-    accepted = workspace.capture_accepted_source(
-        "workflow.py:hello",
-        files=[
-            ("workflow.py", "entry point"),
-            ("helper.py", "local Python import"),
-        ],
-        specification="Return the topic with one suffix.",
-        git_provenance={
-            "available": False,
-            "commit": None,
-            "dirty": None,
-            "status": [],
-        },
-    )
-    accepted_root = Path(str(accepted["root"]))
-    deployment_home = tmp_path / "deployment-home"
-    monkeypatch.setenv("ZIPPERGEN_HOME", str(deployment_home))
-    monkeypatch.chdir(accepted_root)
-
-    assert main([
-        "deploy",
-        "workflow.py:hello",
-        "--name",
-        "accepted-files",
-        "--input",
-        "topic=accepted",
-        "--yes",
-        "--no-install",
-        "--no-setup",
-        "--no-doctor",
-        "--no-start",
-    ]) == 0
-    capsys.readouterr()
-
-    profile = json.loads(
-        (
-            deployment_home
-            / "deployments"
-            / "accepted-files.json"
-        ).read_text()
-    )
-    bundled = set(profile["bundled_files"])
-    assert {
-        "workflow.py",
-        "helper.py",
-        "specification.md",
-        ".zippergen-accepted.json",
-    }.issubset(bundled)
-
-
 def test_configure_keeps_existing_secret_when_updating_public_field(tmp_path, monkeypatch, capsys):
     workflow_path = tmp_path / "guided_workflow.py"
     workflow_path.write_text(GUIDED_WORKFLOW_SOURCE)

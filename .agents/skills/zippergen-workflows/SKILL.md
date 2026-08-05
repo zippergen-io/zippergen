@@ -35,7 +35,7 @@ Extract these facts from all supplied prompts before writing code:
 6. Parallel work and the data needed to join it.
 7. Logical connector requirements, external services, configuration, secrets,
    packages, setup, and source files.
-8. Safety constraints, retry/idempotency expectations, and acceptance examples.
+8. Safety constraints, retry/idempotency expectations, and success examples.
 
 Resolve contradictions between prompts explicitly. Ask only when a missing
 choice would materially change the protocol or authorize an external effect.

@@ -146,14 +146,14 @@ projections before execution.
   \draw[zgflow] (run) -- (deploy);
 \end{tikzpicture}
 \caption{The first-workflow path. A coding assistant may propose the Python,
-but inspection, validation, human review, and deployment remain explicit.}
+but inspection, validation, running, and deployment remain explicit.}
 \end{figure}
 
 \begin{notebox}{The safety boundary}
 A coding-assistant process returning does not mean that its requested checks
-passed. Studio records those facts separately. Generated code is always
-reviewed before it is accepted, run, or deployed; opaque model output is never
-treated as an automatically deployed workflow.
+passed. Studio records those facts separately and summarizes the changed files
+and assistant report. Opaque model output is never treated as an automatically
+deployed workflow.
 \end{notebox}
 
 \section{Create the project and install ZipperGen}
@@ -275,8 +275,8 @@ The assistant works synchronously in the project, reports its own checks, and
 returns to the same Studio prompt. No request path has to be copied and there
 is no background assistant job. On later changes, the shortcut
 \texttt{workflow refine "CHANGE" --implement} saves the refinement and starts
-the configured assistant; adding \texttt{--review} enters guided review on
-return. These options sequence existing steps and never accept a result.
+the configured assistant. When implementation finishes, Studio summarizes the
+changed files, technical validation result, and the assistant's report.
 
 After it returns, enter:
 
@@ -284,10 +284,10 @@ After it returns, enter:
 workflow status
 \end{lstlisting}
 
-The expected state is \emph{awaiting human review}. \emph{Assistant checks}
+The expected state is \emph{implemented}. \emph{Assistant checks}
 are reported separately as passed, failed, or incomplete. This is evidence
 reported by the assistant, whereas \texttt{workflow validate} is ZipperGen
-checking the current code. Do not accept a result with unresolved failures.
+checking the current code. Resolve failures before relying on the result.
 
 \begin{notebox}{If no coding assistant is installed}
 The prompt-to-code step necessarily needs a repository-aware coding assistant,
@@ -298,9 +298,9 @@ cd "$HOME/Projects/zippergen-tutorial"
 zippergen studio zippergen/examples/tutorial_review.py:tutorial_review
 \end{lstlisting}
 Continue with Section~5. The prompt-generated workflow and the shipped example
-have similar review-and-retry behavior. Skip the implementation-acceptance
-instruction in Section~8 because the shipped source is not an open assistant
-result.
+have similar review-and-retry behavior. The shipped source has no local
+implementation request. Studio warns about the missing record and validates the
+workflow before deploying it; you do not need to regenerate the shipped source.
 \end{notebox}
 
 \section{Discover, select, and inspect the workflow}
@@ -405,31 +405,17 @@ model inherit Writer.revise_answer
 The exact action route takes precedence over the participant route. The
 \texttt{inherit} command removes only that override.
 
-\begin{notebox}{Validation is not acceptance}
+\begin{notebox}{Validation and deployment are separate}
 \texttt{workflow validate} is a repeatable technical check of the Python
-workflow as it exists now: it checks structure, ownership, declarations, and
-every local projection. It neither approves the requirements nor closes the
-current implementation.
+workflow as it exists now. It checks structure, ownership, declarations, and
+every local projection.
 
-\texttt{workflow accept} is the later human decision: it records the exact
-specification and workflow semantics that you reviewed, then closes the
-implementation task. It does not validate, merge, or repair anything. A
-workflow may therefore be valid but not yet accepted. Studio displays the two
-states separately.
-
-\texttt{workflow review} is the guided process containing inspection,
-validation, running, and the explicit acceptance decision. Its presentation is
-more compact when no human, effect, assistant, or deployment boundary is
-declared, but acceptance is never inferred or automatic: LLM calls and prompt
-changes can still be consequential.
-
-If an existing workflow has no open implementation task---for example after
-upgrading a project accepted by an older Studio---the workflow still exists.
-\texttt{current} says \emph{Implementation task: none} while continuing to
-show the selected workflow. In that state, \texttt{workflow accept} offers a
-one-time baseline acceptance directly. It records the reviewed specification,
-semantics, and source snapshot without inventing a refinement and without
-running or deploying anything.
+When Studio has a local implementation record, \texttt{deploy} checks an
+additional coherence property. If the specification changed after that
+implementation, Studio stops and asks you to run \texttt{workflow implement}
+again. A fresh clone has no portable implementation record yet, so Studio
+warns and proceeds after technical validation. Git provides history and
+rollback for the specification and source.
 \end{notebox}
 
 \section{Run, interrupt, and resume}
@@ -533,37 +519,22 @@ of yes and no. \texttt{run trace} shows recent durable events. Studio creates
 and selects the underlying SQLite file automatically. It is not a separate
 user-managed object.
 
-\section{Review and accept assistant-generated work}
+\section{Inspect assistant-generated work}
 
-If a coding assistant created the workflow, enter:
-
-\begin{lstlisting}[style=shell]
-workflow review
-\end{lstlisting}
-
-The guided review offers the specification, source, semantic views,
-validation, a development run, and final acceptance. Before the menu, Studio
-shows the exact specification changes and the semantic workflow changes
-relative to the pre-change baseline. The same comparison is available directly
-with:
+When the coding assistant returns, Studio prints an implementation summary.
+It lists changed files, the assistant-check result, and the assistant's concise
+report. Inspect the available specification and semantic differences with:
 
 \begin{lstlisting}[style=shell]
 workflow diff
+workflow validate
 \end{lstlisting}
 
-Choose
-\emph{Accept reviewed implementation} only after the visible code and checks
-are satisfactory. Acceptance records the human decision; it does not delete
-the specification, source, tests, run history, or private assistant history.
-It also preserves a private, content-hashed snapshot of the accepted workflow
-files and records the Git commit and reviewed-file dirty state when Git is
-available. It does not run or deploy anything.
-If the specification or workflow semantics later change, \texttt{current},
-\texttt{workflow status}, \texttt{workflow validate}, \texttt{run}, and
-\texttt{deploy} report that the current files no longer match that accepted
-baseline. Development runs may still exercise the candidate. Deployment stops
-and offers the immutable accepted version, return to review, an audited
-unreviewed override, or cancellation.
+\texttt{workflow diff} can be repeated whenever you want the detailed change
+view. \texttt{workflow validate} independently checks the current global
+workflow and every local projection. If assistant checks failed or were
+incomplete, inspect \texttt{workflow status --details} and deliberately rerun
+the assistant only after understanding the problem.
 
 A development run records its model, assistant, and connector routing when it
 starts. Therefore \texttt{resume} cannot silently redirect an old run after
@@ -571,7 +542,7 @@ project configuration changes. A deployment keeps its own immutable source
 and configuration snapshot. \texttt{deploy show NAME} compares that snapshot
 with the current project and tells you when redeployment is needed.
 
-In an ordinary terminal, inspect the versioned result:
+In an ordinary terminal, inspect and version the result:
 
 \begin{lstlisting}[style=shell]
 cd "$HOME/Projects/zippergen-tutorial"
@@ -580,8 +551,10 @@ git diff --check
 git diff
 \end{lstlisting}
 
-Do not commit secrets. A commit is a useful local recovery point, but pushing
-is a separate decision and is not required for local deployment.
+Do not commit secrets. Git is the recovery path for returning to an earlier
+specification and implementation. Pushing is a separate decision and is not
+required for local deployment.
+
 
 \section{Prepare a named deployment}
 
@@ -604,8 +577,11 @@ deploy doctor
 deploy show
 \end{lstlisting}
 
-\texttt{deploy} uses the immutable accepted source snapshot by default,
-validates it again, collects declared inputs, creates a separate timestamped
+\texttt{deploy} first compares any local implementation record with the current
+specification. If no record travelled with a fresh clone, it says so and
+continues after technical validation. It validates the current source again,
+collects declared inputs,
+creates a separate timestamped
 deployment bundle and managed Python environment, initializes the
 deployment's stable SQLite store, and remembers the deployment name. The
 \texttt{--no-start} flag deliberately leaves the
@@ -629,13 +605,9 @@ Explicit \texttt{deploy start} and \texttt{deploy restart} repeat
 readiness checks before changing service-manager state. Failures block the
 operation instead of creating a restart loop; warnings do not.
 
-If the working tree changed after acceptance, Studio first shows the exact
-specification and semantic differences. Choose the accepted snapshot or return
-to \texttt{workflow review}. The exceptional
-\texttt{deploy NAME --unreviewed --reason "TEXT"} form deploys the current
-candidate and records the reason; it is not the normal tutorial path. A
-running service continues to use its own bundle and cannot see later
-working-tree edits.
+If the specification changed after implementation, Studio blocks deployment
+and names \texttt{workflow implement} as the remedy. A running service
+continues to use its own bundle and cannot see later working-tree edits.
 
 \begin{warningbox}{Starting is an operational action}
 Continue only on your own development machine, with the mock model, when
@@ -813,7 +785,7 @@ deploy remove reviewed-answer-tutorial
 Studio first shows the service state and every deployment-owned path. After
 confirmation, it unregisters the service and moves the profile, private
 secrets, bundles, environment, stable store, and logs into a private archive.
-The workflow source, specification, accepted review, model configurations, and
+The workflow source, specification, implementation history, model configurations, and
 connector configurations remain. The permanent
 \texttt{deploy remove reviewed-answer-tutorial --purge} form deletes the same
 deployment-owned files instead. It requires the name explicitly and asks you

@@ -21,7 +21,7 @@ variables, SQLite filenames, task IDs, or service-manager commands.
 The complete manual remains the reference. The eventual beginner tutorial is a
 short transcript of this product path, not a list of shell workarounds.
 
-## Five-minute acceptance transcript
+## Five-minute verification transcript
 
 ```text
 $ uv run zippergen studio

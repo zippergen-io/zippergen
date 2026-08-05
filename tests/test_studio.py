@@ -258,6 +258,27 @@ def _studio(tmp_path, responses=(), secret_responses=()):
     return studio, workspace, output
 
 
+def _mark_implementation_current(
+    workspace: Workspace,
+    workflow_spec: str = "workflow.py:sample",
+) -> dict[str, object]:
+    """Record a completed implementation for the current specification."""
+
+    fingerprint = workspace.specification_fingerprint()
+    record = workspace.save_request(
+        kind="implementation",
+        prompt="Implement the current specification.",
+        content="Implement the current specification.\n",
+        workflow_spec=workflow_spec,
+        specification_fingerprint=fingerprint,
+    )
+    return workspace.update_request(
+        str(record["request_id"]),
+        status="implemented",
+        result_specification_fingerprint=fingerprint,
+    )
+
+
 def _completions(studio: Studio, text: str) -> list[str]:
     document = Document(text, cursor_position=len(text))
     event = CompleteEvent(completion_requested=True)
@@ -265,6 +286,55 @@ def _completions(studio: Studio, text: str) -> list[str]:
         completion.text
         for completion in StudioCompleter(studio).get_completions(document, event)
     ]
+
+
+def test_studio_archives_retired_approval_state_on_first_start(tmp_path):
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "workflow.py").write_text(WORKFLOW_SOURCE)
+    workspace = Workspace(root, home=tmp_path / "home")
+    workspace.save_specification("Echo the request through Writer.")
+    fingerprint = workspace.specification_fingerprint()
+    request = workspace.save_request(
+        kind="implementation",
+        prompt="Implement the workflow.",
+        content="Implement the workflow.\n",
+        specification_fingerprint=fingerprint,
+    )
+    retired = workspace.directory / "accepted"
+    retired.mkdir(parents=True)
+    (retired / "source.py").write_text("# immutable snapshot\n")
+    workspace.update(
+        accepted_reviews={
+            "workflow.py:sample": {
+                "request_id": request["request_id"],
+                "specification_fingerprint": fingerprint,
+            }
+        },
+        deployment_review_overrides=[{"reason": "legacy"}],
+    )
+    output: list[str] = []
+
+    Studio(workspace, output_func=output.append)
+
+    assert not retired.exists()
+    archives = list((workspace.home / "trash" / "accepted").iterdir())
+    assert len(archives) == 1
+    assert (archives[0] / "source.py").read_text() == "# immutable snapshot\n"
+    state = workspace.load()
+    assert "accepted_reviews" not in state
+    assert "deployment_review_overrides" not in state
+    migrated = workspace.load_request(str(request["request_id"]))
+    assert migrated["workflow_spec"] == "workflow.py:sample"
+    assert migrated["result_specification_fingerprint"] == fingerprint
+    assert output == [
+        "• Archived retired workflow source snapshots at "
+        f"{archives[0]}."
+    ]
+
+    output.clear()
+    Studio(workspace, output_func=output.append)
+    assert output == []
 
 
 def test_studio_completion_is_context_and_project_aware(tmp_path):
@@ -277,7 +347,7 @@ def test_studio_completion_is_context_and_project_aware(tmp_path):
 
     assert _completions(studio, "wo") == ["workflow"]
     assert {"refine", "status"}.issubset(_completions(studio, "workflow "))
-    assert _completions(studio, "workflow rev") == ["review"]
+    assert _completions(studio, "workflow rev") == []
     assert _completions(studio, "workflow select wor") == [
         "workflow.py:sample"
     ]
@@ -1310,13 +1380,14 @@ def test_studio_assistant_launches_codex_in_project_on_the_stable_task(
     assert any("MCP" in line and "not required" in line for line in output)
     assert any("Codex session returned to Studio" in line for line in output)
     assert any("assistant checks are incomplete" in line.lower() for line in output)
-    assert any(
-        "Status" in line and "awaiting human review" in line for line in output
-    )
+    assert any("Status" in line and "implemented" in line for line in output)
+    assert any("Files changed" in line for line in output)
+    assert any("Validation" in line and "passed" in line for line in output)
+    assert any("Assistant report" in line for line in output)
     request = workspace.current_request()
     assert request is not None
     assert request["assistant_mode"] == "one_shot"
-    assert request["status"] == "awaiting_review"
+    assert request["status"] == "implemented"
     assert request["assistant_verification"] == "incomplete"
 
 
@@ -1412,7 +1483,7 @@ def test_studio_assistant_records_passed_verification_separately_from_exit(
 
     request = workspace.current_request()
     assert request is not None
-    assert request["status"] == "awaiting_review"
+    assert request["status"] == "implemented"
     assert request["assistant_exit_code"] == 0
     assert request["assistant_verification"] == "passed"
     assert len(request["assistant_verification_checks"]) == 2
@@ -1441,49 +1512,6 @@ def test_studio_assistant_records_passed_verification_separately_from_exit(
         "Check summary" in line and "focused application tests passed" in line
         for line in output
     )
-
-
-def test_studio_implement_can_enter_guided_review_on_return(
-    tmp_path,
-    monkeypatch,
-):
-    studio, workspace, _output = _studio(tmp_path)
-    studio.create_request("Create a review workflow.")
-    monkeypatch.setattr(
-        "zippergen.studio.shutil.which",
-        lambda _name: "/bin/codex",
-    )
-
-    def fake_run(arguments, *, cwd, check, **kwargs):
-        workspace.assistant_result_path.write_text(
-            json.dumps(
-                {
-                    "schema_version": 1,
-                    "verification": "passed",
-                    "summary": "Focused checks passed.",
-                    "checks": [
-                        {
-                            "command": "uv run zippergen validate workflow.py:sample",
-                            "status": "passed",
-                            "detail": "Workflow is valid.",
-                        }
-                    ],
-                }
-            )
-        )
-        return subprocess.CompletedProcess(arguments, 0, stdout="", stderr="")
-
-    monkeypatch.setattr("zippergen.studio.subprocess.run", fake_run)
-    review_calls: list[bool] = []
-    monkeypatch.setattr(
-        studio,
-        "review_workflow",
-        lambda: review_calls.append(True),
-    )
-
-    studio.execute("workflow implement --review")
-
-    assert review_calls == [True]
 
 
 def test_studio_assistant_does_not_hide_a_failed_check_behind_zero_exit(
@@ -1519,7 +1547,7 @@ def test_studio_assistant_does_not_hide_a_failed_check_behind_zero_exit(
 
     request = workspace.current_request()
     assert request is not None
-    assert request["status"] == "awaiting_review"
+    assert request["status"] == "implemented"
     assert request["assistant_exit_code"] == 0
     assert request["assistant_verification"] == "failed"
     assert any("assistant checks failed" in line.lower() for line in output)
@@ -1562,7 +1590,7 @@ def test_studio_verification_checks_are_wrapped_records_with_problem_priority(
     )
     workspace.update_request(
         str(record["request_id"]),
-        status="awaiting_review",
+        status="implemented",
         assistant="Codex",
         assistant_verification="failed",
         assistant_verification_checks=[
@@ -1700,7 +1728,7 @@ def test_studio_assistant_codex_can_still_run_interactively(
     request = workspace.current_request()
     assert request is not None
     assert request["assistant_mode"] == "interactive"
-    assert request["status"] == "awaiting_review"
+    assert request["status"] == "implemented"
 
 
 def test_studio_assistant_refreshes_edited_specification_before_launch(
@@ -1778,7 +1806,7 @@ def test_studio_assistant_can_launch_claude_code_on_the_same_task(
         "Mode" in line and "one-shot implementation" in line for line in output
     )
     assert any("Claude Code session returned to Studio" in line for line in output)
-    assert workspace.current_request()["status"] == "awaiting_review"
+    assert workspace.current_request()["status"] == "implemented"
 
 
 def test_studio_assistant_reports_missing_codex_without_losing_task(
@@ -1829,7 +1857,7 @@ def test_studio_assistant_reports_missing_claude_and_rejects_unknown_tools(
     assert workspace.current_task_path.exists()
 
 
-def test_studio_completed_refinement_task_waits_for_review_without_refreshing(
+def test_studio_completed_refinement_is_implemented_without_refreshing(
     tmp_path,
     monkeypatch,
 ):
@@ -1870,7 +1898,7 @@ def test_studio_completed_refinement_task_waits_for_review_without_refreshing(
     completed = workspace.current_request()
     assert completed is not None
     assert completed["request_id"] == original["request_id"]
-    assert completed["status"] == "awaiting_review"
+    assert completed["status"] == "implemented"
     assert completed["assistant"] == "Codex"
     assert completed["assistant_exit_code"] == 0
     output.clear()
@@ -1882,40 +1910,32 @@ def test_studio_completed_refinement_task_waits_for_review_without_refreshing(
     assert reviewed["request_id"] == original["request_id"]
     assert len(workspace.list_requests()) == 1
     assert any(
-        "Status" in line and "awaiting human review" in line for line in output
+        "Status" in line and "implemented" in line for line in output
     )
     assert any(
         "Execution" in line and "nothing is scheduled" in line for line in output
     )
     assert "Next" in output
-    assert any("workflow review" in line for line in output)
+    assert any("workflow diff" in line for line in output)
     assert all("Implementation request refreshed" not in line for line in output)
 
     output.clear()
     studio.execute("current")
 
     assert any(
-        "Implementation" in line and "awaiting human review" in line
+        "Implementation" in line and "implemented" in line
         for line in output
     )
     assert any(
-        "Task next" in line and "workflow review" in line for line in output
+        "Task next" in line and "workflow diff" in line for line in output
     )
-    assert any(
-        "Refinement" in line and "awaiting human review" in line
-        for line in output
-    )
-
     output.clear()
     studio.execute("workflow show pending")
 
-    assert any(
-        "Status" in line and "awaiting human review" in line for line in output
-    )
     assert "Next" in output
-    assert any("workflow review" in line for line in output)
+    assert any("workflow diff" in line for line in output)
 
-    with pytest.raises(SystemExit, match="already returned.*awaiting human review"):
+    with pytest.raises(SystemExit, match="already returned.*workflow diff"):
         studio.execute("workflow implement codex")
 
 
@@ -1947,7 +1967,7 @@ def test_studio_explicit_assistant_rerun_prepares_a_new_task(
     assert rerun is not None
     assert rerun["request_id"] != first["request_id"]
     assert rerun["refreshes_request"] == first["request_id"]
-    assert rerun["status"] == "awaiting_review"
+    assert rerun["status"] == "implemented"
     assert len(workspace.list_requests()) == 2
 
 
@@ -2044,7 +2064,7 @@ def test_studio_recovers_an_orphaned_running_assistant_as_interrupted(
     )
 
 
-def test_studio_infers_review_state_for_an_existing_integrated_refinement(
+def test_studio_infers_implemented_state_for_an_existing_integrated_refinement(
     tmp_path,
 ):
     studio, workspace, output = _studio(tmp_path)
@@ -2068,18 +2088,19 @@ def test_studio_infers_review_state_for_an_existing_integrated_refinement(
     migrated = workspace.current_request()
     assert migrated is not None
     assert migrated["request_id"] == original["request_id"]
-    assert migrated["status"] == "awaiting_review"
+    assert migrated["status"] == "implemented"
     assert migrated["lifecycle_inferred"] is True
     assert len(workspace.list_requests()) == 1
     assert any(
-        "Status" in line and "awaiting human review" in line for line in output
+        "Status" in line and "implemented" in line for line in output
     )
     assert any(
-        "Assistant" in line and "review inferred" in line for line in output
+        "Assistant" in line and "implementation inferred" in line
+        for line in output
     )
 
 
-def test_studio_manual_spec_integration_is_reviewable_without_an_assistant(
+def test_studio_manual_spec_integration_is_implemented_without_an_assistant(
     tmp_path,
 ):
     studio, workspace, output = _studio(tmp_path)
@@ -2099,7 +2120,7 @@ def test_studio_manual_spec_integration_is_reviewable_without_an_assistant(
     manual = workspace.current_request()
     assert manual is not None
     assert manual["request_id"] == original["request_id"]
-    assert manual["status"] == "awaiting_review"
+    assert manual["status"] == "implemented"
     assert manual["manual_integration"] is True
     assert any(
         "Assistant" in line and "edited manually" in line for line in output
@@ -2108,153 +2129,7 @@ def test_studio_manual_spec_integration_is_reviewable_without_an_assistant(
         "Execution" in line and "assistant not run" in line for line in output
     )
     assert "Next" in output
-    assert any("workflow review" in line for line in output)
-
-
-def test_studio_workflow_review_guides_requirements_and_can_be_resumed(
-    tmp_path,
-):
-    studio, workspace, output = _studio(tmp_path, responses=["1", "6"])
-    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
-    workspace.save_specification("Echo the request through Writer.")
-    studio.refine_request("Require human approval before returning.")
-    workspace.save_specification(
-        "Echo the request through Writer and require human approval "
-        "before returning."
-    )
-
-    studio.execute("workflow review")
-
-    assert workspace.current_request() is not None
-    assert workspace.pending_refinement() is not None
-    assert "Workflow review" in output
-    assert "Review actions" in output
-    assert any("Require human approval before returning." in line for line in output)
-    assert any(
-        "Echo the request through Writer and require human approval" in line
-        for line in output
-    )
-    assert "Specification diff" in output
-    assert "Semantic workflow diff" in output
-    assert any("Review remains open" in line for line in output)
-
-
-def test_studio_workflow_review_can_accept_the_reviewed_refinement(tmp_path):
-    studio, workspace, output = _studio(tmp_path, responses=["4", "y"])
-    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
-    workspace.save_specification("Echo the request through Writer.")
-    studio.refine_request("Require human approval before returning.")
-    workspace.save_specification(
-        "Echo the request through Writer and require human approval "
-        "before returning."
-    )
-
-    studio.execute("workflow review")
-
-    assert workspace.current_request() is None
-    assert workspace.pending_refinement() is None
-    assert any(line == "Specification refinement" for line in output)
-    assert any(
-        "Implementation" in line and "accepted" in line
-        for line in output
-    )
-
-
-def test_studio_workflow_review_requires_a_returned_implementation(tmp_path):
-    studio, _workspace, _output = _studio(tmp_path)
-    studio.create_request("Create a review workflow.")
-
-    with pytest.raises(SystemExit, match="not awaiting human review"):
-        studio.execute("workflow review")
-
-
-def test_studio_workflow_accept_keeps_history_and_accepts_refinements(tmp_path):
-    studio, workspace, output = _studio(tmp_path)
-    studio.create_request("Create a review workflow.")
-
-    studio.execute("workflow accept --yes")
-
-    assert workspace.current_request() is None
-    assert not workspace.current_task_path.exists()
-    assert workspace.list_requests()[0]["status"] == "closed"
-    assert "Review comparison" in output
-    assert any(line == "Workflow implementation accepted" for line in output)
-
-    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
-    workspace.save_specification("Echo the request through Writer.")
-    studio.refine_request("Require human approval.")
-    with pytest.raises(SystemExit, match="workflow accept.*workflow discard"):
-        studio.manage_task(["close", "--yes"])
-
-
-def test_studio_accepts_an_existing_selected_workflow_without_a_task(tmp_path):
-    studio, workspace, output = _studio(tmp_path, responses=["y"])
-    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
-    workspace.save_specification("Echo the request through Writer.")
-
-    studio.execute("workflow accept")
-
-    accepted = workspace.accepted_review("workflow.py:sample")
-    assert accepted is not None
-    assert accepted["request_id"] is None
-    assert workspace.current_request() is None
-    assert "Existing workflow acceptance" in output
-    assert "Workflow baseline accepted" in output
-    assert any(
-        "nothing was run or deployed" in line for line in output
-    )
-
-
-def test_studio_repeated_baseline_accept_is_idempotent(tmp_path):
-    studio, workspace, output = _studio(tmp_path)
-    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
-    workspace.save_specification("Echo the request through Writer.")
-    studio.execute("workflow accept --yes")
-    first = workspace.accepted_review("workflow.py:sample")
-    assert first is not None
-    first_source = first["accepted_source"]
-    assert isinstance(first_source, dict)
-    first_root = first_source["root"]
-    output.clear()
-
-    studio.execute("workflow accept")
-
-    second = workspace.accepted_review("workflow.py:sample")
-    assert second is not None
-    second_source = second["accepted_source"]
-    assert isinstance(second_source, dict)
-    assert second_source["root"] == first_root
-    assert output[0] == "Workflow baseline already accepted"
-
-
-def test_studio_can_reaccept_source_only_drift_without_a_dummy_refinement(
-    tmp_path,
-):
-    studio, workspace, output = _studio(tmp_path)
-    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
-    workspace.save_specification("Echo the request through Writer.")
-    studio.execute("workflow accept --yes")
-    first = workspace.accepted_review("workflow.py:sample")
-    assert first is not None
-    first_source = first["accepted_source"]
-    assert isinstance(first_source, dict)
-    first_root = first_source["root"]
-    source = workspace.root / "workflow.py"
-    source.write_text(source.read_text() + "\n# Reviewed documentation note.\n")
-    output.clear()
-
-    studio.execute("workflow accept --yes")
-
-    second = workspace.accepted_review("workflow.py:sample")
-    assert second is not None
-    second_source = second["accepted_source"]
-    assert isinstance(second_source, dict)
-    assert second_source["root"] != first_root
-    assert any(
-        "Source files" in line and "modified workflow.py" in line
-        for line in output
-    )
-    assert "Workflow baseline accepted" in output
+    assert any("workflow diff" in line for line in output)
 
 
 def test_studio_remembers_shows_and_resets_editor_preference(
@@ -2493,25 +2368,19 @@ def test_studio_refine_can_start_implementation_without_a_second_command(
     assert calls == [[]]
 
 
-def test_studio_refine_can_chain_implementation_into_guided_review(
+def test_studio_refine_rejects_the_removed_review_option(
     tmp_path,
     monkeypatch,
 ):
     studio, workspace, _output = _studio(tmp_path)
     workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
     workspace.save_specification("Echo the input through Writer.")
-    calls: list[list[str]] = []
-    monkeypatch.setattr(
-        studio,
-        "run_assistant",
-        lambda arguments: calls.append(arguments),
-    )
+    with pytest.raises(SystemExit, match="--review no longer exists"):
+        studio.execute(
+            "workflow refine Increase the retry budget --implement --review"
+        )
 
-    studio.execute(
-        "workflow refine Increase the retry budget --implement --review"
-    )
-
-    assert calls == [["--review"]]
+    assert workspace.pending_refinement() is None
 
 
 def test_studio_failed_create_editor_preserves_canonical_draft(
@@ -2647,7 +2516,9 @@ def test_studio_commands_are_discoverable(tmp_path):
     assert "project reset [fresh|state] [--yes]" in output[-1]
     assert "workflow history" in output[-1]
     assert "workflow status" in output[-1]
-    assert "workflow review" in output[-1]
+    assert "workflow diff" in output[-1]
+    assert "workflow review" not in output[-1]
+    assert "workflow accept" not in output[-1]
     assert "workflow implement" in output[-1]
     assert "editor set COMMAND" in output[-1]
     assert "edit file PATH" in output[-1]
@@ -2865,18 +2736,14 @@ def test_studio_validation_marks_successful_checks(tmp_path):
     assert output[0] == "Workflow validation"
     assert output[1] == "═" * len("Workflow validation")
     assert output[2] == "✓ Workflow sample: valid"
-    distinction = output.index("Validation and acceptance")
+    distinction = output.index("Validation result")
     assert all(line.startswith("  ✓ ") for line in output[3:distinction])
     assert any(
         "Technical validation" in line and "passed" in line
         for line in output[distinction:]
     )
     assert any(
-        "Human acceptance" in line and "not recorded" in line
-        for line in output[distinction:]
-    )
-    assert any(
-        "validate checks workflow structure" in line
+        "validation checks workflow structure" in line
         for line in output[distinction:]
     )
 
@@ -3139,55 +3006,7 @@ def test_studio_spec_commands_use_automatic_paths_and_append_one_pending_change(
     assert any("Add bounded retries" in line for line in output)
 
 
-def test_studio_reconcile_requires_integrated_spec_and_keeps_private_history(
-    tmp_path,
-):
-    studio, workspace, output = _studio(tmp_path)
-    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
-    studio.create_request("Echo the request through Writer.")
-    studio.execute(
-        "workflow refine Add a human approval before returning"
-    )
-
-    try:
-        studio.execute("workflow accept --yes")
-    except SystemExit as exc:
-        assert "canonical specification has not changed" in str(exc)
-    else:
-        raise AssertionError("an unintegrated refinement must not be reconciled")
-
-    workspace.save_specification(
-        "Echo the request through Writer and require human approval before return."
-    )
-    output.clear()
-    studio.execute("workflow accept --yes")
-
-    assert workspace.pending_refinement() is None
-    assert workspace.current_request() is None
-    assert not workspace.current_task_path.exists()
-    assert workspace.list_spec_history()[0]["status"] == "reconciled"
-    assert workspace.list_requests()[0]["status"] == "reconciled"
-    assert any("✓ reconciled" in line for line in output)
-    assert any("✓ cleared" in line for line in output)
-    assert any(
-        "Canonical" in line and "no automatic merge" in line for line in output
-    )
-    accepted = workspace.accepted_review("workflow.py:sample")
-    assert accepted is not None
-    assert accepted["specification"] == (
-        "Echo the request through Writer and require human approval before return."
-    )
-    assert isinstance(accepted["semantic_snapshot"], dict)
-    history = workspace.list_spec_history()[0]
-    assert Path(str(history["specification_before_file"])).read_text().strip() == (
-        "Echo the request through Writer."
-    )
-    assert Path(str(history["specification_after_file"])).read_text().strip() == (
-        "Echo the request through Writer and require human approval before return."
-    )
-
-
-def test_studio_review_diff_compares_intent_and_semantics_before_acceptance(
+def test_studio_workflow_diff_compares_intent_and_semantics(
     tmp_path,
 ):
     studio, workspace, output = _studio(tmp_path)
@@ -3201,7 +3020,7 @@ def test_studio_review_diff_compares_intent_and_semantics_before_acceptance(
 
     studio.execute("workflow diff")
 
-    assert "Review comparison" in output
+    assert "Change comparison" in output
     assert "Specification diff" in output
     assert "Semantic workflow diff" in output
     assert any("-Echo the request through Writer." in line for line in output)
@@ -3211,58 +3030,6 @@ def test_studio_review_diff_compares_intent_and_semantics_before_acceptance(
         for line in output
     )
     assert any("# No semantic changes." in line for line in output)
-
-
-def test_studio_accept_records_review_and_reports_later_intent_drift(tmp_path):
-    studio, workspace, output = _studio(tmp_path)
-    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
-    studio.create_request("Echo the request through Writer.")
-
-    studio.execute("workflow accept --yes")
-    output.clear()
-    studio.execute("workflow validate")
-
-    assert any(
-        "Human acceptance" in line
-        and "matches accepted intent and workflow semantics" in line
-        for line in output
-    )
-
-    workspace.save_specification(
-        "Echo the request through Writer. Add a future human review."
-    )
-    output.clear()
-    studio.execute("workflow validate")
-
-    assert any(
-        "Human acceptance" in line
-        and "specification changed since the last accepted review" in line
-        for line in output
-    )
-
-
-def test_studio_reports_semantic_drift_after_an_accepted_source_edit(tmp_path):
-    studio, workspace, output = _studio(tmp_path)
-    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
-    studio.create_request("Echo the request through Writer.")
-    studio.execute("workflow accept --yes")
-
-    source = workspace.root / "workflow.py"
-    source.write_text(
-        source.read_text().replace(
-            'system="Echo the value."',
-            'system="Echo the value in one short sentence."',
-        )
-    )
-    output.clear()
-
-    studio.execute("workflow validate")
-
-    assert any(
-        "Human acceptance" in line
-        and "workflow semantics changed since the last accepted review" in line
-        for line in output
-    )
 
 
 def test_studio_spec_discard_is_explicit_and_recoverable(tmp_path):
@@ -4932,6 +4699,7 @@ def test_studio_operates_human_tasks_through_the_deployment(
 def test_studio_deploys_current_workflow_and_remembers_name(tmp_path, monkeypatch):
     studio, workspace, output = _studio(tmp_path)
     workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    _mark_implementation_current(workspace)
     calls: list[list[str]] = []
 
     monkeypatch.setattr(
@@ -4961,9 +4729,7 @@ def test_studio_deploys_current_workflow_and_remembers_name(tmp_path, monkeypatc
     assert calls[0][-2:] == ["--llm-idle-timeouts-json", "{}"]
     assert workspace.load()["last_deployment"] == "sample-test"
     assert output[-1] == "✓ Deployment completed: sample-test"
-    assert any(
-        "No Studio acceptance is recorded" in line for line in output
-    )
+    assert any("matches the current specification" in line for line in output)
 
 
 def test_studio_resume_uses_recorded_connector_routing(tmp_path, monkeypatch):
@@ -5014,7 +4780,7 @@ def test_studio_resume_uses_recorded_connector_routing(tmp_path, monkeypatch):
     assert callable(calls[0]["human_connector_factory"])
 
 
-def test_deployment_alignment_covers_review_and_configuration(tmp_path):
+def test_deployment_alignment_covers_workflow_and_configuration(tmp_path):
     from zippergen.semantic import semantic_snapshot
     from zippergen.serve import load_workflow_spec
 
@@ -5028,19 +4794,7 @@ def test_deployment_alignment_covers_review_and_configuration(tmp_path):
         workspace.absolute_spec(current)
     )
     semantics = semantic_snapshot(workflow, module)
-    specification = workspace.specification()
-    assert specification is not None
-    specification_fingerprint = workspace.specification_fingerprint(
-        include_pending=False
-    )
-    workspace.record_accepted_review(
-        current,
-        specification=specification,
-        specification_fingerprint=specification_fingerprint,
-        semantic_snapshot=semantics,
-        request_id=None,
-        accepted_source={"root": str(workspace.root)},
-    )
+    specification_fingerprint = workspace.specification_fingerprint()
     profile: dict[str, object] = {
         "project_root": str(workspace.root),
         "workflow": "workflow.py:sample",
@@ -5057,7 +4811,6 @@ def test_deployment_alignment_covers_review_and_configuration(tmp_path):
             "semantic_fingerprint": (
                 studio._semantic_snapshot_fingerprint(semantics)
             ),
-            "review": "accepted",
         },
     }
 
@@ -5079,22 +4832,14 @@ def test_deployment_alignment_covers_review_and_configuration(tmp_path):
     assert "Redeploy" in message
 
 
-def test_studio_deploys_the_immutable_accepted_source_by_default(
+def test_studio_deploys_the_current_implementation(
     tmp_path,
     monkeypatch,
 ):
     studio, workspace, output = _studio(tmp_path)
     workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
-    studio.create_request("Echo the request through Writer.")
-    studio.execute("workflow accept --yes")
-    accepted = workspace.accepted_review("workflow.py:sample")
-    assert accepted is not None
-    accepted_source = accepted["accepted_source"]
-    assert isinstance(accepted_source, dict)
-    accepted_root = Path(str(accepted_source["root"]))
-    assert (accepted_root / "workflow.py").read_text() == (
-        workspace.root / "workflow.py"
-    ).read_text()
+    workspace.save_specification("Echo the request through Writer.")
+    _mark_implementation_current(workspace)
     output.clear()
     calls: list[tuple[list[str], Path]] = []
 
@@ -5104,127 +4849,73 @@ def test_studio_deploys_the_immutable_accepted_source_by_default(
 
     monkeypatch.setattr("zippergen.serve.main", fake_main)
 
-    studio.deploy_workflow(["sample-accepted", "--no-start"])
-
-    assert calls[0][1] == accepted_root
-    assert calls[0][0][0] == "deploy"
-    assert str(accepted_root) in calls[0][0][1]
-    assert any(
-        "Source" in line and "immutable accepted source snapshot" in line
-        for line in output
-    )
-
-
-def test_studio_divergent_deploy_can_use_the_accepted_version(
-    tmp_path,
-    monkeypatch,
-):
-    studio, workspace, output = _studio(tmp_path, responses=["1"])
-    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
-    studio.create_request("Echo the request through Writer.")
-    studio.execute("workflow accept --yes")
-    accepted = workspace.accepted_review("workflow.py:sample")
-    assert accepted is not None
-    accepted_source = accepted["accepted_source"]
-    assert isinstance(accepted_source, dict)
-    accepted_root = Path(str(accepted_source["root"]))
-    source = workspace.root / "workflow.py"
-    source.write_text(
-        source.read_text().replace(
-            'system="Echo the value."',
-            'system="Echo a changed value."',
-        )
-    )
-    output.clear()
-    calls: list[tuple[list[str], Path]] = []
-
-    def fake_main(arguments):
-        calls.append((arguments, Path.cwd()))
-        return 0
-
-    monkeypatch.setattr("zippergen.serve.main", fake_main)
-
-    studio.deploy_workflow(["sample-accepted", "--no-start"])
-
-    assert calls[0][1] == accepted_root
-    assert str(accepted_root) in calls[0][0][1]
-    assert "Accepted semantic workflow diff" in output
-    assert any(
-        "system_prompt" in line and "Echo a changed value." in line
-        for line in output
-    )
-
-
-def test_studio_divergent_deploy_override_requires_and_records_a_reason(
-    tmp_path,
-    monkeypatch,
-):
-    studio, workspace, output = _studio(tmp_path)
-    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
-    studio.create_request("Echo the request through Writer.")
-    studio.execute("workflow accept --yes")
-    source = workspace.root / "workflow.py"
-    source.write_text(
-        source.read_text().replace(
-            'system="Echo the value."',
-            'system="Emergency candidate behavior."',
-        )
-    )
-    output.clear()
-    calls: list[tuple[list[str], Path]] = []
-
-    def fake_main(arguments):
-        calls.append((arguments, Path.cwd()))
-        return 0
-
-    monkeypatch.setattr("zippergen.serve.main", fake_main)
-
-    studio.deploy_workflow(
-        [
-            "sample-override",
-            "--no-start",
-            "--unreviewed",
-            "--reason",
-            "Emergency production correction",
-        ]
-    )
+    studio.deploy_workflow(["sample-current", "--no-start"])
 
     assert calls[0][1] == workspace.root
+    assert calls[0][0][0] == "deploy"
     assert calls[0][0][1] == str(workspace.root / "workflow.py") + ":sample"
-    overrides = workspace.load()["deployment_review_overrides"]
-    assert isinstance(overrides, list)
-    assert overrides[-1]["reason"] == "Emergency production correction"
     assert any(
-        "Unaccepted deployment override recorded" in line for line in output
+        "Implementation" in line and "matches the current specification" in line
+        for line in output
     )
+    assert any("Source" in line and "current working tree" in line for line in output)
 
 
-def test_studio_blocks_a_never_accepted_generated_result_awaiting_review(
+def test_studio_blocks_deploy_when_specification_changed_after_implementation(
     tmp_path,
     monkeypatch,
 ):
     studio, workspace, output = _studio(tmp_path)
     workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
-    studio.create_request("Echo the request through Writer.")
-    request = workspace.current_request()
-    assert request is not None
-    workspace.update_request(
-        str(request["request_id"]),
-        status="awaiting_review",
-    )
+    workspace.save_specification("Echo the request through Writer.")
+    _mark_implementation_current(workspace)
+    workspace.save_specification("Echo the request through Writer with retries.")
     monkeypatch.setattr(
         "zippergen.serve.main",
         lambda _arguments: pytest.fail("deployment must not start"),
     )
 
-    with pytest.raises(
-        SystemExit,
-        match="human-review boundary",
-    ):
-        studio.deploy_workflow(["sample-blocked"])
+    with pytest.raises(SystemExit, match="current specification"):
+        studio.deploy_workflow(["sample-stale", "--no-start"])
 
     assert any(
-        "Reason" in line and "awaiting human review" in line
+        "Reason" in line and "specification changed after implementation" in line
+        for line in output
+    )
+
+
+def test_studio_rejects_removed_deploy_review_options(
+    tmp_path,
+    monkeypatch,
+):
+    studio, workspace, _output = _studio(tmp_path)
+    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    _mark_implementation_current(workspace)
+
+    for option in ("--accepted", "--unreviewed", "--reason"):
+        with pytest.raises(SystemExit, match="unknown option"):
+            studio.deploy_workflow(["sample", option])
+
+
+def test_studio_warns_and_deploys_without_a_local_implementation_record(
+    tmp_path,
+    monkeypatch,
+):
+    studio, workspace, output = _studio(tmp_path)
+    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        "zippergen.serve.main",
+        lambda arguments: calls.append(arguments) or 0,
+    )
+
+    studio.deploy_workflow(["sample-imported", "--no-start"])
+
+    assert len(calls) == 1
+    assert any(
+        "Implementation" in line
+        and "not recorded on this machine" in line
+        and "technical validation" in line
         for line in output
     )
 
@@ -5232,6 +4923,7 @@ def test_studio_blocks_a_never_accepted_generated_result_awaiting_review(
 def test_studio_can_prepare_deployment_without_starting_it(tmp_path, monkeypatch):
     studio, workspace, _output = _studio(tmp_path)
     workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    _mark_implementation_current(workspace)
     calls: list[list[str]] = []
     monkeypatch.setattr(
         "zippergen.serve.main",
@@ -5261,6 +4953,7 @@ def test_studio_offers_private_provider_key_reuse_for_first_deployment(
     studio, workspace, output = _studio(tmp_path, responses=[""])
     (workspace.root / "workflow.py").write_text(DEPLOYMENT_SOURCE)
     workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    _mark_implementation_current(workspace)
     workspace.save_model_profile(
         "workflow.py:sample",
         default="openai:gpt-4o-mini",
@@ -5295,6 +4988,7 @@ def test_studio_reuses_a_selected_provider_key_without_a_declared_field(
 ):
     studio, workspace, output = _studio(tmp_path, responses=[""])
     workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    _mark_implementation_current(workspace)
     workspace.save_model_profile(
         "workflow.py:sample",
         default="mock",
@@ -5323,6 +5017,7 @@ def test_studio_carries_the_configured_local_endpoint_into_deployment(
 ):
     studio, workspace, _output = _studio(tmp_path)
     workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    _mark_implementation_current(workspace)
     workspace.save_provider_profile(
         "local",
         {
@@ -5356,6 +5051,7 @@ def test_studio_can_decline_provider_key_reuse_for_deployment(
     studio, workspace, output = _studio(tmp_path, responses=["n"])
     (workspace.root / "workflow.py").write_text(DEPLOYMENT_SOURCE)
     workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    _mark_implementation_current(workspace)
     workspace.save_model_profile(
         "workflow.py:sample",
         default="openai:gpt-4o-mini",
@@ -5385,6 +5081,7 @@ def test_studio_redeploy_keeps_existing_deployment_provider_key(
     studio, workspace, output = _studio(tmp_path)
     (workspace.root / "workflow.py").write_text(DEPLOYMENT_SOURCE)
     workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    _mark_implementation_current(workspace)
     workspace.save_model_profile(
         "workflow.py:sample",
         default="openai:gpt-4o-mini",
@@ -6308,6 +6005,7 @@ def test_studio_models_checks_local_configuration_identifiers(
 def test_studio_model_profile_is_used_for_run_and_deploy(tmp_path, monkeypatch):
     studio, workspace, _output = _studio(tmp_path)
     workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    _mark_implementation_current(workspace)
     workspace.save_model_profile(
         "workflow.py:sample",
         default="mock",
@@ -6362,6 +6060,7 @@ def test_studio_propagates_local_configuration_idle_release(
 ):
     studio, workspace, _output = _studio(tmp_path)
     workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    _mark_implementation_current(workspace)
     workspace.save_provider_profile(
         "local",
         {

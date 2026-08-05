@@ -35,6 +35,8 @@ def test_command_registry_has_unique_paths_and_derives_user_surfaces():
     assert ("run", "approve") in paths
     assert ("run", "trace") in paths
     assert ("workflow", "import") in paths
+    assert ("workflow", "review") not in paths
+    assert ("workflow", "accept") not in paths
     assert "studio doctor" in full_help()
     assert "store list" not in full_help()
     assert "deploy show" in full_help()
@@ -42,6 +44,8 @@ def test_command_registry_has_unique_paths_and_derives_user_surfaces():
     assert "run inspect" in full_help()
     assert "run tasks" in full_help()
     assert "workflow import PATH.py[:WORKFLOW]" in full_help()
+    assert "workflow review" not in full_help()
+    assert "workflow accept" not in full_help()
     assert "\n  status " not in full_help()
     assert "workflow prompts" not in full_help()
     assert ("studio", "inspect or operate the Studio process") in (

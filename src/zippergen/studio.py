@@ -302,11 +302,10 @@ def _is_allowed_natural_plan_command(parts: list[str]) -> bool:
             "list",
             "files",
             "status",
-            "review",
+            "diff",
             "validate",
             "history",
             "path",
-            "accept",
             "discard",
         }:
             return len(args) <= 2
@@ -321,7 +320,6 @@ def _is_allowed_natural_plan_command(parts: list[str]) -> bool:
                     "claude",
                     "--rerun",
                     "--interactive",
-                    "--review",
                 }
                 for value in lowered
             )
@@ -602,6 +600,12 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
 
             secret_input_func = getpass.getpass
         self.secret_input = secret_input_func
+        archived_acceptance = self.workspace.retire_acceptance_state()
+        if archived_acceptance is not None:
+            self._info(
+                "Archived retired workflow source snapshots at "
+                f"{archived_acceptance}."
+            )
 
     def _emit(self, value: object = "") -> None:
         self._renderer.emit(value)
@@ -1077,7 +1081,7 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
             if action == "show":
                 if not rest:
                     return [
-                        ("spec", "accepted workflow specification"),
+                        ("spec", "canonical workflow specification"),
                         ("pending", "pending refinement"),
                         ("source", "authored Python source"),
                         *_SUBCOMMAND_COMPLETIONS["show"],
@@ -1131,24 +1135,13 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
                             )
                         )
                     return choices
-                if (
-                    action == "refine"
-                    and "--implement" in rest
-                    and "--review" not in rest
-                ):
-                    return [
-                        (
-                            "--review",
-                            "enter guided human review when the assistant returns",
-                        )
-                    ]
                 return []
             if action == "edit":
                 if "--editor" in rest and rest[-1] == "--editor":
                     return self._editor_completion_candidates()
                 if not rest:
                     return [
-                        ("spec", "edit the accepted specification"),
+                        ("spec", "edit the canonical specification"),
                         ("code", "edit the selected Python workflow"),
                     ]
                 return [("--editor", "choose an editor for this invocation")]
@@ -1157,10 +1150,6 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
                     return [
                         ("codex", "implement with Codex"),
                         ("claude", "implement with Claude Code"),
-                        (
-                            "--review",
-                            "enter guided human review when the assistant returns",
-                        ),
                     ]
                 if rest[0].lower() == "codex":
                     values = []
@@ -1172,26 +1161,12 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
                         values.append(
                             ("--interactive", "open an interactive Codex session")
                         )
-                    if "--review" not in rest:
-                        values.append(
-                            (
-                                "--review",
-                                "enter guided human review on return",
-                            )
-                        )
                     return values
                 if rest[0].lower() == "claude":
                     values = []
                     if "--rerun" not in rest:
                         values.append(
                             ("--rerun", "deliberately rerun reviewed work")
-                        )
-                    if "--review" not in rest:
-                        values.append(
-                            (
-                                "--review",
-                                "enter guided human review on return",
-                            )
                         )
                     return values
                 return []
@@ -1388,14 +1363,6 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
                     *_SUBCOMMAND_COMPLETIONS["deploy"],
                     *self._deployment_completion_candidates(),
                     ("--no-start", "prepare without starting"),
-                    (
-                        "--accepted",
-                        "deploy the immutable human-accepted source",
-                    ),
-                    (
-                        "--unreviewed",
-                        "override a divergence with an audited reason",
-                    ),
                 ]
             if (
                 args[0].lower()
@@ -1616,15 +1583,6 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
             record = self._normalize_task_lifecycle(record)
             state, state_kind = self._task_state(record)
             next_action = self._task_next(record)
-        review_state = "not available until a workflow is selected"
-        review_kind: StatusKind | None = "warning"
-        if self.workspace.current_workflow:
-            current, workflow, module = self._current_context()
-            review_state, review_kind = self._accepted_review_status(
-                current,
-                workflow,
-                module,
-            )
         self._emit_table(
             "Workflow development",
             [
@@ -1650,160 +1608,8 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
                     None if self.workspace.current_workflow else "warning",
                 ),
                 ("Implementation task", state, state_kind),
-                ("Accepted review", review_state, review_kind),
                 ("Next", next_action, None),
             ],
-        )
-
-    def _accepted_review_status(
-        self,
-        workflow_spec: str,
-        workflow,
-        module,
-    ) -> tuple[str, StatusKind]:
-        state, changed, _accepted = self._accepted_review_comparison(
-            workflow_spec,
-            workflow,
-            module,
-        )
-        if state == "never":
-            return (
-                "not recorded; validation does not imply human acceptance",
-                "warning",
-            )
-        if state == "match":
-            return "matches accepted intent and workflow semantics", "success"
-        subject = " and ".join(changed)
-        if self.workspace.pending_refinement() is not None:
-            return f"{subject} changed; candidate review is pending", "warning"
-        return f"{subject} changed since the last accepted review", "warning"
-
-    def _accepted_review_comparison(
-        self,
-        workflow_spec: str,
-        workflow,
-        module,
-    ) -> tuple[
-        Literal["never", "match", "diverged"],
-        list[str],
-        dict[str, object] | None,
-    ]:
-        accepted = self.workspace.accepted_review(workflow_spec)
-        if accepted is None:
-            return "never", [], None
-        current_specification = self.workspace.specification_fingerprint(
-            include_pending=False
-        )
-        specification_changed = (
-            accepted.get("specification_fingerprint")
-            != current_specification
-        )
-        accepted_semantics = accepted.get("semantic_snapshot")
-        current_semantics = semantic_snapshot(workflow, module)
-        semantic_changed = (
-            not isinstance(accepted_semantics, dict)
-            or accepted_semantics != current_semantics
-        )
-        if not specification_changed and not semantic_changed:
-            return "match", [], accepted
-        changed: list[str] = []
-        if specification_changed:
-            changed.append("specification")
-        if semantic_changed:
-            changed.append("workflow semantics")
-        return "diverged", changed, accepted
-
-    def _show_accepted_divergence(
-        self,
-        accepted: dict[str, object],
-        workflow,
-        module,
-    ) -> None:
-        accepted_specification = accepted.get("specification")
-        current_specification = self.workspace.specification()
-        if (
-            isinstance(accepted_specification, str)
-            and isinstance(current_specification, str)
-        ):
-            specification_lines = list(
-                difflib.unified_diff(
-                    accepted_specification.splitlines(),
-                    current_specification.splitlines(),
-                    fromfile="accepted specification",
-                    tofile="current specification.md",
-                    lineterm="",
-                )
-            )
-            specification_diff = (
-                "\n".join(specification_lines)
-                if specification_lines
-                else "# No specification changes."
-            )
-        else:
-            specification_diff = "# Accepted specification is unavailable."
-        accepted_semantics = accepted.get("semantic_snapshot")
-        if isinstance(accepted_semantics, dict):
-            try:
-                semantic_diff = render_semantic_diff(
-                    semantic_diff_models(
-                        read_semantic_snapshot(accepted_semantics),
-                        read_semantic_snapshot(
-                            semantic_snapshot(workflow, module)
-                        ),
-                    )
-                )
-            except ValueError:
-                semantic_diff = "# Accepted semantic baseline is unavailable."
-        else:
-            semantic_diff = "# Accepted semantic baseline is unavailable."
-        self._emit_section_title("Accepted specification diff")
-        self._emit(specification_diff)
-        self._emit()
-        self._emit_section_title("Accepted semantic workflow diff")
-        self._emit(semantic_diff)
-        self._emit()
-
-    def _accepted_source_context(
-        self,
-        accepted: dict[str, object],
-    ) -> tuple[Path, str]:
-        source = accepted.get("accepted_source")
-        if not isinstance(source, dict):
-            raise SystemExit(
-                "This acceptance predates immutable source snapshots. The "
-                "current files can be reviewed and accepted again."
-            )
-        root = Path(str(source.get("root") or "")).expanduser()
-        workflow_spec = str(source.get("workflow_spec") or "")
-        files = source.get("files")
-        if not root.is_dir() or not workflow_spec or not isinstance(files, list):
-            raise SystemExit(
-                "The accepted source snapshot is missing or incomplete. "
-                "Review and accept the current files again."
-            )
-        for value in files:
-            if not isinstance(value, dict):
-                raise SystemExit("The accepted source manifest is invalid.")
-            relative = Path(str(value.get("path") or ""))
-            path = (root / relative).resolve()
-            expected = str(value.get("sha256") or "")
-            if (
-                not relative.parts
-                or relative.is_absolute()
-                or ".." in relative.parts
-                or not path.is_file()
-                or not path.is_relative_to(root.resolve())
-                or hashlib.sha256(path.read_bytes()).hexdigest() != expected
-            ):
-                raise SystemExit(
-                    "The accepted source snapshot failed its content check: "
-                    f"{relative}. Review and accept the current files again."
-                )
-        module_ref, separator, workflow_name = workflow_spec.partition(":")
-        absolute = str((root / module_ref).resolve())
-        return (
-            root,
-            absolute + (f":{workflow_name}" if separator else ""),
         )
 
     def _specification_diff(self) -> tuple[str, str]:
@@ -1813,19 +1619,6 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
         state = self.workspace.load()
         baseline = state.get("pending_specification_baseline")
         baseline_name = "pre-refinement specification"
-        if not isinstance(baseline, str):
-            selected = self.workspace.current_workflow
-            accepted = (
-                self.workspace.accepted_review(selected)
-                if selected is not None
-                else None
-            )
-            baseline = (
-                accepted.get("specification")
-                if isinstance(accepted, dict)
-                else None
-            )
-            baseline_name = "last accepted specification"
         if not isinstance(baseline, str):
             return (
                 "initial",
@@ -1846,8 +1639,8 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
         )
 
     def _semantic_diff(self) -> tuple[str, str]:
-        current, workflow, module = self._current_context(
-            purpose="compare its reviewed semantics"
+        _current, workflow, module = self._current_context(
+            purpose="compare its semantics"
         )
         state = self.workspace.load()
         baseline_file = state.get("pending_semantic_baseline")
@@ -1870,22 +1663,6 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
             ):
                 baseline_snapshot = None
         if baseline_snapshot is None:
-            accepted = self.workspace.accepted_review(current)
-            raw_accepted = (
-                accepted.get("semantic_snapshot")
-                if isinstance(accepted, dict)
-                else None
-            )
-            if isinstance(raw_accepted, dict):
-                try:
-                    baseline_snapshot = {
-                        "schema": raw_accepted.get("schema"),
-                        "workflow": read_semantic_snapshot(raw_accepted),
-                    }
-                    baseline_name = "last accepted semantics"
-                except ValueError:
-                    baseline_snapshot = None
-        if baseline_snapshot is None:
             return (
                 "initial",
                 "# No earlier semantic baseline exists for this creation.",
@@ -1897,17 +1674,17 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
             render_semantic_diff(semantic_diff_models(before, after)),
         )
 
-    def show_review_changes(self) -> None:
+    def show_workflow_changes(self) -> None:
         specification_baseline, specification_diff = self._specification_diff()
         semantic_baseline, semantic_diff = self._semantic_diff()
         self._emit_table(
-            "Review comparison",
+            "Change comparison",
             [
                 ("Intent baseline", specification_baseline, None),
                 ("Behavior baseline", semantic_baseline, None),
                 (
                     "Meaning",
-                    "comparison only; validation and acceptance remain separate",
+                    "comparison only; validation is a separate technical check",
                     "info",
                 ),
             ],
@@ -1919,483 +1696,9 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
         self._emit(semantic_diff)
         self._emit()
 
-    def _record_accepted_review(
-        self,
-        request_id: str | None,
-    ) -> dict[str, object]:
-        current, workflow, module = self._current_context(
-            purpose="record its accepted review"
-        )
-        specification = self.workspace.specification()
-        if specification is None:
-            raise SystemExit(
-                "A canonical specification is required before acceptance."
-            )
-        file_records = self._workflow_file_records()
-        git_provenance = self._accepted_git_provenance(
-            [path for path, _role in file_records]
-        )
-        try:
-            accepted_source = self.workspace.capture_accepted_source(
-                current,
-                files=file_records,
-                specification=specification,
-                git_provenance=git_provenance,
-            )
-        except (OSError, WorkspaceError) as exc:
-            raise SystemExit(
-                f"Could not preserve the accepted source snapshot: {exc}"
-            ) from exc
-        return self.workspace.record_accepted_review(
-            current,
-            specification=specification,
-            specification_fingerprint=(
-                self.workspace.specification_fingerprint(
-                    include_pending=False
-                )
-            ),
-            semantic_snapshot=semantic_snapshot(workflow, module),
-            request_id=request_id,
-            accepted_source=accepted_source,
-        )
-
-    def _accepted_git_provenance(
-        self,
-        workflow_files: list[str],
-    ) -> dict[str, object]:
-        """Describe the reviewed Git state without requiring a clean tree."""
-
-        git = shutil.which("git")
-        if git is None:
-            return {
-                "available": False,
-                "commit": None,
-                "dirty": None,
-                "status": [],
-            }
-
-        def run(arguments: list[str]) -> subprocess.CompletedProcess[str]:
-            return subprocess.run(
-                [git, "-C", str(self.workspace.root), *arguments],
-                check=False,
-                capture_output=True,
-                text=True,
-            )
-
-        root_result = run(["rev-parse", "--show-toplevel"])
-        if root_result.returncode != 0:
-            return {
-                "available": False,
-                "commit": None,
-                "dirty": None,
-                "status": [],
-            }
-        commit_result = run(["rev-parse", "HEAD"])
-        tracked = sorted(
-            {
-                self.workspace.specification_path.relative_to(
-                    self.workspace.root
-                ).as_posix(),
-                *workflow_files,
-            }
-        )
-        status_result = run(
-            ["status", "--short", "--untracked-files=all", "--", *tracked]
-        )
-        status = (
-            [line for line in status_result.stdout.splitlines() if line]
-            if status_result.returncode == 0
-            else []
-        )
-        return {
-            "available": True,
-            "root": root_result.stdout.strip(),
-            "commit": (
-                commit_result.stdout.strip()
-                if commit_result.returncode == 0
-                else None
-            ),
-            "dirty": bool(status) if status_result.returncode == 0 else None,
-            "status": status,
-        }
-
-    def _accepted_source_rows(
-        self,
-        accepted: dict[str, object],
-    ) -> list[tuple[str, object, StatusKind | None]]:
-        source = accepted.get("accepted_source")
-        if not isinstance(source, dict):
-            return []
-        git = source.get("git")
-        git_row: tuple[str, object, StatusKind | None] | None = None
-        if isinstance(git, dict) and git.get("available"):
-            commit = str(git.get("commit") or "no commit")
-            dirty = git.get("dirty")
-            git_row = (
-                "Git provenance",
-                (
-                    f"{commit[:12]} · reviewed files had uncommitted changes"
-                    if dirty
-                    else f"{commit[:12]} · reviewed files were clean"
-                    if dirty is False
-                    else f"{commit[:12]} · dirty state unavailable"
-                ),
-                "warning" if dirty else "success" if dirty is False else None,
-            )
-        rows: list[tuple[str, object, StatusKind | None]] = [
-            ("Accepted source", source.get("root") or "not preserved", "success")
-        ]
-        if git_row is not None:
-            rows.append(git_row)
-        return rows
-
-    def _accepted_source_drift(
-        self,
-        accepted: dict[str, object],
-        current_files: list[tuple[str, str]],
-    ) -> list[str]:
-        source = accepted.get("accepted_source")
-        if not isinstance(source, dict):
-            return ["accepted source snapshot unavailable"]
-        raw_files = source.get("files")
-        if not isinstance(raw_files, list):
-            return ["accepted source manifest unavailable"]
-        accepted_hashes = {
-            str(value.get("path")): str(value.get("sha256"))
-            for value in raw_files
-            if isinstance(value, dict)
-            and value.get("path")
-            and value.get("sha256")
-        }
-        current_hashes: dict[str, str] = {}
-        for relative, _role in current_files:
-            path = (self.workspace.root / relative).resolve()
-            if path.is_file() and path.is_relative_to(self.workspace.root):
-                current_hashes[relative] = hashlib.sha256(
-                    path.read_bytes()
-                ).hexdigest()
-        changes = [
-            f"added {path}"
-            for path in sorted(current_hashes.keys() - accepted_hashes.keys())
-        ]
-        changes.extend(
-            f"removed {path}"
-            for path in sorted(accepted_hashes.keys() - current_hashes.keys())
-        )
-        changes.extend(
-            f"modified {path}"
-            for path in sorted(current_hashes.keys() & accepted_hashes.keys())
-            if current_hashes[path] != accepted_hashes[path]
-        )
-        return changes
-
-    def accept_selected_workflow_baseline(self, *, yes: bool) -> None:
-        """Accept an existing selected workflow without inventing a task."""
-
-        from zippergen.serve import _validate_workflow
-
-        current, workflow, module = self._current_context(
-            purpose="accept it as the reviewed baseline"
-        )
-        specification = self.workspace.specification()
-        if specification is None:
-            raise SystemExit(
-                "A canonical specification is required. Use 'workflow edit "
-                "spec', then review and accept the selected workflow."
-            )
-        validation = _validate_workflow(workflow, module)
-        comparison, changed, accepted_before = (
-            self._accepted_review_comparison(current, workflow, module)
-        )
-        current_files = self._workflow_file_records()
-        source_drift = (
-            self._accepted_source_drift(accepted_before, current_files)
-            if accepted_before is not None
-            else []
-        )
-        if (
-            comparison == "match"
-            and accepted_before is not None
-            and not source_drift
-        ):
-            self._emit_table(
-                "Workflow baseline already accepted",
-                [
-                    ("Workflow", current, "success"),
-                    (
-                        "Accepted",
-                        accepted_before.get("accepted_at") or "recorded",
-                        "success",
-                    ),
-                    (
-                        "Technical validation",
-                        "valid" if validation["valid"] else "invalid",
-                        "success" if validation["valid"] else "error",
-                    ),
-                    (
-                        "Meaning",
-                        "current specification, semantics, and reviewed source "
-                        "already match the accepted baseline",
-                        "info",
-                    ),
-                    *self._accepted_source_rows(accepted_before),
-                    ("Next", "current · deploy --no-start", None),
-                ],
-            )
-            return
-
-        if comparison == "diverged" and accepted_before is not None:
-            self._show_accepted_divergence(
-                accepted_before,
-                workflow,
-                module,
-            )
-        state = (
-            "replace the earlier accepted baseline"
-            if accepted_before is not None
-            else "create the first accepted baseline"
-        )
-        self._emit_table(
-            "Existing workflow acceptance",
-            [
-                ("Workflow", current, "success"),
-                ("Specification", "specification.md", "success"),
-                (
-                    "Technical validation",
-                    "valid" if validation["valid"] else "invalid",
-                    "success" if validation["valid"] else "error",
-                ),
-                (
-                    "Intent/semantics",
-                    (
-                        ", ".join(changed) + " changed"
-                        if changed
-                        else "no earlier accepted comparison"
-                        if comparison == "never"
-                        else "match the earlier accepted baseline"
-                    ),
-                    "warning" if changed else None,
-                ),
-                (
-                    "Source files",
-                    (
-                        "; ".join(source_drift)
-                        if source_drift
-                        else f"{len(current_files)} reviewed files"
-                    ),
-                    "warning" if source_drift else None,
-                ),
-                ("Action", state, "warning" if accepted_before else "info"),
-                (
-                    "Boundary",
-                    "accept records human approval and a private source "
-                    "snapshot; it does not validate, run, deploy, or restart",
-                    "info",
-                ),
-            ],
-        )
-        if not yes and not self._confirm_action(
-            "Accept the selected workflow as the reviewed baseline? [y/n]: ",
-            cancel_message=(
-                "Workflow baseline acceptance cancelled; nothing was changed."
-            ),
-        ):
-            return
-        accepted = self._record_accepted_review(None)
-        self._emit_table(
-            "Workflow baseline accepted",
-            [
-                ("Status", "human approval recorded", "success"),
-                ("Workflow", current, None),
-                (
-                    "Accepted baseline",
-                    f"recorded at {accepted['accepted_at']}",
-                    "success",
-                ),
-                (
-                    "Technical validation",
-                    "valid" if validation["valid"] else "invalid",
-                    "success" if validation["valid"] else "error",
-                ),
-                *self._accepted_source_rows(accepted),
-                (
-                    "Meaning",
-                    "no implementation task was created or closed; nothing "
-                    "was run or deployed",
-                    "info",
-                ),
-                ("Next", "current · deploy --no-start", None),
-            ],
-        )
-
-    @staticmethod
-    def _review_scope(workflow, module) -> tuple[str, StatusKind, bool]:
-        """Describe review depth without weakening explicit acceptance."""
-
-        model = workflow_semantics(workflow, module)
-        raw_sites = model.get("action_sites")
-        sites = raw_sites if isinstance(raw_sites, list) else []
-        elevated_kinds = {
-            str(site.get("kind"))
-            for site in sites
-            if isinstance(site, dict)
-            and site.get("kind") in {"human", "effect", "assistant"}
-        }
-        reasons = [
-            label
-            for kind, label in (
-                ("human", "human actions"),
-                ("effect", "external effects"),
-                ("assistant", "assistant actions"),
-            )
-            if kind in elevated_kinds
-        ]
-        if getattr(module, "zippergen_deployment", None) is not None:
-            reasons.append("deployment declaration")
-        if reasons:
-            return (
-                "elevated — " + ", ".join(reasons),
-                "warning",
-                True,
-            )
-        return (
-            "standard — no declared human, effect, assistant, or deployment "
-            "boundary; LLM and prompt behavior still require explicit approval",
-            "info",
-            False,
-        )
-
-    def review_workflow(self) -> None:
-        """Guide the complete human-review loop without hiding any step."""
-
-        record = self._ensure_current_task_fresh(announce=False)
-        if record is None:
-            raise SystemExit(
-                "No implementation is awaiting review. Use workflow create or "
-                "workflow refine, then workflow implement."
-            )
-        record = self._normalize_task_lifecycle(record)
-        status = str(record.get("status") or "prepared")
-        if status != "awaiting_review":
-            _state, _kind = self._task_state(record)
-            raise SystemExit(
-                f"The current implementation is {_state}, not awaiting human "
-                f"review. Next: {self._task_next(record)}"
-            )
-        verification, verification_kind = self._task_verification(record)
-        pending = self.workspace.pending_refinement() is not None
-        _current, selected_workflow, selected_module = self._current_context()
-        review_scope, review_scope_kind, elevated = self._review_scope(
-            selected_workflow,
-            selected_module,
-        )
-        self._emit_table(
-            "Workflow review",
-            [
-                ("Status", "awaiting human review", "warning"),
-                ("Kind", record["kind"], None),
-                (
-                    "Workflow",
-                    record.get("workflow_spec")
-                    or self.workspace.current_workflow
-                    or "select during inspection",
-                    None,
-                ),
-                ("Assistant checks", verification, verification_kind),
-                ("Review scope", review_scope, review_scope_kind),
-                (
-                    "Decision boundary",
-                    "validate checks the current code; accept records your "
-                    "human approval after review",
-                    "info",
-                ),
-                (
-                    "Requirements",
-                    (
-                        "pending refinement plus integrated specification"
-                        if pending
-                        else "integrated specification"
-                    ),
-                    None,
-                ),
-            ],
-        )
-        if pending:
-            self._emit_section_title("Requested refinement")
-            self._emit(self.workspace.pending_refinement() or "")
-            self._emit()
-        self.show_review_changes()
-
-        while True:
-            actions = (
-                [
-                    "Review specification and semantic changes",
-                    "Inspect authored source",
-                    "Inspect a semantic workflow view",
-                    "Validate workflow",
-                    "Run workflow",
-                    "Accept reviewed implementation",
-                    "Finish review for now",
-                ]
-                if elevated
-                else [
-                    "Review specification and semantic changes",
-                    "Validate workflow",
-                    "Run workflow",
-                    "Accept reviewed implementation",
-                    "More inspection",
-                    "Finish review for now",
-                ]
-            )
-            selected = self._select(
-                "Review actions",
-                actions,
-                prompt="Select review action",
-            )
-            assert isinstance(selected, str)
-            if selected == "Review specification and semantic changes":
-                if self.workspace.pending_refinement() is not None:
-                    self.manage_spec(["pending"])
-                self.manage_spec(["show"])
-                self.show_review_changes()
-            elif selected == "Inspect authored source":
-                self.show_workflow_source([])
-            elif selected == "Inspect a semantic workflow view":
-                self.show_workflow([])
-            elif selected == "More inspection":
-                inspection = self._select(
-                    "Additional inspection",
-                    ["Inspect authored source", "Inspect a semantic workflow view"],
-                    prompt="Select inspection",
-                )
-                if inspection == "Inspect authored source":
-                    self.show_workflow_source([])
-                else:
-                    self.show_workflow([])
-            elif selected == "Validate workflow":
-                self.validate()
-            elif selected == "Run workflow":
-                self.execute("run", _allow_natural=False)
-            elif selected == "Accept reviewed implementation":
-                before = self.workspace.current_request()
-                self.manage_workflow(
-                    ["accept"],
-                    show_accept_comparison=False,
-                )
-                after = self.workspace.current_request()
-                if before is not None and after is None:
-                    return
-            else:
-                self._info(
-                    "Review remains open; use 'workflow review' to continue."
-                )
-                return
-
     def manage_workflow(
         self,
         args: list[str],
-        *,
-        show_accept_comparison: bool = True,
     ) -> None:
         """Present specification, implementation, and inspection as one lifecycle."""
 
@@ -2408,25 +1711,25 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
             self.create_from_command(rest)
             return
         if action == "refine":
-            implement = "--implement" in rest
-            review = "--review" in rest
-            if (
-                rest.count("--implement") > 1
-                or rest.count("--review") > 1
-                or (review and not implement)
-            ):
+            if "--review" in rest:
                 raise SystemExit(
                     "Use workflow refine [CHANGE|--file PATH|--edit] "
-                    "[--implement [--review]]."
+                    "[--implement]; --review no longer exists."
+                )
+            implement = "--implement" in rest
+            if rest.count("--implement") > 1:
+                raise SystemExit(
+                    "Use workflow refine [CHANGE|--file PATH|--edit] "
+                    "[--implement]."
                 )
             refinement_args = [
                 value
                 for value in rest
-                if value not in {"--implement", "--review"}
+                if value != "--implement"
             ]
             self.manage_spec(["refine", *refinement_args])
             if implement:
-                self.run_assistant(["--review"] if review else [])
+                self.run_assistant([])
             return
         if action == "edit":
             target = rest[0].casefold() if rest and not rest[0].startswith("-") else "spec"
@@ -2470,7 +1773,7 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
         if action == "diff":
             if rest:
                 raise SystemExit("Use workflow diff.")
-            self.show_review_changes()
+            self.show_workflow_changes()
             return
         if action == "status":
             if rest not in ([], ["--details"]):
@@ -2480,33 +1783,10 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
         if action == "implement":
             self.run_assistant(rest)
             return
-        if action == "review":
-            if rest:
-                raise SystemExit("Use workflow review.")
-            self.review_workflow()
-            return
         if action == "validate":
             if rest:
                 raise SystemExit("Use workflow validate.")
             self.validate()
-            return
-        if action == "accept":
-            if rest not in ([], ["--yes"]):
-                raise SystemExit("Use workflow accept [--yes].")
-            if self.workspace.pending_refinement() is not None:
-                if show_accept_comparison:
-                    self.show_review_changes()
-                self.manage_spec(["reconcile", *rest])
-            else:
-                request = self.workspace.current_request()
-                if request is None:
-                    self.accept_selected_workflow_baseline(
-                        yes=rest == ["--yes"]
-                    )
-                else:
-                    if show_accept_comparison:
-                        self.show_review_changes()
-                    self.manage_task(["close", *rest])
             return
         if action == "discard":
             self.manage_spec(["discard", *rest])
@@ -2525,8 +1805,7 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
             return
         raise SystemExit(
             "Use workflow create, refine, edit, list, import, select, files, show, "
-            "diff, status, implement, review, validate, accept, discard, "
-            "history, or path."
+            "diff, status, implement, validate, discard, history, or path."
         )
 
     def studio_doctor(self) -> None:
@@ -3042,16 +2321,6 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
                 )
             current, workflow, module = self._current_context(
                 purpose="run it"
-            )
-            review_state, review_kind = self._accepted_review_status(
-                current,
-                workflow,
-                module,
-            )
-            self._status(
-                review_kind,
-                f"Accepted review: {review_state}. "
-                "The run performs technical validation separately.",
             )
             profile = self._run_model_profile()
             default_model = profile.get("default")
@@ -3600,8 +2869,7 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
         parts = shlex.split(command_line)
         lowered = [value.casefold() for value in parts]
         if (
-            tuple(lowered[:2])
-            in {("workflow", "discard"), ("workflow", "accept")}
+            tuple(lowered[:2]) == ("workflow", "discard")
             and "--yes" not in lowered
         ):
             parts.append("--yes")
@@ -4402,9 +3670,9 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
                 if task_record
                 else "prepared"
             )
-            if task_status == "awaiting_review":
-                pending_status = "assistant returned; awaiting human review"
-                pending_kind: StatusKind = "warning"
+            if task_status in {"awaiting_review", "implemented"}:
+                pending_status = "assistant returned; implementation available"
+                pending_kind: StatusKind = "success"
                 assert task_record is not None
                 next_action = self._task_next(task_record)
             elif task_status == "assistant_running":
@@ -4495,102 +3763,36 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
                     "canonical specification; its original files were kept."
                 )
             return
-        if action in {"reconcile", "discard"}:
+        if action == "discard":
             if rest not in ([], ["--yes"]):
-                public_action = "accept" if action == "reconcile" else "discard"
-                raise SystemExit(f"Use workflow {public_action} [--yes].")
+                raise SystemExit("Use workflow discard [--yes].")
             pending = self.workspace.pending_refinement()
             if pending is None:
                 raise SystemExit("There is no pending refinement.")
-            if action == "reconcile":
-                baseline = self.workspace.load().get(
-                    "pending_specification_fingerprint"
-                )
-                current = self.workspace.specification_fingerprint(
-                    include_pending=False
-                )
-                if baseline == current:
-                    raise SystemExit(
-                        "The canonical specification has not changed since this "
-                        "refinement began. Run 'workflow implement' or use "
-                        "'workflow edit spec' to integrate the change before "
-                        "accepting it."
-                    )
-            if rest != ["--yes"]:
-                question = (
-                    "Accept the reviewed intent and implementation, record "
-                    "their baseline, and clear the pending refinement? [y/n]: "
-                    if action == "reconcile"
-                    else "Discard the refinement request without reverting "
-                    "working-tree files? [y/n]: "
-                )
-                if not self._confirm_spec_action(
-                    question
-                ):
-                    return
-            request = self.workspace.current_request()
-            accepted = (
-                self._record_accepted_review(
-                    str(request["request_id"]) if request is not None else None
-                )
-                if action == "reconcile"
-                else None
-            )
+            if rest != ["--yes"] and not self._confirm_spec_action(
+                "Discard the refinement request without reverting "
+                "working-tree files? [y/n]: "
+            ):
+                return
             result = self.workspace.archive_pending_refinement(
-                status="reconciled" if action == "reconcile" else "discarded"
+                status="discarded"
             )
             self._emit_table(
                 "Specification refinement",
                 [
-                    (
-                        "Status",
-                        result["status"],
-                        "success" if action == "reconcile" else "warning",
-                    ),
-                    (
-                        "Canonical",
-                        (
-                            "existing integration accepted; no automatic merge "
-                            "was performed"
-                            if action == "reconcile"
-                            else "unchanged by discard"
-                        ),
-                        "success" if action == "reconcile" else None,
-                    ),
+                    ("Status", result["status"], "warning"),
+                    ("Canonical", "unchanged by discard", None),
                     ("Pending", "cleared", "success"),
                     (
                         "Implementation",
-                        (
-                            "accepted; private history retained"
-                            if action == "reconcile"
-                            else "not accepted; working-tree files unchanged"
-                        ),
-                        "success" if action == "reconcile" else "warning",
+                        "working-tree files unchanged",
+                        "warning",
                     ),
-                    *(
-                        [
-                            (
-                                "Accepted baseline",
-                                f"recorded at {accepted['accepted_at']}",
-                                "success",
-                            ),
-                            (
-                                "Meaning",
-                                "human approval recorded; validation is a "
-                                "separate technical check",
-                                "info",
-                            ),
-                            *self._accepted_source_rows(accepted),
-                        ]
-                        if accepted is not None
-                        else [
-                            (
-                                "Working tree",
-                                "not reverted; inspect git diff and restore "
-                                "unwanted source/specification edits manually",
-                                "warning",
-                            )
-                        ]
+                    (
+                        "Working tree",
+                        "not reverted; inspect git diff and restore unwanted "
+                        "source/specification edits manually",
+                        "warning",
                     ),
                     ("History", result["history_path"], None),
                     ("Next", "workflow show spec · current", None),
@@ -4605,7 +3807,7 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
                     [
                         (
                             "Status",
-                            "none; accepted specification history lives in Git",
+                            "none; specification history lives in Git",
                             None,
                         )
                     ],
@@ -4627,7 +3829,7 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
             return
         raise SystemExit(
             "Use workflow show spec, workflow edit spec, workflow path, "
-            "workflow refine, workflow show pending, workflow accept [--yes], "
+            "workflow refine, workflow show pending, "
             "workflow discard [--yes], or workflow history."
         )
 
@@ -4950,8 +4152,6 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
         workflow_name = "none selected"
         validation = "not available"
         validation_kind: StatusKind = "warning"
-        accepted = "not available"
-        accepted_kind: StatusKind = "warning"
         llm_action_count = 0
         if current:
             try:
@@ -4971,11 +4171,6 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
                 result = _validate_workflow(workflow, module)
                 validation = "valid" if result["valid"] else "invalid"
                 validation_kind = "success" if result["valid"] else "error"
-                accepted, accepted_kind = self._accepted_review_status(
-                    current,
-                    workflow,
-                    module,
-                )
             except (Exception, SystemExit) as exc:
                 workflow_name = f"{current} · cannot load"
                 validation = str(exc)
@@ -5021,12 +4216,8 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
             )
         )
         self._emit(
-            f"│   ├── Validation · {self._status_mark(validation_kind)} "
+            f"│   └── Validation · {self._status_mark(validation_kind)} "
             f"{validation}"
-        )
-        self._emit(
-            f"│   └── Accepted review · {self._status_mark(accepted_kind)} "
-            f"{accepted}"
         )
 
         model_default = "none"
@@ -5276,6 +4467,11 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
                     ),
                 )
             return record
+        if record.get("status") == "awaiting_review":
+            return self.workspace.update_request(
+                str(record["request_id"]),
+                status="implemented",
+            )
         if record.get("status"):
             return record
         changes: dict[str, object] = {"status": "prepared"}
@@ -5291,7 +4487,7 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
             )
             if baseline and baseline != current:
                 changes = {
-                    "status": "awaiting_review",
+                    "status": "implemented",
                     "lifecycle_inferred": True,
                     "result_specification_fingerprint": (
                         self.workspace.specification_fingerprint()
@@ -5310,7 +4506,8 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
         states: dict[str, tuple[str, StatusKind]] = {
             "prepared": ("ready for assistant", "success"),
             "assistant_running": ("assistant running", "info"),
-            "awaiting_review": ("awaiting human review", "warning"),
+            "awaiting_review": ("implemented", "success"),
+            "implemented": ("implemented", "success"),
             "assistant_failed": ("assistant failed", "error"),
             "assistant_interrupted": ("assistant interrupted", "warning"),
             "reconciled": ("reconciled", "success"),
@@ -5428,7 +4625,7 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
     def _task_next(self, record: dict[str, object]) -> str:
         status = str(record.get("status") or "prepared")
         kind = str(record.get("kind") or "")
-        if status == "awaiting_review":
+        if status in {"awaiting_review", "implemented"}:
             verification = str(record.get("assistant_verification") or "")
             if verification != "passed" and record.get("assistant"):
                 backend = (
@@ -5436,17 +4633,15 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
                     if str(record.get("assistant")).lower().startswith("claude")
                     else "codex"
                 )
-                return (
-                    f"workflow review · workflow implement {backend} --rerun"
-                )
+                return f"workflow diff · workflow implement {backend} --rerun"
             if kind == "refine":
                 if record.get("specification_context_changed") is False:
                     return (
                         "workflow edit spec · workflow implement codex --rerun · "
                         "workflow implement claude --rerun"
                     )
-                return "workflow review"
-            return "workflow review"
+                return "workflow diff · workflow validate · run · deploy"
+            return "workflow diff · workflow validate · run · deploy"
         if status == "assistant_running":
             return "wait for the assistant session to return"
         if status in {"assistant_failed", "assistant_interrupted"}:
@@ -5491,7 +4686,7 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
                 return f"{assistant} — returned {finished}"
             return str(assistant)
         if record.get("lifecycle_inferred"):
-            return "not recorded; review inferred from specification change"
+            return "not recorded; implementation inferred from specification change"
         if record.get("manual_integration"):
             return "not used; canonical specification was edited manually"
         return "not started"
@@ -5502,36 +4697,29 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
     ) -> tuple[str, StatusKind]:
         status = str(record.get("status") or "prepared")
         current = self.workspace.specification_fingerprint()
-        if status == "awaiting_review":
+        if status in {"awaiting_review", "implemented"}:
             result = record.get("result_specification_fingerprint")
             if result and result != current:
                 if record.get("manual_integration"):
                     return "changed again after manual integration", "warning"
                 return "changed again after the assistant returned", "warning"
             if record.get("manual_integration"):
-                return "manual integration is preserved for review", "success"
-            return "assistant result is preserved for review", "success"
+                return "manual integration matches this task", "success"
+            return "implementation matches this task", "success"
         if record.get("specification_fingerprint") == current:
             return "matches the current specification", "success"
         return "changed since this implementation was prepared", "warning"
 
     def manage_task(self, args: list[str]) -> None:
-        if len(args) > 2 or (
+        if len(args) > 1 or (
             args
             and args[0].lower()
-            not in {"show", "path", "history", "close", "details"}
+            not in {"show", "path", "history", "details"}
         ):
             raise SystemExit(
-                "Use workflow status [--details], workflow history, or "
-                "workflow accept [--yes]."
+                "Use workflow status [--details] or workflow history."
             )
         action = args[0].lower() if args else "summary"
-        rest = args[1:]
-        if action != "close" and rest:
-            raise SystemExit(
-                "Use workflow status [--details], workflow history, or "
-                "workflow accept [--yes]."
-            )
         if action == "history":
             records = self.workspace.list_requests()
             if not records:
@@ -5567,11 +4755,10 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
 
         record = self._ensure_current_task_fresh()
         if record is None:
-            if action in {"show", "path", "close"}:
+            if action in {"show", "path"}:
                 raise SystemExit(
                     "No current implementation task is open. A selected "
-                    "workflow may still exist; use 'current' to inspect it or "
-                    "'workflow accept' to record a reviewed baseline."
+                    "workflow may still exist; use 'current' to inspect it."
                 )
             self._emit_table(
                 "Workflow implementation task",
@@ -5585,48 +4772,6 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
             )
             return
         record = self._normalize_task_lifecycle(record)
-        if action == "close":
-            if rest not in ([], ["--yes"]):
-                raise SystemExit("Use workflow accept [--yes].")
-            if self.workspace.pending_refinement() is not None:
-                raise SystemExit(
-                    "A refinement is still pending. Review it, then use "
-                    "'workflow accept' to accept it or 'workflow discard' "
-                    "to reject it."
-                )
-            if rest != ["--yes"] and not self._confirm_action(
-                "Accept the reviewed intent and implementation and record "
-                "their baseline? [y/n]: ",
-                cancel_message=(
-                    "Workflow acceptance cancelled; nothing was changed."
-                ),
-            ):
-                return
-            accepted = self._record_accepted_review(
-                str(record["request_id"])
-            )
-            self.workspace.clear_current_task()
-            self._emit_table(
-                "Workflow implementation accepted",
-                [
-                    ("Status", "closed", "success"),
-                    (
-                        "Accepted baseline",
-                        f"recorded at {accepted['accepted_at']}",
-                        "success",
-                    ),
-                    (
-                        "Meaning",
-                        "human approval recorded; validation is a separate "
-                        "technical check",
-                        "info",
-                    ),
-                    *self._accepted_source_rows(accepted),
-                    ("History", "retained; use workflow history", None),
-                    ("Next", "current", None),
-                ],
-            )
-            return
         if action == "path":
             self._emit(self.workspace.current_task_path)
             return
@@ -5637,15 +4782,6 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
             return
         state, state_kind = self._task_state(record)
         context, context_kind = self._task_context(record)
-        accepted_state = "not available until a workflow is selected"
-        accepted_kind: StatusKind = "warning"
-        if self.workspace.current_workflow:
-            current, workflow, module = self._current_context()
-            accepted_state, accepted_kind = self._accepted_review_status(
-                current,
-                workflow,
-                module,
-            )
         self._emit_table(
             "Workflow implementation task",
             [
@@ -5667,7 +4803,6 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
                     else []
                 ),
                 ("Context", context, context_kind),
-                ("Accepted review", accepted_state, accepted_kind),
                 *(
                     [
                         ("Request", record["request_id"], None),
@@ -5935,25 +5070,121 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
         thread.start()
         return stopped, thread
 
+    def _implementation_file_snapshot(self) -> dict[str, str] | None:
+        """Fingerprint visible project files for the implementation summary."""
+
+        ignored = {
+            ".git",
+            ".hg",
+            ".mypy_cache",
+            ".pytest_cache",
+            ".ruff_cache",
+            ".tox",
+            ".venv",
+            ".zippergen",
+            "__pycache__",
+            "build",
+            "dist",
+            "node_modules",
+            "venv",
+        }
+        snapshot: dict[str, str] = {}
+        try:
+            for directory, directory_names, file_names in os.walk(
+                self.workspace.root,
+                followlinks=False,
+            ):
+                directory_names[:] = [
+                    name for name in directory_names if name not in ignored
+                ]
+                base = Path(directory)
+                for name in file_names:
+                    path = base / name
+                    relative = path.relative_to(self.workspace.root)
+                    try:
+                        if path.is_symlink():
+                            digest = "symlink:" + os.readlink(path)
+                        elif path.is_file():
+                            digest = hashlib.sha256(path.read_bytes()).hexdigest()
+                        else:
+                            digest = "missing"
+                    except OSError:
+                        digest = "unreadable"
+                    snapshot[relative.as_posix()] = digest
+        except OSError:
+            return None
+        return snapshot
+
+    @staticmethod
+    def _implementation_changed_files(
+        before: dict[str, str] | None,
+        after: dict[str, str] | None,
+    ) -> tuple[str, ...] | None:
+        if before is None or after is None:
+            return None
+        return tuple(
+            sorted(
+                path
+                for path in before.keys() | after.keys()
+                if before.get(path) != after.get(path)
+            )
+        )
+
+    @staticmethod
+    def _implementation_files_summary(files: tuple[str, ...] | None) -> str:
+        if files is None:
+            return "not available"
+        if not files:
+            return "none detected"
+        shown = files[:8]
+        suffix = f" · +{len(files) - len(shown)} more" if len(files) > 8 else ""
+        return f"{len(files)} · " + " · ".join(shown) + suffix
+
+    def _implementation_validation_summary(
+        self,
+        workflow_spec: str | None,
+    ) -> tuple[str, StatusKind]:
+        """Validate the produced workflow without prompting for a selection."""
+
+        if workflow_spec is None:
+            return ("not available; select the produced workflow", "warning")
+        try:
+            from zippergen.serve import _validate_workflow, load_workflow_spec
+
+            workflow, module = load_workflow_spec(
+                self.workspace.absolute_spec(workflow_spec)
+            )
+            result = _validate_workflow(workflow, module)
+        except (Exception, SystemExit) as exc:
+            return (f"failed to load or validate: {exc}", "error")
+        if result["valid"]:
+            return ("passed", "success")
+        failed = sum(
+            1
+            for check in result["checks"]  # type: ignore[index]
+            if str(check.get("status") or "").casefold() == "fail"
+        )
+        detail = f"failed · {failed} check{'s' if failed != 1 else ''}"
+        return (detail, "error")
+
     def run_assistant(self, args: list[str]) -> None:
         rerun = "--rerun" in args
         interactive = "--interactive" in args
-        review_after = "--review" in args
         values = [
             value
             for value in args
-            if value not in {"--rerun", "--interactive", "--review"}
+            if value not in {"--rerun", "--interactive"}
         ]
         if len(values) > 1 or any(
             value.lower() not in {"codex", "claude"} for value in values
         ) or any(
             args.count(option) > 1
-            for option in ("--rerun", "--interactive", "--review")
+            for option in ("--rerun", "--interactive")
         ):
             raise SystemExit(
                 "Use workflow implement, workflow implement codex, "
                 "workflow implement claude, or workflow implement "
-                "[codex|claude] [--rerun] [--review]. Use workflow implement "
+                "[codex|claude] [--rerun]. Use workflow implement "
                 "codex --interactive only for an interactive session."
             )
         assistant = (
@@ -5972,15 +5203,14 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
                 "workflow refine before starting the assistant."
             )
         status = str(record.get("status") or "prepared")
-        if status == "awaiting_review":
+        if status in {"awaiting_review", "implemented"}:
             manual_first_pass = bool(record.get("manual_integration")) and not bool(
                 record.get("assistant")
             )
             if not rerun and not manual_first_pass:
                 raise SystemExit(
-                    "The assistant has already returned and this implementation is awaiting "
-                    "human review. Use 'workflow review' for the guided review "
-                    "and acceptance loop; use 'workflow implement "
+                    "The assistant has already returned for this implementation. "
+                    "Use 'workflow diff' to inspect it; use 'workflow implement "
                     f"{assistant} --rerun' only to run it deliberately again."
                 )
             record = self._ensure_current_task_fresh(
@@ -6109,6 +5339,7 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
                 instruction,
             ]
         capture_codex = assistant == "codex" and not interactive
+        files_before = self._implementation_file_snapshot()
         heartbeat_stop: threading.Event | None = None
         heartbeat_thread: threading.Thread | None = None
         if capture_codex:
@@ -6204,9 +5435,17 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
         assistant_result = self._consume_assistant_result()
         result_fingerprint = self.workspace.specification_fingerprint()
         changed = record.get("specification_fingerprint") != result_fingerprint
+        workflow_spec = str(record.get("workflow_spec") or "") or None
+        if workflow_spec is None:
+            candidates = self.workspace.discover_workflows()
+            if len(candidates) == 1:
+                workflow_spec = self.workspace.canonical_spec(
+                    candidates[0], cwd=self.workspace.root
+                )
         record = self.workspace.update_request(
             str(record["request_id"]),
-            status="awaiting_review",
+            status="implemented",
+            workflow_spec=workflow_spec,
             assistant_finished_at=time.strftime("%Y-%m-%dT%H:%M:%S%z"),
             assistant_exit_code=0,
             assistant_verification=assistant_result.verification,
@@ -6229,8 +5468,7 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
             self._success("Assistant checks passed.")
         elif assistant_result.verification == "failed":
             self._error(
-                "Assistant checks failed; do not accept the "
-                "change until they are resolved."
+                "Assistant checks failed; resolve them before using the change."
             )
         else:
             self._warning(
@@ -6242,15 +5480,31 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
             "changed since implementation preparation"
             if changed
             else (
-                "unchanged; reconciliation will refuse until it is integrated"
+                "unchanged; integrate the refinement into the specification"
                 if kind == "refine"
-                else "unchanged; review the generated workflow files"
+                else "unchanged"
             )
         )
+        files_after = self._implementation_file_snapshot()
+        changed_files = self._implementation_changed_files(
+            files_before,
+            files_after,
+        )
+        validation = self._implementation_validation_summary(workflow_spec)
+        assistant_report = (
+            str(record.get("assistant_report") or "").strip()
+            or assistant_result.summary
+            or "none provided"
+        )
         self._emit_table(
-            "Review required",
+            "Implementation summary",
             [
-                ("Status", "awaiting human review", "warning"),
+                ("Status", "implemented", "success"),
+                (
+                    "Files changed",
+                    self._implementation_files_summary(changed_files),
+                    None,
+                ),
                 (
                     "Specification",
                     specification_result,
@@ -6258,32 +5512,19 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
                 ),
                 (
                     "Refinement",
-                    "still open; Studio never accepts it automatically"
+                    "still open; use workflow discard to clear the request"
                     if kind == "refine"
                     else "not applicable",
                     "warning" if kind == "refine" else None,
                 ),
+                ("Validation", *validation),
                 ("Assistant checks", *self._task_verification(record)),
-                ("Check summary", assistant_result.summary, None),
+                ("Assistant report", assistant_report, None),
                 ("Next", self._task_next(record), None),
             ],
         )
         if assistant_result.verification != "passed":
             self._emit_task_verification_checks(record, problems_only=True)
-        if review_after:
-            self.review_workflow()
-        elif (
-            self._prompt_toolkit_enabled
-            and assistant_result.verification == "passed"
-            and self._confirm_action(
-                "Open the guided workflow review now? [Y/n]: ",
-                cancel_message=(
-                    "Review remains open; use 'workflow review' when ready."
-                ),
-                default=True,
-            )
-        ):
-            self.review_workflow()
 
     def show_current(self) -> None:
         from zippergen.serve import _validate_workflow
@@ -6301,10 +5542,10 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
         )
         refinement_status = (
             (
-                "pending — awaiting human review; use workflow show pending"
+                "pending — implementation available; use workflow show pending"
                 if request
                 and request.get("kind") == "refine"
-                and request.get("status") == "awaiting_review"
+                and request.get("status") in {"awaiting_review", "implemented"}
                 else "pending — use workflow show pending or workflow refine"
             )
             if pending is not None
@@ -6503,11 +5744,6 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
             active_models = self._llm_action_lifelines(workflow, module)
             llm_participants = list(active_models)
             validation = _validate_workflow(workflow, module)
-            review_state, review_kind = self._accepted_review_status(
-                str(state["current_workflow"]),
-                workflow,
-                module,
-            )
             self._emit_table(
                 "Workflow",
                 [
@@ -6569,7 +5805,6 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
                         "valid" if validation["valid"] else "invalid",
                         "success" if validation["valid"] else "error",
                     ),
-                    ("Accepted review", review_state, review_kind),
                 ],
             )
             assignments = self.workspace.model_assignment_profile(
@@ -6661,11 +5896,6 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
                     ("Assistant actions", "0 — none", None),
                     ("Connectors", "none", None),
                     ("Validation", "not available", "warning"),
-                    (
-                        "Accepted review",
-                        "not available until a workflow is selected",
-                        "warning",
-                    ),
                 ],
             )
             self._emit_table(
@@ -7136,6 +6366,7 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
             except ValueError:
                 pass
         self.workspace.select_workflow(canonical, cwd=self.workspace.root)
+        self._associate_implementation_workflow(canonical)
         return canonical, workflow.name
 
     def select_workflow(self, args: list[str]) -> None:
@@ -7439,7 +6670,7 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
     def validate(self) -> None:
         from zippergen.serve import _validate_workflow
 
-        current, workflow, module = self._current_context(
+        _current, workflow, module = self._current_context(
             purpose="validate it"
         )
         result = _validate_workflow(workflow, module)
@@ -7458,13 +6689,8 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
                 f"{check['name']}: {check['detail']}",
                 indent=2,
             )
-        review_state, review_kind = self._accepted_review_status(
-            current,
-            workflow,
-            module,
-        )
         self._emit_table(
-            "Validation and acceptance",
+            "Validation result",
             [
                 (
                     "Technical validation",
@@ -7475,20 +6701,18 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
                     ),
                     "success" if result["valid"] else "error",
                 ),
-                ("Human acceptance", review_state, review_kind),
                 (
-                    "Difference",
-                    "validate checks workflow structure and every local "
-                    "projection; accept records that a human approved the "
-                    "reviewed intent and semantics",
+                    "Meaning",
+                    "validation checks workflow structure and every local "
+                    "projection",
                     "info",
                 ),
                 (
                     "Next",
                     (
-                        "workflow diff · workflow review"
-                        if review_kind != "success"
-                        else "workflow diff · run"
+                        "workflow diff · run · deploy"
+                        if result["valid"]
+                        else "workflow diff · workflow implement"
                     ),
                     None,
                 ),
@@ -8887,58 +8111,82 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
                 environment[credential_env] = secret
         return environment
 
-    def deploy_workflow(self, args: list[str]) -> None:
-        from zippergen.deployment import deployment_spec_from_module
-        from zippergen.serve import (
-            _deployment_name_from_workflow,
-            _slug,
-            load_workflow_spec,
+    def _implementation_record(
+        self,
+        workflow_spec: str,
+    ) -> dict[str, object] | None:
+        """Return the newest implementation tied to this workflow."""
+
+        canonical = self.workspace.canonical_spec(
+            workflow_spec,
+            cwd=self.workspace.root,
+        )
+        for record in self.workspace.list_requests():
+            status = str(record.get("status") or "")
+            if status not in {
+                "implemented",
+                "awaiting_review",
+                "reconciled",
+                "closed",
+            }:
+                continue
+            recorded_workflow = record.get("workflow_spec")
+            if not recorded_workflow:
+                continue
+            try:
+                recorded_canonical = self.workspace.canonical_spec(
+                    str(recorded_workflow),
+                    cwd=self.workspace.root,
+                )
+            except WorkspaceError:
+                continue
+            if (
+                recorded_canonical == canonical
+                and record.get("result_specification_fingerprint")
+            ):
+                return record
+        return None
+
+    def _associate_implementation_workflow(self, workflow_spec: str) -> None:
+        """Tie a completed creation request to an explicitly selected workflow."""
+
+        record = self.workspace.current_request()
+        if (
+            record is None
+            or record.get("kind") != "create"
+            or record.get("workflow_spec")
+            or not record.get("result_specification_fingerprint")
+            or str(record.get("status") or "")
+            not in {"implemented", "awaiting_review", "closed"}
+        ):
+            return
+        self.workspace.update_request(
+            str(record["request_id"]),
+            workflow_spec=self.workspace.canonical_spec(
+                workflow_spec,
+                cwd=self.workspace.root,
+            ),
         )
 
+    def deploy_workflow(self, args: list[str]) -> None:
+        from zippergen.deployment import deployment_spec_from_module
+        from zippergen.serve import _deployment_name_from_workflow, _slug
+
         no_start = False
-        review_mode: Literal["accepted", "unreviewed"] | None = None
-        override_reason: str | None = None
         names: list[str] = []
-        index = 0
-        while index < len(args):
-            argument = args[index]
+        for argument in args:
             if argument == "--no-start":
                 no_start = True
-            elif argument in {"--accepted", "--unreviewed"}:
-                candidate_mode = argument.removeprefix("--")
-                if review_mode is not None and review_mode != candidate_mode:
-                    raise SystemExit(
-                        "Use only one of --accepted or --unreviewed."
-                    )
-                review_mode = cast(
-                    Literal["accepted", "unreviewed"],
-                    candidate_mode,
-                )
-            elif argument == "--reason":
-                index += 1
-                if index >= len(args):
-                    raise SystemExit(
-                        "Use deploy [NAME] --unreviewed --reason TEXT."
-                    )
-                override_reason = args[index].strip()
-            elif argument.startswith("--reason="):
-                override_reason = argument.partition("=")[2].strip()
             elif argument.startswith("--"):
                 raise SystemExit(
-                    "Use deploy [NAME] [--no-start] "
-                    "[--accepted|--unreviewed --reason TEXT]; unknown option "
+                    "Use deploy [NAME] [--no-start]; unknown option "
                     f"{argument!r}."
                 )
             else:
                 names.append(argument)
-            index += 1
         if len(names) > 1:
-            raise SystemExit(
-                "Use deploy [NAME] [--no-start] "
-                "[--accepted|--unreviewed --reason TEXT]."
-            )
-        if override_reason is not None and review_mode != "unreviewed":
-            raise SystemExit("--reason is only valid with --unreviewed.")
+            raise SystemExit("Use deploy [NAME] [--no-start].")
+
         current, workflow, module = self._current_context()
         current_target = self.workspace.absolute_spec(current)
         current_spec = deployment_spec_from_module(module)
@@ -8948,165 +8196,53 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
             else current_spec.name
             or _deployment_name_from_workflow(current_target, workflow)
         )
-        comparison, changed, accepted = self._accepted_review_comparison(
-            current,
-            workflow,
-            module,
+        implementation = self._implementation_record(current)
+        current_fingerprint = self.workspace.specification_fingerprint()
+        recorded_fingerprint = (
+            implementation.get("result_specification_fingerprint")
+            if implementation is not None
+            else None
         )
-        review_state, review_kind = self._accepted_review_status(
-            current,
-            workflow,
-            module,
-        )
+        if (
+            implementation is not None
+            and recorded_fingerprint != current_fingerprint
+        ):
+            self._emit_table(
+                "Deployment precondition",
+                [
+                    ("Status", "blocked", "error"),
+                    (
+                        "Reason",
+                        "the specification changed after implementation",
+                        "error",
+                    ),
+                    (
+                        "Required",
+                        "implementation must match the current specification",
+                        "info",
+                    ),
+                    ("Next", "workflow implement", None),
+                ],
+            )
+            raise SystemExit(
+                "Deployment requires an implementation of the current "
+                "specification."
+            )
+
         target = current_target
         deployment_cwd = self.workspace.root
         deployment_workflow = workflow
         deployment_module = module
         deployment_source = "current working tree"
-        override_audit: tuple[str, str | None] | None = None
-
-        if comparison == "never":
-            if review_mode == "accepted":
-                raise SystemExit(
-                    "No accepted source version exists. Use 'workflow review' "
-                    "and 'workflow accept', or deploy this manual/imported "
-                    "workflow without --accepted."
-                )
-            request = self._ensure_current_task_fresh(announce=False)
-            if request is not None:
-                request = self._normalize_task_lifecycle(request)
-            if request is not None and request.get("status") == "awaiting_review":
-                self._emit_table(
-                    "Deployment review gate",
-                    [
-                        ("Status", "blocked", "error"),
-                        (
-                            "Reason",
-                            "this generated implementation is awaiting human "
-                            "review and has never been accepted",
-                            "error",
-                        ),
-                        (
-                            "Next",
-                            "workflow diff · workflow review · workflow accept",
-                            None,
-                        ),
-                    ],
-                )
-                raise SystemExit(
-                    "Deployment stopped at the human-review boundary."
-                )
-            self._warning(
-                "No Studio acceptance is recorded. Proceeding with the current "
-                "manual, imported, or legacy workflow after technical "
-                "validation."
-            )
-        elif comparison == "diverged":
-            assert accepted is not None
-            self._emit_table(
-                "Deployment review gate",
-                [
-                    ("Status", "blocked pending a deployment choice", "error"),
-                    (
-                        "Changed",
-                        ", ".join(changed),
-                        "warning",
-                    ),
-                    (
-                        "Accepted",
-                        accepted.get("accepted_at") or "unknown time",
-                        None,
-                    ),
-                ],
-            )
-            self._show_accepted_divergence(accepted, workflow, module)
-            accepted_context: tuple[Path, str] | None = None
-            accepted_error: str | None = None
-            try:
-                accepted_context = self._accepted_source_context(accepted)
-            except SystemExit as exc:
-                accepted_error = str(exc)
-
-            if review_mode is None:
-                choices = []
-                if accepted_context is not None:
-                    choices.append(
-                        "Deploy the immutable accepted version"
-                    )
-                choices.extend(
-                    [
-                        "Review the current changes and return",
-                        "Override and deploy the current candidate",
-                        "Cancel deployment",
-                    ]
-                )
-                selected = self._select(
-                    "Deployment choices",
-                    choices,
-                    prompt="Select deployment action",
-                )
-                assert isinstance(selected, str)
-                if selected == "Review the current changes and return":
-                    self._emit_next(
-                        "workflow review · workflow accept · deploy"
-                    )
-                    return
-                if selected == "Cancel deployment":
-                    self._info("Deployment cancelled; nothing was changed.")
-                    return
-                review_mode = (
-                    "accepted"
-                    if selected == "Deploy the immutable accepted version"
-                    else "unreviewed"
-                )
-            if review_mode == "accepted":
-                if accepted_context is None:
-                    raise SystemExit(
-                        accepted_error
-                        or "The accepted source snapshot is unavailable."
-                    )
-                deployment_source = "immutable accepted source snapshot"
-            else:
-                if not override_reason:
-                    override_reason = self.input(
-                        "Reason for deploying the unaccepted candidate: "
-                    ).strip()
-                if not override_reason:
-                    raise SystemExit(
-                        "An override reason is required; deployment was "
-                        "cancelled."
-                    )
-                override_audit = (
-                    override_reason,
-                    str(accepted.get("accepted_at") or "") or None,
-                )
-                deployment_source = (
-                    "current unaccepted candidate; override will be audited"
-                )
-        elif review_mode == "unreviewed":
-            raise SystemExit(
-                "The current workflow already matches its accepted review; "
-                "--unreviewed is unnecessary."
-            )
-
-        if comparison == "match" or review_mode == "accepted":
-            assert accepted is not None
-            try:
-                deployment_cwd, target = self._accepted_source_context(
-                    accepted
-                )
-                deployment_workflow, deployment_module = load_workflow_spec(
-                    target
-                )
-                deployment_source = "immutable accepted source snapshot"
-            except SystemExit:
-                if review_mode == "accepted":
-                    raise
-                self._warning(
-                    "This older acceptance has no usable source snapshot. The "
-                    "current files match its intent and semantics, so Studio "
-                    "will deploy the current working tree."
-                )
+        implementation_summary = (
+            "matches the current specification"
+            if implementation is not None
+            else "not recorded on this machine; proceeding after technical "
+            "validation"
+        )
+        implementation_kind: StatusKind = (
+            "success" if implementation is not None else "warning"
+        )
         self._validate_workflow_model_idle_policies(
             current,
             deployment_workflow,
@@ -9117,18 +8253,12 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
             "Guided deployment",
             [
                 ("Deployment", name, None),
-                ("Accepted review", review_state, review_kind),
                 (
-                    "Source",
-                    deployment_source,
-                    (
-                        "success"
-                        if deployment_source.startswith("immutable accepted")
-                        else "warning"
-                        if "unaccepted" in deployment_source
-                        else None
-                    ),
+                    "Implementation",
+                    implementation_summary,
+                    implementation_kind,
                 ),
+                ("Source", deployment_source, None),
                 (
                     "Safety boundary",
                     "deployment validates the selected source again; an "
@@ -9148,33 +8278,11 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
         deployed_semantic_fingerprint = (
             self._semantic_snapshot_fingerprint(deployed_semantics)
         )
-        uses_accepted_source = deployment_source.startswith(
-            "immutable accepted"
-        )
         alignment_metadata = {
             "schema_version": 1,
             "workflow_spec": current,
-            "specification_fingerprint": (
-                accepted.get("specification_fingerprint")
-                if uses_accepted_source and accepted is not None
-                else self.workspace.specification_fingerprint(
-                    include_pending=False
-                )
-            ),
+            "specification_fingerprint": current_fingerprint,
             "semantic_fingerprint": deployed_semantic_fingerprint,
-            "review": (
-                "accepted"
-                if (
-                    override_audit is None
-                    and (
-                        comparison == "match"
-                        or review_mode == "accepted"
-                    )
-                )
-                else "override"
-                if override_audit is not None
-                else "manual"
-            ),
         }
         arguments.extend(
             [
@@ -9235,18 +8343,6 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
         rc = self._run_project_cli(arguments, cwd=deployment_cwd)
         if rc != 0:
             raise SystemExit(f"Deployment {name} did not complete successfully.")
-        if override_audit is not None:
-            reason, accepted_at = override_audit
-            audit = self.workspace.record_deployment_review_override(
-                deployment=name,
-                workflow_spec=current,
-                reason=reason,
-                accepted_at=accepted_at,
-            )
-            self._warning(
-                "Unaccepted deployment override recorded at "
-                f"{audit['recorded_at']}."
-            )
         from zippergen.serve import _deployment_profile_path, _load_deployment_profile
 
         deployed_profile: dict[str, object] | None = None
@@ -9316,7 +8412,7 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
                 "Deployments",
                 [
                     ("Status", "none", "warning"),
-                    ("Next", "workflow accept · deploy", None),
+                    ("Next", "workflow status · deploy", None),
                 ],
             )
             return
@@ -9625,23 +8721,9 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
             changed.append("workflow")
         if (
             baseline.get("specification_fingerprint")
-            != self.workspace.specification_fingerprint(
-                include_pending=False
-            )
+            != self.workspace.specification_fingerprint()
         ):
             changed.append("specification")
-        review_comparison, _review_changed, _accepted = (
-            self._accepted_review_comparison(
-                workflow_spec,
-                workflow,
-                module,
-            )
-        )
-        if (
-            baseline.get("review") != "accepted"
-            or review_comparison != "match"
-        ):
-            changed.append("accepted review")
 
         current_models = self.workspace.model_profile(
             workflow_spec,
@@ -9747,8 +8829,7 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
                 unique_changed,
             )
         return (
-            "matches current specification, accepted workflow, and "
-            "configuration",
+            "matches current specification, workflow, and configuration",
             "success",
             (),
         )
@@ -10232,7 +9313,7 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
                 ),
                 (
                     "Project state",
-                    "workflow code, accepted reviews, models, and connector "
+                    "workflow code, implementation history, models, and connector "
                     "configurations remain",
                     "info",
                 ),
@@ -10453,7 +9534,7 @@ The canonical workflow specification is the durable source of truth.
 
 Before editing, summarize participants, owned inputs and outputs, messages,
 action kinds, owned decisions and loops, non-human connector requirements,
-deployment requirements, retry and safety assumptions, and acceptance
+deployment requirements, retry and safety assumptions, and success
 examples. Then create visible Python source and focused mock/fake tests.
 Human delivery is inferred from `@human` action sites and configured in
 Studio, so do not add a redundant Telegram or email requirement for it. Every
@@ -10560,7 +9641,7 @@ and assistant-check results.
             if baseline and baseline != current_canonical:
                 record = self.workspace.update_request(
                     str(record["request_id"]),
-                    status="awaiting_review",
+                    status="implemented",
                     manual_integration=True,
                     result_specification_fingerprint=(
                         self.workspace.specification_fingerprint()
@@ -10570,7 +9651,7 @@ and assistant-check results.
                 if announce:
                     self._info(
                         "Canonical specification changed while the refinement "
-                        "was open; preserving the task for human review."
+                        "was open; preserving the implementation task."
                     )
                 return record
         ensured = self.workspace.ensure_specification()
@@ -10750,7 +9831,7 @@ and assistant-check results.
                 ),
                 (
                     "Manual path",
-                    "workflow edit code · workflow edit spec · workflow review",
+                    "workflow edit code · workflow edit spec · workflow diff",
                     None,
                 ),
                 ("Inspect", "workflow status · workflow history", None),
