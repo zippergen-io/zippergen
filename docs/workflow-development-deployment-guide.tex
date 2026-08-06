@@ -2412,6 +2412,20 @@ Gmail query, and participant routing are already present in the clone. A
 private site override may replace a project model assignment on one machine;
 otherwise the project value is used directly.
 
+\begin{notebox}{Connector targets are committed}
+Because they travel with the project, a spreadsheet identifier, sheet tab,
+Gmail query, and Telegram chat identifier are written into
+\path{zippergen.toml} and committed. That is usually what you want: a
+colleague who clones the project reaches the same shared resource without
+being told which one to use. None of these values grants access on its own,
+which still requires the credentials that stay private.
+
+They do, however, describe your resources. In a public repository they are
+readable by anyone. If that matters, keep the repository private, or set the
+target on each machine with a private site override and leave the project
+value out.
+\end{notebox}
+
 The implementation relationship is portable. Commit \path{zippergen.lock}
 with the specification and generated source. A fresh server derives the same
 \emph{current}, \emph{stale}, or \emph{external} state without private Studio
