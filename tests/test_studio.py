@@ -13,7 +13,7 @@ from prompt_toolkit.input import create_pipe_input
 from prompt_toolkit.output import DummyOutput
 
 from zippergen.studio import Studio, StudioCompleter
-from zippergen.workspace import Workspace
+from zippergen.workspace import PROJECT_MANIFEST_NAME, Workspace
 
 
 WORKFLOW_SOURCE = """
@@ -6195,3 +6195,145 @@ def test_studio_reports_command_interruption_without_a_traceback(
 
     assert any("Command interrupted" in line for line in output)
     assert any("use 'resume'" in line for line in output)
+
+
+ASSISTANT_WORKFLOW_SOURCE = """
+from zippergen import Lifeline, assistant, workflow
+
+User = Lifeline("User")
+Coder = Lifeline("Coder")
+
+@assistant(instructions="Review the repository.")
+def review(request: str) -> str: ...
+
+@workflow
+def sample(request: str @ User) -> str:
+    User(request) >> Coder(request)
+    Coder: report = review(request)
+    Coder(report) >> User(report)
+    return report @ User
+"""
+
+
+def test_studio_blocks_deploy_when_the_assistant_is_not_installed(
+    tmp_path,
+    monkeypatch,
+):
+    studio, workspace, output = _studio(tmp_path)
+    (workspace.root / "workflow.py").write_text(ASSISTANT_WORKFLOW_SOURCE)
+    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    _mark_implementation_current(workspace)
+    monkeypatch.setattr("zippergen.studio.shutil.which", lambda _name: None)
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        "zippergen.serve.main",
+        lambda arguments: calls.append(arguments) or 0,
+    )
+
+    with pytest.raises(SystemExit) as error:
+        studio.deploy_workflow(["assistant-deployment", "--no-start"])
+
+    assert "not installed on this machine" in str(error.value)
+    assert calls == []
+    assert any("Coder.review" in line for line in output)
+
+
+def test_studio_deploys_assistant_workflow_when_the_assistant_exists(
+    tmp_path,
+    monkeypatch,
+):
+    studio, workspace, output = _studio(tmp_path)
+    (workspace.root / "workflow.py").write_text(ASSISTANT_WORKFLOW_SOURCE)
+    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    _mark_implementation_current(workspace)
+    monkeypatch.setattr(
+        "zippergen.studio.shutil.which", lambda name: f"/usr/bin/{name}"
+    )
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        "zippergen.serve.main",
+        lambda arguments: calls.append(arguments) or 0,
+    )
+
+    studio.deploy_workflow(["assistant-deployment", "--no-start"])
+
+    assert len(calls) == 1
+    assert any("found" in line for line in output)
+
+
+def test_studio_blocks_deploy_when_an_assigned_model_is_missing(
+    tmp_path,
+    monkeypatch,
+):
+    studio, workspace, _output = _studio(tmp_path)
+    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    _mark_implementation_current(workspace)
+    name = workspace.ensure_model_configuration("openai:gpt-4o")
+    workspace.save_model_assignment_profile(
+        "workflow.py:sample",
+        default="mock",
+        lifelines={"Writer": name},
+        actions={},
+    )
+    manifest = workspace.root / PROJECT_MANIFEST_NAME
+    manifest.write_text(
+        manifest.read_text().replace(
+            f'[models.configurations."{name}"]', "[models.configurations.other]"
+        )
+    )
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        "zippergen.serve.main",
+        lambda arguments: calls.append(arguments) or 0,
+    )
+
+    with pytest.raises(SystemExit) as error:
+        studio.deploy_workflow(["unrouted-deployment", "--no-start"])
+
+    assert name in str(error.value)
+    assert calls == []
+
+
+def test_studio_deploy_assigns_models_without_reaching_the_endpoint(
+    tmp_path,
+    monkeypatch,
+):
+    studio, workspace, output = _studio(tmp_path)
+    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    _mark_implementation_current(workspace)
+    probes: list[str] = []
+
+    def _refuse(label, spec, for_save=False):
+        probes.append(spec)
+        raise AssertionError("deploy must not probe model endpoints")
+
+    monkeypatch.setattr(studio, "_verify_model_spec", _refuse)
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        "zippergen.serve.main",
+        lambda arguments: calls.append(arguments) or 0,
+    )
+
+    studio.deploy_workflow(["prepared-deployment", "--no-start"])
+
+    assert probes == []
+    assert len(calls) == 1
+    assert any("assigned" in line for line in output)
+
+
+def test_studio_blocks_deploy_when_a_connector_is_unbound(tmp_path, monkeypatch):
+    studio, workspace, _output = _studio(tmp_path)
+    (workspace.root / "workflow.py").write_text(CONNECTOR_SOURCE)
+    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    _mark_implementation_current(workspace)
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        "zippergen.serve.main",
+        lambda arguments: calls.append(arguments) or 0,
+    )
+
+    with pytest.raises(SystemExit) as error:
+        studio.deploy_workflow(["unbound-deployment", "--no-start"])
+
+    assert "human-approval" in str(error.value)
+    assert calls == []

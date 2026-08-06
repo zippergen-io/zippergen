@@ -7145,6 +7145,65 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
         ordered = self._agent_names(workflow)
         return {name: actions[name] for name in ordered if name in actions}
 
+    def _assistant_action_lifelines(self, workflow, module) -> dict[str, list[str]]:
+        """Return coding-assistant actions per participant, in protocol order."""
+
+        model = workflow_semantics(workflow, module)
+        actions: dict[str, list[str]] = {}
+        sites = model.get("action_sites") or []
+        if isinstance(sites, list):
+            for site in sites:
+                if not isinstance(site, dict) or site.get("kind") != "assistant":
+                    continue
+                name = str(site.get("lifeline"))
+                action = str(site.get("action"))
+                actions.setdefault(name, [])
+                if action not in actions[name]:
+                    actions[name].append(action)
+        ordered = self._agent_names(workflow)
+        return {name: actions[name] for name in ordered if name in actions}
+
+    def _check_workflow_assistants(self, workflow, module) -> None:
+        """Refuse to deploy assistant actions this machine cannot execute.
+
+        A deployment runs on the machine that installs it, so a missing
+        executable is a known failure rather than an unknown one.
+        """
+
+        active = self._assistant_action_lifelines(workflow, module)
+        if not active:
+            return
+        configured = str(self._global_settings().get("assistant") or "codex")
+        if shutil.which(configured) is not None:
+            self._emit_table(
+                "Assistant checks",
+                [("Status", f"{configured} found", "success")],
+            )
+            return
+        targets = ", ".join(
+            f"{participant}.{action}"
+            for participant, actions in active.items()
+            for action in actions
+        )
+        self._emit_table(
+            "Assistant checks",
+            [
+                ("Status", "blocked", "error"),
+                ("Reason", f"{configured!r} was not found on PATH", "error"),
+                ("Assistant actions", targets, None),
+                (
+                    "Next",
+                    f"install {configured}, or use settings set assistant "
+                    f"{'claude' if configured == 'codex' else 'codex'}",
+                    None,
+                ),
+            ],
+        )
+        raise SystemExit(
+            f"This workflow has coding-assistant actions, but {configured!r} "
+            "is not installed on this machine."
+        )
+
     def _llm_action_targets(self, workflow, module) -> dict[str, tuple[str, str]]:
         """Return canonical ``Participant.action`` targets in protocol order."""
 
@@ -8669,11 +8728,19 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
         else:
             implementation_summary = "matches the current specification"
             implementation_kind = "success"
-        self._validate_workflow_model_idle_policies(
+        # The routes `run` resolves, minus the live probe.  A deployment may be
+        # prepared now and started later, so an unreachable endpoint is not a
+        # reason to refuse.  What must hold is that every participant has a
+        # model configuration, and that this machine can run the assistant
+        # actions the workflow declares.  Connectors are validated separately
+        # by _deployment_connector_arguments.
+        self._check_workflow_models(
             current,
             deployment_workflow,
             deployment_module,
+            verify=False,
         )
+        self._check_workflow_assistants(deployment_workflow, deployment_module)
         spec = deployment_spec_from_module(deployment_module)
         self._emit_table(
             "Guided deployment",

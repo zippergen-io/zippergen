@@ -261,6 +261,7 @@ class StudioModelsMixin:
         *,
         default_override: str | None = None,
         for_run: bool = False,
+        verify: bool = True,
     ) -> None:
         """Check exactly the configurations used by LLM-active participants."""
 
@@ -328,6 +329,21 @@ class StudioModelsMixin:
                         )
                     spec = str(configuration["spec"])
                 routes.append((target, configuration_name, spec))
+
+        if not verify:
+            # Every route resolved, so each participant has an existing
+            # configuration.  Reaching the endpoint is deliberately not
+            # required here: a prepared deployment may start later, and a
+            # local model server may come up beside it.
+            self._emit_columns(
+                title,
+                ("Participant.action", "Configuration", "Model", "Status"),
+                [
+                    (target, configuration_name, spec, "assigned")
+                    for target, configuration_name, spec in routes
+                ],
+            )
+            return
 
         checks: dict[tuple[str, str], _ModelVerification] = {}
         failures: list[str] = []
