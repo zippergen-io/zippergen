@@ -312,7 +312,7 @@ class StudioConnectorsMixin:
             self._emit_table(
                 "Connector assignments",
                 [
-                    ("Workflow", "none selected", "warning"),
+                    ("Workflow", "not configured", "warning"),
                     ("Assignments", "not available", None),
                 ],
             )
@@ -1413,7 +1413,7 @@ class StudioConnectorsMixin:
                 elif request_status == "prepared":
                     correction = "workflow implement"
                 else:
-                    correction = "workflow refine"
+                    correction = "workflow edit-refinement"
                 self._emit_table(
                     "Connector binding blocked",
                     [
@@ -1428,7 +1428,7 @@ class StudioConnectorsMixin:
                         (
                             "Reason",
                             (
-                                "the selected workflow declares no logical "
+                                "the project workflow declares no logical "
                                 "connector requirements"
                                 if not requirements
                                 else "the requested name is not among the "
@@ -1442,7 +1442,7 @@ class StudioConnectorsMixin:
                     f"workflow show full · {correction} · connector"
                 )
                 raise SystemExit(
-                    f"Cannot bind {requirement_name}. The selected workflow "
+                    f"Cannot bind {requirement_name}. The project workflow "
                     "does not declare that connector requirement."
                 )
             configurations = self.workspace.connector_configurations()

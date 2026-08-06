@@ -341,8 +341,8 @@ all optional exercises, clearly labelled below.
 For the guided local cycle, you do not need to export \texttt{ZIPPERGEN\_HOME},
 invent a SQLite filename, copy a task ID, keep two terminals synchronized, or
 remember the inspection flags. Studio creates unique durable stores, presents
-human tasks inline, and remembers the current workflow, run, view, and named
-deployment for this project.
+human tasks inline, records the workflow in the versioned project manifest,
+and remembers the current run, view, and named deployment.
 \end{notebox}
 
 \subsection{Create the project and framework checkouts}
@@ -368,9 +368,10 @@ The parent is now the tutorial project and coding-assistant root. Its nested
 \path{zippergen} directory is a separate framework checkout containing
 \path{AGENTS.md}, the workflow skill, framework source, and shipped examples.
 Studio will create the application project's fixed \path{specification.md}
-when you enter \texttt{workflow create}; there is no prompt directory or prompt filename
-to choose. The ignored \path{.zippergen/pending-refinement.md} is likewise
-created automatically only when a change is pending.
+when you enter \texttt{workflow edit-spec}; there is no prompt directory or
+prompt filename to choose. A later described change uses the ignored scratch
+file \path{.zippergen/refinement.md}. Only \texttt{workflow refine-spec} reads
+it, and a successful revision consumes it.
 \texttt{uv sync} creates the framework's local environment;
 \texttt{uv tool install --force --editable} makes the short \texttt{zippergen} command
 available while still using this editable checkout. The project, checkout,
@@ -385,7 +386,7 @@ An older version of this manual cloned ZipperGen directly into
 \path{AGENTS.md}, \path{pyproject.toml}, and \path{src}, and
 there is no nested \path{zippergen} directory. Do not add a
 \texttt{zippergen/} prefix to framework paths. The Studio creation command is
-still simply \texttt{workflow create}. For that flat checkout, run these equivalent
+still simply \texttt{workflow edit-spec}. For that flat checkout, run these equivalent
 installation commands from its root:
 \begin{quote}
 \texttt{uv sync --python 3.12}\\
@@ -486,7 +487,7 @@ ZipperGen Studio
 Session context
 Project    zippergen-tutorial
 Root       /path/to/zippergen-tutorial
-Workflow   WARN none selected
+Workflow   WARN not configured
 Assistant  OK Codex CLI found
 Start      Type a command or describe what you want.
            Press Tab to complete. Use 'help' for the short path.
@@ -577,9 +578,10 @@ current
 
 Studio creates \path{zippergen.toml} and safe Git
 ignores for \path{.zippergen}, the nested framework checkout, and the optional
-transparent runtime. The manifest and canonical \path{specification.md} are
-project source and may be committed. Timestamped tasks, semantic baselines,
-runs, and secrets remain
+transparent runtime. The manifest, its one \texttt{workflow\_entry}, and the
+canonical \path{specification.md} are project source and may be committed. A
+clone can therefore identify its workflow without a private workspace record.
+Timestamped tasks, semantic baselines, runs, and secrets remain
 in private Studio state outside the project. Studio mirrors only the current
 generated task at \path{.zippergen/current-task.md}; Git ignores that file.
 Repeating \texttt{project init} is safe; it reports the existing manifest
@@ -593,7 +595,7 @@ files by hand. Plain \texttt{project reset} first asks which scope you mean:
 \emph{Fresh design cycle}, \emph{Studio state only}, or \emph{Cancel}. The
 state-only choice archives runs and stores, assistant-task/refinement/command
 history, model/provider preferences, development secrets, generated tasks, and
-pending refinement while retaining every visible project file. The fresh
+the scratch refinement while retaining every visible project file. The fresh
 choice additionally archives \path{zippergen.toml},
 \path{specification.md}, and legacy prompt material. Both keep workflow source,
 tests, Git history, the nested framework checkout, and deployments. Archives
@@ -603,7 +605,7 @@ Neither reset scope changes the global preferences shown by
 
 This distinction explains the complete restart sequence. Choose the fresh
 design cycle, confirm it, then enter \texttt{project init} and \texttt{workflow
-create}.
+edit-spec}.
 The manifest is genuinely new and the specification contains only the writing
 guide described below, not the previous requirements. For automation, the
 explicit commands are \texttt{project reset fresh --yes} and
@@ -636,7 +638,7 @@ The real terminal uses connected curved Unicode corners, a Unicode vertical
 bar, and a middle dot; the connected ASCII box above is print-friendly. The
 banner repeats only the command family, never its prompt text, paths, model
 values, or secrets. It therefore remains short even for a long
-\texttt{workflow create} or \texttt{workflow refine} command. Blank input and
+\texttt{workflow edit-spec} or \texttt{workflow edit-refinement} command. Blank input and
 \texttt{exit} produce no banner. Use \texttt{settings set output compact} only
 if a one-line boundary is preferable.
 
@@ -668,7 +670,7 @@ authoring.
 
 Long requirements do not belong in a single-line terminal question, and the
 user should not have to invent or remember a prompt filename. Enter
-\texttt{workflow create}. Studio creates the fixed project file
+\texttt{workflow edit-spec}. Studio creates the fixed project file
 \path{specification.md}, opens it in the automatically discovered editor, and
 waits. On the first creation it contains a short comment explaining what a
 specification should cover and which development mechanics to omit. Write
@@ -678,7 +680,7 @@ untouched does not create an assistant task. Copying into an editor is reliable
 even when a terminal's interactive question cannot accept a multiline paste.
 
 \begin{lstlisting}[style=shell]
-workflow create
+workflow edit-spec
 \end{lstlisting}
 
 \begin{lstlisting}[numbers=none]
@@ -718,13 +720,12 @@ instructions. It prints a compact table instead of repeating the long text:
 
 \begin{lstlisting}[style=shell]
 +----------------------------------------------------------+
-| ZipperGen Studio : workflow create                       |
+| ZipperGen Studio : workflow edit-spec                    |
 +----------------------------------------------------------+
-Creation
-  Specification  [success] specification.md
-  Implementation [success] prepared
-  Next                     workflow implement codex / workflow implement claude
-  Inspect                  workflow status / workflow history
+Specification updated
+  File           [success] specification.md
+  Implementation           absent
+  Next                     workflow implement
 \end{lstlisting}
 
 There is no prompt ID, numbered prompt file, or ordering operation. The
@@ -738,7 +739,7 @@ Projects created by an older Studio may still contain an ordered prompt
 ledger. On first specification access, Studio combines its active entries into
 \path{specification.md} and preserves the old files as migration history. The
 former \texttt{workflow prompts} command is deliberately unavailable: all new
-work uses one canonical specification and at most one pending refinement.
+work uses one canonical specification and one optional scratch refinement.
 
 The implementation request asks the assistant to identify participants,
 ownership, messages, action kinds, decisions, loops, deployment needs, safety
@@ -751,15 +752,16 @@ Notice that the specification does not choose a Python filename or symbol,
 request tests and validation, or repeat the prohibition on deployment. Those
 are development mechanics supplied automatically by Studio's generated task.
 The specification contains only durable application intent. After generation,
-Studio discovers the resulting workflow so the user can list and select it
-with \texttt{workflow list} and \texttt{workflow select} without knowing its
-source path in advance.
+Studio discovers the resulting workflow and records its one entry point in
+\path{zippergen.toml}. For hand-written source, \texttt{workflow list} discovers
+the displayed path and \texttt{workflow import PATH.py:NAME} adopts it. The
+entry point therefore travels with the project.
 
 The everyday specification commands are intentionally uniform:
 
 \begin{lstlisting}[style=shell]
 workflow show spec    # read the canonical requirements
-workflow edit spec    # reopen the same specification.md
+workflow edit-spec    # reopen the same specification.md
 workflow path         # print its absolute path only when another tool needs it
 workflow status       # inspect the implementation lifecycle
 workflow status --details # add task IDs, refresh links, and record paths
@@ -773,24 +775,21 @@ auditable plumbing rather than concepts required for daily work.
 when diagnosis or traceability requires them.
 
 An empty specification is rejected. Never put an API key or other secret in
-it. For a genuinely short experiment, \texttt{workflow create DESCRIPTION}
+it. For a genuinely short experiment, \texttt{workflow edit-spec DESCRIPTION}
 writes the same canonical file without opening an editor. Advanced users may import an
-existing UTF-8 document once with \texttt{workflow create --file PATH}; Studio copies
+existing UTF-8 document with \texttt{workflow edit-spec --file PATH}; Studio copies
 its content into \path{specification.md} and does not retain that source
 filename as project configuration.
 
-Studio fingerprints the canonical specification when it prepares a task.
-While the implementation is still prepared, Studio compares that fingerprint
-before \texttt{workflow status}, \texttt{current}, or \texttt{workflow
-implement}. If an input document changed, Studio creates one refreshed private
-request and records which older request it replaces.
-After an assistant has run, its expected edits are implementation output, not
-new task input: Studio preserves the executed request instead of silently
-creating another ``ready'' task.
+Studio records the specification fingerprint and generated source fingerprint
+in the committed \path{zippergen.lock} file after implementation. From the
+manifest, specification, source, and lock, it derives \emph{absent},
+\emph{stale}, \emph{current}, or \emph{external}. This result is the same on a
+fresh clone because it uses no private workspace state.
 
 Projects made with an older Studio may still contain
 \path{prompts/index.toml} and numbered prompt files. On the first
-\texttt{workflow show spec}, \texttt{workflow edit spec}, or \texttt{workflow
+\texttt{workflow show spec}, \texttt{workflow edit-spec}, or \texttt{workflow
 refine}, Studio safely
 combines their active contents into \path{specification.md} and keeps every old
 file as history. New work then uses only the canonical specification model.
@@ -915,7 +914,7 @@ that the change is ready. Immediately below the summary table it prints only
 failed or unexecuted checks; the complete reported check list remains
 available through \texttt{workflow status}. Use \texttt{workflow diff} to
 inspect changes again and \texttt{workflow validate} for ZipperGen's technical
-check of the current workflow.
+check of the project workflow.
 
 The internal handoff retains a field named \texttt{verification} for its
 versioned JSON contract. Studio presents it as assistant checks so it is not
@@ -966,23 +965,24 @@ git diff
 
 Do not commit merely because code was generated. First complete the checks
 below. If generation is unavailable or fails, continue with workflow discovery
-and select the shipped \texttt{tutorial\_review} workflow instead. The selector displays
-its internal source reference; the user does not have to type it.
+and import the shipped \texttt{tutorial\_review} workflow instead.
 
-\subsection{Discover and select generated workflow source}
+\subsection{Discover and configure generated workflow source}
 
 Return to the Studio terminal and enter:
 
 \begin{lstlisting}[style=shell]
 workflow list
-workflow select
+workflow import workflows/reviewed_answer.py:reviewed_answer
 workflow files
 workflow show source
 \end{lstlisting}
 
-Studio displays the discovered workflows. Select the newly generated
-reviewed-answer workflow by its number; there is no path or Python symbol to
-type. The selected entry may display an internal reference of the form
+Studio displays the discovered workflows. Import the newly generated
+reviewed-answer workflow by the displayed \texttt{PATH.py:NAME}. When the file
+is already in the project, Studio copies nothing and only writes the entry to
+\path{zippergen.toml}.
+The configured entry may display an internal reference of the form
 \texttt{PATH.py:NAME}: the suffix names the Python workflow object, not a
 deployment. Inspect the authored Python before asking validation to judge it.
 The commands have deliberately different jobs:
@@ -992,18 +992,16 @@ The commands have deliberately different jobs:
         points from project source and lists their \texttt{PATH.py:NAME}
         references. This is source discovery, not validation.
   \item[\texttt{workflow import PATH.py[:WORKFLOW]}] copies an external
-        workflow into the current project before selection. It preserves paths
+        workflow into the current project before configuration. It preserves paths
         relative to the external project root when that root has
         \path{pyproject.toml}, \path{zippergen.toml}, or \path{.git}. It also
         copies statically imported local Python modules and literal files named
-        by deployment or assistant declarations. It never overwrites a
-        different project file.
-  \item[\texttt{workflow select}] loads the chosen entry point and remembers it
-        as the current workflow for later Studio commands. It neither validates,
-        accepts, runs, nor deploys it.
+        by deployment or assistant declarations. If the project already has a
+        workflow, Studio shows the replacement and asks before overwriting
+        different files or changing the manifest.
   \item[\texttt{workflow files}] lists the entry module, statically imported
         project-local Python modules, and declared resource files known to the
-        selected workflow.
+        project workflow.
   \item[\texttt{workflow show source}] displays the authored entry module.
         Use \texttt{workflow show source NUMBER} or a path printed by
         \texttt{workflow files} to inspect another listed file.
@@ -1012,14 +1010,15 @@ The commands have deliberately different jobs:
 A workflow entry point need not occupy one file. It may import \texttt{@fragment}
 definitions, actions, connectors, or helpers from other modules. Conversely,
 one module may expose several top-level \texttt{@workflow} entry points.
-Studio lists entry points as choices; supporting files are inspection
-material, not additional workflows.
+Studio lists every discovered entry point as importable source, while the
+manifest identifies exactly one as this project's workflow. Supporting files
+are inspection material, not additional project workflows.
 
-If no workflow is selected, \texttt{workflow show}, \texttt{workflow files},
-\texttt{workflow edit code}, and \texttt{workflow validate} perform this
-selection step automatically. One discovered entry point is selected with an
-explicit notice; several open the numbered selector. In both cases Studio says
-that validation has not yet run.
+If no workflow entry is configured, \texttt{workflow show},
+\texttt{workflow files}, \texttt{workflow edit code}, and
+\texttt{workflow validate} perform this one-time setup automatically. One
+discovered entry point is recorded with an explicit notice; several open the
+numbered selector. In both cases Studio says that validation has not yet run.
 
 \section{Workflow inspection and validation}
 
@@ -1080,12 +1079,13 @@ deployment. Use \texttt{project} when you want the complete project inventory.
 structurally valid, and can every participant be projected consistently? It
 can be run repeatedly and does not change project state.
 
-When a local implementation record exists, \texttt{deploy} checks a separate
-coherence property. Studio compares that record's specification fingerprint
-with the current fingerprint. If they differ, run \texttt{workflow implement}
-again before deploying. A fresh clone has no portable record yet, so Studio
-warns and proceeds after technical validation. Git remains the version history
-for source and specification changes.
+\texttt{deploy} checks a separate coherence property. Studio compares the
+committed \path{zippergen.lock} record with the specification and generated
+source. This derives \emph{absent}, \emph{stale}, \emph{current}, or
+\emph{external}, including on a fresh clone. Deployment blocks \emph{absent}
+and \emph{stale}. It warns and proceeds for \emph{external}, whose provenance
+is unknown rather than known to disagree. Git remains the version history for
+source and specification changes.
 \end{notebox}
 
 Inspect declared boundaries in proportion to their risk. A workflow with
@@ -1104,8 +1104,8 @@ If the connector view reports no human actions, inspect the full workflow.
 The generated code is incomplete when the requested \texttt{@human} action is
 absent. After implementation, use
 \texttt{workflow implement codex --rerun} or the corresponding Claude command.
-Record a requested correction with \texttt{workflow refine}, then implement
-the updated specification again.
+Record a requested correction with \texttt{workflow edit-refinement}, apply it
+with \texttt{workflow refine-spec}, then implement the updated specification.
 
 \section{Model configuration and routing}
 
@@ -1154,7 +1154,8 @@ Execution
 \end{lstlisting}
 
 Generated action names may differ, but Writer and Reviewer should appear. The
-non-secret assignments are stored per workflow and survive a reboot. The
+non-secret assignments are stored in the versioned project manifest and
+therefore survive both a reboot and a clone. The
 built-in \texttt{mock} configuration needs no provider connection and is
 already checked. Plain \texttt{model assignments} uses saved check state and
 performs no network request. Enter \texttt{model assignments check} to check
@@ -1375,6 +1376,21 @@ model identifier. For a local Ollama model, it can also contain an idle-release
 time. An assignment maps an LLM-active participant to one of those names.
 Enter \texttt{model setup} for a guided pass through all three layers.
 
+The provider and exact model identifier are project decisions. Named model
+configurations and participant or action assignments are therefore written to
+\path{zippergen.toml}. A local endpoint, idle-release policy, cached connection
+checks, and API keys describe one machine and stay in private site state. A
+site assignment can override the project route without adding another
+precedence system:
+
+\begin{lstlisting}[style=shell]
+model assign Writer mock --site
+\end{lstlisting}
+
+The effective lookup has one rule: use the site override when it exists,
+otherwise use the project value. Plain \texttt{model assign} edits the project
+assignment. The \texttt{--site} form changes only this machine.
+
 \texttt{model provider configure PROVIDER} asks for a missing API key without
 echo, or for the endpoint of a local provider. It saves and checks the
 connection. \texttt{model provider check PROVIDER} repeats that check later.
@@ -1422,6 +1438,9 @@ takes precedence over the default. Enter
 \texttt{model inherit PARTICIPANT.ACTION} to remove one action override, or
 \texttt{model inherit PARTICIPANT} to restore the project default for that
 participant.
+Append \texttt{--site} to any of these assignment commands to change only this
+machine. A site assignment overrides the project assignment in one lookup. It
+does not create an environment or another precedence layer.
 Use Tab completion rather than retyping generated names. Editing one named
 configuration with \texttt{model config edit NAME} updates every assignment
 that refers to it. \texttt{model config rename OLD NEW} changes only its
@@ -1503,39 +1522,35 @@ change declared workflow/deployment defaults, or accompany prompt, action, or
 test changes, record it as a refinement and run an assistant. For example:
 
 \begin{lstlisting}[style=shell]
-workflow refine Use openai:gpt-4o-mini for Writer and preserve all protocol behavior.
+workflow edit-refinement Use openai:gpt-4o-mini for Writer and preserve all protocol behavior.
+workflow refine-spec
 workflow implement claude
 \end{lstlisting}
 
-The second form appends to the one pending refinement and asks the assistant to
-update the canonical specification and visible project files together. It is
-intentionally heavier than routing.
+The second form puts the instruction in one ignored scratch buffer. The
+specification assistant sees only that buffer and the canonical specification.
+Implementation remains a separate, deliberate command.
 \end{notebox}
 
 \section{Refinement and reimplementation}
 
-\subsection{Refine through one pending change}
+\subsection{Refine through one scratch buffer}
 
-Use \texttt{workflow refine} to describe one change to the selected workflow:
+Use \texttt{workflow edit-refinement} to describe one change, then apply it to
+the specification:
 
 \begin{lstlisting}[style=shell]
-workflow refine "Require a second review after a rejected draft"
-workflow show pending
+workflow edit-refinement "Require a second review after a rejected draft"
+workflow refine-spec
 workflow implement
 \end{lstlisting}
 
-Studio keeps at most one pending refinement. Repeating \texttt{workflow refine}
-updates that request instead of creating a numbered ledger. The coding
-assistant receives the canonical specification, the pending change, and the
-semantic baseline captured before the refinement. It must integrate the change
-into \path{specification.md}, update source and tests, and preserve behavior
-outside the request.
-
-For the common chained form, use:
-
-\begin{lstlisting}[style=shell]
-workflow refine "Add a retry limit" --implement
-\end{lstlisting}
+The refinement lives at \path{.zippergen/refinement.md}. It is ignored by Git,
+has no lifecycle, and is read only by \texttt{workflow refine-spec}. That
+command runs the configured assistant in an isolated temporary directory with
+only the current specification and refinement. The implementation is not
+visible, so the specification cannot be fitted retroactively to existing code.
+A successful revision consumes the buffer. Emptying the buffer discards it.
 
 After the assistant returns, Studio prints an implementation summary with the
 changed files, assistant-check result, and assistant report. The detailed
@@ -1554,18 +1569,13 @@ with \texttt{workflow status --details} and rerun the assistant deliberately
 with \texttt{workflow implement codex --rerun} or the corresponding Claude
 command.
 
-\texttt{workflow discard} archives and clears the pending refinement request.
-It does not revert changes already present in the working tree. Inspect
-\texttt{git diff} and restore unwanted source or specification edits with
-ordinary Git operations.
-
-When an implementation request is available locally, its recorded
-specification fingerprint must equal the current specification fingerprint.
-Editing the specification after implementation therefore blocks \texttt{deploy}
-until \texttt{workflow implement} runs again. When no record is available,
-such as on a fresh clone, Studio warns and proceeds after technical validation.
-Git is the version history for returning to an earlier source/specification
-pair.
+\texttt{workflow implement} writes \path{zippergen.lock} with the workflow
+entry, specification fingerprint, generated-source fingerprint, and source
+file list. Editing the specification makes a generated implementation
+\emph{stale}. Editing generated source makes it \emph{external}. Stale source
+blocks deployment. External source proceeds after a provenance warning and
+technical validation. Git is the version history for returning to an earlier
+source/specification pair.
 
 
 \section{Deployment and operation}
@@ -1585,7 +1595,7 @@ Studio compares any local implementation fingerprint with the current
 specification fingerprint. If the specification changed after implementation,
 deployment stops with \texttt{workflow implement} as the remedy. If no local
 record exists, Studio warns instead. In both cases Studio validates the
-selected workflow again before preparing the bundle.
+project workflow again before preparing the bundle.
 
 A previously running deployment is
 not reading the working tree: it continues to execute its own timestamped
@@ -1812,7 +1822,7 @@ Next
 zippergen [tutorial_review]>
 \end{lstlisting}
 
-The text in square brackets is the current workflow object name, not a
+The text in square brackets is the project workflow object name, not a
 deployment name. Enter \texttt{help} at any time. The public commands follow
 four main areas: \texttt{workflow} for specification, implementation,
 inspection, and validation; \texttt{model} for connections, configurations,
@@ -1832,25 +1842,21 @@ current        # specification, workflow, models, run, deployment
 editor show    # effective terminal editor and preference source
 editor set micro # alias for the global editor setting
 workflow       # workflow-development dashboard
-workflow create # create/reopen specification.md
-workflow refine # create/reopen the one pending refinement
-workflow edit spec # edit the canonical specification
-workflow edit code # edit the selected Python source
+workflow edit-spec # create or edit specification.md
+workflow edit-refinement # edit or discard the scratch refinement
+workflow refine-spec # apply the refinement to specification.md
 workflow files  # list entry module, local imports, and declared resources
 workflow show source # inspect the authored entry module
 workflow show spec # canonical requirements
-workflow show pending # inspect the pending refinement
 workflow show  # choose a semantic code view
 workflow diff  # compare intent and semantics with the available baseline
 workflow status # prepared, running, implemented, failed/interrupted
 workflow status --details # include task IDs and internal record paths
 workflow implement codex # or: workflow implement claude
 workflow validate # technical structure and projection check
-workflow discard # archive rejection; does not revert working-tree files
 workflow history # specification and implementation history
 workflow list   # discover workflow entry points; does not validate
 workflow import /path/to/workflow.py # copy external source into this project
-workflow select # select one by number, name, or complete reference
 model         # show connections, configurations, and assignments
 model setup   # guided provider, configuration, and assignment setup
 model provider configure NAME # configure an API key or local endpoint
@@ -1861,6 +1867,7 @@ model assignments # show routes and cached last-check state
 model assignments check # check only configurations used here
 model assign PARTICIPANT NAME # route a participant to a configuration
 model assign PARTICIPANT.ACTION NAME # override one LLM action
+model assign PARTICIPANT NAME --site # override only on this machine
 model config rename OLD NEW # rename it and migrate all assignments
 connector # providers, configurations, assignments, and bindings
 connector setup # guided setup for every connector used here
@@ -1982,8 +1989,9 @@ new \texttt{run} never silently reuses an old result.
 
 \subsection{Return after a closed terminal or computer crash}
 
-The current workflow and run are remembered outside the Git checkout. Return
-to the same project root and reopen Studio:
+The workflow entry is recorded in the versioned project manifest. The current
+run remains in private state outside the Git checkout. Return to the same
+project root and reopen Studio:
 
 \begin{lstlisting}[style=shell]
 cd "$HOME/Projects/zippergen-tutorial"
@@ -1999,7 +2007,7 @@ resume
 
 \texttt{resume} reuses the recorded inputs and SQLite store. If a human task
 was pending, it is presented again in the terminal. Studio also compares the
-current workflow's semantic fingerprint with the one recorded when the run
+project workflow's semantic fingerprint with the one recorded when the run
 started. If the workflow meaning changed meanwhile, it preserves the old
 store and asks you either to restore matching source or start a new run.
 
@@ -2014,13 +2022,13 @@ normal Studio prerequisite.
 For a multiline description, let Studio open the canonical project document:
 
 \begin{lstlisting}[style=shell]
-workflow create
+workflow edit-spec
 \end{lstlisting}
 
 For a short idea, provide the description on the same line:
 
 \begin{lstlisting}[style=shell]
-workflow create Draft an answer and require human approval.
+workflow edit-spec Draft an answer and require human approval.
 \end{lstlisting}
 
 Studio saves a structured coding-assistant task. It asks for visible Python
@@ -2036,27 +2044,26 @@ implementation request. Neither is a ZipperGen
 workflow model provider, and neither automates deployment. The assistant edits
 ordinary files in the checkout; ZipperGen then loads, validates, projects,
 renders, and runs the result. Integrations can consume the same generated
-request directly. After source creation, enter \texttt{workflow list} and
-\texttt{workflow select} to discover and select the new workflow. The request
+request directly. After hand-written source creation, enter \texttt{workflow
+list} and \texttt{workflow import PATH.py:NAME} to discover and record the
+workflow in the manifest. The request
 is not a queued job: Studio records the synchronous assistant return as
 \texttt{implemented}, then prints the changed files, assistant checks, and
 assistant report. Use \texttt{workflow diff} and \texttt{workflow validate}
 for detailed inspection.
 \end{notebox}
 
-For an existing selected workflow, open or reopen the one pending change:
+For an existing project workflow, write a scratch refinement and apply it:
 
 \begin{lstlisting}[style=shell]
-workflow refine
+workflow edit-refinement
+workflow refine-spec
 \end{lstlisting}
 
-Studio owns both filenames, saves a semantic pre-edit baseline, and includes
-the canonical specification plus pending refinement in the assistant brief.
-The assistant is required to update \path{specification.md}, preserve behavior
-not mentioned in the request, validate the result, inspect changed projections,
-and run \texttt{zippergen diff} against that baseline. The pending request
-remains inspectable. \texttt{workflow discard} archives and clears it without
-reverting working-tree files.
+Studio owns both filenames. The specification assistant sees only the canonical
+specification and scratch refinement in an isolated directory. It rewrites
+\path{specification.md} and consumes the buffer. Run
+\texttt{workflow implement} afterward to update code and tests.
 
 \subsection{Use a real LLM without repeating an API-key export}
 
@@ -2138,8 +2145,8 @@ operations, and destructive changes require confirmation. Use
 
 If unmatched declarative or imperative prose might describe the application,
 Studio offers to treat it as a workflow requirement. Before
-\path{specification.md} exists it proposes \texttt{workflow create}; afterward
-it proposes \texttt{workflow refine}. The offer does not depend on framework
+\path{specification.md} exists it proposes \texttt{workflow edit-spec}; afterward
+it proposes \texttt{workflow edit-refinement}. The offer does not depend on framework
 words such as ``workflow'' or ``participant''. Enter \texttt{y} to store the
 requirement, \texttt{n} to cancel, or \texttt{command} to interpret the same
 sentence as an operation without changing the specification. Questions and
@@ -2147,10 +2154,10 @@ recognizable operational or troubleshooting requests remain on the command
 path. Explicit \texttt{ask TEXT} and \texttt{plan TEXT} bypass the requirement
 offer.
 
-Short phrases use project context: \texttt{run it} means the selected workflow
+Short phrases use project context: \texttt{run it} means the project workflow
 and \texttt{stop it} means the remembered deployment. Ambiguous
-\texttt{start over} asks whether the intention is a new run, discarded
-refinement, Studio restart, or fresh project design. The unambiguous
+\texttt{start over} asks whether the intention is a new run, specification
+change, Studio restart, or fresh project design. The unambiguous
 \texttt{reset everything} proposes the recoverable fresh-design reset.
 
 When repository details are required and no built-in or learned
@@ -2223,8 +2230,8 @@ does not invoke an LLM, shell script, provider, or MCP server. Override the
 editor for one operation without changing the saved preference:
 
 \begin{lstlisting}[style=shell]
-workflow edit code --editor nano
-workflow create --editor micro
+edit file workflows/reviewed_answer.py --editor nano
+workflow edit-spec --editor micro
 \end{lstlisting}
 
 For a command with arguments, quote the complete value, for example
@@ -2333,7 +2340,9 @@ Two arrangements work. Prefer the first for any workflow you will change again.
 
 Keep the workflow in a repository, clone it on the server, and use the clone as
 the project root. Updates are then an ordinary \texttt{git pull}, and no import
-step is required at all:
+or workflow-selection step is required at all. The versioned
+\path{zippergen.toml} names both \path{specification.md} and the project's
+workflow entry point:
 
 \begin{lstlisting}[style=shell]
 git clone git@github.com:you/your-workflows.git ~/workflows
@@ -2355,6 +2364,10 @@ Then, in Studio on the server:
 workflow import ~/staging/call-intake/call_intake.py:call_intake
 \end{lstlisting}
 
+If that project already has a configured workflow, Studio shows the current
+and incoming entry points, lists how many files differ, and asks before
+replacing anything. A path already inside the project is adopted without a copy.
+
 \subsection{Copy the directory, not only the entry file}
 
 A workflow may name local files in its declarations: connector configuration,
@@ -2371,25 +2384,29 @@ owner-only permissions, outside the project directory. A project directory can
 therefore be copied, pushed to a repository, or handed to somebody else without
 carrying credentials with it.
 
-Model and connector assignments are held in the same private workspace state, so
-they do not travel either. After the source arrives, configure them on the
-server exactly as you did locally:
+Named model and connector configurations, their assignments, and connector
+bindings live in \path{zippergen.toml}, so they travel with the project. After
+the source arrives, enter \texttt{project}. Its \emph{Site setup} branch lists
+only the machine-specific facts and secrets that are still missing. Supply
+those items, rather than reconstructing the design:
 
 \begin{lstlisting}[style=shell]
-model setup
-connector setup
+project
+model provider configure PROVIDER       # only when listed
+connector provider configure PROVIDER   # only when listed
 \end{lstlisting}
 
-This is expected rather than a missing step. Each machine holds its own
-credentials, and a workflow file that reached the server by any route cannot
-bring another machine's secrets with it.
+For example, a local model endpoint, API key, Telegram bot token, or Google
+authorization remains private to the server. The model name, spreadsheet,
+Gmail query, and participant routing are already present in the clone. A
+private site override may replace a project model assignment on one machine;
+otherwise the project value is used directly.
 
-The implementation request is also machine-local in the current Studio
-layout. Source transfer therefore does not carry its fingerprint. On a fresh
-server, Studio states that the record is unavailable and proceeds only after
-technical validation. You may run \texttt{workflow implement} there when you
-want the server to establish its own local coherence record, but deployment
-does not require this temporary workaround.
+The implementation relationship is portable. Commit \path{zippergen.lock}
+with the specification and generated source. A fresh server derives the same
+\emph{current}, \emph{stale}, or \emph{external} state without private Studio
+data. Deployment blocks \emph{stale}, but warns and proceeds for
+\emph{external}.
 
 \subsection{Validate on the server before deploying}
 
@@ -2402,16 +2419,14 @@ workflow validate
 workflow show
 \end{lstlisting}
 
-Only then continue with model and connector configuration and, finally,
-\texttt{deploy}.
+Only then supply the reported site facts, run the model and connector checks,
+and continue with \texttt{deploy}.
 
 \begin{notebox}{The same Studio, different commands}
 Studio behaves identically on both machines. Authoring commands such as
-\texttt{ask}, \texttt{plan}, \texttt{workflow refine}, and \texttt{workflow
-implement} use a coding assistant. Validation, running, deployment, and
-inspection do not invoke that assistant. A first Studio deployment on a fresh
-server warns that no local implementation record is available, then continues
-through the normal technical validation and readiness checks.
+\texttt{ask}, \texttt{plan}, \texttt{workflow refine-spec}, and
+\texttt{workflow implement} use a coding assistant. Validation, running,
+deployment, and inspection do not invoke that assistant.
 \end{notebox}
 
 \section{Studio and scriptable CLI equivalents}
@@ -2424,8 +2439,8 @@ this table to understand why those sections contain more commands.
 \textbf{Need} & \textbf{Recommended Studio path} &
 \textbf{Detailed/scriptable path} \\
 \midrule
-Select workflow & \texttt{workflow list}, then \texttt{workflow select};
-remembered per project & Supply
+Configure workflow & \texttt{workflow list}, then \texttt{workflow import PATH.py:NAME};
+versioned in \path{zippergen.toml} & Supply
 \path{path.py:workflow} to each command. \\
 Inspect & \texttt{workflow show} selector & \texttt{zippergen show} with
 \texttt{--detail}, \texttt{--communications}, or participant flags. \\
@@ -2438,9 +2453,10 @@ Inspect durable state & \texttt{run inspect}, \texttt{run tasks},
 \texttt{run approve}, \texttt{run trace}, or the corresponding
 \texttt{deploy} commands & Pass the exact \texttt{--store} path to
 status/task/trace commands. \\
-Specification change & \texttt{workflow create} or
-\texttt{workflow refine} & Manually request a snapshot, assistant edit,
-validation, views, projections, and semantic diff. \\
+Specification change & \texttt{workflow edit-spec}, or
+\texttt{workflow edit-refinement} then \texttt{workflow refine-spec} & Edit
+\path{specification.md} directly, then regenerate, validate, and inspect the
+workflow. \\
 Deploy/operate & \texttt{deploy}, then \texttt{deploy show},
 \texttt{deploy tasks}, \texttt{deploy approve},
 \texttt{deploy trace},
@@ -2742,7 +2758,7 @@ deploy show
 No manual notification synchronization command is required. The bridge watches
 the deployment's unique store, sends unseen tasks, consumes replies, and
 completes exactly the corresponding durable action. A development run starts
-the same bridge automatically when the selected workflow has an external
+the same bridge automatically when the project workflow has an external
 human assignment. Without such an assignment, development keeps the human
 decision in the Studio terminal.
 
@@ -2901,7 +2917,7 @@ spreadsheet files, not only to the configured tab. Use a dedicated account,
 a dedicated spreadsheet, or protected ranges when a narrower operational
 boundary is required. Studio records the scopes that Google actually granted.
 Connector checks, runs, and deployments stop early if those scopes no longer
-cover the selected workflow.
+cover the project workflow.
 
 \subsection{Gmail and Sheets in one workflow}
 
@@ -2921,10 +2937,13 @@ Before opening Studio:
   \item Create a Desktop app OAuth client and download its JSON file.
 \end{enumerate}
 Publishing an external application with Gmail access may require additional
-Google review. Use a dedicated test account while developing.
+Google review. Use a dedicated test account while developing. Put this
+workflow in its own project rather than changing the tutorial project's
+manifest:
 
 \begin{lstlisting}[style=shell]
-workflow select examples/call_intake.py:call_intake
+project init call-intake
+workflow import /path/to/zippergen/examples/call_intake.py:call_intake
 workflow show communications
 workflow validate
 model setup
@@ -3614,12 +3633,13 @@ printed by \texttt{echo}; it is the value used below.
 
 \subsection{Use a precise refinement prompt}
 
-In Studio, select the workbench copy and open the one automatically named
-pending refinement:
+In Studio, import the workbench copy as the branch's project workflow and open
+the scratch refinement. Studio shows the former and
+incoming entries and asks for confirmation before changing the manifest:
 
 \begin{lstlisting}[style=shell]
-workflow select workbench/tutorial_review.py:tutorial_review
-workflow refine
+workflow import workbench/tutorial_review.py:tutorial_review
+workflow edit-refinement
 \end{lstlisting}
 
 Paste the following text into the editor, save it, and exit:
@@ -3633,19 +3653,18 @@ approves, release that draft to Requester; otherwise send the existing explicit
 failure notice. Keep all Reviewer-approved paths and the retry bound unchanged.
 \end{lstlisting}
 
-Studio stores the text at \path{.zippergen/pending-refinement.md}, records its
-own semantic baseline, and generates the complete task. No prompt filename or
-baseline placeholder is required. Inspect and execute it:
+Studio stores the text at \path{.zippergen/refinement.md}. Apply it, then
+implement the revised canonical specification:
 
 \begin{lstlisting}[style=shell]
-workflow show pending
+workflow refine-spec
 workflow status
 workflow implement
 \end{lstlisting}
 
-The generated task supplies the nested skill, canonical specification, pending
-change, target, semantic baseline, assistant-check contract, and explicit no-deployment
-boundary. Studio starts Codex in the tutorial root with that fixed task.
+The implementation task supplies the nested skill, canonical specification,
+assistant-check contract, and explicit no-deployment boundary. Studio starts
+Codex in the tutorial root with that fixed task.
 
 \subsection{Independently verify the assistant's work}
 
@@ -3710,7 +3729,7 @@ git push -u origin tutorial/workflow-cycle
 
 \subsection{Specification template for a workflow created from scratch}
 
-Enter \texttt{workflow create} and use this structure in the automatically opened
+Enter \texttt{workflow edit-spec} and use this structure in the automatically opened
 \path{specification.md}:
 
 \begin{lstlisting}[numbers=none]
@@ -3728,11 +3747,10 @@ Enter \texttt{workflow create} and use this structure in the automatically opene
 - Safety/idempotency requirements: ...
 \end{lstlisting}
 
-Later behavioral changes go into the single pending document opened by
-\texttt{workflow refine}. The assistant integrates that change into this clean
-canonical specification; after human review, Studio reconciles the pending
-document. Git, rather than a pile of active prompt fragments, preserves
-accepted history.
+Later behavioral changes go into the scratch buffer opened by
+\texttt{workflow edit-refinement}. \texttt{workflow refine-spec} integrates
+the change into the canonical specification and consumes the buffer. Git,
+rather than a pile of active prompt fragments, preserves history.
 
 \section{Create a guided named deployment}
 
@@ -4065,18 +4083,17 @@ zippergen
 model
 \end{lstlisting}
 
-If no workflow is selected, enter \texttt{workflow list} and then
-\texttt{workflow select}. Inspection and validation commands also open this
-selector automatically.
+If no project workflow is configured, enter \texttt{workflow list} and then
+\texttt{workflow import PATH.py:NAME} using the displayed path.
 
 \subsection*{Studio says the specification is empty}
 
 Enter \texttt{workflow path} to see Studio's fixed path, then
-\texttt{workflow edit spec} to
+\texttt{workflow edit-spec} to
 open it again. Add at least one real requirement, save, and leave the editor.
 The file must be valid nonempty UTF-8 text. No prompt directory, ID, or custom
 filename is required. If importing an existing document with the advanced
-\texttt{workflow create --file PATH} form, Studio reports the resolved absolute path
+\texttt{workflow edit-spec --file PATH} form, Studio reports the resolved absolute path
 and distinguishes a missing file, directory, empty file, and invalid UTF-8.
 
 \subsection*{The shell says \texttt{command not found: --input} or \texttt{--store}}
@@ -4088,7 +4105,7 @@ only the first part of the intended command actually ran.
 
 \subsection*{\texttt{model} lists no Writer or Reviewer}
 
-Run \texttt{current} to confirm the selected workflow, then
+Run \texttt{current} to confirm the project workflow, then
 \texttt{workflow show actions}. Studio lists a lifeline in \texttt{model} only when that
 lifeline contains an actual \texttt{@llm} action. A pure, human, or message-only
 lifeline does not need a model. If the generated workflow was meant to contain
@@ -4271,7 +4288,7 @@ connector assignments, runs, and deployments. It also reports the project root
 and automatic \path{specification.md} path. The visible files contain no
 private runtime state. & \\
 $\square$ & \texttt{current}, \texttt{workflow list},
-\texttt{workflow select}, and the selectable
+\texttt{workflow import}, and the selectable
 \texttt{workflow show}
 views make specification/refinement state, workflow name, participants, validation, model
 routes, provider connections, and runtime context clear. & \\
@@ -4280,9 +4297,8 @@ editor, and output preferences while language history remains project-local. & \
 $\square$ & \texttt{editor set micro} remembers the installed global editor;
 \texttt{editor show}, \texttt{edit file}, and a one-off
 \texttt{--editor nano} behave as documented without MCP setup. & \\
-$\square$ & \texttt{workflow create} opens \path{specification.md} without asking
-for a filename, creates \path{.zippergen/current-task.md}, and prints a concise
-result table; \texttt{workflow status} exposes its lifecycle. & \\
+$\square$ & \texttt{workflow edit-spec} opens \path{specification.md} without asking
+for a filename and prints a concise result table. & \\
 $\square$ & \texttt{workflow implement codex} launches Codex in the project root without a
 copied path or MCP setup; the assistant creates visible source plus a focused
 test at the requested paths. & \\
@@ -4291,15 +4307,12 @@ summary containing changed files, assistant checks, and the assistant report;
 \texttt{workflow status} reports \texttt{implemented}. & \\
 $\square$ & \texttt{workflow diff} shows the available specification and
 semantic baselines, while \texttt{workflow validate} independently checks the
-current workflow and every local projection. & \\
-$\square$ & \texttt{workflow refine} creates or reopens exactly one automatically
-named pending refinement; repeated edits do not
-create a pile of prompt files. & \\
-$\square$ & The assistant receives the canonical specification plus pending
-change. \texttt{workflow discard} archives and clears the pending request
-without reverting working-tree files. & \\
-$\square$ & A known stale implementation blocks deployment; a fresh clone with
-no local implementation record warns and proceeds after technical validation. & \\
+project workflow and every local projection. & \\
+$\square$ & \texttt{workflow edit-refinement} creates or reopens one ignored
+scratch buffer; \texttt{workflow refine-spec} consumes it after revision. & \\
+$\square$ & The specification assistant sees no implementation source. & \\
+$\square$ & \path{zippergen.lock} makes current, stale, and external states
+portable; deployment accepts only current. & \\
 $\square$ & \texttt{model} lists connections, reusable configurations, and
 only LLM-active lifeline assignments;
 \texttt{model config check NAME} verifies a configuration without changing
@@ -4367,16 +4380,14 @@ settings set editor micro
 settings set output banner
 current
 editor show
-workflow create       # opens the automatic specification.md
+workflow edit-spec    # opens the automatic specification.md
 workflow show spec
-workflow edit spec
 workflow path
 workflow status
 workflow implement codex # or: workflow implement claude
 # After the coding assistant creates source:
 workflow list         # show discovered entry points without validating
 workflow import PATH.py[:WORKFLOW] # copy an existing workflow into this project
-workflow select       # select one by number
 workflow files        # list known implementation and resource files
 workflow show source  # inspect authored Python before validation
 workflow show
@@ -4391,8 +4402,8 @@ run inspect
 run tasks
 run approve
 run trace
-workflow refine       # creates or reopens one pending change
-workflow show pending
+workflow edit-refinement # creates or reopens one scratch change
+workflow refine-spec  # applies it to specification.md
 workflow implement codex # or: workflow implement claude
 workflow diff         # specification and semantic before/after
 workflow validate     # structural and projection check

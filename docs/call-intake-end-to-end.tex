@@ -203,7 +203,12 @@ workflow import zippergen/examples/call_intake.py:call_intake
 \end{lstlisting}
 
 Studio copies the workflow to \path{examples/call_intake.py} in the outer
-project and selects it. The nested framework repository remains separate.
+project and records it as the project's workflow in \path{zippergen.toml}.
+The nested framework repository remains separate. A clone of this outer
+project can resolve the same entry point without private Studio state. Named
+model and connector configurations, their assignments, and connector bindings
+are also written to this manifest as you configure them. A later clone already
+knows those project decisions and asks only for its own endpoint and secrets.
 
 Check what was imported:
 
@@ -227,7 +232,7 @@ An imported workflow is visible code, but the fresh project does not yet have
 a canonical specification. Enter:
 
 \begin{lstlisting}[style=shell]
-workflow edit spec
+workflow edit-spec
 \end{lstlisting}
 
 Replace the initial writing guide with this text:
@@ -269,10 +274,10 @@ workflow validate
 \end{lstlisting}
 
 Studio summarizes the changed files, assistant checks, and assistant report.
-On this machine, deployment later uses the implementation record to detect a
-specification change. If the project is transferred without private Studio
-state, deployment warns that no record is available and proceeds after
-technical validation.
+Deployment later uses the committed \path{zippergen.lock} implementation
+record to detect a specification change. That record travels with the project,
+so a fresh clone derives the same implementation state without private Studio
+data.
 
 \section{Configure the LLM}
 
@@ -315,6 +320,12 @@ Studio asks for the API key privately and then asks for the model name. The
 same sequence works with \texttt{mistral} or \texttt{anthropic} as provider.
 Configure only one option for this test.
 
+The chosen provider, model, and default assignment are project configuration
+in \path{zippergen.toml}. The local endpoint, idle-release policy, and API key
+are site configuration. If this project is cloned onto another machine, enter
+\texttt{project} there. Studio reports only the missing endpoint or key. It
+does not ask you to recreate \texttt{call-extractor} or its assignment.
+
 \section{Prepare Google}
 
 Use one Google account for Gmail and the test Sheet.
@@ -338,13 +349,13 @@ The file remains on the computer that performs browser authorization.
 \section{Configure Gmail and Sheets in Studio}
 \label{sec:oauth}
 
-\begin{notebox}{The setup is driven by the selected workflow}
+\begin{notebox}{The setup is driven by the project workflow}
 Studio has no special case for \texttt{call\_intake}. The workflow declares
 logical connector requirements with a name, kind, participant, capabilities,
 and access level. Those declarations make Studio ask for a Gmail resource and
 a Google Sheets resource. The workflow's \texttt{DeploymentSpec} separately
 declares the later questions about certified senders, intake recipient, reply
-mode, rate limit, and polling interval. Selecting a different workflow
+mode, rate limit, and polling interval. Another project with another workflow
 produces questions from that workflow's own declarations.
 \end{notebox}
 
@@ -663,7 +674,7 @@ uv run --no-sync --project zippergen zippergen
 # Studio commands
 project init call-intake-check
 workflow import zippergen/examples/call_intake.py:call_intake
-workflow edit spec
+workflow edit-spec
 workflow implement
 workflow show communications
 workflow show full

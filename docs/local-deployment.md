@@ -419,7 +419,8 @@ zippergen
 Then enter:
 
 ```text
-workflow select examples/call_intake.py:call_intake
+project init call-intake
+workflow import examples/call_intake.py:call_intake
 workflow validate
 model setup
 connector setup
@@ -427,9 +428,15 @@ connector assignments check
 deploy call-intake
 ```
 
+`workflow import` records this one entry point in the versioned project
+manifest. Because the file is already in the project, Studio copies nothing.
+It is project setup, not a mode for switching among other example sources.
+
 `connector setup` uses one private Google provider authorization. It creates
 and checks separate Gmail and Google Sheets configurations and binds them to
-the workflow. The deployment questions cover application policy such as
+the workflow. The configurations and bindings are versioned in
+`zippergen.toml`; only authorization and site observations remain private.
+The deployment questions cover application policy such as
 certified senders, the intake address, safe reply mode, and rate limits.
 OAuth token paths and Google resource IDs are not deployment fields.
 The optional installation keeps Google libraries out of basic ZipperGen

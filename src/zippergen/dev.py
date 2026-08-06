@@ -454,12 +454,13 @@ def run_dev(
         else:
             renderer.status("info", f"Resuming run {selected_run_id}.")
     else:
-        selected = workflow_spec or workspace.current_workflow
+        selected = workflow_spec or workspace.workflow_entry
         if not selected:
             raise SystemExit(
-                "No workflow selected. Pass PATH.py:WORKFLOW or select one in Studio."
+                "No project workflow is configured. Pass PATH.py:WORKFLOW once "
+                "or use 'workflow import PATH.py:WORKFLOW' in Studio."
             )
-        stored_spec = workspace.select_workflow(selected)
+        stored_spec = workspace.canonical_spec(selected, cwd=workspace.root)
         workflow, module = _load_and_validate(workspace, stored_spec)
         if renderer is None:
             output_func(f"Workflow {workflow.name}: valid")
@@ -524,10 +525,7 @@ def run_dev(
     environment = provider_environment
 
     store_path = str(record["store"])
-    workspace.update(
-        current_workflow=stored_spec,
-        current_run=selected_run_id,
-    )
+    workspace.update(current_run=selected_run_id)
     workspace.update_run(selected_run_id, status="running", error=None)
     if renderer is not None:
         run_rows: list[tuple[str, object, StatusKind | None]] = [

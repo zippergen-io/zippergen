@@ -23,6 +23,18 @@ over remembered syntax.
 - For an explanation or review, follow **Inspect as code** without editing.
 - Prepare or start a deployment only when the user asks for deployment work.
 
+Studio projects have one versioned workflow entry point in
+`zippergen.toml`. `workflow list` is read-only discovery. `workflow import`
+adopts a file already inside the project without copying it. Importing another
+workflow into an already configured project is a replacement and requires the
+user's confirmation before files or the manifest change.
+
+Treat portability separately from secrecy. Named model and connector
+configurations, assignments, and connector bindings belong in
+`zippergen.toml`. Local endpoints, idle policy, cached checks, and credentials
+belong to private site state. Resolve configuration with one rule only: a site
+override wins when present, otherwise use the project value.
+
 ## Model the intent first
 
 Extract these facts from all supplied prompts before writing code:

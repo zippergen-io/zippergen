@@ -80,14 +80,14 @@ specification.
 Studio keeps the main path short:
 
 ```text
-workflow create
+workflow edit-spec
 workflow implement codex
 workflow validate
 run
 deploy
 ```
 
-`workflow create` opens one versioned `specification.md`. A coding assistant
+`workflow edit-spec` opens one versioned `specification.md`. A coding assistant
 may implement that specification as ordinary Python code and focused tests.
 The assistant never deploys the result. Studio summarizes the files changed,
 assistant checks, and assistant report when implementation finishes. Validation,
@@ -270,7 +270,6 @@ Useful Studio forms:
 ```text
 workflow list
 workflow import /path/to/existing_workflow.py
-workflow select
 workflow show
 workflow show communications
 workflow show agent Reviewer
@@ -280,19 +279,46 @@ workflow diff
 
 `workflow import` copies an existing workflow into the current project. It
 also copies statically imported local Python modules and literal resource files
-declared by the workflow. Existing project files are never overwritten
-silently. If the imported file contains one workflow, Studio selects it. If it
-contains several, Studio displays the entry points for selection.
+declared by the workflow. If the project already has a workflow, Studio shows
+what will be replaced and asks before overwriting files or changing the entry
+point. If the imported file contains several workflows, name the intended one
+as `PATH.py:WORKFLOW`.
+
+One project has one configured workflow. `workflow import` writes its entry
+point to the visible, versioned `zippergen.toml` manifest. Pointing it at a
+file already inside the project only adopts that entry point and copies
+nothing. `workflow list` remains a read-only source scan. A clone containing
+the manifest therefore knows its specification and workflow without private
+Studio state.
 
 `workflow validate` is a machine check. It checks structure, projection,
 metadata, and canonical rendering. `workflow diff` shows the available
 specification and semantic baseline again in detail.
 
-Running never requires an implementation record. When Studio has a local
-implementation record, `deploy` blocks if the specification changed afterward
-and asks you to run `workflow implement` again. A fresh clone has no portable
-record yet, so Studio warns and proceeds after technical validation. Portable
-derivation is planned for the simplified authoring lifecycle.
+Running never requires an implementation record. `workflow implement` writes
+the portable `zippergen.lock` record that relates the generated source to the
+current specification. Studio derives four states from committed project files:
+`absent`, `stale`, `current`, or `external`. A fresh clone derives the same
+state without private Studio data. Deployment blocks `absent` and `stale`.
+It warns and proceeds for `external`, because provenance is unknown rather
+than known to disagree. `workflow implement` remains the way to produce
+`current`.
+
+Project configuration travels with the workflow. Named model and connector
+configurations, participant and action assignments, and connector bindings are
+written to `zippergen.toml`. Machine-specific facts stay private on each site.
+These include local model endpoints, idle-release policy, cached health checks,
+API keys, bot tokens, and Google authorization. The effective value is one
+lookup: a private site override wins when present, otherwise Studio uses the
+project value. For example, keep the real model assignment in the project and
+use `model assign Writer mock --site` on a laptop. The `project` view lists only
+the site facts and secrets still missing after a fresh clone.
+
+For a described specification change, use `workflow edit-refinement` and then
+`workflow refine-spec`. The first command writes an ignored scratch buffer.
+The second lets an isolated assistant see only the specification and requested
+change, rewrites `specification.md`, and consumes the buffer. It never exposes
+the implementation to the specification assistant.
 
 ## Assistant safety
 
@@ -445,8 +471,9 @@ permanently. A permanent purge requires the explicit deployment name and a
 second confirmation.
 
 Studio discovers human actions from workflow code. Their delivery uses the
-same provider, configuration, and assignment lifecycle as models. Private
-credentials remain outside Git:
+same provider, configuration, and assignment lifecycle as models. Named
+configurations and assignments are versioned. Private credentials remain
+outside Git:
 
 ```text
 connector provider configure telegram
@@ -466,8 +493,9 @@ configuration. One configuration may be assigned to several participants.
 Their model and connector calls can still run in parallel.
 
 Gmail and Google Sheets use the same provider and configuration pattern. The
-workflow declares logical mailbox and table operations. Studio stores Google
-authorization, the Gmail query, and the concrete spreadsheet privately:
+workflow declares logical mailbox and table operations. Studio versions the
+Gmail query and concrete spreadsheet choice in `zippergen.toml`, while Google
+authorization remains private on each site:
 
 For a source checkout, install the optional Google support once:
 
@@ -483,12 +511,14 @@ automatically.
 connector setup
 ```
 
-For the call-intake workflow, this one command authorizes Gmail and Sheets,
-asks for the mailbox query, spreadsheet, and tab, checks both resources, and
-binds the saved configurations:
+For the call-intake workflow, create a separate project directory first. This
+setup then authorizes Gmail and Sheets, asks for the mailbox query,
+spreadsheet, and tab, checks both resources, and binds the saved
+configurations:
 
 ```text
-workflow select examples/call_intake.py:call_intake
+project init call-intake
+workflow import /path/to/zippergen/examples/call_intake.py:call_intake
 connector setup
 connector assignments check
 deploy call-intake

@@ -100,7 +100,7 @@ def requirement_proposal(
         text,
     ):
         return None
-    action = "refine" if has_specification else "create"
+    action = "edit-refinement" if has_specification else "edit-spec"
     noun = "refinement" if has_specification else "initial specification"
     return NaturalCommandPlan(
         f"Treat this prose as the {noun}.",
@@ -224,7 +224,7 @@ def deterministic_plan(
 
     if text in {"run it", "run this", "run the current workflow"}:
         return NaturalCommandPlan(
-            "Run the selected workflow.",
+            "Run the project workflow.",
             ("run",),
             "deterministic",
         )
@@ -325,7 +325,7 @@ def deterministic_plan(
         "show the task",
     }:
         return NaturalCommandPlan(
-            "Show the current workflow implementation status.",
+            "Show the project workflow implementation status.",
             ("workflow status",),
             "deterministic",
         )
@@ -356,7 +356,7 @@ def deterministic_plan(
 
     if re.search(r"\b(validate|validation|check)\b.*\bworkflow\b", text):
         return NaturalCommandPlan(
-            "Validate the selected workflow.",
+            "Validate the project workflow.",
             ("workflow validate",),
             "deterministic",
         )
@@ -374,7 +374,7 @@ def deterministic_plan(
         text,
     ):
         return NaturalCommandPlan(
-            "Run the selected workflow.",
+            "Run the project workflow.",
             ("run",),
             "deterministic",
         )
@@ -382,7 +382,7 @@ def deterministic_plan(
     if re.search(r"\b(?:show|display|inspect|view)\b", text):
         if re.search(r"\b(source|python|authored code|files?)\b", text):
             return NaturalCommandPlan(
-                "Show the selected workflow's authored source.",
+                "Show the project workflow's authored source.",
                 ("workflow show source",),
                 "deterministic",
             )
@@ -515,8 +515,8 @@ def deterministic_plan(
 
     if re.search(r"\b(pending|current)\s+refinement\b", text):
         return NaturalCommandPlan(
-            "Show the pending specification refinement.",
-            ("workflow show pending",),
+            "Show whether a specification refinement is ready.",
+            ("workflow status",),
             "deterministic",
         )
 

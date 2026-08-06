@@ -186,11 +186,15 @@ def read_reviews() -> str:
 
 Use connector declarations when workflow behavior requires a non-human
 external capability independently of deployment configuration. Studio stores
-named configurations and secrets privately, while semantic snapshots and full
+named configurations, assignments, and bindings in the versioned
+`zippergen.toml` manifest. Secrets and machine-specific observations remain
+private, while semantic snapshots and full
 views retain the logical kind, participant, access, capabilities, and each
 effect's logical connector operation. For Google Sheets writes, prefer a
 stable-key upsert to a blind append. This makes a retry after a crash safe.
 Never put a spreadsheet ID, OAuth token, or credentials path in workflow code.
+The spreadsheet ID belongs in a named project connector configuration. The
+OAuth token remains private site state.
 Use `connector setup` to configure and bind the concrete resource.
 
 Gmail follows the same pattern:
@@ -212,8 +216,10 @@ def read_mail() -> str:
 ```
 
 Keep the account, Gmail search query, and OAuth token outside workflow source.
+The account and query are project configuration. The token is private site
+state.
 `connector setup` can authorize Gmail and Google Sheets together when the
-selected workflow requires both. Declare `access="read-only"` for readers.
+project workflow requires both. Declare `access="read-only"` for readers.
 Use `read-write` only when an action modifies Gmail or Sheets. Studio uses
 that declaration to request the narrowest supported Google OAuth scope.
 
@@ -439,6 +445,18 @@ The events table has an explicit integer primary key. Database compaction must
 preserve these stable event identifiers because recovery floors refer to them.
 
 ## Studio natural-language commands
+
+Studio keeps one canonical `specification.md` and one workflow entry in
+`zippergen.toml`. `workflow edit-spec` changes the specification directly.
+For a described change, `workflow edit-refinement` writes an ignored scratch
+buffer and `workflow refine-spec` applies it without exposing implementation
+source to the specification assistant. `workflow implement` writes the
+committed `zippergen.lock` record. The project then derives implementation as
+`absent`, `stale`, `current`, or `external`, including on a fresh clone.
+Deployment blocks `absent` and `stale`. It warns and proceeds for `external`,
+because provenance is unknown rather than known to disagree.
+`workflow import PATH.py:NAME` also adopts a file already inside the project
+without copying it.
 
 Inside `zippergen studio` (or plain `zippergen` in an interactive terminal),
 exact Studio syntax remains authoritative. Input that is not valid command

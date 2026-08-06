@@ -106,23 +106,23 @@ COMMANDS: tuple[CommandSpec, ...] = (
         primary=True,
     ),
     CommandSpec(
-        ("workflow", "create"),
-        "workflow create [DESCRIPTION|--file PATH|--edit]",
-        "write the initial specification",
+        ("workflow", "edit-spec"),
+        "workflow edit-spec [DESCRIPTION|--file PATH] [--editor COMMAND]",
+        "write or edit the canonical specification",
         "configuration",
         primary=True,
     ),
     CommandSpec(
-        ("workflow", "refine"),
-        "workflow refine [CHANGE|--file PATH|--edit] [--implement]",
-        "create or reopen the pending refinement",
+        ("workflow", "edit-refinement"),
+        "workflow edit-refinement [CHANGE|--file PATH] [--editor COMMAND]",
+        "write or discard the scratch refinement",
         "configuration",
     ),
     CommandSpec(
-        ("workflow", "edit"),
-        "workflow edit [spec|code]",
-        "edit requirements or selected source",
-        "configuration",
+        ("workflow", "refine-spec"),
+        "workflow refine-spec [codex|claude]",
+        "apply the refinement to the specification",
+        "execution",
     ),
     CommandSpec(
         ("workflow", "list"),
@@ -133,19 +133,13 @@ COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec(
         ("workflow", "import"),
         "workflow import PATH.py[:WORKFLOW]",
-        "copy an existing workflow and its local files into this project",
-        "configuration",
-    ),
-    CommandSpec(
-        ("workflow", "select"),
-        "workflow select [NUMBER|NAME|PATH.py:NAME]",
-        "select a workflow entry point",
+        "import or replace this project's workflow and local files",
         "configuration",
     ),
     CommandSpec(
         ("workflow", "files"),
         "workflow files",
-        "list files used by the selected workflow",
+        "list files used by the project workflow",
         "read-only",
     ),
     CommandSpec(
@@ -180,12 +174,6 @@ COMMANDS: tuple[CommandSpec, ...] = (
         "workflow validate",
         "check structural validity and every projection",
         "read-only",
-    ),
-    CommandSpec(
-        ("workflow", "discard"),
-        "workflow discard [--yes]",
-        "archive a rejected refinement; does not revert files",
-        "destructive",
     ),
     CommandSpec(
         ("workflow", "history"),
@@ -232,25 +220,25 @@ COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec(
         ("model", "assignments", "check"),
         "model assignments check",
-        "check configurations used by the selected workflow",
+        "check configurations used by the project workflow",
         "read-only",
     ),
     CommandSpec(
         ("model", "assign"),
-        "model assign PARTICIPANT_OR_ACTION NAME",
-        "assign a configuration to a participant or LLM action",
+        "model assign PARTICIPANT_OR_ACTION NAME [--site]",
+        "assign a project configuration, optionally only on this site",
         "configuration",
     ),
     CommandSpec(
         ("model", "default"),
-        "model default NAME",
-        "set the inherited default configuration",
+        "model default NAME [--site]",
+        "set the project or site default configuration",
         "configuration",
     ),
     CommandSpec(
         ("model", "inherit"),
-        "model inherit PARTICIPANT_OR_ACTION",
-        "restore participant or action inheritance",
+        "model inherit PARTICIPANT_OR_ACTION [--site]",
+        "restore project or site inheritance",
         "configuration",
     ),
     CommandSpec(
@@ -616,6 +604,34 @@ COMMANDS: tuple[CommandSpec, ...] = (
 )
 
 
+# Pass-3 authoring lifecycle map. The root ``workflow`` command is the compact
+# status observation; files, history, and path are narrower observation views.
+WORKFLOW_COMMAND_MAP: dict[str, frozenset[tuple[str, ...]]] = {
+    "transitions": frozenset(
+        {
+            ("workflow", "edit-spec"),
+            ("workflow", "edit-refinement"),
+            ("workflow", "refine-spec"),
+            ("workflow", "implement"),
+            ("workflow", "import"),
+        }
+    ),
+    "observations": frozenset(
+        {
+            ("workflow",),
+            ("workflow", "validate"),
+            ("workflow", "show"),
+            ("workflow", "diff"),
+            ("workflow", "status"),
+            ("workflow", "list"),
+            ("workflow", "files"),
+            ("workflow", "history"),
+            ("workflow", "path"),
+        }
+    ),
+}
+
+
 def command_spec(parts: list[str] | tuple[str, ...]) -> CommandSpec | None:
     lowered = tuple(value.casefold() for value in parts)
     matches = [
@@ -654,7 +670,7 @@ def subcommand_completions(parent: str) -> tuple[tuple[str, str], ...]:
 def concise_help() -> str:
     return """Getting started:
   1. project init
-  2. workflow create
+  2. workflow edit-spec
   3. workflow implement
   4. workflow validate
   5. run

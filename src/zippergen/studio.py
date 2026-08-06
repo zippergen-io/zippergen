@@ -12,6 +12,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from collections.abc import Callable, Iterator
@@ -76,6 +77,7 @@ from zippergen.workspace import (
     SPECIFICATION_GUIDE,
     Workspace,
     WorkspaceError,
+    discover_workflow_specs,
 )
 
 
@@ -306,11 +308,12 @@ def _is_allowed_natural_plan_command(parts: list[str]) -> bool:
             "validate",
             "history",
             "path",
-            "discard",
         }:
             return len(args) <= 2
-        if action in {"create", "refine"}:
+        if action in {"edit-spec", "edit-refinement"}:
             return True
+        if action == "refine-spec":
+            return len(args) <= 2
         if action == "implement":
             return all(
                 value
@@ -323,17 +326,13 @@ def _is_allowed_natural_plan_command(parts: list[str]) -> bool:
                 }
                 for value in lowered
             )
-        if action == "select":
-            return len(args) <= 2
-        if action == "edit":
-            return len(args) <= 3
         if action == "show":
             if len(args) == 1:
                 return True
             if len(args) == 2:
                 return lowered[1] in {
                     "spec",
-                    "pending",
+                            "refinement",
                     "source",
                     *(view.command for view in WORKFLOW_VIEWS),
                 }
@@ -765,22 +764,26 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
         return command
 
     def _prompt(self) -> str:
-        current = self.workspace.current_workflow
-        label = current.rsplit(":", 1)[-1] if current else "no workflow"
+        entry = self.workspace.workflow_entry
+        label = entry.rsplit(":", 1)[-1] if entry else "no workflow"
         return f"zippergen [{label}]> "
 
     def welcome(self) -> None:
+        self._migrate_workflow_entry()
+        self._migrate_project_configuration()
+        self._migrate_portable_implementation_lock()
+        self._report_legacy_refinement()
         self._emit_studio_banner()
         manifest = self.workspace.project_manifest()
-        current = self.workspace.current_workflow
+        entry = self.workspace.workflow_entry
         assistant, assistant_kind = self._coding_assistant_readiness()
         rows: list[tuple[str, object, StatusKind | None]] = [
             ("Project", manifest["name"], None),
             ("Root", self.workspace.root, None),
             (
                 "Workflow",
-                current if current else "none selected",
-                "success" if current else "warning",
+                entry if entry else "not configured",
+                "success" if entry else "warning",
             ),
             ("Assistant", assistant, assistant_kind),
         ]
@@ -799,6 +802,44 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
             rows,
         )
         self._emit_next(self._welcome_next_action())
+
+    def _migrate_portable_implementation_lock(self) -> None:
+        """Convert a trustworthy private Pass-1 record into project metadata."""
+
+        if (
+            self.workspace.implementation_lock_path.exists()
+            or self.workspace.workflow_entry is None
+        ):
+            return
+        record = self._implementation_record(self.workspace.workflow_entry)
+        if record is None:
+            return
+        fingerprint = record.get("result_specification_fingerprint")
+        if not isinstance(fingerprint, str) or not fingerprint:
+            return
+        try:
+            files = [path for path, _role in self._workflow_file_records()]
+            self.workspace.write_implementation_lock(
+                files,
+                specification_fingerprint=fingerprint,
+            )
+        except (WorkspaceError, OSError, ValueError, SystemExit):
+            return
+        self._info(
+            "Recorded the former local implementation relationship in "
+            "zippergen.lock; commit this file with the project."
+        )
+
+    def _report_legacy_refinement(self) -> None:
+        """Leave retired user prose untouched and explain its explicit paths."""
+
+        if self.workspace.legacy_pending_refinement_path.is_file():
+            self._warning(
+                "A former pending refinement was left untouched at "
+                f"{self.workspace.legacy_pending_refinement_path}. Copy it with "
+                "'workflow edit-refinement --file PATH' or remove it only after "
+                "you decide it is no longer needed."
+            )
 
     def _coding_assistant_readiness(self) -> tuple[str, StatusKind]:
         configured = str(self._global_settings().get("assistant") or "codex")
@@ -823,16 +864,13 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
         manifest = self.workspace.project_manifest()
         if not manifest["exists"]:
             return "project init"
-        if self.workspace.specification() is None:
-            if self.workspace.current_workflow is not None:
-                return "workflow show · workflow validate"
-            return "workflow create · workflow import PATH.py"
-        record = self._ensure_current_task_fresh(announce=False)
-        if record is not None:
-            return self._task_next(self._normalize_task_lifecycle(record))
-        if self.workspace.current_workflow is None:
-            return "workflow list"
-        return "workflow show · run"
+        specification = self.workspace.specification()
+        implementation = self.workspace.implementation_state()
+        return self._workflow_next_action(
+            specification_present=specification is not None,
+            refinement_present=self.workspace.refinement_buffer() is not None,
+            implementation=str(implementation["state"]),
+        )
 
     def _new_prompt_session(self) -> PromptSession[str]:
         self.workspace.directory.mkdir(parents=True, exist_ok=True)
@@ -941,7 +979,7 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
                 self._error(str(exc))
 
     def _completion_lifelines(self, *, llm_only: bool = False) -> list[str]:
-        if self.workspace.current_workflow is None:
+        if self.workspace.workflow_entry is None:
             return []
         try:
             _current, workflow, module = self._current_context()
@@ -1082,7 +1120,6 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
                 if not rest:
                     return [
                         ("spec", "canonical workflow specification"),
-                        ("pending", "pending refinement"),
                         ("source", "authored Python source"),
                         *_SUBCOMMAND_COMPLETIONS["show"],
                     ]
@@ -1102,22 +1139,9 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
                         if name.lower() not in used
                     ]
                 return []
-            if action == "select":
-                try:
-                    workflows = self.workspace.discover_workflows()
-                except (WorkspaceError, OSError):
-                    workflows = []
-                values = [
-                    (str(index), value)
-                    for index, value in enumerate(workflows, start=1)
-                ]
-                values.extend(
-                    (value, "discovered workflow") for value in workflows
-                )
-                return values
             if action == "import":
                 return self._path_completion_candidates(fragment)
-            if action in {"create", "refine"}:
+            if action == "edit-refinement":
                 if "--file" in rest and rest[-1] == "--file":
                     return self._path_completion_candidates(fragment)
                 if "--editor" in rest and rest[-1] == "--editor":
@@ -1127,24 +1151,22 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
                         ("--file", "import text from an existing file"),
                         ("--editor", "choose an editor for this invocation"),
                     ]
-                    if action == "refine":
-                        choices.append(
-                            (
-                                "--implement",
-                                "save the refinement and start the default assistant",
-                            )
-                        )
                     return choices
                 return []
-            if action == "edit":
+            if action == "edit-spec":
+                if "--file" in rest and rest[-1] == "--file":
+                    return self._path_completion_candidates(fragment)
                 if "--editor" in rest and rest[-1] == "--editor":
                     return self._editor_completion_candidates()
-                if not rest:
-                    return [
-                        ("spec", "edit the canonical specification"),
-                        ("code", "edit the selected Python workflow"),
-                    ]
-                return [("--editor", "choose an editor for this invocation")]
+                return [
+                    ("--file", "read the specification from a file"),
+                    ("--editor", "choose an editor for this invocation"),
+                ]
+            if action == "refine-spec":
+                return [
+                    ("codex", "rewrite the specification with Codex"),
+                    ("claude", "rewrite the specification with Claude Code"),
+                ]
             if action == "implement":
                 if not rest:
                     return [
@@ -1177,8 +1199,6 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
                         "include task IDs, refresh links, and internal record path",
                     )
                 ]
-            if action in {"accept", "discard"}:
-                return [("--yes", "confirm without another prompt")]
             return []
         if command == "model":
             if not args:
@@ -1242,7 +1262,7 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
                 return [
                     (
                         "check",
-                        "check models used by the selected workflow",
+                        "check models used by the project workflow",
                     )
                 ]
             if action == "default":
@@ -1570,19 +1590,15 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
 
     def _show_workflow_dashboard(self) -> None:
         specification = self.workspace.specification()
-        pending = self.workspace.pending_refinement()
-        record = self._ensure_current_task_fresh(announce=False)
-        state = "none"
-        state_kind: StatusKind | None = None
-        next_action = (
-            "workflow create"
-            if specification is None
-            else "workflow refine"
+        refinement = self.workspace.refinement_buffer() is not None
+        implementation = self.workspace.implementation_state()
+        state = str(implementation["state"])
+        state_kind: StatusKind = "success" if state == "current" else "warning"
+        next_action = self._workflow_next_action(
+            specification_present=specification is not None,
+            refinement_present=refinement,
+            implementation=state,
         )
-        if record is not None:
-            record = self._normalize_task_lifecycle(record)
-            state, state_kind = self._task_state(record)
-            next_action = self._task_next(record)
         self._emit_table(
             "Workflow development",
             [
@@ -1599,27 +1615,55 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
                 ),
                 (
                     "Refinement",
-                    "pending" if pending is not None else "none",
-                    "warning" if pending is not None else None,
+                    "ready to apply" if refinement else "none",
+                    "warning" if refinement else None,
                 ),
                 (
-                    "Selected",
-                    self.workspace.current_workflow or "none",
-                    None if self.workspace.current_workflow else "warning",
+                    "Workflow",
+                    self.workspace.workflow_entry or "not configured",
+                    None if self.workspace.workflow_entry else "warning",
                 ),
-                ("Implementation task", state, state_kind),
+                ("Implementation", state, state_kind),
+                ("Reason", implementation.get("reason") or "—", None),
                 ("Next", next_action, None),
             ],
         )
+
+    @staticmethod
+    def _workflow_next_action(
+        *,
+        specification_present: bool,
+        refinement_present: bool,
+        implementation: str,
+    ) -> str:
+        """Return the first matching row of the normative Next table."""
+
+        if not specification_present:
+            return "workflow edit-spec"
+        if refinement_present:
+            return "workflow refine-spec"
+        if implementation == "external":
+            return "workflow edit-spec · workflow implement"
+        if implementation in {"absent", "stale"}:
+            return "workflow implement"
+        return "run · deploy"
 
     def _specification_diff(self) -> tuple[str, str]:
         current = self.workspace.specification()
         if current is None:
             return "none", "# No canonical specification is available."
-        state = self.workspace.load()
-        baseline = state.get("pending_specification_baseline")
-        baseline_name = "pre-refinement specification"
-        if not isinstance(baseline, str):
+        baseline: str | None = None
+        for record in self.workspace.list_requests():
+            if str(record.get("status") or "") in {
+                "implemented",
+                "awaiting_review",
+                "reconciled",
+                "closed",
+            } and isinstance(record.get("prompt"), str):
+                baseline = str(record["prompt"])
+                break
+        baseline_name = "last implemented specification"
+        if baseline is None:
             return (
                 "initial",
                 "# No earlier specification baseline exists for this creation.",
@@ -1642,8 +1686,11 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
         _current, workflow, module = self._current_context(
             purpose="compare its semantics"
         )
-        state = self.workspace.load()
-        baseline_file = state.get("pending_semantic_baseline")
+        baseline_file: object = None
+        for record in self.workspace.list_requests():
+            if record.get("baseline_file"):
+                baseline_file = record.get("baseline_file")
+                break
         baseline_snapshot: dict[str, object] | None = None
         baseline_name = "pre-refinement semantics"
         if baseline_file:
@@ -1707,40 +1754,15 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
             return
         action, *rest = args
         action = action.casefold()
-        if action == "create":
-            self.create_from_command(rest)
+        if action == "edit-spec":
+            self.manage_spec(["edit-spec", *rest])
             return
-        if action == "refine":
-            if "--review" in rest:
-                raise SystemExit(
-                    "Use workflow refine [CHANGE|--file PATH|--edit] "
-                    "[--implement]; --review no longer exists."
-                )
-            implement = "--implement" in rest
-            if rest.count("--implement") > 1:
-                raise SystemExit(
-                    "Use workflow refine [CHANGE|--file PATH|--edit] "
-                    "[--implement]."
-                )
-            refinement_args = [
-                value
-                for value in rest
-                if value != "--implement"
-            ]
-            self.manage_spec(["refine", *refinement_args])
-            if implement:
-                self.run_assistant([])
+        if action == "edit-refinement":
+            self.manage_spec(["edit-refinement", *rest])
             return
-        if action == "edit":
-            target = rest[0].casefold() if rest and not rest[0].startswith("-") else "spec"
-            options = rest[1:] if rest and not rest[0].startswith("-") else rest
-            if target == "spec":
-                self.manage_spec(["edit", *options])
-                return
-            if target == "code":
-                self.edit_file(["workflow", *options])
-                return
-            raise SystemExit("Use workflow edit [spec|code] [--editor COMMAND].")
+        if action == "refine-spec":
+            self.refine_specification(rest)
+            return
         if action == "list":
             if rest:
                 raise SystemExit("Use workflow list.")
@@ -1748,9 +1770,6 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
             return
         if action == "import":
             self.import_workflow(rest)
-            return
-        if action == "select":
-            self.select_workflow(rest)
             return
         if action == "files":
             if rest:
@@ -1762,11 +1781,6 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
                 if len(rest) != 1:
                     raise SystemExit("Use workflow show spec.")
                 self.manage_spec(["show"])
-                return
-            if rest and rest[0].casefold() == "pending":
-                if len(rest) != 1:
-                    raise SystemExit("Use workflow show pending.")
-                self.manage_spec(["pending"])
                 return
             self.show_workflow(rest)
             return
@@ -1788,9 +1802,6 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
                 raise SystemExit("Use workflow validate.")
             self.validate()
             return
-        if action == "discard":
-            self.manage_spec(["discard", *rest])
-            return
         if action == "history":
             if rest:
                 raise SystemExit("Use workflow history.")
@@ -1804,8 +1815,8 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
             self.manage_spec(["path"])
             return
         raise SystemExit(
-            "Use workflow create, refine, edit, list, import, select, files, show, "
-            "diff, status, implement, validate, discard, history, or path."
+            "Use workflow edit-spec, edit-refinement, refine-spec, list, import, "
+            "files, show, diff, status, implement, validate, history, or path."
         )
 
     def studio_doctor(self) -> None:
@@ -2223,9 +2234,32 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
                 self._emit_output_boundary("workflow")
             raise SystemExit(
                 "`workflow prompts` was retired. Studio now maintains one "
-                "canonical specification and at most one pending refinement. "
-                "Use workflow show spec, workflow show pending, workflow "
-                "create, or workflow refine."
+                "canonical specification and one optional scratch refinement. "
+                "Use workflow show spec, workflow edit-spec, workflow "
+                "edit-refinement, or workflow refine-spec."
+            )
+        if (
+            len(parts) >= 2
+            and parts[0].casefold() == "workflow"
+            and parts[1].casefold() == "select"
+        ):
+            if show_boundary:
+                self._emit_output_boundary("workflow import")
+            raise SystemExit(
+                "`workflow select` was removed. Use `workflow import "
+                "PATH.py:WORKFLOW`; a file already inside this project is "
+                "adopted without being copied."
+            )
+        if (
+            len(parts) >= 2
+            and parts[0].casefold() == "workflow"
+            and parts[1].casefold() in {"create", "refine", "discard"}
+        ):
+            if show_boundary:
+                self._emit_output_boundary("workflow")
+            raise SystemExit(
+                f"`workflow {parts[1]}` was removed. Use workflow edit-spec, "
+                "workflow edit-refinement, or workflow refine-spec."
             )
         explicit = self._is_explicit_command(parts)
         if _allow_natural and not explicit:
@@ -2674,7 +2708,7 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
         participants, active = self._language_participants()
         manifest = self.workspace.project_manifest()
         profile: dict[str, object] = {"default": None, "lifelines": {}}
-        if self.workspace.current_workflow:
+        if self.workspace.workflow_entry:
             try:
                 profile = self._run_model_profile()
             except (Exception, SystemExit):
@@ -2699,8 +2733,9 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
                 self.workspace.specification_path.relative_to(self.workspace.root)
             ),
             "specification_exists": self.workspace.specification() is not None,
-            "pending_refinement": self.workspace.pending_refinement() is not None,
-            "selected_workflow": self.workspace.current_workflow,
+            "refinement_present": self.workspace.refinement_buffer() is not None,
+            "implementation": self.workspace.implementation_state()["state"],
+            "workflow_entry": self.workspace.workflow_entry,
             "discovered_workflows": self.workspace.discover_workflows(),
             "participants": participants,
             "llm_active_participants": active,
@@ -3464,7 +3499,7 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
             self._prepare_specification_editor(target)
             raise SystemExit(
                 "No application requirements were written. The specification "
-                "guide was kept; enter 'workflow create' and write below its "
+                "guide was kept; enter 'workflow edit-spec' and write below its "
                 "comment."
             )
         self.workspace.save_specification(prompt)
@@ -3484,58 +3519,6 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
             raise SystemExit(usage)
         return values[:index], values[-1]
 
-    def create_from_command(self, args: list[str]) -> None:
-        """Create a handoff while keeping specification filenames automatic."""
-
-        values, editor_override = self._editor_override(
-            args,
-            usage="Use workflow create [DESCRIPTION], workflow create "
-            "--file PATH, or workflow create [--edit] [--editor COMMAND].",
-        )
-        if not values or values == ["--edit"]:
-            self.workspace.initialize_project()
-            ensured = self.workspace.ensure_specification()
-            target = self.workspace.specification_path
-            self._prepare_specification_editor(target)
-            self._launch_editor(
-                target,
-                override=editor_override,
-                title="Workflow specification",
-                return_hint="save and exit the editor to continue in Studio",
-            )
-            prompt = self._finish_specification_editor(target)
-            self.create_request(prompt, specification_already_saved=True)
-            if ensured["migrated"]:
-                self._info(
-                    "The former active prompt ledger was migrated into the "
-                    "canonical specification; its original files were kept."
-                )
-            return
-        if editor_override is not None:
-            raise SystemExit(
-                "--editor is only used when workflow create opens the "
-                "specification editor."
-            )
-        if values[0] == "--file":
-            if len(values) != 2:
-                raise SystemExit("Use workflow create --file PATH.")
-            entered = Path(values[1]).expanduser()
-            source = (
-                entered
-                if entered.is_absolute()
-                else self.workspace.root / entered
-            ).resolve()
-            prompt = self._read_prompt_file(source)
-        elif "--file" in values or "--edit" in values:
-            raise SystemExit(
-                "Use workflow create [DESCRIPTION], workflow create --file "
-                "PATH, or plain workflow create to open the automatic "
-                "specification file."
-            )
-        else:
-            prompt = " ".join(values).strip()
-        self.create_request(prompt)
-
     def _show_specification(self) -> None:
         ensured = self.workspace.ensure_specification()
         content = ensured["content"]
@@ -3545,7 +3528,7 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
                 [
                     (
                         "Status",
-                        "not written; use workflow create or workflow edit spec",
+                        "not written; use workflow edit-spec",
                         "warning",
                     ),
                     ("File", self.workspace.specification_path, None),
@@ -3558,12 +3541,12 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
                 ("Status", "canonical", "success"),
                 ("File", self.workspace.specification_path, None),
                 (
-                    "Pending",
-                    "yes; use workflow show pending"
-                    if self.workspace.pending_refinement() is not None
+                    "Refinement",
+                    "ready to apply"
+                    if self.workspace.refinement_buffer() is not None
                     else "none",
                     "warning"
-                    if self.workspace.pending_refinement() is not None
+                    if self.workspace.refinement_buffer() is not None
                     else None,
                 ),
             ],
@@ -3606,7 +3589,7 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
             self._warning("Please enter 'y' or 'n'.")
 
     def manage_spec(self, args: list[str]) -> None:
-        """Manage one canonical specification and one pending refinement."""
+        """Manage the canonical specification and its scratch refinement."""
 
         if not args or args == ["show"]:
             self._show_specification()
@@ -3617,30 +3600,64 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
             self.workspace.initialize_project()
             self._emit(self.workspace.specification_path)
             return
-        if action == "edit":
+        if action == "edit-spec":
             values, editor_override = self._editor_override(
                 rest,
-                usage="Use workflow edit spec [--editor COMMAND].",
+                usage="Use workflow edit-spec [DESCRIPTION|--file PATH] "
+                "[--editor COMMAND].",
             )
-            if values:
-                raise SystemExit(
-                    "Use workflow edit spec [--editor COMMAND]."
-                )
             self.workspace.initialize_project()
             ensured = self.workspace.ensure_specification()
             target = self.workspace.specification_path
-            self._prepare_specification_editor(target)
-            self._launch_editor(target, override=editor_override)
-            self._finish_specification_editor(target)
+            if not values:
+                self._prepare_specification_editor(target)
+                self._launch_editor(target, override=editor_override)
+                self._finish_specification_editor(target)
+            elif editor_override is not None:
+                raise SystemExit(
+                    "--editor is only used when workflow edit-spec opens the "
+                    "specification editor."
+                )
+            elif values[0] == "--file":
+                if len(values) != 2:
+                    raise SystemExit("Use workflow edit-spec --file PATH.")
+                entered = Path(values[1]).expanduser()
+                source = (
+                    entered
+                    if entered.is_absolute()
+                    else self.workspace.root / entered
+                ).resolve()
+                self.workspace.save_specification(self._read_prompt_file(source))
+            elif "--file" in values:
+                raise SystemExit(
+                    "Use workflow edit-spec [DESCRIPTION] or workflow "
+                    "edit-spec --file PATH."
+                )
+            else:
+                content = " ".join(values).strip()
+                if not content:
+                    raise SystemExit("The specification must not be empty.")
+                self.workspace.save_specification(content)
             self._emit_table(
                 "Specification updated",
                 [
                     ("File", target, "success"),
-                    ("Pending", "unchanged", None),
+                    (
+                        "Implementation",
+                        self.workspace.implementation_state()["state"],
+                        None,
+                    ),
                     (
                         "Next",
-                        "workflow status · workflow implement · "
-                        "workflow validate",
+                        self._workflow_next_action(
+                            specification_present=True,
+                            refinement_present=(
+                                self.workspace.refinement_buffer() is not None
+                            ),
+                            implementation=str(
+                                self.workspace.implementation_state()["state"]
+                            ),
+                        ),
                         None,
                     ),
                 ],
@@ -3651,153 +3668,87 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
                     "its original files were kept."
                 )
             return
-        if action == "pending" and not rest:
-            pending = self.workspace.pending_refinement()
-            if pending is None:
-                self._emit_table(
-                    "Pending refinement",
-                    [("Status", "none; use workflow refine", None)],
-                )
-                return
-            request_record = self._ensure_current_task_fresh(announce=False)
-            task_record = (
-                request_record
-                if request_record and request_record.get("kind") == "refine"
-                else None
-            )
-            task_status = (
-                str(task_record.get("status") or "prepared")
-                if task_record
-                else "prepared"
-            )
-            if task_status in {"awaiting_review", "implemented"}:
-                pending_status = "assistant returned; implementation available"
-                pending_kind: StatusKind = "success"
-                assert task_record is not None
-                next_action = self._task_next(task_record)
-            elif task_status == "assistant_running":
-                pending_status = "assistant is integrating the change"
-                pending_kind = "info"
-                next_action = "wait for the assistant session to return"
-            elif task_status in {"assistant_failed", "assistant_interrupted"}:
-                pending_status = "assistant did not finish; refinement remains open"
-                pending_kind = "error"
-                next_action = (
-                    "workflow status · workflow implement codex · "
-                    "workflow implement claude"
-                )
-            else:
-                pending_status = "waiting to be integrated"
-                pending_kind = "warning"
-                next_action = (
-                    "workflow implement codex · workflow implement claude"
-                )
-            self._emit_table(
-                "Pending refinement",
-                [
-                    ("Status", pending_status, pending_kind),
-                    *(
-                        [
-                            (
-                                "Assistant checks",
-                                *self._task_verification(task_record),
-                            )
-                        ]
-                        if task_record
-                        else []
-                    ),
-                    ("Edit", "workflow refine", None),
-                    ("Next", next_action, None),
-                ],
-            )
-            self._emit_section_title("Requested change")
-            self._emit(pending)
-            self._emit()
-            return
-        if action == "refine":
-            if self.workspace.current_workflow is None:
-                raise SystemExit(
-                    "No workflow selected. Use 'workflow select' before preparing "
-                    "a refinement."
-                )
+        if action == "edit-refinement":
             ensured = self.workspace.ensure_specification()
             if ensured["content"] is None:
                 raise SystemExit(
-                    "No workflow specification exists. Use 'workflow create' "
-                    "or 'workflow edit spec' first."
+                    "No workflow specification exists. Use 'workflow edit-spec' "
+                    "first."
                 )
             values, editor_override = self._editor_override(
                 rest,
-                usage="Use workflow refine [CHANGE|--file PATH] "
+                usage="Use workflow edit-refinement [CHANGE|--file PATH] "
                 "[--editor COMMAND].",
             )
-            existing = self.workspace.pending_refinement()
-            if not values or values == ["--edit"]:
-                target = self.workspace.begin_pending_refinement()
+            target = self.workspace.refinement_buffer_path
+            if not values:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                if not target.exists():
+                    target.touch()
                 self._launch_editor(target, override=editor_override)
-                refinement = self._read_prompt_file(target)
-                append = False
+                try:
+                    refinement = target.read_text(encoding="utf-8")
+                except (OSError, UnicodeDecodeError) as exc:
+                    raise SystemExit(
+                        f"Could not read refinement buffer {target}: {exc}"
+                    ) from exc
             elif values[0] == "--file":
                 if len(values) != 2 or editor_override is not None:
-                    raise SystemExit("Use workflow refine --file PATH.")
+                    raise SystemExit(
+                        "Use workflow edit-refinement --file PATH."
+                    )
                 entered = Path(values[1]).expanduser()
                 source = (
                     entered
                     if entered.is_absolute()
                     else self.workspace.root / entered
                 ).resolve()
-                refinement = self._read_prompt_file(source)
-                append = existing is not None
-            elif "--file" in values or "--edit" in values or editor_override is not None:
+                try:
+                    refinement = source.read_text(encoding="utf-8")
+                except FileNotFoundError:
+                    raise SystemExit(
+                        f"Refinement file does not exist: {source}"
+                    ) from None
+                except (OSError, UnicodeDecodeError) as exc:
+                    raise SystemExit(
+                        f"Could not read refinement file {source}: {exc}"
+                    ) from exc
+            elif "--file" in values or editor_override is not None:
                 raise SystemExit(
-                    "Use workflow refine [CHANGE|--file PATH] "
+                    "Use workflow edit-refinement [CHANGE|--file PATH] "
                     "[--editor COMMAND]."
                 )
             else:
                 refinement = " ".join(values).strip()
-                append = existing is not None
-            self.refine_request(refinement, append=append)
+            result = self.workspace.save_refinement_buffer(refinement)
+            present = result["content"] is not None
+            implementation = self.workspace.implementation_state()
+            self._emit_table(
+                "Refinement buffer",
+                [
+                    (
+                        "Status",
+                        "ready to apply" if present else "discarded",
+                        "success" if present else None,
+                    ),
+                    ("Storage", "ignored scratch file", None),
+                    (
+                        "Implementation",
+                        implementation["state"],
+                        None,
+                    ),
+                    (
+                        "Next",
+                        "workflow refine-spec" if present else "workflow status",
+                        None,
+                    ),
+                ],
+            )
             if ensured["migrated"]:
                 self._info(
                     "The former active prompt ledger was migrated into the "
                     "canonical specification; its original files were kept."
                 )
-            return
-        if action == "discard":
-            if rest not in ([], ["--yes"]):
-                raise SystemExit("Use workflow discard [--yes].")
-            pending = self.workspace.pending_refinement()
-            if pending is None:
-                raise SystemExit("There is no pending refinement.")
-            if rest != ["--yes"] and not self._confirm_spec_action(
-                "Discard the refinement request without reverting "
-                "working-tree files? [y/n]: "
-            ):
-                return
-            result = self.workspace.archive_pending_refinement(
-                status="discarded"
-            )
-            self._emit_table(
-                "Specification refinement",
-                [
-                    ("Status", result["status"], "warning"),
-                    ("Canonical", "unchanged by discard", None),
-                    ("Pending", "cleared", "success"),
-                    (
-                        "Implementation",
-                        "working-tree files unchanged",
-                        "warning",
-                    ),
-                    (
-                        "Working tree",
-                        "not reverted; inspect git diff and restore unwanted "
-                        "source/specification edits manually",
-                        "warning",
-                    ),
-                    ("History", result["history_path"], None),
-                    ("Next", "workflow show spec · current", None),
-                ],
-            )
             return
         if action == "history" and not rest:
             records = self.workspace.list_spec_history()
@@ -3828,9 +3779,175 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
             self._emit("Canonical specification history is versioned by Git.")
             return
         raise SystemExit(
-            "Use workflow show spec, workflow edit spec, workflow path, "
-            "workflow refine, workflow show pending, "
-            "workflow discard [--yes], or workflow history."
+            "Use workflow show spec, workflow edit-spec, workflow "
+            "edit-refinement, workflow path, or workflow history."
+        )
+
+    def refine_specification(self, args: list[str]) -> None:
+        """Rewrite the specification in an isolated assistant workspace."""
+
+        if len(args) > 1 or any(
+            value.casefold() not in {"codex", "claude"} for value in args
+        ):
+            raise SystemExit("Use workflow refine-spec [codex|claude].")
+        specification = self.workspace.specification()
+        if specification is None:
+            raise SystemExit(
+                "No workflow specification exists. Use 'workflow edit-spec' first."
+            )
+        refinement = self.workspace.refinement_buffer()
+        if refinement is None:
+            raise SystemExit(
+                "There is no refinement. Use 'workflow edit-refinement' first."
+            )
+        assistant = (
+            args[0].casefold()
+            if args
+            else str(self._global_settings()["assistant"])
+        )
+        executable = shutil.which(assistant)
+        if executable is None:
+            label = "Codex CLI" if assistant == "codex" else "Claude Code"
+            raise SystemExit(
+                f"{label} was not found. Install and authenticate it, then run "
+                "workflow refine-spec again; the refinement remains available."
+            )
+        tool = "Codex CLI" if assistant == "codex" else "Claude Code"
+        with tempfile.TemporaryDirectory(prefix="zippergen-refine-spec-") as raw:
+            isolated = Path(raw)
+            isolated_specification = isolated / "specification.md"
+            isolated_refinement = isolated / "refinement.md"
+            isolated_task = isolated / "TASK.md"
+            isolated_specification.write_text(
+                specification.rstrip() + "\n",
+                encoding="utf-8",
+            )
+            isolated_refinement.write_text(
+                refinement.rstrip() + "\n",
+                encoding="utf-8",
+            )
+            isolated_task.write_text(
+                "# Specification revision\n\n"
+                "This isolated directory contains only the current "
+                "specification and the requested refinement. Read "
+                "specification.md and refinement.md. Rewrite "
+                "specification.md so it incorporates the requested change "
+                "as a clean, complete specification. Preserve every "
+                "unaffected requirement. Do not create implementation code, "
+                "tests, configuration, or additional files.\n",
+                encoding="utf-8",
+            )
+            instruction = (
+                "Read TASK.md and perform the specification revision. Edit "
+                "specification.md directly and do nothing else."
+            )
+            if assistant == "codex":
+                command = [
+                    executable,
+                    "exec",
+                    "--json",
+                    "--strict-config",
+                    "--skip-git-repo-check",
+                    "--cd",
+                    str(isolated),
+                    "--sandbox",
+                    "workspace-write",
+                    "--ignore-user-config",
+                    "--config",
+                    "mcp_servers={}",
+                    "--config",
+                    'web_search="disabled"',
+                    "--config",
+                    "agents.enabled=false",
+                    "--config",
+                    "sandbox_workspace_write.network_access=false",
+                    "-",
+                ]
+                stdin = instruction
+            else:
+                command = [
+                    executable,
+                    "--print",
+                    "--permission-mode",
+                    "acceptEdits",
+                    "--tools",
+                    "Read,Edit,Write",
+                    "--safe-mode",
+                    "--no-chrome",
+                    "--disable-slash-commands",
+                    "--strict-mcp-config",
+                    instruction,
+                ]
+                stdin = None
+            self._emit_table(
+                "Specification refinement",
+                [
+                    ("Tool", tool, None),
+                    ("Input", "specification and refinement only", "success"),
+                    ("Implementation", "not exposed to the assistant", "success"),
+                ],
+            )
+            try:
+                completed = subprocess.run(
+                    command,
+                    cwd=isolated,
+                    input=stdin,
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+            except OSError as exc:
+                raise SystemExit(
+                    f"Could not start {tool}: {exc}; the refinement remains "
+                    "available."
+                ) from exc
+            if assistant == "codex":
+                self._emit_codex_output(
+                    self._parse_codex_output(completed.stdout, completed.stderr)
+                )
+            if completed.returncode != 0:
+                detail = (completed.stderr or completed.stdout).strip()
+                suffix = f": {detail[:300]}" if detail else ""
+                raise SystemExit(
+                    f"{tool} exited with status {completed.returncode}{suffix}; "
+                    "the specification and refinement were not changed."
+                )
+            try:
+                revised = isolated_specification.read_text(
+                    encoding="utf-8"
+                ).strip()
+            except (OSError, UnicodeDecodeError) as exc:
+                raise SystemExit(
+                    f"Could not read the revised specification: {exc}; the "
+                    "refinement remains available."
+                ) from exc
+            if not revised:
+                raise SystemExit(
+                    "The assistant returned an empty specification; the current "
+                    "specification and refinement were preserved."
+                )
+        previous_fingerprint = self.workspace.specification_fingerprint()
+        self.workspace.save_specification(revised)
+        self.workspace.consume_refinement_buffer()
+        implementation = self.workspace.implementation_state()
+        changed = previous_fingerprint != self.workspace.specification_fingerprint()
+        self._emit_table(
+            "Specification revised",
+            [
+                ("File", self.workspace.specification_path, "success"),
+                ("Change", "updated" if changed else "no textual change", None),
+                ("Refinement", "consumed", "success"),
+                ("Implementation", implementation["state"], None),
+                (
+                    "Next",
+                    self._workflow_next_action(
+                        specification_present=True,
+                        refinement_present=False,
+                        implementation=str(implementation["state"]),
+                    ),
+                    None,
+                ),
+            ],
         )
 
     def _project_path(self, value: str | Path, *, label: str = "File") -> Path:
@@ -3982,12 +4099,12 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
             editor_override = args[-1]
             args = args[:index]
         if not args or args == ["workflow"]:
-            current = self._ensure_workflow_selected("edit its source")
+            current = self._ensure_workflow_configured("edit its source")
             module_ref = self.workspace.absolute_spec(current).partition(":")[0]
             target = Path(module_ref)
             if target.suffix != ".py" or not target.is_file():
                 raise SystemExit(
-                    f"The selected workflow is not backed by a Python file: {current}"
+                    f"The project workflow is not backed by a Python file: {current}"
                 )
             target = self._project_path(target, label="Workflow")
             next_steps = "workflow validate · workflow show · run"
@@ -4005,10 +4122,62 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
         self._launch_editor(target, override=editor_override)
         self._emit_next(next_steps)
 
-    def _ensure_workflow_selected(self, purpose: str) -> str:
-        current = self.workspace.current_workflow
-        if current:
-            return current
+    def _migrate_workflow_entry(
+        self,
+        *,
+        prompt_for_multiple: bool = True,
+    ) -> str | None:
+        """Move a former private workflow pointer into the project manifest."""
+
+        result = self.workspace.migrate_workflow_entry()
+        raw_candidates = result.get("candidates")
+        candidates = (
+            [str(value) for value in raw_candidates]
+            if isinstance(raw_candidates, (tuple, list))
+            else []
+        )
+        if candidates and prompt_for_multiple:
+            selected = self._select(
+                "Choose this project's workflow",
+                candidates,
+                prompt="Select workflow",
+            )
+            assert isinstance(selected, str)
+            result = self.workspace.migrate_workflow_entry(selected=selected)
+        entry = result.get("workflow_entry")
+        source = result.get("source")
+        if entry and source:
+            self._associate_implementation_workflow(str(entry))
+            description = {
+                "private workspace": "former private Studio state",
+                "discovery": "the only discovered workflow",
+                "selection": "your selection",
+            }.get(str(source), str(source))
+            self._info(
+                f"Recorded {entry} in zippergen.toml from {description}; "
+                "validation has not run."
+            )
+        return str(entry) if entry else None
+
+    def _migrate_project_configuration(self) -> None:
+        """Move portable legacy model and connector settings into the manifest."""
+
+        result = self.workspace.migrate_project_configuration()
+        if result.get("migrated"):
+            self._info(
+                "Moved portable model and connector configuration into "
+                "zippergen.toml; machine-specific settings and secrets remain "
+                "private on this site."
+            )
+
+    def _ensure_workflow_configured(self, purpose: str) -> str:
+        entry = self.workspace.workflow_entry
+        if entry:
+            return entry
+        if self.workspace.manifest_path.exists():
+            entry = self._migrate_workflow_entry()
+            if entry:
+                return entry
         candidates = self.workspace.discover_workflows()
         if not candidates:
             raise SystemExit(
@@ -4016,30 +4185,16 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
                 "to confirm discovery, then inspect the generated Python files "
                 "for a top-level @workflow definition."
             )
-        if len(candidates) == 1:
-            selected = candidates[0]
-            automatic = True
-        else:
-            selected = self._select(
-                f"Choose a workflow to {purpose}",
-                candidates,
-                prompt="Select workflow",
-            )
-            automatic = False
-        assert isinstance(selected, str)
-        canonical, name = self._select_workflow_spec(selected)
-        message = (
-            f"Automatically selected {canonical} ({name}) to {purpose}"
-            if automatic
-            else f"Selected {canonical} ({name}) to {purpose}"
-        )
-        self._info(f"{message}; validation has not run.")
-        return canonical
+        self.workspace.initialize_project()
+        entry = self._migrate_workflow_entry()
+        if entry is None:
+            raise SystemExit(f"No project workflow is configured to {purpose}.")
+        return entry
 
     def _current_context(self, *, purpose: str = "inspect it"):
         from zippergen.serve import load_workflow_spec
 
-        current = self._ensure_workflow_selected(purpose)
+        current = self._ensure_workflow_configured(purpose)
         workflow, module = load_workflow_spec(self.workspace.absolute_spec(current))
         return current, workflow, module
 
@@ -4120,6 +4275,8 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
         manifest = self.workspace.initialize_project(
             name=args[1] if len(args) == 2 else None
         )
+        self._migrate_workflow_entry()
+        manifest = self.workspace.project_manifest()
         result = "already exists" if existed else "created"
         self._success(
             f"Project manifest {result}: {self.workspace.manifest_path}"
@@ -4131,8 +4288,15 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
                 ("Manifest", self.workspace.manifest_path, None),
                 ("Specification", self.workspace.specification_path, None),
                 (
+                    "Workflow",
+                    manifest.get("workflow_entry") or "not configured",
+                    "success" if manifest.get("workflow_entry") else "warning",
+                ),
+                (
                     "Next",
-                    "workflow create · workflow import PATH.py · "
+                    "workflow show · current"
+                    if manifest.get("workflow_entry")
+                    else "workflow edit-spec · workflow import PATH.py · "
                     "workflow list · current",
                     None,
                 ),
@@ -4147,9 +4311,10 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
 
         manifest = self.workspace.project_manifest()
         specification = self.workspace.specification()
-        pending = self.workspace.pending_refinement()
-        current = self.workspace.current_workflow
-        workflow_name = "none selected"
+        refinement = self.workspace.refinement_buffer() is not None
+        implementation = self.workspace.implementation_state()
+        current = self.workspace.workflow_entry
+        workflow_name = "not configured"
         validation = "not available"
         validation_kind: StatusKind = "warning"
         llm_action_count = 0
@@ -4211,9 +4376,14 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
             "│   ├── Refinement · "
             + (
                 f"{self._status_mark('warning')} pending"
-                if pending is not None
+                if refinement
                 else "none"
             )
+        )
+        self._emit(
+            "│   ├── Implementation · "
+            f"{self._status_mark('success' if implementation['state'] == 'current' else 'warning')} "
+            f"{implementation['state']}"
         )
         self._emit(
             f"│   └── Validation · {self._status_mark(validation_kind)} "
@@ -4250,6 +4420,21 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
             f"├── Connectors · {connector_count} assignment"
             f"{'' if connector_count == 1 else 's'}"
         )
+        missing_site = self.workspace.missing_site_requirements()
+        if missing_site:
+            self._emit(
+                f"├── Site setup · {self._status_mark('warning')} "
+                f"{len(missing_site)} missing"
+            )
+            for index, item in enumerate(missing_site):
+                branch = "│   └──" if index == len(missing_site) - 1 else "│   ├──"
+                self._emit(
+                    f"{branch} {item['name']} · {item['command']}"
+                )
+        else:
+            self._emit(
+                f"├── Site setup · {self._status_mark('success')} ready"
+            )
         run_summary = "none"
         if newest_run is not None:
             run_summary = (
@@ -4295,6 +4480,7 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
         project_exists = self.workspace.root.is_dir()
         manifest_exists = self.workspace.manifest_path.exists()
         specification_exists = self.workspace.specification_path.exists()
+        implementation_lock_exists = self.workspace.implementation_lock_path.exists()
         legacy_prompts_exist = (
             self.workspace.prompts_directory != self.workspace.root
             and self.workspace.prompts_directory.exists()
@@ -4303,7 +4489,10 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
             summary["workspace_exists"] or summary["project_local_exists"]
         )
         visible_design_exists = bool(
-            manifest_exists or specification_exists or legacy_prompts_exist
+            manifest_exists
+            or specification_exists
+            or implementation_lock_exists
+            or legacy_prompts_exist
         )
         if mode == "state" and not private_exists:
             self._warning(
@@ -4350,6 +4539,13 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
                     "warning" if fresh and specification_exists else "success",
                 ),
                 (
+                    "Implementation record",
+                    "archive"
+                    if fresh and implementation_lock_exists
+                    else "kept/none",
+                    "warning" if fresh and implementation_lock_exists else None,
+                ),
+                (
                     "Legacy prompts",
                     "archive" if fresh and legacy_prompts_exist else "kept/none",
                     "warning" if fresh and legacy_prompts_exist else None,
@@ -4377,9 +4573,10 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
                 (
                     "Next",
                     (
-                        "project init · workflow create"
+                        "project init · workflow edit-spec"
                         if fresh
-                        else "workflow list · workflow select · workflow create · current"
+                        else "workflow list · workflow import PATH.py · "
+                        "workflow edit-spec · current"
                     ),
                     None,
                 ),
@@ -4419,15 +4616,24 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
                 ("Manifest", "not created" if fresh else "kept", None),
                 ("Specification", "not written" if fresh else "kept", None),
                 ("Source and tests", "kept", "success"),
-                ("Workflow", "none selected", None),
+                (
+                    "Workflow",
+                    "not configured"
+                    if fresh
+                    else self.workspace.workflow_entry or "not configured",
+                    None,
+                ),
                 ("Run", "none selected", None),
                 ("Implementation request", "none", None),
                 (
                     "Next",
                     (
-                        "project init · workflow create"
+                        "project init · workflow edit-spec"
                         if fresh and project_exists
-                        else "workflow list · workflow select · workflow create · current"
+                        else "workflow show · current"
+                        if project_exists and self.workspace.workflow_entry
+                        else "workflow list · workflow import PATH.py · "
+                        "workflow edit-spec · current"
                         if project_exists
                         else "exit and recreate the project directory"
                     ),
@@ -4455,48 +4661,19 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
                 else:
                     process_is_live = True
             if not process_is_live:
-                return self.workspace.update_request(
-                    str(record["request_id"]),
-                    status="assistant_interrupted",
-                    assistant_finished_at=time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-                    assistant_error=(
+                return {
+                    **record,
+                    "status": "assistant_interrupted",
+                    "assistant_error": (
                         "the Studio process ended before the assistant returned"
                     ),
-                    result_specification_fingerprint=(
-                        self.workspace.specification_fingerprint()
-                    ),
-                )
+                }
             return record
         if record.get("status") == "awaiting_review":
-            return self.workspace.update_request(
-                str(record["request_id"]),
-                status="implemented",
-            )
+            return {**record, "status": "implemented"}
         if record.get("status"):
             return record
-        changes: dict[str, object] = {"status": "prepared"}
-        if (
-            record.get("kind") == "refine"
-            and self.workspace.pending_refinement() is not None
-        ):
-            baseline = self.workspace.load().get(
-                "pending_specification_fingerprint"
-            )
-            current = self.workspace.specification_fingerprint(
-                include_pending=False
-            )
-            if baseline and baseline != current:
-                changes = {
-                    "status": "implemented",
-                    "lifecycle_inferred": True,
-                    "result_specification_fingerprint": (
-                        self.workspace.specification_fingerprint()
-                    ),
-                }
-        return self.workspace.update_request(
-            str(record["request_id"]),
-            **changes,
-        )
+        return {**record, "status": "prepared"}
 
     def _task_state(
         self,
@@ -4624,43 +4801,16 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
 
     def _task_next(self, record: dict[str, object]) -> str:
         status = str(record.get("status") or "prepared")
-        kind = str(record.get("kind") or "")
-        if status in {"awaiting_review", "implemented"}:
-            verification = str(record.get("assistant_verification") or "")
-            if verification != "passed" and record.get("assistant"):
-                backend = (
-                    "claude"
-                    if str(record.get("assistant")).lower().startswith("claude")
-                    else "codex"
-                )
-                return f"workflow diff · workflow implement {backend} --rerun"
-            if kind == "refine":
-                if record.get("specification_context_changed") is False:
-                    return (
-                        "workflow edit spec · workflow implement codex --rerun · "
-                        "workflow implement claude --rerun"
-                    )
-                return "workflow diff · workflow validate · run · deploy"
-            return "workflow diff · workflow validate · run · deploy"
         if status == "assistant_running":
             return "wait for the assistant session to return"
         if status in {"assistant_failed", "assistant_interrupted"}:
-            assistant_path = (
-                "workflow show · workflow implement codex · "
-                "workflow implement claude"
-            )
-            if kind == "refine":
-                return (
-                    f"{assistant_path} · workflow edit code · "
-                    "workflow edit spec"
-                )
-            return assistant_path
-        if kind == "refine":
-            return (
-                "workflow implement codex · workflow implement claude · "
-                "workflow edit code · workflow edit spec"
-            )
-        return "workflow implement codex · workflow implement claude"
+            return "workflow implement codex · workflow implement claude"
+        implementation = str(self.workspace.implementation_state()["state"])
+        return self._workflow_next_action(
+            specification_present=self.workspace.specification() is not None,
+            refinement_present=self.workspace.refinement_buffer() is not None,
+            implementation=implementation,
+        )
 
     def _task_execution(self, record: dict[str, object]) -> str:
         status = str(record.get("status") or "prepared")
@@ -4695,20 +4845,16 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
         self,
         record: dict[str, object],
     ) -> tuple[str, StatusKind]:
-        status = str(record.get("status") or "prepared")
-        current = self.workspace.specification_fingerprint()
-        if status in {"awaiting_review", "implemented"}:
-            result = record.get("result_specification_fingerprint")
-            if result and result != current:
-                if record.get("manual_integration"):
-                    return "changed again after manual integration", "warning"
-                return "changed again after the assistant returned", "warning"
-            if record.get("manual_integration"):
-                return "manual integration matches this task", "success"
-            return "implementation matches this task", "success"
-        if record.get("specification_fingerprint") == current:
+        del record
+        implementation = self.workspace.implementation_state()
+        state = str(implementation["state"])
+        if state == "current":
             return "matches the current specification", "success"
-        return "changed since this implementation was prepared", "warning"
+        if state == "stale":
+            return "specification changed after implementation", "warning"
+        if state == "external":
+            return "not known to have been generated from this specification", "warning"
+        return "no implementation is present", "warning"
 
     def manage_task(self, args: list[str]) -> None:
         if len(args) > 1 or (
@@ -4728,7 +4874,7 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
                     [
                         (
                             "Status",
-                            "none; use workflow create or workflow refine",
+                            "none; use workflow implement",
                             "warning",
                         )
                     ],
@@ -4753,21 +4899,39 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
             )
             return
 
-        record = self._ensure_current_task_fresh()
+        record = self.workspace.current_request()
+        if record is not None:
+            record = self._normalize_task_lifecycle(record)
         if record is None:
             if action in {"show", "path"}:
                 raise SystemExit(
                     "No current implementation task is open. A selected "
                     "workflow may still exist; use 'current' to inspect it."
                 )
+            implementation = self.workspace.implementation_state()
+            implementation_state = str(implementation["state"])
             self._emit_table(
                 "Workflow implementation task",
                 [
                     (
                         "Status",
-                        "none; use workflow create or workflow refine",
+                        "none; use workflow implement",
                         "warning",
-                    )
+                    ),
+                    ("Implementation", implementation_state, None),
+                    (
+                        "Next",
+                        self._workflow_next_action(
+                            specification_present=(
+                                self.workspace.specification() is not None
+                            ),
+                            refinement_present=(
+                                self.workspace.refinement_buffer() is not None
+                            ),
+                            implementation=implementation_state,
+                        ),
+                        None,
+                    ),
                 ],
             )
             return
@@ -4782,10 +4946,12 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
             return
         state, state_kind = self._task_state(record)
         context, context_kind = self._task_context(record)
+        implementation = self.workspace.implementation_state()
         self._emit_table(
             "Workflow implementation task",
             [
                 ("Status", state, state_kind),
+                ("Implementation", implementation["state"], None),
                 ("Kind", record["kind"], None),
                 ("Workflow", record.get("workflow_spec") or "new workflow", None),
                 ("Assistant", self._task_assistant(record), None),
@@ -5167,7 +5333,37 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
         detail = f"failed · {failed} check{'s' if failed != 1 else ''}"
         return (detail, "error")
 
+    def _record_portable_implementation(
+        self,
+        workflow_spec: str | None,
+    ) -> dict[str, object]:
+        """Write the committed relationship between spec and generated files."""
+
+        if workflow_spec is None:
+            raise WorkspaceError(
+                "The assistant did not produce exactly one discoverable workflow."
+            )
+        canonical = self.workspace.canonical_spec(
+            workflow_spec,
+            cwd=self.workspace.root,
+        )
+        configured = self.workspace.workflow_entry
+        if configured is None:
+            self.workspace.select_workflow(canonical, cwd=self.workspace.root)
+        elif configured != canonical:
+            raise WorkspaceError(
+                f"The assistant produced {canonical}, but this project is "
+                f"configured for {configured}."
+            )
+        files = [path for path, _role in self._workflow_file_records()]
+        return self.workspace.write_implementation_lock(files)
+
     def run_assistant(self, args: list[str]) -> None:
+        if self.workspace.refinement_buffer() is not None:
+            raise SystemExit(
+                "The refinement must be applied before implementation. Use "
+                "'workflow refine-spec' first."
+            )
         rerun = "--rerun" in args
         interactive = "--interactive" in args
         values = [
@@ -5199,8 +5395,8 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
         record = self._ensure_current_task_fresh(for_assistant=True)
         if record is None:
             raise SystemExit(
-                "No current implementation request. Use workflow create or "
-                "workflow refine before starting the assistant."
+                "No implementation request could be prepared. Use "
+                "'workflow edit-spec' first."
             )
         status = str(record.get("status") or "prepared")
         if status in {"awaiting_review", "implemented"}:
@@ -5442,6 +5638,27 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
                 workflow_spec = self.workspace.canonical_spec(
                     candidates[0], cwd=self.workspace.root
                 )
+        try:
+            self._record_portable_implementation(workflow_spec)
+        except (WorkspaceError, OSError, ValueError) as exc:
+            self.workspace.update_request(
+                str(record["request_id"]),
+                status="assistant_failed",
+                assistant_finished_at=time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                assistant_exit_code=0,
+                assistant_verification=assistant_result.verification,
+                assistant_verification_summary=assistant_result.summary,
+                assistant_verification_checks=[
+                    dict(check) for check in assistant_result.checks
+                ],
+                assistant_result_error=assistant_result.error,
+                assistant_report=codex_output.report,
+                result_specification_fingerprint=result_fingerprint,
+            )
+            raise SystemExit(
+                "The assistant returned, but Studio could not record a portable "
+                f"implementation: {exc}"
+            ) from exc
         record = self.workspace.update_request(
             str(record["request_id"]),
             status="implemented",
@@ -5475,15 +5692,10 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
                 "Assistant checks are incomplete; a normal assistant exit "
                 "does not mean the checks passed."
             )
-        kind = str(record.get("kind") or "")
         specification_result = (
             "changed since implementation preparation"
             if changed
-            else (
-                "unchanged; integrate the refinement into the specification"
-                if kind == "refine"
-                else "unchanged"
-            )
+            else "unchanged"
         )
         files_after = self._implementation_file_snapshot()
         changed_files = self._implementation_changed_files(
@@ -5510,13 +5722,7 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
                     specification_result,
                     "success" if changed else "warning",
                 ),
-                (
-                    "Refinement",
-                    "still open; use workflow discard to clear the request"
-                    if kind == "refine"
-                    else "not applicable",
-                    "warning" if kind == "refine" else None,
-                ),
+                ("Portable record", self.workspace.implementation_lock_path, "success"),
                 ("Validation", *validation),
                 ("Assistant checks", *self._task_verification(record)),
                 ("Assistant report", assistant_report, None),
@@ -5532,25 +5738,18 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
         state = self.workspace.load()
         global_settings = self._global_settings()
         manifest = self.workspace.project_manifest()
-        request = self._ensure_current_task_fresh(announce=False)
+        request = self.workspace.current_request()
+        if request is not None:
+            request = self._normalize_task_lifecycle(request)
         specification = self.workspace.specification()
-        pending = self.workspace.pending_refinement()
+        refinement = self.workspace.refinement_buffer() is not None
+        implementation = self.workspace.implementation_state()
         task_state, task_state_kind = (
             self._task_state(request)
             if request
-            else ("none; use workflow create or workflow refine", "warning")
+            else ("none", None)
         )
-        refinement_status = (
-            (
-                "pending — implementation available; use workflow show pending"
-                if request
-                and request.get("kind") == "refine"
-                and request.get("status") in {"awaiting_review", "implemented"}
-                else "pending — use workflow show pending or workflow refine"
-            )
-            if pending is not None
-            else "none"
-        )
+        refinement_status = "ready to apply" if refinement else "none"
         self._emit_section_title("Current", major=True)
         self._emit()
         self._emit_table(
@@ -5572,18 +5771,24 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
                     (
                         f"ready — {self.workspace.specification_path.name}"
                         if specification is not None
-                        else "not written; use workflow create or "
-                        "workflow edit spec"
+                        else "not written; use workflow edit-spec"
                     ),
                     "success" if specification is not None else "warning",
                 ),
                 (
                     "Refinement",
                     refinement_status,
-                    "warning" if pending is not None else None,
+                    "warning" if refinement else None,
                 ),
                 (
-                    "Implementation task",
+                    "Implementation",
+                    implementation["state"],
+                    "success"
+                    if implementation["state"] == "current"
+                    else "warning",
+                ),
+                (
+                    "Last assistant task",
                     (
                         f"{request['kind']} — {task_state}"
                         if request
@@ -5670,7 +5875,8 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
                 ),
             ],
         )
-        if state.get("current_workflow"):
+        workflow_entry = self.workspace.workflow_entry
+        if workflow_entry:
             _current, workflow, module = self._current_context()
             model = workflow_semantics(workflow, module)
             raw_lifelines = model.get("lifelines")
@@ -5717,11 +5923,11 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
 
             connector_requirements = connector_requirements_from_module(module)
             connector_bindings = self.workspace.connector_binding_profile(
-                str(state["current_workflow"])
+                workflow_entry
             )
             human_connector_assignments = (
                 self.workspace.connector_assignment_profile(
-                    str(state["current_workflow"])
+                    workflow_entry
                 )
             )
             connector_parts = [
@@ -5747,7 +5953,7 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
             self._emit_table(
                 "Workflow",
                 [
-                    ("Selected", state["current_workflow"], "success"),
+                    ("Entry point", workflow_entry, "success"),
                     ("Name", workflow.name, None),
                     (
                         "Participants",
@@ -5808,7 +6014,7 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
                 ],
             )
             assignments = self.workspace.model_assignment_profile(
-                str(state["current_workflow"]),
+                workflow_entry,
                 default=default_llm_spec(module),
             )
             configurations = self.workspace.model_configurations()
@@ -5871,7 +6077,7 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
                     (f"Provider {provider}", provider_status, kind)
                 )
             idle_routes = self._model_idle_timeout_routes(
-                str(state["current_workflow"]),
+                workflow_entry,
                 workflow,
                 module,
             )
@@ -5887,7 +6093,7 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
             self._emit_table(
                 "Workflow",
                 [
-                    ("Selected", "none", "warning"),
+                    ("Entry point", "not configured", "warning"),
                     ("Name", "—", None),
                     ("Participants", "0 — none", None),
                     ("LLM-active participants", "0 — none", None),
@@ -6008,7 +6214,7 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
 
     def list_workflows(self) -> None:
         candidates = self.workspace.discover_workflows()
-        selected = self.workspace.current_workflow
+        configured = self.workspace.workflow_entry
         if not candidates:
             self._emit_table(
                 "Available workflows",
@@ -6035,8 +6241,8 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
                     name,
                     spec,
                     (
-                        f"{self._status_mark('success')} selected"
-                        if spec == selected
+                        f"{self._status_mark('success')} project workflow"
+                        if spec == configured
                         else "available"
                     ),
                 )
@@ -6052,7 +6258,13 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
             [
                 ("Method", "source scan only", "info"),
                 ("Validation", "not run", "warning"),
-                ("Next", "workflow select NUMBER|NAME", None),
+                (
+                    "Next",
+                    "workflow import PATH.py:WORKFLOW"
+                    if configured is None
+                    else "workflow show · workflow validate",
+                    None,
+                ),
             ],
         )
 
@@ -6140,6 +6352,7 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
             raise SystemExit(f"Workflow source file does not exist: {source}")
         if source.suffix.casefold() != ".py":
             raise SystemExit("Workflow import requires a Python source file.")
+        self.workspace.initialize_project()
         source_root = self._external_workflow_root(source).resolve()
         destination_root = self.workspace.root.resolve()
         if source_root == destination_root:
@@ -6166,13 +6379,64 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
             if selected is None or (len(candidates) > 1 and not requested_name):
                 self.list_workflows()
                 self._info(
-                    "The source is already in this project. Use workflow "
-                    "select PATH.py:WORKFLOW."
+                    "The source is already in this project. Repeat workflow "
+                    "import with PATH.py:WORKFLOW."
                 )
                 return
-            self._select_workflow_spec(selected)
-            self._success(f"Selected existing project workflow: {selected}")
+            existing = self.workspace.workflow_entry
+            replace = existing is not None and existing != selected
+            if replace and not self._confirm_action(
+                f"Replace project workflow {existing} with {selected}? [y/N]: ",
+                cancel_message="Workflow import cancelled; nothing was changed.",
+                default=False,
+            ):
+                return
+            self._configure_workflow_spec(selected, replace=replace)
+            if replace:
+                self.workspace.remove_implementation_lock()
+            self._success(f"Configured existing project workflow: {selected}")
             return
+
+        source_entries = [
+            candidate
+            for candidate in discover_workflow_specs(source_root)
+            if (source_root / candidate.partition(":")[0]).resolve() == source
+        ]
+        if not source_entries:
+            raise SystemExit(
+                "The source contains no discoverable top-level @workflow."
+            )
+        source_selected = next(
+            (
+                candidate
+                for candidate in source_entries
+                if requested_name
+                and candidate.rpartition(":")[2] == requested_name
+            ),
+            None,
+        )
+        if requested_name and source_selected is None:
+            raise SystemExit(
+                f"Workflow {requested_name!r} was not found. Available: "
+                f"{', '.join(source_entries)}."
+            )
+        if source_selected is None and len(source_entries) == 1:
+            source_selected = source_entries[0]
+        if source_selected is None:
+            self._emit_columns(
+                "Workflow entry points in source",
+                ("Workflow", "Entry point"),
+                [
+                    (candidate.rpartition(":")[2], candidate)
+                    for candidate in source_entries
+                ],
+            )
+            self._emit_next("workflow import PATH.py:WORKFLOW")
+            return
+        incoming_entry = (
+            f"{source.relative_to(source_root).as_posix()}:"
+            f"{source_selected.rpartition(':')[2]}"
+        )
 
         dependencies = self._local_python_dependencies(
             source,
@@ -6212,31 +6476,67 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
                 or destination.read_bytes() != item.read_bytes()
             )
         ]
-        if conflicts:
-            display = ", ".join(
-                str(path.relative_to(self.workspace.root))
-                for path in conflicts
+        existing = self.workspace.workflow_entry
+        replacing = bool(conflicts) or (
+            existing is not None and existing != incoming_entry
+        )
+        if replacing:
+            self._emit_table(
+                "Workflow replacement",
+                [
+                    ("Current", existing or "no configured workflow", "warning"),
+                    ("Incoming", incoming_entry, None),
+                    (
+                        "Files overwritten",
+                        len(conflicts),
+                        "warning" if conflicts else None,
+                    ),
+                    (
+                        "Meaning",
+                        "the project manifest will identify the incoming workflow",
+                        "warning",
+                    ),
+                ],
             )
-            raise SystemExit(
-                "Workflow import would overwrite different project files: "
-                f"{display}. Rename or move the existing import first."
-            )
+            if not self._confirm_action(
+                "Replace the project workflow? [y/N]: ",
+                cancel_message="Workflow import cancelled; nothing was changed.",
+                default=False,
+            ):
+                return
 
         copied: list[tuple[Path, str]] = []
         created: list[Path] = []
+        overwritten: dict[Path, tuple[bytes, int]] = {}
+
+        def restore_files() -> None:
+            for path in reversed(created):
+                try:
+                    path.unlink()
+                except OSError:
+                    pass
+            for path, (content, mode) in overwritten.items():
+                try:
+                    path.write_bytes(content)
+                    path.chmod(mode)
+                except OSError:
+                    pass
+
         try:
             for item, destination, role in planned:
                 destination.parent.mkdir(parents=True, exist_ok=True)
                 if not destination.exists():
                     shutil.copy2(item, destination)
                     created.append(destination)
+                elif destination.read_bytes() != item.read_bytes():
+                    overwritten[destination] = (
+                        destination.read_bytes(),
+                        destination.stat().st_mode & 0o777,
+                    )
+                    shutil.copy2(item, destination)
                 copied.append((destination, role))
         except OSError as exc:
-            for path in reversed(created):
-                try:
-                    path.unlink()
-                except OSError:
-                    pass
+            restore_files()
             raise SystemExit(
                 f"Workflow import failed while copying files: {exc}"
             ) from exc
@@ -6262,6 +6562,7 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
             ],
         )
         if not discovered:
+            restore_files()
             raise SystemExit(
                 "Files were copied, but no top-level @workflow entry point "
                 "was discovered in the imported source."
@@ -6276,6 +6577,7 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
             None,
         )
         if requested_name and selected is None:
+            restore_files()
             raise SystemExit(
                 f"Files were copied, but workflow {requested_name!r} was not "
                 f"found. Available: {', '.join(discovered)}."
@@ -6283,6 +6585,7 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
         if selected is None and len(discovered) == 1:
             selected = discovered[0]
         if selected is None:
+            restore_files()
             self._emit_columns(
                 "Imported workflow entry points",
                 ("Workflow", "Entry point"),
@@ -6291,11 +6594,17 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
                     for candidate in discovered
                 ],
             )
-            self._emit_next("workflow select PATH.py:WORKFLOW")
+            self._emit_next("workflow import PATH.py:WORKFLOW")
             return
         try:
-            canonical, name = self._select_workflow_spec(selected)
+            canonical, name = self._configure_workflow_spec(
+                selected,
+                replace=replacing,
+            )
+            if replacing:
+                self.workspace.remove_implementation_lock()
         except Exception as exc:
+            restore_files()
             raise SystemExit(
                 "The files were copied, but the imported workflow could not "
                 f"be loaded: {exc}"
@@ -6316,38 +6625,12 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
             ],
         )
 
-    def _resolve_workflow_choice(
+    def _configure_workflow_spec(
         self,
-        value: str,
-        candidates: list[str],
-    ) -> str:
-        if value.isdecimal():
-            index = int(value)
-            if 1 <= index <= len(candidates):
-                return candidates[index - 1]
-            raise SystemExit(
-                f"Workflow number must be between 1 and {len(candidates)}."
-            )
-        canonical = self.workspace.canonical_spec(value, cwd=self.workspace.root)
-        if canonical in candidates:
-            return canonical
-        by_name = [
-            spec
-            for spec in candidates
-            if spec.rpartition(":")[2].casefold() == value.casefold()
-        ]
-        if len(by_name) == 1:
-            return by_name[0]
-        if len(by_name) > 1:
-            raise SystemExit(
-                f"Workflow name {value!r} is ambiguous. Use 'workflow list' "
-                "and select its number or complete PATH.py:NAME."
-            )
-        raise SystemExit(
-            f"Workflow was not discovered: {value}. Use 'workflow list' first."
-        )
-
-    def _select_workflow_spec(self, selected: str) -> tuple[str, str]:
+        selected: str,
+        *,
+        replace: bool = False,
+    ) -> tuple[str, str]:
         from zippergen.serve import load_workflow_spec
 
         canonical = self.workspace.canonical_spec(
@@ -6365,47 +6648,16 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
                 sys.path.remove(project_path)
             except ValueError:
                 pass
-        self.workspace.select_workflow(canonical, cwd=self.workspace.root)
+        try:
+            self.workspace.select_workflow(
+                canonical,
+                cwd=self.workspace.root,
+                replace=replace,
+            )
+        except WorkspaceError as exc:
+            raise SystemExit(str(exc)) from exc
         self._associate_implementation_workflow(canonical)
         return canonical, workflow.name
-
-    def select_workflow(self, args: list[str]) -> None:
-        if len(args) > 1:
-            raise SystemExit(
-                "Use workflow select [NUMBER|NAME|PATH.py:WORKFLOW]."
-            )
-        candidates = self.workspace.discover_workflows()
-        if not candidates:
-            raise SystemExit(
-                "No workflow entry points were discovered. Inspect the "
-                "generated Python for a top-level @workflow definition."
-            )
-        if args:
-            selected = self._resolve_workflow_choice(args[0], candidates)
-        else:
-            selected = self._select(
-                "Available workflows",
-                candidates,
-                prompt="Select workflow",
-            )
-            assert isinstance(selected, str)
-        canonical, name = self._select_workflow_spec(selected)
-        self._emit_table(
-            "Workflow selected",
-            [
-                ("Workflow", name, None),
-                ("Entry point", canonical, None),
-                ("Load", "succeeded; entry point is available", "success"),
-                ("Purpose", "inspection, configuration, and execution", None),
-                ("Validation", "not run; use workflow validate", "warning"),
-                (
-                    "Next",
-                    "workflow show source · workflow show protocol · "
-                    "workflow validate",
-                    None,
-                ),
-            ],
-        )
 
     def _resolve_local_module(
         self,
@@ -6556,7 +6808,7 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
             raise SystemExit("Use workflow show source [NUMBER|PATH].")
         records = self._workflow_file_records()
         if not records:
-            raise SystemExit("No source files were found for the selected workflow.")
+            raise SystemExit("No source files were found for the project workflow.")
         if not args:
             selected = records[0]
         elif args[0].isdecimal():
@@ -6570,7 +6822,7 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
             matches = [record for record in records if record[0] == args[0]]
             if len(matches) != 1:
                 raise SystemExit(
-                    f"File is not part of the selected workflow: {args[0]}. "
+                    f"File is not part of the project workflow: {args[0]}. "
                     "Use 'workflow files' first."
                 )
             selected = matches[0]
@@ -6660,7 +6912,7 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
             data = workflow_view_data(workflow, module, options=options)
         except ValueError as exc:
             raise SystemExit(str(exc)) from exc
-        self.workspace.update(current_workflow=current, last_view=remembered)
+        self.workspace.update(last_view=remembered)
         self._emit_section_title(
             f"Workflow view · {workflow.name} · {remembered}"
         )
@@ -8148,7 +8400,7 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
         return None
 
     def _associate_implementation_workflow(self, workflow_spec: str) -> None:
-        """Tie a completed creation request to an explicitly selected workflow."""
+        """Tie a completed creation request to the configured project workflow."""
 
         record = self.workspace.current_request()
         if (
@@ -8187,6 +8439,49 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
         if len(names) > 1:
             raise SystemExit("Use deploy [NAME] [--no-start].")
 
+        implementation = self.workspace.implementation_state()
+        implementation_state = str(implementation["state"])
+        if implementation_state in {"absent", "stale"}:
+            absent = implementation_state == "absent"
+            self._emit_table(
+                "Deployment precondition",
+                [
+                    ("Status", "blocked", "error"),
+                    (
+                        "Reason",
+                        implementation.get("reason") or "implementation is not current",
+                        "error",
+                    ),
+                    (
+                        "Required",
+                        (
+                            "an implementation must exist"
+                            if absent
+                            else "implementation must match the current specification"
+                        ),
+                        "info",
+                    ),
+                    (
+                        "Next",
+                        "workflow edit-spec · workflow import · workflow implement"
+                        if absent
+                        else "workflow implement",
+                        None,
+                    ),
+                ],
+            )
+            raise SystemExit(
+                "Deployment requires an implementation."
+                if absent
+                else "Deployment requires an implementation of the current "
+                "specification."
+            )
+        if self.workspace.specification() is None:
+            raise SystemExit(
+                "Deployment requires a workflow specification. Use "
+                "'workflow edit-spec' first."
+            )
+
         current, workflow, module = self._current_context()
         current_target = self.workspace.absolute_spec(current)
         current_spec = deployment_spec_from_module(module)
@@ -8196,53 +8491,25 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
             else current_spec.name
             or _deployment_name_from_workflow(current_target, workflow)
         )
-        implementation = self._implementation_record(current)
         current_fingerprint = self.workspace.specification_fingerprint()
-        recorded_fingerprint = (
-            implementation.get("result_specification_fingerprint")
-            if implementation is not None
-            else None
-        )
-        if (
-            implementation is not None
-            and recorded_fingerprint != current_fingerprint
-        ):
-            self._emit_table(
-                "Deployment precondition",
-                [
-                    ("Status", "blocked", "error"),
-                    (
-                        "Reason",
-                        "the specification changed after implementation",
-                        "error",
-                    ),
-                    (
-                        "Required",
-                        "implementation must match the current specification",
-                        "info",
-                    ),
-                    ("Next", "workflow implement", None),
-                ],
-            )
-            raise SystemExit(
-                "Deployment requires an implementation of the current "
-                "specification."
-            )
 
         target = current_target
         deployment_cwd = self.workspace.root
         deployment_workflow = workflow
         deployment_module = module
         deployment_source = "current working tree"
-        implementation_summary = (
-            "matches the current specification"
-            if implementation is not None
-            else "not recorded on this machine; proceeding after technical "
-            "validation"
-        )
-        implementation_kind: StatusKind = (
-            "success" if implementation is not None else "warning"
-        )
+        if implementation_state == "external":
+            self._warning(
+                "This implementation was not generated from the specification. "
+                "Deployment will proceed after technical validation."
+            )
+            implementation_summary = (
+                "external; not generated from the specification"
+            )
+            implementation_kind: StatusKind = "warning"
+        else:
+            implementation_summary = "matches the current specification"
+            implementation_kind = "success"
         self._validate_workflow_model_idle_policies(
             current,
             deployment_workflow,
@@ -8705,7 +8972,7 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
             )
         except (Exception, SystemExit):
             return (
-                "selected workflow can no longer be loaded",
+                "project workflow can no longer be loaded",
                 "warning",
                 ("workflow",),
             )
@@ -9496,8 +9763,8 @@ normally does not turn a failed command into successful assistant checks."""
             return ""
         return (
             f"This task refreshes {refreshes_request} because the canonical "
-            "specification or pending refinement changed. The documents below "
-            "were captured immediately before this task was written."
+            "specification changed. The document below was captured "
+            "immediately before this task was written."
         )
 
     def _creation_task_content(
@@ -9584,16 +9851,14 @@ visible in the repository. Do not deploy or start a service.
 
 ## Task
 
-Refine {workflow_spec} using the canonical specification and the single pending
-refinement below. The pending refinement changes only what it says explicitly;
-preserve every unaffected requirement and behavior. {refresh_instruction}
+Update {workflow_spec} so it implements the canonical specification below.
+Preserve every unaffected requirement and behavior. {refresh_instruction}
 
 {context}
 
-Integrate the requested change coherently into {specification_file} itself so that
-the canonical specification remains a clean description of the current
-application, not a chronological change log. Do not delete or clear the pending
-refinement; the user will reconcile it in Studio after reviewing your changes.
+Treat {specification_file} as read-only intent. Do not rewrite it to fit the
+implementation. The specification-rewriting operation has already happened in
+an isolated workspace and this task must make the implementation follow it.
 
 The semantic baseline is {baseline_file}.
 Preserve all behavior not explicitly changed.
@@ -9622,46 +9887,35 @@ and assistant-check results.
         for_assistant: bool = False,
         force: bool = False,
     ) -> dict[str, object] | None:
-        record = self.workspace.current_request()
-        if record is None:
-            return None
-        record = self._normalize_task_lifecycle(record)
-        if (
-            not force
-            and record.get("status") == "prepared"
-            and record.get("kind") == "refine"
-            and self.workspace.pending_refinement() is not None
-        ):
-            baseline = self.workspace.load().get(
-                "pending_specification_fingerprint"
-            )
-            current_canonical = self.workspace.specification_fingerprint(
-                include_pending=False
-            )
-            if baseline and baseline != current_canonical:
-                record = self.workspace.update_request(
-                    str(record["request_id"]),
-                    status="implemented",
-                    manual_integration=True,
-                    result_specification_fingerprint=(
-                        self.workspace.specification_fingerprint()
-                    ),
-                    specification_context_changed=True,
-                )
-                if announce:
-                    self._info(
-                        "Canonical specification changed while the refinement "
-                        "was open; preserving the implementation task."
-                    )
-                return record
         ensured = self.workspace.ensure_specification()
         if ensured["content"] is None:
-            return record
+            return self.workspace.current_request()
         fingerprint = self.workspace.specification_fingerprint()
+        record = self.workspace.current_request()
+        implementation = str(self.workspace.implementation_state()["state"])
+        if record is None:
+            return self._prepare_implementation_request(
+                fingerprint=fingerprint,
+                announce=announce,
+            )
+        record = self._normalize_task_lifecycle(record)
         status = str(record.get("status") or "prepared")
+        result = record.get("result_specification_fingerprint")
+        if (
+            not force
+            and status in {"implemented", "awaiting_review"}
+            and result == fingerprint
+            and implementation == "current"
+        ):
+            return record
         may_refresh = status == "prepared" or (
             for_assistant
-            and status in {"assistant_failed", "assistant_interrupted"}
+            and status in {
+                "assistant_failed",
+                "assistant_interrupted",
+                "implemented",
+                "awaiting_review",
+            }
         )
         if not force and not may_refresh:
             return record
@@ -9673,48 +9927,81 @@ and assistant-check results.
         ):
             return record
         kind = str(record.get("kind") or "")
-        workflow_spec = str(record.get("workflow_spec") or "") or None
-        baseline_file = str(record.get("baseline_file") or "") or None
         refreshes_request = str(record["request_id"])
-        if kind == "create":
-            content = self._creation_task_content(
-                refreshes_request=refreshes_request,
-            )
-        elif kind == "refine":
-            if workflow_spec is None or baseline_file is None:
-                raise WorkspaceError(
-                    f"Refinement task {refreshes_request} is missing its workflow "
-                    "or semantic baseline. Prepare a new refinement."
-                )
-            content = self._refinement_task_content(
-                workflow_spec=workflow_spec,
-                baseline_file=baseline_file,
-                refreshes_request=refreshes_request,
-            )
-        else:
-            raise WorkspaceError(
-                f"Cannot refresh unsupported task kind {kind!r}. "
-                "Use workflow create or workflow refine."
-            )
-        prompt = (
-            self.workspace.pending_refinement()
-            if kind == "refine"
-            else self.workspace.specification()
-        ) or str(record.get("prompt") or "")
-        refreshed = self.workspace.save_request(
-            kind=kind,
-            prompt=prompt,
-            content=content,
-            workflow_spec=workflow_spec,
-            specification_fingerprint=fingerprint,
-            baseline_file=baseline_file,
+        if kind not in {"create", "refine"}:
+            kind = "create" if implementation == "absent" else "refine"
+        refreshed = self._prepare_implementation_request(
+            fingerprint=fingerprint,
+            announce=False,
             refreshes_request=refreshes_request,
+            force_kind=kind,
         )
         if announce:
             self._success(
-                "Implementation request refreshed from the current specification context."
+                "Implementation request refreshed from the current specification."
             )
         return refreshed
+
+    def _prepare_implementation_request(
+        self,
+        *,
+        fingerprint: str,
+        announce: bool,
+        refreshes_request: str | None = None,
+        force_kind: str | None = None,
+    ) -> dict[str, object]:
+        """Prepare a private assistant handoff from portable project state."""
+
+        specification = self.workspace.specification()
+        if specification is None:
+            raise WorkspaceError("No canonical specification is available.")
+        implementation = str(self.workspace.implementation_state()["state"])
+        workflow_spec = self.workspace.workflow_entry
+        kind = force_kind or ("create" if implementation == "absent" else "refine")
+        baseline: Path | None = None
+        if kind == "refine" and workflow_spec is not None:
+            try:
+                _current, workflow, module = self._current_context()
+                self.workspace.requests_directory.mkdir(parents=True, exist_ok=True)
+                baseline = self.workspace.requests_directory / (
+                    f"{time.strftime('%Y%m%d-%H%M%S')}-"
+                    f"{time.time_ns() % 1_000_000_000:09d}-semantic-before.json"
+                )
+                baseline.write_text(
+                    json.dumps(
+                        semantic_snapshot(workflow, module),
+                        indent=2,
+                        default=str,
+                    )
+                    + "\n",
+                    encoding="utf-8",
+                )
+            except (Exception, SystemExit):
+                baseline = None
+        if kind == "create" or workflow_spec is None:
+            kind = "create"
+            content = self._creation_task_content(
+                refreshes_request=refreshes_request,
+            )
+        else:
+            baseline_label: str | Path = baseline or "not available"
+            content = self._refinement_task_content(
+                workflow_spec=workflow_spec,
+                baseline_file=baseline_label,
+                refreshes_request=refreshes_request,
+            )
+        record = self.workspace.save_request(
+            kind=kind,
+            prompt=specification,
+            content=content,
+            workflow_spec=workflow_spec,
+            specification_fingerprint=fingerprint,
+            baseline_file=baseline,
+            refreshes_request=refreshes_request,
+        )
+        if announce:
+            self._success("Implementation request prepared from specification.md.")
+        return record
 
     def create_request(
         self,
@@ -9733,8 +10020,7 @@ and assistant-check results.
             if existing is not None and existing != prompt.strip():
                 raise SystemExit(
                     "A canonical specification already exists. Use "
-                    "'workflow create' or 'workflow edit spec' to reopen it "
-                    "instead of replacing it from the command line."
+                    "'workflow edit-spec' to change it."
                 )
             self.workspace.save_specification(prompt)
         prompt_fingerprint = self.workspace.specification_fingerprint()
@@ -9770,70 +10056,24 @@ and assistant-check results.
         source_path: str | Path | None = None,
         append: bool = False,
     ) -> None:
-        current, workflow, module = self._current_context()
         if not prompt:
             prompt = self.input("Describe the change: ").strip()
         if not prompt:
             raise SystemExit("The refinement description must not be empty.")
-        del source_path  # pending refinement always uses Studio's fixed path
+        del source_path
+        del append
         ensured = self.workspace.ensure_specification()
         if ensured["content"] is None:
             raise SystemExit(
-                "No workflow specification exists. Use 'workflow create' or "
-                "'workflow edit spec' first."
+                "No workflow specification exists. Use 'workflow edit-spec' "
+                "first."
             )
-        pending = self.workspace.save_pending_refinement(prompt, append=append)
-        self.workspace.requests_directory.mkdir(parents=True, exist_ok=True)
-        state = self.workspace.load()
-        stored_baseline = state.get("pending_semantic_baseline")
-        baseline = Path(str(stored_baseline)) if stored_baseline else None
-        if baseline is None or not baseline.exists():
-            baseline = self.workspace.requests_directory / (
-                f"{time.strftime('%Y%m%d-%H%M%S')}-"
-                f"{time.time_ns() % 1_000_000_000:09d}-semantic-before.json"
-            )
-            baseline.write_text(
-                json.dumps(semantic_snapshot(workflow, module), indent=2, default=str)
-                + "\n"
-            )
-            self.workspace.update(pending_semantic_baseline=str(baseline))
-        prompt_fingerprint = self.workspace.specification_fingerprint()
-        content = self._refinement_task_content(
-            workflow_spec=current,
-            baseline_file=baseline,
-        )
-        self.workspace.save_request(
-            kind="refine",
-            prompt=str(pending["content"]),
-            content=content,
-            workflow_spec=current,
-            specification_fingerprint=prompt_fingerprint,
-            baseline_file=baseline,
-        )
+        self.workspace.save_refinement_buffer(prompt)
         self._emit_table(
-            "Refinement",
+            "Refinement buffer",
             [
-                (
-                    "Pending",
-                    (
-                        "created"
-                        if pending["created"]
-                        else "updated"
-                    ),
-                    "success",
-                ),
-                ("Workflow", current, None),
-                ("Implementation", "prepared", "success"),
-                (
-                    "Assistant path",
-                    "workflow implement codex · workflow implement claude",
-                    None,
-                ),
-                (
-                    "Manual path",
-                    "workflow edit code · workflow edit spec · workflow diff",
-                    None,
-                ),
-                ("Inspect", "workflow status · workflow history", None),
+                ("Status", "ready to apply", "success"),
+                ("Storage", "ignored scratch file", None),
+                ("Next", "workflow refine-spec", None),
             ],
         )

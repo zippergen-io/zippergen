@@ -175,7 +175,7 @@ class StudioModelsMixin:
         return routes
 
     def _run_model_profile(self) -> dict[str, object]:
-        current = self.workspace.current_workflow
+        current = self.workspace.workflow_entry
         if not current:
             return {"default": None, "lifelines": {}}
         _current, _workflow, module = self._current_context()
@@ -898,16 +898,16 @@ class StudioModelsMixin:
         self._emit_table("Model configuration renamed", rows)
 
     def _show_model_assignments(self) -> None:
-        if not self.workspace.current_workflow:
+        if not self.workspace.workflow_entry:
             self._emit_table(
                 "Workflow assignments",
                 [
                     (
                         "Status",
-                        "no workflow selected",
+                        "no project workflow configured",
                         "warning",
                     ),
-                    ("Next", "workflow list · workflow select", None),
+                    ("Next", "workflow list · workflow import PATH.py", None),
                 ],
             )
             return
@@ -1005,15 +1005,15 @@ class StudioModelsMixin:
             context=("Configuration", configuration_name, "success"),
         )
 
-        if not self.workspace.current_workflow:
+        if not self.workspace.workflow_entry:
             self._emit_table(
                 "Assignment paused",
                 [
                     ("Configuration", configuration_name, "success"),
-                    ("Status", "no workflow selected", "warning"),
+                    ("Status", "no project workflow configured", "warning"),
                     (
                         "Next",
-                        "workflow list · workflow select · model setup",
+                        "workflow list · workflow import PATH.py · model setup",
                         None,
                     ),
                 ],
@@ -1150,10 +1150,13 @@ class StudioModelsMixin:
                 "or model inherit PARTICIPANT_OR_ACTION."
             )
 
+        site = len(args) > 1 and args[-1].casefold() == "--site"
+        command_args = args[:-1] if site else args
         current, workflow, module = self._current_context()
         assignments = self.workspace.model_assignment_profile(
             current,
             default=default_llm_spec(module),
+            include_site=site,
         )
         default = str(assignments["default"])
         overrides = dict(assignments.get("lifelines") or {})
@@ -1163,12 +1166,12 @@ class StudioModelsMixin:
         changed_configuration: str | None = None
         result_message: str
 
-        if action == "default" and len(args) == 2:
-            default = self._model_configuration_name(args[1])
+        if action == "default" and len(command_args) == 2:
+            default = self._model_configuration_name(command_args[1])
             changed_configuration = default
             result_message = f"Set the default configuration to {default}."
-        elif action == "assign" and len(args) == 3:
-            entered_target, entered_configuration = args[1:]
+        elif action == "assign" and len(command_args) == 3:
+            entered_target, entered_configuration = command_args[1:]
             lifeline = {
                 name.casefold(): name for name in active
             }.get(entered_target.casefold())
@@ -1195,8 +1198,8 @@ class StudioModelsMixin:
                 overrides[lifeline] = configuration  # type: ignore[index]
             changed_configuration = configuration
             result_message = f"Assigned {configuration} to {target}."
-        elif action == "inherit" and len(args) == 2:
-            entered_target = args[1]
+        elif action == "inherit" and len(command_args) == 2:
+            entered_target = command_args[1]
             lifeline = {
                 name.casefold(): name for name in active
             }.get(entered_target.casefold())
@@ -1228,8 +1231,9 @@ class StudioModelsMixin:
                 )
         else:
             raise SystemExit(
-                "Use model assign PARTICIPANT_OR_ACTION NAME, model default NAME, or "
-                "model inherit PARTICIPANT_OR_ACTION."
+                "Use model assign PARTICIPANT_OR_ACTION NAME [--site], "
+                "model default NAME [--site], or model inherit "
+                "PARTICIPANT_OR_ACTION [--site]."
             )
 
         if changed_configuration is not None:
@@ -1254,7 +1258,10 @@ class StudioModelsMixin:
             default=default,
             lifelines=overrides,
             actions=action_overrides,
+            site=site,
         )
+        if site:
+            result_message = result_message.rstrip(".") + " for this site."
         self._success(result_message)
         self._emit()
         self._emit_model_assignments(

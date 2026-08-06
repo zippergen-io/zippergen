@@ -53,7 +53,7 @@ def test_workflow_discovery_uses_ast_without_importing_modules(tmp_path):
     assert discover_workflow_specs(tmp_path) == ["workflows/review.py:review"]
 
 
-def test_workspace_state_lives_outside_checkout_and_remembers_workflow(tmp_path):
+def test_workflow_entry_lives_in_visible_project_manifest(tmp_path):
     root = tmp_path / "project"
     home = tmp_path / "state"
     root.mkdir()
@@ -65,10 +65,120 @@ def test_workspace_state_lives_outside_checkout_and_remembers_workflow(tmp_path)
     selected = workspace.select_workflow(str(workflow_path) + ":review")
 
     assert selected == "review.py:review"
-    assert workspace.current_workflow == "review.py:review"
+    assert workspace.workflow_entry == "review.py:review"
+    assert tomllib.loads(workspace.manifest_path.read_text())["workflow_entry"] == (
+        "review.py:review"
+    )
     assert workspace.absolute_spec(selected) == str(workflow_path) + ":review"
     assert workspace.state_path.is_relative_to(home)
     assert not (root / ".zippergen").exists()
+
+
+def test_fresh_clone_resolves_workflow_from_manifest_without_private_state(tmp_path):
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "workflow.py").write_text("@workflow\ndef review(): pass\n")
+    original = Workspace(root, home=tmp_path / "original-home")
+    original.select_workflow("workflow.py:review", cwd=root)
+
+    clone = Workspace(root, home=tmp_path / "empty-home")
+
+    assert not clone.state_path.exists()
+    entry = clone.workflow_entry
+    assert entry == "workflow.py:review"
+    assert clone.absolute_spec(entry) == (
+        str(root / "workflow.py") + ":review"
+    )
+
+
+def test_fresh_clone_derives_all_four_implementation_states_from_project_files(
+    tmp_path,
+):
+    absent_root = tmp_path / "absent"
+    absent_root.mkdir()
+    absent = Workspace(absent_root, home=tmp_path / "absent-home")
+    absent.initialize_project()
+    absent.save_specification("Return the request.")
+    assert Workspace(
+        absent_root, home=tmp_path / "absent-clone-home"
+    ).implementation_state()["state"] == "absent"
+
+    root = tmp_path / "project"
+    root.mkdir()
+    source = root / "workflow.py"
+    source.write_text("@workflow\ndef review(): pass\n")
+    original = Workspace(root, home=tmp_path / "original-home")
+    original.select_workflow("workflow.py:review", cwd=root)
+    original.save_specification("Return the request.")
+
+    external = Workspace(root, home=tmp_path / "external-home")
+    assert not external.state_path.exists()
+    assert external.implementation_state()["state"] == "external"
+
+    original.write_implementation_lock(["workflow.py"])
+    current = Workspace(root, home=tmp_path / "current-home")
+    assert not current.state_path.exists()
+    assert current.implementation_state()["state"] == "current"
+
+    original.save_specification("Return the request after review.")
+    stale = Workspace(root, home=tmp_path / "stale-home")
+    assert not stale.state_path.exists()
+    assert stale.implementation_state()["state"] == "stale"
+
+    original.save_specification("Return the request.")
+    source.write_text("@workflow\ndef review():\n    return 1\n")
+    edited = Workspace(root, home=tmp_path / "edited-home")
+    assert not edited.state_path.exists()
+    assert edited.implementation_state()["state"] == "external"
+
+
+def test_workspace_migrates_private_workflow_pointer_into_manifest(tmp_path):
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "workflow.py").write_text("@workflow\ndef review(): pass\n")
+    workspace = Workspace(root, home=tmp_path / "home")
+    workspace.initialize_project()
+    state = workspace.default_state()
+    state["current_workflow"] = "workflow.py:review"
+    workspace.state_path.parent.mkdir(parents=True)
+    workspace.state_path.write_text(json.dumps(state))
+
+    result = workspace.migrate_workflow_entry()
+
+    assert result["source"] == "private workspace"
+    assert workspace.workflow_entry == "workflow.py:review"
+    assert "current_workflow" not in workspace.load()
+
+
+def test_workspace_migration_uses_one_discovered_workflow(tmp_path):
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "workflow.py").write_text("@workflow\ndef review(): pass\n")
+    workspace = Workspace(root, home=tmp_path / "home")
+    workspace.initialize_project()
+
+    result = workspace.migrate_workflow_entry()
+
+    assert result["source"] == "discovery"
+    assert workspace.workflow_entry == "workflow.py:review"
+
+
+def test_workspace_migration_rejects_nonportable_external_pointer(tmp_path):
+    root = tmp_path / "project"
+    root.mkdir()
+    external = tmp_path / "external.py"
+    external.write_text("@workflow\ndef review(): pass\n")
+    workspace = Workspace(root, home=tmp_path / "home")
+    workspace.initialize_project()
+    state = workspace.default_state()
+    state["current_workflow"] = f"{external}:review"
+    workspace.state_path.parent.mkdir(parents=True)
+    workspace.state_path.write_text(json.dumps(state))
+
+    with pytest.raises(WorkspaceError, match="workflow import"):
+        workspace.migrate_workflow_entry()
+
+    assert workspace.workflow_entry is None
 
 
 def test_workspace_discards_legacy_current_store_pointer(tmp_path):
@@ -246,7 +356,7 @@ def test_workspace_reset_archives_private_state_and_keeps_project_files(tmp_path
     assert deployment.exists()
     assert not workspace.directory.exists()
     assert not workspace.current_task_path.exists()
-    assert workspace.current_workflow is None
+    assert workspace.workflow_entry == "workflow.py:review"
     assert workspace.current_run_id is None
     assert workspace.load()["last_deployment"] is None
     assert workspace.load_secrets() == {}
@@ -275,7 +385,7 @@ def test_workspace_reset_can_archive_unreadable_private_state(tmp_path):
     assert (
         backup / "workspace" / "development.secrets.json"
     ).read_text() == "{also-broken"
-    assert workspace.load()["current_workflow"] is None
+    assert "current_workflow" not in workspace.load()
 
 
 def test_workspace_reset_supports_home_inside_project_tooling_directory(tmp_path):
@@ -295,7 +405,7 @@ def test_workspace_reset_supports_home_inside_project_tooling_directory(tmp_path
     assert backup.is_relative_to(root / ".zippergen" / "resets")
     assert (backup / "workspace" / "workspace.json").exists()
     assert (backup / "project-local" / "current-task.md").exists()
-    assert workspace.current_workflow is None
+    assert workspace.workflow_entry == "workflow.py:review"
     assert workspace.private_state_summary()["project_local_exists"] is False
 
 
@@ -632,9 +742,10 @@ def test_workspace_prompt_fingerprint_tracks_active_content_and_order(tmp_path):
     assert workspace.prompt_ledger_fingerprint() == edited
 
 
-def test_workspace_manages_one_canonical_spec_and_one_pending_refinement(tmp_path):
+def test_workspace_manages_specification_and_consumable_refinement_buffer(tmp_path):
     root = tmp_path / "project"
     root.mkdir()
+    (root / ".git").mkdir()
     workspace = Workspace(root, home=tmp_path / "state")
 
     manifest = workspace.initialize_project(name="Review project")
@@ -646,49 +757,24 @@ def test_workspace_manages_one_canonical_spec_and_one_pending_refinement(tmp_pat
     assert "prompts_directory" not in workspace.manifest_path.read_text()
 
     workspace.save_specification("# Reviewed answer\n\nRequire human approval.")
-    accepted_fingerprint = workspace.specification_fingerprint(
-        include_pending=False
-    )
-    first = workspace.save_pending_refinement("Add bounded retries.")
-    second = workspace.save_pending_refinement(
-        "Return an explicit failure after exhaustion.",
-        append=True,
-    )
+    fingerprint = workspace.specification_fingerprint()
+    saved = workspace.save_refinement_buffer("Add bounded retries.")
 
-    assert first["path"] == root / ".zippergen" / "pending-refinement.md"
-    assert first["created"] is True
-    assert second["created"] is False
-    assert workspace.pending_refinement() == (
-        "Add bounded retries.\n\nReturn an explicit failure after exhaustion."
-    )
-    assert workspace.load()["pending_specification_fingerprint"] == (
-        accepted_fingerprint
-    )
-    assert workspace.load()["pending_specification_baseline"] == (
-        "# Reviewed answer\n\nRequire human approval."
-    )
-    assert workspace.specification_fingerprint() != accepted_fingerprint
+    assert saved["path"] == root / ".zippergen" / "refinement.md"
+    assert workspace.refinement_buffer() == "Add bounded retries."
+    assert workspace.specification_fingerprint() == fingerprint
+    assert "pending_specification_fingerprint" not in workspace.load()
+    assert "pending_specification_baseline" not in workspace.load()
+    assert "pending_refinement_created_at" not in workspace.load()
+    assert "pending_semantic_baseline" not in workspace.load()
 
-    workspace.save_pending_refinement("bounded", append=True)
-    assert workspace.pending_refinement().endswith("\n\nbounded")
-    workspace.save_specification(
-        "# Reviewed answer\n\nRequire human approval and bounded retries."
-    )
-
-    archived = workspace.archive_pending_refinement(status="reconciled")
-
-    assert archived["status"] == "reconciled"
-    assert workspace.pending_refinement() is None
-    assert Path(archived["history_path"]).read_text().startswith(
-        "Add bounded retries."
-    )
-    assert Path(archived["specification_before_path"]).read_text().strip() == (
-        "# Reviewed answer\n\nRequire human approval."
-    )
-    assert Path(archived["specification_after_path"]).read_text().strip() == (
-        "# Reviewed answer\n\nRequire human approval and bounded retries."
-    )
-    assert workspace.list_spec_history()[0]["status"] == "reconciled"
+    assert workspace.consume_refinement_buffer() == "Add bounded retries."
+    assert workspace.refinement_buffer() is None
+    discarded = workspace.save_refinement_buffer("")
+    assert discarded["content"] is None
+    ignored = (root / ".gitignore").read_text(encoding="utf-8")
+    assert "/.zippergen/" in ignored.splitlines()
+    assert "zippergen.lock" not in ignored
 
 
 def test_workspace_migrates_active_legacy_prompts_without_deleting_history(tmp_path):
@@ -761,3 +847,183 @@ def test_project_init_recognizes_and_ignores_nested_framework_checkout(tmp_path)
     (root / ".gitignore").write_text("")
     workspace.initialize_project()
     assert "/zippergen/" in (root / ".gitignore").read_text().splitlines()
+
+
+def test_project_configuration_survives_a_fresh_clone_and_reports_only_site_gaps(
+    tmp_path,
+):
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "workflow.py").write_text("def sample(): pass\n")
+    original = Workspace(root, home=tmp_path / "original-state")
+    original.initialize_project(name="Portable project")
+    original.select_workflow("workflow.py:sample", cwd=root)
+    original.save_model_configuration(
+        "reviewer",
+        {
+            "provider": "anthropic",
+            "model": "claude-opus-5",
+            "spec": "anthropic:claude-opus-5",
+            "check_status": "available",
+        },
+    )
+    original.save_model_configuration(
+        "local-writer",
+        {
+            "provider": "local",
+            "model": "qwen2.5:14b",
+            "spec": "local:qwen2.5:14b",
+            "idle_timeout": "300",
+        },
+    )
+    original.save_model_assignment_profile(
+        "workflow.py:sample",
+        default="reviewer",
+        lifelines={"Writer": "local-writer"},
+    )
+    original.save_connector_provider_profile("google", {"kind": "google"})
+    original.save_connector_provider_profile(
+        "telegram", {"kind": "telegram"}
+    )
+    original.save_connector_configuration(
+        "records",
+        {
+            "provider": "google",
+            "kind": "google-sheets",
+            "spreadsheet_id": "sheet-123",
+            "tab": "Calls",
+        },
+    )
+    original.save_connector_configuration(
+        "approvals",
+        {
+            "provider": "telegram",
+            "kind": "telegram",
+            "chat_id": "42",
+        },
+    )
+    original.bind_connector("workflow.py:sample", "call-records", "records")
+    original.save_connector_assignment_profile(
+        "workflow.py:sample",
+        lifelines={"Human": "approvals"},
+    )
+    original.save_provider_profile(
+        "local", {"kind": "local", "base_url": "http://gpu:11434/v1"}
+    )
+    original.save_secrets({"ANTHROPIC_API_KEY": "private"})
+    original.save_connector_provider_secret(
+        "google", "authorized_user_json", "private"
+    )
+    original.save_connector_provider_secret("telegram", "bot_token", "private")
+
+    clone = Workspace(root, home=tmp_path / "fresh-clone-state")
+
+    assert clone.workflow_entry == "workflow.py:sample"
+    assert clone.model_assignment_profile("workflow.py:sample") == {
+        "default": "reviewer",
+        "lifelines": {"Writer": "local-writer"},
+    }
+    assert clone.model_configurations()["reviewer"]["spec"] == (
+        "anthropic:claude-opus-5"
+    )
+    assert "idle_timeout" not in clone.model_configurations()["local-writer"]
+    assert clone.connector_binding_profile("workflow.py:sample") == {
+        "call-records": "records"
+    }
+    assert clone.connector_assignment_profile("workflow.py:sample") == {
+        "lifelines": {"Human": "approvals"},
+        "actions": {},
+    }
+    assert [
+        (item["kind"], item["name"], item["command"])
+        for item in clone.missing_site_requirements()
+    ] == [
+        (
+            "secret",
+            "ANTHROPIC_API_KEY",
+            "model provider configure anthropic",
+        ),
+        (
+            "secret",
+            "Google authorization",
+            "connector provider configure google",
+        ),
+        (
+            "secret",
+            "Telegram bot token",
+            "connector provider configure telegram",
+        ),
+        (
+            "site fact",
+            "local model endpoint",
+            "model provider configure local",
+        ),
+    ]
+    manifest_text = clone.manifest_path.read_text()
+    assert "claude-opus-5" in manifest_text
+    assert "sheet-123" in manifest_text
+    assert "idle_timeout" not in manifest_text
+    assert "http://gpu:11434/v1" not in manifest_text
+    assert "private" not in manifest_text
+
+
+def test_legacy_configuration_migration_copies_portable_fields_without_deleting(
+    tmp_path,
+):
+    root = tmp_path / "project"
+    root.mkdir()
+    workspace = Workspace(root, home=tmp_path / "state")
+    workspace.initialize_project()
+    workspace.select_workflow("workflow.py:sample", cwd=root)
+    workspace.update(
+        model_configurations={
+            "writer": {
+                "provider": "local",
+                "model": "qwen2.5:14b",
+                "spec": "local:qwen2.5:14b",
+                "idle_timeout": "300",
+            }
+        },
+        model_profiles={
+            "workflow.py:sample": {
+                "default_configuration": "writer",
+                "lifeline_configurations": {},
+            }
+        },
+        connector_providers={"google": {"kind": "google", "scopes": "mail"}},
+        connector_configurations={
+            "mailbox": {
+                "provider": "google",
+                "kind": "gmail",
+                "account": "me",
+                "check_status": "available",
+            }
+        },
+        connector_bindings={"workflow.py:sample": {"mail": "mailbox"}},
+    )
+
+    result = workspace.migrate_project_configuration()
+
+    assert result["migrated"] is True
+    manifest = workspace.project_manifest()
+    assert manifest["models"]["configurations"]["writer"] == {
+        "provider": "local",
+        "model": "qwen2.5:14b",
+        "spec": "local:qwen2.5:14b",
+    }
+    assert manifest["models"]["assignments"]["default"] == "writer"
+    assert manifest["connectors"]["providers"] == {
+        "google": {"kind": "google"}
+    }
+    assert manifest["connectors"]["configurations"]["mailbox"] == {
+        "provider": "google",
+        "kind": "gmail",
+        "account": "me",
+    }
+    assert manifest["connectors"]["bindings"] == {"mail": "mailbox"}
+    state = workspace.load()
+    assert state["model_configurations"]["writer"]["idle_timeout"] == "300"
+    assert state["connector_providers"]["google"]["scopes"] == "mail"
+    assert state["connector_configurations"]["mailbox"]["check_status"] == (
+        "available"
+    )

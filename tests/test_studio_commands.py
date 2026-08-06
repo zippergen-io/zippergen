@@ -1,5 +1,6 @@
 from zippergen.studio_commands import (
     COMMANDS,
+    WORKFLOW_COMMAND_MAP,
     WORKFLOW_VIEWS,
     command_spec,
     full_help,
@@ -35,6 +36,13 @@ def test_command_registry_has_unique_paths_and_derives_user_surfaces():
     assert ("run", "approve") in paths
     assert ("run", "trace") in paths
     assert ("workflow", "import") in paths
+    assert ("workflow", "edit-spec") in paths
+    assert ("workflow", "edit-refinement") in paths
+    assert ("workflow", "refine-spec") in paths
+    assert ("workflow", "select") not in paths
+    assert ("workflow", "create") not in paths
+    assert ("workflow", "refine") not in paths
+    assert ("workflow", "discard") not in paths
     assert ("workflow", "review") not in paths
     assert ("workflow", "accept") not in paths
     assert "studio doctor" in full_help()
@@ -63,7 +71,7 @@ def test_command_registry_has_unique_paths_and_derives_user_surfaces():
 
 
 def test_command_registry_owns_risk_and_natural_language_catalog():
-    assert command_spec(["workflow", "discard"]).risk == "destructive"
+    assert command_spec(["workflow", "refine-spec"]).risk == "execution"
     assert command_spec(["workflow", "implement"]).risk == "execution"
     assert command_spec(["workflow", "show", "protocol"]).risk == "read-only"
     assert command_spec(["run", "approve"]).risk == "execution"
@@ -72,13 +80,23 @@ def test_command_registry_owns_risk_and_natural_language_catalog():
     assert command_spec(["deploy", "storage", "compact"]).risk == "destructive"
     assert command_spec(["deploy", "remove"]).risk == "destructive"
     catalog = natural_command_catalog()
-    assert "workflow discard" in catalog
+    assert "workflow edit-refinement" in catalog
     assert "studio doctor" in catalog
     assert "\n- deploy [NAME]" in catalog
     assert "\n- deploy remove [NAME]" in catalog
     assert "\n- deployment" not in catalog
     assert "\n- status [NAME]" not in catalog
     assert "\n- exit" not in catalog
+
+
+def test_every_workflow_command_belongs_to_exactly_one_state_map_row():
+    workflow_paths = {
+        command.path for command in COMMANDS if command.path[0] == "workflow"
+    }
+    mapped = [path for paths in WORKFLOW_COMMAND_MAP.values() for path in paths]
+
+    assert len(mapped) == len(set(mapped))
+    assert set(mapped) == workflow_paths
 
 
 def test_workflow_view_registry_owns_commands_labels_aliases_and_completion():

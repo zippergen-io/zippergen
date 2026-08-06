@@ -264,6 +264,8 @@ def _mark_implementation_current(
 ) -> dict[str, object]:
     """Record a completed implementation for the current specification."""
 
+    if workspace.specification() is None:
+        workspace.save_specification("Echo the request through Writer.")
     fingerprint = workspace.specification_fingerprint()
     record = workspace.save_request(
         kind="implementation",
@@ -272,11 +274,18 @@ def _mark_implementation_current(
         workflow_spec=workflow_spec,
         specification_fingerprint=fingerprint,
     )
-    return workspace.update_request(
+    updated = workspace.update_request(
         str(record["request_id"]),
         status="implemented",
         result_specification_fingerprint=fingerprint,
     )
+    if workspace.workflow_entry is None:
+        workspace.select_workflow(workflow_spec, cwd=workspace.root)
+    workspace.write_implementation_lock(
+        [workflow_spec.partition(":")[0]],
+        specification_fingerprint=fingerprint,
+    )
+    return updated
 
 
 def _completions(studio: Studio, text: str) -> list[str]:
@@ -346,11 +355,11 @@ def test_studio_completion_is_context_and_project_aware(tmp_path):
     (notes / "spec.md").write_text("Another workflow.\n")
 
     assert _completions(studio, "wo") == ["workflow"]
-    assert {"refine", "status"}.issubset(_completions(studio, "workflow "))
+    assert {"refine-spec", "status"}.issubset(
+        _completions(studio, "workflow ")
+    )
     assert _completions(studio, "workflow rev") == []
-    assert _completions(studio, "workflow select wor") == [
-        "workflow.py:sample"
-    ]
+    assert _completions(studio, "workflow select wor") == []
     assert "reset" in _completions(studio, "deploy logs ")
     assert _completions(studio, "workflow show agent W") == ["Writer"]
     assert _completions(studio, "model assign W") == [
@@ -395,24 +404,40 @@ def test_studio_completion_is_context_and_project_aware(tmp_path):
     assert _completions(
         studio, "deploy inspect review-demo Reviewer "
     ) == ["--watch"]
-    assert _completions(studio, "workflow create --file req") == [
+    assert _completions(studio, "workflow edit-spec --file req") == [
         "requirements.md"
     ]
     assert _completions(
-        studio, "workflow create --file 'notes f"
+        studio, "workflow edit-spec --file 'notes f"
     ) == ["'notes folder/'"]
     assert _completions(
-        studio, "workflow create --file 'notes folder/'"
+        studio, "workflow edit-spec --file 'notes folder/'"
     ) == [
         "'notes folder/spec.md'"
     ]
     assert _completions(studio, "workflow impo") == ["import"]
 
 
+def test_studio_leaves_legacy_pending_refinement_user_text_untouched(tmp_path):
+    root = tmp_path / "project"
+    legacy = root / ".zippergen" / "pending-refinement.md"
+    legacy.parent.mkdir(parents=True)
+    legacy.write_text("Do not lose this refinement.\n", encoding="utf-8")
+    workspace = Workspace(root, home=tmp_path / "home")
+    output: list[str] = []
+
+    studio = Studio(workspace, output_func=output.append)
+    studio.welcome()
+
+    assert legacy.read_text(encoding="utf-8") == "Do not lose this refinement.\n"
+    assert any("left untouched" in line for line in output)
+    assert any("workflow edit-refinement --file" in line for line in output)
+
+
 def test_studio_imports_external_workflow_dependencies_and_resources(
     tmp_path,
 ):
-    studio, workspace, output = _studio(tmp_path)
+    studio, workspace, output = _studio(tmp_path, responses=["y"])
     external = tmp_path / "external"
     (external / "flows").mkdir(parents=True)
     (external / "prompts").mkdir()
@@ -446,29 +471,45 @@ def test_studio_imports_external_workflow_dependencies_and_resources(
     assert (workspace.root / "flows" / "__init__.py").is_file()
     assert (workspace.root / "flows" / "helper.py").is_file()
     assert (workspace.root / "prompts" / "instructions.md").is_file()
-    assert workspace.current_workflow == "flows/imported.py:imported"
+    assert workspace.workflow_entry == "flows/imported.py:imported"
     assert any("Workflow imported" in line for line in output)
     assert any("workflow validate" in line for line in output)
 
 
-def test_studio_import_refuses_to_overwrite_different_project_file(tmp_path):
-    studio, workspace, _output = _studio(tmp_path)
+def test_studio_import_cancellation_preserves_existing_project_file(tmp_path):
+    studio, workspace, output = _studio(tmp_path, responses=["n"])
     external = tmp_path / "external"
     external.mkdir()
     source = external / "imported.py"
     source.write_text(WORKFLOW_SOURCE)
     (workspace.root / "imported.py").write_text("# local work\n")
 
-    with pytest.raises(SystemExit, match="would overwrite different"):
-        studio.execute(f"workflow import {source}")
+    studio.execute(f"workflow import {source}")
 
     assert (workspace.root / "imported.py").read_text() == "# local work\n"
+    assert workspace.workflow_entry is None
+    assert any("cancelled; nothing was changed" in line for line in output)
+
+
+def test_studio_import_confirmation_replaces_existing_project_file(tmp_path):
+    studio, workspace, _output = _studio(tmp_path, responses=["y"])
+    external = tmp_path / "external"
+    external.mkdir()
+    source = external / "imported.py"
+    source.write_text(WORKFLOW_SOURCE.replace("def sample(", "def imported("))
+    destination = workspace.root / "imported.py"
+    destination.write_text("# older imported workflow\n")
+
+    studio.execute(f"workflow import {source}")
+
+    assert destination.read_bytes() == source.read_bytes()
+    assert workspace.workflow_entry == "imported.py:imported"
 
 
 def test_studio_import_selects_requested_entry_from_multi_workflow_file(
     tmp_path,
 ):
-    studio, workspace, _output = _studio(tmp_path)
+    studio, workspace, _output = _studio(tmp_path, responses=["y"])
     external = tmp_path / "external"
     external.mkdir()
     source = external / "choices.py"
@@ -485,11 +526,11 @@ def test_studio_import_selects_requested_entry_from_multi_workflow_file(
 
     studio.execute(f"workflow import {source}:second")
 
-    assert workspace.current_workflow == "choices.py:second"
+    assert workspace.workflow_entry == "choices.py:second"
 
 
 def test_studio_imports_from_nested_project_checkout(tmp_path):
-    studio, workspace, output = _studio(tmp_path)
+    studio, workspace, output = _studio(tmp_path, responses=["y"])
     nested_checkout = workspace.root / "zippergen"
     examples = nested_checkout / "examples"
     examples.mkdir(parents=True)
@@ -512,7 +553,7 @@ def test_studio_imports_from_nested_project_checkout(tmp_path):
     imported = workspace.root / "examples" / "call_intake.py"
     assert imported.is_file()
     assert imported.read_bytes() == source.read_bytes()
-    assert workspace.current_workflow == "examples/call_intake.py:call_intake"
+    assert workspace.workflow_entry == "examples/call_intake.py:call_intake"
     assert any("Workflow imported" in line for line in output)
 
 
@@ -666,7 +707,7 @@ def test_studio_explains_a_single_completion_match(tmp_path):
         " Tab: resume — resume the current incomplete run "
     )
     assert studio.completion_explanation("workflow ref") == (
-        " Tab: refine — create or reopen the pending refinement "
+        " Tab: refine-spec — apply the refinement to the specification "
     )
     assert studio.completion_explanation("studio res") == (
         " Tab: restart — replace this process and reload installed source "
@@ -703,7 +744,7 @@ def test_welcome_and_studio_doctor_show_readiness_and_next_action(
 
     assert "Studio readiness" in output
     assert any("Codex CLI found" in line for line in output)
-    assert any("workflow create" in line for line in output)
+    assert any("workflow edit-spec" in line for line in output)
 
     output.clear()
     studio.welcome()
@@ -1003,32 +1044,45 @@ def test_studio_completion_never_breaks_input_on_invalid_private_state(tmp_path)
     assert _completions(studio, "status ") == []
 
 
-def test_studio_list_and_select_discover_workflow_entry_points(tmp_path):
-    studio, workspace, output = _studio(tmp_path, responses=["1"])
+def test_studio_list_and_import_discover_workflow_entry_points(tmp_path):
+    studio, workspace, output = _studio(tmp_path)
 
     studio.list_workflows()
 
-    assert workspace.current_workflow is None
+    assert workspace.workflow_entry is None
+    assert not workspace.manifest_path.exists()
     assert output[0] == "Available workflows"
     assert any("workflow.py:sample" in line for line in output)
     assert any("source scan only" in line for line in output)
 
-    workspace.update(current_workflow=None)
     output.clear()
-    studio.select_workflow([])
+    studio.execute("workflow import workflow.py:sample")
 
-    assert workspace.current_workflow == "workflow.py:sample"
-    assert "Workflow selected" in output
-    assert any("Validation" in line and "not run" in line for line in output)
+    assert workspace.workflow_entry == "workflow.py:sample"
+    assert any("Configured existing project workflow" in line for line in output)
 
 
-def test_studio_numbered_workflow_menus_name_the_requested_selection(tmp_path):
+def test_studio_import_requires_confirmation_to_replace_project_workflow(tmp_path):
+    studio, workspace, output = _studio(tmp_path, responses=["n"])
+    (workspace.root / "alternate.py").write_text(
+        WORKFLOW_SOURCE.replace("def sample(", "def alternate("),
+        encoding="utf-8",
+    )
+    studio.execute("workflow import workflow.py:sample")
+
+    studio.execute("workflow import alternate.py:alternate")
+
+    assert workspace.workflow_entry == "workflow.py:sample"
+    assert any("cancelled" in line for line in output)
+
+
+def test_studio_numbered_view_menus_name_the_requested_selection(tmp_path):
     studio, workspace, _output = _studio(tmp_path)
     (workspace.root / "alternate.py").write_text(
         WORKFLOW_SOURCE.replace("def sample(", "def alternate("),
         encoding="utf-8",
     )
-    answers = iter(["2", "1", "2", "1,2"])
+    answers = iter(["1", "2", "1,2"])
     prompts: list[str] = []
 
     def answer(prompt: str) -> str:
@@ -1036,13 +1090,12 @@ def test_studio_numbered_workflow_menus_name_the_requested_selection(tmp_path):
         return next(answers)
 
     studio.input = answer
-    studio.execute("workflow select")
+    studio.execute("workflow import alternate.py:alternate")
     studio.execute("workflow show")
     studio.execute("workflow show agent")
     studio.execute("workflow show agents")
 
     assert prompts == [
-        "Select workflow [1-2]: ",
         "Select workflow view [1-8]: ",
         "Select participant [1-2]: ",
         "Select participants [1-2, comma-separated]: ",
@@ -1060,8 +1113,8 @@ def test_studio_show_prompts_for_entry_point_when_several_are_discovered(
 
     studio.execute("workflow show protocol")
 
-    assert output[0] == "Choose a workflow to inspect it"
-    assert workspace.current_workflow in {
+    assert output[0] == "Choose this project's workflow"
+    assert workspace.workflow_entry in {
         "alternate.py:alternate",
         "workflow.py:sample",
     }
@@ -1083,7 +1136,7 @@ def test_studio_lists_local_workflow_files_and_shows_selected_source(tmp_path):
 
     studio.execute("workflow files")
 
-    assert workspace.current_workflow == "workflow.py:sample"
+    assert workspace.workflow_entry == "workflow.py:sample"
     assert any(
         "workflow.py" in line and "entry point" in line for line in output
     )
@@ -1142,7 +1195,7 @@ def test_studio_create_saves_code_first_assistant_handoff(tmp_path):
         "Draft an answer and ask a reviewer to approve it."
     )
     assert output[0] == "Creation"
-    assert any("✓ specification.md" in line for line in output)
+    assert "specification.md" in "\n".join(output)
     assert any("✓ prepared" in line for line in output)
     assert any("workflow implement" in line for line in output)
     assert all("Pass this brief" not in line for line in output)
@@ -1158,19 +1211,15 @@ def test_studio_create_reads_multiline_prompt_from_project_file(tmp_path):
         encoding="utf-8",
     )
 
-    studio.execute('workflow create --file "prompts/reviewed answer.md"')
+    studio.execute('workflow edit-spec --file "prompts/reviewed answer.md"')
 
-    records = list(workspace.requests_directory.glob("*-create.json"))
-    assert len(records) == 1
-    metadata = json.loads(records[0].read_text())
-    assert metadata["prompt"] == (
+    assert workspace.current_request() is None
+    assert workspace.specification() == (
         "Create a reviewed answer workflow.\n\n"
         "Never return an unapproved draft."
     )
-    assert workspace.specification() == metadata["prompt"]
-    assert metadata["specification_file"] == str(workspace.specification_path)
-    assert output[0] == "Creation"
-    assert any("✓ specification.md" in line for line in output)
+    assert output[0] == "Specification updated"
+    assert "specification.md" in "\n".join(output)
     assert all("Loaded prompt file" not in line for line in output)
 
 
@@ -1179,48 +1228,28 @@ def test_studio_inline_create_does_not_replace_an_existing_specification(tmp_pat
     studio.create_request("Original accepted requirements.")
 
     try:
-        studio.execute("workflow create Different requirements")
-    except SystemExit as exc:
-        assert "canonical specification already exists" in str(exc)
-    else:
-        raise AssertionError("inline create must not overwrite accepted intent")
+        studio.execute("workflow edit-spec Different requirements")
+    except SystemExit:
+        raise AssertionError("edit-spec must permit a direct specification edit")
 
-    assert workspace.specification() == "Original accepted requirements."
+    assert workspace.specification() == "Different requirements"
 
 
-def test_studio_refine_saves_semantic_baseline_and_handoff(tmp_path):
+def test_studio_refinement_is_an_ignored_buffer_not_an_implementation_task(tmp_path):
     studio, workspace, output = _studio(tmp_path)
-    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
     workspace.save_specification("Echo a value through Writer and return it.")
 
-    studio.refine_request("Add a human review before returning the result.")
+    studio.execute("workflow edit-refinement Add human review before returning")
 
-    baselines = list(workspace.requests_directory.glob("*-semantic-before.json"))
-    briefs = list(workspace.requests_directory.glob("*-refine.md"))
-    assert len(baselines) == 1
-    assert len(briefs) == 1
-    content = briefs[0].read_text()
-    assert str(baselines[0]) in content
-    assert "Preserve all behavior not explicitly changed" in content
-    assert "zippergen diff" in content
-    assert "# Canonical workflow specification" in content
-    assert "# Pending refinement" in content
-    assert workspace.pending_refinement() == (
-        "Add a human review before returning the result."
-    )
-    assert output[0] == "Refinement"
-    assert any("Pending" in line and "✓ created" in line for line in output)
-    assert all(".zippergen/pending-refinement.md" not in line for line in output)
-    assert any("✓ prepared" in line for line in output)
-    assert any(
-        "Manual path" in line
-        and "workflow edit code" in line
-        and "workflow edit spec" in line
-        for line in output
-    )
+    assert workspace.refinement_buffer() == "Add human review before returning"
+    assert workspace.current_request() is None
+    assert not list(workspace.requests_directory.glob("*-semantic-before.json"))
+    assert output[0] == "Refinement buffer"
+    assert any("ignored scratch file" in line for line in output)
+    assert any("workflow refine-spec" in line for line in output)
 
 
-def test_studio_refine_reads_prompt_from_absolute_file(tmp_path):
+def test_studio_refinement_reads_input_from_absolute_file(tmp_path):
     studio, workspace, output = _studio(tmp_path)
     workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
     workspace.save_specification("Echo a value through Writer and return it.")
@@ -1230,14 +1259,10 @@ def test_studio_refine_reads_prompt_from_absolute_file(tmp_path):
         encoding="utf-8",
     )
 
-    studio.execute(f'workflow refine --file "{prompt_file}"')
+    studio.execute(f'workflow edit-refinement --file "{prompt_file}"')
 
-    briefs = list(workspace.requests_directory.glob("*-refine.md"))
-    assert len(briefs) == 1
-    content = briefs[0].read_text()
-    assert "Add human review.\nPreserve the existing model call." in content
-    assert output[0] == "Refinement"
-    assert workspace.pending_refinement() == (
+    assert output[0] == "Refinement buffer"
+    assert workspace.refinement_buffer() == (
         "Add human review.\nPreserve the existing model call."
     )
     assert all("Loaded prompt file" not in line for line in output)
@@ -1274,7 +1299,7 @@ def test_studio_workflow_commands_expose_one_implementation_and_private_history(
     assert any("create" in line for line in output)
 
 
-def test_studio_task_show_refreshes_stale_specification_context_once(tmp_path):
+def test_studio_task_show_is_read_only_when_specification_changed(tmp_path):
     studio, workspace, output = _studio(tmp_path)
     studio.create_request("Create a review workflow.")
     original = workspace.current_request()
@@ -1289,34 +1314,12 @@ def test_studio_task_show_refreshes_stale_specification_context_once(tmp_path):
 
     refreshed = workspace.current_request()
     assert refreshed is not None
-    assert refreshed["request_id"] != original["request_id"]
-    assert refreshed["refreshes_request"] == original["request_id"]
-    assert refreshed["specification_fingerprint"] == (
-        workspace.specification_fingerprint()
-    )
-    assert output[0] == (
-        "✓ Implementation request refreshed from the current specification context."
-    )
-    assert "add an explicit failure result" in output[1]
-    assert len(workspace.list_requests()) == 2
-
-    output.clear()
-    studio.manage_task(["show"])
-
+    assert refreshed["request_id"] == original["request_id"]
+    assert len(workspace.list_requests()) == 1
     assert output == [workspace.current_task_path.read_text().rstrip()]
-    assert len(workspace.list_requests()) == 2
-
-    output.clear()
-    studio.execute("workflow history")
-
-    assert any("Refreshes" in line for line in output)
-    compact = "".join(line.strip() for line in output)
-    assert str(refreshed["request_id"])[:16] in compact
-    assert "…" in compact
-    assert str(original["request_id"])[:16] in compact
 
 
-def test_studio_refreshes_a_pre_verification_contract_task_before_launch(
+def test_studio_task_show_does_not_migrate_a_legacy_task_contract(
     tmp_path,
 ):
     studio, workspace, output = _studio(tmp_path)
@@ -1333,13 +1336,9 @@ def test_studio_refreshes_a_pre_verification_contract_task_before_launch(
 
     refreshed = workspace.current_request()
     assert refreshed is not None
-    assert refreshed["request_id"] != original["request_id"]
-    assert refreshed["refreshes_request"] == original["request_id"]
-    assert refreshed["task_contract_version"] == 3
-    assert "assistant-result.json" in output[1]
-    assert output[0] == (
-        "✓ Implementation request refreshed from the current specification context."
-    )
+    assert refreshed["request_id"] == original["request_id"]
+    assert "task_contract_version" not in refreshed
+    assert output == [workspace.current_task_path.read_text().rstrip()]
 
 
 def test_studio_assistant_launches_codex_in_project_on_the_stable_task(
@@ -1555,7 +1554,7 @@ def test_studio_assistant_does_not_hide_a_failed_check_behind_zero_exit(
         "Assistant checks" in line and "failed" in line for line in output
     )
     assert "Next" in output
-    assert any("workflow implement codex --rerun" in line for line in output)
+    assert any("resolve them before using the change" in line for line in output)
     assert "Failed or incomplete assistant checks" in output
     assert any("Command" in line and "uv run pytest" in line for line in output)
     assert any(
@@ -1763,7 +1762,7 @@ def test_studio_assistant_refreshes_edited_specification_before_launch(
     )
     assert calls
     assert output[0] == (
-        "✓ Implementation request refreshed from the current specification context."
+        "✓ Implementation request refreshed from the current specification."
     )
     assert output[1] == "Assistant"
 
@@ -1857,118 +1856,37 @@ def test_studio_assistant_reports_missing_claude_and_rejects_unknown_tools(
     assert workspace.current_task_path.exists()
 
 
-def test_studio_completed_refinement_is_implemented_without_refreshing(
+def test_studio_refine_spec_isolated_from_implementation_and_consumes_buffer(
     tmp_path,
     monkeypatch,
 ):
     studio, workspace, output = _studio(tmp_path)
     workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
     workspace.save_specification("Echo the request through Writer.")
-    studio.refine_request("Require human approval before returning.")
-    original = workspace.current_request()
-    assert original is not None
+    _mark_implementation_current(workspace)
+    studio.execute("workflow edit-refinement Require human approval")
     monkeypatch.setattr("zippergen.studio.shutil.which", lambda name: "/bin/codex")
 
     def fake_run(arguments, *, cwd, check, **kwargs):
-        workspace.save_specification(
-            "Echo the request through Writer and require human approval "
-            "before returning."
+        assert cwd != workspace.root
+        assert not (cwd / "workflow.py").exists()
+        assert (cwd / "refinement.md").read_text().strip() == (
+            "Require human approval"
         )
-        workspace.assistant_result_path.write_text(
-            json.dumps(
-                {
-                    "schema_version": 1,
-                    "verification": "passed",
-                    "summary": "Validation and focused tests passed.",
-                    "checks": [
-                        {
-                            "command": "uv run zippergen validate workflow.py:sample",
-                            "status": "passed",
-                            "detail": "Workflow is valid.",
-                        }
-                    ],
-                }
-            )
+        (cwd / "specification.md").write_text(
+            "Echo the request through Writer and require human approval.\n",
+            encoding="utf-8",
         )
         return subprocess.CompletedProcess(arguments, 0)
 
     monkeypatch.setattr("zippergen.studio.subprocess.run", fake_run)
-
-    studio.execute("workflow implement codex")
-    completed = workspace.current_request()
-    assert completed is not None
-    assert completed["request_id"] == original["request_id"]
-    assert completed["status"] == "implemented"
-    assert completed["assistant"] == "Codex"
-    assert completed["assistant_exit_code"] == 0
     output.clear()
+    studio.execute("workflow refine-spec codex")
 
-    studio.execute("workflow status")
-
-    reviewed = workspace.current_request()
-    assert reviewed is not None
-    assert reviewed["request_id"] == original["request_id"]
-    assert len(workspace.list_requests()) == 1
-    assert any(
-        "Status" in line and "implemented" in line for line in output
-    )
-    assert any(
-        "Execution" in line and "nothing is scheduled" in line for line in output
-    )
-    assert "Next" in output
-    assert any("workflow diff" in line for line in output)
-    assert all("Implementation request refreshed" not in line for line in output)
-
-    output.clear()
-    studio.execute("current")
-
-    assert any(
-        "Implementation" in line and "implemented" in line
-        for line in output
-    )
-    assert any(
-        "Task next" in line and "workflow diff" in line for line in output
-    )
-    output.clear()
-    studio.execute("workflow show pending")
-
-    assert "Next" in output
-    assert any("workflow diff" in line for line in output)
-
-    with pytest.raises(SystemExit, match="already returned.*workflow diff"):
-        studio.execute("workflow implement codex")
-
-
-def test_studio_explicit_assistant_rerun_prepares_a_new_task(
-    tmp_path,
-    monkeypatch,
-):
-    studio, workspace, _output = _studio(tmp_path)
-    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
-    workspace.save_specification("Echo the request through Writer.")
-    studio.refine_request("Require human approval before returning.")
-    first = workspace.current_request()
-    assert first is not None
-    monkeypatch.setattr("zippergen.studio.shutil.which", lambda name: "/bin/codex")
-
-    def fake_run(arguments, *, cwd, check, **kwargs):
-        workspace.save_specification(
-            "Echo the request through Writer and require human approval "
-            "before returning."
-        )
-        return subprocess.CompletedProcess(arguments, 0)
-
-    monkeypatch.setattr("zippergen.studio.subprocess.run", fake_run)
-    studio.execute("workflow implement codex")
-
-    studio.execute("workflow implement codex --rerun")
-
-    rerun = workspace.current_request()
-    assert rerun is not None
-    assert rerun["request_id"] != first["request_id"]
-    assert rerun["refreshes_request"] == first["request_id"]
-    assert rerun["status"] == "implemented"
-    assert len(workspace.list_requests()) == 2
+    assert workspace.specification().endswith("require human approval.")
+    assert workspace.refinement_buffer() is None
+    assert workspace.implementation_state()["state"] == "stale"
+    assert any("not exposed to the assistant" in line for line in output)
 
 
 def test_studio_failed_and_interrupted_assistants_have_explicit_task_states(
@@ -2032,7 +1950,7 @@ def test_studio_run_explains_recovery_after_assistant_interrupt(
     )
 
 
-def test_studio_recovers_an_orphaned_running_assistant_as_interrupted(
+def test_studio_status_does_not_mutate_an_orphaned_assistant_record(
     tmp_path,
     monkeypatch,
 ):
@@ -2058,78 +1976,40 @@ def test_studio_recovers_an_orphaned_running_assistant_as_interrupted(
 
     recovered = workspace.current_request()
     assert recovered is not None
-    assert recovered["status"] == "assistant_interrupted"
-    assert any(
-        "Status" in line and "assistant interrupted" in line for line in output
-    )
+    assert recovered["status"] == "assistant_running"
+    assert "assistant interrupted" in "\n".join(output)
 
 
-def test_studio_infers_implemented_state_for_an_existing_integrated_refinement(
+def test_studio_status_reports_external_implementation_without_private_records(
     tmp_path,
 ):
     studio, workspace, output = _studio(tmp_path)
     workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
     workspace.save_specification("Echo the request through Writer.")
-    studio.refine_request("Require human approval before returning.")
-    original = workspace.current_request()
-    assert original is not None
-    metadata_path = workspace.request_path(str(original["request_id"]))
-    metadata = json.loads(metadata_path.read_text())
-    metadata.pop("status")
-    metadata_path.write_text(json.dumps(metadata))
-    workspace.save_specification(
-        "Echo the request through Writer and require human approval "
-        "before returning."
-    )
-    output.clear()
 
     studio.execute("workflow status")
 
-    migrated = workspace.current_request()
-    assert migrated is not None
-    assert migrated["request_id"] == original["request_id"]
-    assert migrated["status"] == "implemented"
-    assert migrated["lifecycle_inferred"] is True
-    assert len(workspace.list_requests()) == 1
-    assert any(
-        "Status" in line and "implemented" in line for line in output
-    )
-    assert any(
-        "Assistant" in line and "implementation inferred" in line
-        for line in output
-    )
+    assert workspace.current_request() is None
+    assert workspace.implementation_state()["state"] == "external"
+    assert "Implementation" in "\n".join(output)
+    assert "external" in "\n".join(output)
 
 
-def test_studio_manual_spec_integration_is_implemented_without_an_assistant(
+def test_studio_status_reports_current_from_portable_lock_without_task_state(
     tmp_path,
 ):
     studio, workspace, output = _studio(tmp_path)
     workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
     workspace.save_specification("Echo the request through Writer.")
-    studio.refine_request("Require human approval before returning.")
-    original = workspace.current_request()
-    assert original is not None
-    workspace.save_specification(
-        "Echo the request through Writer and require human approval "
-        "before returning."
-    )
-    output.clear()
+    workspace.write_implementation_lock(["workflow.py"])
 
     studio.execute("workflow status")
 
-    manual = workspace.current_request()
-    assert manual is not None
-    assert manual["request_id"] == original["request_id"]
-    assert manual["status"] == "implemented"
-    assert manual["manual_integration"] is True
-    assert any(
-        "Assistant" in line and "edited manually" in line for line in output
-    )
-    assert any(
-        "Execution" in line and "assistant not run" in line for line in output
-    )
-    assert "Next" in output
-    assert any("workflow diff" in line for line in output)
+    assert workspace.current_request() is None
+    assert workspace.implementation_state()["state"] == "current"
+    assert "Implementation" in "\n".join(output)
+    assert "current" in "\n".join(output)
+    assert any("run · deploy" in line for line in output)
 
 
 def test_studio_remembers_shows_and_resets_editor_preference(
@@ -2180,8 +2060,8 @@ def test_studio_edits_selected_workflow_with_preference_or_one_off_override(
     monkeypatch.setattr("zippergen.studio.shutil.which", find_editor)
     monkeypatch.setattr("zippergen.studio.subprocess.run", fake_run)
 
-    studio.execute("workflow edit code")
-    studio.execute("workflow edit code --editor micro")
+    studio.execute("edit file workflow.py")
+    studio.execute("edit file workflow.py --editor micro")
 
     assert calls == [
         (["/usr/bin/nano", str(workspace.root / "workflow.py")], workspace.root, False),
@@ -2189,8 +2069,7 @@ def test_studio_edits_selected_workflow_with_preference_or_one_off_override(
     ]
     assert any("global preference" in line for line in output)
     assert any("one-off" in line for line in output)
-    assert "Next" in output
-    assert "workflow validate · workflow show · run" in output
+    assert output.count("Editor") == 2
 
 
 def test_studio_create_opens_automatic_specification_and_prepares_task(
@@ -2218,7 +2097,7 @@ def test_studio_create_opens_automatic_specification_and_prepares_task(
 
     monkeypatch.setattr("zippergen.studio.subprocess.run", fake_run)
 
-    studio.execute("workflow create --editor micro")
+    studio.execute("workflow edit-spec --editor micro")
 
     assert calls == [[
         "/usr/bin/micro",
@@ -2231,15 +2110,14 @@ def test_studio_create_opens_automatic_specification_and_prepares_task(
     assert "zippergen:specification-guide" not in (
         workspace.specification_path.read_text()
     )
-    assert workspace.current_task_path.exists()
+    assert not workspace.current_task_path.exists()
     assert any("Editor closed" in line for line in output)
     assert any("specification.md" in line for line in output)
     rendered = "\n".join(output)
-    assert "Workflow specification" in rendered
+    assert "Specification updated" in rendered
     assert "/usr/bin/micro" in rendered
-    assert "save and exit the editor to continue in Studio" in rendered
-    assert output.count("Workflow specification") == 1
-    assert "Editor" not in output
+    assert output.count("Specification updated") == 1
+    assert output.count("Editor") == 1
 
 
 def test_studio_create_keeps_guide_when_no_requirements_are_written(
@@ -2257,7 +2135,7 @@ def test_studio_create_keeps_guide_when_no_requirements_are_written(
     )
 
     try:
-        studio.execute("workflow create --editor micro")
+        studio.execute("workflow edit-spec --editor micro")
     except SystemExit as exc:
         assert "No application requirements were written" in str(exc)
     else:
@@ -2289,7 +2167,7 @@ def test_studio_path_free_create_always_uses_canonical_specification_name(
 
     monkeypatch.setattr("zippergen.studio.subprocess.run", fake_run)
 
-    studio.execute("workflow create --edit --editor micro")
+    studio.execute("workflow edit-spec --editor micro")
 
     assert workspace.specification_path == workspace.root / "specification.md"
     assert workspace.specification() == (
@@ -2299,7 +2177,7 @@ def test_studio_path_free_create_always_uses_canonical_specification_name(
     assert not (workspace.root / "prompts").exists()
 
 
-def test_studio_spec_refine_reopens_one_pending_file(tmp_path, monkeypatch):
+def test_studio_edit_refinement_reopens_one_scratch_buffer(tmp_path, monkeypatch):
     studio, workspace, _output = _studio(tmp_path)
     workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
     workspace.save_specification("Echo the input through Writer.")
@@ -2313,7 +2191,7 @@ def test_studio_spec_refine_reopens_one_pending_file(tmp_path, monkeypatch):
     def fake_run(arguments, *, cwd, check):
         nonlocal calls
         target = Path(arguments[-1])
-        assert target == workspace.pending_refinement_path
+        assert target == workspace.refinement_buffer_path
         if calls == 0:
             target.write_text("Add human approval before returning the result.\n")
         else:
@@ -2327,60 +2205,42 @@ def test_studio_spec_refine_reopens_one_pending_file(tmp_path, monkeypatch):
 
     monkeypatch.setattr("zippergen.studio.subprocess.run", fake_run)
 
-    studio.execute("workflow refine --editor micro")
-    first_baselines = list(
-        workspace.requests_directory.glob("*-semantic-before.json")
-    )
-    studio.execute("workflow refine --editor micro")
+    studio.execute("workflow edit-refinement --editor micro")
+    studio.execute("workflow edit-refinement --editor micro")
 
-    request = workspace.current_request()
-    assert request is not None
-    assert request["kind"] == "refine"
-    assert workspace.pending_refinement() == (
+    assert workspace.current_request() is None
+    assert workspace.refinement_buffer() == (
         "Add human approval before returning the result.\n"
         "Use a yes/no decision."
     )
-    assert len(first_baselines) == 1
-    assert list(workspace.requests_directory.glob("*-semantic-before.json")) == (
-        first_baselines
-    )
 
 
-def test_studio_refine_can_start_implementation_without_a_second_command(
+def test_studio_implement_is_blocked_until_refinement_is_applied(
     tmp_path,
     monkeypatch,
 ):
     studio, workspace, _output = _studio(tmp_path)
     workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
     workspace.save_specification("Echo the input through Writer.")
-    calls: list[list[str]] = []
-    monkeypatch.setattr(
-        studio,
-        "run_assistant",
-        lambda arguments: calls.append(arguments),
-    )
+    studio.execute("workflow edit-refinement Increase the retry budget")
 
-    studio.execute(
-        "workflow refine Increase the retry budget --implement"
-    )
+    with pytest.raises(SystemExit, match="refinement must be applied"):
+        studio.execute("workflow implement")
 
-    assert workspace.pending_refinement() == "Increase the retry budget"
-    assert calls == [[]]
+    assert workspace.refinement_buffer() == "Increase the retry budget"
 
 
-def test_studio_refine_rejects_the_removed_review_option(
+def test_studio_rejects_removed_refine_command(
     tmp_path,
     monkeypatch,
 ):
     studio, workspace, _output = _studio(tmp_path)
     workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
     workspace.save_specification("Echo the input through Writer.")
-    with pytest.raises(SystemExit, match="--review no longer exists"):
-        studio.execute(
-            "workflow refine Increase the retry budget --implement --review"
-        )
+    with pytest.raises(SystemExit, match="workflow refine.*was removed"):
+        studio.execute("workflow refine Increase the retry budget")
 
-    assert workspace.pending_refinement() is None
+    assert workspace.refinement_buffer() is None
 
 
 def test_studio_failed_create_editor_preserves_canonical_draft(
@@ -2399,7 +2259,7 @@ def test_studio_failed_create_editor_preserves_canonical_draft(
     monkeypatch.setattr("zippergen.studio.subprocess.run", fake_run)
 
     try:
-        studio.execute("workflow create --editor micro")
+        studio.execute("workflow edit-spec --editor micro")
     except SystemExit as exc:
         assert "Editor exited with status 3" in str(exc)
     else:
@@ -2417,11 +2277,11 @@ def test_studio_editor_errors_are_safe_and_actionable(tmp_path, monkeypatch):
     for command, expected in (
         ("editor set missing", "Editor executable was not found: missing"),
         (
-            "workflow create --editor missing",
+            "workflow edit-spec --editor missing",
             "Editor executable was not found: missing",
         ),
         (
-            "workflow edit code --editor missing",
+            "edit file workflow.py --editor missing",
             "Editor executable was not found: missing",
         ),
     ):
@@ -2449,7 +2309,7 @@ def test_studio_does_not_prepare_task_after_failed_editor(
     monkeypatch.setattr("zippergen.studio.subprocess.run", fake_run)
 
     try:
-        studio.execute("workflow create --editor micro")
+        studio.execute("workflow edit-spec --editor micro")
     except SystemExit as exc:
         assert "Editor exited with status 3" in str(exc)
     else:
@@ -2467,10 +2327,10 @@ def test_studio_refuses_manual_filename_for_create_editor(tmp_path, monkeypatch)
 
     try:
         studio.execute(
-            "workflow create --edit prompts/custom.md --editor micro"
+            "workflow edit-spec prompts/custom.md --editor micro"
         )
     except SystemExit as exc:
-        assert "only used when workflow create opens" in str(exc)
+        assert "only used when workflow edit-spec opens" in str(exc)
     else:
         raise AssertionError("create should own the specification filename")
 
@@ -2482,15 +2342,15 @@ def test_studio_prompt_file_errors_are_actionable(tmp_path):
     (workspace.root / "not-utf8.md").write_bytes(b"\xff")
 
     for command, expected in (
-        ("workflow create --file", "Use workflow create --file PATH."),
-        ("workflow create --file missing.md", "Prompt file does not exist:"),
-        ("workflow create --file empty.md", "Prompt file is empty:"),
+        ("workflow edit-spec --file", "Use workflow edit-spec --file PATH."),
+        ("workflow edit-spec --file missing.md", "Prompt file does not exist:"),
+        ("workflow edit-spec --file empty.md", "Prompt file is empty:"),
         (
-            "workflow create --file prompt-directory",
+            "workflow edit-spec --file prompt-directory",
             "Prompt path is a directory:",
         ),
         (
-            "workflow create --file not-utf8.md",
+            "workflow edit-spec --file not-utf8.md",
             "Prompt file must contain UTF-8 text:",
         ),
     ):
@@ -2506,7 +2366,7 @@ def test_studio_commands_are_discoverable(tmp_path):
     studio, _workspace, output = _studio(tmp_path)
 
     assert studio.execute("help") is True
-    assert "workflow create" in output[-1]
+    assert "workflow edit-spec" in output[-1]
     assert "help all" in output[-1]
 
     output.clear()
@@ -2522,9 +2382,9 @@ def test_studio_commands_are_discoverable(tmp_path):
     assert "workflow implement" in output[-1]
     assert "editor set COMMAND" in output[-1]
     assert "edit file PATH" in output[-1]
-    assert "workflow create" in output[-1]
-    assert "workflow edit" in output[-1]
-    assert "workflow refine" in output[-1]
+    assert "workflow edit-spec" in output[-1]
+    assert "workflow edit-refinement" in output[-1]
+    assert "workflow refine-spec" in output[-1]
     assert "model provider" in output[-1]
     assert "model config" in output[-1]
     assert "model config list|create|show|check" in output[-1]
@@ -2688,7 +2548,7 @@ def test_studio_structured_output_separates_titles_headers_rows_and_next(
 
     next_title = output.index("Next")
     assert output[next_title + 1] == "═" * len("Next")
-    assert output[next_title + 2] == "workflow create"
+    assert output[next_title + 2] == "workflow edit-spec"
 
 
 def test_studio_status_marks_use_color_only_when_enabled(tmp_path):
@@ -2756,7 +2616,10 @@ def test_studio_validate_automatically_selects_one_discovered_workflow(tmp_path)
 
     assert studio.run() == 0
 
-    assert any("Automatically selected workflow.py:sample" in line for line in output)
+    assert any(
+        "Recorded workflow.py:sample in zippergen.toml" in line
+        for line in output
+    )
     assert any(line.startswith("✓ Workflow sample: valid") for line in output)
 
 
@@ -2786,14 +2649,14 @@ def test_studio_boundaries_hide_arguments_and_skip_empty_or_exit(tmp_path):
     studio, _workspace, output = _studio(tmp_path)
 
     studio.execute(
-        "workflow create Never expose SECRET_SENTINEL in a boundary",
+        "workflow edit-spec Never expose SECRET_SENTINEL in a boundary",
         show_boundary=True,
     )
 
     boundary = next(
         line
         for line in output
-        if line.startswith("│ ZipperGen Studio · workflow create ")
+        if line.startswith("│ ZipperGen Studio · workflow edit-spec ")
     )
     assert "SECRET_SENTINEL" not in boundary
 
@@ -2806,7 +2669,7 @@ def test_studio_boundaries_hide_arguments_and_skip_empty_or_exit(tmp_path):
 def test_studio_parse_errors_receive_an_input_boundary(tmp_path):
     studio, _workspace, output = _studio(tmp_path)
 
-    studio.execute('workflow create "unterminated', show_boundary=True)
+    studio.execute('workflow edit-spec "unterminated', show_boundary=True)
 
     assert output[0] == ""
     assert output[1].startswith("╭")
@@ -2823,7 +2686,7 @@ def test_studio_project_reset_can_be_cancelled_without_changes(tmp_path):
 
     studio.execute("project reset state")
 
-    assert workspace.current_workflow == "workflow.py:sample"
+    assert workspace.workflow_entry == "workflow.py:sample"
     assert workspace.current_request() is not None
     assert workspace.current_task_path.exists()
     assert not workspace.resets_directory.exists()
@@ -2834,6 +2697,7 @@ def test_studio_project_reset_can_be_cancelled_without_changes(tmp_path):
 def test_studio_project_reset_interrupt_is_a_clean_cancellation(tmp_path):
     studio, workspace, output = _studio(tmp_path)
     workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    workspace.update(last_deployment="sample")
 
     def interrupt(_prompt):
         raise KeyboardInterrupt
@@ -2842,7 +2706,7 @@ def test_studio_project_reset_interrupt_is_a_clean_cancellation(tmp_path):
 
     studio.execute("project reset state")
 
-    assert workspace.current_workflow == "workflow.py:sample"
+    assert workspace.workflow_entry == "workflow.py:sample"
     assert output[-1] == "⚠ Project reset cancelled; nothing was changed."
 
 
@@ -2857,7 +2721,7 @@ def test_studio_project_reset_state_backs_up_only_private_context(tmp_path):
     studio.execute("project reset state")
 
     assert "⚠ Please enter 'y' or 'n'." in output
-    assert workspace.current_workflow is None
+    assert workspace.workflow_entry == "workflow.py:sample"
     assert workspace.current_request() is None
     assert workspace.load_secrets() == {}
     assert not workspace.current_task_path.exists()
@@ -2872,7 +2736,7 @@ def test_studio_project_reset_state_backs_up_only_private_context(tmp_path):
     assert any("✓ complete" in line for line in output)
     compact = "".join(line.strip() for line in output)
     assert str(backups[0]) in compact
-    assert studio._prompt() == "zippergen [no workflow]> "
+    assert studio._prompt() == "zippergen [sample]> "
 
 
 def test_studio_plain_project_reset_makes_both_scopes_explicit(tmp_path):
@@ -2927,7 +2791,7 @@ def test_studio_project_reset_fresh_archives_design_then_init_is_new(tmp_path):
     assert (archived / "specification.md").exists()
     assert (archived / "prompts" / "index.toml").exists()
     assert any("fresh design cycle" in line for line in output)
-    assert any("project init · workflow create" in line for line in output)
+    assert any("project init · workflow edit-spec" in line for line in output)
 
     output.clear()
     studio.execute('project init "Tutorial again"')
@@ -2938,10 +2802,11 @@ def test_studio_project_reset_fresh_archives_design_then_init_is_new(tmp_path):
 def test_studio_project_reset_state_yes_is_noninteractive_and_idempotent(tmp_path):
     studio, workspace, output = _studio(tmp_path)
     workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    workspace.update(last_deployment="sample")
 
     studio.execute("project reset state --yes")
 
-    assert workspace.current_workflow is None
+    assert workspace.workflow_entry == "workflow.py:sample"
     assert any("✓ complete" in line for line in output)
 
     output.clear()
@@ -2962,7 +2827,7 @@ def test_studio_project_reset_handles_a_missing_project_directory(tmp_path):
 
     studio.execute("project reset state --yes")
 
-    assert workspace.current_workflow is None
+    assert workspace.workflow_entry is None
     compact = "".join(line.strip() for line in output)
     assert str(root) in compact
     assert "missing" in compact
@@ -2971,7 +2836,7 @@ def test_studio_project_reset_handles_a_missing_project_directory(tmp_path):
     )
 
 
-def test_studio_spec_commands_use_automatic_paths_and_append_one_pending_change(
+def test_studio_spec_commands_use_automatic_paths_and_one_refinement_buffer(
     tmp_path,
 ):
     studio, workspace, output = _studio(tmp_path)
@@ -2983,27 +2848,20 @@ def test_studio_spec_commands_use_automatic_paths_and_append_one_pending_change(
     assert output == [str(workspace.root / "specification.md")]
 
     output.clear()
-    studio.execute("workflow refine Add bounded retries")
+    studio.execute("workflow edit-refinement Add bounded retries")
     studio.execute(
-        "workflow refine Return an explicit failure after exhaustion"
+        "workflow edit-refinement Return an explicit failure after exhaustion"
     )
 
-    assert workspace.pending_refinement_path == (
-        workspace.root / ".zippergen" / "pending-refinement.md"
+    assert workspace.refinement_buffer_path == (
+        workspace.root / ".zippergen" / "refinement.md"
     )
-    assert workspace.pending_refinement() == (
-        "Add bounded retries\n\nReturn an explicit failure after exhaustion"
+    assert workspace.refinement_buffer() == (
+        "Return an explicit failure after exhaustion"
     )
-    assert len(
-        list(workspace.requests_directory.glob("*-semantic-before.json"))
-    ) == 1
-    assert any("Implementation" in line and "prepared" in line for line in output)
+    assert not list(workspace.requests_directory.glob("*-semantic-before.json"))
+    assert any("workflow refine-spec" in line for line in output)
     assert not (workspace.root / "prompts").exists()
-
-    output.clear()
-    studio.execute("workflow show pending")
-    assert output[0] == "Pending refinement"
-    assert any("Add bounded retries" in line for line in output)
 
 
 def test_studio_workflow_diff_compares_intent_and_semantics(
@@ -3012,7 +2870,14 @@ def test_studio_workflow_diff_compares_intent_and_semantics(
     studio, workspace, output = _studio(tmp_path)
     workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
     workspace.save_specification("Echo the request through Writer.")
-    studio.refine_request("Require explicit human approval.")
+    record = workspace.save_request(
+        kind="refine",
+        prompt="Echo the request through Writer.",
+        content="Implement the specification.",
+        workflow_spec="workflow.py:sample",
+        specification_fingerprint=workspace.specification_fingerprint(),
+    )
+    workspace.update_request(str(record["request_id"]), status="implemented")
     workspace.save_specification(
         "Echo the request through Writer and require explicit human approval."
     )
@@ -3029,24 +2894,27 @@ def test_studio_workflow_diff_compares_intent_and_semantics(
         in line
         for line in output
     )
-    assert any("# No semantic changes." in line for line in output)
+    assert any("semantic" in line.lower() for line in output)
 
 
-def test_studio_spec_discard_is_explicit_and_recoverable(tmp_path):
+def test_studio_empty_refinement_buffer_discards_refinement(tmp_path, monkeypatch):
     studio, workspace, output = _studio(tmp_path)
     workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
     studio.create_request("Echo the request through Writer.")
-    studio.execute("workflow refine Remove Writer")
+    studio.execute("workflow edit-refinement Remove Writer")
     output.clear()
 
-    studio.execute("workflow discard --yes")
-
-    assert workspace.pending_refinement() is None
-    assert workspace.list_spec_history()[0]["status"] == "discarded"
-    assert any("⚠ discarded" in line for line in output)
-    assert any(
-        "Working tree" in line and "not reverted" in line for line in output
+    monkeypatch.setattr(
+        "zippergen.studio.subprocess.run",
+        lambda arguments, **kwargs: (
+            workspace.refinement_buffer_path.write_text("", encoding="utf-8")
+            or subprocess.CompletedProcess(arguments, 0)
+        ),
     )
+    studio.execute("workflow edit-refinement")
+
+    assert workspace.refinement_buffer() is None
+    assert any("discarded" in line for line in output)
 
 
 def test_studio_spec_show_migrates_legacy_prompt_ledger_once(tmp_path):
@@ -3092,27 +2960,20 @@ def test_studio_legacy_prompt_ledger_is_migrated_but_has_no_command_surface(
     assert "Create a reviewer." in output
 
 
-def test_studio_handoff_contains_canonical_spec_and_pending_refinement(tmp_path):
+def test_studio_implementation_handoff_contains_only_canonical_spec(tmp_path):
     studio, workspace, _output = _studio(tmp_path)
     studio.create_request("Create a concise answer workflow.")
     workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
-    studio.refine_request("Add an explicit reviewer.")
+    record = studio._ensure_current_task_fresh(for_assistant=True)
+    assert record is not None
+    brief = workspace.current_task_path.read_text()
 
-    refine_records = list(workspace.requests_directory.glob("*-refine.json"))
-    assert len(refine_records) == 1
-    metadata = json.loads(refine_records[0].read_text())
-    brief = refine_records[0].with_suffix(".md").read_text()
-
-    assert metadata["prompt_id"] is None
-    assert metadata["specification_fingerprint"] == (
+    assert record["prompt_id"] is None
+    assert record["specification_fingerprint"] == (
         workspace.specification_fingerprint()
     )
-    assert brief.index("# Canonical workflow specification") < brief.index(
-        "# Pending refinement"
-    )
     assert "Create a concise answer workflow." in brief
-    assert "Add an explicit reviewer." in brief
-    assert "preserve every unaffected requirement" in brief
+    assert "Pending refinement" not in brief
 
 
 def test_studio_current_is_a_complete_project_dashboard(tmp_path):
@@ -3131,9 +2992,12 @@ def test_studio_current_is_a_complete_project_dashboard(tmp_path):
     assert any("Name" in line and "project" in line for line in output)
     assert any("Specification" in line and "ready" in line for line in output)
     assert any("Refinement" in line and "none" in line for line in output)
-    assert any("Implementation task" in line for line in output)
+    assert any("Implementation" in line for line in output)
     assert any("Editor" in line and "automatic" in line for line in output)
-    assert any("Selected" in line and "workflow.py:sample" in line for line in output)
+    assert any(
+        "Entry point" in line and "workflow.py:sample" in line
+        for line in output
+    )
     assert any("Name" in line and "sample" in line for line in output)
     assert any("Participants" in line and "User, Writer" in line for line in output)
     assert any(
@@ -3190,7 +3054,10 @@ def test_studio_current_is_explicit_before_a_workflow_exists(tmp_path):
     studio.show_current()
 
     assert output[0] == "Current"
-    assert any("Selected" in line and "⚠ none" in line for line in output)
+    assert any(
+        "Entry point" in line and "not configured" in line
+        for line in output
+    )
     assert any("Participants" in line and "0 — none" in line for line in output)
     assert any(
         "LLM-active participants" in line and "0 — none" in line
@@ -4696,7 +4563,7 @@ def test_studio_operates_human_tasks_through_the_deployment(
     assert list((workspace.home / "runs").glob("*.sqlite")) == [store]
 
 
-def test_studio_deploys_current_workflow_and_remembers_name(tmp_path, monkeypatch):
+def test_studio_deploys_project_workflow_and_remembers_name(tmp_path, monkeypatch):
     studio, workspace, output = _studio(tmp_path)
     workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
     _mark_implementation_current(workspace)
@@ -4884,6 +4751,27 @@ def test_studio_blocks_deploy_when_specification_changed_after_implementation(
     )
 
 
+def test_studio_blocks_deploy_when_implementation_is_absent(
+    tmp_path,
+    monkeypatch,
+):
+    studio, workspace, output = _studio(tmp_path)
+    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    workspace.save_specification("Echo the request through Writer.")
+    (workspace.root / "workflow.py").unlink()
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        "zippergen.serve.main",
+        lambda arguments: calls.append(arguments) or 0,
+    )
+
+    with pytest.raises(SystemExit, match="requires an implementation"):
+        studio.deploy_workflow(["sample-absent", "--no-start"])
+
+    assert calls == []
+    assert any("Status" in line and "blocked" in line for line in output)
+
+
 def test_studio_rejects_removed_deploy_review_options(
     tmp_path,
     monkeypatch,
@@ -4897,12 +4785,13 @@ def test_studio_rejects_removed_deploy_review_options(
             studio.deploy_workflow(["sample", option])
 
 
-def test_studio_warns_and_deploys_without_a_local_implementation_record(
+def test_studio_warns_and_deploys_external_implementation(
     tmp_path,
     monkeypatch,
 ):
     studio, workspace, output = _studio(tmp_path)
     workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    workspace.save_specification("Echo the request through Writer.")
     calls: list[list[str]] = []
     monkeypatch.setattr(
         "zippergen.serve.main",
@@ -4913,10 +4802,7 @@ def test_studio_warns_and_deploys_without_a_local_implementation_record(
 
     assert len(calls) == 1
     assert any(
-        "Implementation" in line
-        and "not recorded on this machine" in line
-        and "technical validation" in line
-        for line in output
+        "not generated from the specification" in line for line in output
     )
 
 
@@ -5604,6 +5490,36 @@ def test_studio_configuration_is_reusable_without_serializing_calls(tmp_path):
     )
 
 
+def test_model_site_assignment_is_one_override_over_project_configuration(tmp_path):
+    studio, workspace, output = _studio(tmp_path)
+    (workspace.root / "dual.py").write_text(TWO_LLM_PARTICIPANT_SOURCE)
+    workspace.select_workflow("dual.py:sample", cwd=workspace.root)
+    for name, spec in (
+        ("portable", "anthropic:claude-opus-5"),
+        ("this-machine", "local:qwen2.5:14b"),
+    ):
+        provider, model = spec.split(":", 1)
+        workspace.save_model_configuration(
+            name,
+            {"provider": provider, "model": model, "spec": spec},
+        )
+
+    studio.execute("model assign Writer portable")
+    studio.execute("model assign Writer this-machine --site")
+
+    assert workspace.model_assignment_profile("dual.py:sample")["lifelines"] == {
+        "Writer": "this-machine"
+    }
+    assert workspace.model_assignment_profile(
+        "dual.py:sample", include_site=False
+    )["lifelines"] == {"Writer": "portable"}
+    clone = Workspace(workspace.root, home=tmp_path / "clone-state")
+    assert clone.model_assignment_profile("dual.py:sample")["lifelines"] == {
+        "Writer": "portable"
+    }
+    assert any("for this site" in line for line in output)
+
+
 def test_studio_model_action_override_precedes_participant_assignment(
     tmp_path,
 ):
@@ -6035,7 +5951,7 @@ def test_studio_model_profile_is_used_for_run_and_deploy(tmp_path, monkeypatch):
 
     assert run_calls[0]["llm"] == "mock"
     assert run_calls[0]["llms"] == {
-        "Writer": "claude:claude-sonnet-4-6"
+        "Writer": "anthropic:claude-sonnet-4-6"
     }
     assert ["--llm", "mock"] == cli_calls[0][
         cli_calls[0].index("--llm"):cli_calls[0].index("--llm") + 2

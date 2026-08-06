@@ -196,17 +196,18 @@ and one suggested next command. At the Studio prompt, enter:
 project init zippergen-tutorial
 \end{lstlisting}
 
-Studio creates \path{zippergen.toml} and safe Git ignores. It stores
-machine-specific runs and secrets outside the repository, so this tutorial
-does not require a \texttt{ZIPPERGEN\_HOME} export or a hand-written SQLite
-path.
+Studio creates \path{zippergen.toml} and safe Git ignores. The manifest is
+visible and versionable. It will name this project's specification and its one
+workflow entry point. Machine-specific runs and secrets stay outside the
+repository, so this tutorial does not require a \texttt{ZIPPERGEN\_HOME}
+export or a hand-written SQLite path.
 
 Enter \texttt{project} at any time to see what exists. It shows the workflow
 and specification, model and connector assignments, development runs, and
 deployments as one project tree. Use \texttt{current} when you instead want to
 see what you were most recently working on.
 
-From now on, commands such as \texttt{workflow create}, \texttt{run}, and
+From now on, commands such as \texttt{workflow edit-spec}, \texttt{run}, and
 \texttt{deploy} are Studio commands. Do not prefix them with
 \texttt{zippergen}. Press Tab for completion or enter \texttt{help} if the next
 step is forgotten.
@@ -216,7 +217,7 @@ step is forgotten.
 Enter:
 
 \begin{lstlisting}[style=shell]
-workflow create
+workflow edit-spec
 \end{lstlisting}
 
 Studio creates the fixed file \path{specification.md} and opens it in an
@@ -273,10 +274,15 @@ workflow implement claude
 Studio passes the current specification and repository rules automatically.
 The assistant works synchronously in the project, reports its own checks, and
 returns to the same Studio prompt. No request path has to be copied and there
-is no background assistant job. On later changes, the shortcut
-\texttt{workflow refine "CHANGE" --implement} saves the refinement and starts
-the configured assistant. When implementation finishes, Studio summarizes the
-changed files, technical validation result, and the assistant's report.
+is no background assistant job. For a later change, use
+\texttt{workflow edit-refinement "CHANGE"}, then
+\texttt{workflow refine-spec}. The first command writes an ignored scratch
+buffer. The second lets an isolated assistant rewrite only
+\path{specification.md} and consumes the buffer. Run
+\texttt{workflow implement} separately when the revised specification is
+right. When implementation finishes, Studio writes the portable
+\path{zippergen.lock} record and summarizes the changed files, technical
+validation result, and the assistant's report.
 
 After it returns, enter:
 
@@ -284,7 +290,7 @@ After it returns, enter:
 workflow status
 \end{lstlisting}
 
-The expected state is \emph{implemented}. \emph{Assistant checks}
+The expected implementation state is \emph{current}. \emph{Assistant checks}
 are reported separately as passed, failed, or incomplete. This is evidence
 reported by the assistant, whereas \texttt{workflow validate} is ZipperGen
 checking the current code. Resolve failures before relying on the result.
@@ -298,22 +304,27 @@ cd "$HOME/Projects/zippergen-tutorial"
 zippergen studio zippergen/examples/tutorial_review.py:tutorial_review
 \end{lstlisting}
 Continue with Section~5. The prompt-generated workflow and the shipped example
-have similar review-and-retry behavior. The shipped source has no local
-implementation request. Studio warns about the missing record and validates the
-workflow before deploying it; you do not need to regenerate the shipped source.
+have similar review-and-retry behavior. The shipped source is classified as
+\emph{external}. It can be inspected and run directly, but deployment requires
+technical validation and displays a provenance warning. Run
+\texttt{workflow implement} when you want Studio to record the committed source
+and specification relationship as \emph{current}.
 \end{notebox}
 
-\section{Discover, select, and inspect the workflow}
+\section{Discover, configure, and inspect the workflow}
 
 For assistant-generated source, enter:
 
 \begin{lstlisting}[style=shell]
 workflow list
-workflow select
+workflow import workflows/reviewed_answer.py:reviewed_answer
 \end{lstlisting}
 
-Studio lists top-level \texttt{@workflow} entry points. Select the new
-reviewed-answer workflow by number. A displayed reference such as
+Studio lists top-level \texttt{@workflow} entry points. Import the new
+reviewed-answer workflow by its displayed path. Because the file is already in
+the project, Studio copies nothing. It writes that entry point to
+\path{zippergen.toml}; it is now project configuration rather than a private
+selection. A displayed reference such as
 \texttt{workflows/reviewed\_answer.py:reviewed\_answer} means
 \emph{Python file: workflow object}; it is not a deployment name.
 
@@ -324,9 +335,11 @@ commands. Enter:
 workflow import /path/to/existing_workflow.py
 \end{lstlisting}
 Studio copies the source, statically imported local Python modules, and
-literal declared resources into the current project. It refuses to overwrite
-different project files. One discovered entry point is selected
-automatically; several are displayed for selection. Continue below with
+literal declared resources into the current project. If the project already
+has a configured workflow, Studio shows the replacement and asks before it
+overwrites files or changes the manifest. One discovered entry point is
+configured automatically; for several, repeat the command with
+\texttt{PATH.py:WORKFLOW}. Continue below with
 \texttt{workflow files}, inspection, and validation.
 \end{notebox}
 
@@ -348,7 +361,7 @@ The protocol view shows the global behavior; communications hides local
 actions; an agent view is that participant's exact projection; the full view
 includes actions, prompts, and deployment metadata.
 \texttt{connector} discovers HumanApprover and its human actions directly
-from the selected workflow. At this point their effective route is the local
+from the project workflow. At this point their effective route is the local
 terminal, so no Telegram token is needed.
 
 Check six things before continuing:
@@ -410,12 +423,11 @@ The exact action route takes precedence over the participant route. The
 workflow as it exists now. It checks structure, ownership, declarations, and
 every local projection.
 
-When Studio has a local implementation record, \texttt{deploy} checks an
-additional coherence property. If the specification changed after that
+\texttt{deploy} checks an additional coherence property using the committed
+\path{zippergen.lock}. If the specification or generated source changed after
 implementation, Studio stops and asks you to run \texttt{workflow implement}
-again. A fresh clone has no portable implementation record yet, so Studio
-warns and proceeds after technical validation. Git provides history and
-rollback for the specification and source.
+again. A fresh clone derives the same state without private Studio data. Git
+provides history and rollback for the specification and source.
 \end{notebox}
 
 \section{Run, interrupt, and resume}
@@ -434,7 +446,13 @@ and reports the configuration that needs attention. An unused default such as
 development-run summary instead lists the effective route for Writer and
 Reviewer separately.
 
-Studio validates the selected workflow and asks for its declared inputs. Press
+Named model and connector configurations and their assignments are project
+configuration in \path{zippergen.toml}. Endpoints, idle-release policy, health
+checks, and credentials remain private to one machine. A fresh clone therefore
+keeps the workflow's routing and asks only for missing site facts. Enter
+\texttt{project} to see that exact list.
+
+Studio validates the project workflow and asks for its declared inputs. Press
 Enter to accept the default request, enter \texttt{3} for
 \texttt{max\_retries}, reject the first draft with \texttt{n}, and approve the
 revision with \texttt{y}. Mock output such as
@@ -577,9 +595,8 @@ deploy doctor
 deploy show
 \end{lstlisting}
 
-\texttt{deploy} first compares any local implementation record with the current
-specification. If no record travelled with a fresh clone, it says so and
-continues after technical validation. It validates the current source again,
+\texttt{deploy} first checks that the portable implementation state is
+\emph{current}. It validates the current source again,
 collects declared inputs,
 creates a separate timestamped
 deployment bundle and managed Python environment, initializes the
@@ -695,7 +712,7 @@ participants. Sharing it does not prevent parallel workflow steps. Use
 HumanApprover.approve\_answer OTHER} for an action-specific override.
 
 Development runs and deployments start the Telegram bridge automatically
-when the selected workflow has an external human assignment. Telegram presents
+when the project workflow has an external human assignment. Telegram presents
 confirmations and selections as buttons. Every callback contains a durable
 one-time task token, so delayed or duplicate replies cannot answer the wrong
 task. Numbered replies to the original message remain a fallback.
@@ -713,7 +730,9 @@ after it completes successfully.
 
 The reviewed-answer workflow does not need Google Sheets. A separate small
 example shows how a workflow can declare a table while Studio owns the Google
-account and concrete spreadsheet:
+account and concrete spreadsheet. One project has one workflow, so do not
+switch this tutorial project to the example. Create another project directory
+and import the example there.
 
 \begin{lstlisting}[style=shell]
 uv sync --extra google
@@ -725,7 +744,11 @@ checkout. An installed package uses
 or Sheets requirement installs the same optional support automatically.
 
 \begin{lstlisting}[style=shell]
-workflow select examples/google_sheets_records.py:google_sheet_records
+mkdir "$HOME/Projects/zippergen-sheets-demo"
+cd "$HOME/Projects/zippergen-sheets-demo"
+zippergen
+project init zippergen-sheets-demo
+workflow import /path/to/zippergen/examples/google_sheets_records.py:google_sheet_records
 workflow validate
 connector setup
 run
@@ -748,7 +771,11 @@ needed.
 The larger call-intake example uses the same command for two resources:
 
 \begin{lstlisting}[style=shell]
-workflow select examples/call_intake.py:call_intake
+mkdir "$HOME/Projects/zippergen-call-intake"
+cd "$HOME/Projects/zippergen-call-intake"
+zippergen
+project init zippergen-call-intake
+workflow import /path/to/zippergen/examples/call_intake.py:call_intake
 workflow validate
 connector setup
 connector assignments check
@@ -770,10 +797,13 @@ app OAuth client. For an external test application, add the Gmail account as a
 test user.
 
 This optional example performs a stable-key upsert instead of a blind append.
-That makes a retry after a crash safe. Return to the tutorial workflow with:
+That makes a retry after a crash safe. Return to the tutorial project by
+leaving Studio and changing back to its directory:
 
 \begin{lstlisting}[style=shell]
-workflow select examples/tutorial_review.py:tutorial_review
+exit
+cd "$HOME/Projects/zippergen-tutorial"
+zippergen
 \end{lstlisting}
 
 If this deployment was only for the tutorial and you no longer want it, enter:

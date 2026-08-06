@@ -111,27 +111,23 @@ def test_unmatched_design_prose_is_offered_as_initial_specification(tmp_path):
     studio.execute(request)
 
     assert workspace.specification() == request
-    current = workspace.current_request()
-    assert current is not None
-    assert current["kind"] == "create"
+    assert workspace.current_request() is None
     assert any(
         "Treat this prose as the initial specification" in line
         for line in output
     )
-    assert any("workflow create" in line for line in output)
+    assert any("workflow edit-spec" in line for line in output)
 
 
-def test_unmatched_design_prose_is_offered_as_one_pending_refinement(tmp_path):
+def test_unmatched_design_prose_is_offered_as_refinement_input(tmp_path):
     studio, workspace, _output = _studio(tmp_path, responses=["y"])
     workspace.save_specification("Writer drafts an answer.")
     request = "Add a Reviewer participant that must approve every answer"
 
     studio.execute(request)
 
-    assert workspace.pending_refinement() == request
-    current = workspace.current_request()
-    assert current is not None
-    assert current["kind"] == "refine"
+    assert workspace.refinement_buffer() == request
+    assert workspace.current_request() is None
 
 
 @pytest.mark.parametrize(
@@ -157,7 +153,7 @@ def test_realistic_declarative_requirements_are_offered_without_framework_words(
     assert plan is not None
     assert plan.requires_confirmation is True
     assert plan.commands == (
-        f"workflow create {shlex.quote(sentence)}",
+        f"workflow edit-spec {shlex.quote(sentence)}",
     )
 
 
@@ -250,31 +246,6 @@ def test_explicit_reset_everything_still_proposes_recoverable_fresh_reset(
     assert any("project reset fresh" in line for line in output)
 
 
-def test_confirmed_natural_discard_does_not_confirm_twice(
-    tmp_path,
-    monkeypatch,
-):
-    prompts: list[str] = []
-    studio, workspace, _output = _studio(tmp_path)
-    studio.input = lambda prompt: prompts.append(prompt) or "y"
-    workspace.save_specification("Create a review workflow.")
-    studio.refine_request("Add a Reviewer.")
-    monkeypatch.setattr(
-        studio,
-        "_interpret_with_cli",
-        lambda request_text, *, configured: NaturalCommandPlan(
-            "Discard the pending refinement.",
-            ("workflow discard",),
-            "codex",
-        ),
-    )
-
-    studio.execute("Remove the pending amendment")
-
-    assert workspace.pending_refinement() is None
-    assert prompts == ["Execute this destructive plan? [y/n]: "]
-
-
 def test_help_me_get_started_is_local_and_deterministic(tmp_path):
     studio, workspace, output = _studio(tmp_path)
 
@@ -309,7 +280,7 @@ def test_natural_workflow_discovery_and_source_requests_are_deterministic(
     output.clear()
     studio.execute("Show me the authored Python source")
 
-    assert workspace.current_workflow == "workflow.py:sample"
+    assert workspace.workflow_entry == "workflow.py:sample"
     assert any("workflow show source" in line for line in output)
     assert any("Source: workflow.py" in line for line in output)
 
@@ -532,7 +503,7 @@ def test_codex_fallback_is_read_only_and_learns_a_parameterized_plan(
         "--cd",
     ]
     assert calls[0][0][-1] == "-"
-    assert "selected_workflow" in str(calls[0][1]["input"])
+    assert "workflow_entry" in str(calls[0][1]["input"])
     learned = NaturalLanguageStore(
         workspace.directory / "natural-language.json"
     ).learned()

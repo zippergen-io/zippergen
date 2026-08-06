@@ -453,7 +453,7 @@ def test_no_command_opens_studio(tmp_path, monkeypatch, capsys):
     captured = capsys.readouterr()
     assert rc == 0
     assert "ZipperGen Studio" in captured.out
-    assert "Workflow   ⚠ none selected" in captured.out
+    assert "Workflow   ⚠ not configured" in captured.out
 
 
 def test_dev_run_id_requires_resume():
