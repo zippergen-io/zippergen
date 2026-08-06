@@ -69,6 +69,51 @@ def _git_repository(project_root: Path) -> tuple[str, Path] | None:
     return executable, repository_root
 
 
+def _committed_implementation_files(
+    workspace: Workspace,
+    *,
+    executable: str,
+    repository_root: Path,
+) -> tuple[str, ...]:
+    """Implementation files named by the lock as committed at HEAD.
+
+    Used only to widen the commit unit so removals are staged.  Any failure —
+    no commit yet, no committed lock, unreadable TOML — simply contributes no
+    extra paths.
+    """
+
+    try:
+        repository_path = (
+            workspace.implementation_lock_path.resolve()
+            .relative_to(repository_root)
+            .as_posix()
+        )
+        completed = _run_process(
+            [
+                executable,
+                "-C",
+                str(repository_root),
+                "show",
+                f"HEAD:{repository_path}",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except (OSError, ValueError):
+        return ()
+    if completed.returncode != 0:
+        return ()
+    try:
+        document = tomllib.loads(completed.stdout)
+    except tomllib.TOMLDecodeError:
+        return ()
+    raw = document.get("implementation_files")
+    if not isinstance(raw, list):
+        return ()
+    return tuple(str(value) for value in raw)
+
+
 def implementation_commit_unit(
     workspace: Workspace,
     *,
@@ -89,12 +134,25 @@ def implementation_commit_unit(
     if not isinstance(raw_files, list):
         return None
 
+    executable, repository_root = repository
+    # Union with the committed lock so that a file the new implementation drops
+    # has its removal staged.  Naming only the current files would leave the
+    # deletion behind, and a clone would carry a file no lock describes.
+    names = sorted(
+        {
+            *(str(value) for value in raw_files),
+            *_committed_implementation_files(
+                workspace,
+                executable=executable,
+                repository_root=repository_root,
+            ),
+        }
+    )
     paths = [
         workspace.specification_path,
-        *(workspace.root / str(value) for value in raw_files),
+        *(workspace.root / name for name in names),
         workspace.implementation_lock_path,
     ]
-    executable, repository_root = repository
     if include_manifest is True or (
         include_manifest == "workflow_identity"
         and _manifest_changes_workflow_identity(

@@ -218,3 +218,31 @@ def test_non_git_project_has_no_commit_offer_or_status_warning(
     studio.manage_task([])
 
     assert not any("Git" in line or "fresh clone" in line for line in output)
+
+
+def test_commit_unit_stages_removal_of_a_dropped_implementation_file(
+    tmp_path: Path,
+) -> None:
+    root, workspace = _project(tmp_path)
+    helper = root / "helper.py"
+    helper.write_text("VALUE = 1\n", encoding="utf-8")
+    workspace.write_implementation_lock(["workflow.py", "helper.py"])
+    _initialize_git(root)
+
+    unit = implementation_commit_unit(workspace, include_manifest=True)
+    assert unit is not None
+    commit_implementation_unit(unit, "Implement with a generated helper")
+
+    # A later implementation drops the helper; the new lock no longer names it.
+    helper.unlink()
+    workspace.write_implementation_lock(["workflow.py"])
+
+    unit = implementation_commit_unit(workspace, include_manifest=True)
+    assert unit is not None
+    assert "helper.py" in unit.project_paths
+
+    commit_implementation_unit(unit, "Regenerate without the helper")
+
+    assert _git(root, "status", "--porcelain").stdout == ""
+    tracked = _git(root, "ls-files").stdout.splitlines()
+    assert "helper.py" not in tracked
