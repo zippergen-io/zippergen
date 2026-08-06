@@ -453,6 +453,11 @@ buffer and `workflow refine-spec` applies it without exposing implementation
 source to the specification assistant. `workflow implement` writes the
 committed `zippergen.lock` record. The project then derives implementation as
 `absent`, `stale`, `current`, or `external`, including on a fresh clone.
+In an interactive Git project, implementation offers one editable commit for
+the specification, implementation files, lock, and a manifest it changed. It
+does not include unrelated staged work and never pushes. `workflow status` and
+`deploy` warn, but do not block, when those related files are uncommitted.
+Non-Git and non-interactive use has no prompt or warning.
 Deployment blocks `absent` and `stale`. It warns and proceeds for `external`,
 because provenance is unknown rather than known to disagree.
 `workflow import PATH.py:NAME` also adopts a file already inside the project

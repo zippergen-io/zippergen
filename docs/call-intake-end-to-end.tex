@@ -277,7 +277,10 @@ Studio summarizes the changed files, assistant checks, and assistant report.
 Deployment later uses the committed \path{zippergen.lock} implementation
 record to detect a specification change. That record travels with the project,
 so a fresh clone derives the same implementation state without private Studio
-data.
+data. In an interactive Git project, Studio offers to commit the specification,
+implementation files, lock, and any manifest entry it created as one unit. The
+message is editable, only those related files are included, and Studio never
+pushes. Declining the offer leaves every change in place for ordinary Git use.
 
 \section{Configure the LLM}
 

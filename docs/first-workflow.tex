@@ -284,6 +284,13 @@ right. When implementation finishes, Studio writes the portable
 \path{zippergen.lock} record and summarizes the changed files, technical
 validation result, and the assistant's report.
 
+If this project is a Git repository and Studio is interactive, it now offers
+to commit the specification, implementation files, \path{zippergen.lock}, and
+any manifest entry that implementation created. Review the summary first.
+Accept the suggested commit message, edit it, or answer no and use Git yourself
+later. Studio commits only those related files and never pushes. In a
+non-Git project or a non-interactive command, no Git prompt appears.
+
 After it returns, enter:
 
 \begin{lstlisting}[style=shell]
@@ -428,6 +435,9 @@ every local projection.
 implementation, Studio stops and asks you to run \texttt{workflow implement}
 again. A fresh clone derives the same state without private Studio data. Git
 provides history and rollback for the specification and source.
+If one of the related files is not committed, \texttt{workflow status} and
+\texttt{deploy} warn that a fresh clone may derive a different implementation
+state. This is information, not a deployment block.
 \end{notebox}
 
 \section{Run, interrupt, and resume}
@@ -569,9 +579,11 @@ git diff --check
 git diff
 \end{lstlisting}
 
-Do not commit secrets. Git is the recovery path for returning to an earlier
-specification and implementation. Pushing is a separate decision and is not
-required for local deployment.
+Do not commit secrets. If you accepted Studio's post-implementation Git offer,
+the specification, generated source, and lock already form one local commit.
+Otherwise inspect and commit them with ordinary Git. Git is the recovery path
+for returning to an earlier specification and implementation. Pushing is a
+separate decision and is not required for local deployment.
 
 
 \section{Prepare a named deployment}

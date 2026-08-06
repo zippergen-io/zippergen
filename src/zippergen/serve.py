@@ -2264,7 +2264,12 @@ def _studio_command(args) -> int:
         canonical = workspace.canonical_spec(args.workflow)
         load_workflow_spec(workspace.absolute_spec(canonical))
         workspace.select_workflow(canonical, cwd=workspace.root)
-    studio = Studio(workspace, input_func=input, output_func=print)
+    studio = Studio(
+        workspace,
+        input_func=input,
+        output_func=print,
+        command_mode=bool(args.command),
+    )
     if args.command:
         studio.welcome()
         for command in args.command:

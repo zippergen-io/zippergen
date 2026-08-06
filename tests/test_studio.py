@@ -1348,8 +1348,16 @@ def test_studio_assistant_launches_codex_in_project_on_the_stable_task(
     studio.create_request("Create a review workflow.")
     output.clear()
     calls: list[tuple[list[str], Path, bool]] = []
+    commit_offers: list[tuple[str | None, bool]] = []
 
     monkeypatch.setattr("zippergen.studio.shutil.which", lambda name: "/bin/codex")
+    monkeypatch.setattr(
+        studio,
+        "_offer_implementation_commit",
+        lambda workflow_spec, *, include_manifest: commit_offers.append(
+            (workflow_spec, include_manifest)
+        ),
+    )
 
     def fake_run(arguments, *, cwd, check, **kwargs):
         assert kwargs == {"capture_output": True, "text": True}
@@ -1388,6 +1396,7 @@ def test_studio_assistant_launches_codex_in_project_on_the_stable_task(
     assert request["assistant_mode"] == "one_shot"
     assert request["status"] == "implemented"
     assert request["assistant_verification"] == "incomplete"
+    assert commit_offers == [("workflow.py:sample", True)]
 
 
 def test_studio_condensed_assistant_reports_progress_and_precise_boundary(

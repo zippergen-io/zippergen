@@ -1170,7 +1170,13 @@ class Workspace:
             raw_profiles = state.get(state_key) or {}
             if isinstance(raw_profiles, dict) and current:
                 profile = raw_profiles.get(current)
-                if isinstance(profile, dict) and not connectors.get(manifest_key):
+                existing = connectors.get(manifest_key)
+                existing_values = (
+                    any(existing.values())
+                    if isinstance(existing, dict)
+                    else bool(existing)
+                )
+                if isinstance(profile, dict) and not existing_values:
                     connectors[manifest_key] = dict(profile)
 
         self._write_project_configuration(models=models, connectors=connectors)
@@ -1567,6 +1573,36 @@ class Workspace:
                             accepted_fingerprint
                         )
                         changed_request = True
+                    accepted_source = value.get("accepted_source")
+                    accepted_files = (
+                        accepted_source.get("files")
+                        if isinstance(accepted_source, dict)
+                        else None
+                    )
+                    if isinstance(accepted_files, list) and accepted_files:
+                        normalized_files: list[dict[str, str]] = []
+                        for item in accepted_files:
+                            if not isinstance(item, dict):
+                                normalized_files = []
+                                break
+                            path = item.get("path")
+                            digest = item.get("sha256")
+                            if (
+                                not isinstance(path, str)
+                                or not path
+                                or Path(path).is_absolute()
+                                or ".." in Path(path).parts
+                                or not isinstance(digest, str)
+                                or len(digest) != 64
+                            ):
+                                normalized_files = []
+                                break
+                            normalized_files.append(
+                                {"path": Path(path).as_posix(), "sha256": digest}
+                            )
+                        if normalized_files:
+                            request["accepted_source_files"] = normalized_files
+                            changed_request = True
                     if changed_request:
                         request["updated_at"] = _timestamp()
                         _atomic_write_json(request_path, request)
@@ -3273,7 +3309,7 @@ class Workspace:
         missing: dict[tuple[str, str], dict[str, str]] = {}
         secrets = self.load_secrets()
         model_configurations = self.model_configurations()
-        assignments = self.model_assignment_profile(entry, include_site=False)
+        assignments = self.model_assignment_profile(entry)
         assigned_models = {
             str(assignments.get("default") or "mock"),
             *(

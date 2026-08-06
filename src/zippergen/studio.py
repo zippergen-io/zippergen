@@ -63,6 +63,13 @@ from zippergen.studio_commands import (
     workflow_view_spec,
 )
 from zippergen.studio_connectors import StudioConnectorsMixin
+from zippergen.studio_git import (
+    GitCommitError,
+    commit_implementation_unit,
+    implementation_commit_unit,
+    implementation_status_unit,
+    uncommitted_commit_unit_paths,
+)
 from zippergen.studio_models import (
     StudioModelsMixin,
     _PROVIDER_SECRETS,
@@ -577,6 +584,7 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
         output_func: OutputFunc = print,
         secret_input_func: SecretInputFunc | None = None,
         color: bool | None = None,
+        command_mode: bool = False,
     ) -> None:
         self.workspace = workspace
         self.input = input_func
@@ -588,6 +596,9 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
             and bool(getattr(sys.stdout, "isatty", lambda: False)())
         )
         self._prompt_session: PromptSession[str] | None = None
+        self._interactive_offers_enabled = (
+            self._prompt_toolkit_enabled and not command_mode
+        )
         self._renderer = TerminalRenderer(
             output_func,
             color=color,
@@ -817,8 +828,29 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
         fingerprint = record.get("result_specification_fingerprint")
         if not isinstance(fingerprint, str) or not fingerprint:
             return
+        raw_accepted_files = record.get("accepted_source_files")
+        if not isinstance(raw_accepted_files, list) or not raw_accepted_files:
+            return
         try:
             files = [path for path, _role in self._workflow_file_records()]
+            accepted_files = {
+                str(item["path"]): str(item["sha256"])
+                for item in raw_accepted_files
+                if isinstance(item, dict)
+                and isinstance(item.get("path"), str)
+                and isinstance(item.get("sha256"), str)
+            }
+            if set(accepted_files) != set(files):
+                return
+            for relative in files:
+                candidate = (self.workspace.root / relative).resolve()
+                if (
+                    not candidate.is_file()
+                    or not candidate.is_relative_to(self.workspace.root)
+                    or hashlib.sha256(candidate.read_bytes()).hexdigest()
+                    != accepted_files[relative]
+                ):
+                    return
             self.workspace.write_implementation_lock(
                 files,
                 specification_fingerprint=fingerprint,
@@ -4919,6 +4951,7 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
                         "warning",
                     ),
                     ("Implementation", implementation_state, None),
+                    *self._git_status_rows(),
                     (
                         "Next",
                         self._workflow_next_action(
@@ -4969,6 +5002,7 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
                     else []
                 ),
                 ("Context", context, context_kind),
+                *self._git_status_rows(),
                 *(
                     [
                         ("Request", record["request_id"], None),
@@ -5332,6 +5366,120 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
         )
         detail = f"failed · {failed} check{'s' if failed != 1 else ''}"
         return (detail, "error")
+
+    @staticmethod
+    def _git_path_summary(paths: tuple[str, ...]) -> str:
+        shown = paths[:5]
+        suffix = f" · +{len(paths) - len(shown)} more" if len(paths) > 5 else ""
+        return " · ".join(shown) + suffix
+
+    def _uncommitted_implementation_paths(self) -> tuple[str, ...] | None:
+        """Inspect the portable commit unit without making Git mandatory."""
+
+        unit = implementation_status_unit(self.workspace)
+        if unit is None:
+            return None
+        return uncommitted_commit_unit_paths(unit)
+
+    def _git_status_rows(self) -> list[tuple[str, object, StatusKind | None]]:
+        changed = self._uncommitted_implementation_paths()
+        if not changed:
+            return []
+        return [
+            (
+                "Git",
+                "uncommitted implementation files: "
+                f"{self._git_path_summary(changed)}; a fresh clone may derive "
+                "a different implementation state",
+                "warning",
+            )
+        ]
+
+    def _warn_if_git_state_differs(self) -> None:
+        changed = self._uncommitted_implementation_paths()
+        if not changed:
+            return
+        self._warning(
+            "The implementation has uncommitted project files: "
+            f"{self._git_path_summary(changed)}. A fresh clone may derive a "
+            "different implementation state. Deployment will still proceed."
+        )
+
+    def _offer_implementation_commit(
+        self,
+        workflow_spec: str | None,
+        *,
+        include_manifest: bool,
+    ) -> None:
+        """Offer one explicit, path-limited commit after implementation."""
+
+        if not self._interactive_offers_enabled:
+            return
+        unit = implementation_commit_unit(
+            self.workspace,
+            include_manifest=include_manifest,
+        )
+        if unit is None:
+            return
+        changed = uncommitted_commit_unit_paths(unit)
+        if not changed:
+            return
+        self._emit_table(
+            "Commit implementation",
+            [
+                (
+                    "Files",
+                    self._git_path_summary(unit.project_paths),
+                    None,
+                ),
+                (
+                    "Scope",
+                    (
+                        "specification, implementation, portable lock, and "
+                        "manifest only"
+                        if include_manifest
+                        else "specification, implementation, and portable lock only"
+                    ),
+                    "info",
+                ),
+            ],
+        )
+        if not self._confirm_action(
+            "Commit these files together? [Y/n]: ",
+            cancel_message=(
+                "Git commit skipped; project changes remain in the working tree."
+            ),
+            default=True,
+        ):
+            return
+        workflow_name = (
+            workflow_spec.rpartition(":")[2]
+            if workflow_spec
+            else "workflow"
+        )
+        default_message = f"Implement {workflow_name} workflow"
+        try:
+            entered = self.input(
+                f"Commit message [{default_message}]: "
+            ).strip()
+        except (EOFError, KeyboardInterrupt):
+            self._warning(
+                "Git commit skipped; project changes remain in the working tree."
+            )
+            return
+        try:
+            revision = commit_implementation_unit(
+                unit,
+                entered or default_message,
+            )
+        except GitCommitError as exc:
+            self._warning(
+                f"Git commit was not created: {exc} Project changes were preserved."
+            )
+            return
+        self._success(
+            f"Committed the specification and implementation together ({revision})."
+        )
 
     def _record_portable_implementation(
         self,
@@ -5731,6 +5879,16 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
         )
         if assistant_result.verification != "passed":
             self._emit_task_verification_checks(record, problems_only=True)
+        manifest_relative = self.workspace.manifest_path.relative_to(
+            self.workspace.root
+        ).as_posix()
+        self._offer_implementation_commit(
+            workflow_spec,
+            include_manifest=(
+                changed_files is not None
+                and manifest_relative in changed_files
+            ),
+        )
 
     def show_current(self) -> None:
         from zippergen.serve import _validate_workflow
@@ -8439,6 +8597,7 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
         if len(names) > 1:
             raise SystemExit("Use deploy [NAME] [--no-start].")
 
+        self._warn_if_git_state_differs()
         implementation = self.workspace.implementation_state()
         implementation_state = str(implementation["state"])
         if implementation_state in {"absent", "stale"}:

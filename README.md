@@ -304,6 +304,14 @@ It warns and proceeds for `external`, because provenance is unknown rather
 than known to disagree. `workflow implement` remains the way to produce
 `current`.
 
+In an interactive Git project, `workflow implement` then offers to commit the
+specification, implementation files, `zippergen.lock`, and a manifest that it
+changed. The suggested message is editable. Studio commits only that unit and
+never pushes. `workflow status` and `deploy` warn when the unit has uncommitted
+changes, because a fresh clone could derive a different state. The warning
+never blocks deployment. Outside Git, and in non-interactive use, Studio stays
+silent and behaves as before.
+
 Project configuration travels with the workflow. Named model and connector
 configurations, participant and action assignments, and connector bindings are
 written to `zippergen.toml`. Machine-specific facts stay private on each site.

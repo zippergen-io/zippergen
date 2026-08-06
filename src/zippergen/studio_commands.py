@@ -165,7 +165,7 @@ COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec(
         ("workflow", "implement"),
         "workflow implement [codex|claude] [--rerun]",
-        "run a coding assistant and summarize the result",
+        "implement, summarize, and offer one coherent Git commit",
         "execution",
         primary=True,
     ),

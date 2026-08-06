@@ -956,7 +956,13 @@ implementation request directly.
 
 Wait for the assistant to report generated source, focused tests, validation,
 communication-only and full views, and projections for Requester, Writer, and
-Reviewer. Then inspect the checkout in the ordinary terminal:
+Reviewer. In an interactive Git project, Studio offers to commit the
+specification, implementation files, \path{zippergen.lock}, and a manifest that
+implementation changed. Its suggested message is editable. The commit is
+limited to those related files and does not include unrelated staged work.
+Studio never pushes. Decline if you want to inspect or commit the files
+yourself. Non-Git projects and non-interactive commands receive no Git prompt.
+Then inspect the checkout in the ordinary terminal:
 
 \begin{lstlisting}[style=shell]
 git status --short
@@ -1575,7 +1581,11 @@ file list. Editing the specification makes a generated implementation
 \emph{stale}. Editing generated source makes it \emph{external}. Stale source
 blocks deployment. External source proceeds after a provenance warning and
 technical validation. Git is the version history for returning to an earlier
-source/specification pair.
+source/specification pair. \texttt{workflow status} and \texttt{deploy} warn
+when a file in this implementation unit is modified or uncommitted, because a
+fresh clone may derive another implementation state. The warning is
+informational and never blocks deployment. Studio performs no Git operation
+outside the explicit post-implementation offer.
 
 
 \section{Deployment and operation}
@@ -2406,7 +2416,10 @@ The implementation relationship is portable. Commit \path{zippergen.lock}
 with the specification and generated source. A fresh server derives the same
 \emph{current}, \emph{stale}, or \emph{external} state without private Studio
 data. Deployment blocks \emph{stale}, but warns and proceeds for
-\emph{external}.
+\emph{external}. The post-implementation Git offer creates this local commit
+as one unit. If you decline it and leave one of these files uncommitted,
+\texttt{workflow status} and \texttt{deploy} warn before you copy or deploy a
+working tree that another clone cannot reproduce.
 
 \subsection{Validate on the server before deploying}
 
