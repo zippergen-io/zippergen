@@ -8,6 +8,7 @@ import os
 import threading
 import time
 from collections.abc import Callable, Mapping
+from pathlib import Path
 from urllib import request
 from urllib.error import HTTPError, URLError
 
@@ -20,6 +21,8 @@ __all__ = [
     "make_openai_backend",
     "make_anthropic_backend",
     "make_lifeline_router",
+    "make_scripted_backend",
+    "load_scripted_script",
     "validate_local_idle_policies",
     "router_from_specs",
     "router_from_env",
@@ -451,6 +454,94 @@ def make_anthropic_backend(
     return backend
 
 
+def load_scripted_script(path: str | Path) -> dict[str, list[dict[str, object]]]:
+    """Read a scripted-response file, checking its shape before it is used."""
+
+    source = Path(path).expanduser()
+    try:
+        raw = json.loads(source.read_text(encoding="utf-8"))
+    except FileNotFoundError as exc:
+        raise RuntimeError(f"Scripted response file not found: {source}") from exc
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"Scripted response file {source} is not valid JSON: {exc}") from exc
+    if not isinstance(raw, dict):
+        raise RuntimeError(
+            f"Scripted response file {source} must be a JSON object mapping "
+            "'Participant.action' or 'action' to a list of responses."
+        )
+
+    script: dict[str, list[dict[str, object]]] = {}
+    for key, value in raw.items():
+        entries = value if isinstance(value, list) else [value]
+        for entry in entries:
+            if not isinstance(entry, dict):
+                raise RuntimeError(
+                    f"Scripted responses for {key!r} must be objects mapping "
+                    f"output name to value; got {type(entry).__name__}."
+                )
+        script[str(key)] = [dict(entry) for entry in entries]
+    return script
+
+
+def make_scripted_backend(
+    script: dict[str, list[dict[str, object]]],
+) -> Callable:
+    """Replay recorded outputs so every protocol branch can be reached.
+
+    ``mock`` returns one placeholder for every action, so a workflow driven by
+    it can only ever take the branch that placeholder happens to select — in a
+    consensus protocol, immediate agreement. Nothing behind a decision is
+    reachable. This backend fixes that by answering per action.
+
+    Keys are ``"Participant.action"``, falling back to ``"action"`` for every
+    participant. Responses are consumed in order; **the last one repeats** once
+    the list is exhausted, so a reviewer that never changes its mind is a
+    one-element list rather than a long one.
+    """
+
+    remaining: dict[str, list[dict[str, object]]] = {
+        key: list(value) for key, value in script.items()
+    }
+    last: dict[str, dict[str, object]] = {}
+    lock = threading.Lock()
+
+    def backend(action, inputs: dict[str, object]) -> dict[str, object]:
+        del inputs  # a scripted response does not depend on the prompt
+        lifeline_name = threading.current_thread().name
+        target = f"{lifeline_name}.{action.name}"
+        key = target if target in remaining else action.name
+        if key not in remaining:
+            known = ", ".join(sorted(remaining)) or "none"
+            raise RuntimeError(
+                f"No scripted response for {target!r}. Add {target!r} or "
+                f"{action.name!r} to the response file. Scripted: {known}."
+            )
+
+        with lock:
+            queue = remaining[key]
+            if queue:
+                response = queue.pop(0)
+                last[key] = response
+            elif key in last:
+                response = last[key]
+            else:
+                raise RuntimeError(
+                    f"Scripted responses for {key!r} are empty; give at least one."
+                )
+
+        expected = [name for name, _type in action.outputs]
+        absent = [name for name in expected if name not in response]
+        if absent:
+            raise RuntimeError(
+                f"Scripted response for {key!r} is missing "
+                f"{', '.join(absent)}; {action.name} declares "
+                f"{', '.join(expected)}."
+            )
+        return {name: response[name] for name in expected}
+
+    return backend
+
+
 def make_lifeline_router(backends: dict[str, Callable]) -> Callable:
     """Route LLM calls by action override, then by calling lifeline.
 
@@ -550,6 +641,7 @@ def backend_from_spec(
 
     Supported specs:
     - ``"mock"`` for the supplied fallback backend
+    - ``"scripted:<file.json>"`` for deterministic recorded responses
     - ``"openai"`` or ``"openai:<model>"``
     - ``"ollama"`` / ``"local"`` or ``"ollama:<model>"``
     - ``"mistral"`` or ``"mistral:<model>"``
@@ -561,6 +653,16 @@ def backend_from_spec(
     """
 
     provider, model = _split_llm_spec(spec)
+    if provider == "scripted":
+        if not model:
+            raise RuntimeError(
+                "LLM spec 'scripted' needs a response file: "
+                "scripted:responses.json"
+            )
+        return (
+            make_scripted_backend(load_scripted_script(model)),
+            f"scripted ({model})",
+        )
     if provider == "mock":
         if fallback is None:
             raise RuntimeError("LLM spec 'mock' requires a fallback backend.")

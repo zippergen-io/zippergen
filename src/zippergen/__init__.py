@@ -77,6 +77,8 @@ __all__: list[str] = [
     "make_openai_backend",
     "make_anthropic_backend",
     "make_lifeline_router",
+    "make_scripted_backend",
+    "load_scripted_script",
     "validate_local_idle_policies",
     "router_from_specs",
     "router_from_env",
