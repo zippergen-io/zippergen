@@ -47,7 +47,7 @@ def _deployment_fixture(tmp_path, monkeypatch, name="review-demo"):
     return home, profile, store, log
 
 
-def test_remove_deployment_artifacts_archives_the_complete_owned_unit(
+def test_remove_deployment_archives_only_what_cannot_be_rebuilt(
     tmp_path,
     monkeypatch,
 ):
@@ -62,18 +62,44 @@ def test_remove_deployment_artifacts_archives_the_complete_owned_unit(
     assert result.archive is not None
     assert result.archive.is_dir()
     assert (result.archive / "removal.json").is_file()
-    assert (result.archive / "profile/deployment.json").is_file()
-    assert (result.archive / "profile/secrets.json").is_file()
+    # What actually happened, and what produced it, is kept.
     assert (result.archive / "state/store.sqlite").is_file()
     assert (result.archive / "state/store.sqlite-wal").is_file()
     assert (result.archive / "logs/deployment.log").is_file()
-    assert (result.archive / "runtime/environment/python").is_file()
-    assert (
-        result.archive / "runtime/bundles/revision/workflow.py"
-    ).is_file()
+    assert (result.archive / "profile/deployment.json").is_file()
+    # Secrets are never left behind, and everything else is rebuilt by
+    # deploying again.
+    assert not (result.archive / "profile/secrets.json").exists()
+    assert not (result.archive / "runtime").exists()
+    assert not (result.archive / "launch").exists()
+    # The deployment itself is gone from active use.
     assert not store.exists()
     assert not log.exists()
     assert not (home / "deployments/review-demo.json").exists()
+
+
+def test_remove_deployment_leaves_no_secret_anywhere_in_the_archive(
+    tmp_path,
+    monkeypatch,
+):
+    home, profile, _store, _log = _deployment_fixture(tmp_path, monkeypatch)
+
+    result = remove_deployment_artifacts(
+        "review-demo",
+        profile,
+        purge=False,
+    )
+
+    assert result.archive is not None
+    for path in result.archive.rglob("*"):
+        if path.is_file():
+            assert "secret" not in path.name.casefold()
+    trash = home / "trash" / "deployments"
+    assert not any(
+        "secret" in path.name.casefold()
+        for path in trash.rglob("*")
+        if path.is_file()
+    )
 
 
 def test_remove_deployment_artifacts_purge_leaves_no_archive(

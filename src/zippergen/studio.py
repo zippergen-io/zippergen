@@ -1498,8 +1498,8 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
                     return self._deployment_completion_candidates()
                 if len(args) == 2:
                     return [
-                        ("--purge", "permanently delete instead of archiving"),
-                        ("--yes", "confirm recoverable removal"),
+                        ("--purge", "delete the durable store too"),
+                        ("--yes", "confirm removal"),
                     ]
                 if len(args) == 3 and args[2].lower() == "--purge":
                     return [("--yes", "confirm permanent deletion")]
@@ -10069,7 +10069,7 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
         mode = (
             "permanent purge; no recovery archive"
             if purge
-            else "recoverable archive"
+            else "the durable store, log, and profile are kept"
         )
         self._emit_table(
             "Deployment removal",
@@ -10095,8 +10095,17 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
         )
         self._emit_columns(
             "Deployment-owned artifacts",
-            ("Artifact", "Path"),
-            [(artifact.label, artifact.path) for artifact in artifacts],
+            ("Artifact", "After removal", "Path"),
+            [
+                (
+                    artifact.label,
+                    "deleted"
+                    if purge or not artifact.retain
+                    else "kept in the archive",
+                    artifact.path,
+                )
+                for artifact in artifacts
+            ],
         )
 
         if not yes:
@@ -10162,6 +10171,14 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
         ]
         if result.archive is not None:
             rows.append(("Archive", result.archive, "success"))
+            rows.append(
+                (
+                    "Archive holds",
+                    "the durable store, log, and profile; secrets, the "
+                    "environment, bundles, and service files were deleted",
+                    None,
+                )
+            )
         else:
             rows.append(("Archive", "none; deletion was permanent", "warning"))
         self._emit_table("Removal result", rows)

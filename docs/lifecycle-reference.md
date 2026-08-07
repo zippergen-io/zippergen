@@ -10,7 +10,7 @@ question. For explanation and examples, see the manual.
 | `specification.md` | you, or `workflow refine-spec` | yes | what the workflow should do |
 | `workflow.py` (any name) | `workflow implement`, or you | yes | the implementation |
 | `zippergen.toml` | `project init`, `model setup`, `connector setup` | yes | entry point, specification file, shared settings |
-| `zippergen.lock` | `workflow implement` only | yes | which specification version the code came from |
+| `zippergen.lock` | `workflow implement` · `workflow adopt` | yes | that this specification and this code correspond |
 | `.zippergen/` | Studio | no | the refinement buffer and other scratch |
 | `ZIPPERGEN_HOME` | Studio | no | keys, endpoints, runs, deployments, trash |
 
@@ -96,6 +96,102 @@ First matching row wins.
 workflow leaves exactly that pair, and writing a specification by hand only to
 regenerate the code would throw away what you imported.
 
+## Runs
+
+A development run is durable. It keeps its own SQLite store, so an interrupted
+run continues rather than starting over.
+
+One run is *current* at a time — the most recent one you started. Every `run`
+subcommand acts on that one. `runs` lists all of them.
+
+A run is in one of five states:
+
+| state | meaning |
+|---|---|
+| `running` | executing now |
+| `waiting` | stopped at a human action, waiting for an answer |
+| `interrupted` | you pressed Ctrl-C |
+| `failed` | a participant raised an error |
+| `done` | finished, with a result |
+
+`running` and `waiting` alternate as the workflow reaches and passes each human
+action. The last three are final for that run — `interrupted` and `failed` can
+be continued with `resume`, `done` cannot.
+
+| command | needs | does |
+|---|---|---|
+| `run` | a workflow that loads · a model for every LLM participant · a connector for every requirement | starts a new run and makes it current |
+| `resume` | a current run that is not `done` | continues it from where it stopped |
+| `runs` | nothing | lists every run, current one marked |
+| `run tasks` | a current run | shows decisions waiting for a person |
+| `run approve` | a current run with a pending decision | answers one |
+| `run trace` | a current run | shows recent events |
+| `run inspect` | a current run | shows where each participant stands |
+
+Models and connectors are probed before a run starts, and a failure stops it
+before any inputs are collected. See *What each machine must supply*.
+
+Only `run` and `resume` change anything. The other five answer questions.
+
+**Why `resume` and not restart.** The store records what already happened, so
+resuming re-enters the workflow at the point it stopped. Work already done is
+not repeated, and an LLM call already made is not paid for twice.
+
+## Deployments
+
+A deployment is an installed copy of one workflow, with its own managed Python
+environment, its own service registration, and its own durable store. A project
+can have several, each with a name.
+
+Preparing and starting are separate. `deploy NAME --no-start` writes everything
+and stops; `deploy NAME` also starts the service.
+
+| state | meaning |
+|---|---|
+| prepared | files written, service not installed |
+| started | service installed and running |
+| stopped | service installed, not running |
+| removed | gone from active use |
+
+| command | needs | does |
+|---|---|---|
+| `deploy NAME` | an implementation that is not `absent` or `stale` · every model and connector reachable | prepares, then starts |
+| `deploy NAME --no-start` | the same, but nothing is probed | prepares only |
+| `deploy start` · `deploy restart` | a prepared deployment · its recorded routes reachable | starts it |
+| `deploy stop` | a started deployment | stops the service, keeps everything |
+| `deploy remove [--purge]` | a deployment | deletes it; see below |
+| `deploy storage compact` | a **stopped** deployment | drops events already past the replay floor |
+| `deploy logs reset` | a deployment | archives the visible log and starts a new one |
+| `deploy show` · `doctor` · `logs` · `trace` · `tasks` · `inspect` · `storage` | a deployment | answer questions, change nothing |
+| `deploy approve` | a pending decision | answers one |
+| `deploy list` | nothing | lists every deployment |
+
+Only `deploy`, `start`, `restart`, `stop`, `remove`, `storage compact`,
+`logs reset`, and `approve` change anything. The rest answer questions.
+
+`deploy storage compact` refuses while the service is running. Compaction reads
+the replay floors, and a running deployment can move them underneath it.
+
+### What removal keeps
+
+`deploy remove` deletes the deployment but keeps what cannot be got back:
+
+| artifact | kept | why |
+|---|---|---|
+| durable store, WAL sidecars | yes | the record of what actually ran |
+| deployment log | yes | the same |
+| profile | yes | says what produced them |
+| secrets | **no** | must not be left behind |
+| managed environment | no | rebuilt by deploying again |
+| source bundles | no | git has the source |
+| service files, run script | no | regenerated |
+
+`deploy remove --purge` keeps nothing, including the store. Use it when the
+history itself should be gone.
+
+What survives lands in `$ZIPPERGEN_HOME/trash/deployments/`, owner-readable
+only. Nothing prunes it, so it is worth looking at occasionally.
+
 ## Git
 
 Studio does not manage branches, remotes or merges. It tracks one fact: **would
@@ -158,8 +254,10 @@ Nothing asks a question that a script cannot answer.
 
 ## Where each command belongs
 
-Studio has 88 commands in six areas. The tables above describe the **workflow**
-area only; the others have their own behaviour and are documented in the manual.
+Studio has 88 commands in six areas. The tables above cover the **workflow**,
+**run**, and **deploy** areas — every part of Studio with real state. The
+`model`, `connector`, and settings commands are configuration, and are
+documented in the manual.
 
 | area | count | what it covers |
 |---|---|---|

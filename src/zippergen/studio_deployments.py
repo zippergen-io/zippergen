@@ -44,6 +44,12 @@ class DeploymentArtifact:
     path: Path
     destination: Path
     kind: str
+    # Whether removal keeps this in the archive. Only what cannot be got back
+    # is kept: the durable store and the log record what actually happened,
+    # and the profile says what produced them. Source lives in git, the
+    # environment and service files are rebuilt by deploying again, and
+    # secrets must not be left behind.
+    retain: bool = False
 
 
 @dataclass(frozen=True)
@@ -95,12 +101,14 @@ def _artifact(
     destination: str,
     *,
     kind: str = "file",
+    retain: bool = False,
 ) -> DeploymentArtifact:
     return DeploymentArtifact(
         label=label,
         path=path.expanduser(),
         destination=Path(destination),
         kind=kind,
+        retain=retain,
     )
 
 
@@ -119,6 +127,7 @@ def deployment_artifacts(
             "Profile",
             _deployment_profile_path(name),
             "profile/deployment.json",
+            retain=True,
         ),
         _artifact(
             "Private secrets",
@@ -183,6 +192,7 @@ def deployment_artifacts(
                     "Durable store" if index == 0 else f"Store sidecar {suffix}",
                     path,
                     f"state/store.sqlite{suffix}",
+                    retain=True,
                 )
             )
     log = profile.get("log")
@@ -192,6 +202,7 @@ def deployment_artifacts(
                 "Deployment log",
                 Path(str(log)),
                 "logs/deployment.log",
+                retain=True,
             )
         )
 
@@ -526,13 +537,43 @@ def compact_deployment_logs(
     )
 
 
+def _discard_unretained(
+    destination: Path,
+    artifacts: Iterable[DeploymentArtifact],
+) -> None:
+    """Delete the staged artifacts that an archive does not keep."""
+
+    for artifact in artifacts:
+        if artifact.retain:
+            continue
+        staged = destination / artifact.destination
+        if staged.is_dir() and not staged.is_symlink():
+            shutil.rmtree(staged)
+        elif staged.exists() or staged.is_symlink():
+            staged.unlink()
+    for directory in sorted(
+        (path for path in destination.rglob("*") if path.is_dir()),
+        key=lambda path: len(path.parts),
+        reverse=True,
+    ):
+        if not any(directory.iterdir()):
+            directory.rmdir()
+
+
 def remove_deployment_artifacts(
     name: str,
     profile: dict[str, object],
     *,
     purge: bool,
 ) -> DeploymentRemovalResult:
-    """Archive or permanently purge a deployment after service unregistration."""
+    """Archive or permanently purge a deployment after service unregistration.
+
+    Every artifact is moved into a staging directory first so that a failure
+    part way through can be rolled back. What survives afterwards is only what
+    cannot be got back another way: the durable store, the log, and the
+    profile. Secrets, the managed environment, the source bundles, and the
+    service files are deleted even when the removal is recoverable.
+    """
 
     artifacts = present_deployment_artifacts(name, profile)
     destination = _unique_removal_directory(name, purging=purge)
@@ -587,6 +628,14 @@ def remove_deployment_artifacts(
             ) from exc
         archive = None
     else:
+        try:
+            _discard_unretained(destination, artifacts)
+        except OSError as exc:
+            raise DeploymentRemovalError(
+                "Deployment artifacts were isolated from active use, but "
+                f"discarding the rebuildable ones failed at {destination}: "
+                f"{exc}"
+            ) from exc
         archive = destination
     return DeploymentRemovalResult(
         name=name,

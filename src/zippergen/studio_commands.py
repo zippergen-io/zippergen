@@ -430,7 +430,7 @@ COMMANDS: tuple[CommandSpec, ...] = (
     CommandSpec(
         ("deploy", "remove"),
         "deploy remove [NAME] [--purge] [--yes]",
-        "archive or permanently purge a deployment",
+        "remove a deployment, keeping its durable store unless purged",
         "destructive",
     ),
     CommandSpec(
