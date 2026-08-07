@@ -41,6 +41,9 @@ worked out from the files, never stored as a flag.
 | **workflow implement** | present | b | absent |
 | → | present | `current` | ↓ |
 | | | | |
+| **workflow adopt** | b | `external` | absent |
+| → | present ⁵ | `current` | ↓ |
+| | | | |
 | **workflow import** | b | b ³ | b |
 | → | ↓ | `external` | ↓ |
 | | | | |
@@ -62,18 +65,36 @@ replaces it and asks first.
 generated from the specification. `stale` and `absent` are blocked. The rule is:
 block when something is known to be wrong, warn when it is only unknown.
 
-**One thing only.** Only `workflow implement` produces `current`. Editing the
-specification can only move a generated implementation away from it.
+⁵ Written from the code by a coding assistant, then opened for you to review
+before the pair is recorded. Refuses unless the implementation is `external`,
+so it can never overwrite a specification you are deliberately working ahead
+of.
+
+**Two ways in, one meaning.** `current` means the specification and the code
+correspond — not that one produced the other. `workflow implement` makes the
+code follow the specification; `workflow adopt` makes the specification
+describe the code. Editing the specification can only move the pair apart.
+
+**Not a round trip.** Both directions are lossy: adopting and then
+re-implementing gives you different code. Adopt exists so imported code can
+enter the refinement loop, not so code and specification can be regenerated
+from each other.
 
 ## What to do next
 
+First matching row wins.
+
 | when | next |
 |---|---|
-| no specification | `workflow edit-spec` |
 | a refinement is waiting | `workflow refine-spec` |
-| implementation is `external` | `workflow edit-spec` · `workflow implement` |
+| implementation is `external` | `workflow adopt` |
+| no specification | `workflow edit-spec` |
 | implementation is `absent` or `stale` | `workflow implement` |
 | otherwise | `run` · `deploy` |
+
+`external` is checked before a missing specification on purpose. Importing a
+workflow leaves exactly that pair, and writing a specification by hand only to
+regenerate the code would throw away what you imported.
 
 ## Git
 
@@ -137,13 +158,13 @@ Nothing asks a question that a script cannot answer.
 
 ## Where each command belongs
 
-Studio has 87 commands in six areas. The tables above describe the **workflow**
+Studio has 88 commands in six areas. The tables above describe the **workflow**
 area only; the others have their own behaviour and are documented in the manual.
 
 | area | count | what it covers |
 |---|---|---|
 | `deploy` | 16 | bundles, services, durable state, storage, logs |
-| `workflow` | 14 | specification, implementation, views, validation |
+| `workflow` | 15 | specification, implementation, views, validation |
 | `model` | 9 | providers, named configurations, assignments |
 | `connector` | 9 | provider credentials, resources, human-action routes |
 | `run` · `resume` · `runs` | 7 | durable development execution |
@@ -154,7 +175,7 @@ question. A workflow command that does neither should probably not exist.
 
 | kind | commands |
 |---|---|
-| changes state | `edit-spec`, `edit-refinement`, `refine-spec`, `implement`, `import` |
+| changes state | `edit-spec`, `edit-refinement`, `refine-spec`, `adopt`, `implement`, `import` |
 | answers a question | `validate`, `show`, `diff`, `status`, `list`, `files`, `history`, `path` |
 
 Commands that answer a question change nothing, so they have no "after" row.

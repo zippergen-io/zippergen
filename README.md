@@ -301,8 +301,11 @@ current specification. Studio derives four states from committed project files:
 `absent`, `stale`, `current`, or `external`. A fresh clone derives the same
 state without private Studio data. Deployment blocks `absent` and `stale`.
 It warns and proceeds for `external`, because provenance is unknown rather
-than known to disagree. `workflow implement` remains the way to produce
-`current`.
+than known to disagree. Two commands produce `current`, from opposite
+directions: `workflow implement` makes the code follow the specification, and
+`workflow adopt` writes a specification for code Studio did not generate,
+leaving every implementation file untouched. `current` means the two
+correspond, not that one produced the other.
 
 In an interactive Git project, `workflow implement` then offers to commit the
 specification, implementation files, `zippergen.lock`, and a manifest that it

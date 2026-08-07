@@ -319,7 +319,7 @@ def _is_allowed_natural_plan_command(parts: list[str]) -> bool:
             return len(args) <= 2
         if action in {"edit-spec", "edit-refinement"}:
             return True
-        if action == "refine-spec":
+        if action in {"refine-spec", "adopt"}:
             return len(args) <= 2
         if action == "implement":
             return all(
@@ -1199,6 +1199,11 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
                     ("codex", "rewrite the specification with Codex"),
                     ("claude", "rewrite the specification with Claude Code"),
                 ]
+            if action == "adopt":
+                return [
+                    ("codex", "describe the implementation with Codex"),
+                    ("claude", "describe the implementation with Claude Code"),
+                ]
             if action == "implement":
                 if not rest:
                     return [
@@ -1670,12 +1675,15 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
     ) -> str:
         """Return the first matching row of the normative Next table."""
 
-        if not specification_present:
-            return "workflow edit-spec"
         if refinement_present:
             return "workflow refine-spec"
+        # External code is checked before a missing specification: importing a
+        # workflow leaves exactly that pair, and writing a specification by
+        # hand only to regenerate the code would discard what was imported.
         if implementation == "external":
-            return "workflow edit-spec · workflow implement"
+            return "workflow adopt"
+        if not specification_present:
+            return "workflow edit-spec"
         if implementation in {"absent", "stale"}:
             return "workflow implement"
         return "run · deploy"
@@ -1795,6 +1803,9 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
         if action == "refine-spec":
             self.refine_specification(rest)
             return
+        if action == "adopt":
+            self.adopt_implementation(rest)
+            return
         if action == "list":
             if rest:
                 raise SystemExit("Use workflow list.")
@@ -1847,8 +1858,9 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
             self.manage_spec(["path"])
             return
         raise SystemExit(
-            "Use workflow edit-spec, edit-refinement, refine-spec, list, import, "
-            "files, show, diff, status, implement, validate, history, or path."
+            "Use workflow edit-spec, edit-refinement, refine-spec, adopt, list, "
+            "import, files, show, diff, status, implement, validate, history, "
+            "or path."
         )
 
     def studio_doctor(self) -> None:
@@ -3670,7 +3682,7 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
             self._emit_table(
                 "Specification updated",
                 [
-                    ("File", target, "success"),
+                    ("File", self._displayed_path(target), "success"),
                     (
                         "Implementation",
                         self.workspace.implementation_state()["state"],
@@ -3935,7 +3947,7 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
                     self._parse_codex_output(completed.stdout, completed.stderr)
                 )
             if completed.returncode != 0:
-                detail = (completed.stderr or completed.stdout).strip()
+                detail = (completed.stderr or completed.stdout or "").strip()
                 suffix = f": {detail[:300]}" if detail else ""
                 raise SystemExit(
                     f"{tool} exited with status {completed.returncode}{suffix}; "
@@ -3978,6 +3990,271 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
                 ),
             ],
         )
+
+    def _adopted_workflow_views(self) -> str:
+        """Render the deterministic views an adopted workflow is described from.
+
+        The assistant reads normalized structure rather than raw source, so
+        formatting and naming choices in the file cannot steer the wording of
+        the specification.
+        """
+
+        from zippergen.syntax import _ordered_workflow_lifelines
+        from zippergen.view import ViewOptions, render_workflow
+
+        _current, workflow, module = self._current_context()
+        sections = [
+            (
+                "Global protocol",
+                render_workflow(
+                    workflow, module, options=ViewOptions(detail="full")
+                ),
+            )
+        ]
+        for lifeline in _ordered_workflow_lifelines(workflow):
+            name = lifeline.name
+            sections.append(
+                (
+                    f"Local projection for {name}",
+                    render_workflow(
+                        workflow,
+                        module,
+                        options=ViewOptions(detail="full", agent=name),
+                    ),
+                )
+            )
+        return "\n\n".join(
+            f"## {title}\n\n```python\n{body.rstrip()}\n```"
+            for title, body in sections
+        )
+
+    def adopt_implementation(self, args: list[str]) -> None:
+        """Describe an external implementation so the lifecycle can continue.
+
+        `workflow implement` only goes specification to code. Without this,
+        code that Studio did not generate can be deployed but never refined,
+        because there is no specification to refine. Adopting writes one from
+        the code and records the pair, which makes the state `current` without
+        changing a single implementation file.
+        """
+
+        if len(args) > 1 or any(
+            value.casefold() not in {"codex", "claude"} for value in args
+        ):
+            raise SystemExit("Use workflow adopt [codex|claude].")
+        state = self.workspace.implementation_state()
+        implementation = str(state["state"])
+        if implementation != "external":
+            reason = {
+                "absent": (
+                    "There is no implementation to adopt. Use "
+                    "'workflow import PATH.py' or 'workflow implement'."
+                ),
+                "current": (
+                    "The specification already describes this implementation."
+                ),
+                "stale": (
+                    "The specification is deliberately ahead of the code. "
+                    "Adopting would discard that intent; use "
+                    "'workflow implement' instead."
+                ),
+            }[implementation]
+            raise SystemExit(reason)
+        if self.workspace.refinement_buffer() is not None:
+            raise SystemExit(
+                "A refinement is waiting. Apply or discard it with "
+                "'workflow refine-spec' before adopting."
+            )
+        existing = self.workspace.specification()
+        if existing is not None and not self._confirm_action(
+            "Replace the current specification with one written from the "
+            "code? [y/n] ",
+            cancel_message="Adoption cancelled; nothing was changed.",
+        ):
+            return
+
+        views = self._adopted_workflow_views()
+        assistant = (
+            args[0].casefold()
+            if args
+            else str(self._global_settings()["assistant"])
+        )
+        executable = shutil.which(assistant)
+        tool = "Codex CLI" if assistant == "codex" else "Claude Code"
+        if executable is None:
+            raise SystemExit(
+                f"{tool} was not found. Install and authenticate it, then run "
+                "workflow adopt again; nothing has been changed."
+            )
+        with tempfile.TemporaryDirectory(prefix="zippergen-adopt-") as raw:
+            isolated = Path(raw)
+            (isolated / "workflow-views.md").write_text(
+                f"# Workflow views\n\n{views}\n", encoding="utf-8"
+            )
+            isolated_specification = isolated / "specification.md"
+            isolated_specification.write_text("", encoding="utf-8")
+            (isolated / "TASK.md").write_text(
+                "# Write a specification for an existing workflow\n\n"
+                "This isolated directory contains deterministic views of a "
+                "ZipperGen workflow in workflow-views.md: the global protocol "
+                "and one local projection per participant.\n\n"
+                "Write specification.md so it describes what this workflow "
+                "does, in prose, as intent rather than as a transcript of the "
+                "code. State the purpose, the participants and their "
+                "responsibilities, the order of exchanges, every decision and "
+                "its condition, and any external resource the workflow uses. "
+                "Do not invent requirements the views do not support. Where "
+                "the intent behind a step is genuinely unclear from the "
+                "structure, describe the observable behaviour instead of "
+                "guessing at a motive.\n\n"
+                "Edit specification.md only. Do not create implementation "
+                "code, tests, configuration, or additional files.\n",
+                encoding="utf-8",
+            )
+            instruction = (
+                "Read TASK.md and write the specification. Edit "
+                "specification.md directly and do nothing else."
+            )
+            if assistant == "codex":
+                command = [
+                    executable,
+                    "exec",
+                    "--json",
+                    "--strict-config",
+                    "--skip-git-repo-check",
+                    "--cd",
+                    str(isolated),
+                    "--sandbox",
+                    "workspace-write",
+                    "--ignore-user-config",
+                    "--config",
+                    "mcp_servers={}",
+                    "--config",
+                    'web_search="disabled"',
+                    "--config",
+                    "agents.enabled=false",
+                    "--config",
+                    "sandbox_workspace_write.network_access=false",
+                    "-",
+                ]
+                stdin = instruction
+            else:
+                command = [
+                    executable,
+                    "--print",
+                    "--permission-mode",
+                    "acceptEdits",
+                    "--tools",
+                    "Read,Edit,Write",
+                    "--safe-mode",
+                    "--no-chrome",
+                    "--disable-slash-commands",
+                    "--strict-mcp-config",
+                    instruction,
+                ]
+                stdin = None
+            self._emit_table(
+                "Adopt implementation",
+                [
+                    ("Tool", tool, None),
+                    ("Input", "rendered workflow views only", "success"),
+                    (
+                        "Implementation",
+                        "read through views; never edited",
+                        "success",
+                    ),
+                ],
+            )
+            try:
+                completed = subprocess.run(
+                    command,
+                    cwd=isolated,
+                    input=stdin,
+                    text=True,
+                    capture_output=True,
+                    check=False,
+                )
+            except OSError as exc:
+                raise SystemExit(
+                    f"Could not start {tool}: {exc}; nothing has been changed."
+                ) from exc
+            if assistant == "codex":
+                self._emit_codex_output(
+                    self._parse_codex_output(completed.stdout, completed.stderr)
+                )
+            if completed.returncode != 0:
+                detail = (completed.stderr or completed.stdout or "").strip()
+                suffix = f": {detail[:300]}" if detail else ""
+                raise SystemExit(
+                    f"{tool} exited with status {completed.returncode}{suffix}; "
+                    "nothing has been changed."
+                )
+            try:
+                written = isolated_specification.read_text(
+                    encoding="utf-8"
+                ).strip()
+            except (OSError, UnicodeDecodeError) as exc:
+                raise SystemExit(
+                    f"Could not read the written specification: {exc}; "
+                    "nothing has been changed."
+                ) from exc
+            if not written:
+                raise SystemExit(
+                    "The assistant returned an empty specification; nothing "
+                    "has been changed."
+                )
+
+        self.workspace.save_specification(written)
+        # The specification is a description of intent inferred from
+        # structure, so it is reviewed before it becomes the source of truth.
+        self._launch_editor(
+            self.workspace.specification_path,
+            title="Review the written specification",
+            return_hint="save and close the editor to record the adoption",
+        )
+        reviewed = self.workspace.specification()
+        if not reviewed:
+            raise SystemExit(
+                "The specification is empty after review. Use "
+                "'workflow edit-spec' to write one, or 'workflow adopt' again."
+            )
+        files = [path for path, _role in self._workflow_file_records()]
+        self.workspace.write_implementation_lock(files)
+        adopted = self.workspace.implementation_state()
+        self._emit_table(
+            "Implementation adopted",
+            [
+                (
+                    "Specification",
+                    self._displayed_path(self.workspace.specification_path),
+                    "success",
+                ),
+                ("Implementation", "unchanged", "success"),
+                ("Files", self._implementation_files_summary(tuple(files)), None),
+                ("State", str(adopted["state"]), "success"),
+                (
+                    "Next",
+                    self._workflow_next_action(
+                        specification_present=True,
+                        refinement_present=False,
+                        implementation=str(adopted["state"]),
+                    ),
+                    None,
+                ),
+            ],
+        )
+
+    def _displayed_path(self, target: Path) -> object:
+        """Show a project file by its short path inside the project.
+
+        Absolute paths are long enough to be wrapped mid-name by the table
+        renderer, which makes them unreadable and impossible to copy.
+        """
+
+        try:
+            return target.relative_to(self.workspace.root).as_posix()
+        except ValueError:
+            return target
 
     def _project_path(self, value: str | Path, *, label: str = "File") -> Path:
         entered = Path(value).expanduser()
@@ -4315,7 +4592,11 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
             [
                 ("Name", manifest["name"], None),
                 ("Manifest", self.workspace.manifest_path, None),
-                ("Specification", self.workspace.specification_path, None),
+                (
+                    "Specification",
+                    self._displayed_path(self.workspace.specification_path),
+                    None,
+                ),
                 (
                     "Workflow",
                     manifest.get("workflow_entry") or "not configured",
@@ -4944,7 +5225,11 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
                 [
                     (
                         "Status",
-                        "none; use workflow implement",
+                        (
+                            "none; this implementation was not generated here"
+                            if implementation_state == "external"
+                            else "none; use workflow implement"
+                        ),
                         "warning",
                     ),
                     ("Implementation", implementation_state, None),

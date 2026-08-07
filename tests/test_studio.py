@@ -241,6 +241,17 @@ def sample() -> str:
 """
 
 
+def _unwrapped(output: list[str]) -> str:
+    """Join emitted lines with wrapping undone.
+
+    Table cells wrap at a fixed width and indent the continuation, so a long
+    value such as a path is split across lines. Tests that look for such a
+    value compare against this instead of the raw output.
+    """
+
+    return "".join(line.strip() for line in output)
+
+
 def _studio(tmp_path, responses=(), secret_responses=()):
     root = tmp_path / "project"
     root.mkdir()
@@ -3930,9 +3941,10 @@ def test_studio_deploy_remove_archives_the_deployment_and_clears_selection(
         "Deployment removed from active use: reviewed-answer" in line
         for line in output
     )
-    rendered = "\n".join(output).replace("\n", "")
-    assert "Archive" in rendered
-    assert archives[0].name in rendered
+    assert "Archive" in "\n".join(output)
+    # The renderer wraps long values and indents the continuation, so the
+    # archive name is compared against the unwrapped text.
+    assert archives[0].name in _unwrapped(output)
 
 
 def test_studio_deploy_remove_purge_requires_a_name_and_deletes_permanently(
@@ -6495,3 +6507,115 @@ def test_studio_starts_a_deployment_whose_recorded_routes_are_reachable(
 
     assert probed == ["approvals"]
     assert calls == [["start", "sample-test", "--enable"]]
+
+
+def _make_external_implementation(workspace) -> None:
+    """Select a workflow Studio did not generate, with no lock recorded."""
+
+    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    assert workspace.implementation_state()["state"] == "external"
+
+
+def test_studio_adopt_writes_a_spec_and_leaves_the_code_untouched(
+    tmp_path,
+    monkeypatch,
+):
+    studio, workspace, output = _studio(tmp_path)
+    _make_external_implementation(workspace)
+    before = (workspace.root / "workflow.py").read_bytes()
+    monkeypatch.setattr("zippergen.studio.shutil.which", lambda name: "/bin/codex")
+    monkeypatch.setattr(studio, "_launch_editor", lambda *a, **k: None)
+    seen: dict[str, str] = {}
+
+    def fake_run(arguments, *, cwd, check, **kwargs):
+        # The assistant sees rendered views, never the project itself.
+        assert cwd != workspace.root
+        assert not (cwd / "workflow.py").exists()
+        seen["views"] = (cwd / "workflow-views.md").read_text()
+        (cwd / "specification.md").write_text(
+            "Writer echoes the request back to the User.\n", encoding="utf-8"
+        )
+        return subprocess.CompletedProcess(arguments, 0)
+
+    monkeypatch.setattr("zippergen.studio.subprocess.run", fake_run)
+    output.clear()
+    studio.execute("workflow adopt codex")
+
+    assert workspace.implementation_state()["state"] == "current"
+    assert (workspace.root / "workflow.py").read_bytes() == before
+    assert workspace.specification().startswith("Writer echoes")
+    assert "Global protocol" in seen["views"]
+    assert "Local projection for Writer" in seen["views"]
+    assert any("unchanged" in line for line in output)
+
+
+def test_studio_adopt_refuses_unless_the_implementation_is_external(
+    tmp_path,
+    monkeypatch,
+):
+    studio, workspace, _output = _studio(tmp_path)
+    monkeypatch.setattr("zippergen.studio.shutil.which", lambda name: "/bin/codex")
+    started: list[object] = []
+    monkeypatch.setattr(
+        "zippergen.studio.subprocess.run",
+        lambda *a, **k: started.append(a) or subprocess.CompletedProcess([], 0),
+    )
+
+    with pytest.raises(SystemExit, match="no implementation to adopt"):
+        studio.execute("workflow adopt")
+
+    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    _mark_implementation_current(workspace)
+    with pytest.raises(SystemExit, match="already describes"):
+        studio.execute("workflow adopt")
+
+    workspace.save_specification("A different intention entirely.")
+    assert workspace.implementation_state()["state"] == "stale"
+    with pytest.raises(SystemExit, match="deliberately ahead"):
+        studio.execute("workflow adopt")
+
+    assert started == []
+
+
+def test_studio_adopt_keeps_everything_when_the_assistant_fails(
+    tmp_path,
+    monkeypatch,
+):
+    studio, workspace, _output = _studio(tmp_path)
+    _make_external_implementation(workspace)
+    monkeypatch.setattr("zippergen.studio.shutil.which", lambda name: "/bin/codex")
+    monkeypatch.setattr(
+        "zippergen.studio.subprocess.run",
+        lambda arguments, **kwargs: subprocess.CompletedProcess(arguments, 3),
+    )
+
+    with pytest.raises(SystemExit, match="exited with status 3"):
+        studio.execute("workflow adopt codex")
+
+    assert workspace.specification() is None
+    assert workspace.implementation_state()["state"] == "external"
+
+
+def test_studio_adopt_rejects_an_empty_specification(tmp_path, monkeypatch):
+    studio, workspace, _output = _studio(tmp_path)
+    _make_external_implementation(workspace)
+    monkeypatch.setattr("zippergen.studio.shutil.which", lambda name: "/bin/codex")
+    monkeypatch.setattr(
+        "zippergen.studio.subprocess.run",
+        lambda arguments, **kwargs: subprocess.CompletedProcess(arguments, 0),
+    )
+
+    with pytest.raises(SystemExit, match="empty specification"):
+        studio.execute("workflow adopt codex")
+
+    assert workspace.specification() is None
+    assert workspace.implementation_state()["state"] == "external"
+
+
+def test_studio_external_workflow_is_pointed_at_adopt(tmp_path):
+    studio, workspace, output = _studio(tmp_path)
+    _make_external_implementation(workspace)
+
+    studio.execute("workflow status")
+
+    assert any("workflow adopt" in line for line in output)

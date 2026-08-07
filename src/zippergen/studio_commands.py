@@ -125,6 +125,12 @@ COMMANDS: tuple[CommandSpec, ...] = (
         "execution",
     ),
     CommandSpec(
+        ("workflow", "adopt"),
+        "workflow adopt [codex|claude]",
+        "write a specification for an implementation Studio did not generate",
+        "execution",
+    ),
+    CommandSpec(
         ("workflow", "list"),
         "workflow list",
         "list discovered workflow entry points",
@@ -612,6 +618,7 @@ WORKFLOW_COMMAND_MAP: dict[str, frozenset[tuple[str, ...]]] = {
             ("workflow", "edit-spec"),
             ("workflow", "edit-refinement"),
             ("workflow", "refine-spec"),
+            ("workflow", "adopt"),
             ("workflow", "implement"),
             ("workflow", "import"),
         }
