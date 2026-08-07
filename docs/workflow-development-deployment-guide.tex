@@ -1143,16 +1143,16 @@ API-key values are never displayed or written to the project.
 
 Model configurations
 --------------------
-  Name                   Provider    Model                        Status
-  ----                   --------    -----                        ------
-  mock                   mock        built in                     ... available
+  Name  Provider  Model     Idle release
+  ----  --------  -----     ------------
+  mock  mock      built in  not applicable
 
 Model assignments
 -----------------
-  Participant  Configuration   Model  LLM actions                 Last check
-  -----------  -------------   -----  --------------------------  ----------
-  Writer       mock (default)  mock   draft_reply, revise_reply   ... built in
-  Reviewer     mock (default)  mock   assess_draft                ... built in
+  Participant  LLM action    Configuration  Model  Source
+  -----------  ------------  -------------  -----  -------
+  Writer       draft_reply   mock           mock   default
+  Reviewer     assess_draft  mock           mock   default
 
 Execution
 ---------
@@ -1162,11 +1162,12 @@ Execution
 Generated action names may differ, but Writer and Reviewer should appear. The
 non-secret assignments are stored in the versioned project manifest and
 therefore survive both a reboot and a clone. The
-built-in \texttt{mock} configuration needs no provider connection and is
-already checked. Plain \texttt{model assignments} uses saved check state and
-performs no network request. Enter \texttt{model assignments check} to check
-only the effective configurations shown in this table; shared configurations
-are checked once.
+built-in \texttt{mock} configuration needs no provider connection. Plain
+\texttt{model assignments} answers only ``what is assigned'', so it is
+instant and works offline. Enter \texttt{model assignments check} to reach
+the providers behind the configurations in this table; shared configurations
+are checked once. Checks are always live and their results are never stored,
+so a listing can never show you a stale verdict.
 
 \section{Durable execution, recovery, and stores}
 
@@ -1384,8 +1385,9 @@ Enter \texttt{model setup} for a guided pass through all three layers.
 
 The provider and exact model identifier are project decisions. Named model
 configurations and participant or action assignments are therefore written to
-\path{zippergen.toml}. A local endpoint, idle-release policy, cached connection
-checks, and API keys describe one machine and stay in private site state. A
+\path{zippergen.toml}. A local endpoint, idle-release policy, and API keys
+describe one machine and stay in private site state. Check results are never
+stored anywhere, so there is nothing about them to keep in step. A
 site assignment can override the project route without adding another
 precedence system:
 
@@ -1408,17 +1410,16 @@ and displays provider connections, named configurations, and workflow
 assignments as separate tables.
 
 \texttt{model config check} checks every saved configuration;
-\texttt{model config check NAME} checks one. It records \texttt{available},
-\texttt{unverified}, or \texttt{unavailable}, but never changes which
-participant uses which model. A green result confirms that the provider
-accepted the configured key and exact model identifier at check time. A yellow
-result means connectivity prevented a conclusive answer.
-\texttt{model assignments} displays the effective route of every LLM action,
-its source, and its cached last-check state. It never contacts a provider.
-\texttt{model assignments check} performs a fresh, targeted check of only
-those effective configurations, deduplicating configurations shared by
-several participants. \texttt{run} repeats that targeted check as a mandatory
-preflight. For a local
+\texttt{model config check NAME} checks one. It reports the result and
+stores nothing, and it never changes which participant uses which model. A
+green result confirms that the provider accepted the configured key and exact
+model identifier at that moment. A yellow result means connectivity prevented
+a conclusive answer, which counts as not passing.
+\texttt{model assignments} displays the effective route of every LLM action
+and its source. It never contacts a provider, so it is instant and works
+offline. \texttt{model assignments check} probes only those effective
+configurations, deduplicating configurations shared by several participants.
+\texttt{run} repeats that targeted check as a mandatory preflight. For a local
 OpenAI-compatible or Ollama endpoint,
 \texttt{model provider configure local} asks for the endpoint (normally
 \texttt{http://127.0.0.1:11434/v1}). A later
@@ -1873,7 +1874,7 @@ model provider configure NAME # configure an API key or local endpoint
 model provider check [NAME] # verify provider connectivity
 model config create [NAME] # name one provider/model pair
 model config check [NAME] # verify exact model availability
-model assignments # show routes and cached last-check state
+model assignments # show routes; never contacts a provider
 model assignments check # check only configurations used here
 model assign PARTICIPANT NAME # route a participant to a configuration
 model assign PARTICIPANT.ACTION NAME # override one LLM action
@@ -2270,8 +2271,10 @@ selected provider key is already configured, Studio first shows only its
 environment-variable name and asks whether to reuse it; accepting avoids
 another secret-entry prompt while retaining a separate deployment copy. The
 \texttt{--no-start} flag prepares the bundle and deployment environment without
-installing or starting a user service. After a successful preparation, Studio
-remembers that name. Inspect it first:
+installing or starting a user service. Preparing resolves every model and
+connector route but reaches none of them, because a prepared deployment may be
+started days later. Starting one probes them all and refuses if any is
+unreachable. After a successful preparation, Studio remembers that name. Inspect it first:
 
 \begin{lstlisting}[style=shell]
 deploy doctor
@@ -2446,8 +2449,9 @@ workflow validate
 workflow show
 \end{lstlisting}
 
-Only then supply the reported site facts, run the model and connector checks,
-and continue with \texttt{deploy}.
+Only then supply the reported site facts and continue with \texttt{deploy}.
+Starting a deployment probes every model and connector it will use and stops
+if one is unreachable, so a separate round of checks first is optional.
 
 \begin{notebox}{The same Studio, different commands}
 Studio behaves identically on both machines. Authoring commands such as

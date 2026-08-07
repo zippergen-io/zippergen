@@ -315,11 +315,12 @@ silent and behaves as before.
 Project configuration travels with the workflow. Named model and connector
 configurations, participant and action assignments, and connector bindings are
 written to `zippergen.toml`. Machine-specific facts stay private on each site.
-These include local model endpoints, idle-release policy, cached health checks,
-API keys, bot tokens, and Google authorization. The effective value is one
-lookup: a private site override wins when present, otherwise Studio uses the
-project value. For example, keep the real model assignment in the project and
-use `model assign Writer mock --site` on a laptop. The `project` view lists only
+These include local model endpoints, idle-release policy, API keys, bot tokens,
+and Google authorization. Health checks are always live and are never stored,
+so there is nothing about them to keep in step between machines. The effective
+value is one lookup: a private site override wins when present, otherwise
+Studio uses the project value. For example, keep the real model assignment in
+the project and use `model assign Writer mock --site` on a laptop. The `project` view lists only
 the site facts and secrets still missing after a fresh clone.
 
 For a described specification change, use `workflow edit-refinement` and then

@@ -404,10 +404,11 @@ A green validation result means the deterministic checks passed; it is not a
 claim that the prompts are useful or the application intent is correct. The
 built-in mock model needs no account, network connection, or API key.
 \texttt{model assignments} should list Writer and Reviewer because they
-contain LLM actions. Its \emph{Last check} column is cached: displaying the
+contain LLM actions. It answers only ``what is assigned'', so displaying the
 table never contacts a provider. Enter \texttt{model assignments check} when
-you want a fresh check of precisely the configurations used by this workflow.
-If both participants share a configuration, Studio checks it only once.
+you want to reach precisely the configurations used by this workflow. If both
+participants share a configuration, Studio checks it only once. Checks are
+always live and are never saved, so nothing you see can be out of date.
 When a named configuration uses local Ollama, Studio also asks for an
 idle-release time. The default releases the model after five idle minutes.
 The workflow keeps waiting durably, and Ollama loads the model again at the
@@ -614,7 +615,9 @@ creates a separate timestamped
 deployment bundle and managed Python environment, initializes the
 deployment's stable SQLite store, and remembers the deployment name. The
 \texttt{--no-start} flag deliberately leaves the
-service stopped. \texttt{deploy doctor} runs detailed readiness checks.
+service stopped, so Studio resolves the model and connector routes without
+reaching them; \texttt{deploy} and \texttt{deploy start} probe them instead.
+\texttt{deploy doctor} runs detailed readiness checks.
 \texttt{deploy show} separates the immutable bundle, supervised service,
 workflow run, and SQLite store. Its \texttt{Boot} row states whether the
 service starts automatically at server boot, after user login, or only after
