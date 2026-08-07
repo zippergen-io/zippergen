@@ -8305,11 +8305,24 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
                     f"Connector assignment references missing configuration "
                     f"{configuration_name}."
                 )
-            if configuration.get("check_status") != "available":
+            # Block on a check that failed, warn on one that never ran.  The
+            # status is a per-machine field, so a clone starts with no status
+            # at all; refusing there would demand a check for every connector
+            # before a correct project could deploy.  A missing credential is
+            # caught below and does still block.
+            check_status = configuration.get("check_status")
+            if check_status in {"failed", "unavailable"}:
                 raise SystemExit(
-                    f"Connector {configuration_name} has not passed its latest "
+                    f"Connector {configuration_name} did not pass its latest "
                     f"check. Use 'connector config check "
-                    f"{configuration_name}'."
+                    f"{configuration_name}' after fixing the provider or "
+                    "destination."
+                )
+            if check_status != "available":
+                self._warning(
+                    f"Connector {configuration_name} has not been checked on "
+                    f"this machine. Use 'connector config check "
+                    f"{configuration_name}' to confirm it is reachable."
                 )
             provider = str(
                 configuration.get("provider")

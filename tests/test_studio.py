@@ -6337,3 +6337,88 @@ def test_studio_blocks_deploy_when_a_connector_is_unbound(tmp_path, monkeypatch)
 
     assert "human-approval" in str(error.value)
     assert calls == []
+
+
+def _bind_telegram_connector(workspace, check_status: str | None) -> None:
+    """Bind the workflow's connector requirement to a telegram configuration."""
+
+    configuration = {
+        "provider": "telegram",
+        "kind": "telegram",
+        "chat_id": "42",
+    }
+    if check_status is not None:
+        configuration["check_status"] = check_status
+        configuration["check_detail"] = "recorded by the test"
+        configuration["checked_at"] = "2026-01-01T00:00:00+0000"
+    workspace.save_connector_configuration("approvals", configuration)
+    workspace.bind_connector(
+        "workflow.py:sample", "human-approval", "approvals"
+    )
+
+
+def test_studio_blocks_deploy_when_a_connector_check_failed(
+    tmp_path,
+    monkeypatch,
+):
+    studio, workspace, _output = _studio(tmp_path)
+    (workspace.root / "workflow.py").write_text(CONNECTOR_SOURCE)
+    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    _mark_implementation_current(workspace)
+    _bind_telegram_connector(workspace, "failed")
+    workspace.save_connector_provider_secret("telegram", "bot_token", "t0ken")
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        "zippergen.serve.main",
+        lambda arguments: calls.append(arguments) or 0,
+    )
+
+    with pytest.raises(SystemExit) as error:
+        studio.deploy_workflow(["failed-check-deployment", "--no-start"])
+
+    assert "did not pass its latest check" in str(error.value)
+    assert calls == []
+
+
+def test_studio_warns_but_deploys_when_a_connector_was_never_checked(
+    tmp_path,
+    monkeypatch,
+):
+    studio, workspace, output = _studio(tmp_path)
+    (workspace.root / "workflow.py").write_text(CONNECTOR_SOURCE)
+    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    _mark_implementation_current(workspace)
+    _bind_telegram_connector(workspace, None)
+    workspace.save_connector_provider_secret("telegram", "bot_token", "t0ken")
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        "zippergen.serve.main",
+        lambda arguments: calls.append(arguments) or 0,
+    )
+
+    studio.deploy_workflow(["unchecked-deployment", "--no-start"])
+
+    assert len(calls) == 1
+    assert any("has not been checked on this machine" in line for line in output)
+
+
+def test_studio_blocks_deploy_when_an_unchecked_connector_has_no_token(
+    tmp_path,
+    monkeypatch,
+):
+    studio, workspace, _output = _studio(tmp_path)
+    (workspace.root / "workflow.py").write_text(CONNECTOR_SOURCE)
+    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    _mark_implementation_current(workspace)
+    _bind_telegram_connector(workspace, None)
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        "zippergen.serve.main",
+        lambda arguments: calls.append(arguments) or 0,
+    )
+
+    with pytest.raises(SystemExit) as error:
+        studio.deploy_workflow(["tokenless-deployment", "--no-start"])
+
+    assert "Telegram provider token is missing" in str(error.value)
+    assert calls == []

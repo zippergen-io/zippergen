@@ -103,7 +103,8 @@ what is missing.
 | `run` | a connector configuration for every connector requirement | resolved, then the service is reached |
 | `run` | the keys those need | read where they are used |
 | `deploy` | the same models and connectors | resolved only |
-| `deploy` | each connector has passed `connector config check` | the stored result is read |
+| `deploy` | no connector has a *failed* check | the stored result is read |
+| `deploy` | the key each connector needs | read from this machine |
 | `deploy` | an implementation that is not `absent` or `stale` | worked out from the files |
 | `deploy` | a coding assistant, if the workflow has `@assistant` actions | looked up on `PATH` |
 
@@ -111,7 +112,11 @@ what is missing.
 is started, and a local model server may come up beside it, so an endpoint that
 is unreachable right now is not a reason to refuse. What must hold is that the
 machine is configured: every participant has a model, every requirement has a
-connector, and the assistant is installed.
+connector with its key, and the assistant is installed.
+
+Check results do not travel between machines, so a fresh clone has none. A
+connector that has never been checked here is reported and deploys; one whose
+check *failed* is blocked. Known wrong blocks, merely unknown warns.
 
 `project` lists what is still missing on this machine.
 
