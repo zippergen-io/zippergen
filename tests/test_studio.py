@@ -3108,7 +3108,6 @@ def test_studio_configures_checks_and_binds_a_telegram_connector(
 
     configuration = workspace.connector_configurations()["review-telegram"]
     assert configuration["provider"] == "telegram"
-    assert configuration["check_status"] == "available"
     assert workspace.connector_provider_secret(
         "telegram", "bot_token"
     ) == "private-bot-token"
@@ -3196,7 +3195,6 @@ def test_studio_guides_google_sheet_setup_and_builds_private_runtime_context(
     assert configuration["kind"] == "google-sheets"
     assert configuration["spreadsheet_id"] == "sheet-123"
     assert configuration["tab"] == "Calls"
-    assert configuration["check_status"] == "available"
     assert workspace.connector_provider_secret(
         "google", "authorized_user_json"
     ) == '{"refresh_token":"private-google-token"}'
@@ -3702,7 +3700,7 @@ def test_studio_does_not_replace_local_endpoint_when_check_fails(
     assert workspace.provider_profiles()["local"] == original
 
 
-def test_studio_records_failed_local_configuration_check(tmp_path, monkeypatch):
+def test_studio_reports_a_failed_local_configuration_check(tmp_path, monkeypatch):
     studio, workspace, output = _studio(tmp_path)
     workspace.save_provider_profile(
         "local",
@@ -3720,7 +3718,6 @@ def test_studio_records_failed_local_configuration_check(tmp_path, monkeypatch):
             "provider": "local",
             "model": "qwen2.5:7b",
             "spec": "local:qwen2.5:7b",
-            "check_status": "not_checked",
         },
     )
 
@@ -3729,17 +3726,17 @@ def test_studio_records_failed_local_configuration_check(tmp_path, monkeypatch):
 
     monkeypatch.setattr("zippergen.studio_models.request.urlopen", fail_urlopen)
 
-    studio.execute("model config check local-reviewer")
+    with pytest.raises(SystemExit, match="check did not pass for local-reviewer"):
+        studio.execute("model config check local-reviewer")
 
-    configuration = workspace.model_configurations()["local-reviewer"]
-    assert configuration["check_status"] == "unverified"
-    assert "connection refused" in configuration["check_detail"]
-    output.clear()
-    studio.execute("model")
     assert any(
-        "local-reviewer" in line and "unverified" in line
+        "local-reviewer" in line and "connection refused" in line
         for line in output
     )
+    # The result is reported, never stored.
+    stored = workspace.model_configurations()["local-reviewer"]
+    assert "check_status" not in stored
+    assert "check_detail" not in stored
 
 
 def test_studio_retires_the_public_store_namespace(tmp_path):
@@ -5190,9 +5187,6 @@ def test_studio_models_configure_check_then_assign(
 
     studio.execute("model config create fast-review")
     assert requests == []
-    assert workspace.model_configurations()["fast-review"]["check_status"] == (
-        "not_checked"
-    )
 
     studio.execute("model config check fast-review")
     studio.execute("model assign Writer fast-review")
@@ -5299,7 +5293,7 @@ def test_studio_guided_model_setup_labels_progress_and_each_selection(tmp_path):
     }
 
 
-def test_studio_models_rename_preserves_check_and_updates_all_assignments(
+def test_studio_models_rename_updates_all_assignments(
     tmp_path,
 ):
     studio, workspace, output = _studio(tmp_path)
@@ -5332,10 +5326,6 @@ def test_studio_models_rename_preserves_check_and_updates_all_assignments(
     assert configurations["editorial"]["spec"] == (
         "mistral:mistral-small-latest"
     )
-    assert configurations["editorial"]["check_status"] == "available"
-    assert configurations["editorial"]["checked_at"] == (
-        "2026-07-24T16:00:00+0200"
-    )
     profiles = workspace.load()["model_profiles"]
     assert profiles["workflow.py:sample"]["default_configuration"] == "editorial"
     assert profiles["workflow.py:sample"]["lifeline_configurations"] == {
@@ -5348,7 +5338,6 @@ def test_studio_models_rename_preserves_check_and_updates_all_assignments(
         "mistral:mistral-small-latest"
     )
     assert any(line == "Model configuration renamed" for line in output)
-    assert any("Check" in line and "available; preserved" in line for line in output)
     assert any(
         "workflow.py:sample" in line and "default, Writer" in line
         for line in output
@@ -5411,7 +5400,6 @@ def test_studio_model_configuration_guides_missing_provider_connection(
     )
     configuration = workspace.model_configurations()["anthropic-review"]
     assert configuration["spec"] == "anthropic:claude-sonnet-4-6"
-    assert configuration["check_status"] == "not_checked"
     assert any("Configured anthropic" in line for line in output)
     assert all("private-anthropic-key" not in line for line in output)
 
@@ -5489,8 +5477,6 @@ def test_studio_configuration_is_reusable_without_serializing_calls(tmp_path):
         "Configuration",
         "Model",
         "Source",
-        "Last",
-        "check",
     ]
     assert set(output[title + 3].replace(" ", "")) == {"─"}
     assert any(
@@ -5574,7 +5560,7 @@ def test_studio_model_action_override_precedes_participant_assignment(
     )
 
 
-def test_studio_assignment_listing_is_cached_and_check_is_targeted(
+def test_studio_assignment_listing_never_probes_and_check_is_targeted(
     tmp_path,
     monkeypatch,
 ):
@@ -5620,21 +5606,19 @@ def test_studio_assignment_listing_is_cached_and_check_is_targeted(
 
     studio.execute("model assignments")
 
+    # Listing answers "what is assigned", so it never reaches the network.
     assert checks == []
-    assert any("Last check" in line for line in output)
-    assert any("never" in line for line in output)
 
     output.clear()
     studio.execute("model assignments check")
 
+    # Checking probes only what this workflow actually uses.
     assert checks == [("shared-local", "local:qwen3")]
     assert any(line == "Assignment checks" for line in output)
     assert any("All assigned models are reachable" in line for line in output)
-    assert workspace.model_configurations()["shared-local"]["check_status"] == (
-        "available"
-    )
-    assert workspace.model_configurations()["unused-mistral"]["check_status"] == (
-        "not_checked"
+    # The result is reported, never stored.
+    assert "check_status" not in (
+        workspace.model_configurations()["shared-local"]
     )
 
 
@@ -5701,7 +5685,7 @@ def test_studio_models_inherit_removes_a_participant_assignment(tmp_path):
     )
 
 
-def test_studio_models_check_updates_configuration_not_assignments(
+def test_studio_models_check_reports_without_touching_assignments(
     tmp_path,
     monkeypatch,
 ):
@@ -5751,9 +5735,7 @@ def test_studio_models_check_updates_configuration_not_assignments(
 
     assert len(requests) == 1
     assert workspace.model_assignment_profile("workflow.py:sample") == before
-    assert workspace.model_configurations()["review-model"]["check_status"] == (
-        "available"
-    )
+    assert "check_status" not in workspace.model_configurations()["review-model"]
     assert any(line == "Configuration checks" for line in output)
     assert any(
         "review-model:" in line
@@ -5764,7 +5746,7 @@ def test_studio_models_check_updates_configuration_not_assignments(
     assert all("private-mistral-key" not in line for line in output)
 
 
-def test_studio_models_check_records_an_unavailable_configuration(
+def test_studio_models_check_reports_an_unavailable_configuration(
     tmp_path,
     monkeypatch,
 ):
@@ -5799,21 +5781,22 @@ def test_studio_models_check_records_an_unavailable_configuration(
 
     with pytest.raises(
         SystemExit,
-        match="check failed for broken-reviewer.*Assignments were not changed",
+        match="check did not pass for broken-reviewer.*Assignments were not changed",
     ):
         studio.execute("model config check broken-reviewer")
 
     assert workspace.model_assignment_profile("workflow.py:sample") == before
-    configuration = workspace.model_configurations()["broken-reviewer"]
-    assert configuration["check_status"] == "unavailable"
+    assert "check_status" not in workspace.model_configurations()["broken-reviewer"]
     assert any(
         "broken-reviewer:" in line
         and "not available with the configured mistral API key" in line
         for line in output
     )
-    with pytest.raises(SystemExit, match="broken-reviewer is unavailable"):
-        studio.execute("model assign Writer broken-reviewer")
-    assert workspace.model_profile("workflow.py:sample")["lifelines"] == {}
+    # Assigning is a local decision, so a failed probe does not veto it.
+    studio.execute("model assign Writer broken-reviewer")
+    assert workspace.model_profile("workflow.py:sample")["lifelines"] == {
+        "Writer": "mistral:mistral-smol-latest"
+    }
 
 
 def test_studio_models_check_accepts_a_case_insensitive_configuration(tmp_path):
@@ -5840,7 +5823,7 @@ def test_studio_models_dashboard_does_not_change_routing(tmp_path):
     assert any(line == "Model assignments" for line in output)
 
 
-def test_studio_models_assignment_warns_when_configuration_is_unchecked(tmp_path):
+def test_studio_models_assignment_is_silent_about_liveness(tmp_path):
     studio, workspace, output = _studio(tmp_path)
     workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
     workspace.save_model_configuration(
@@ -5849,7 +5832,6 @@ def test_studio_models_assignment_warns_when_configuration_is_unchecked(tmp_path
             "provider": "mistral",
             "model": "mistral-small-latest",
             "spec": "mistral:mistral-small-latest",
-            "check_status": "not_checked",
         },
     )
 
@@ -5857,11 +5839,8 @@ def test_studio_models_assignment_warns_when_configuration_is_unchecked(tmp_path
     assert workspace.model_profile("workflow.py:sample")["lifelines"] == {
         "Writer": "mistral:mistral-small-latest"
     }
-    assert any(
-        "review-model is not_checked" in line
-        and "model config check review-model" in line
-        for line in output
-    )
+    # Assigning says nothing about reachability; only a check does that.
+    assert all("model config check" not in line for line in output)
 
 
 def test_studio_models_checks_local_configuration_identifiers(
@@ -5919,11 +5898,8 @@ def test_studio_models_checks_local_configuration_identifiers(
         for line in output
     )
 
-    with pytest.raises(SystemExit, match="check failed for missing-local"):
+    with pytest.raises(SystemExit, match="check did not pass for missing-local"):
         studio.execute("model config check missing-local")
-    assert workspace.model_configurations()["missing-local"]["check_status"] == (
-        "unavailable"
-    )
     assert any("Available models: qwen2.5:7b" in line for line in output)
 
 
@@ -6141,9 +6117,8 @@ def test_studio_run_stops_before_inputs_when_a_used_model_is_unreachable(
     assert any(line == "Run model checks" for line in output)
     assert any("local-writer" in line and "not verified" in line for line in output)
     assert any("connection refused" in line for line in output)
-    assert workspace.model_configurations()["local-writer"]["check_status"] == (
-        "unverified"
-    )
+    # The failure is reported, never stored.
+    assert "check_status" not in workspace.model_configurations()["local-writer"]
 
 
 def test_studio_run_reports_runtime_provider_failure_without_a_traceback(
@@ -6339,48 +6314,19 @@ def test_studio_blocks_deploy_when_a_connector_is_unbound(tmp_path, monkeypatch)
     assert calls == []
 
 
-def _bind_telegram_connector(workspace, check_status: str | None) -> None:
+def _bind_telegram_connector(workspace) -> None:
     """Bind the workflow's connector requirement to a telegram configuration."""
 
-    configuration = {
-        "provider": "telegram",
-        "kind": "telegram",
-        "chat_id": "42",
-    }
-    if check_status is not None:
-        configuration["check_status"] = check_status
-        configuration["check_detail"] = "recorded by the test"
-        configuration["checked_at"] = "2026-01-01T00:00:00+0000"
-    workspace.save_connector_configuration("approvals", configuration)
+    workspace.save_connector_configuration(
+        "approvals",
+        {"provider": "telegram", "kind": "telegram", "chat_id": "42"},
+    )
     workspace.bind_connector(
         "workflow.py:sample", "human-approval", "approvals"
     )
 
 
-def test_studio_blocks_deploy_when_a_connector_check_failed(
-    tmp_path,
-    monkeypatch,
-):
-    studio, workspace, _output = _studio(tmp_path)
-    (workspace.root / "workflow.py").write_text(CONNECTOR_SOURCE)
-    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
-    _mark_implementation_current(workspace)
-    _bind_telegram_connector(workspace, "failed")
-    workspace.save_connector_provider_secret("telegram", "bot_token", "t0ken")
-    calls: list[list[str]] = []
-    monkeypatch.setattr(
-        "zippergen.serve.main",
-        lambda arguments: calls.append(arguments) or 0,
-    )
-
-    with pytest.raises(SystemExit) as error:
-        studio.deploy_workflow(["failed-check-deployment", "--no-start"])
-
-    assert "did not pass its latest check" in str(error.value)
-    assert calls == []
-
-
-def test_studio_warns_but_deploys_when_a_connector_was_never_checked(
+def test_studio_prepares_a_deployment_without_probing_anything(
     tmp_path,
     monkeypatch,
 ):
@@ -6388,21 +6334,27 @@ def test_studio_warns_but_deploys_when_a_connector_was_never_checked(
     (workspace.root / "workflow.py").write_text(CONNECTOR_SOURCE)
     workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
     _mark_implementation_current(workspace)
-    _bind_telegram_connector(workspace, None)
+    _bind_telegram_connector(workspace)
     workspace.save_connector_provider_secret("telegram", "bot_token", "t0ken")
+
+    def _refuse(*args, **kwargs):
+        raise AssertionError("preparing a deployment must not probe")
+
+    monkeypatch.setattr(studio, "_verify_model_spec", _refuse)
+    monkeypatch.setattr(studio, "_check_connector_configuration", _refuse)
     calls: list[list[str]] = []
     monkeypatch.setattr(
         "zippergen.serve.main",
         lambda arguments: calls.append(arguments) or 0,
     )
 
-    studio.deploy_workflow(["unchecked-deployment", "--no-start"])
+    studio.deploy_workflow(["prepared-deployment", "--no-start"])
 
     assert len(calls) == 1
-    assert any("has not been checked on this machine" in line for line in output)
+    assert any("assigned" in line for line in output)
 
 
-def test_studio_blocks_deploy_when_an_unchecked_connector_has_no_token(
+def test_studio_blocks_a_starting_deployment_when_a_connector_is_unreachable(
     tmp_path,
     monkeypatch,
 ):
@@ -6410,7 +6362,41 @@ def test_studio_blocks_deploy_when_an_unchecked_connector_has_no_token(
     (workspace.root / "workflow.py").write_text(CONNECTOR_SOURCE)
     workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
     _mark_implementation_current(workspace)
-    _bind_telegram_connector(workspace, None)
+    _bind_telegram_connector(workspace)
+    workspace.save_connector_provider_secret("telegram", "bot_token", "t0ken")
+    monkeypatch.setattr(
+        studio, "_check_connector_configuration", lambda name: False
+    )
+    monkeypatch.setattr(
+        studio,
+        "_verify_model_spec",
+        lambda label, spec, for_save=False: SimpleNamespace(
+            kind="success",
+            message=f"{label}: {spec} is available.",
+        ),
+    )
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        "zippergen.serve.main",
+        lambda arguments: calls.append(arguments) or 0,
+    )
+
+    with pytest.raises(SystemExit) as error:
+        studio.deploy_workflow(["starting-deployment"])
+
+    assert "approvals" in str(error.value)
+    assert calls == []
+
+
+def test_studio_blocks_deploy_when_a_connector_has_no_token(
+    tmp_path,
+    monkeypatch,
+):
+    studio, workspace, _output = _studio(tmp_path)
+    (workspace.root / "workflow.py").write_text(CONNECTOR_SOURCE)
+    workspace.select_workflow("workflow.py:sample", cwd=workspace.root)
+    _mark_implementation_current(workspace)
+    _bind_telegram_connector(workspace)
     calls: list[list[str]] = []
     monkeypatch.setattr(
         "zippergen.serve.main",
@@ -6422,3 +6408,90 @@ def test_studio_blocks_deploy_when_an_unchecked_connector_has_no_token(
 
     assert "Telegram provider token is missing" in str(error.value)
     assert calls == []
+
+
+def _write_deployment_profile(workspace, name: str, profile: dict) -> None:
+    """Write the stored profile that `deploy start` reads its routes from."""
+
+    directory = workspace.home / "deployments"
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / f"{name}.json").write_text(json.dumps(profile))
+
+
+def test_studio_blocks_deploy_start_when_a_recorded_model_is_unreachable(
+    tmp_path,
+    monkeypatch,
+):
+    studio, workspace, output = _studio(tmp_path)
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(workspace.home))
+    workspace.update(last_deployment="sample-test")
+    _write_deployment_profile(
+        workspace,
+        "sample-test",
+        {"llm": "mistral:mistral-small-latest"},
+    )
+    monkeypatch.setattr(
+        studio,
+        "_verify_model_spec",
+        lambda label, spec, for_save=False: SimpleNamespace(
+            kind="error",
+            message=f"{label}: {spec} is unreachable.",
+        ),
+    )
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        "zippergen.serve.main",
+        lambda arguments: calls.append(arguments) or 0,
+    )
+
+    with pytest.raises(SystemExit) as error:
+        studio.deployment_action("start", [])
+
+    assert "mistral:mistral-small-latest" in str(error.value)
+    assert calls == []
+    assert any(line == "Start checks" for line in output)
+
+
+def test_studio_starts_a_deployment_whose_recorded_routes_are_reachable(
+    tmp_path,
+    monkeypatch,
+):
+    studio, workspace, _output = _studio(tmp_path)
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(workspace.home))
+    workspace.update(last_deployment="sample-test")
+    workspace.save_connector_configuration(
+        "approvals",
+        {"provider": "telegram", "kind": "telegram", "chat_id": "42"},
+    )
+    _write_deployment_profile(
+        workspace,
+        "sample-test",
+        {
+            "name": "sample-test",
+            "store": str(workspace.home / "store.sqlite3"),
+            "project_root": str(workspace.root),
+            "llm": "mock",
+            "connectors": {
+                "human:Writer": {
+                    "kind": "telegram",
+                    "configuration": "approvals",
+                }
+            },
+        },
+    )
+    probed: list[str] = []
+    monkeypatch.setattr(
+        studio,
+        "_check_connector_configuration",
+        lambda name: probed.append(name) or True,
+    )
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        "zippergen.serve.main",
+        lambda arguments: calls.append(arguments) or 0,
+    )
+
+    studio.deployment_action("start", [])
+
+    assert probed == ["approvals"]
+    assert calls == [["start", "sample-test", "--enable"]]

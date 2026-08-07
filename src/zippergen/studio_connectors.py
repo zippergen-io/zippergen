@@ -17,6 +17,15 @@ from zippergen.workspace import WorkspaceError
 # pyright: reportAttributeAccessIssue=false, reportUnknownMemberType=false
 
 
+def _checked_when(profile: dict[str, str]) -> str:
+    """Date a provider check so it never reads as a current health claim."""
+
+    checked_at = str(profile.get("checked_at") or "").strip()
+    if len(checked_at) >= 10:
+        return f" ({checked_at[:10]})"
+    return ""
+
+
 class StudioConnectorsMixin:
     @staticmethod
     def _read_google_client_json(path: Path) -> str:
@@ -252,11 +261,14 @@ class StudioConnectorsMixin:
         if providers:
             self._emit_columns(
                 "Connector providers",
-                ("Provider", "Status", "Detail"),
+                ("Provider", "Last check", "Detail"),
                 [
                     (
                         name,
-                        value.get("check_status", "not checked"),
+                        (
+                            f"{value.get('check_status', 'not checked')}"
+                            f"{_checked_when(value)}"
+                        ),
                         value.get("check_detail", "—"),
                     )
                     for name, value in providers.items()
@@ -275,7 +287,7 @@ class StudioConnectorsMixin:
         if configurations:
             self._emit_columns(
                 "Connector configurations",
-                ("Configuration", "Provider", "Resource", "Last check"),
+                ("Configuration", "Provider", "Resource"),
                 [
                     (
                         name,
@@ -285,10 +297,6 @@ class StudioConnectorsMixin:
                         value.get("chat_id")
                         or value.get("resource")
                         or "—",
-                        (
-                            f"{value.get('check_status', 'not checked')} — "
-                            f"{value.get('check_detail', '')}"
-                        ).rstrip(" —"),
                     )
                     for name, value in configurations.items()
                 ],
@@ -591,13 +599,6 @@ class StudioConnectorsMixin:
             status = "available"
         except Exception as exc:
             detail = str(exc)
-        checked = {
-            **configuration,
-            "check_status": status,
-            "check_detail": detail,
-            "checked_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-        }
-        self.workspace.save_connector_configuration(name, checked)
         if status == "available":
             self._success(f"Connector {name}: {detail}.")
             return True
@@ -664,12 +665,6 @@ class StudioConnectorsMixin:
                     )
                     or configuration.get("resource")
                     or "—",
-                    None,
-                ),
-                (
-                    "Last check",
-                    f"{configuration.get('check_status', 'not checked')} — "
-                    f"{configuration.get('check_detail', '')}".rstrip(" —"),
                     None,
                 ),
                 (
@@ -946,11 +941,7 @@ class StudioConnectorsMixin:
             )
         self.workspace.save_connector_configuration(
             name,
-            {
-                **record,
-                "check_status": "not checked",
-                "check_detail": "configuration changed",
-            },
+            record,
         )
         self._success(f"Saved connector configuration {name}.")
         if not self._check_connector_configuration(name):
@@ -998,18 +989,6 @@ class StudioConnectorsMixin:
         ) != "telegram":
             raise SystemExit(
                 f"{configuration_name} cannot deliver human actions."
-            )
-        status = configuration.get("check_status")
-        if status in {"failed", "unavailable"}:
-            raise SystemExit(
-                f"{configuration_name} is unavailable. Run "
-                f"'connector config check {configuration_name}' after fixing "
-                "the provider or destination."
-            )
-        if status != "available":
-            self._warning(
-                f"{configuration_name} has not passed a live check. Use "
-                f"'connector config check {configuration_name}'."
             )
         profile = self.workspace.connector_assignment_profile(current)
         lifelines = dict(profile["lifelines"])

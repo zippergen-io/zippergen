@@ -348,12 +348,10 @@ class StudioModelsMixin:
         checks: dict[tuple[str, str], _ModelVerification] = {}
         failures: list[str] = []
         details: list[str] = []
-        checked_at = time.strftime("%Y-%m-%dT%H:%M:%S%z")
         for _target, configuration_name, spec in routes:
             key = (configuration_name, spec)
             if key in checks:
                 continue
-            configuration = configurations.get(configuration_name)
             try:
                 verification = self._verify_model_spec(
                     configuration_name,
@@ -366,23 +364,6 @@ class StudioModelsMixin:
                     str(exc),
                 )
             checks[key] = verification
-            if configuration is not None and configuration_name != "mock":
-                status = (
-                    "available"
-                    if verification.kind == "success"
-                    else "unavailable"
-                    if verification.kind == "error"
-                    else "unverified"
-                )
-                self.workspace.save_model_configuration(
-                    configuration_name,
-                    {
-                        **configuration,
-                        "check_status": status,
-                        "check_detail": verification.message[:240],
-                        "checked_at": checked_at,
-                    },
-                )
             if verification.kind != "success":
                 failures.append(configuration_name)
                 details.append(verification.message)
@@ -432,57 +413,15 @@ class StudioModelsMixin:
         )
         self._emit()
 
-    def _configuration_status_kind(
-        self,
-        configuration: dict[str, str],
-    ) -> StatusKind:
-        status = configuration.get("check_status", "not_checked")
-        if status == "available":
-            return "success"
-        if status == "unavailable":
-            return "error"
-        return "warning"
-
-    def _assignment_check_summary(
-        self,
-        configuration: dict[str, str] | None,
-    ) -> str:
-        """Render compact cached check state without implying a live request."""
-
-        if configuration is None:
-            return f"{self._status_mark('error')} missing"
-        provider = configuration.get("provider") or _canonical_provider(
-            configuration.get("spec", "")
-        )
-        if provider == "mock":
-            return f"{self._status_mark('success')} built in"
-        status = configuration.get("check_status", "not_checked")
-        kind = self._configuration_status_kind(configuration)
-        if status == "not_checked":
-            return f"{self._status_mark(kind)} never"
-        checked_at = str(configuration.get("checked_at") or "").strip()
-        when = "unknown"
-        if len(checked_at) >= 16 and checked_at[10] == "T":
-            when = (
-                checked_at[11:16]
-                if checked_at[:10] == time.strftime("%Y-%m-%d")
-                else checked_at[:10]
-            )
-        return f"{self._status_mark(kind)} {when}"
-
     def _emit_model_configurations(self, *, include_next: bool = True) -> None:
         configurations = self.workspace.model_configurations()
         rows: list[tuple[object, ...]] = []
         for name, configuration in configurations.items():
-            status = configuration.get("check_status", "not_checked")
             provider = configuration.get("provider") or _canonical_provider(
                 configuration["spec"]
             )
             model = configuration.get("model") or (
                 "built in" if provider == "mock" else "default"
-            )
-            mark = self._status_mark(
-                self._configuration_status_kind(configuration)
             )
             rows.append(
                 (
@@ -490,12 +429,11 @@ class StudioModelsMixin:
                     provider,
                     model,
                     self._configuration_idle_summary(configuration),
-                    f"{mark} {status.replace('_', ' ')}",
                 )
             )
         self._emit_columns(
             "Model configurations",
-            ("Name", "Provider", "Model", "Idle release", "Status"),
+            ("Name", "Provider", "Model", "Idle release"),
             rows,
         )
         if include_next:
@@ -554,9 +492,6 @@ class StudioModelsMixin:
                         effective,
                         spec,
                         source,
-                        self._assignment_check_summary(
-                            configurations.get(effective)
-                        ),
                     )
                 )
         self._emit_columns(
@@ -567,7 +502,6 @@ class StudioModelsMixin:
                 "Configuration",
                 "Model",
                 "Source",
-                "Last check",
             ),
             rows,
         )
@@ -726,14 +660,6 @@ class StudioModelsMixin:
                     "provider": provider,
                     "model": model,
                     "spec": spec,
-                    "check_status": (
-                        "available" if provider == "mock" else "not_checked"
-                    ),
-                    "check_detail": (
-                        "built in"
-                        if provider == "mock"
-                        else "run 'model config check' before assignment"
-                    ),
                     **(
                         {"idle_timeout": idle_timeout}
                         if idle_timeout is not None
@@ -772,40 +698,22 @@ class StudioModelsMixin:
                 )
             except SystemExit as exc:
                 detail = str(exc)
-                self.workspace.save_model_configuration(
-                    name,
-                    {
-                        **configuration,
-                        "check_status": "unavailable",
-                        "check_detail": detail[:240],
-                        "checked_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-                    },
-                )
                 self._error(f"{name}: {detail}", indent=2)
                 failures.append(name)
                 continue
-            check_status = (
-                "available"
-                if verification.kind == "success"
-                else "unverified"
-            )
-            self.workspace.save_model_configuration(
-                name,
-                {
-                    **configuration,
-                    "check_status": check_status,
-                    "check_detail": verification.message,
-                    "checked_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-                },
-            )
             self._status(
                 verification.kind,
                 verification.message,
                 indent=2,
             )
+            if verification.kind != "success":
+                # A probe that could not complete is not a pass.  Run and
+                # deploy treat it as a failure, so the check command must
+                # agree rather than print a tick under a warning.
+                failures.append(name)
         if failures:
             raise SystemExit(
-                "Model configuration check failed for "
+                "Model configuration check did not pass for "
                 + ", ".join(failures)
                 + ". Assignments were not changed."
             )
@@ -833,16 +741,6 @@ class StudioModelsMixin:
                 (
                     "Idle release",
                     self._configuration_idle_summary(configuration),
-                    None,
-                ),
-                (
-                    "Check",
-                    configuration.get("check_status", "not checked"),
-                    self._configuration_status_kind(configuration),
-                ),
-                (
-                    "Check detail",
-                    configuration.get("check_detail", "not checked"),
                     None,
                 ),
                 (
@@ -876,16 +774,6 @@ class StudioModelsMixin:
             ("From", old_name, None),
             ("To", new_name, "success"),
             ("Model", spec, None),
-            (
-                "Check",
-                (
-                    str(configuration.get("check_status") or "not checked")
-                    if isinstance(configuration, dict)
-                    else "not checked"
-                )
-                + "; preserved",
-                None,
-            ),
         ]
         references = result.get("references")
         reference_count = 0
@@ -1179,12 +1067,10 @@ class StudioModelsMixin:
         action_overrides = dict(assignments.get("actions") or {})
         active = self._llm_action_lifelines(workflow, module)
         action_targets = self._llm_action_targets(workflow, module)
-        changed_configuration: str | None = None
         result_message: str
 
         if action == "default" and len(command_args) == 2:
             default = self._model_configuration_name(command_args[1])
-            changed_configuration = default
             result_message = f"Set the default configuration to {default}."
         elif action == "assign" and len(command_args) == 3:
             entered_target, entered_configuration = command_args[1:]
@@ -1212,7 +1098,6 @@ class StudioModelsMixin:
                 action_overrides[action_target] = configuration
             else:
                 overrides[lifeline] = configuration  # type: ignore[index]
-            changed_configuration = configuration
             result_message = f"Assigned {configuration} to {target}."
         elif action == "inherit" and len(command_args) == 2:
             entered_target = command_args[1]
@@ -1252,23 +1137,6 @@ class StudioModelsMixin:
                 "PARTICIPANT_OR_ACTION [--site]."
             )
 
-        if changed_configuration is not None:
-            configuration = self.workspace.model_configurations()[
-                changed_configuration
-            ]
-            status = configuration.get("check_status")
-            if status == "unavailable":
-                raise SystemExit(
-                    f"{changed_configuration} is unavailable. Run "
-                    f"'model config check {changed_configuration}' again, "
-                    "or edit the configuration before assigning it."
-                )
-            if status != "available":
-                self._warning(
-                    f"{changed_configuration} is "
-                    f"{status or 'not checked'}; "
-                    f"use 'model config check {changed_configuration}'."
-                )
         saved = self.workspace.save_model_assignment_profile(
             current,
             default=default,

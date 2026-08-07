@@ -82,12 +82,12 @@ _IGNORED_DISCOVERY_PARTS = {
 }
 
 _MODEL_PROJECT_FIELDS = frozenset({"provider", "model", "spec"})
-_MODEL_SITE_FIELDS = frozenset(
-    {"idle_timeout", "check_status", "check_detail", "checked_at"}
-)
-_CONNECTOR_SITE_FIELDS = frozenset(
-    {"check_status", "check_detail", "checked_at"}
-)
+# Checks are always live, so their results are never stored.  These are the
+# fields that describe one machine rather than the project.
+_MODEL_SITE_FIELDS = frozenset({"idle_timeout"})
+_CONNECTOR_SITE_FIELDS: frozenset[str] = frozenset()
+# Results of earlier versions' cached checks, stripped wherever they are read.
+_STALE_CHECK_FIELDS = frozenset({"check_status", "check_detail", "checked_at"})
 _PROVIDER_PROJECT_FIELDS = frozenset({"kind"})
 
 
@@ -1157,7 +1157,9 @@ class Workspace:
             portable = {
                 str(key): str(value)
                 for key, value in raw.items()
-                if value is not None and str(key) not in _CONNECTOR_SITE_FIELDS
+                if value is not None
+                and str(key) not in _CONNECTOR_SITE_FIELDS
+                and str(key) not in _STALE_CHECK_FIELDS
             }
             if portable:
                 project_connectors.setdefault(str(name), portable)
@@ -2509,8 +2511,6 @@ class Workspace:
                 "provider": "mock",
                 "model": "",
                 "spec": "mock",
-                "check_status": "available",
-                "check_detail": "built in",
             }
         }
         for name, raw_configuration in raw_project.items():
@@ -2521,7 +2521,7 @@ class Workspace:
             configurations[str(name)] = {
                 str(key): str(value)
                 for key, value in raw_configuration.items()
-                if value is not None
+                if value is not None and str(key) not in _STALE_CHECK_FIELDS
             }
         migrated = bool(state.get(PROJECT_CONFIGURATION_MARKER))
         for name, raw_configuration in raw_site.items():
@@ -2533,6 +2533,7 @@ class Workspace:
                 str(key): str(value)
                 for key, value in raw_configuration.items()
                 if value is not None
+                and str(key) not in _STALE_CHECK_FIELDS
                 and (not migrated or str(key) in _MODEL_SITE_FIELDS)
             }
             if not migrated and str(name) not in configurations:
@@ -2652,6 +2653,7 @@ class Workspace:
             str(key): value
             for key, value in dict(site_configurations.get(normalized) or {}).items()
             if str(key) not in _MODEL_SITE_FIELDS
+            and str(key) not in _STALE_CHECK_FIELDS
         }
         preserved.update(
             {
@@ -2719,8 +2721,6 @@ class Workspace:
                 "provider": provider,
                 "model": model,
                 "spec": canonical_spec,
-                "check_status": "not_checked",
-                "check_detail": "migrated from direct model routing",
             },
         )
         return name
@@ -3532,7 +3532,7 @@ class Workspace:
             configurations[str(name)] = {
                 str(key): str(item)
                 for key, item in value.items()
-                if item is not None
+                if item is not None and str(key) not in _STALE_CHECK_FIELDS
             }
         migrated = bool(state.get(PROJECT_CONFIGURATION_MARKER))
         for name, value in raw_site.items():
@@ -3544,6 +3544,7 @@ class Workspace:
                 str(key): str(item)
                 for key, item in value.items()
                 if item is not None
+                and str(key) not in _STALE_CHECK_FIELDS
                 and (not migrated or str(key) in _CONNECTOR_SITE_FIELDS)
             }
             if not migrated and str(name) not in configurations:
@@ -3778,6 +3779,7 @@ class Workspace:
             key: value
             for key, value in configuration.items()
             if key not in _CONNECTOR_SITE_FIELDS
+            and key not in _STALE_CHECK_FIELDS
         }
         connectors["configurations"] = project_configurations
         self._write_project_configuration(connectors=connectors)

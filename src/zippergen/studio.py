@@ -2773,10 +2773,7 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
             "llm_active_participants": active,
             "model_profile": profile,
             "model_configurations": {
-                name: {
-                    "spec": configuration.get("spec"),
-                    "status": configuration.get("check_status"),
-                }
+                name: {"spec": configuration.get("spec")}
                 for name, configuration
                 in self.workspace.model_configurations().items()
             },
@@ -8305,25 +8302,6 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
                     f"Connector assignment references missing configuration "
                     f"{configuration_name}."
                 )
-            # Block on a check that failed, warn on one that never ran.  The
-            # status is a per-machine field, so a clone starts with no status
-            # at all; refusing there would demand a check for every connector
-            # before a correct project could deploy.  A missing credential is
-            # caught below and does still block.
-            check_status = configuration.get("check_status")
-            if check_status in {"failed", "unavailable"}:
-                raise SystemExit(
-                    f"Connector {configuration_name} did not pass its latest "
-                    f"check. Use 'connector config check "
-                    f"{configuration_name}' after fixing the provider or "
-                    "destination."
-                )
-            if check_status != "available":
-                self._warning(
-                    f"Connector {configuration_name} has not been checked on "
-                    f"this machine. Use 'connector config check "
-                    f"{configuration_name}' to confirm it is reachable."
-                )
             provider = str(
                 configuration.get("provider")
                 or configuration.get("kind")
@@ -8741,18 +8719,23 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
         else:
             implementation_summary = "matches the current specification"
             implementation_kind = "success"
-        # The routes `run` resolves, minus the live probe.  A deployment may be
-        # prepared now and started later, so an unreachable endpoint is not a
-        # reason to refuse.  What must hold is that every participant has a
-        # model configuration, and that this machine can run the assistant
-        # actions the workflow declares.  Connectors are validated separately
-        # by _deployment_connector_arguments.
+        # A deployment that only prepares may be started much later, so an
+        # endpoint that is unreachable now says nothing and the routes are
+        # merely resolved.  A deployment that starts is about to make real
+        # calls, so every model and connector is probed live and a failure
+        # stops it.
         self._check_workflow_models(
             current,
             deployment_workflow,
             deployment_module,
-            verify=False,
+            verify=not no_start,
         )
+        if not no_start:
+            self._check_workflow_connectors(
+                current,
+                deployment_workflow,
+                deployment_module,
+            )
         self._check_workflow_assistants(deployment_workflow, deployment_module)
         spec = deployment_spec_from_module(deployment_module)
         self._emit_table(
@@ -9899,12 +9882,95 @@ class Studio(StudioModelsMixin, StudioConnectorsMixin, StudioStorageMixin):
         self._emit_table("Removal result", rows)
         self._emit_next("deploy list · deploy")
 
+    def _check_deployment_routes(self, name: str) -> None:
+        """Probe the models and connectors a prepared deployment will use.
+
+        The deployment records its own model specs and connector bindings, so
+        this does not depend on the workflow that happens to be selected now.
+        """
+
+        from zippergen.models import selected_llm_specs
+        from zippergen.serve import _deployment_profile_path
+
+        path = _deployment_profile_path(name)
+        if not path.is_file():
+            return
+        try:
+            profile = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return
+        if not isinstance(profile, dict):
+            return
+
+        failures: list[str] = []
+        rows: list[tuple[object, ...]] = []
+        for spec in selected_llm_specs(profile.get("llm"), profile.get("llms")):
+            if spec == "mock":
+                rows.append((spec, "model", "built in"))
+                continue
+            try:
+                verification = self._verify_model_spec(
+                    spec, spec, for_save=False
+                )
+            except SystemExit as exc:
+                failures.append(spec)
+                rows.append((spec, "model", str(exc)))
+                continue
+            if verification.kind != "success":
+                failures.append(spec)
+            rows.append((spec, "model", verification.message))
+
+        raw_connectors = profile.get("connectors") or {}
+        configurations = (
+            self.workspace.connector_configurations()
+            if isinstance(raw_connectors, dict)
+            else {}
+        )
+        checked: set[str] = set()
+        if isinstance(raw_connectors, dict):
+            for value in raw_connectors.values():
+                if not isinstance(value, dict):
+                    continue
+                configuration_name = str(value.get("configuration") or "")
+                if not configuration_name or configuration_name in checked:
+                    continue
+                checked.add(configuration_name)
+                if configuration_name not in configurations:
+                    failures.append(configuration_name)
+                    rows.append(
+                        (
+                            configuration_name,
+                            "connector",
+                            "not configured on this machine",
+                        )
+                    )
+                    continue
+                if self._check_connector_configuration(configuration_name):
+                    rows.append((configuration_name, "connector", "reachable"))
+                else:
+                    failures.append(configuration_name)
+                    rows.append((configuration_name, "connector", "unreachable"))
+
+        if rows:
+            self._emit_columns(
+                "Start checks", ("Name", "Kind", "Result"), rows
+            )
+        if failures:
+            raise SystemExit(
+                f"Deployment {name} was not started because these are "
+                f"unavailable: {', '.join(sorted(set(failures)))}."
+            )
+
     def deployment_action(self, action: str, args: list[str]) -> None:
         if len(args) > 1:
             raise SystemExit(
                 f"Use deploy {action} or deploy {action} NAME."
             )
         name = self._deployment_name(args[0] if args else None)
+        if action in {"start", "restart"}:
+            # Starting a prepared deployment is the moment it begins making
+            # real calls, so this is where the live probe belongs.
+            self._check_deployment_routes(str(name))
         arguments = [action, str(name)]
         if action == "start":
             arguments.append("--enable")

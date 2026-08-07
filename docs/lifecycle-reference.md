@@ -99,24 +99,39 @@ what is missing.
 
 | needed by | requirement | how it is checked |
 |---|---|---|
-| `run` | a model for every participant and action that uses one | resolved, then the endpoint is reached |
-| `run` | a connector configuration for every connector requirement | resolved, then the service is reached |
+| `run` | a model for every participant and action that uses one | resolved, then probed |
+| `run` | a connector for every connector requirement | resolved, then probed |
 | `run` | the keys those need | read where they are used |
-| `deploy` | the same models and connectors | resolved only |
-| `deploy` | no connector has a *failed* check | the stored result is read |
-| `deploy` | the key each connector needs | read from this machine |
-| `deploy` | an implementation that is not `absent` or `stale` | worked out from the files |
-| `deploy` | a coding assistant, if the workflow has `@assistant` actions | looked up on `PATH` |
+| `deploy --no-start` | the same models and connectors | resolved only |
+| `deploy --no-start` | the key each connector needs | read from this machine |
+| `deploy --no-start` | an implementation that is not `absent` or `stale` | worked out from the files |
+| `deploy --no-start` | a coding assistant, if the workflow has `@assistant` actions | looked up on `PATH` |
+| `deploy` · `deploy start` | everything above | models and connectors are probed |
 
-`deploy` does not reach any endpoint. A deployment is often prepared before it
-is started, and a local model server may come up beside it, so an endpoint that
-is unreachable right now is not a reason to refuse. What must hold is that the
-machine is configured: every participant has a model, every requirement has a
-connector with its key, and the assistant is installed.
+## Checks
 
-Check results do not travel between machines, so a fresh clone has none. A
-connector that has never been checked here is reported and deploys; one whose
-check *failed* is blocked. Known wrong blocks, merely unknown warns.
+A check is always live, and a live failure always stops you.
+
+`model config check` and `connector config check` reach the real endpoint and
+print what they find. They save nothing. There is no stored health anywhere, so
+nothing can go stale, and nothing has to be kept in step between machines.
+
+This is why listings and checks are separate:
+
+| command | question | cost |
+|---|---|---|
+| `model assignments` · `connector assignments` | what is assigned? | instant, works offline |
+| `model config check` · `connector config check` | does it work? | needs the network |
+
+Preparing a deployment and starting one are different moments. `deploy
+--no-start` only writes files, and it may be started days later, so an endpoint
+that is unreachable now says nothing and the routes are merely resolved.
+`deploy` and `deploy start` are about to make real calls, so every model and
+connector is probed and a failure stops them. `deploy start` reads the routes
+the deployment itself recorded, not whichever workflow happens to be selected.
+
+Blocking is the same everywhere — on your laptop, on a server, in a script.
+Nothing asks a question that a script cannot answer.
 
 `project` lists what is still missing on this machine.
 
