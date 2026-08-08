@@ -29,7 +29,8 @@ specification in prose, and a small TOML file. You develop it however you
 develop anything else — in an editor, or by talking to a coding agent such as
 Claude Code or Codex.
 
-There is no ZipperGen application to learn. ZipperGen ships a **skill** that
+There is no separate ZipperGen development environment to learn. ZipperGen
+ships a **skill** that
 teaches a coding agent how to work on a project, and a **CLI** that you and the
 agent both use.
 
@@ -220,6 +221,7 @@ project configuration and live in `zippergen.toml`. Credentials never do:
 
 ```bash
 zg connector configure telegram approvals --chat-id 12345678
+zg connector assign User approvals        # who gets asked, and where
 zg connector authorize google --scopes gmail.readonly,spreadsheets
 ```
 

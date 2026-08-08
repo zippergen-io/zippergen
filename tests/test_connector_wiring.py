@@ -1,0 +1,141 @@
+"""A configured connector must actually reach the deployment.
+
+Studio built this wiring and passed it to `deploy` through a hidden flag. When
+the shell went, so did the only producer of that flag — so a Telegram approval
+could be configured and assigned and still never arrive. `deploy` now reads the
+project directly.
+
+The invariant throughout: the snapshot is durable routing and is committed with
+the deployment; the credential values live only in the environment.
+"""
+
+import json
+import shutil
+from pathlib import Path
+
+import pytest
+
+from zippergen.connector_wiring import ConnectorWiringError, connector_runtime
+from zippergen.serve import load_workflow_spec
+from zippergen.workspace import Workspace
+
+EXAMPLE = Path(__file__).resolve().parents[1] / "examples" / "email_approval.py"
+ENTRY = "workflow.py:email_approval"
+TOKEN = "secret-bot-token"
+
+
+@pytest.fixture
+def project(tmp_path):
+    root = tmp_path / "project"
+    root.mkdir()
+    shutil.copy(EXAMPLE, root / "workflow.py")
+    workspace = Workspace(root, home=tmp_path / "home")
+    workspace.initialize_project(name="demo")
+    workspace.select_workflow(ENTRY, cwd=root)
+    return workspace
+
+
+def _wire(workspace):
+    workflow, module = load_workflow_spec(
+        str(workspace.absolute_spec(ENTRY))
+    )
+    return connector_runtime(workspace, ENTRY, workflow, module)
+
+
+def _telegram(workspace, name="approvals", chat="4242"):
+    workspace.save_connector_configuration(
+        name, {"provider": "telegram", "kind": "telegram", "chat_id": chat}
+    )
+    workspace.save_connector_provider_secret("telegram", "bot_token", TOKEN)
+
+
+def test_a_project_with_no_connectors_wires_nothing(project):
+    assert _wire(project) == ({}, {})
+
+
+def test_an_assigned_participant_is_routed_to_its_chat(project):
+    _telegram(project)
+    project.save_connector_assignment_profile(
+        ENTRY, lifelines={"User": "approvals"}, actions={}
+    )
+
+    snapshot, environment = _wire(project)
+
+    route = snapshot["human:User"]
+    assert route["kind"] == "telegram"
+    assert route["chat_id"] == "4242"
+    assert route["participant"] == "User"
+    assert environment[route["token_env"]] == TOKEN
+
+
+def test_the_token_is_never_in_the_snapshot(project):
+    """The snapshot ships with the deployment; the token must not."""
+
+    _telegram(project)
+    project.save_connector_assignment_profile(
+        ENTRY, lifelines={"User": "approvals"}, actions={}
+    )
+
+    snapshot, environment = _wire(project)
+
+    assert TOKEN not in json.dumps(snapshot)
+    assert TOKEN in environment.values()
+
+
+def test_a_single_action_can_be_routed_on_its_own(project):
+    _telegram(project)
+    project.save_connector_assignment_profile(
+        ENTRY, lifelines={}, actions={"User.approve_reply": "approvals"}
+    )
+
+    snapshot, _environment = _wire(project)
+
+    route = snapshot["human:User.approve_reply"]
+    assert route["participant"] == "User"
+    assert route["action"] == "approve_reply"
+
+
+def test_assigning_a_participant_with_no_human_action_is_refused(project):
+    """The Writer has no `@human` action, so it cannot be asked anything."""
+
+    _telegram(project)
+    project.save_connector_assignment_profile(
+        ENTRY, lifelines={"Writer": "approvals"}, actions={}
+    )
+
+    with pytest.raises(ConnectorWiringError, match="no human action"):
+        _wire(project)
+
+
+def test_a_missing_token_is_refused_before_deploying(project):
+    project.save_connector_configuration(
+        "approvals",
+        {"provider": "telegram", "kind": "telegram", "chat_id": "1"},
+    )
+    project.save_connector_assignment_profile(
+        ENTRY, lifelines={"User": "approvals"}, actions={}
+    )
+
+    with pytest.raises(ConnectorWiringError, match="bot token is missing"):
+        _wire(project)
+
+
+def test_a_non_human_connector_cannot_answer_a_human_action(project):
+    project.save_connector_configuration(
+        "records",
+        {
+            "provider": "google",
+            "kind": "google-sheets",
+            "spreadsheet_id": "1",
+            "tab": "T",
+        },
+    )
+    project.save_connector_provider_secret(
+        "google", "authorized_user_json", "{}"
+    )
+    project.save_connector_assignment_profile(
+        ENTRY, lifelines={"User": "records"}, actions={}
+    )
+
+    with pytest.raises(ConnectorWiringError, match="ask a person"):
+        _wire(project)

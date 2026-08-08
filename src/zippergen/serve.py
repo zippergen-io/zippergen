@@ -2762,6 +2762,69 @@ def _telegram_bot_token(workspace) -> None:
     print("Saved the Telegram bot token for this computer.")
 
 
+def _project_connector_runtime(args) -> tuple[dict, dict[str, str]]:
+    """Build deployment connector routing from the project's configuration.
+
+    Studio used to do this and pass the result through a hidden flag. With the
+    shell gone, `deploy` reads the project directly, so a Telegram approval
+    configured with `connector configure` and `connector assign` actually
+    reaches the deployment.
+    """
+
+    from zippergen.connector_wiring import connector_runtime
+    from zippergen.workspace import Workspace
+
+    workspace = Workspace(getattr(args, "project", None))
+    entry = workspace.workflow_entry
+    if not entry:
+        return {}, {}
+    workflow, module = load_workflow_spec(str(workspace.absolute_spec(entry)))
+    return connector_runtime(workspace, entry, workflow, module)
+
+
+def _connector_assign_command(args) -> int:
+    """Route a participant's human actions to a saved connector.
+
+    A `@human` action asks a person something. This says where that question
+    is delivered. Without it the question appears in whichever terminal is
+    running the workflow, which is right for development and wrong for a
+    deployment nobody is watching.
+    """
+
+    from zippergen.workspace import Workspace, WorkspaceError
+
+    workspace = Workspace(getattr(args, "project", None))
+    entry = workspace.workflow_entry
+    if not entry:
+        raise SystemExit(
+            "This project has no workflow configured, so there is nothing to "
+            "assign a connector to."
+        )
+    if args.configuration not in workspace.connector_configurations():
+        known = ", ".join(sorted(workspace.connector_configurations())) or "none"
+        raise SystemExit(
+            f"No connector configuration named {args.configuration!r}. "
+            f"Saved: {known}. Use 'zippergen connector configure'."
+        )
+
+    profile = workspace.connector_assignment_profile(entry)
+    lifelines = dict(profile.get("lifelines") or {})
+    actions = dict(profile.get("actions") or {})
+    if "." in args.target:
+        actions[args.target] = args.configuration
+    else:
+        lifelines[args.target] = args.configuration
+
+    try:
+        workspace.save_connector_assignment_profile(
+            entry, lifelines=lifelines, actions=actions
+        )
+    except WorkspaceError as exc:
+        raise SystemExit(str(exc)) from exc
+    print(f"{args.target} will be asked through {args.configuration}.")
+    return 0
+
+
 def _connector_configure_command(args) -> int:
     """Save a connector for this project, and optionally bind it.
 
@@ -3642,6 +3705,21 @@ def _apply_deploy_arguments(
         }
     )
     profile["environment"] = environment_values
+    # Wire the project's connectors unless the caller passed a snapshot.
+    if getattr(args, "connectors_json", None) is None:
+        try:
+            snapshot, connector_environment = _project_connector_runtime(args)
+        except Exception as exc:  # surfaced as a clear refusal below
+            from zippergen.connector_wiring import ConnectorWiringError
+
+            if isinstance(exc, ConnectorWiringError):
+                raise SystemExit(str(exc)) from exc
+            raise
+        if snapshot:
+            profile["connectors"] = snapshot
+            environment_values.update(connector_environment)
+            profile["environment"] = environment_values
+
     connectors_json = getattr(args, "connectors_json", None)
     if connectors_json is not None:
         try:
@@ -4427,6 +4505,20 @@ def main(argv=None) -> int:
     configure_gmail.add_argument("--bind", help="Connector requirement to bind to.")
     configure_gmail.add_argument("--project", help="Project root.")
 
+    connector_assign = connector_sub.add_parser(
+        "assign",
+        help="route a participant's human actions to a saved connector",
+    )
+    connector_assign.add_argument(
+        "target",
+        help="Participant, or Participant.action for a single action.",
+    )
+    connector_assign.add_argument(
+        "configuration",
+        help="Name of a saved connector configuration.",
+    )
+    connector_assign.add_argument("--project", help="Project root.")
+
     connector_authorize = connector_sub.add_parser(
         "authorize",
         help="create a private authorization handoff",
@@ -4801,6 +4893,8 @@ def main(argv=None) -> int:
         return _validate_command(args)
     if args.cmd == "connector" and args.connector_action == "configure":
         return _connector_configure_command(args)
+    if args.cmd == "connector" and args.connector_action == "assign":
+        return _connector_assign_command(args)
     if args.cmd == "init":
         return _init_command(args)
     if args.cmd == "skill":

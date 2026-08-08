@@ -129,8 +129,8 @@ It is short enough to read in one sitting, and it already contains everything
 that makes ZipperGen worth using: two participants, a model call, an explicit
 human decision, and a branch that only the decider takes.
 
-There is no ZipperGen application to learn. You work in an ordinary directory
-with an ordinary command line, and — if you like — a coding agent such as
+There is no separate ZipperGen development environment to learn. You work in an
+ordinary directory with an ordinary command line, and — if you like — a coding agent such as
 Claude Code or Codex. This tutorial shows both, and is honest about which parts
 need a person.
 \end{abstract}
@@ -191,6 +191,12 @@ ZipperGen project: email-approval
   specification.md   created
   AGENTS.md          created
 \end{lstlisting}
+
+\begin{notebox}{\texttt{zg} is short for \texttt{zippergen}}
+Both commands are installed and do the same thing. The rest of this tutorial
+uses \texttt{zg}, because the commands you type often are the ones worth
+shortening.
+\end{notebox}
 
 That is the whole of project creation. It writes three files and stops: it asks
 you nothing, and it configures nothing.
@@ -390,13 +396,21 @@ chat that is.
 
 \begin{lstlisting}[style=shell]
 zg connector configure telegram approvals --chat-id 12345678
+zg connector assign User approvals
 \end{lstlisting}
 
 \begin{lstlisting}
 Telegram bot token (input hidden):
 Saved the Telegram bot token for this computer.
 Saved connector configuration approvals (chat 12345678).
+User will be asked through approvals.
 \end{lstlisting}
+
+The first command says \emph{which} chat. The second says \emph{who} is asked
+there — the \texttt{User}, whose \texttt{@human} action is the approval. Without
+the assignment the question still appears in whichever terminal is running the
+workflow, which is right while you are developing and wrong for a deployment
+nobody is watching.
 
 Two things went to two different places, on purpose:
 
@@ -424,12 +438,14 @@ tutorial where the two windows genuinely differ.
 \textbf{\footnotesize Coding agent}\par\vspace{2pt}
 \begin{lstlisting}[style=pane]
 > Everything validates. To send
-  approvals to Telegram, run this
+  approvals to Telegram, run these
   yourself:
 
-    zippergen connector configure
+    zg connector configure
       telegram approvals
       --chat-id <your chat id>
+    zg connector assign User
+      approvals
 
   I will not need the token.
 \end{lstlisting}
@@ -437,13 +453,18 @@ tutorial where the two windows genuinely differ.
 \begin{minipage}[t]{0.485\linewidth}
 \textbf{\footnotesize Your terminal}\par\vspace{2pt}
 \begin{lstlisting}[style=pane]
-$ zippergen connector configure
+$ zg connector configure
     telegram approvals
     --chat-id 12345678
 
 Telegram bot token (hidden):
 Saved the token for this computer.
 Saved configuration approvals.
+
+$ zg connector assign User
+    approvals
+User will be asked through
+  approvals.
 \end{lstlisting}
 \end{minipage}
 \par\smallskip
