@@ -68,3 +68,5 @@ uv.lock
 # Local design conversation (never committed)
 DESIGN-NOTES.md
 AGENT-HARNESS-DESIGN.md
+# ZipperGen project-local tooling and transparent runtime
+/.zippergen/

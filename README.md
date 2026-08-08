@@ -209,7 +209,7 @@ environment and service files without starting anything; without it, every
 model and connector is probed live and a failure stops the deployment:
 
 ```bash
-zg deploy production --no-start
+zg deploy --name production --no-start   # first time: names it
 zg start production
 zg logs production
 zg remove production          # the durable store is kept

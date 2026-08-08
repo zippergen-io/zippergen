@@ -469,6 +469,13 @@ User will be asked through
 \end{minipage}
 \par\smallskip
 
+\begin{notebox}{Authorizing Google from another computer}
+A server has no browser. Run \texttt{zg connector authorize google --scopes
+...} on your own machine, then paste the \texttt{zg-google-v1...} result it
+prints into \texttt{zg connector accept google} on the server. The credential
+never travels through a shell argument.
+\end{notebox}
+
 \section{Runs that survive interruption}
 
 There is one verb for running a workflow. \texttt{--durable} records the run as
@@ -500,7 +507,7 @@ Preparing a deployment and starting one are separate steps, and the difference
 matters. Preparing writes files and reaches nothing:
 
 \begin{lstlisting}[style=shell]
-zg deploy production --no-start
+zg deploy --name production --no-start
 \end{lstlisting}
 
 Starting is about to make real calls, so every model and connector is probed

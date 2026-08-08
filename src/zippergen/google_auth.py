@@ -32,7 +32,7 @@ _GOOGLE_AUTHORIZATION_PREFIX = "zg-google-v1"
 
 
 class GoogleConnectorError(RuntimeError):
-    """A clear Google connector error suitable for Studio output."""
+    """A Google connector error phrased for a person to act on."""
 
 
 @dataclass(frozen=True)

@@ -1,0 +1,19 @@
+# Visible, versionable ZipperGen project configuration.
+schema_version = 1
+name = "zippergen"
+specification_file = "specification.md"
+
+[connectors.providers."google"]
+"kind" = "google"
+
+[connectors.configurations."inbox"]
+"account" = "me"
+"kind" = "gmail"
+"provider" = "google"
+"query" = "is:unread"
+
+[connectors.configurations."records"]
+"kind" = "google-sheets"
+"provider" = "google"
+"spreadsheet_id" = "1AbC"
+"tab" = "Calls"

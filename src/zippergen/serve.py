@@ -2177,8 +2177,9 @@ def _resolved_workflow_spec(args) -> str:
     reader retype `workflow.py:email_approval` on every run buys nothing.
     """
 
-    if args.workflow:
-        return args.workflow
+    named = getattr(args, "workflow", None) or getattr(args, "target", None)
+    if named:
+        return str(named)
     from zippergen.workspace import Workspace
 
     workspace = Workspace(getattr(args, "project", None))
@@ -2775,11 +2776,73 @@ def _project_connector_runtime(args) -> tuple[dict, dict[str, str]]:
     from zippergen.workspace import Workspace
 
     workspace = Workspace(getattr(args, "project", None))
-    entry = workspace.workflow_entry
+    # Follow the workflow actually being deployed. Falling back to the
+    # project's configured entry silently skipped connectors whenever a
+    # workflow was named explicitly.
+    target = getattr(args, "target", None)
+    entry = target if target and (":" in target or _looks_like_path(target)) else None
+    entry = entry or workspace.workflow_entry
     if not entry:
         return {}, {}
-    workflow, module = load_workflow_spec(str(workspace.absolute_spec(entry)))
-    return connector_runtime(workspace, entry, workflow, module)
+    canonical = workspace.canonical_spec(entry, cwd=workspace.root)
+    workflow, module = load_workflow_spec(str(workspace.absolute_spec(canonical)))
+    return connector_runtime(workspace, canonical, workflow, module)
+
+
+def _connector_accept_google_command(args) -> int:
+    """Save a Google authorization produced on a computer with a browser.
+
+    `connector authorize google` runs the browser flow and prints an encoded
+    result. This is the other half: it stores the credential and the scopes
+    Google actually granted, so a machine with no browser — a server — can be
+    authorized from your laptop.
+    """
+
+    import getpass
+
+    from zippergen.google_auth import (
+        GoogleConnectorError,
+        decode_google_authorization,
+        google_authorization_summary,
+    )
+    from zippergen.workspace import Workspace
+
+    encoded = args.result
+    if not encoded:
+        try:
+            encoded = getpass.getpass(
+                "Paste the zg-google-v1... result (input hidden): "
+            ).strip()
+        except (EOFError, KeyboardInterrupt):
+            raise SystemExit("Cancelled; nothing was saved.") from None
+    if not encoded:
+        raise SystemExit("An encoded authorization result is required.")
+
+    try:
+        result = decode_google_authorization(encoded)
+    except (GoogleConnectorError, ValueError) as exc:
+        raise SystemExit(f"That is not a valid authorization result: {exc}") from exc
+
+    granted, client, expiry = google_authorization_summary(result)
+    workspace = Workspace(getattr(args, "project", None))
+    workspace.save_connector_provider_secret(
+        "google", "authorized_user_json", result.authorized_user_json
+    )
+    profile = workspace.connector_provider_profiles().get("google") or {}
+    workspace.save_connector_provider_profile(
+        "google",
+        {
+            **profile,
+            "kind": "google",
+            "granted_scopes": json.dumps(list(result.granted_scopes)),
+            "client_id": client,
+            "credential_expiry": expiry,
+        },
+    )
+    print("Google authorization saved for this computer.")
+    print(f"  Granted: {granted}")
+    print(f"  Expiry:  {expiry}")
+    return 0
 
 
 def _connector_assign_command(args) -> int:
@@ -3869,12 +3932,36 @@ def _finalize_guided_deployment(
 
 
 def _deploy_command(args) -> int:
+    if not args.target:
+        args.target = _resolved_workflow_spec(args)
     existing_path = _deployment_profile_path(args.target)
     if existing_path.exists() and not _looks_like_path(args.target) and ":" not in args.target:
         profile, workflow, module, spec = _deployment_context(args.target, source=True)
         if args.name and _slug(args.name) != str(profile["name"]):
             raise SystemExit("--name cannot rename an existing deployment.")
     else:
+        # A bare word that is neither a workflow nor a known deployment is
+        # almost always a deployment name typed before it existed.
+        if (
+            not _looks_like_path(args.target)
+            and ":" not in args.target
+            and not args.target.isidentifier()
+        ) or (
+            not _looks_like_path(args.target)
+            and ":" not in args.target
+            and not Path(f"{args.target}.py").exists()
+            and args.target not in sys.modules
+        ):
+            known = sorted(
+                path.stem for path in _deployments_dir().glob("*.json")
+            ) if _deployments_dir().exists() else []
+            raise SystemExit(
+                f"There is no deployment named {args.target!r}, and it is not "
+                "a workflow spec. To create it, name the workflow and pass "
+                f"--name {args.target}. "
+                + (f"Existing deployments: {', '.join(known)}." if known
+                   else "No deployments exist yet.")
+            )
         workflow, module = load_workflow_spec(args.target)
         spec = deployment_spec_from_module(module)
         name = _slug(args.name or spec.name or _deployment_name_from_workflow(args.target, workflow))
@@ -4505,6 +4592,25 @@ def main(argv=None) -> int:
     configure_gmail.add_argument("--bind", help="Connector requirement to bind to.")
     configure_gmail.add_argument("--project", help="Project root.")
 
+    connector_accept = connector_sub.add_parser(
+        "accept",
+        help="save an authorization produced on another computer",
+    )
+    accept_sub = connector_accept.add_subparsers(
+        dest="connector_provider",
+        required=True,
+    )
+    accept_google = accept_sub.add_parser(
+        "google",
+        help="save the zg-google-v1... result printed by 'connector authorize'",
+    )
+    accept_google.add_argument(
+        "result",
+        nargs="?",
+        help="The encoded result. Omit to be prompted without echo.",
+    )
+    accept_google.add_argument("--project", help="Project root.")
+
     connector_assign = connector_sub.add_parser(
         "assign",
         help="route a participant's human actions to a saved connector",
@@ -4693,7 +4799,15 @@ def main(argv=None) -> int:
     semantic_diff_parser.add_argument("--format", choices=("code", "json"), default="code", help="Output format.")
 
     deploy = sub.add_parser("deploy", help="configure, validate, and start a workflow deployment")
-    deploy.add_argument("target", help="Workflow spec or existing deployment name.")
+    deploy.add_argument(
+        "target",
+        nargs="?",
+        help=(
+            "Workflow spec, or the name of a deployment that already exists. "
+            "Defaults to this project's workflow; name a new deployment with "
+            "--name."
+        ),
+    )
     deploy.add_argument("--name", help="Deployment name; defaults to the workflow declaration or workflow name.")
     _add_guided_deployment_arguments(deploy)
     deploy.add_argument("--no-bundle", action="store_true", help="Run from source instead of snapshotting declared files.")
@@ -4895,6 +5009,12 @@ def main(argv=None) -> int:
         return _connector_configure_command(args)
     if args.cmd == "connector" and args.connector_action == "assign":
         return _connector_assign_command(args)
+    if (
+        args.cmd == "connector"
+        and args.connector_action == "accept"
+        and args.connector_provider == "google"
+    ):
+        return _connector_accept_google_command(args)
     if args.cmd == "init":
         return _init_command(args)
     if args.cmd == "skill":

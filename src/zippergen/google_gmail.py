@@ -36,8 +36,8 @@ def _binding_records() -> dict[str, dict[str, object]]:
     raw = os.environ.get(_CONNECTORS_ENV, "")
     if not raw:
         raise GmailError(
-            "No connector runtime configuration is active. Run through "
-            "ZipperGen Studio or deploy with a connector binding."
+            "No connector runtime configuration is active. Configure it with "
+            "'zippergen connector configure' and bind it, then deploy."
         )
     try:
         value = json.loads(raw)
