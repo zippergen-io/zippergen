@@ -19,20 +19,12 @@ MARGIN_Y = 22
 def _capture_lines(path: Path) -> list[str]:
     text = ANSI.sub("", path.read_text(encoding="utf-8")).replace("\r", "")
     lines = text.splitlines()
-    command_starts = [
-        index
-        for index, line in enumerate(lines[:-1])
-        if line.startswith("╭") and "ZipperGen Studio ·" in lines[index + 1]
-    ]
-    if command_starts:
-        start = command_starts[-1]
-    else:
-        try:
-            start = next(
-                index for index, line in enumerate(lines) if line.startswith("╭")
-            )
-        except StopIteration:
-            start = 0
+    try:
+        start = next(
+            index for index, line in enumerate(lines) if line.startswith("╭")
+        )
+    except StopIteration:
+        start = 0
     lines = lines[start:]
     while lines and not lines[-1]:
         lines.pop()
@@ -76,7 +68,7 @@ def render_svg(
         index, line = too_wide[0]
         raise ValueError(
             f"{capture}: line {index} is {len(line)} columns wide. "
-            f"Capture Studio at {canvas_columns} columns so it wraps the output."
+            f"Capture the terminal at {canvas_columns} columns so it wraps."
         )
     width = int(canvas_columns * CELL_WIDTH + 2 * MARGIN_X)
     height = len(lines) * LINE_HEIGHT + 2 * MARGIN_Y
@@ -91,7 +83,7 @@ def render_svg(
   aria-labelledby="title description" width="{width}" height="{height}"
   viewBox="0 0 {width} {height}" preserveAspectRatio="xMinYMin meet">
   <title id="title">{html.escape(title)}</title>
-  <desc id="description">Real ZipperGen Studio terminal output.</desc>
+  <desc id="description">Real ZipperGen terminal output.</desc>
   <style>
     .background {{ fill: #f6f8fa; stroke: #d0d7de; }}
     text {{ fill: #1f2328; font: 14px ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }}

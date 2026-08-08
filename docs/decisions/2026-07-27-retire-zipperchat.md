@@ -28,3 +28,14 @@ This decision removes `zipperchat`, the `ui` and `show_decisions` workflow
 options, their CLI flags, browser replay state, and the static browser demo.
 At the current alpha stage, these interfaces are removed rather than retained
 as ignored compatibility options.
+
+## Note added 8 August 2026
+
+Studio has since been removed as well. Reason 1 above named it as the main
+development and operating environment; that role now belongs to the CLI,
+driven by a person or by a coding agent. Where this record says "Studio and
+the CLI can inspect and complete those tasks", read "the CLI".
+
+The decision itself is unchanged. Nothing here argued for retiring ZipperChat
+*because* Studio existed in particular — only that one code-first interface
+was better than two — and that argument holds with the CLI in Studio's place.

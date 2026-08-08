@@ -1,6 +1,6 @@
 # pyright: reportInvalidTypeForm=false, reportGeneralTypeIssues=false, reportOperatorIssue=false, reportCallIssue=false, reportAttributeAccessIssue=false, reportUnusedExpression=false, reportUnboundVariable=false, reportReturnType=false, reportArgumentType=false
 
-"""Call/project intake workflow for Studio deployment.
+"""Call/project intake workflow for deployment.
 
 The workflow watches an email inbox, accepts messages only from certified
 senders, asks an LLM to classify/extract calls, replies with the extracted JSON,
@@ -9,11 +9,14 @@ the JSON email with corrected fields, preferably keeping the same call_id.
 
 Guided deployment:
 
-    uv run zippergen deploy examples/call_intake.py:call_intake
+    zippergen connector authorize google --scopes gmail.readonly,spreadsheets
+    zippergen connector configure gmail --bind inbox
+    zippergen connector configure google-sheets --bind call-records
+    zippergen deploy examples/call_intake.py:call_intake
 
-In Studio, select the workflow and run ``connector setup``. Studio asks for
-one Google OAuth desktop client, a Gmail search query, and a spreadsheet tab.
-No token paths or Google resource IDs are part of the workflow source.
+Configuration asks for one Google OAuth desktop client, a Gmail search query,
+and a spreadsheet tab, and stores them outside the project. No token paths or
+Google resource IDs are part of the workflow source.
 """
 
 import csv
@@ -507,7 +510,7 @@ def zippergen_doctor(config) -> list[dict[str, object]]:
             checks.append({
                 "status": "ok",
                 "name": "Gmail connector",
-                "detail": "bound through Studio",
+                "detail": "bound to a configured connector",
             })
         try:
             from zippergen.google_sheets import GoogleSheetsTable
@@ -523,7 +526,7 @@ def zippergen_doctor(config) -> list[dict[str, object]]:
             checks.append({
                 "status": "ok",
                 "name": "Google Sheets connector",
-                "detail": "bound through Studio",
+                "detail": "bound to a configured connector",
             })
 
     llm_spec = str(config.profile.get("llm") or "")

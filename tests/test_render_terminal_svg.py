@@ -9,14 +9,11 @@ def test_terminal_svg_uses_one_fixed_canvas_width(tmp_path: Path):
     capture = tmp_path / "capture.txt"
     destination = tmp_path / "capture.svg"
     capture.write_text(
+        "leading shell noise\n"
         "╭──────────────────╮\n"
-        "│ ZipperGen Studio │\n"
+        "│ zg validate      │\n"
         "╰──────────────────╯\n"
-        "Session context\n"
-        "╭────╮\n"
-        "│ ZipperGen Studio · current │\n"
-        "╰────╯\n"
-        "Short output\n",
+        "Workflow email_approval: valid\n",
         encoding="utf-8",
     )
 
@@ -26,8 +23,10 @@ def test_terminal_svg_uses_one_fixed_canvas_width(tmp_path: Path):
     assert 'width="876"' in svg
     assert 'viewBox="0 0 876 ' in svg
     assert 'preserveAspectRatio="xMinYMin meet"' in svg
-    assert "Session context" not in svg
-    assert "ZipperGen Studio · current" in svg
+    # Rendering starts at the first framed block, so anything the shell printed
+    # before it is dropped.
+    assert "leading shell noise" not in svg
+    assert "Workflow email_approval: valid" in svg
 
 
 def test_terminal_svg_rejects_a_capture_wider_than_its_canvas(tmp_path: Path):
@@ -49,7 +48,7 @@ def test_terminal_svg_can_use_a_narrower_canvas_without_scaling_text(
     destination = tmp_path / "capture.svg"
     capture.write_text(
         "╭────╮\n"
-        "│ ZipperGen Studio · deploy show │\n"
+        "│ zg status review-demo │\n"
         "╰────╯\n"
         "Deployment  review-demo\n",
         encoding="utf-8",
@@ -66,3 +65,17 @@ def test_terminal_svg_can_use_a_narrower_canvas_without_scaling_text(
     assert 'width="708"' in svg
     assert 'viewBox="0 0 708 ' in svg
     assert "font: 14px" in svg
+
+
+def test_terminal_svg_renders_a_capture_with_no_frame_at_all(tmp_path: Path):
+    """Plain CLI output has no box, so rendering must not depend on one."""
+
+    capture = tmp_path / "capture.txt"
+    destination = tmp_path / "capture.svg"
+    capture.write_text("Workflow email_approval: valid\n", encoding="utf-8")
+
+    render_svg(capture, destination, "Plain")
+
+    assert "Workflow email_approval: valid" in destination.read_text(
+        encoding="utf-8"
+    )

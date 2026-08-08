@@ -1,11 +1,11 @@
 """Small workflow with a configured Google Sheets resource.
 
-The workflow owns the table schema and the meaning of each operation. Studio
-owns Google authorization and the concrete spreadsheet:
+The workflow owns the table schema and the meaning of each operation. The
+project owns Google authorization and the concrete spreadsheet:
 
-    zippergen
-    zippergen [google_sheet_records]> connector setup
-    zippergen [google_sheet_records]> run
+    zippergen connector authorize google --scopes spreadsheets
+    zippergen connector configure google-sheets --bind records
+    zippergen run examples/google_sheets_records.py:google_sheet_records
 """
 
 import json
