@@ -388,9 +388,10 @@ def email_approval__User() -> int:
         message = next_unread_message()
     else:
         send_decision('Writer', False)
+    return handled
 \end{lstlisting}
 
-\begin{notebox}{The Writer has no branch}
+\begin{notebox}{The Writer has no approval branch}
 Nobody wrote either of those lines. Put the two programs side by side and the
 \texttt{User} does something for each of its two control structures, while the
 \texttt{Writer} does something for only one of them.

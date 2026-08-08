@@ -230,9 +230,10 @@ Quote or summarize the rendered code rather than inventing a diagram. Preserve
 the distinction between a selected-agent focus view and exact single-agent
 projection.
 
-A participant that takes no part in a decision has no branch in its projection.
-When you explain a workflow, say so — it is the property the projection gives
-you, and it is checkable in one command.
+A participant that takes no part in a decision has no branch for it in its
+projection. That holds even when it works inside a loop around that decision
+and is told each round whether to continue. When you explain a workflow, say
+so. It is the property the projection gives you, and one command checks it.
 
 ## Prepare deployment
 

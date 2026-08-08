@@ -806,6 +806,16 @@ def render_workflow(
             _workflow_signature(workflow, agent=lifeline.name),
             *(body or ["    pass"]),
         ]
+        # The signature promises this lifeline's declared output, so the body
+        # has to show where it comes from. Without this the view rendered a
+        # non-None return type over a function that never returned.
+        owned = [
+            value.name
+            for value, owner in workflow.outputs
+            if owner.name == lifeline.name
+        ]
+        if owned:
+            lines.append(f"    return {', '.join(owned)}")
         return "\n".join(lines)
 
     selected = frozenset(options.agents) if options.agents else None

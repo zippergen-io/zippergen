@@ -7,7 +7,8 @@
   <a href="https://arxiv.org/abs/2604.17612"><img src="https://img.shields.io/badge/arXiv-2604.17612-b31b1b.svg" alt="arXiv"></a>
 </p>
 
-ZipperGen is a Python library for making several LLM agents work together.
+ZipperGen is a Python library for coordinating LLM agents, humans, and
+services.
 
 You write one protocol. It says who sends what to whom, who calls a model, and
 who owns each decision. ZipperGen works out the program each participant runs,
@@ -30,16 +31,19 @@ things. A **skill**, which tells a coding agent how to work on a project. And a
 **CLI**, which you and the agent both use.
 
 ```
-      you, or Claude Code / Codex
-                  │
-            zippergen skill
-                  │
-             zippergen CLI
-      init · validate · run · deploy
-                  │
-              ZipperGen
-   protocol · projection · runtime
+you ────────────────────────────┐
+                                │
+Claude Code / Codex ─ skill ────┤
+                                │
+                          zippergen CLI
+                    init · validate · run · deploy
+                                │
+                            ZipperGen
+                 protocol · projection · runtime
 ```
+
+The skill is for the agent. The CLI is shared: you and the agent run the same
+commands, and you never have to go through the agent to use them.
 
 ## Install
 
@@ -82,11 +86,17 @@ agent in that directory and ask for it:
 > draft a short reply to each new message, and asks me to approve it before it
 > is sent. It should keep running and wait for the next message.
 
-The agent reads `zippergen skill`, writes `specification.md` and
-`workflow.py`, then checks its own work. What comes out is normal Python that
-you can read:
+The agent runs `zippergen skill`, reads the instructions it prints, writes
+`specification.md` and `workflow.py`, then checks its own work. What comes out
+is normal Python that you can read:
 
 ```python
+message = Var("message", str)
+draft = Var("draft", str)
+approved = Var("approved", bool)
+handled = Var("handled", int, default=0)
+
+
 @workflow
 def email_approval() -> int:
     User: message = next_unread_message()
@@ -159,6 +169,7 @@ def email_approval__User() -> int:
         message = next_unread_message()
     else:
         send_decision('Writer', False)
+    return handled
 ```
 
 ```bash
@@ -174,7 +185,8 @@ def email_approval__Writer() -> None:
         send('User', draft)
 ```
 
-**The Writer has no branch.** Nobody wrote those two programs by hand.
+**The Writer has no approval branch.** Nobody wrote those two programs by
+hand.
 
 The Writer is told in every round whether to go on, because it has work to do
 inside the loop. It is never told what the User approved, because it does
@@ -186,7 +198,8 @@ This is what projection means, and it is what the Lean proof is about.
 ## Deterministic testing
 
 `--llm mock` gives every action the same placeholder answer, so a run always
-takes the same path. To test another path, write the answers down in a file:
+takes the same path. To give model actions fixed answers instead, write them
+down in a file:
 
 ```json
 {
@@ -203,6 +216,13 @@ same way. A list is used once through. If the workflow asks for one more answer
 than the list holds, the run fails instead of quietly repeating the last one.
 So a change that calls an action more often than you expected shows up as an
 error.
+
+This covers model actions only. A `@human` action still asks a person, so to
+drive an approval one way or the other you answer it, or pipe the answer in:
+
+```bash
+printf 'n\n' | zg run --llm scripted:replies.json
+```
 
 ## Durable runs and deployment
 
@@ -234,7 +254,7 @@ zg remove production          # the durable store is kept
 ```
 
 A workflow can ask a person on Telegram, read Gmail, or write to Google
-Sheets. Which chat, which spreadsheet, which search: that is project
+Sheets. Which chat, which spreadsheet, which Gmail query: that is project
 configuration, and it goes in `zippergen.toml`. Credentials never go there:
 
 ```bash
@@ -276,9 +296,9 @@ The main result says that the projected local programs behave exactly like the
 global workflow. Freedom from deadlock follows from this, for well-formed
 workflows in the supported model.
 
-The main theorems are [machine-checked in Lean
-4](https://github.com/zippergen-io/zippergen-lean/tree/main/isola). The formal
-results are described in these papers:
+The main theorems are
+[machine-checked in Lean 4](https://github.com/zippergen-io/zippergen-lean/tree/main/isola).
+The formal results are described in these papers:
 
 - Bollig, Függer, and Nowak. [Provable Coordination for LLM Agents via
   Message Sequence Charts](https://arxiv.org/abs/2604.17612). Accepted at

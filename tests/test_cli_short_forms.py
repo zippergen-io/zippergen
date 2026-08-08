@@ -212,3 +212,27 @@ def test_a_manifest_entry_wins_over_discovery(tmp_path, monkeypatch, capsys):
     assert serve.main(["validate"]) == 0
 
     assert "email_approval: valid" in capsys.readouterr().out
+
+
+def test_a_projection_that_promises_a_result_shows_where_it_comes_from(
+    project, capsys
+):
+    """The signature and the body have to agree.
+
+    The local view typed `User` as `-> int` while rendering a function that
+    never returned. A reader who knows Python notices that before they notice
+    anything else.
+    """
+
+    assert serve.main(["show", "--agent", "User"]) == 0
+    user = capsys.readouterr().out
+
+    assert "-> int" in user
+    assert "return handled" in user
+
+    # The Writer owns no output, so it must keep promising nothing.
+    assert serve.main(["show", "--agent", "Writer"]) == 0
+    writer = capsys.readouterr().out
+
+    assert "-> None" in writer
+    assert "return" not in writer
