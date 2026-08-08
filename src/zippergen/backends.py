@@ -8,6 +8,7 @@ import os
 import threading
 import time
 from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from urllib import request
 from urllib.error import HTTPError, URLError
@@ -21,12 +22,23 @@ __all__ = [
     "make_openai_backend",
     "make_anthropic_backend",
     "make_lifeline_router",
+    "PROVIDER_API_KEY_VARIABLES",
     "make_scripted_backend",
     "load_scripted_script",
     "validate_local_idle_policies",
     "router_from_specs",
     "router_from_env",
 ]
+
+
+# Which environment variable holds each provider's API key. `backend_from_spec`
+# reads these directly; anything that needs to *report* what is missing without
+# building a backend should use this rather than repeating the names.
+PROVIDER_API_KEY_VARIABLES: Mapping[str, str] = {
+    "openai": "OPENAI_API_KEY",
+    "anthropic": "ANTHROPIC_API_KEY",
+    "mistral": "MISTRAL_API_KEY",
+}
 
 
 def _coerce_bool(value: object) -> bool:
@@ -454,8 +466,45 @@ def make_anthropic_backend(
     return backend
 
 
-def load_scripted_script(path: str | Path) -> dict[str, list[dict[str, object]]]:
-    """Read a scripted-response file, checking its shape before it is used."""
+@dataclass(frozen=True)
+class _ScriptedResponses:
+    """Either a constant answer, or a finite sequence that must be consumed.
+
+    The distinction is the point. A constant says *"this participant always
+    answers this way"*; a sequence says *"exactly these calls are expected"*,
+    and running past its end is a control-flow change worth failing on.
+    """
+
+    responses: tuple[dict[str, object], ...]
+    repeating: bool
+
+
+def _read_scripted_entry(key: str, value: object) -> _ScriptedResponses:
+    """A bare object repeats; a list is a finite, exhaustible sequence."""
+
+    entries = value if isinstance(value, list) else [value]
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise RuntimeError(
+                f"Scripted responses for {key!r} must be objects mapping "
+                f"output name to value; got {type(entry).__name__}."
+            )
+    if not entries:
+        raise RuntimeError(
+            f"Scripted responses for {key!r} are empty; give at least one."
+        )
+    return _ScriptedResponses(
+        responses=tuple(dict(entry) for entry in entries),
+        repeating=not isinstance(value, list),
+    )
+
+
+def load_scripted_script(path: str | Path) -> dict[str, _ScriptedResponses]:
+    """Read a scripted-response file, checking its shape before it is used.
+
+    ``{"LLM1.assess": {...}}`` answers every call the same way.
+    ``{"LLM1.assess": [{...}, {...}]}`` expects exactly two calls.
+    """
 
     source = Path(path).expanduser()
     try:
@@ -467,67 +516,69 @@ def load_scripted_script(path: str | Path) -> dict[str, list[dict[str, object]]]
     if not isinstance(raw, dict):
         raise RuntimeError(
             f"Scripted response file {source} must be a JSON object mapping "
-            "'Participant.action' or 'action' to a list of responses."
+            "'Participant.action' or 'action' to a response or a list of them."
         )
-
-    script: dict[str, list[dict[str, object]]] = {}
-    for key, value in raw.items():
-        entries = value if isinstance(value, list) else [value]
-        for entry in entries:
-            if not isinstance(entry, dict):
-                raise RuntimeError(
-                    f"Scripted responses for {key!r} must be objects mapping "
-                    f"output name to value; got {type(entry).__name__}."
-                )
-        script[str(key)] = [dict(entry) for entry in entries]
-    return script
+    return {
+        str(key): _read_scripted_entry(str(key), value)
+        for key, value in raw.items()
+    }
 
 
 def make_scripted_backend(
-    script: dict[str, list[dict[str, object]]],
+    script: Mapping[str, object],
 ) -> Callable:
-    """Replay recorded outputs so every protocol branch can be reached.
+    """Replay recorded outputs so every protocol branch is reachable.
 
     ``mock`` returns one placeholder for every action, so a workflow driven by
-    it can only ever take the branch that placeholder happens to select — in a
-    consensus protocol, immediate agreement. Nothing behind a decision is
-    reachable. This backend fixes that by answering per action.
+    it takes whichever branch that placeholder selects and no other. In a
+    consensus protocol that means immediate agreement, and everything behind a
+    decision is unreachable. This backend answers per action instead.
 
     Keys are ``"Participant.action"``, falling back to ``"action"`` for every
-    participant. Responses are consumed in order; **the last one repeats** once
-    the list is exhausted, so a reviewer that never changes its mind is a
-    one-element list rather than a long one.
+    participant. A bare object answers every call the same way; a list is a
+    finite sequence and **running past its end is an error**, so a control-flow
+    change that calls an action more often than expected fails loudly rather
+    than being absorbed.
     """
 
-    remaining: dict[str, list[dict[str, object]]] = {
-        key: list(value) for key, value in script.items()
+    entries = {
+        key: value
+        if isinstance(value, _ScriptedResponses)
+        else _read_scripted_entry(key, value)
+        for key, value in script.items()
     }
-    last: dict[str, dict[str, object]] = {}
+    used: dict[str, int] = {key: 0 for key in entries}
     lock = threading.Lock()
 
     def backend(action, inputs: dict[str, object]) -> dict[str, object]:
         del inputs  # a scripted response does not depend on the prompt
         lifeline_name = threading.current_thread().name
         target = f"{lifeline_name}.{action.name}"
-        key = target if target in remaining else action.name
-        if key not in remaining:
-            known = ", ".join(sorted(remaining)) or "none"
+        key = target if target in entries else action.name
+        if key not in entries:
+            known = ", ".join(sorted(entries)) or "none"
             raise RuntimeError(
                 f"No scripted response for {target!r}. Add {target!r} or "
                 f"{action.name!r} to the response file. Scripted: {known}."
             )
 
+        entry = entries[key]
         with lock:
-            queue = remaining[key]
-            if queue:
-                response = queue.pop(0)
-                last[key] = response
-            elif key in last:
-                response = last[key]
-            else:
-                raise RuntimeError(
-                    f"Scripted responses for {key!r} are empty; give at least one."
-                )
+            index = used[key]
+            used[key] = index + 1
+        if entry.repeating:
+            response = entry.responses[0]
+        elif index < len(entry.responses):
+            response = entry.responses[index]
+        else:
+            count = len(entry.responses)
+            raise RuntimeError(
+                f"Scripted responses for {key!r} are exhausted: "
+                f"{count} given, call {index + 1} requested. Either the "
+                "workflow calls it more often than expected, or the script "
+                "needs more entries. Use a bare object instead of a list to "
+                "answer every call the same way."
+            )
 
         expected = [name for name, _type in action.outputs]
         absent = [name for name in expected if name not in response]

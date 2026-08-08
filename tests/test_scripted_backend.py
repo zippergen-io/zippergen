@@ -72,24 +72,65 @@ def test_responses_are_consumed_in_order():
     assert _as("LLM1", backend)["reason"] == "second"
 
 
-def test_the_last_response_repeats_once_exhausted():
-    """A reviewer who never changes its mind is a one-element list.
+def test_a_bare_object_answers_every_call_the_same_way():
+    """A reviewer who never changes its mind is written without a list.
 
-    Without this, driving a loop to its bound means writing one entry per
-    iteration and updating them whenever the bound changes.
+    Otherwise driving a loop to its bound means one entry per iteration,
+    rewritten whenever the bound changes.
     """
 
     backend = make_scripted_backend(
-        {"LLM1.assess": [{"verdict": "no", "reason": "unmoved"}]}
+        {"LLM1.assess": {"verdict": "no", "reason": "unmoved"}}
     )
 
     for _ in range(5):
         assert _as("LLM1", backend)["verdict"] == "no"
 
 
+def test_a_list_is_finite_and_running_past_its_end_fails():
+    """The point of a deterministic backend.
+
+    If a change makes an action run more often than the script expects, that
+    is a control-flow change and it should fail loudly rather than be absorbed
+    by silently repeating the last answer.
+    """
+
+    backend = make_scripted_backend(
+        {"LLM1.assess": [{"verdict": "no", "reason": "only call"}]}
+    )
+    assert _as("LLM1", backend)["reason"] == "only call"
+
+    with pytest.raises(RuntimeError) as error:
+        _as("LLM1", backend)
+
+    message = str(error.value)
+    assert "exhausted" in message
+    assert "1 given, call 2 requested" in message
+    assert "bare object" in message
+
+
+def test_a_one_element_list_is_not_the_same_as_a_bare_object(tmp_path):
+    """The distinction survives the file format, which is where it matters."""
+
+    constant = tmp_path / "constant.json"
+    constant.write_text(json.dumps({"assess": {"verdict": "y", "reason": "r"}}))
+    sequence = tmp_path / "sequence.json"
+    sequence.write_text(json.dumps({"assess": [{"verdict": "y", "reason": "r"}]}))
+
+    repeating = make_scripted_backend(load_scripted_script(constant))
+    finite = make_scripted_backend(load_scripted_script(sequence))
+
+    _as("LLM1", repeating)
+    _as("LLM1", repeating)
+
+    _as("LLM1", finite)
+    with pytest.raises(RuntimeError, match="exhausted"):
+        _as("LLM1", finite)
+
+
 def test_a_bare_action_name_answers_for_every_participant():
     backend = make_scripted_backend(
-        {"assess": [{"verdict": "maybe", "reason": "shared"}]}
+        {"assess": {"verdict": "maybe", "reason": "shared"}}
     )
 
     assert _as("LLM1", backend)["verdict"] == "maybe"
@@ -99,8 +140,8 @@ def test_a_bare_action_name_answers_for_every_participant():
 def test_a_participant_key_wins_over_a_bare_action_name():
     backend = make_scripted_backend(
         {
-            "assess": [{"verdict": "shared", "reason": "x"}],
-            "LLM2.assess": [{"verdict": "specific", "reason": "y"}],
+            "assess": {"verdict": "shared", "reason": "x"},
+            "LLM2.assess": {"verdict": "specific", "reason": "y"},
         }
     )
 
@@ -109,7 +150,7 @@ def test_a_participant_key_wins_over_a_bare_action_name():
 
 
 def test_an_unscripted_action_names_itself_and_what_is_scripted():
-    backend = make_scripted_backend({"LLM1.assess": [{"verdict": "y", "reason": "r"}]})
+    backend = make_scripted_backend({"LLM1.assess": {"verdict": "y", "reason": "r"}})
 
     with pytest.raises(RuntimeError) as error:
         _as("LLM2", backend, _Action("reconsider", (("verdict", str),)))
@@ -120,7 +161,7 @@ def test_an_unscripted_action_names_itself_and_what_is_scripted():
 
 
 def test_a_response_missing_a_declared_output_says_which():
-    backend = make_scripted_backend({"LLM1.assess": [{"verdict": "yes"}]})
+    backend = make_scripted_backend({"LLM1.assess": {"verdict": "yes"}})
 
     with pytest.raises(RuntimeError, match="missing reason"):
         _as("LLM1", backend)
@@ -128,24 +169,23 @@ def test_a_response_missing_a_declared_output_says_which():
 
 def test_extra_keys_in_a_response_are_ignored():
     backend = make_scripted_backend(
-        {"LLM1.assess": [{"verdict": "y", "reason": "r", "note": "for humans"}]}
+        {"LLM1.assess": {"verdict": "y", "reason": "r", "note": "for humans"}}
     )
 
     assert _as("LLM1", backend) == {"verdict": "y", "reason": "r"}
 
 
-def test_a_single_object_is_accepted_where_a_list_is_expected(tmp_path):
+def test_an_empty_list_is_rejected_when_the_file_is_read(tmp_path):
     path = tmp_path / "script.json"
-    path.write_text(json.dumps({"LLM1.assess": {"verdict": "y", "reason": "r"}}))
+    path.write_text(json.dumps({"assess": []}))
 
-    backend = make_scripted_backend(load_scripted_script(path))
-
-    assert _as("LLM1", backend)["verdict"] == "y"
+    with pytest.raises(RuntimeError, match="at least one"):
+        load_scripted_script(path)
 
 
 def test_the_spec_builds_the_backend_from_a_file(tmp_path):
     path = tmp_path / "script.json"
-    path.write_text(json.dumps({"assess": [{"verdict": "y", "reason": "r"}]}))
+    path.write_text(json.dumps({"assess": {"verdict": "y", "reason": "r"}}))
 
     backend, label = backend_from_spec(f"scripted:{path}")
 

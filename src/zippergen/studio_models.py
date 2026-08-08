@@ -11,7 +11,10 @@ from urllib import request
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlsplit, urlunsplit
 
-from zippergen.backends import validate_local_idle_policies
+from zippergen.backends import (
+    PROVIDER_API_KEY_VARIABLES,
+    validate_local_idle_policies,
+)
 from zippergen.dev import default_llm_spec
 from zippergen.models import effective_llm_routes
 from zippergen.rendering import StatusKind
@@ -26,11 +29,8 @@ _PROVIDER_ALIASES = {
     "claude": "anthropic",
     "ollama": "local",
 }
-_PROVIDER_SECRETS = {
-    "openai": "OPENAI_API_KEY",
-    "anthropic": "ANTHROPIC_API_KEY",
-    "mistral": "MISTRAL_API_KEY",
-}
+# The mapping lives with the providers; this alias keeps the local name.
+_PROVIDER_SECRETS = PROVIDER_API_KEY_VARIABLES
 _PROVIDER_DEFAULT_MODELS = {
     "local": ("OLLAMA_MODEL", "qwen2.5:7b"),
     "openai": ("OPENAI_MODEL", "gpt-4o-mini"),

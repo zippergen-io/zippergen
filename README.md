@@ -573,6 +573,7 @@ Documentation:
 - [Development and Deployment Manual](docs/workflow-development-deployment-guide.pdf)
 - [Call Intake End to End](docs/call-intake-end-to-end.pdf)
 - [Workflow authoring skill](.agents/skills/zippergen-workflows/SKILL.md)
+  — also available from an install with `zippergen skill`
 
 The first document is the shortest complete path. The manual contains the
 concepts, full command reference, model setup, durable execution, connectors,

@@ -52,5 +52,11 @@ package-dir = {"" = "src"}
 where = ["src"]
 include = ["zippergen*"]
 
+# The coding-agent skill ships with the package. Without this, `pip install
+# zippergen` gives you a runtime with no instructions for an agent, and the
+# skill is reachable only from a git checkout.
+[tool.setuptools.package-data]
+zippergen = ["skills/**/*.md", "skills/**/*.yaml"]
+
 [tool.pytest.ini_options]
 pythonpath = ["."]

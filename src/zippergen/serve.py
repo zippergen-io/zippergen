@@ -2603,6 +2603,21 @@ def _validate_command(args) -> int:
     return 0 if result["valid"] else 1
 
 
+def _skill_command(args) -> int:
+    from zippergen.skill import SkillNotFound, agents_md, load_skill
+
+    if args.agents_md:
+        project = args.project or Path.cwd().name
+        print(agents_md(project), end="")
+        return 0
+    try:
+        skill = load_skill()
+    except SkillNotFound as exc:
+        raise SystemExit(str(exc)) from exc
+    print(skill.render(include_references=not args.no_references), end="")
+    return 0
+
+
 def _snapshot_command(args) -> int:
     workflow, module = load_workflow_spec(args.workflow)
     payload = json.dumps(semantic_snapshot(workflow, module), indent=2, default=str)
@@ -4179,6 +4194,25 @@ def main(argv=None) -> int:
     validate.add_argument("workflow", help="Workflow spec: module:workflow or path.py:workflow")
     validate.add_argument("--json", action="store_true", help="Print machine-readable validation results.")
 
+    skill_parser = sub.add_parser(
+        "skill",
+        help="print the coding-agent skill shipped with this package",
+    )
+    skill_parser.add_argument(
+        "--agents-md",
+        action="store_true",
+        help="Print an AGENTS.md that points a coding agent at the skill.",
+    )
+    skill_parser.add_argument(
+        "--project",
+        help="Project name for --agents-md; defaults to the directory name.",
+    )
+    skill_parser.add_argument(
+        "--no-references",
+        action="store_true",
+        help="Print SKILL.md alone, without the reference files it links.",
+    )
+
     snapshot = sub.add_parser("snapshot", help="save a stable semantic workflow baseline")
     snapshot.add_argument("workflow", help="Workflow spec: module:workflow or path.py:workflow")
     snapshot.add_argument("--output", "-o", help="Write JSON to this path instead of standard output.")
@@ -4356,6 +4390,8 @@ def main(argv=None) -> int:
         return _show_command(args)
     if args.cmd == "validate":
         return _validate_command(args)
+    if args.cmd == "skill":
+        return _skill_command(args)
     if args.cmd == "snapshot":
         return _snapshot_command(args)
     if args.cmd == "diff":

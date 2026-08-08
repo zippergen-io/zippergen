@@ -1,0 +1,4 @@
+interface:
+  display_name: "ZipperGen Workflows"
+  short_description: "Create, refine, inspect, and deploy workflows"
+  default_prompt: "Use $zippergen-workflows to turn this workflow description into validated ZipperGen code."
