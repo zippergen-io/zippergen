@@ -270,7 +270,7 @@ makes it. That annotation is the important one, and the next section shows why.
 \section{Check it}
 
 \begin{lstlisting}[style=shell]
-zippergen validate workflow.py:email_approval
+zg validate
 \end{lstlisting}
 
 \begin{lstlisting}
@@ -294,7 +294,7 @@ participant actually runs.
 The \texttt{User} is the decider, so the branch is there:
 
 \begin{lstlisting}[style=shell]
-zippergen show workflow.py:email_approval --agent User
+zg show --agent User
 \end{lstlisting}
 
 \begin{lstlisting}[language=Python]
@@ -312,7 +312,7 @@ def email_approval__User(message: str) -> str:
 Now the \texttt{Writer}:
 
 \begin{lstlisting}[style=shell]
-zippergen show workflow.py:email_approval --agent Writer
+zg show --agent Writer
 \end{lstlisting}
 
 \begin{lstlisting}[language=Python]
@@ -344,11 +344,12 @@ No model key needed yet. \texttt{--llm mock} answers model calls with a
 placeholder:
 
 \begin{lstlisting}[style=shell]
-zippergen run workflow.py:email_approval --llm mock --execution memory \
-    --input message="Could we move our meeting to Thursday afternoon?"
+zg run --llm mock
 \end{lstlisting}
 
 \begin{lstlisting}
+Message (str): Could we move our meeting to Thursday afternoon?
+
 Proposed reply:
 
 [draft_reply:draft]
@@ -361,37 +362,13 @@ The approval happened in your terminal, and answering \texttt{n} takes the
 other branch. The reply is a placeholder because \texttt{mock} does not call a
 model.
 
-\subsection{Making the test say something}
-
-\texttt{mock} answers every action the same way, which means a workflow driven
-by it takes one path and no other. To exercise a specific branch, script the
-answers. Put this in \texttt{replies.json}:
-
-\begin{lstlisting}
-{
-  "draft_reply": {"draft": "Thursday afternoon works for me. How about 3pm?"}
-}
-\end{lstlisting}
-
-\begin{lstlisting}[style=shell]
-zippergen run workflow.py:email_approval --llm scripted:replies.json \
-    --execution memory --input message="Could we move our meeting to Thursday?"
-\end{lstlisting}
-
-\begin{lstlisting}
-Proposed reply:
-
-Thursday afternoon works for me. How about 3pm?
-
-Send this reply? [y/n]: y
-{"result": "Sent: Thursday afternoon works for me. How about 3pm?"}
-\end{lstlisting}
-
-Keys are \texttt{action} or \texttt{Participant.action}. A bare object answers
-every call the same way; a \emph{list} is a finite sequence, and running past
-its end is an error. That distinction matters: if a change makes an action run
-more often than the script expects, the run fails instead of quietly repeating
-the last answer.
+\begin{notebox}{Testing a specific branch}
+\texttt{mock} answers every action the same way, so a workflow driven by it
+takes one path and no other. When you want to drive a particular branch — the
+rejection, or a loop running exactly three times — script the answers with
+\texttt{--llm scripted:replies.json}. The guide covers it; you do not need it
+yet.
+\end{notebox}
 
 \section{Use a real model}
 
@@ -399,8 +376,7 @@ Set the key in your environment and name a provider:
 
 \begin{lstlisting}[style=shell]
 export OPENAI_API_KEY=sk-...
-zippergen run workflow.py:email_approval --llm openai:gpt-4o-mini \
-    --execution memory --input message="Could we move our meeting to Thursday?"
+zg run --llm openai:gpt-4o-mini
 \end{lstlisting}
 
 There is no ZipperGen credential store to set up for development. The
@@ -413,7 +389,7 @@ the workflow declares that it needs a place to ask a human, and you say which
 chat that is.
 
 \begin{lstlisting}[style=shell]
-zippergen connector configure telegram approvals --chat-id 12345678
+zg connector configure telegram approvals --chat-id 12345678
 \end{lstlisting}
 
 \begin{lstlisting}
@@ -478,8 +454,7 @@ There is one verb for running a workflow. \texttt{--durable} records the run as
 it goes, so an interrupted run continues rather than starting over:
 
 \begin{lstlisting}[style=shell]
-zippergen run workflow.py:email_approval --durable --llm mock \
-    --input message="Could we move our meeting to Thursday?"
+zg run --durable --llm mock
 \end{lstlisting}
 
 \begin{lstlisting}
@@ -492,7 +467,7 @@ Proposed reply:
 Press Ctrl-C while it waits for your approval, then:
 
 \begin{lstlisting}[style=shell]
-zippergen run --resume
+zg run --resume
 \end{lstlisting}
 
 The model call that already happened is not repeated. The run resumes at the
@@ -504,22 +479,22 @@ Preparing a deployment and starting one are separate steps, and the difference
 matters. Preparing writes files and reaches nothing:
 
 \begin{lstlisting}[style=shell]
-zippergen deploy production --no-start
+zg deploy production --no-start
 \end{lstlisting}
 
 Starting is about to make real calls, so every model and connector is probed
 first, and a failure stops it:
 
 \begin{lstlisting}[style=shell]
-zippergen start production
-zippergen logs production
-zippergen status production
+zg start production
+zg logs production
+zg status production
 \end{lstlisting}
 
 A deployment you no longer want:
 
 \begin{lstlisting}[style=shell]
-zippergen remove production
+zg remove production
 \end{lstlisting}
 
 Its durable store is kept — that is the record of what actually ran, and it is

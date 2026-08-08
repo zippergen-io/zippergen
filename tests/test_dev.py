@@ -472,15 +472,15 @@ def test_run_durable_and_run_resume_reach_the_same_execution(tmp_path, monkeypat
     assert calls[1]["workflow"] is None
 
 
-def test_a_plain_run_still_needs_a_workflow():
+def test_a_plain_run_outside_a_project_says_what_is_missing(tmp_path, monkeypatch):
+    """Inside a project the workflow is inferred; outside there is none."""
+
     from zippergen import serve
 
-    try:
+    monkeypatch.chdir(tmp_path)
+
+    with pytest.raises(SystemExit, match="has none configured"):
         serve.main(["run"])
-    except SystemExit as exc:
-        assert "use --resume" in str(exc)
-    else:  # pragma: no cover
-        raise AssertionError("a plain run with no workflow should be refused")
 
 
 def test_run_id_requires_resume():

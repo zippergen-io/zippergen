@@ -2170,22 +2170,58 @@ def _print_status(status: dict[str, object]) -> None:
             )
 
 
+def _resolved_workflow_spec(args) -> str:
+    """Use the project's workflow when the command line does not name one.
+
+    A single-workflow project already records its entry point, so making the
+    reader retype `workflow.py:email_approval` on every run buys nothing.
+    """
+
+    if args.workflow:
+        return args.workflow
+    from zippergen.workspace import Workspace
+
+    workspace = Workspace(getattr(args, "project", None))
+    entry = workspace.workflow_entry
+    if not entry:
+        raise SystemExit(
+            "No workflow was named and this project has none configured. "
+            "Give a workflow spec, or set workflow_entry in zippergen.toml."
+        )
+    return str(workspace.absolute_spec(entry))
+
+
 def _run_workflow_command(args) -> int:
+    args.workflow = _resolved_workflow_spec(args)
     wf, module = load_workflow_spec(args.workflow)
     inputs = _parse_input_json(args.input_json)
     inputs.update(_parse_inputs(args.input))
+    # Ask for anything the workflow needs that was not supplied, rather than
+    # refusing with a usage error.
+    if sys.stdin.isatty() and not getattr(args, "yes", False):
+        from zippergen.dev import collect_workflow_inputs
+
+        inputs = collect_workflow_inputs(
+            wf, module, inputs, interactive=True, input_func=input
+        )
     options = _parse_options(args.option, services=args.services)
     llms = normalize_llm_overrides(_parse_inputs(args.llm_for))
     llm_idle_timeouts = _parse_llm_idle_timeouts(
         args.llm_idle_timeout_for
     )
 
+    # Naming a store means wanting one; otherwise a plain run leaves nothing
+    # behind, and --durable is the way to ask for a run you can come back to.
+    execution = args.execution or ("sqlite" if args.store else "memory")
     store_path = args.store
-    if args.execution == "sqlite":
+    if execution == "sqlite":
         store_path = _ensure_store_parent(store_path or _default_store_path(args.workflow, wf))
         print(f"Store: {store_path}", file=sys.stderr)
     elif store_path:
-        print("--store is ignored when --execution memory is used.", file=sys.stderr)
+        print(
+            "--store is ignored because --execution memory was requested.",
+            file=sys.stderr,
+        )
 
     config = RunConfig(
         workflow_spec=args.workflow,
@@ -2200,7 +2236,7 @@ def _run_workflow_command(args) -> int:
         inputs=inputs,
         options=options,
         timeout=args.timeout,
-        execution=args.execution,
+        execution=execution,
     )
     _call_setup_hook(module, config)
 
@@ -2208,7 +2244,7 @@ def _run_workflow_command(args) -> int:
         "timeout": args.timeout,
         "llm_idle_timeout": args.llm_idle_timeout,
         "llm_idle_timeouts": llm_idle_timeouts,
-        "execution": args.execution,
+        "execution": execution,
         "store_path": store_path,
         "assistant": args.assistant,
         "assistant_root": str(Path.cwd()),
@@ -2303,6 +2339,7 @@ def _view_options_from_args(args) -> ViewOptions:
 
 
 def _show_command(args) -> int:
+    args.workflow = _resolved_workflow_spec(args)
     workflow, module = load_workflow_spec(args.workflow)
     options = _view_options_from_args(args)
     try:
@@ -2593,6 +2630,7 @@ def _validate_workflow(workflow: Workflow, module: ModuleType) -> dict[str, obje
 
 
 def _validate_command(args) -> int:
+    args.workflow = _resolved_workflow_spec(args)
     workflow, module = load_workflow_spec(args.workflow)
     result = _validate_workflow(workflow, module)
     if args.json:
@@ -2848,6 +2886,7 @@ def _skill_command(args) -> int:
 
 
 def _snapshot_command(args) -> int:
+    args.workflow = _resolved_workflow_spec(args)
     workflow, module = load_workflow_spec(args.workflow)
     payload = json.dumps(semantic_snapshot(workflow, module), indent=2, default=str)
     if args.output:
@@ -4495,10 +4534,19 @@ def main(argv=None) -> int:
     rn.add_argument("--option", action="append", default=[], metavar="name=value", help="Option passed to zippergen_setup(config).")
     rn.add_argument("--services", choices=("fake", "live"), help="Shortcut for --option services=<value>.")
     rn.add_argument("--timeout", type=float, default=60.0, help="Workflow timeout in seconds; use 0 for no deadline.")
-    rn.add_argument("--execution", choices=("sqlite", "memory"), default="sqlite", help="Execution backend.")
+    rn.add_argument(
+        "--execution",
+        choices=("sqlite", "memory"),
+        default=None,
+        help=(
+            "Where the run keeps its state. Defaults to 'memory', which leaves "
+            "nothing behind, or to 'sqlite' when --store names one. Use "
+            "--durable for a recorded, resumable run."
+        ),
+    )
 
     show = sub.add_parser("show", help="render a workflow as a code-first semantic view")
-    show.add_argument("workflow", help="Workflow spec: module:workflow or path.py:workflow")
+    show.add_argument("workflow", nargs="?", help="Workflow spec: module:workflow or path.py:workflow. Defaults to this project's workflow.")
     show.add_argument("--detail", choices=DETAILS, default="protocol", help="Amount of implementation detail to include.")
     show.add_argument("--communications", action="store_true", help="Show communication and control flow only.")
     focus = show.add_mutually_exclusive_group()
@@ -4507,7 +4555,7 @@ def main(argv=None) -> int:
     show.add_argument("--format", choices=("code", "json"), default="code", help="Output format.")
 
     validate = sub.add_parser("validate", help="validate loading, projection, rendering, and deployment metadata")
-    validate.add_argument("workflow", help="Workflow spec: module:workflow or path.py:workflow")
+    validate.add_argument("workflow", nargs="?", help="Workflow spec: module:workflow or path.py:workflow. Defaults to this project's workflow.")
     validate.add_argument("--json", action="store_true", help="Print machine-readable validation results.")
 
     init_parser = sub.add_parser(
@@ -4544,7 +4592,7 @@ def main(argv=None) -> int:
     )
 
     snapshot = sub.add_parser("snapshot", help="save a stable semantic workflow baseline")
-    snapshot.add_argument("workflow", help="Workflow spec: module:workflow or path.py:workflow")
+    snapshot.add_argument("workflow", nargs="?", help="Workflow spec: module:workflow or path.py:workflow. Defaults to this project's workflow.")
     snapshot.add_argument("--output", "-o", help="Write JSON to this path instead of standard output.")
 
     semantic_diff_parser = sub.add_parser("diff", help="compare two workflows by semantic IR changes")
@@ -4746,11 +4794,6 @@ def main(argv=None) -> int:
             raise SystemExit("--run-id requires --resume.")
         if getattr(args, "durable", False) or getattr(args, "resume", False):
             return _durable_run_command(args)
-        if not args.workflow:
-            raise SystemExit(
-                "Name a workflow to run, or use --resume to continue a "
-                "recorded run."
-            )
         return _run_workflow_command(args)
     if args.cmd == "show":
         return _show_command(args)

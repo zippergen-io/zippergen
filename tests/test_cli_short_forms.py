@@ -1,0 +1,106 @@
+"""The common path should be short enough not to undercut the story.
+
+A first tutorial that says "just tell the coding agent what you want" is
+undermined if every check then costs a workflow spec, an execution-mode flag
+and an inline input. A single-workflow project already records its entry point,
+so these commands infer it.
+
+    zippergen validate workflow.py:email_approval --execution memory ...
+    zg validate
+"""
+
+import shutil
+from pathlib import Path
+
+import pytest
+
+from zippergen import serve
+from zippergen.workspace import Workspace
+
+EXAMPLE = Path(__file__).resolve().parents[1] / "examples" / "email_approval.py"
+
+
+@pytest.fixture
+def project(tmp_path, monkeypatch):
+    root = tmp_path / "email-approval"
+    root.mkdir()
+    shutil.copy(EXAMPLE, root / "workflow.py")
+    workspace = Workspace(root, home=tmp_path / "home")
+    workspace.initialize_project(name="email-approval")
+    workspace.select_workflow("workflow.py:email_approval", cwd=root)
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(tmp_path / "home"))
+    return root
+
+
+def test_validate_infers_the_project_workflow(project, capsys):
+    assert serve.main(["validate"]) == 0
+
+    assert "email_approval: valid" in capsys.readouterr().out
+
+
+def test_show_infers_the_project_workflow(project, capsys):
+    assert serve.main(["show", "--agent", "Writer"]) == 0
+
+    rendered = capsys.readouterr().out
+    assert "email_approval__Writer" in rendered
+    # The Writer takes no part in the User's decision, so it has no branch.
+    assert "if " not in rendered
+
+
+def test_run_infers_the_project_workflow(project, monkeypatch, capsys):
+    monkeypatch.setattr("builtins.input", lambda _prompt="": "y")
+
+    rc = serve.main(["run", "--llm", "mock", "--input", "message=hello", "--yes"])
+
+    assert rc == 0
+    assert "result" in capsys.readouterr().out
+
+
+def test_an_explicit_spec_still_wins(project, capsys):
+    assert serve.main(["validate", "workflow.py:email_approval"]) == 0
+
+    assert "email_approval: valid" in capsys.readouterr().out
+
+
+def test_a_run_leaves_nothing_behind_by_default(project, monkeypatch, capsys):
+    """`--execution memory` was an implementation detail in the reader's way."""
+
+    monkeypatch.setattr("builtins.input", lambda _prompt="": "y")
+
+    serve.main(["run", "--llm", "mock", "--input", "message=hello", "--yes"])
+
+    assert "Store:" not in capsys.readouterr().err
+    assert not list(project.glob("*.sqlite"))
+
+
+def test_a_missing_input_is_asked_for_in_a_terminal(project, monkeypatch, capsys):
+    """Rather than refusing with a usage error."""
+
+    monkeypatch.setattr(serve.sys.stdin, "isatty", lambda: True)
+    answers = iter(["Could we move our meeting to Thursday?", "y"])
+    monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
+
+    rc = serve.main(["run", "--llm", "mock"])
+
+    assert rc == 0
+    assert "result" in capsys.readouterr().out
+
+
+def test_a_missing_input_outside_a_terminal_still_refuses_clearly(
+    project, monkeypatch
+):
+    monkeypatch.setattr(serve.sys.stdin, "isatty", lambda: False)
+
+    with pytest.raises(Exception) as error:
+        serve.main(["run", "--llm", "mock"])
+
+    assert "message" in str(error.value)
+
+
+def test_a_directory_without_a_project_says_so(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(tmp_path / "home"))
+
+    with pytest.raises(SystemExit, match="no workflow was named|has none configured"):
+        serve.main(["validate"])

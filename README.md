@@ -51,7 +51,8 @@ agent both use.
 pip install zippergen
 ```
 
-ZipperGen has no runtime dependencies and needs Python 3.11 or newer.
+ZipperGen has no runtime dependencies and needs Python 3.11 or newer. It
+installs two commands, `zippergen` and the short form `zg`.
 
 > The published PyPI alpha predates the current CLI. Until the next release,
 > work from a clone:
@@ -104,12 +105,15 @@ def email_approval(message: str @ User) -> str:
 Check it and run it:
 
 ```bash
-zippergen validate workflow.py:email_approval
-zippergen run workflow.py:email_approval --llm mock --execution memory \
-    --input message="Could we move our meeting to Thursday afternoon?"
+zg validate
+zg run --llm mock
 ```
 
+The project already records which workflow it contains, so you rarely name it.
+
 ```
+Message (str): Could we move our meeting to Thursday afternoon?
+
 Proposed reply:
 
 Thursday afternoon works for me. How about 3pm?
@@ -127,7 +131,7 @@ The workflow above has one decision, and the `User` makes it. Ask ZipperGen
 what each participant actually runs:
 
 ```bash
-zippergen show workflow.py:email_approval --agent User
+zg show --agent User
 ```
 
 ```python
@@ -143,7 +147,7 @@ def email_approval__User(message: str) -> str:
 ```
 
 ```bash
-zippergen show workflow.py:email_approval --agent Writer
+zg show --agent Writer
 ```
 
 ```python
@@ -173,7 +177,7 @@ responses:
 ```
 
 ```bash
-zippergen run workflow.py:email_approval --llm scripted:replies.json ...
+zg run --llm scripted:replies.json
 ```
 
 Responses are consumed in order per action. A bare object answers every call
@@ -187,8 +191,8 @@ There is one verb for running a workflow. `--durable` records the run so it can
 be resumed:
 
 ```bash
-zippergen run workflow.py:email_approval --durable --llm mock  # Ctrl-C
-zippergen run --resume                                         # carry on
+zg run --durable --llm mock   # Ctrl-C part way through
+zg run --resume               # carry on where it stopped
 ```
 
 ```
@@ -204,10 +208,10 @@ environment and service files without starting anything; without it, every
 model and connector is probed live and a failure stops the deployment:
 
 ```bash
-zippergen deploy production --no-start
-zippergen start production
-zippergen logs production
-zippergen remove production          # the durable store is kept
+zg deploy production --no-start
+zg start production
+zg logs production
+zg remove production          # the durable store is kept
 ```
 
 Human approvals can go to Telegram, and workflows can read Gmail or write
@@ -215,8 +219,8 @@ Google Sheets. Which chat, which spreadsheet, which mailbox query — those are
 project configuration and live in `zippergen.toml`. Credentials never do:
 
 ```bash
-zippergen connector configure telegram approvals --chat-id 12345678
-zippergen connector authorize google --scopes gmail.readonly,spreadsheets
+zg connector configure telegram approvals --chat-id 12345678
+zg connector authorize google --scopes gmail.readonly,spreadsheets
 ```
 
 ## The CLI

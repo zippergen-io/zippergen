@@ -44,6 +44,8 @@ Repository = "https://github.com/zippergen-io/zippergen"
 
 [project.scripts]
 zippergen = "zippergen.serve:main"
+# Short form. The commands you type most are the ones worth shortening.
+zg = "zippergen.serve:main"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
