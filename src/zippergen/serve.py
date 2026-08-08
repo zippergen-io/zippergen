@@ -2603,6 +2603,64 @@ def _validate_command(args) -> int:
     return 0 if result["valid"] else 1
 
 
+SPECIFICATION_TEMPLATE = """# {name}
+
+What should this workflow do? Describe the participants, what they exchange,
+and in what order. Plain prose is fine — this is the statement of intent, not
+a formal document.
+"""
+
+
+def _init_command(args) -> int:
+    """Create a project and stop. No questionnaire, no configuration.
+
+    Everything else — models, connectors, the workflow itself — is either an
+    edit to `zippergen.toml` or something a coding agent writes once you say
+    what you want.
+    """
+
+    from zippergen.skill import agents_md
+    from zippergen.workspace import Workspace
+
+    root = Path(args.directory).expanduser().resolve() if args.directory else Path.cwd()
+    root.mkdir(parents=True, exist_ok=True)
+    workspace = Workspace(root)
+    name = args.name or root.name
+
+    created = workspace.manifest_path.exists()
+    manifest = workspace.initialize_project(name=name)
+    rows = [("zippergen.toml", "exists" if created else "created")]
+
+    specification = root / str(manifest["specification_file"])
+    if specification.exists():
+        rows.append((specification.name, "exists"))
+    else:
+        specification.write_text(
+            SPECIFICATION_TEMPLATE.format(name=manifest["name"]),
+            encoding="utf-8",
+        )
+        rows.append((specification.name, "created"))
+
+    agents = root / "AGENTS.md"
+    if agents.exists():
+        rows.append(("AGENTS.md", "exists; left alone"))
+    else:
+        agents.write_text(agents_md(str(manifest["name"])), encoding="utf-8")
+        rows.append(("AGENTS.md", "created"))
+
+    print(f"ZipperGen project: {manifest['name']}")
+    for filename, state in rows:
+        print(f"  {filename:<18} {state}")
+    if agents.exists() and "zippergen skill" not in agents.read_text(encoding="utf-8"):
+        print()
+        print("AGENTS.md was already here and was not changed. Add this so a")
+        print("coding agent finds the ZipperGen instructions:")
+        print()
+        print("    Before editing workflow code, run `zippergen skill`")
+        print("    and follow it completely.")
+    return 0
+
+
 def _skill_command(args) -> int:
     from zippergen.skill import SkillNotFound, agents_md, load_skill
 
@@ -4194,6 +4252,20 @@ def main(argv=None) -> int:
     validate.add_argument("workflow", help="Workflow spec: module:workflow or path.py:workflow")
     validate.add_argument("--json", action="store_true", help="Print machine-readable validation results.")
 
+    init_parser = sub.add_parser(
+        "init",
+        help="create a ZipperGen project in this directory",
+    )
+    init_parser.add_argument(
+        "name",
+        nargs="?",
+        help="Project name; defaults to the directory name.",
+    )
+    init_parser.add_argument(
+        "--directory",
+        help="Create the project here instead of the current directory.",
+    )
+
     skill_parser = sub.add_parser(
         "skill",
         help="print the coding-agent skill shipped with this package",
@@ -4390,6 +4462,8 @@ def main(argv=None) -> int:
         return _show_command(args)
     if args.cmd == "validate":
         return _validate_command(args)
+    if args.cmd == "init":
+        return _init_command(args)
     if args.cmd == "skill":
         return _skill_command(args)
     if args.cmd == "snapshot":
