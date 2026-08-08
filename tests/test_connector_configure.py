@@ -1,9 +1,13 @@
-"""Configuring a Telegram connector must not need the deleted Studio shell.
+"""Configuring a connector must not need the deleted Studio shell.
 
-This was the one capability the Studio removal genuinely cost: setting up and
-binding a human-approval connector lived in `studio_connectors.py` and nothing
-in the CLI replaced it. The tutorial workflow needs it, so it is back as an
-ordinary command over the same workspace methods.
+This is what the Studio removal genuinely cost: creating and binding
+connectors lived in `studio_connectors.py` and nothing in the CLI replaced it.
+Telegram blocked the tutorial; Gmail and Sheets blocked `call_intake`. All
+three are back as ordinary commands over the same workspace methods.
+
+The split is the same everywhere: portable fields — which chat, which
+spreadsheet, which mailbox query — are committed to `zippergen.toml`;
+credentials are not.
 """
 
 import subprocess
@@ -96,3 +100,67 @@ def test_binding_without_a_workflow_says_so(tmp_path):
 
     assert result.returncode != 0
     assert "no workflow yet" in result.stderr
+
+
+def test_a_sheets_configuration_records_the_spreadsheet_and_tab(tmp_path):
+    root = _project(tmp_path)
+
+    result = _run(root, "connector", "configure", "google-sheets", "records",
+                  "--spreadsheet-id", "1AbC_xyz", "--tab", "Calls")
+
+    assert result.returncode == 0, result.stderr
+    manifest = tomllib.loads((root / "zippergen.toml").read_text())
+    assert manifest["connectors"]["configurations"]["records"] == {
+        "provider": "google",
+        "kind": "google-sheets",
+        "spreadsheet_id": "1AbC_xyz",
+        "tab": "Calls",
+    }
+
+
+def test_a_gmail_configuration_records_the_mailbox_and_query(tmp_path):
+    root = _project(tmp_path)
+
+    result = _run(root, "connector", "configure", "gmail", "inbox",
+                  "--query", "is:unread from:clients@example.com")
+
+    assert result.returncode == 0, result.stderr
+    manifest = tomllib.loads((root / "zippergen.toml").read_text())
+    configuration = manifest["connectors"]["configurations"]["inbox"]
+    assert configuration["kind"] == "gmail"
+    assert configuration["query"] == "is:unread from:clients@example.com"
+    assert configuration["account"] == "me"
+
+
+def test_google_kinds_say_when_authorization_is_still_missing(tmp_path):
+    """The configuration is portable; the credential is not, and it is separate."""
+
+    root = _project(tmp_path)
+
+    result = _run(root, "connector", "configure", "google-sheets", "records",
+                  "--spreadsheet-id", "1", "--tab", "T")
+
+    assert "connector authorize google" in result.stdout
+
+
+def test_binding_works_against_a_real_workflow_requirement(tmp_path):
+    """`call_intake` declares call-mailbox and call-records."""
+
+    root = _project(tmp_path)
+    example = Path(__file__).resolve().parents[1] / "examples" / "call_intake.py"
+    (root / "workflow.py").write_text(example.read_text())
+    Workspace(root).select_workflow("workflow.py:call_intake", cwd=root)
+
+    first = _run(root, "connector", "configure", "gmail", "inbox",
+                 "--bind", "call-mailbox")
+    second = _run(root, "connector", "configure", "google-sheets", "records",
+                  "--spreadsheet-id", "1", "--tab", "Calls",
+                  "--bind", "call-records")
+
+    assert first.returncode == 0, first.stderr
+    assert second.returncode == 0, second.stderr
+    manifest = tomllib.loads((root / "zippergen.toml").read_text())
+    assert manifest["connectors"]["bindings"] == {
+        "call-mailbox": "inbox",
+        "call-records": "records",
+    }

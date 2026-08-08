@@ -2655,56 +2655,97 @@ def _compact_command(args) -> int:
     return 0
 
 
-def _connector_configure_telegram_command(args) -> int:
-    """Save a Telegram bot and chat, reading the token without echoing it.
+def _bind_connector_requirement(workspace, requirement: str, name: str) -> None:
+    """Bind a saved configuration to a requirement the workflow declares."""
 
-    The token is typed, never passed as an argument, so it stays out of shell
-    history and out of any transcript.
-    """
+    from zippergen.workspace import WorkspaceError
+
+    entry = workspace.workflow_entry
+    if not entry:
+        raise SystemExit(
+            "This project has no workflow yet, so there is nothing to bind "
+            "to. Add one, then re-run with --bind."
+        )
+    try:
+        workspace.bind_connector(entry, requirement, name)
+    except WorkspaceError as exc:
+        raise SystemExit(str(exc)) from exc
+    print(f"Bound {requirement} to {name}.")
+
+
+def _telegram_bot_token(workspace) -> None:
+    """Read the bot token once, without echo, and keep it off this machine's argv."""
 
     import getpass
+
+    if workspace.connector_provider_secret("telegram", "bot_token"):
+        print("Using the Telegram bot token already saved on this computer.")
+        return
+    try:
+        token = getpass.getpass("Telegram bot token (input hidden): ").strip()
+    except (EOFError, KeyboardInterrupt):
+        raise SystemExit("Cancelled; nothing was saved.") from None
+    if not token:
+        raise SystemExit("A bot token is required.")
+    workspace.save_connector_provider_secret("telegram", "bot_token", token)
+    print("Saved the Telegram bot token for this computer.")
+
+
+def _connector_configure_command(args) -> int:
+    """Save a connector for this project, and optionally bind it.
+
+    Portable fields — which chat, which spreadsheet, which mailbox query — go
+    in `zippergen.toml` and are committed. Credentials never do: the Telegram
+    token is typed here, and Google uses `connector authorize`.
+    """
 
     from zippergen.workspace import Workspace, WorkspaceError
 
     workspace = Workspace(args.project)
-    token = workspace.connector_provider_secret("telegram", "bot_token")
-    if not token:
-        try:
-            token = getpass.getpass("Telegram bot token (input hidden): ").strip()
-        except (EOFError, KeyboardInterrupt):
-            raise SystemExit("Cancelled; nothing was saved.") from None
-        if not token:
-            raise SystemExit("A bot token is required.")
-        workspace.save_connector_provider_secret("telegram", "bot_token", token)
-        print("Saved the Telegram bot token for this computer.")
-    else:
-        print("Using the Telegram bot token already saved on this computer.")
+    provider = args.connector_provider
+
+    if provider == "telegram":
+        _telegram_bot_token(workspace)
+        values = {
+            "provider": "telegram",
+            "kind": "telegram",
+            "chat_id": str(args.chat_id),
+        }
+        described = f"chat {args.chat_id}"
+    elif provider == "google-sheets":
+        values = {
+            "provider": "google",
+            "kind": "google-sheets",
+            "spreadsheet_id": str(args.spreadsheet_id),
+            "tab": str(args.tab),
+        }
+        described = f"tab {args.tab}"
+    elif provider == "gmail":
+        values = {
+            "provider": "google",
+            "kind": "gmail",
+            "account": str(args.account),
+            "query": str(args.query),
+        }
+        described = f"query {args.query!r}"
+    else:  # pragma: no cover - argparse restricts the choices
+        raise SystemExit(f"Unsupported connector provider {provider!r}.")
 
     try:
-        workspace.save_connector_configuration(
-            args.name,
-            {
-                "provider": "telegram",
-                "kind": "telegram",
-                "chat_id": str(args.chat_id),
-            },
-        )
+        workspace.save_connector_configuration(args.name, values)
     except WorkspaceError as exc:
         raise SystemExit(str(exc)) from exc
-    print(f"Saved connector configuration {args.name} (chat {args.chat_id}).")
+    print(f"Saved connector configuration {args.name} ({described}).")
+
+    if provider in {"google-sheets", "gmail"} and not workspace.connector_provider_secret(
+        "google", "authorized_user_json"
+    ):
+        print()
+        print("Google is not authorized on this computer yet. Run:")
+        print("    zippergen connector authorize google --scopes <scopes>")
 
     if args.bind:
-        entry = workspace.workflow_entry
-        if not entry:
-            raise SystemExit(
-                "This project has no workflow yet, so there is nothing to "
-                "bind to. Add one, then re-run with --bind."
-            )
-        try:
-            workspace.bind_connector(entry, args.bind, args.name)
-        except WorkspaceError as exc:
-            raise SystemExit(str(exc)) from exc
-        print(f"Bound {args.bind} to {args.name}.")
+        _bind_connector_requirement(workspace, args.bind, args.name)
     return 0
 
 
@@ -4278,6 +4319,42 @@ def main(argv=None) -> int:
         help="Project root; defaults to discovery from the current directory.",
     )
 
+    configure_sheets = configure_sub.add_parser(
+        "google-sheets",
+        help="save a Google spreadsheet and tab for a workflow to record into",
+    )
+    configure_sheets.add_argument("name", help="Configuration name, e.g. records.")
+    configure_sheets.add_argument(
+        "--spreadsheet-id",
+        required=True,
+        help="Spreadsheet id, the long value in its URL.",
+    )
+    configure_sheets.add_argument(
+        "--tab",
+        required=True,
+        help="Sheet tab name.",
+    )
+    configure_sheets.add_argument("--bind", help="Connector requirement to bind to.")
+    configure_sheets.add_argument("--project", help="Project root.")
+
+    configure_gmail = configure_sub.add_parser(
+        "gmail",
+        help="save a Gmail mailbox and search for a workflow to read",
+    )
+    configure_gmail.add_argument("name", help="Configuration name, e.g. inbox.")
+    configure_gmail.add_argument(
+        "--account",
+        default="me",
+        help="Mailbox to read. Default 'me', the authorized account.",
+    )
+    configure_gmail.add_argument(
+        "--query",
+        default="is:unread in:inbox",
+        help="Gmail search that selects the messages to handle.",
+    )
+    configure_gmail.add_argument("--bind", help="Connector requirement to bind to.")
+    configure_gmail.add_argument("--project", help="Project root.")
+
     connector_authorize = connector_sub.add_parser(
         "authorize",
         help="create a private authorization handoff",
@@ -4609,12 +4686,8 @@ def main(argv=None) -> int:
         return _show_command(args)
     if args.cmd == "validate":
         return _validate_command(args)
-    if (
-        args.cmd == "connector"
-        and args.connector_action == "configure"
-        and args.connector_provider == "telegram"
-    ):
-        return _connector_configure_telegram_command(args)
+    if args.cmd == "connector" and args.connector_action == "configure":
+        return _connector_configure_command(args)
     if args.cmd == "init":
         return _init_command(args)
     if args.cmd == "skill":
