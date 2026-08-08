@@ -357,9 +357,9 @@ with coregion:
 \subsection{Inputs and outputs}
 
 \begin{lstlisting}[language=Python]
-def email_approval(message: str @ User) -> str:
+def email_approval() -> int:
     ...
-    return result @ User
+    return handled @ User
 \end{lstlisting}
 
 An input belongs to the participant that supplies it; the return says who holds
@@ -400,12 +400,14 @@ runs after projection, which is not what you wrote:
 \begin{lstlisting}[language=Python]
 @role('Writer')
 def email_approval__Writer() -> None:
-    message = recv('User')
-    draft = draft_reply(message)
-    send('User', draft)
+    while recv_decision('User'):
+        message = recv('User')
+        draft = draft_reply(message)
+        send('User', draft)
 \end{lstlisting}
 
-The \texttt{Writer} has no branch, because it takes no part in the
+The \texttt{Writer} is told each round whether to continue, because it has work
+inside the loop. It has no \texttt{if}, because it takes no part in the
 \texttt{User}'s decision. A participant's local program mentions only what
 concerns it --- which is why it cannot wait for a message the decider chose not
 to send.

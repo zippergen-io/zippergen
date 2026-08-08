@@ -91,22 +91,28 @@ and checks its work. What comes out is ordinary, readable Python:
 
 ```python
 @workflow
-def email_approval(message: str @ User) -> str:
-    User(message) >> Writer(message)
-    Writer: draft = draft_reply(message)
-    Writer(draft) >> User(draft)
-    User: approved = approve_reply(draft)
-    if approved @ User:
-        User: result = sent(draft)
-    else:
-        User: result = discarded()
-    return result @ User
+def email_approval() -> int:
+    User: message = next_unread_message()
+    while message @ User:
+        User(message) >> Writer(message)
+        Writer: draft = draft_reply(message)
+        Writer(draft) >> User(draft)
+        User: approved = approve_reply(draft)
+        if approved @ User:
+            User: handled = send_reply(draft, handled)
+        else:
+            User: handled = discard(handled)
+        User: message = next_unread_message()
+    return handled @ User
 ```
 
 Check it and run it:
 
 ```bash
 zg validate
+
+mkdir -p mailbox
+echo "Could we move our meeting to Thursday?" > mailbox/01.txt
 zg run --llm mock
 ```
 
@@ -137,14 +143,20 @@ zg show --agent User
 
 ```python
 @role('User')
-def email_approval__User(message: str) -> str:
-    send('Writer', message)
-    draft = recv('Writer')
-    approved = approve_reply(draft)
-    if approved:
-        result = sent(draft)
+def email_approval__User() -> int:
+    message = next_unread_message()
+    while message:
+        send_decision('Writer', True)
+        send('Writer', message)
+        draft = recv('Writer')
+        approved = approve_reply(draft)
+        if approved:
+            handled = send_reply(draft, handled)
+        else:
+            handled = discard(handled)
+        message = next_unread_message()
     else:
-        result = discarded()
+        send_decision('Writer', False)
 ```
 
 ```bash
@@ -154,15 +166,17 @@ zg show --agent Writer
 ```python
 @role('Writer')
 def email_approval__Writer() -> None:
-    message = recv('User')
-    draft = draft_reply(message)
-    send('User', draft)
+    while recv_decision('User'):
+        message = recv('User')
+        draft = draft_reply(message)
+        send('User', draft)
 ```
 
-**The Writer has no branch.** Nobody wrote that. ZipperGen worked out that the
-Writer takes no part in the User's decision, so its local program does not
-mention it — and therefore cannot wait on it, or disagree with it, or deadlock
-against it. That is the projection, and it is the same construction the
+**The Writer has no branch.** Nobody wrote either line. The Writer is told
+each round whether to continue, because it has work inside the loop. It is
+never told what was approved, because it does nothing in either branch — so
+the decision is erased from its program, and it cannot wait on it, disagree
+with it, or deadlock against it. That is the projection, and it is the same construction the
 correctness proof is about.
 
 ## Deterministic testing
@@ -245,7 +259,7 @@ Run `zippergen <command> --help` for any of them.
 
 | | |
 |---|---|
-| [`examples/email_approval.py`](examples/email_approval.py) | the tutorial workflow: draft, approve, send |
+| [`examples/email_approval.py`](examples/email_approval.py) | the tutorial workflow: watch a mailbox, draft, approve, send |
 | [`examples/diagnosis.py`](examples/diagnosis.py) | two reviewers loop until they agree — the paper's example |
 | [`examples/call_intake.py`](examples/call_intake.py) | Gmail in, Sheets out, deployed as a service |
 | [Your first ZipperGen workflow](docs/first-workflow.pdf) | the tutorial |

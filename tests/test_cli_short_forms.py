@@ -17,7 +17,19 @@ import pytest
 from zippergen import serve
 from zippergen.workspace import Workspace
 
-EXAMPLE = Path(__file__).resolve().parents[1] / "examples" / "email_approval.py"
+EXAMPLES = Path(__file__).resolve().parents[1] / "examples"
+EXAMPLE = EXAMPLES / "email_approval.py"
+# The tutorial workflow watches a mailbox and never ends on its own, so every
+# run of it here carries a message budget.
+BUDGET = ["--option", "max_messages=1"]
+
+
+def _mailbox(root, *messages):
+    box = root / "mailbox"
+    box.mkdir(exist_ok=True)
+    for index, text in enumerate(messages, start=1):
+        (box / f"{index:02d}.txt").write_text(text, encoding="utf-8")
+    return box
 
 
 @pytest.fixture
@@ -28,6 +40,21 @@ def project(tmp_path, monkeypatch):
     workspace = Workspace(root, home=tmp_path / "home")
     workspace.initialize_project(name="email-approval")
     workspace.select_workflow("workflow.py:email_approval", cwd=root)
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(tmp_path / "home"))
+    return root
+
+
+@pytest.fixture
+def input_project(tmp_path, monkeypatch):
+    """A workflow that actually takes an input, for the prompting tests."""
+
+    root = tmp_path / "hello"
+    root.mkdir()
+    shutil.copy(EXAMPLES / "hello.py", root / "workflow.py")
+    workspace = Workspace(root, home=tmp_path / "home")
+    workspace.initialize_project(name="hello")
+    workspace.select_workflow("workflow.py:hello", cwd=root)
     monkeypatch.chdir(root)
     monkeypatch.setenv("ZIPPERGEN_HOME", str(tmp_path / "home"))
     return root
@@ -50,8 +77,9 @@ def test_show_infers_the_project_workflow(project, capsys):
 
 def test_run_infers_the_project_workflow(project, monkeypatch, capsys):
     monkeypatch.setattr("builtins.input", lambda _prompt="": "y")
+    _mailbox(project, "Could we move our meeting?")
 
-    rc = serve.main(["run", "--llm", "mock", "--input", "message=hello", "--yes"])
+    rc = serve.main(["run", "--llm", "mock", "--yes", *BUDGET])
 
     assert rc == 0
     assert "result" in capsys.readouterr().out
@@ -67,18 +95,21 @@ def test_a_run_leaves_nothing_behind_by_default(project, monkeypatch, capsys):
     """`--execution memory` was an implementation detail in the reader's way."""
 
     monkeypatch.setattr("builtins.input", lambda _prompt="": "y")
+    _mailbox(project, "Could we move our meeting?")
 
-    serve.main(["run", "--llm", "mock", "--input", "message=hello", "--yes"])
+    serve.main(["run", "--llm", "mock", "--yes", *BUDGET])
 
     assert "Store:" not in capsys.readouterr().err
     assert not list(project.glob("*.sqlite"))
 
 
-def test_a_missing_input_is_asked_for_in_a_terminal(project, monkeypatch, capsys):
+def test_a_missing_input_is_asked_for_in_a_terminal(
+    input_project, monkeypatch, capsys
+):
     """Rather than refusing with a usage error."""
 
     monkeypatch.setattr(serve.sys.stdin, "isatty", lambda: True)
-    answers = iter(["Could we move our meeting to Thursday?", "y"])
+    answers = iter(["deployment", "y"])
     monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
 
     rc = serve.main(["run", "--llm", "mock"])
@@ -88,14 +119,14 @@ def test_a_missing_input_is_asked_for_in_a_terminal(project, monkeypatch, capsys
 
 
 def test_a_missing_input_outside_a_terminal_still_refuses_clearly(
-    project, monkeypatch
+    input_project, monkeypatch
 ):
     monkeypatch.setattr(serve.sys.stdin, "isatty", lambda: False)
 
     with pytest.raises(Exception) as error:
         serve.main(["run", "--llm", "mock"])
 
-    assert "message" in str(error.value)
+    assert "topic" in str(error.value)
 
 
 def test_a_directory_without_a_project_says_so(tmp_path, monkeypatch):
@@ -119,7 +150,7 @@ def test_diff_compares_a_baseline_against_the_project_workflow(
     workflow.write_text(
         workflow.read_text().replace(
             "Writer(draft) >> User(draft)",
-            "Writer(draft) >> User(draft)\n    User(draft) >> Writer(draft)",
+            "Writer(draft) >> User(draft)\n        User(draft) >> Writer(draft)",
             1,
         )
     )

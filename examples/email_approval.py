@@ -1,21 +1,28 @@
 # pyright: reportInvalidTypeForm=false, reportGeneralTypeIssues=false, reportOperatorIssue=false, reportCallIssue=false, reportAttributeAccessIssue=false, reportUnusedExpression=false, reportUnboundVariable=false, reportReturnType=false
-"""Draft a reply, ask a person to approve it, then send or discard.
+"""Watch a mailbox, draft a reply, ask a person, then send or discard.
 
 The tutorial workflow. Small enough to read in one sitting, but it already
 contains everything that makes ZipperGen worth using: two participants, an LLM
 action, an explicit human decision, a branch owned by whoever makes that
-decision, and a result that depends on the answer.
+decision, and a loop that makes the whole thing a service rather than a script.
 
-The incoming message is an input here. A later tutorial replaces it with a real
-mailbox and sends the approved reply for real; the coordination does not change.
+It does not stop on its own. `next_unread_message` waits for the next message,
+so the workflow keeps running until you stop it — which is the point: this is
+something you deploy, not something you launch by hand each time.
 
-    zippergen run examples/email_approval.py:email_approval \\
-        --llm mock --execution memory \\
-        --input message="Could we move our meeting to Thursday afternoon?"
+The mailbox here is a directory of text files, so the tutorial needs no
+credentials. `examples/call_intake.py` is the same shape against real Gmail.
+
+    mkdir -p mailbox
+    echo "Could we move our meeting to Thursday?" > mailbox/01.txt
+    zippergen run examples/email_approval.py:email_approval --llm mock
 """
 
+import time
+from pathlib import Path
+
 from zippergen import Lifeline, Var, workflow
-from zippergen.actions import human, llm, pure
+from zippergen.actions import effect, human, llm, pure
 
 Writer = Lifeline("Writer")
 User = Lifeline("User")
@@ -23,7 +30,52 @@ User = Lifeline("User")
 message = Var("message", str)
 draft = Var("draft", str)
 approved = Var("approved", bool)
-result = Var("result", str)
+handled = Var("handled", int, default=0)
+
+_mailbox = Path("mailbox")
+_poll_seconds = 2.0
+# Unlimited by default: this is a service. A demo or a test sets a budget so
+# the run ends on its own.
+_remaining = 2**31 - 1
+
+
+def zippergen_setup(config) -> None:
+    """Hook called by ``zippergen run`` before configuring the workflow."""
+
+    global _mailbox, _poll_seconds, _remaining
+    _mailbox = Path(str(config.option("mailbox", "mailbox")))
+    _poll_seconds = float(config.option("poll_seconds", 2.0) or 2.0)
+    budget = config.option("max_messages", None)
+    _remaining = int(budget) if budget is not None else 2**31 - 1
+
+
+@effect
+def next_unread_message() -> str:
+    """Return the oldest unread message, waiting until one arrives.
+
+    A message is a ``.txt`` file in the mailbox directory. Taking one renames
+    it to ``.done``, so the same message is never handled twice — including
+    after a crash and resume.
+
+    This call does not return until there is something to hand back, which is
+    why the workflow never finishes on its own. Setting ``max_messages`` gives
+    it a budget instead, and it returns ``""`` once that budget is spent; the
+    loop then ends and the workflow reports how many it handled.
+    """
+
+    global _remaining
+    if _remaining <= 0:
+        return ""
+    while True:
+        _mailbox.mkdir(parents=True, exist_ok=True)
+        pending = sorted(_mailbox.glob("*.txt"))
+        if pending:
+            oldest = pending[0]
+            text = oldest.read_text(encoding="utf-8").strip()
+            oldest.rename(oldest.with_suffix(".done"))
+            _remaining -= 1
+            return text
+        time.sleep(_poll_seconds)
 
 
 @llm(
@@ -47,37 +99,30 @@ def draft_reply(message: str): ...
 def approve_reply(draft: str): ...
 
 
-@pure
-def sent(draft: str) -> str:
-    return f"Sent: {draft}"
+@effect
+def send_reply(draft: str, handled: int) -> int:
+    """Send the approved reply. Printing it is this tutorial's 'send'."""
+
+    print(f"    sent: {draft}")
+    return handled + 1
 
 
 @pure
-def discarded() -> str:
-    return "Discarded. Nothing was sent."
+def discard(handled: int) -> int:
+    return handled
 
 
 @workflow
-def email_approval(message: str @ User) -> str:
-    # The User hands the incoming message to the Writer.
-    User(message) >> Writer(message)
-    Writer: draft = draft_reply(message)
-    Writer(draft) >> User(draft)
-
-    # The User decides, so the User owns the branch. ZipperGen works out on its
-    # own that the Writer takes no part in it.
-    User: approved = approve_reply(draft)
-    if approved @ User:
-        User: result = sent(draft)
-    else:
-        User: result = discarded()
-    return result @ User
-
-
-if __name__ == "__main__":
-    email_approval.configure(llms="mock", execution="memory")
-    print(
-        email_approval(
-            message="Could we move our meeting to Thursday afternoon?"
-        )
-    )
+def email_approval() -> int:
+    User: message = next_unread_message()
+    while message @ User:
+        User(message) >> Writer(message)
+        Writer: draft = draft_reply(message)
+        Writer(draft) >> User(draft)
+        User: approved = approve_reply(draft)
+        if approved @ User:
+            User: handled = send_reply(draft, handled)
+        else:
+            User: handled = discard(handled)
+        User: message = next_unread_message()
+    return handled @ User

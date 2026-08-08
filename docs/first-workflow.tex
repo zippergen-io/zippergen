@@ -123,11 +123,13 @@
 \maketitle
 
 \begin{abstract}
-You will build a small application that reads a message, asks a language model
-to draft a reply, and asks \emph{you} to approve it before anything is sent.
-It is short enough to read in one sitting, and it already contains everything
-that makes ZipperGen worth using: two participants, a model call, an explicit
-human decision, and a branch that only the decider takes.
+You will build a small application that watches a mailbox, asks a language
+model to draft a reply to each message, and asks \emph{you} to approve it
+before anything is sent. It does not stop on its own --- it is a service, and
+the last section leaves it running on a server. It is short enough to read in
+one sitting, and it already contains everything that makes ZipperGen worth
+using: two participants, a model call, an explicit human decision, a branch
+that only the decider takes, and a loop that keeps the whole thing alive.
 
 There is no separate ZipperGen development environment to learn. You work in an
 ordinary directory with an ordinary command line, and — if you like — a coding agent such as
@@ -139,7 +141,7 @@ need a person.
 
 \begin{center}
 \begin{tikzpicture}[node distance=7mm]
-  \node[zgstage] (msg)   {incoming\\message};
+  \node[zgstage] (msg)   {next unread\\message};
   \node[zgstage, right=of msg] (draft) {\textbf{Writer}\\drafts a reply};
   \node[zgstage, right=of draft] (ask) {\textbf{User}\\approves?};
   \node[zgstage, above right=3mm and 7mm of ask] (send) {send};
@@ -148,8 +150,14 @@ need a person.
   \draw[zgflow] (draft) -- (ask);
   \draw[zgflow] (ask) -- (send);
   \draw[zgflow] (ask) -- (drop);
+  \draw[zgflow] (send.east) .. controls +(right:8mm) and +(up:12mm) ..
+    node[right,font=\scriptsize,pos=0.35]{next message} (msg.north);
+  \draw[zgflow] (drop.east) .. controls +(right:8mm) and +(down:12mm) .. (msg.south);
 \end{tikzpicture}
 \end{center}
+
+It then waits for the next message, and does it again. Nothing ends the loop,
+which is what makes this a service rather than a script.
 
 Concretely, you want this to happen:
 
@@ -222,8 +230,9 @@ claude
 and ask for it:
 
 \begin{lstlisting}[style=agent]
-> Build a ZipperGen workflow that takes an email message, asks an LLM to
-  draft a short reply, and asks me to approve it before it is sent.
+> Build a ZipperGen workflow that watches a mailbox directory, asks an LLM
+  to draft a short reply to each new message, and asks me to approve it
+  before it is sent. It should keep running and wait for the next message.
 \end{lstlisting}
 
 The agent reads \texttt{AGENTS.md}, which points it at \texttt{zg skill} ---
@@ -259,19 +268,22 @@ Visible, readable Python. This is the whole coordination:
 
 \begin{lstlisting}[language=Python]
 @workflow
-def email_approval(message: str @ User) -> str:
-    User(message) >> Writer(message)
-    Writer: draft = draft_reply(message)
-    Writer(draft) >> User(draft)
-    User: approved = approve_reply(draft)
-    if approved @ User:
-        User: result = sent(draft)
-    else:
-        User: result = discarded()
-    return result @ User
+def email_approval() -> int:
+    User: message = next_unread_message()
+    while message @ User:
+        User(message) >> Writer(message)
+        Writer: draft = draft_reply(message)
+        Writer(draft) >> User(draft)
+        User: approved = approve_reply(draft)
+        if approved @ User:
+            User: handled = send_reply(draft, handled)
+        else:
+            User: handled = discard(handled)
+        User: message = next_unread_message()
+    return handled @ User
 \end{lstlisting}
 
-Read it top to bottom and you have the entire message order. Four things are
+Read it top to bottom and you have the entire message order. Five things are
 worth noticing.
 
 \texttt{User(message) >> Writer(message)} is a message. The left side sends,
@@ -287,6 +299,21 @@ stops and waits for a person.
 
 \texttt{if approved @ User} is a decision, and the \texttt{@ User} says who
 makes it. That annotation is the important one, and the next section shows why.
+
+\texttt{while message @ User} is a loop, owned the same way. The
+\texttt{User} decides each round whether there is another message to handle.
+\texttt{next\_unread\_message} waits until there is one, so in practice that
+decision is always yes and the workflow never finishes --- which is the point.
+
+\begin{notebox}{One action hides the awkward part}
+Mailboxes are fiddly: what to do when nothing is unread, how to avoid handling
+the same message twice, whether to poll or block. All of it sits behind
+\texttt{next\_unread\_message}, whose contract is one sentence --- \emph{return
+the next message, waiting if there is none}. Here it takes the oldest
+\texttt{.txt} file from \texttt{mailbox/} and renames it \texttt{.done}, so no
+message is handled twice even after a crash. The coordination above does not
+change when you point it at a real inbox.
+\end{notebox}
 
 \section{Check it yourself}
 
@@ -328,17 +355,18 @@ reading the code again, ask:
 
   @role('Writer')
   def email_approval__Writer() -> None:
-      message = recv('User')
-      draft = draft_reply(message)
-      send('User', draft)
+      while recv_decision('User'):
+          message = recv('User')
+          draft = draft_reply(message)
+          send('User', draft)
 
-The Writer receives the message, drafts a reply, and sends it back. It
-has no branch: the User owns the approval decision, and the Writer takes
-no part in it.
+The Writer is told each round whether to keep going, then drafts one
+reply. It is never told whether the reply was sent: the User owns the
+approval decision, and the Writer takes no part in it.
 \end{lstlisting}
 
-Run it yourself and you get the same three lines. Now compare the
-\texttt{User}, who is the decider:
+Run it yourself and you get the same four lines. Now compare the
+\texttt{User}, who owns both the loop and the decision:
 
 \begin{lstlisting}[style=shell]
 zg show --agent User
@@ -346,25 +374,40 @@ zg show --agent User
 
 \begin{lstlisting}[language=Python]
 @role('User')
-def email_approval__User(message: str) -> str:
-    send('Writer', message)
-    draft = recv('Writer')
-    approved = approve_reply(draft)
-    if approved:
-        result = sent(draft)
+def email_approval__User() -> int:
+    message = next_unread_message()
+    while message:
+        send_decision('Writer', True)
+        send('Writer', message)
+        draft = recv('Writer')
+        approved = approve_reply(draft)
+        if approved:
+            handled = send_reply(draft, handled)
+        else:
+            handled = discard(handled)
+        message = next_unread_message()
     else:
-        result = discarded()
+        send_decision('Writer', False)
 \end{lstlisting}
 
 \begin{notebox}{The Writer has no branch}
-Nobody wrote that. ZipperGen worked out that the \texttt{Writer} takes no part
-in the \texttt{User}'s decision, so the \texttt{Writer}'s local program does
-not mention it --- and therefore cannot wait on it, disagree with it, or
-deadlock against it.
+Nobody wrote either of those lines. Put the two programs side by side and the
+\texttt{User} does something for each of its two control structures, while the
+\texttt{Writer} does something for only one of them.
 
-In a hand-written multi-agent system this is where the bugs live: one agent
-waits for a message the other decided not to send. Here the question does not
-arise, because the projection removed it.
+The loop, the \texttt{Writer} must know about: it has work inside it, so the
+\texttt{User} tells it every round whether to continue --- and tells it once
+more, at the end, not to. That is the \texttt{send\_decision} in the
+\texttt{else}.
+
+The approval, the \texttt{Writer} must \emph{not} know about: it does nothing
+in either branch, so the decision is erased from its program entirely. It
+cannot wait on it, disagree with it, or deadlock against it.
+
+In a hand-written multi-agent system this is exactly where the bugs live: one
+agent waits for a message the other decided not to send. Here the question does
+not arise, because the projection worked out who needed telling and who did
+not.
 \end{notebox}
 
 This is not a convenience. It is the construction the correctness proof is
@@ -372,6 +415,13 @@ about: the projected local programs produce exactly the behaviours of the
 global protocol, and deadlock freedom follows for well-formed workflows.
 
 \section{Run it}
+
+First put something in the mailbox. A message is just a text file:
+
+\begin{lstlisting}[style=shell]
+mkdir -p mailbox
+echo "Could we move our meeting to Thursday?" > mailbox/01.txt
+\end{lstlisting}
 
 No model key needed yet. \texttt{--llm mock} answers model calls with a
 placeholder:
@@ -381,19 +431,33 @@ zg run --llm mock
 \end{lstlisting}
 
 \begin{lstlisting}
-Message (str): Could we move our meeting to Thursday afternoon?
-
 Proposed reply:
 
 [draft_reply:draft]
 
 Send this reply? [y/n]: y
-{"result": "Sent: [draft_reply:draft]"}
+    sent: [draft_reply:draft]
 \end{lstlisting}
 
-The approval happened in your terminal, and answering \texttt{n} takes the
-other branch. The reply is a placeholder because \texttt{mock} does not call a
-model.
+Then nothing happens, and that is correct: it is waiting for the next message.
+Drop another file into \texttt{mailbox/} from a second terminal and it wakes up
+and handles that one too. Answering \texttt{n} takes the other branch.
+
+\texttt{mailbox/01.txt} is now \texttt{mailbox/01.done}. That rename is what
+stops a message being answered twice, including after a crash.
+
+Stop it with \texttt{Ctrl-C}. When you want a run that ends by itself --- in a
+test, or just to see a result --- give it a budget:
+
+\begin{lstlisting}[style=shell]
+zg run --llm mock --option max_messages=2
+\end{lstlisting}
+
+\begin{lstlisting}
+{"result": 1}
+\end{lstlisting}
+
+Two messages handled, one of them approved.
 
 \begin{notebox}{Testing a specific branch}
 \texttt{mock} answers every action the same way, so a workflow driven by it
@@ -545,6 +609,11 @@ zg run --resume
 The model call that already happened is not repeated. The run resumes at the
 point it stopped, because every step was recorded before it was taken.
 
+This matters more for a workflow that never ends than for one that finishes in
+a second. Stopping is the normal way this one exits --- you press Ctrl-C, the
+machine reboots, the service restarts --- and each time it picks up where it
+was rather than re-reading a mailbox it has already answered.
+
 \section{Deploy it}
 
 Preparing a deployment and starting one are separate steps, and the difference
@@ -627,10 +696,14 @@ installs a small \texttt{systemd} user service that restarts the workflow if it
 fails; you never write that file, and \texttt{zg status}, \texttt{zg logs} and
 \texttt{zg stop} manage it from here.
 
-This particular workflow handles one approval and exits, which makes for a very
-short-lived service. The version worth leaving running watches a mailbox and
-never finishes on its own --- \texttt{examples/call\_intake.py} does exactly
-that.
+This is the point of the loop. The workflow you built does not finish, so
+leaving it on a server is not a contrivance to show off a \texttt{deploy}
+command --- it is the only sensible place for it. Your laptop can close.
+
+The mailbox here is a directory, which is enough to see the shape. Point
+\texttt{next\_unread\_message} at a real inbox and nothing above changes;
+\texttt{examples/call\_intake.py} is that workflow, reading Gmail and writing
+to a spreadsheet.
 
 \section{What you have}
 
@@ -640,18 +713,20 @@ that.
 \texttt{specification.md} & what it should do, in prose, maintained by you and your agent \\
 \texttt{workflow.py} & the coordination, as visible Python \\
 \texttt{zippergen.toml} & which model, which chat — committed, no secrets \\
+\texttt{mailbox/} & where messages arrive; a real inbox on a real server \\
 \bottomrule
 \end{tabularx}
 \end{center}
 
-Three files in a directory, plus whatever your machine supplies: a model key in
-the environment, a bot token typed once.
+Three files and a directory, plus whatever your machine supplies: a model key
+in the environment, a bot token typed once.
 
-The thing worth remembering is the \texttt{Writer} with no branch. You wrote
-one protocol; ZipperGen derived what each participant runs, and derived it in a
-way that cannot deadlock. As the workflow grows — more participants, loops,
-parallel regions — that property is what stops the coordination becoming the
-hard part.
+The thing worth remembering is the \texttt{Writer}. It learned about the loop,
+because it has work to do inside it. It never learned about the approval,
+because it has none. You wrote one protocol; ZipperGen worked out what each
+participant runs, and worked it out in a way that cannot deadlock. As the
+workflow grows — more participants, more loops, parallel regions — that is
+what stops the coordination becoming the hard part.
 
 \section{Where to go next}
 
