@@ -139,3 +139,44 @@ def test_a_non_human_connector_cannot_answer_a_human_action(project):
 
     with pytest.raises(ConnectorWiringError, match="ask a person"):
         _wire(project)
+
+
+def test_reconfiguring_a_deployment_ignores_the_surrounding_project(
+    project, tmp_path, monkeypatch
+):
+    """A deployment carries its own workflow; the ambient directory is not it.
+
+    `zg configure NAME` names an existing deployment. Wiring it from whatever
+    project the shell is standing in attaches the wrong connectors — or refuses
+    over requirements the deployment never had.
+    """
+
+    from zippergen import serve
+
+    _telegram(project)
+    project.save_connector_assignment_profile(
+        ENTRY, lifelines={"User": "approvals"}, actions={}
+    )
+
+    other = tmp_path / "unrelated"
+    other.mkdir()
+    shutil.copy(EXAMPLE, other / "workflow.py")
+    unrelated = Workspace(other, home=tmp_path / "home")
+    unrelated.initialize_project(name="unrelated")
+    unrelated.select_workflow(ENTRY, cwd=other)
+    monkeypatch.chdir(other)
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(tmp_path / "home"))
+
+    class Args:
+        target = "some-deployment"
+        project = None
+        connectors_json = None
+
+    # Standing in `unrelated`, the deployment's own workflow must still win.
+    snapshot, _environment = serve._project_connector_runtime(
+        Args(),
+        deployed_workflow=ENTRY,
+        deployed_project=str(project.root),
+    )
+
+    assert "human:User" in snapshot

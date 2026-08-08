@@ -574,6 +574,64 @@ the one thing no rebuild can recover. Everything else, the environment and
 service files and the bundled source, is written again by deploying again.
 \texttt{--purge} removes the store too, when you mean it.
 
+\section{Put it on a server}
+
+This section is optional. Everything above works on your laptop; read on only
+when you want the workflow to keep running after you close it.
+
+There is no ZipperGen deployment host and no server to sign up for. You copy
+the project to a machine, install ZipperGen there, and run the same commands
+you have just been running. That is the whole mechanism.
+
+\begin{center}
+\begin{tikzpicture}[node distance=6mm]
+  \node[zgstage] (agent) {coding agent\\(your laptop)};
+  \node[zgstage, below=of agent] (files) {\texttt{workflow.py}\\\texttt{specification.md}\\\texttt{zippergen.toml}};
+  \node[zgstage, right=16mm of files] (server) {project directory\\(the server)};
+  \node[zgstage, right=of server] (run) {\texttt{zg start}\\runs it};
+  \draw[zgflow] (agent) -- (files);
+  \draw[zgflow] (files) -- node[above,font=\scriptsize]{git} (server);
+  \draw[zgflow] (server) -- (run);
+\end{tikzpicture}
+\end{center}
+
+Notice what does \emph{not} cross to the right. The coding agent stays on your
+laptop. It wrote the workflow; it is not part of the running application, and
+the server never needs Claude, Codex, or an agent of any kind installed. The
+server needs three things: ZipperGen, the project files, and its own
+credentials.
+
+On an ordinary Linux machine:
+
+\begin{lstlisting}[style=shell]
+git clone https://github.com/me/email-approval.git && cd email-approval
+python3 -m venv .venv && source .venv/bin/activate
+pip install zippergen
+
+zg connector configure telegram approvals --chat-id 4242
+zg connector assign User approvals
+
+zg deploy --name production --no-start
+zg start production
+\end{lstlisting}
+
+The credentials did not arrive with the clone, because they were never in it.
+\texttt{configure} asks for the bot token, does not echo it, and stores it
+outside the project. That is why cloning gives the server the routing without
+giving it the secret.
+
+The last two lines are the pair from the previous section, unchanged. Starting
+probes the model and the connector first, so a token typed wrongly here fails
+now rather than in the middle of an approval. On Linux \texttt{zg start}
+installs a small \texttt{systemd} user service that restarts the workflow if it
+fails; you never write that file, and \texttt{zg status}, \texttt{zg logs} and
+\texttt{zg stop} manage it from here.
+
+This particular workflow handles one approval and exits, which makes for a very
+short-lived service. The version worth leaving running watches a mailbox and
+never finishes on its own --- \texttt{examples/call\_intake.py} does exactly
+that.
+
 \section{What you have}
 
 \begin{center}

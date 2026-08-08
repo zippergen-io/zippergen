@@ -2777,25 +2777,34 @@ def _telegram_bot_token(workspace) -> None:
     print("Saved the Telegram bot token for this computer.")
 
 
-def _project_connector_runtime(args) -> tuple[dict, dict[str, str]]:
+def _project_connector_runtime(
+    args,
+    deployed_workflow: str | None = None,
+    deployed_project: str | None = None,
+) -> tuple[dict, dict[str, str]]:
     """Build deployment connector routing from the project's configuration.
 
     Studio used to do this and pass the result through a hidden flag. With the
     shell gone, `deploy` reads the project directly, so a Telegram approval
     configured with `connector configure` and `connector assign` actually
     reaches the deployment.
+
+    `deployed_workflow` and `deployed_project` are what an existing deployment
+    already records about itself. Reconfiguring by name must wire that
+    workflow, from that project — not from whatever directory the shell
+    happens to be standing in, which may be an unrelated project or none.
     """
 
     from zippergen.connector_wiring import connector_runtime
     from zippergen.workspace import Workspace
 
-    workspace = Workspace(getattr(args, "project", None))
+    workspace = Workspace(getattr(args, "project", None) or deployed_project)
     # Follow the workflow actually being deployed. Falling back to the
     # project's configured entry silently skipped connectors whenever a
     # workflow was named explicitly.
     target = getattr(args, "target", None)
     entry = target if target and (":" in target or _looks_like_path(target)) else None
-    entry = entry or workspace.workflow_entry
+    entry = entry or deployed_workflow or workspace.workflow_entry
     if not entry:
         return {}, {}
     canonical = workspace.canonical_spec(entry, cwd=workspace.root)
@@ -3787,7 +3796,14 @@ def _apply_deploy_arguments(
     # Wire the project's connectors unless the caller passed a snapshot.
     if getattr(args, "connectors_json", None) is None:
         try:
-            snapshot, connector_environment = _project_connector_runtime(args)
+            snapshot, connector_environment = _project_connector_runtime(
+                args,
+                deployed_workflow=str(
+                    profile.get("source_workflow") or profile.get("workflow") or ""
+                )
+                or None,
+                deployed_project=str(profile.get("source_cwd") or "") or None,
+            )
         except Exception as exc:  # surfaced as a clear refusal below
             from zippergen.connector_wiring import ConnectorWiringError
 

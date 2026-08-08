@@ -2,6 +2,7 @@
 schema_version = 1
 name = "zippergen"
 specification_file = "specification.md"
+workflow_entry = "examples/call_intake.py:call_intake"
 
 [connectors.providers."google"]
 "kind" = "google"
