@@ -13,22 +13,21 @@ You write one protocol. It says who sends what to whom, who calls a model, and
 who owns each decision. ZipperGen works out the program each participant runs,
 and runs them.
 
-For well-formed workflows those programs cannot deadlock. That is a theorem
-rather than a test result, and the proof is machine-checked in Lean 4.
+For well-formed workflows, those programs cannot deadlock. This is proved, not
+just tested. The proof is checked by machine, in Lean 4.
 
 ---
 
 ## How you work with it
 
-A ZipperGen project is an ordinary directory: a workflow in Python, a
-specification in prose, and a small TOML file. You develop it however you
-develop anything else, in an editor or by talking to a coding agent such as
-Claude Code or Codex.
+A ZipperGen project is a normal directory. It holds a workflow in Python, a
+specification in plain text, and a small TOML file. You work on it like any
+other code: in an editor, or by talking to a coding agent such as Claude Code
+or Codex.
 
-There is no separate ZipperGen development environment to learn. ZipperGen
-ships a **skill** that
-teaches a coding agent how to work on a project, and a **CLI** that you and the
-agent both use.
+There is no special ZipperGen environment to learn. ZipperGen gives you two
+things. A **skill**, which tells a coding agent how to work on a project. And a
+**CLI**, which you and the agent both use.
 
 ```
       you, or Claude Code / Codex
@@ -48,11 +47,11 @@ agent both use.
 pip install zippergen
 ```
 
-ZipperGen has no runtime dependencies and needs Python 3.11 or newer. It
-installs two commands, `zippergen` and the short form `zg`.
+ZipperGen needs Python 3.11 or newer. It has no other dependencies. It
+installs two commands: `zippergen`, and `zg` for short.
 
-> The published PyPI alpha predates the current CLI. Until the next release,
-> work from a clone:
+> The version on PyPI is older than the CLI shown here. Until the next
+> release, install from a clone:
 >
 > ```bash
 > git clone https://github.com/zippergen-io/zippergen.git
@@ -66,8 +65,8 @@ mkdir email-approval && cd email-approval
 zippergen init
 ```
 
-That writes three files and stops: a manifest, an empty specification, and an
-`AGENTS.md` that points a coding agent at ZipperGen's instructions:
+That writes three files and stops. A manifest, an empty specification, and an
+`AGENTS.md` file that tells a coding agent where ZipperGen's instructions are:
 
 ```
 ZipperGen project: email-approval
@@ -76,14 +75,16 @@ ZipperGen project: email-approval
   AGENTS.md          created
 ```
 
-Now describe what you want. Either write the workflow yourself, or open a
-coding agent in that directory and say so:
+Now say what you want. You can write the workflow yourself, or open a coding
+agent in that directory and ask for it:
 
-> Build a ZipperGen workflow that takes an email message, asks an LLM to draft
-> a short reply, and sends the draft to me for approval before it is sent.
+> Build a ZipperGen workflow that watches a mailbox directory, asks an LLM to
+> draft a short reply to each new message, and asks me to approve it before it
+> is sent. It should keep running and wait for the next message.
 
-The agent reads `zippergen skill`, writes `specification.md` and `workflow.py`,
-and checks its work. What comes out is ordinary, readable Python:
+The agent reads `zippergen skill`, writes `specification.md` and
+`workflow.py`, then checks its own work. What comes out is normal Python that
+you can read:
 
 ```python
 @workflow
@@ -112,26 +113,31 @@ echo "Could we move our meeting to Thursday?" > mailbox/01.txt
 zg run --llm mock
 ```
 
-The project already records which workflow it contains, so you rarely name it.
-
 ```
-Message (str): Could we move our meeting to Thursday afternoon?
-
 Proposed reply:
 
-Thursday afternoon works for me. How about 3pm?
+[draft_reply:draft]
 
 Send this reply? [y/n]: y
-{"result": "Sent: Thursday afternoon works for me. How about 3pm?"}
+    sent: [draft_reply:draft]
 ```
 
-A full walkthrough, including approval over Telegram and a real deployment, is
-in [**Your first ZipperGen workflow**](docs/first-workflow.pdf).
+The reply is a placeholder, because `mock` does not call a model. Use
+`--llm openai:gpt-4o-mini`, with a key in your environment, to get a real one.
 
-## What the protocol buys you
+Then it waits for the next message. Press Ctrl-C to stop it.
 
-The workflow above has one decision, and the `User` makes it. Ask ZipperGen
-what each participant actually runs:
+You did not have to name the workflow in those commands. The project already
+knows which one it holds.
+
+The tutorial goes through all of this step by step, including approval on your
+phone and a real deployment:
+[**Your first ZipperGen workflow**](docs/first-workflow.pdf).
+
+## What you get from writing one protocol
+
+The workflow above has one decision, and the `User` makes it. You can ask
+ZipperGen what each participant really runs:
 
 ```bash
 zg show --agent User
@@ -168,18 +174,19 @@ def email_approval__Writer() -> None:
         send('User', draft)
 ```
 
-**The Writer has no branch.** Nobody wrote either line. The Writer is told
-each round whether to continue, because it has work inside the loop. It is
-never told what was approved, because it does nothing in either branch. The
-decision is erased from its program, so it cannot wait on it or deadlock
-against it. This is the projection, and it is the construction the proof in
-Lean is about.
+**The Writer has no branch.** Nobody wrote those two programs by hand.
+
+The Writer is told in every round whether to go on, because it has work to do
+inside the loop. It is never told what the User approved, because it does
+nothing either way. So that decision is simply not in its program. It cannot
+wait for it, and it cannot block on it.
+
+This is what projection means, and it is what the Lean proof is about.
 
 ## Deterministic testing
 
-`--llm mock` answers every action with a placeholder, so a workflow driven by
-it takes one path and no other. To reach a specific branch, script the
-responses:
+`--llm mock` gives every action the same placeholder answer, so a run always
+takes the same path. To test another path, write the answers down in a file:
 
 ```json
 {
@@ -191,15 +198,16 @@ responses:
 zg run --llm scripted:replies.json
 ```
 
-Responses are consumed in order per action. A bare object answers every call
-the same way. A list is a finite sequence, and running past its end is an
-error rather than a silent repeat, so a change that calls an action more often
-than expected fails instead of passing quietly.
+Answers are used in order, per action. A single object answers every call the
+same way. A list is used once through. If the workflow asks for one more answer
+than the list holds, the run fails instead of quietly repeating the last one.
+So a change that calls an action more often than you expected shows up as an
+error.
 
 ## Durable runs and deployment
 
-There is one verb for running a workflow. `--durable` records the run so it can
-be resumed:
+There is one command for running a workflow. Add `--durable` to record it, so
+you can continue it later:
 
 ```bash
 zg run --durable --llm mock   # Ctrl-C part way through
@@ -210,13 +218,13 @@ zg run --resume               # carry on where it stopped
 Run email_approval-20260808-135754-015850000
 ```
 
-A plain `run` executes once. A durable run records every step before taking it,
-so an interrupted one continues rather than starting over, and a model call
-already made is not paid for twice.
+A plain `run` just runs once. A durable run writes down every step before it
+takes it. If you stop it, it continues from there instead of starting again,
+and you do not pay twice for a model call that already happened.
 
-Deployment is separate from preparation. `--no-start` writes the bundle,
-environment and service files without starting anything. Without it, every
-model and connector is probed live and a failure stops the deployment:
+Preparing a deployment and starting one are two different steps. `--no-start`
+writes the files and starts nothing. Without it, ZipperGen first checks every
+model and connector for real, and stops if one of them does not answer:
 
 ```bash
 zg deploy --name production --no-start   # first time: names it
@@ -225,9 +233,9 @@ zg logs production
 zg remove production          # the durable store is kept
 ```
 
-Human approvals can go to Telegram, and workflows can read Gmail or write
-Google Sheets. Which chat, which spreadsheet, which mailbox query: those are
-project configuration and live in `zippergen.toml`. Credentials never do:
+A workflow can ask a person on Telegram, read Gmail, or write to Google
+Sheets. Which chat, which spreadsheet, which search: that is project
+configuration, and it goes in `zippergen.toml`. Credentials never go there:
 
 ```bash
 zg connector configure telegram approvals --chat-id 12345678
@@ -264,9 +272,9 @@ Run `zippergen <command> --help` for any of them.
 
 ## Formal foundation
 
-The main result states that the projected local programs produce the same
-behaviors as the global workflow. Deadlock freedom follows for well-formed
-workflows in the supported formal model.
+The main result says that the projected local programs behave exactly like the
+global workflow. Freedom from deadlock follows from this, for well-formed
+workflows in the supported model.
 
 The main theorems are [machine-checked in Lean
 4](https://github.com/zippergen-io/zippergen-lean/tree/main/isola). The formal
@@ -280,10 +288,11 @@ results are described in these papers:
 - Bollig. [Causal Past Logic for Runtime Verification of Distributed LLM Agent
   Workflows](https://arxiv.org/abs/2605.20923). Under submission.
 
-Causal Past Logic supports runtime conditions over causally visible distributed
-state. It complements the design-time protocol and projection guarantees.
+Causal Past Logic lets a condition read distributed state that is causally
+visible at that point in the run. It works alongside what projection already
+guarantees before the run starts.
 
 ## License
 
-ZipperGen is released under the Apache License 2.0. See
-[`LICENSE`](LICENSE) for the full terms.
+ZipperGen is released under the Apache License 2.0. See [`LICENSE`](LICENSE)
+for the full terms.
