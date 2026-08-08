@@ -7,18 +7,14 @@
   <a href="https://arxiv.org/abs/2604.17612"><img src="https://img.shields.io/badge/arXiv-2604.17612-b31b1b.svg" alt="arXiv"></a>
 </p>
 
-Multi-agent systems scatter coordination across agents and callbacks. The
-complete message order becomes hard to read, and a blocked run is hard to
-diagnose.
+ZipperGen is a Python library for making several LLM agents work together.
 
-ZipperGen puts that coordination in one readable Python protocol. It projects
-the protocol into a local program for each participant, runs them durably,
-shows exactly where each participant is waiting, and deploys the result as a
-real service.
+You write one protocol. It says who sends what to whom, who calls a model, and
+who owns each decision. ZipperGen works out the program each participant runs,
+and runs them.
 
-Coordination deadlocks are ruled out by construction, not by runtime checks.
-This guarantee applies to well-formed workflows in ZipperGen's supported
-language.
+For well-formed workflows those programs cannot deadlock. That is a theorem
+rather than a test result, and the proof is machine-checked in Lean 4.
 
 ---
 
@@ -175,9 +171,9 @@ def email_approval__Writer() -> None:
 **The Writer has no branch.** Nobody wrote either line. The Writer is told
 each round whether to continue, because it has work inside the loop. It is
 never told what was approved, because it does nothing in either branch. The
-decision is erased from its program, and it cannot wait on it, disagree
-with it, or deadlock against it. That is the projection, and it is the same construction the
-correctness proof is about.
+decision is erased from its program, so it cannot wait on it or deadlock
+against it. This is the projection, and it is the construction the proof in
+Lean is about.
 
 ## Deterministic testing
 
