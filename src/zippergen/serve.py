@@ -2255,37 +2255,6 @@ def _dev_command(args) -> int:
     return 0
 
 
-def _studio_command(args) -> int:
-    from zippergen.studio import Studio
-    from zippergen.workspace import Workspace, WorkspaceError
-
-    workspace = Workspace(args.project)
-    if args.workflow:
-        canonical = workspace.canonical_spec(args.workflow)
-        load_workflow_spec(workspace.absolute_spec(canonical))
-        workspace.select_workflow(canonical, cwd=workspace.root)
-    studio = Studio(
-        workspace,
-        input_func=input,
-        output_func=print,
-        command_mode=bool(args.command),
-    )
-    if args.command:
-        studio.welcome()
-        for command in args.command:
-            try:
-                if not studio.execute(command, show_boundary=True):
-                    break
-            except KeyboardInterrupt:
-                studio._warning("Command interrupted.")
-                return 130
-            except (SystemExit, WorkspaceError, ValueError) as exc:
-                studio._error(str(exc))
-                return 1
-        return 0
-    return studio.run()
-
-
 def _view_options_from_args(args) -> ViewOptions:
     agents = tuple(
         name.strip()
@@ -2609,6 +2578,81 @@ What should this workflow do? Describe the participants, what they exchange,
 and in what order. Plain prose is fine — this is the statement of intent, not
 a formal document.
 """
+
+
+def _remove_command(args) -> int:
+    """Delete a deployment. Its durable store survives unless --purge."""
+
+    from zippergen.deployments import (
+        DeploymentRemovalError,
+        present_deployment_artifacts,
+        remove_deployment_artifacts,
+        unregister_deployment_service,
+    )
+
+    profile = _load_deployment_profile(args.name)
+    try:
+        artifacts = present_deployment_artifacts(args.name, profile)
+    except DeploymentRemovalError as exc:
+        raise SystemExit(str(exc)) from exc
+
+    kept = [item.label for item in artifacts if item.retain and not args.purge]
+    print(f"Deployment {args.name}: {len(artifacts)} artifact(s) to remove.")
+    if args.purge:
+        print("  --purge: nothing is kept, including the durable store.")
+    elif kept:
+        print(f"  Kept in the archive: {', '.join(kept)}.")
+
+    if not args.yes:
+        if not sys.stdin.isatty():
+            raise SystemExit(
+                f"Removing {args.name} is permanent. Re-run with --yes."
+            )
+        typed = input(f"Type {args.name} to remove this deployment: ").strip()
+        if typed != args.name:
+            print("The name did not match; nothing was changed.")
+            return 1
+
+    try:
+        service = unregister_deployment_service(args.name)
+        result = remove_deployment_artifacts(args.name, profile, purge=args.purge)
+    except DeploymentRemovalError as exc:
+        raise SystemExit(str(exc)) from exc
+
+    print(f"Removed {result.name}: {result.artifact_count} artifact(s). {service}")
+    if result.archive is not None:
+        print(f"  Archive: {result.archive}")
+    return 0
+
+
+def _compact_command(args) -> int:
+    """Reclaim space in a stopped deployment's durable store and logs."""
+
+    from zippergen.deployments import DeploymentRemovalError, compact_deployment_logs
+    from zippergen.storage_maintenance import compact_store
+
+    profile = _load_deployment_profile(args.name)
+    store = profile.get("store")
+    if store:
+        outcome = compact_store(str(store))
+        print(f"Store {store}")
+        for field in ("removed_events", "reclaimed_bytes"):
+            value = getattr(outcome, field, None)
+            if value is not None:
+                print(f"  {field.replace('_', ' ')}: {value}")
+
+    try:
+        logs = compact_deployment_logs(
+            args.name,
+            profile,
+            keep_archives=args.keep_archives,
+        )
+    except DeploymentRemovalError as exc:
+        raise SystemExit(str(exc)) from exc
+    print(f"Logs: rotated, keeping {args.keep_archives} archive(s).")
+    if getattr(logs, "removed", None):
+        print(f"  removed: {logs.removed}")
+    return 0
 
 
 def _init_command(args) -> int:
@@ -4140,16 +4184,6 @@ def _connector_authorize_google_command(args) -> int:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(prog="zippergen")
     sub = ap.add_subparsers(dest="cmd")
-    studio = sub.add_parser("studio", help="open the project-aware interactive development workspace")
-    studio.add_argument("workflow", nargs="?", help="Initial workflow spec: module:workflow or path.py:workflow")
-    studio.add_argument("--project", help="Project root; defaults to discovery from the current directory.")
-    studio.add_argument(
-        "--command",
-        action="append",
-        default=[],
-        help="Execute one Studio command and exit; repeat for several commands.",
-    )
-
     connector = sub.add_parser(
         "connector",
         help="authorize a connector on this computer",
@@ -4357,6 +4391,34 @@ def main(argv=None) -> int:
     stop.add_argument("name", help="Deployment name.")
     stop.add_argument("--dry-run", action="store_true", help="Print the service-manager command without running it.")
 
+    remove_parser = sub.add_parser(
+        "remove",
+        help="delete a deployment, keeping its durable store unless purged",
+    )
+    remove_parser.add_argument("name", help="Deployment name.")
+    remove_parser.add_argument(
+        "--purge",
+        action="store_true",
+        help="Delete the durable store and log too, leaving nothing.",
+    )
+    remove_parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="Do not ask for confirmation.",
+    )
+
+    compact_parser = sub.add_parser(
+        "compact",
+        help="reclaim space in a stopped deployment's store and logs",
+    )
+    compact_parser.add_argument("name", help="Deployment name.")
+    compact_parser.add_argument(
+        "--keep-archives",
+        type=int,
+        default=3,
+        help="How many rotated log archives to retain. Default 3.",
+    )
+
     restart = sub.add_parser("restart", help="restart a named supervised deployment")
     restart.add_argument("name", help="Deployment name.")
     restart.add_argument("--dry-run", action="store_true", help="Print service-manager commands without running them.")
@@ -4443,9 +4505,8 @@ def main(argv=None) -> int:
     args = ap.parse_args(argv)
 
     if args.cmd is None:
-        return _studio_command(argparse.Namespace(project=None, workflow=None, command=[]))
-    if args.cmd == "studio":
-        return _studio_command(args)
+        ap.print_help()
+        return 0
     if (
         args.cmd == "connector"
         and args.connector_action == "authorize"
@@ -4480,6 +4541,10 @@ def main(argv=None) -> int:
         return _run_deployment_command(args)
     if args.cmd == "start":
         return _deployment_lifecycle_command(args, "start")
+    if args.cmd == "remove":
+        return _remove_command(args)
+    if args.cmd == "compact":
+        return _compact_command(args)
     if args.cmd == "stop":
         return _deployment_lifecycle_command(args, "stop")
     if args.cmd == "restart":

@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from zippergen.studio_deployments import (
+from zippergen.deployments import (
     DeploymentRemovalError,
     compact_deployment_logs,
     present_deployment_artifacts,
@@ -138,7 +138,7 @@ def test_compact_deployment_logs_rotates_and_bounds_archives(
         archive.write_bytes(f"old-{index}".encode())
         archive.touch()
     monkeypatch.setattr(
-        "zippergen.studio_deployments._deployment_service_status",
+        "zippergen.deployments._deployment_service_status",
         lambda _name: {
             "state": "not-loaded",
             "detail": "service is stopped",
@@ -173,7 +173,7 @@ def test_compact_deployment_logs_refuses_a_running_service(
         monkeypatch,
     )
     monkeypatch.setattr(
-        "zippergen.studio_deployments._deployment_service_status",
+        "zippergen.deployments._deployment_service_status",
         lambda _name: {
             "state": "running",
             "detail": "service is running",
@@ -216,15 +216,15 @@ def test_unregister_launchd_service_boots_out_and_removes_registration(
     installed.write_text("plist")
     calls = []
     monkeypatch.setattr(
-        "zippergen.studio_deployments._service_manager",
+        "zippergen.deployments._service_manager",
         lambda: "launchd",
     )
     monkeypatch.setattr(
-        "zippergen.studio_deployments._deployment_service_status",
+        "zippergen.deployments._deployment_service_status",
         lambda _name: {"state": "running", "detail": "running"},
     )
     monkeypatch.setattr(
-        "zippergen.studio_deployments._run_launchctl",
+        "zippergen.deployments._run_launchctl",
         lambda command, **kwargs: calls.append((command, kwargs)),
     )
 
@@ -249,11 +249,11 @@ def test_unregister_refuses_unknown_state_with_an_installed_service(
     installed.parent.mkdir(parents=True)
     installed.write_text("plist")
     monkeypatch.setattr(
-        "zippergen.studio_deployments._service_manager",
+        "zippergen.deployments._service_manager",
         lambda: "launchd",
     )
     monkeypatch.setattr(
-        "zippergen.studio_deployments._deployment_service_status",
+        "zippergen.deployments._deployment_service_status",
         lambda _name: {"state": "unknown", "detail": "timed out"},
     )
 

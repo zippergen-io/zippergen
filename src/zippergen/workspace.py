@@ -8,7 +8,7 @@ implementation relationship, while an ignored project-local refinement buffer
 is only scratch input. Machine-specific workspace state and its separate
 owner-only secret file stay below ``ZIPPERGEN_HOME`` rather than in the user's
 Git checkout; the ordinary workspace record is non-secret. The regular CLI
-remains stateless; ``zippergen studio`` and ``zippergen dev`` use this module to
+remains stateless; the ``zippergen`` CLI uses this module to
 manage development runs.
 """
 
@@ -356,6 +356,8 @@ class Workspace:
 
     @property
     def natural_language_path(self) -> Path:
+        # Kept so an existing workspace's file can still be found and removed;
+        # nothing writes it since the Studio command parser was deleted.
         """Return the owner-private Studio language state path."""
 
         return self.directory / NATURAL_LANGUAGE_STATE_NAME
@@ -2055,19 +2057,10 @@ class Workspace:
         except (WorkspaceError, OSError, UnicodeDecodeError) as exc:
             secret_count = "present but unreadable"
             warnings.append(str(exc))
+        # The natural-language command parser was part of the Studio shell
+        # and is gone; nothing counts its history any more.
         language_history: int | str = 0
         language_learned: int | str = 0
-        if self.natural_language_path.exists():
-            try:
-                from zippergen.natural_language import NaturalLanguageStore
-
-                language = NaturalLanguageStore(self.natural_language_path)
-                language_history = len(language.history())
-                language_learned = len(language.learned())
-            except (ValueError, OSError, UnicodeDecodeError) as exc:
-                language_history = "present but unreadable"
-                language_learned = "present but unreadable"
-                warnings.append(str(exc))
         local_directory = self.root / PROJECT_TASK_DIRECTORY
         local_items = (
             self.current_task_path,

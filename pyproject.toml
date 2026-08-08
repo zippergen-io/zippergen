@@ -23,9 +23,9 @@ classifiers = [
   "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 
-dependencies = [
-  "prompt-toolkit>=3.0.52,<4",
-]
+# No runtime dependencies. The only one, prompt-toolkit, existed for the
+# interactive Studio shell and went with it.
+dependencies = []
 
 [project.optional-dependencies]
 google = [
