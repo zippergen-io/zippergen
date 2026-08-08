@@ -26,7 +26,7 @@ language.
 
 A ZipperGen project is an ordinary directory: a workflow in Python, a
 specification in prose, and a small TOML file. You develop it however you
-develop anything else — in an editor, or by talking to a coding agent such as
+develop anything else, in an editor or by talking to a coding agent such as
 Claude Code or Codex.
 
 There is no separate ZipperGen development environment to learn. ZipperGen
@@ -70,7 +70,7 @@ mkdir email-approval && cd email-approval
 zippergen init
 ```
 
-That writes three files and stops — a manifest, an empty specification, and an
+That writes three files and stops: a manifest, an empty specification, and an
 `AGENTS.md` that points a coding agent at ZipperGen's instructions:
 
 ```
@@ -174,8 +174,8 @@ def email_approval__Writer() -> None:
 
 **The Writer has no branch.** Nobody wrote either line. The Writer is told
 each round whether to continue, because it has work inside the loop. It is
-never told what was approved, because it does nothing in either branch — so
-the decision is erased from its program, and it cannot wait on it, disagree
+never told what was approved, because it does nothing in either branch. The
+decision is erased from its program, and it cannot wait on it, disagree
 with it, or deadlock against it. That is the projection, and it is the same construction the
 correctness proof is about.
 
@@ -196,8 +196,8 @@ zg run --llm scripted:replies.json
 ```
 
 Responses are consumed in order per action. A bare object answers every call
-the same way; a list is a finite sequence, and running past its end is an
-error rather than a silent repeat — so a change that calls an action more often
+the same way. A list is a finite sequence, and running past its end is an
+error rather than a silent repeat, so a change that calls an action more often
 than expected fails instead of passing quietly.
 
 ## Durable runs and deployment
@@ -219,7 +219,7 @@ so an interrupted one continues rather than starting over, and a model call
 already made is not paid for twice.
 
 Deployment is separate from preparation. `--no-start` writes the bundle,
-environment and service files without starting anything; without it, every
+environment and service files without starting anything. Without it, every
 model and connector is probed live and a failure stops the deployment:
 
 ```bash
@@ -230,7 +230,7 @@ zg remove production          # the durable store is kept
 ```
 
 Human approvals can go to Telegram, and workflows can read Gmail or write
-Google Sheets. Which chat, which spreadsheet, which mailbox query — those are
+Google Sheets. Which chat, which spreadsheet, which mailbox query: those are
 project configuration and live in `zippergen.toml`. Credentials never do:
 
 ```bash
@@ -260,11 +260,11 @@ Run `zippergen <command> --help` for any of them.
 | | |
 |---|---|
 | [`examples/email_approval.py`](examples/email_approval.py) | the tutorial workflow: watch a mailbox, draft, approve, send |
-| [`examples/diagnosis.py`](examples/diagnosis.py) | two reviewers loop until they agree — the paper's example |
+| [`examples/diagnosis.py`](examples/diagnosis.py) | two reviewers loop until they agree, the paper's example |
 | [`examples/call_intake.py`](examples/call_intake.py) | Gmail in, Sheets out, deployed as a service |
 | [Your first ZipperGen workflow](docs/first-workflow.pdf) | the tutorial |
 | [Development and deployment guide](docs/workflow-development-deployment-guide.pdf) | the long reference |
-| [Workflow authoring skill](.agents/skills/zippergen-workflows/SKILL.md) | what a coding agent follows; also `zippergen skill` |
+| [Workflow authoring skill](.agents/skills/zippergen-workflows/SKILL.md) | what a coding agent follows, also printed by `zippergen skill` |
 
 ## Formal foundation
 

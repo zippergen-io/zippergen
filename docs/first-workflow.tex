@@ -125,15 +125,15 @@
 \begin{abstract}
 You will build a small application that watches a mailbox, asks a language
 model to draft a reply to each message, and asks \emph{you} to approve it
-before anything is sent. It does not stop on its own --- it is a service, and
-the last section leaves it running on a server. It is short enough to read in
+before anything is sent. It does not stop on its own. It is a service, and the
+last section leaves it running on a server. It is short enough to read in
 one sitting, and it already contains everything that makes ZipperGen worth
 using: two participants, a model call, an explicit human decision, a branch
 that only the decider takes, and a loop that keeps the whole thing alive.
 
 There is no separate ZipperGen development environment to learn. You work in an
-ordinary directory with an ordinary command line, and — if you like — a coding agent such as
-Claude Code or Codex. This tutorial shows both, and is honest about which parts
+ordinary directory with an ordinary command line, and, if you like, a coding
+agent such as Claude Code or Codex. This tutorial shows both, and is honest about which parts
 need a person.
 \end{abstract}
 
@@ -210,16 +210,16 @@ That is the whole of project creation. It writes three files and stops: it asks
 you nothing, and it configures nothing.
 
 \begin{itemize}
-  \item \texttt{zippergen.toml} — the project's visible configuration. It is
+  \item \texttt{zippergen.toml} is the project's visible configuration. It is
         committed, and it never contains a credential.
-  \item \texttt{specification.md} — what the workflow is meant to do, in prose.
-  \item \texttt{AGENTS.md} — tells a coding agent to run
+  \item \texttt{specification.md} says what the workflow is meant to do, in prose.
+  \item \texttt{AGENTS.md} tells a coding agent to run
         \texttt{zippergen skill} before touching workflow code.
 \end{itemize}
 
 \section{Describe what you want}
 
-You can write the workflow yourself; the next section shows the code. But the
+You can write the workflow yourself, and the next section shows the code. But the
 intended path is to say what you want in ordinary language. Open a coding agent
 in this directory:
 
@@ -235,8 +235,8 @@ and ask for it:
   before it is sent. It should keep running and wait for the next message.
 \end{lstlisting}
 
-The agent reads \texttt{AGENTS.md}, which points it at \texttt{zg skill} ---
-ZipperGen's own instructions for how to write a workflow, what to check, and
+The agent reads \texttt{AGENTS.md}, which points it at \texttt{zg skill}.
+Those are ZipperGen's own instructions for how to write a workflow, what to check, and
 what never to touch. It writes the files, then checks its work with the same
 commands you would use:
 
@@ -250,7 +250,7 @@ Two participants, User and Writer, and one decision that the User owns:
 whether to send the draft. Ask me to change anything.
 \end{lstlisting}
 
-That is the shape of the whole thing. You describe what you want; the agent
+That is the shape of the whole thing. You describe what you want. The agent
 edits ordinary files and uses ZipperGen's actions to check them. Nothing
 happened that you could not have done by hand, and everything it did is visible
 in the directory.
@@ -258,7 +258,7 @@ in the directory.
 \begin{notebox}{Where the skill comes from}
 \texttt{zg skill} prints instructions that ship inside the package, so they
 match the version you have installed. They are ordinary prose in the
-repository, not generated text --- you can read them, and you can disagree with
+repository, not generated text. You can read them, and you can disagree with
 them.
 \end{notebox}
 
@@ -291,8 +291,8 @@ the right side receives, and the names in brackets say which variables carry
 the value.
 
 \texttt{Writer: draft = draft\_reply(message)} is an action performed by one
-participant. \texttt{draft\_reply} is an \texttt{@llm} action — a model call
-with a prompt and a declared output.
+participant. \texttt{draft\_reply} is an \texttt{@llm} action, which is a model
+call with a prompt and a declared output.
 
 \texttt{User: approved = approve\_reply(draft)} is a \texttt{@human} action. It
 stops and waits for a person.
@@ -303,13 +303,13 @@ makes it. That annotation is the important one, and the next section shows why.
 \texttt{while message @ User} is a loop, owned the same way. The
 \texttt{User} decides each round whether there is another message to handle.
 \texttt{next\_unread\_message} waits until there is one, so in practice that
-decision is always yes and the workflow never finishes --- which is the point.
+decision is always yes and the workflow never finishes. That is the point.
 
 \begin{notebox}{One action hides the awkward part}
 Mailboxes are fiddly: what to do when nothing is unread, how to avoid handling
 the same message twice, whether to poll or block. All of it sits behind
-\texttt{next\_unread\_message}, whose contract is one sentence --- \emph{return
-the next message, waiting if there is none}. Here it takes the oldest
+\texttt{next\_unread\_message}, whose contract is one sentence: \emph{return the
+next message, waiting if there is none}. Here it takes the oldest
 \texttt{.txt} file from \texttt{mailbox/} and renames it \texttt{.done}, so no
 message is handled twice even after a crash. The coordination above does not
 change when you point it at a real inbox.
@@ -336,8 +336,8 @@ OK   canonical rendering: global and local code views rendered successfully
 participant, and renders it back. If it passes, the workflow is well formed and
 the deadlock-freedom guarantee applies to it.
 
-There is no privileged mode here. The agent and you have the same commands ---
-credentials are the exception, and are supplied separately by you. The rest of
+There is no privileged mode here. The agent and you have the same commands.
+Credentials are the exception, and you supply those yourself. The rest of
 this tutorial mixes both: asking the agent when a question is easier to say
 than to type, and running commands directly when they are short.
 
@@ -396,8 +396,8 @@ Nobody wrote either of those lines. Put the two programs side by side and the
 \texttt{Writer} does something for only one of them.
 
 The loop, the \texttt{Writer} must know about: it has work inside it, so the
-\texttt{User} tells it every round whether to continue --- and tells it once
-more, at the end, not to. That is the \texttt{send\_decision} in the
+\texttt{User} tells it every round whether to continue, and tells it once more,
+at the end, not to. That is the \texttt{send\_decision} in the
 \texttt{else}.
 
 The approval, the \texttt{Writer} must \emph{not} know about: it does nothing
@@ -446,8 +446,8 @@ and handles that one too. Answering \texttt{n} takes the other branch.
 \texttt{mailbox/01.txt} is now \texttt{mailbox/01.done}. That rename is what
 stops a message being answered twice, including after a crash.
 
-Stop it with \texttt{Ctrl-C}. When you want a run that ends by itself --- in a
-test, or just to see a result --- give it a budget:
+Stop it with \texttt{Ctrl-C}. When you want a run that ends by itself, in a test
+or just to see a result, give it a budget:
 
 \begin{lstlisting}[style=shell]
 zg run --llm mock --option max_messages=2
@@ -461,10 +461,9 @@ Two messages handled, one of them approved.
 
 \begin{notebox}{Testing a specific branch}
 \texttt{mock} answers every action the same way, so a workflow driven by it
-takes one path and no other. When you want to drive a particular branch — the
-rejection, or a loop running exactly three times — script the answers with
-\texttt{--llm scripted:replies.json}. The guide covers it; you do not need it
-yet.
+takes one path and no other. When you want to drive a particular branch, such as
+the rejection, script the answers with \texttt{--llm scripted:replies.json}. The
+guide covers it. You do not need it yet.
 \end{notebox}
 
 \section{Use a real model}
@@ -513,7 +512,7 @@ appear in the agent's conversation, in your shell history, or in the
 repository.
 
 That is a real boundary, and it is not an absolute one. Once saved, the token
-lives in a file under \texttt{ZIPPERGEN\_HOME} readable by your user --- so a
+lives in a file under \texttt{ZIPPERGEN\_HOME} readable by your user, so a
 coding agent running as you, with a shell, could read it afterwards. If you
 want a hard capability boundary rather than a convention, run the agent without
 access to your credential store: a separate account, or an environment that
@@ -558,7 +557,7 @@ User will be asked through
 \par\smallskip
 
 Two commands, doing two different things. The first says \emph{which} chat. The
-second says \emph{who} is asked there --- the \texttt{User}, whose
+second says \emph{who} is asked there: the \texttt{User}, whose
 \texttt{@human} action is the approval.
 
 And two things went to two different places, on purpose:
@@ -579,7 +578,7 @@ agent.
 \begin{notebox}{Authorizing Google from another computer}
 The same split appears for Gmail and Sheets, with one extra step because a
 server usually has no browser. Run \texttt{zg connector authorize google
--{}-scopes ...} on your own machine; it opens a browser and prints an encoded
+-{}-scopes ...} on your own machine. It opens a browser and prints an encoded
 result. Paste that into \texttt{zg connector accept google} on the server. The
 credential never appears in a command line.
 \end{notebox}
@@ -610,9 +609,8 @@ The model call that already happened is not repeated. The run resumes at the
 point it stopped, because every step was recorded before it was taken.
 
 This matters more for a workflow that never ends than for one that finishes in
-a second. Stopping is the normal way this one exits --- you press Ctrl-C, the
-machine reboots, the service restarts --- and each time it picks up where it
-was rather than re-reading a mailbox it has already answered.
+a second. Stopping is the normal way this one exits. You press Ctrl-C, the
+machine reboots, the service restarts, and each time it picks up where it was rather than re-reading a mailbox it has already answered.
 
 \section{Deploy it}
 
@@ -638,14 +636,14 @@ A deployment you no longer want:
 zg remove production
 \end{lstlisting}
 
-Its durable store is kept — that is the record of what actually ran, and it is
+Its durable store is kept. That is the record of what actually ran, and it is
 the one thing no rebuild can recover. Everything else, the environment and
 service files and the bundled source, is written again by deploying again.
 \texttt{--purge} removes the store too, when you mean it.
 
 \section{Put it on a server}
 
-This section is optional. Everything above works on your laptop; read on only
+This section is optional. Everything above works on your laptop. Read on only
 when you want the workflow to keep running after you close it.
 
 There is no ZipperGen deployment host and no server to sign up for. You copy
@@ -665,7 +663,7 @@ you have just been running. That is the whole mechanism.
 \end{center}
 
 Notice what does \emph{not} cross to the right. The coding agent stays on your
-laptop. It wrote the workflow; it is not part of the running application, and
+laptop. It wrote the workflow, but it is not part of the running application, and
 the server never needs Claude, Codex, or an agent of any kind installed. The
 server needs three things: ZipperGen, the project files, and its own
 credentials.
@@ -693,15 +691,15 @@ The last two lines are the pair from the previous section, unchanged. Starting
 probes the model and the connector first, so a token typed wrongly here fails
 now rather than in the middle of an approval. On Linux \texttt{zg start}
 installs a small \texttt{systemd} user service that restarts the workflow if it
-fails; you never write that file, and \texttt{zg status}, \texttt{zg logs} and
+fails. You never write that file, and \texttt{zg status}, \texttt{zg logs} and
 \texttt{zg stop} manage it from here.
 
 This is the point of the loop. The workflow you built does not finish, so
 leaving it on a server is not a contrivance to show off a \texttt{deploy}
-command --- it is the only sensible place for it. Your laptop can close.
+command. It is the only sensible place for it. Your laptop can close.
 
 The mailbox here is a directory, which is enough to see the shape. Point
-\texttt{next\_unread\_message} at a real inbox and nothing above changes;
+\texttt{next\_unread\_message} at a real inbox and nothing above changes.
 \texttt{examples/call\_intake.py} is that workflow, reading Gmail and writing
 to a spreadsheet.
 
@@ -712,8 +710,8 @@ to a spreadsheet.
 \toprule
 \texttt{specification.md} & what it should do, in prose, maintained by you and your agent \\
 \texttt{workflow.py} & the coordination, as visible Python \\
-\texttt{zippergen.toml} & which model, which chat — committed, no secrets \\
-\texttt{mailbox/} & where messages arrive; a real inbox on a real server \\
+\texttt{zippergen.toml} & which model, which chat, committed, no secrets \\
+\texttt{mailbox/} & where messages arrive, a real inbox on a real server \\
 \bottomrule
 \end{tabularx}
 \end{center}
@@ -723,20 +721,20 @@ in the environment, a bot token typed once.
 
 The thing worth remembering is the \texttt{Writer}. It learned about the loop,
 because it has work to do inside it. It never learned about the approval,
-because it has none. You wrote one protocol; ZipperGen worked out what each
+because it has none. You wrote one protocol, and ZipperGen worked out what each
 participant runs, and worked it out in a way that cannot deadlock. As the
-workflow grows — more participants, more loops, parallel regions — that is
+workflow grows, with more participants, more loops and parallel regions, that is
 what stops the coordination becoming the hard part.
 
 \section{Where to go next}
 
 \begin{itemize}
-  \item \texttt{examples/diagnosis.py} — two reviewers argue until they agree.
+  \item \texttt{examples/diagnosis.py} has two reviewers who argue until they agree.
         A loop, and a decision inside it.
-  \item \texttt{examples/call\_intake.py} — reads a real mailbox, records to a
+  \item \texttt{examples/call\_intake.py} reads a real mailbox and records to a
         real spreadsheet, runs as a service.
-  \item \emph{Development and deployment guide} — the longer reference.
-  \item \texttt{zippergen skill} — what your coding agent is following. Worth
+  \item \emph{Development and deployment guide} is the longer reference.
+  \item \texttt{zippergen skill} prints what your coding agent is following. Worth
         reading once yourself.
 \end{itemize}
 

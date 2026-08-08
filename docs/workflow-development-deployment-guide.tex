@@ -152,14 +152,14 @@ and connectors, deployment and operations, and what to do when something is
 wrong.
 
 It assumes you can use a terminal and an editor. It does not assume you are a
-Python or operations engineer, and it does not assume you use a coding agent —
+Python or operations engineer, and it does not assume you use a coding agent.
 though it says where one helps.
 \end{abstract}
 
 \begin{notebox}{Start with the tutorial}
 \path{docs/first-workflow.pdf} builds one small application end to end in about
 seven pages. This manual explains the parts it passes over. If you have not
-read it, read it first; most of what follows will then be lookup rather than
+read it, read it first. Most of what follows will then be lookup rather than
 learning.
 \end{notebox}
 
@@ -185,7 +185,7 @@ A ZipperGen project is a directory. \texttt{zg init} creates one:
 \midrule
 \path{specification.md} & yes & what the workflow should do, in prose \\
 \path{workflow.py} & yes & the coordination, as Python \\
-\path{zippergen.toml} & yes & models, connectors, entry point --- no secrets \\
+\path{zippergen.toml} & yes & models, connectors, entry point, no secrets \\
 \path{AGENTS.md} & yes & points a coding agent at \texttt{zg skill} \\
 \path{.zippergen/} & no & scratch \\
 \texttt{ZIPPERGEN\_HOME} & no & credentials, runs, deployments \\
@@ -194,7 +194,7 @@ A ZipperGen project is a directory. \texttt{zg init} creates one:
 \end{center}
 
 The split that matters is the last two rows. Everything above them travels with
-the project; everything in them describes one machine. A colleague who clones
+the project. Everything in them describes one machine. A colleague who clones
 the repository gets the workflow, the specification and the configuration, and
 supplies their own keys.
 
@@ -226,12 +226,12 @@ chat_id = "12345678"
 User = "approvals"
 \end{lstlisting}
 
-It is an ordinary file. Edit it in an editor, or let a coding agent edit it;
+It is an ordinary file. Edit it in an editor, or let a coding agent edit it.
 nothing in ZipperGen owns it. \texttt{workflow\_entry} is why most commands do
 not need you to name the workflow.
 
 \emph{Named configurations} exist so several participants can share one and it
-changes in one place. \texttt{configurations} says what a thing is;
+changes in one place. \texttt{configurations} says what a thing is, and
 \texttt{assignments} says who uses it.
 
 \subsection{What stays on one machine}
@@ -251,7 +251,7 @@ Runs and deployments & \texttt{ZIPPERGEN\_HOME} \\
 \section{Writing workflows}
 
 A workflow is a Python function decorated with \texttt{@workflow}. Its body is
-read, rewritten, and turned into an intermediate representation --- so it looks
+read, rewritten, and turned into an intermediate representation, so it looks
 like Python and reads like a protocol, but it is not executed line by line as
 written.
 
@@ -265,7 +265,7 @@ User(message) >> Writer(message)
 \end{lstlisting}
 
 The left side sends, the right receives. The names in brackets say which
-variables carry the value at each end; they need not match.
+variables carry the value at each end. They need not match.
 
 A self-send (\texttt{A(x) >> A(y)}) is a local rename, not a message.
 
@@ -277,7 +277,7 @@ An action is work one participant does.
 \begin{tabularx}{0.97\linewidth}{@{}lX@{}}
 \toprule
 \texttt{@llm} & a model call with a prompt and declared outputs \\
-\texttt{@pure} & ordinary Python; output name and type from the return annotation \\
+\texttt{@pure} & ordinary Python, output name and type from the return annotation \\
 \texttt{@human} & stops and asks a person: \texttt{confirm}, \texttt{select}, \texttt{input} \\
 \texttt{@assistant} & runs a coding agent against a repository \\
 \texttt{@planner} & asks a model to generate a sub-workflow, validated before it runs \\
@@ -362,7 +362,7 @@ def email_approval() -> int:
     return handled @ User
 \end{lstlisting}
 
-An input belongs to the participant that supplies it; the return says who holds
+An input belongs to the participant that supplies it. The return says who holds
 the result.
 
 \section{Inspecting and validating}
@@ -409,11 +409,11 @@ def email_approval__Writer() -> None:
 The \texttt{Writer} is told each round whether to continue, because it has work
 inside the loop. It has no \texttt{if}, because it takes no part in the
 \texttt{User}'s decision. A participant's local program mentions only what
-concerns it --- which is why it cannot wait for a message the decider chose not
+concerns it, which is why it cannot wait for a message the decider chose not
 to send.
 
 Use this when a workflow behaves in a way you did not expect. The global view
-says what you wrote; the local view says what will run.
+says what you wrote. The local view says what will run.
 
 \section{Running and testing}
 
@@ -422,7 +422,7 @@ says what you wrote; the local view says what will run.
 \begin{center}
 \begin{tabularx}{0.95\linewidth}{@{}lX@{}}
 \toprule
-\texttt{zg run} & execute once; nothing is kept \\
+\texttt{zg run} & execute once, nothing is kept \\
 \texttt{zg run -{}-durable} & record every step, so it can be resumed \\
 \texttt{zg run -{}-resume} & continue the most recent unfinished run \\
 \texttt{zg run -{}-resume -{}-run-id ID} & continue a particular one \\
@@ -432,8 +432,8 @@ says what you wrote; the local view says what will run.
 
 A plain run leaves nothing behind, so \texttt{zg status} afterwards finds
 nothing. That is deliberate: throwaway runs should not accumulate. When you want
-to come back to a run --- to resume it, inspect it, or answer a human action
-later --- use \texttt{-{}-durable}.
+to come back to a run, to resume it, inspect it, or answer a human action
+later, use \texttt{-{}-durable}.
 
 Missing inputs are asked for in a terminal. In a script, supply them:
 
@@ -446,9 +446,9 @@ zg run --input message="Could we move our meeting to Thursday?" --yes
 \begin{center}
 \begin{tabularx}{0.95\linewidth}{@{}lX@{}}
 \toprule
-\texttt{-{}-llm mock} & a placeholder for every action; no key needed \\
+\texttt{-{}-llm mock} & a placeholder for every action, no key needed \\
 \texttt{-{}-llm openai:gpt-4o-mini} & a real provider \\
-\texttt{-{}-llm scripted:replies.json} & recorded answers; see below \\
+\texttt{-{}-llm scripted:replies.json} & recorded answers, see below \\
 \texttt{-{}-llm-for Writer=openai:gpt-4o} & override one participant or action \\
 \bottomrule
 \end{tabularx}
@@ -460,7 +460,7 @@ Without \texttt{-{}-llm}, the assignments in \path{zippergen.toml} apply.
 
 \texttt{mock} answers every action the same way, so a workflow driven by it
 takes one path and no other. In a consensus protocol that means immediate
-agreement; everything behind a decision is unreachable.
+agreement. Everything behind a decision is unreachable.
 
 Scripted responses fix that:
 
@@ -477,7 +477,7 @@ Scripted responses fix that:
 zg run --llm scripted:never-agree.json
 \end{lstlisting}
 
-Keys are \texttt{action} or \texttt{Participant.action}; the more specific one
+Keys are \texttt{action} or \texttt{Participant.action}. The more specific one
 wins. Values follow one rule worth learning:
 
 \begin{center}
@@ -496,7 +496,7 @@ run fails instead of passing quietly.
 \begin{notebox}{Use it for branches, not for prompts}
 Scripted responses exercise \emph{coordination}: this reviewer disagrees, that
 loop runs three times, this branch is taken. They say nothing about whether a
-real model would produce good text. Both matter; they are different questions.
+real model would produce good text. Both matter, and they are different questions.
 \end{notebox}
 
 \subsection{Durable runs}
@@ -523,7 +523,7 @@ zg run --resume
 \end{tabularx}
 \end{center}
 
-\texttt{interrupted} and \texttt{failed} can be resumed; \texttt{done} cannot.
+\texttt{interrupted} and \texttt{failed} can be resumed. \texttt{done} cannot.
 
 \section{Models, people, and services}
 
@@ -543,7 +543,7 @@ zg run --llm openai:gpt-4o-mini
 \texttt{anthropic:MODEL} (or \texttt{claude:}) & \texttt{ANTHROPIC\_API\_KEY} \\
 \texttt{mistral:MODEL} & \texttt{MISTRAL\_API\_KEY} \\
 \texttt{ollama:MODEL} (or \texttt{local:}) & \texttt{OLLAMA\_BASE\_URL} \\
-\texttt{mock} & --- \\
+\texttt{mock} & none \\
 \bottomrule
 \end{tabularx}
 \end{center}
@@ -573,7 +573,7 @@ zg connector configure telegram approvals --chat-id 12345678
 zg connector assign User approvals
 \end{lstlisting}
 
-The first says \emph{which} chat. The second says \emph{who} is asked there ---
+The first says \emph{which} chat. The second says \emph{who} is asked there:
 a participant, or one action with \texttt{User.approve\_reply}.
 
 The bot token is typed without echo and stays on this machine. The chat id goes
@@ -619,12 +619,12 @@ which asks for the result without echo and stores the credential together with
 the scopes Google actually granted.
 
 The two halves exist because a server usually has no browser. Authorize on your
-own computer; accept on the server. The credential never appears in a command
+own computer, then accept on the server. The credential never appears in a command
 line, so it does not reach shell history.
 
 \begin{warningbox}{Scopes are checked before deployment}
 Deploying refuses when the granted scopes do not cover what the workflow needs
---- for example a workflow that marks mail as read needs
+For example, a workflow that marks mail as read needs
 \texttt{gmail.modify}, not \texttt{gmail.readonly}. Re-run
 \texttt{authorize} with the missing scopes.
 \end{warningbox}
@@ -639,7 +639,7 @@ zg start production
 \end{lstlisting}
 
 These are deliberately separate. Preparing writes the bundle, a managed Python
-environment, and the service files, and reaches nothing --- a deployment can be
+environment, and the service files, and reaches nothing. A deployment can be
 prepared today and started next week. Starting is about to make real calls, so
 every model and connector is probed first and a failure stops it.
 
@@ -661,7 +661,7 @@ zg deploy production          # redeploy the current source
 \texttt{zg approve NAME} & answer one \\
 \texttt{zg doctor NAME} & readiness checks, in detail \\
 \texttt{zg stop} / \texttt{restart NAME} & move the service \\
-\texttt{zg compact NAME} & reclaim space; the service must be stopped \\
+\texttt{zg compact NAME} & reclaim space, the service must be stopped \\
 \texttt{zg remove NAME} & delete it \\
 \bottomrule
 \end{tabularx}
@@ -690,7 +690,7 @@ it, so look occasionally.
 \begin{enumerate}
   \item Clone the repository. The workflow, specification and
         \path{zippergen.toml} come with it.
-  \item \texttt{zg validate} --- confirms the module loads in that environment.
+  \item \texttt{zg validate} confirms the module loads in that environment.
   \item Supply what the machine needs: model keys in the environment, the
         Telegram token via \texttt{connector configure}, Google via
         \texttt{authorize} on your laptop and \texttt{accept} there.
@@ -704,7 +704,7 @@ a clone and a running service.
 \section{Working with a coding agent}
 
 ZipperGen ships instructions for coding agents. \texttt{zg init} writes an
-\path{AGENTS.md} pointing at them; \texttt{zg skill} prints them.
+\path{AGENTS.md} pointing at them, and \texttt{zg skill} prints them.
 
 \begin{lstlisting}[style=shell]
 zg skill                  # what an agent should follow
@@ -726,11 +726,11 @@ you & credentials, authorization, and starting production \\
 That division is a convention, not a wall: an agent with a shell can run any
 command you can, and can read any file you can. Credentials are typed rather
 than passed as arguments, so they stay out of the agent's conversation, your
-shell history and the repository --- but once saved they live in a file under
+shell history and the repository. But once saved they live in a file under
 \texttt{ZIPPERGEN\_HOME} that your user can read.
 
 That distinction is worth keeping straight. Entering a credential
-interactively protects it \emph{at the moment of entry}; it is not a capability
+interactively protects it \emph{at the moment of entry}. It is not a capability
 boundary. For a real one, run the agent under a different account, or in an
 environment that does not carry \texttt{ZIPPERGEN\_HOME}. Nothing in ZipperGen
 can supply that, because a process running as you can do what you can do.
@@ -739,7 +739,7 @@ can supply that, because a process running as you can do what you can do.
 ZipperGen does not check that \path{workflow.py} implements
 \path{specification.md}, because it cannot: one is prose. There is no gate, no
 provenance, and no ceremony around it. Keep it accurate the way you keep a
-README accurate --- and tell your agent to update it before changing behaviour,
+README accurate, and tell your agent to update it before changing behaviour,
 which the shipped skill does.
 \end{notebox}
 
@@ -760,7 +760,7 @@ zg show --agent ThatParticipant
 \end{lstlisting}
 
 A projected program cannot wait for a message nobody sends, so if a participant
-is stuck the cause is usually an action that never returns --- a model call
+is stuck the cause is usually an action that never returns, such as a model call
 without a timeout, or a human action nobody has answered. \texttt{zg tasks}
 lists the second kind.
 
@@ -783,7 +783,7 @@ back to.
 
 \subsection{Connector configured but the question still appears in the terminal}
 
-Configuring says which chat; assigning says who is asked there. Both are
+Configuring says which chat. Assigning says who is asked there. Both are
 needed:
 
 \begin{lstlisting}[style=shell]
@@ -805,7 +805,7 @@ zg connector assign User approvals
 \texttt{snapshot} / \texttt{diff} & record and compare semantics \\
 \midrule
 \multicolumn{2}{@{}l}{\textbf{Run}} \\
-\texttt{run} & execute; \texttt{-{}-durable}, \texttt{-{}-resume} \\
+\texttt{run} & execute, with \texttt{-{}-durable} and \texttt{-{}-resume} \\
 \texttt{status} / \texttt{trace} / \texttt{tasks} / \texttt{approve} & inspect and answer \\
 \midrule
 \multicolumn{2}{@{}l}{\textbf{Configure}} \\
@@ -824,7 +824,7 @@ zg connector assign User approvals
 \end{center}
 
 Every command takes \texttt{-{}-help}. Commands that act on a workflow default
-to the project's; commands that act on a deployment default to the most recent.
+to the project's. Commands that act on a deployment default to the most recent.
 
 \texttt{zippergen} and \texttt{zg} are the same program.
 
@@ -837,8 +837,8 @@ three things:
 \begin{tabularx}{0.95\linewidth}{@{}lX@{}}
 \toprule
 \textbf{decider} & evaluates the condition and broadcasts the outcome \\
-\textbf{recipient} & appears in a branch; receives the outcome and follows it \\
-\textbf{bystander} & appears in neither branch; the decision is erased from its program \\
+\textbf{recipient} & appears in a branch, receives the outcome and follows it \\
+\textbf{bystander} & appears in neither branch, the decision is erased from its program \\
 \bottomrule
 \end{tabularx}
 \end{center}
@@ -853,6 +853,6 @@ machine-checked in Lean 4.
 
 That is the trade the whole system makes: write one protocol, accept the
 language's restrictions, and get a distributed implementation that cannot
-deadlock --- rather than writing each agent separately and hoping.
+deadlock, rather than writing each agent separately and hoping.
 
 \end{document}
