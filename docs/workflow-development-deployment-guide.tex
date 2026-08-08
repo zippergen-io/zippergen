@@ -722,10 +722,16 @@ you & credentials, authorization, and starting production \\
 \end{center}
 
 That division is a convention, not a wall: an agent with a shell can run any
-command you can. What it \emph{cannot} do is obtain a credential it was never
-given --- the Telegram token and Google authorization are typed, never passed
-as arguments. If you want a harder boundary, give the agent a shell with
-different credentials than your own.
+command you can, and can read any file you can. Credentials are typed rather
+than passed as arguments, so they stay out of the agent's conversation, your
+shell history and the repository --- but once saved they live in a file under
+\texttt{ZIPPERGEN\_HOME} that your user can read.
+
+That distinction is worth keeping straight. Entering a credential
+interactively protects it \emph{at the moment of entry}; it is not a capability
+boundary. For a real one, run the agent under a different account, or in an
+environment that does not carry \texttt{ZIPPERGEN\_HOME}. Nothing in ZipperGen
+can supply that, because a process running as you can do what you can do.
 
 \begin{notebox}{The specification is yours and the agent's}
 ZipperGen does not check that \path{workflow.py} implements

@@ -309,9 +309,10 @@ OK   canonical rendering: global and local code views rendered successfully
 participant, and renders it back. If it passes, the workflow is well formed and
 the deadlock-freedom guarantee applies to it.
 
-There is no privileged mode here. The agent and you have the same commands, and
-the rest of this tutorial mixes both --- asking the agent when a question is
-easier to say than to type, and running commands directly when they are short.
+There is no privileged mode here. The agent and you have the same commands ---
+credentials are the exception, and are supplied separately by you. The rest of
+this tutorial mixes both: asking the agent when a question is easier to say
+than to type, and running commands directly when they are short.
 
 \section{The moment that matters}
 
@@ -441,10 +442,18 @@ need that credential and should not have it. In your own terminal:
 Tell me when that is done and I will check the configuration.
 \end{lstlisting}
 
-That is the boundary, and it is worth pausing on. The agent did everything it
-could and then stopped --- not because a rule told it to be careful, but
-because the token is typed into a prompt and never passed as an argument.
-There is nothing for it to read.
+That is the boundary, and it is worth being precise about it. The agent did
+everything it could and then stopped. The token is entered interactively in
+your terminal rather than passed as a command-line argument, so it does not
+appear in the agent's conversation, in your shell history, or in the
+repository.
+
+That is a real boundary, and it is not an absolute one. Once saved, the token
+lives in a file under \texttt{ZIPPERGEN\_HOME} readable by your user --- so a
+coding agent running as you, with a shell, could read it afterwards. If you
+want a hard capability boundary rather than a convention, run the agent without
+access to your credential store: a separate account, or an environment that
+does not carry \texttt{ZIPPERGEN\_HOME}.
 
 \noindent
 \begin{minipage}[t]{0.485\linewidth}
