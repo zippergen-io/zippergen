@@ -183,21 +183,21 @@ than expected fails instead of passing quietly.
 
 ## Durable runs and deployment
 
-`zippergen dev` runs a workflow as a durable managed run: it records every step
-in its own SQLite store and names the run, so an interrupted run continues
-rather than starting over.
+There is one verb for running a workflow. `--durable` records the run so it can
+be resumed:
 
 ```bash
-zippergen dev workflow.py:email_approval --llm mock   # Ctrl-C part way through
-zippergen dev --resume                                # carry on where it stopped
+zippergen run workflow.py:email_approval --durable --llm mock  # Ctrl-C
+zippergen run --resume                                         # carry on
 ```
 
 ```
-Run email_approval-20260808-132719-612865000
+Run email_approval-20260808-135754-015850000
 ```
 
-Use `zippergen run` for a plain one-shot execution and `zippergen dev` when you
-want the run to survive being interrupted.
+A plain `run` executes once. A durable run records every step before taking it,
+so an interrupted one continues rather than starting over, and a model call
+already made is not paid for twice.
 
 Deployment is separate from preparation. `--no-start` writes the bundle,
 environment and service files without starting anything; without it, every
@@ -226,8 +226,7 @@ init        create a project
 skill       print the coding-agent skill
 validate    load, project, and check a workflow
 show        render the protocol, or one participant's local program
-run         run once, with real, mock, or scripted models
-dev         run as a durable managed run; --resume continues one
+run         run a workflow; --durable records it, --resume continues one
 deploy      prepare and start a deployment
 start · stop · restart · logs · status · trace · tasks · approve
 remove · compact

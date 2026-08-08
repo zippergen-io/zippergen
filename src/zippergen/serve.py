@@ -2228,6 +2228,39 @@ def _run_workflow_command(args) -> int:
     return 0
 
 
+def _durable_run_command(args) -> int:
+    """Run with a recorded, resumable run.
+
+    Same execution as a plain run; what differs is the bookkeeping. The run is
+    registered in the project so `--resume` has something to continue, and any
+    inputs the workflow needs but the command line did not supply are asked
+    for.
+    """
+
+    from zippergen.dev import run_dev
+    from zippergen.workspace import Workspace
+
+    inputs = _parse_input_json(args.input_json)
+    inputs.update(_parse_inputs(args.input))
+    run_dev(
+        Workspace(getattr(args, "project", None)),
+        workflow_spec=args.workflow,
+        resume=args.resume,
+        run_id=getattr(args, "run_id", None),
+        provided_inputs=inputs,
+        llm=args.llm,
+        llms=normalize_llm_overrides(_parse_inputs(args.llm_for)),
+        assistant=args.assistant,
+        options=_parse_options(args.option, services=args.services),
+        services=args.services,
+        timeout=args.timeout,
+        interactive=not args.yes and sys.stdin.isatty(),
+        input_func=input,
+        output_func=print,
+    )
+    return 0
+
+
 def _dev_command(args) -> int:
     from zippergen.dev import run_dev
     from zippergen.workspace import Workspace
@@ -4380,33 +4413,35 @@ def main(argv=None) -> int:
         help="OAuth Desktop app JSON path; prompts when omitted.",
     )
 
-    dev = sub.add_parser("dev", help="run a workflow durably with guided inputs and inline human tasks")
-    dev.add_argument("workflow", nargs="?", help="Workflow spec; defaults to the current Studio workflow.")
-    dev.add_argument("--resume", action="store_true", help="Resume the current incomplete managed run.")
-    dev.add_argument("--run-id", help="Managed run id to resume; requires --resume.")
-    dev.add_argument("--project", help="Project root; defaults to discovery from the current directory.")
-    dev.add_argument("--llm", metavar="SPEC", help="LLM spec; defaults to the workflow declaration or mock.")
-    dev.add_argument(
-        "--assistant",
-        choices=("codex", "claude"),
-        help="Default coding-assistant backend for @assistant actions.",
-    )
-    dev.add_argument(
-        "--llm-for",
-        action="append",
-        default=[],
-        metavar="PARTICIPANT_OR_ACTION=SPEC",
-        help="Override the LLM for one participant or exact action; repeat as needed.",
-    )
-    dev.add_argument("--input", action="append", default=[], metavar="name=value", help="Workflow input value.")
-    dev.add_argument("--input-json", help="Workflow inputs as a JSON object.")
-    dev.add_argument("--option", action="append", default=[], metavar="name=value", help="Workflow setup option.")
-    dev.add_argument("--services", choices=("fake", "live"), help="Workflow service mode.")
-    dev.add_argument("--timeout", type=float, default=0.0, help="Execution deadline; default 0 means no deadline.")
-    dev.add_argument("--yes", action="store_true", help="Use declared input defaults without guided questions.")
+    # Superseded by `run --durable`. Kept, hidden, so existing scripts and
+    # deployment profiles that call it keep working.
+    dev = sub.add_parser("dev", help=argparse.SUPPRESS)
+    dev.add_argument("workflow", nargs="?")
+    dev.add_argument("--resume", action="store_true")
+    dev.add_argument("--run-id")
+    dev.add_argument("--project")
+    dev.add_argument("--llm", metavar="SPEC")
+    dev.add_argument("--assistant", choices=["codex", "claude"])
+    dev.add_argument("--llm-for", action="append", default=[], metavar="PARTICIPANT_OR_ACTION=SPEC")
+    dev.add_argument("--input", action="append", default=[], metavar="name=value")
+    dev.add_argument("--input-json")
+    dev.add_argument("--option", action="append", default=[], metavar="name=value")
+    dev.add_argument("--services", choices=["fake", "live"])
+    dev.add_argument("--timeout", type=float, default=0.0)
+    dev.add_argument("--yes", action="store_true")
 
-    rn = sub.add_parser("run", help="run a workflow locally through SQLite")
-    rn.add_argument("workflow", help="Workflow spec: module:workflow or path.py:workflow")
+    rn = sub.add_parser(
+        "run",
+        help="run a workflow; --durable records it so it can be resumed",
+    )
+    rn.add_argument(
+        "workflow",
+        nargs="?",
+        help=(
+            "Workflow spec: module:workflow or path.py:workflow. Optional with "
+            "--resume, which continues a recorded run."
+        ),
+    )
     rn.add_argument("--llm", metavar="SPEC", help="LLM spec: mock, openai:gpt-4o, ollama:qwen2.5:7b, ...")
     rn.add_argument(
         "--llm-for",
@@ -4429,6 +4464,32 @@ def main(argv=None) -> int:
         help="Default coding-assistant backend for @assistant actions.",
     )
     rn.add_argument("--store", help="SQLite store path. Defaults to ~/.zippergen/runs/<workflow>.sqlite")
+    rn.add_argument(
+        "--durable",
+        action="store_true",
+        help=(
+            "Record the run so it can be resumed, and collect any missing "
+            "inputs interactively."
+        ),
+    )
+    rn.add_argument(
+        "--resume",
+        action="store_true",
+        help="Continue the project's most recent unfinished run.",
+    )
+    rn.add_argument(
+        "--run-id",
+        help="Which recorded run to resume; requires --resume.",
+    )
+    rn.add_argument(
+        "--project",
+        help="Project root for a durable run; defaults to discovery.",
+    )
+    rn.add_argument(
+        "--yes",
+        action="store_true",
+        help="Do not prompt for missing inputs during a durable run.",
+    )
     rn.add_argument("--input", action="append", default=[], metavar="name=value", help="Workflow input value.")
     rn.add_argument("--input-json", help="Workflow inputs as a JSON object.")
     rn.add_argument("--option", action="append", default=[], metavar="name=value", help="Option passed to zippergen_setup(config).")
@@ -4681,6 +4742,15 @@ def main(argv=None) -> int:
             raise SystemExit("--run-id requires --resume.")
         return _dev_command(args)
     if args.cmd == "run":
+        if getattr(args, "run_id", None) and not args.resume:
+            raise SystemExit("--run-id requires --resume.")
+        if getattr(args, "durable", False) or getattr(args, "resume", False):
+            return _durable_run_command(args)
+        if not args.workflow:
+            raise SystemExit(
+                "Name a workflow to run, or use --resume to continue a "
+                "recorded run."
+            )
         return _run_workflow_command(args)
     if args.cmd == "show":
         return _show_command(args)

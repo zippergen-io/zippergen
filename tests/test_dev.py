@@ -445,3 +445,65 @@ def test_dev_routes_models_per_lifeline_and_collects_each_provider_secret(
     record_text = workspace.run_path(record["run_id"]).read_text()
     assert "openai-secret" not in record_text
     assert "anthropic-secret" not in record_text
+
+
+def test_run_durable_and_run_resume_reach_the_same_execution(tmp_path, monkeypatch):
+    """One verb for running a workflow; durability is a mode of running it.
+
+    `run` and `dev` were the same runtime with different bookkeeping — the
+    only difference being whether the run was recorded so it could be resumed.
+    Two verbs for that was a naming wart, so `run --durable` and `run --resume`
+    now reach it and `dev` survives only as a hidden alias.
+    """
+
+    from zippergen import serve
+
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        serve, "_durable_run_command", lambda args: calls.append(vars(args)) or 0
+    )
+
+    assert serve.main(["run", "wf.py:w", "--durable"]) == 0
+    assert serve.main(["run", "--resume"]) == 0
+
+    assert calls[0]["durable"] is True
+    assert calls[1]["resume"] is True
+    # Resuming does not need the workflow named again.
+    assert calls[1]["workflow"] is None
+
+
+def test_a_plain_run_still_needs_a_workflow():
+    from zippergen import serve
+
+    try:
+        serve.main(["run"])
+    except SystemExit as exc:
+        assert "use --resume" in str(exc)
+    else:  # pragma: no cover
+        raise AssertionError("a plain run with no workflow should be refused")
+
+
+def test_run_id_requires_resume():
+    from zippergen import serve
+
+    try:
+        serve.main(["run", "wf.py:w", "--run-id", "old"])
+    except SystemExit as exc:
+        assert "--run-id requires --resume" in str(exc)
+    else:  # pragma: no cover
+        raise AssertionError("--run-id alone should be refused")
+
+
+def test_dev_remains_as_a_hidden_alias(capsys):
+    """Existing scripts and deployment profiles keep working."""
+
+    from zippergen import serve
+
+    try:
+        serve.main(["--help"])
+    except SystemExit:
+        pass
+    listed = capsys.readouterr().out
+
+    assert "dev" in listed  # still dispatchable
+    assert "run a workflow durably" not in listed  # but no longer advertised

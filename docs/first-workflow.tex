@@ -474,11 +474,11 @@ Saved configuration approvals.
 
 \section{Runs that survive interruption}
 
-\texttt{zippergen run} executes once. \texttt{zippergen dev} records the run as
+There is one verb for running a workflow. \texttt{--durable} records the run as
 it goes, so an interrupted run continues rather than starting over:
 
 \begin{lstlisting}[style=shell]
-zippergen dev workflow.py:email_approval --llm mock \
+zippergen run workflow.py:email_approval --durable --llm mock \
     --input message="Could we move our meeting to Thursday?"
 \end{lstlisting}
 
@@ -492,7 +492,7 @@ Proposed reply:
 Press Ctrl-C while it waits for your approval, then:
 
 \begin{lstlisting}[style=shell]
-zippergen dev --resume
+zippergen run --resume
 \end{lstlisting}
 
 The model call that already happened is not repeated. The run resumes at the
