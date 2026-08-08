@@ -409,7 +409,7 @@ positions, fellowships, and similar opportunities. It only sends certified
 senders to the LLM. Accepted messages are classified, converted to JSON,
 written to Google Sheets, and answered by a controlled Gmail draft or message.
 
-The recommended path is ZipperGen Studio:
+The recommended path is:
 
 ```bash
 uv sync --extra google
@@ -429,7 +429,7 @@ deploy call-intake
 ```
 
 `workflow import` records this one entry point in the versioned project
-manifest. Because the file is already in the project, Studio copies nothing.
+manifest. Because the file is already in the project, nothing is copied.
 It is project setup, not a mode for switching among other example sources.
 
 `connector setup` uses one private Google provider authorization. It creates
@@ -443,7 +443,7 @@ The optional installation keeps Google libraries out of basic ZipperGen
 installs. Managed deployments with Gmail or Sheets requirements add them
 automatically.
 
-Operate it in Studio by name:
+Operate it by name:
 
 ```text
 deploy show call-intake
@@ -453,7 +453,7 @@ deploy configure call-intake
 ```
 
 The remainder of this part documents the older environment-variable path for
-troubleshooting existing deployments. New deployments should use Studio.
+troubleshooting existing deployments. New deployments should use `zg deploy`.
 
 Automatic sending has a built-in safeguard: the send effect will not send more
 than 10 emails per hour. If the limit is reached, the workflow waits outside the
