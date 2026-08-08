@@ -4,7 +4,7 @@
 \usepackage[utf8]{inputenc}
 \usepackage{lmodern}
 \usepackage{amssymb}
-\usepackage[margin=24mm]{geometry}
+\usepackage[margin=22mm]{geometry}
 \usepackage{xcolor}
 \usepackage{microtype}
 \DisableLigatures{encoding=T1,family=tt*}
@@ -21,6 +21,7 @@
 \definecolor{ZipperBlue}{HTML}{176B87}
 \definecolor{ZipperLight}{HTML}{EEF6F8}
 \definecolor{CodeBackground}{HTML}{F5F7F8}
+\definecolor{AgentBackground}{HTML}{F2F0F7}
 \definecolor{CodeComment}{HTML}{58715D}
 \definecolor{CodeKeyword}{HTML}{7A3E9D}
 \definecolor{WarningBorder}{HTML}{B7791F}
@@ -38,7 +39,7 @@
 \pagestyle{fancy}
 \fancyhf{}
 \lhead{Your first ZipperGen workflow}
-\rhead{Prompt to prepared deployment}
+\rhead{Draft, approve, send}
 \cfoot{\thepage}
 \setlength{\headheight}{14pt}
 
@@ -69,6 +70,24 @@
   numbers=none
 }
 
+% What the coding agent says, visually distinct from what you type.
+\lstdefinestyle{agent}{
+  language={},
+  backgroundcolor=\color{AgentBackground},
+  basicstyle=\ttfamily\footnotesize,
+  numbers=none
+}
+
+\lstdefinestyle{pane}{
+  basicstyle=\ttfamily\scriptsize,
+  numbers=none,
+  aboveskip=2pt,
+  belowskip=2pt
+}
+
+% Two terminals side by side, used only where the handoff is the point. At
+% this width each pane is narrow, so long output belongs in a full-width
+% listing instead.
 \tikzset{
   zgstage/.style={
     draw=ZipperBlue,
@@ -76,7 +95,7 @@
     very thick,
     rounded corners=2.5pt,
     align=center,
-    minimum height=12mm,
+    minimum height=11mm,
     inner sep=4pt,
     font=\small
   },
@@ -95,770 +114,450 @@
 {\vspace{5pt}\color{WarningBorder}\hrule\end{minipage}\end{center}}
 
 \title{\color{ZipperInk}\Huge\textbf{Your First ZipperGen Workflow}\\[5pt]
-\Large A short path from a prompt to a prepared deployment}
+\Large Draft a reply, ask a person, then send}
 \author{The ZipperGen Authors}
-\date{Tutorial edition: 28 July 2026}
+\date{Tutorial edition: 8 August 2026}
 
 \begin{document}
 
 \maketitle
 
 \begin{abstract}
-This tutorial builds one small multi-participant application from beginning to
-end. You will describe it in ordinary language, ask a coding assistant to
-produce visible Python, inspect and validate the resulting protocol, run it
-with a free mock model, interrupt and resume it, review it, and prepare a named
-deployment. Optional configuration and complete command explanations are kept
-in the companion manual so that the first successful cycle stays short.
+You will build a small application that reads a message, asks a language model
+to draft a reply, and asks \emph{you} to approve it before anything is sent.
+It is short enough to read in one sitting, and it already contains everything
+that makes ZipperGen worth using: two participants, a model call, an explicit
+human decision, and a branch that only the decider takes.
+
+There is no ZipperGen application to learn. You work in an ordinary directory
+with an ordinary command line, and — if you like — a coding agent such as
+Claude Code or Codex. This tutorial shows both, and is honest about which parts
+need a person.
 \end{abstract}
 
-\begin{notebox}{What you need}
-Use macOS or Linux, a terminal, Git, and the \texttt{uv} Python tool. Codex or
-Claude Code is needed for prompt-to-code generation. If neither is installed,
-the repository contains a complete fallback workflow so that inspection,
-durable execution, and deployment can still be tried without an API key.
-\end{notebox}
+\section{What you are building}
 
-\section*{What you are about to build}
-
-The example accepts a request, lets a Writer draft an answer, asks a Reviewer
-to assess every draft, and leaves the final decision to a human. A rejected
-draft returns to the Writer while a bounded retry budget remains. An
-unapproved draft must never be returned.
-
-This is a protocol, not merely a list of agents. One global Python workflow
-states who owns each value, who communicates with whom, and who owns each
-decision. ZipperGen projects that global workflow into an exact local program
-for every participant. Validation checks the global protocol and all of those
-projections before execution.
-
-\begin{figure}[htbp]
-\centering
-\begin{tikzpicture}[node distance=6mm]
-  \node[zgstage, text width=21mm] (spec) {Human-readable\\specification};
-  \node[zgstage, text width=21mm, right=of spec] (code) {Visible Python\\protocol};
-  \node[zgstage, text width=21mm, right=of code] (check) {Inspect and\\validate};
-  \node[zgstage, text width=21mm, right=of check] (run) {Durable run\\and resume};
-  \node[zgstage, text width=21mm, right=of run] (deploy) {Named\\deployment};
-  \draw[zgflow] (spec) -- (code);
-  \draw[zgflow] (code) -- (check);
-  \draw[zgflow] (check) -- (run);
-  \draw[zgflow] (run) -- (deploy);
+\begin{center}
+\begin{tikzpicture}[node distance=7mm]
+  \node[zgstage] (msg)   {incoming\\message};
+  \node[zgstage, right=of msg] (draft) {\textbf{Writer}\\drafts a reply};
+  \node[zgstage, right=of draft] (ask) {\textbf{User}\\approves?};
+  \node[zgstage, above right=3mm and 7mm of ask] (send) {send};
+  \node[zgstage, below right=3mm and 7mm of ask] (drop) {discard};
+  \draw[zgflow] (msg) -- (draft);
+  \draw[zgflow] (draft) -- (ask);
+  \draw[zgflow] (ask) -- (send);
+  \draw[zgflow] (ask) -- (drop);
 \end{tikzpicture}
-\caption{The first-workflow path. A coding assistant may propose the Python,
-but inspection, validation, running, and deployment remain explicit.}
-\end{figure}
+\end{center}
 
-\begin{notebox}{The safety boundary}
-A coding-assistant process returning does not mean that its requested checks
-passed. Studio records those facts separately and summarizes the changed files
-and assistant report. Opaque model output is never treated as an automatically
-deployed workflow.
+Concretely, you want this to happen:
+
+\begin{notebox}{Incoming message}
+Could we move our meeting to Thursday afternoon?
+
+\smallskip
+\textbf{Proposed reply}\\
+Thursday afternoon works for me. How about 3pm?
+
+\smallskip
+\texttt{[ Send ] [ Reject ]}
 \end{notebox}
 
-\section{Create the project and install ZipperGen}
+Two participants exchange messages, one of them is a person, and what happens
+next depends on what that person says. That is a coordination problem, and it
+is the kind of thing ZipperGen exists to make readable.
 
-The tutorial project is the outer directory. The ZipperGen framework checkout
-lives below it:
+\begin{notebox}{What you need}
+\begin{itemize}
+  \item Python 3.11 or newer and ZipperGen installed.
+  \item Nothing else for the first two thirds. The model is mocked and the
+        approval happens in your terminal.
+  \item For the last section, a Telegram bot token, if you want the approval to
+        arrive on your phone.
+\end{itemize}
+\end{notebox}
 
-\begin{lstlisting}[style=shell]
-mkdir -p "$HOME/Projects"
-cd "$HOME/Projects"
-mkdir zippergen-tutorial
-cd "$HOME/Projects/zippergen-tutorial"
-git init
-git clone https://github.com/zippergen-io/zippergen.git zippergen
-uv python install 3.12
-uv sync --project zippergen --python 3.12
-uv tool install --force --editable ./zippergen
-\end{lstlisting}
-
-This layout gives the application its own Git history and lets a
-repository-aware assistant work from the application root. The editable tool
-still uses the nested framework checkout. If \texttt{uv} is not installed,
-follow \url{https://docs.astral.sh/uv/getting-started/installation/}, restart
-the terminal if requested, and repeat the commands beginning with
-\texttt{uv python install}.
-
-\section{Open Studio and initialize the project}
-
-Remain in the outer project directory:
+\section{Create the project}
 
 \begin{lstlisting}[style=shell]
-cd "$HOME/Projects/zippergen-tutorial"
-zippergen
+mkdir email-approval && cd email-approval
+zippergen init
 \end{lstlisting}
-
-The beginning reports the project root, whether Codex or Claude is available,
-and one suggested next command. At the Studio prompt, enter:
-
-\begin{lstlisting}[style=shell]
-project init zippergen-tutorial
-\end{lstlisting}
-
-Studio creates \path{zippergen.toml} and safe Git ignores. The manifest is
-visible and versionable. It will name this project's specification and its one
-workflow entry point. Machine-specific runs and secrets stay outside the
-repository, so this tutorial does not require a \texttt{ZIPPERGEN\_HOME}
-export or a hand-written SQLite path.
-
-Enter \texttt{project} at any time to see what exists. It shows the workflow
-and specification, model and connector assignments, development runs, and
-deployments as one project tree. Use \texttt{current} when you instead want to
-see what you were most recently working on.
-
-From now on, commands such as \texttt{workflow edit-spec}, \texttt{run}, and
-\texttt{deploy} are Studio commands. Do not prefix them with
-\texttt{zippergen}. Press Tab for completion or enter \texttt{help} if the next
-step is forgotten.
-
-\section{Write the workflow specification}
-
-Enter:
-
-\begin{lstlisting}[style=shell]
-workflow edit-spec
-\end{lstlisting}
-
-Studio creates the fixed file \path{specification.md} and opens it in an
-automatically discovered terminal editor. You do not choose a prompt filename.
-Replace the short writing guide with the following specification, save, and
-exit the editor:
 
 \begin{lstlisting}
-# Reviewed Answer
-
-Produce a helpful answer to a request, subject to automated review and explicit
-human approval.
-
-## Participants and behavior
-
-- Requester initially owns `request` and `max_retries`.
-- Writer uses an LLM to draft and revise an answer.
-- Reviewer uses a separate LLM to assess every draft.
-- HumanApprover owns the decision to approve or reject a draft after the
-  automated assessment.
-- A rejection sends the draft back to Writer while retries remain.
-- Never return an unapproved draft. Return an explicit failure after retry
-  exhaustion.
-- Keep human delivery independent of workflow source. HumanApprover's
-  `@human` actions will use the terminal by default and may later be routed
-  through a reusable Telegram configuration.
-
-## Inputs and operation
-
-- The application accepts a `request` input, defaulting to
-  `Explain why the sky is blue in two sentences.`
-- It accepts an integer `max_retries` input, defaulting to `2`.
-- Use the deterministic mock model by default.
-- A deployment may instead use OpenAI or Anthropic. Request the corresponding
-  API key only when that provider is selected.
+ZipperGen project: email-approval
+  zippergen.toml     created
+  specification.md   created
+  AGENTS.md          created
 \end{lstlisting}
 
-The durable design intent now lives in one ordinary, versionable file.
-Development mechanics such as filenames, tests, validation commands, and the
-prohibition on automatic deployment are added by Studio to the generated
-assistant task; they do not have to be copied into the specification.
-
-\section{Produce visible Python}
-
-The Studio welcome message says whether a supported assistant is available.
-Choose exactly one:
-
-\begin{lstlisting}[style=shell]
-workflow implement codex
-# Or:
-workflow implement claude
-\end{lstlisting}
-
-Studio passes the current specification and repository rules automatically.
-The assistant works synchronously in the project, reports its own checks, and
-returns to the same Studio prompt. No request path has to be copied and there
-is no background assistant job. For a later change, use
-\texttt{workflow edit-refinement "CHANGE"}, then
-\texttt{workflow refine-spec}. The first command writes an ignored scratch
-buffer. The second lets an isolated assistant rewrite only
-\path{specification.md} and consumes the buffer. Run
-\texttt{workflow implement} separately when the revised specification is
-right. When implementation finishes, Studio writes the portable
-\path{zippergen.lock} record and summarizes the changed files, technical
-validation result, and the assistant's report.
-
-If this project is a Git repository and Studio is interactive, it now offers
-to commit the specification, implementation files, \path{zippergen.lock}, and
-any manifest entry that implementation created. Review the summary first.
-Accept the suggested commit message, edit it, or answer no and use Git yourself
-later. Studio commits only those related files and never pushes. In a
-non-Git project or a non-interactive command, no Git prompt appears.
-
-After it returns, enter:
-
-\begin{lstlisting}[style=shell]
-workflow status
-\end{lstlisting}
-
-The expected implementation state is \emph{current}. \emph{Assistant checks}
-are reported separately as passed, failed, or incomplete. This is evidence
-reported by the assistant, whereas \texttt{workflow validate} is ZipperGen
-checking the current code. Resolve failures before relying on the result.
-
-\begin{notebox}{If no coding assistant is installed}
-The prompt-to-code step necessarily needs a repository-aware coding assistant,
-but the rest of ZipperGen does not. Leave Studio with \texttt{exit}, then
-select the repository's known workflow directly:
-\begin{lstlisting}[style=shell]
-cd "$HOME/Projects/zippergen-tutorial"
-zippergen studio zippergen/examples/tutorial_review.py:tutorial_review
-\end{lstlisting}
-Continue with Section~5. The prompt-generated workflow and the shipped example
-have similar review-and-retry behavior. The shipped source is classified as
-\emph{external}. It can be inspected and run directly, but deployment requires
-technical validation and displays a provenance warning. Run
-\texttt{workflow adopt} when you want it to become \emph{current}: a coding
-assistant writes a specification from the rendered workflow views, you review
-it, and Studio records the pair. The implementation files are never edited.
-\end{notebox}
-
-\section{Discover, configure, and inspect the workflow}
-
-For assistant-generated source, enter:
-
-\begin{lstlisting}[style=shell]
-workflow list
-workflow import workflows/reviewed_answer.py:reviewed_answer
-\end{lstlisting}
-
-Studio lists top-level \texttt{@workflow} entry points. Import the new
-reviewed-answer workflow by its displayed path. Because the file is already in
-the project, Studio copies nothing. It writes that entry point to
-\path{zippergen.toml}; it is now project configuration rather than a private
-selection. A displayed reference such as
-\texttt{workflows/reviewed\_answer.py:reviewed\_answer} means
-\emph{Python file: workflow object}; it is not a deployment name.
-
-\begin{notebox}{Starting from an existing workflow}
-In a fresh project, an existing workflow does not have to be copied with shell
-commands. Enter:
-\begin{lstlisting}[style=shell]
-workflow import /path/to/existing_workflow.py
-\end{lstlisting}
-Studio copies the source, statically imported local Python modules, and
-literal declared resources into the current project. If the project already
-has a configured workflow, Studio shows the replacement and asks before it
-overwrites files or changes the manifest. One discovered entry point is
-configured automatically; for several, repeat the command with
-\texttt{PATH.py:WORKFLOW}. Continue below with
-\texttt{workflow files}, inspection, and validation.
-\end{notebox}
-
-Now inspect the authored source and the semantic protocol:
-
-\begin{lstlisting}[style=shell]
-workflow files
-workflow show source
-workflow show protocol
-workflow show communications
-workflow show agent Writer
-workflow show agent Reviewer
-workflow show full
-connector
-\end{lstlisting}
-
-\texttt{workflow files} reveals supporting modules and declared resources.
-The protocol view shows the global behavior; communications hides local
-actions; an agent view is that participant's exact projection; the full view
-includes actions, prompts, and deployment metadata.
-\texttt{connector} discovers HumanApprover and its human actions directly
-from the project workflow. At this point their effective route is the local
-terminal, so no Telegram token is needed.
-
-Check six things before continuing:
-
-\begin{enumerate}
-  \item Requester initially owns both inputs.
-  \item Writer and Reviewer communicate explicitly.
-  \item The participant that knows the retry condition owns that decision.
-  \item Every revised draft returns to review and human approval.
-  \item No unapproved draft can reach Requester.
-  \item HumanApprover and every human action appear in connector assignments.
-\end{enumerate}
-
-If \texttt{connector} reports no human actions, inspect
-\texttt{workflow show full}. The generated workflow is incomplete if the
-requested \texttt{@human} approval is absent. Correct it with
-\texttt{workflow implement codex --rerun}, or the corresponding Claude
-command, then inspect again.
-
-\section{Validate and use the mock model}
-
-Inspection answers what the code says. Validation additionally checks the
-global protocol, ownership, action metadata, deployment declarations, and
-every generated projection:
-
-\begin{lstlisting}[style=shell]
-workflow validate
-model default mock
-model assignments
-\end{lstlisting}
-
-A green validation result means the deterministic checks passed; it is not a
-claim that the prompts are useful or the application intent is correct. The
-built-in mock model needs no account, network connection, or API key.
-\texttt{model assignments} should list Writer and Reviewer because they
-contain LLM actions. It answers only ``what is assigned'', so displaying the
-table never contacts a provider. Enter \texttt{model assignments check} when
-you want to reach precisely the configurations used by this workflow. If both
-participants share a configuration, Studio checks it only once. Checks are
-always live and are never saved, so nothing you see can be out of date.
-When a named configuration uses local Ollama, Studio also asks for an
-idle-release time. The default releases the model after five idle minutes.
-The workflow keeps waiting durably, and Ollama loads the model again at the
-next LLM action. Enter \texttt{never} while creating or editing the
-configuration if the model should remain loaded.
-Participant assignment is the simple default. One action can use another
-configuration without changing the other actions on that participant:
-
-\begin{lstlisting}[style=shell]
-model assign Writer drafting
-model assign Writer.revise_answer careful-revision
-model inherit Writer.revise_answer
-\end{lstlisting}
-
-The exact action route takes precedence over the participant route. The
-\texttt{inherit} command removes only that override.
-
-\begin{notebox}{Validation and deployment are separate}
-\texttt{workflow validate} is a repeatable technical check of the Python
-workflow as it exists now. It checks structure, ownership, declarations, and
-every local projection.
-
-\texttt{deploy} checks an additional coherence property using the committed
-\path{zippergen.lock}. If the specification or generated source changed after
-implementation, Studio stops and asks you to run \texttt{workflow implement}
-again. A fresh clone derives the same state without private Studio data. Git
-provides history and rollback for the specification and source.
-If one of the related files is not committed, \texttt{workflow status} and
-\texttt{deploy} warn that a fresh clone may derive a different implementation
-state. This is information, not a deployment block.
-\end{notebox}
-
-\section{Run, interrupt, and resume}
-
-Enter:
-
-\begin{lstlisting}[style=shell]
-run
-\end{lstlisting}
-
-Before asking for inputs, Studio checks the model configuration used by each
-participant containing an LLM action. It checks a shared configuration only
-once, stops before creating a run if an endpoint or model cannot be verified,
-and reports the configuration that needs attention. An unused default such as
-\texttt{mock} is neither checked nor presented as the run's model. The
-development-run summary instead lists the effective route for Writer and
-Reviewer separately.
-
-Named model and connector configurations and their assignments are project
-configuration in \path{zippergen.toml}. Endpoints, idle-release policy, health
-checks, and credentials remain private to one machine. A fresh clone therefore
-keeps the workflow's routing and asks only for missing site facts. Enter
-\texttt{project} to see that exact list.
-
-Studio validates the project workflow and asks for its declared inputs. Press
-Enter to accept the default request, enter \texttt{3} for
-\texttt{max\_retries}, reject the first draft with \texttt{n}, and approve the
-revision with \texttt{y}. Mock output such as
-\texttt{[draft\_reply:draft]} is expected; the important result is the visible
-coordination and second review.
-
-Run it once more. At the human approval question press Control-C. Studio should
-return to its prompt and record the managed run as interrupted. Enter:
-
-\begin{lstlisting}[style=shell]
-current
-resume
-\end{lstlisting}
-
-The same pending decision reappears. Studio reuses the recorded inputs, model
-routing, and unique SQLite store. To prove that this is not merely in-memory
-state, interrupt again, leave Studio, open a new terminal, and run:
-
-\begin{lstlisting}[style=shell]
-cd "$HOME/Projects/zippergen-tutorial"
-zippergen
-current
-resume
-\end{lstlisting}
-
-No export or store path needs to be reconstructed after the terminal closes or
-the computer restarts.
-
-\subsection*{See where every participant is}
-
-After an interruption, enter at the Studio prompt:
-
-\begin{lstlisting}[style=shell]
-run inspect
-run inspect HumanApprover
-\end{lstlisting}
-
-To inspect without interrupting an active foreground run, open a second
-terminal in the project root and enter:
-
-\begin{lstlisting}[style=shell]
-zippergen
-run inspect HumanApprover --watch
-\end{lstlisting}
-
-The foreground terminal continues to own its input and human-approval prompt.
-The second Studio process only reads the durable observation state. The live
-view refreshes once per second in one fixed terminal screen instead of
-appending repeated output. Studio redraws only terminal cells that changed, so
-the pointer can move without clearing the complete screen. Press Ctrl-C to
-restore the Studio screen and return to the prompt. This does not interrupt
-the development run.
-The first command shows one bounded row per participant: running, waiting to
-receive, waiting for a human, executing an external action, completed, or
-failed. It automatically focuses the participant most likely to need
-attention. The second command selects one participant explicitly and renders
-its exact local projection with a pointer marking the current durable program
-position. A local parallel program can have several pointers.
-
-This is observation state, not the recovery snapshot and not an ever-growing
-trace. Studio does not display workflow variables, action inputs, provider
-keys, or other environment values in this view.
-
-\subsection*{Inspect durable state through the current run}
-
-Studio remembers the current development run and its durable state. Enter:
-
-\begin{lstlisting}[style=shell]
-run inspect
-run tasks
-run approve
-run trace
-\end{lstlisting}
-
-\texttt{run inspect} shows participant positions.
-\texttt{run tasks} lists pending decisions for this run.
-With one pending task, bare \texttt{run approve} selects it automatically;
-with several, Studio opens a numbered selector. Before accepting any answer,
-Studio shows the stored instruction and complete rendered context---for this
-example, the draft and automated reviewer notes---together with the meaning
-of yes and no. \texttt{run trace} shows recent durable events. Studio creates
-and selects the underlying SQLite file automatically. It is not a separate
-user-managed object.
-
-\section{Inspect assistant-generated work}
-
-When the coding assistant returns, Studio prints an implementation summary.
-It lists changed files, the assistant-check result, and the assistant's concise
-report. Inspect the available specification and semantic differences with:
-
-\begin{lstlisting}[style=shell]
-workflow diff
-workflow validate
-\end{lstlisting}
-
-\texttt{workflow diff} can be repeated whenever you want the detailed change
-view. \texttt{workflow validate} independently checks the current global
-workflow and every local projection. If assistant checks failed or were
-incomplete, inspect \texttt{workflow status --details} and deliberately rerun
-the assistant only after understanding the problem.
-
-A development run records its model, assistant, and connector routing when it
-starts. Therefore \texttt{resume} cannot silently redirect an old run after
-project configuration changes. A deployment keeps its own immutable source
-and configuration snapshot. \texttt{deploy show NAME} compares that snapshot
-with the current project and tells you when redeployment is needed.
-
-In an ordinary terminal, inspect and version the result:
-
-\begin{lstlisting}[style=shell]
-cd "$HOME/Projects/zippergen-tutorial"
-git status --short
-git diff --check
-git diff
-\end{lstlisting}
-
-Do not commit secrets. If you accepted Studio's post-implementation Git offer,
-the specification, generated source, and lock already form one local commit.
-Otherwise inspect and commit them with ordinary Git. Git is the recovery path
-for returning to an earlier specification and implementation. Pushing is a
-separate decision and is not required for local deployment.
-
-
-\section{Prepare a named deployment}
-
-\begin{notebox}{Deploying on a different machine}
-\texttt{deploy} installs a service on the machine Studio is running on, so this
-tutorial deploys on your own computer. To deploy on a server, the workflow
-source has to reach that server first and Studio has to run there. The full
-manual covers that in \emph{Moving a workflow to a server}: whether to clone or
-import, what travels with the workflow, and why your credentials stay on the
-machine that created them.
-\end{notebox}
-
-Return to Studio. Keep the mock model selected and prepare the deployment
-without starting a background service:
-
-\begin{lstlisting}[style=shell]
-model default mock
-deploy reviewed-answer-tutorial --no-start
-deploy doctor
-deploy show
-\end{lstlisting}
-
-\texttt{deploy} first checks that the portable implementation state is
-\emph{current}. It validates the current source again,
-collects declared inputs,
-creates a separate timestamped
-deployment bundle and managed Python environment, initializes the
-deployment's stable SQLite store, and remembers the deployment name. The
-\texttt{--no-start} flag deliberately leaves the
-service stopped, so Studio resolves the model and connector routes without
-reaching them; \texttt{deploy} and \texttt{deploy start} probe them instead.
-\texttt{deploy doctor} runs detailed readiness checks.
-\texttt{deploy show} separates the immutable bundle, supervised service,
-workflow run, and SQLite store. Its \texttt{Boot} row states whether the
-service starts automatically at server boot, after user login, or only after
-a manual start. Studio enables automatic startup when you use
-\texttt{deploy start}. On a Linux server, unattended startup at boot
-additionally requires account lingering. Before the first start, the run is
-\texttt{not started} and the store is \texttt{ready} with no run data.
-A missing first-run log and an uninstalled service are expected warnings; a
-red failure must be investigated. A selected API model whose private provider key
-was not copied into deployment storage is now a blocking failure, not a
-service that is allowed to enter a restart loop. If a local model is selected,
-Studio also copies its configured OpenAI-compatible endpoint into the
-deployment profile automatically.
-Studio shows a concise readiness summary during \texttt{deploy};
-\texttt{deploy doctor} expands every individual check when needed.
-Explicit \texttt{deploy start} and \texttt{deploy restart} repeat
-readiness checks before changing service-manager state. Failures block the
-operation instead of creating a restart loop; warnings do not.
-
-If the specification changed after implementation, Studio blocks deployment
-and names \texttt{workflow implement} as the remedy. A running service
-continues to use its own bundle and cannot see later working-tree edits.
-
-\begin{warningbox}{Starting is an operational action}
-Continue only on your own development machine, with the mock model, when
-starting a user service is intentional. A real provider can cost money and a
-workflow effect can change an external system.
-\end{warningbox}
-
-When the readiness checks are acceptable:
-
-\begin{lstlisting}[style=shell]
-deploy start
-deploy show
-deploy inspect
-deploy inspect HumanApprover
-deploy inspect HumanApprover --watch
-deploy tasks
-deploy approve
-deploy trace
-deploy storage
-deploy logs
-deploy logs reset
-deploy stop
-deploy storage compact
-\end{lstlisting}
-
-\texttt{deploy logs reset} is optional. It archives the visible log history
-and begins a fresh log view without stopping the service or changing the
-durable store.
-
-\texttt{deploy storage} shows the size of the store, SQLite side files,
-service log, and log archives. It runs a structural quick check and shows
-whether every participant has a recovery snapshot. Diagnostic traces are
-pruned online in batches. The target is 10,000 traces and the store never keeps
-more than 10,999. This does not stop the service. Completed human tasks, tokens,
-and notifications remain as audit records.
-
-After \texttt{deploy stop}, \texttt{deploy storage compact} removes completed
-events covered by recovery snapshots, rotates the active log, and keeps three
-log archives. It never removes seed inputs, pending work, or events still
-needed for recovery.
-Studio then compacts the database file and truncates the WAL while preserving
-the stable event identifiers used for recovery.
-
-Keep the deployment store on a local filesystem. Do not move it to NFS, a
-synchronized folder, or an unverified remote container volume. Do not edit its
-rows directly. The complete filesystem, backup, idempotency, and recovery
-constraints are explained in the manual.
-
-The finite workflow should reach a waiting human task. Each named deployment
-owns one stable logical store, so normal operation never requires selecting or
-copying a store. Immediately after \texttt{deploy start}, the run may briefly
-say \texttt{starting, no durable events recorded yet}. The store remains
-\texttt{ready} throughout. Bare \texttt{deploy inspect} uses the remembered
-deployment name; with one argument that is not a deployment name, Studio
-treats it as the participant to focus. It reads the durable positions from the
-deployment store, so no debugger connection is required.
-The optional \texttt{--watch} form refreshes once per second. Ctrl-C closes
-only the live view. The deployment keeps running.
-\texttt{deploy tasks} displays the proposed draft,
-reviewer notes, instruction, and decision labels.
-\texttt{deploy approve} repeats that evidence immediately before asking
-for the decision; an unseen draft is never presented for blind approval.
-\texttt{deploy trace} shows recent durable events for this deployment.
-
-Telegram is not required for the first run. To deliver the same durable
-decision to a private Telegram chat, use the same provider, configuration, and
-assignment lifecycle as model setup:
-
-\begin{lstlisting}[style=shell]
-connector provider configure telegram
-connector provider check telegram
-connector config create telegram-approvals
-connector config check telegram-approvals
-connector assign HumanApprover telegram-approvals
-connector assignments
-connector assignments check
-deploy
-\end{lstlisting}
-
-The provider owns the private bot token. The named configuration selects the
-chat. The assignment routes every \texttt{@human} action on HumanApprover
-through that configuration. A configuration may be shared by several
-participants. Sharing it does not prevent parallel workflow steps. Use
-\texttt{connector assign
-HumanApprover.approve\_answer OTHER} for an action-specific override.
-
-Development runs and deployments start the Telegram bridge automatically
-when the project workflow has an external human assignment. Telegram presents
-confirmations and selections as buttons. Every callback contains a durable
-one-time task token, so delayed or duplicate replies cannot answer the wrong
-task. Numbered replies to the original message remain a fallback.
-\texttt{deploy tasks} always shows the same underlying decision and remains
-the local inspection path.
-\texttt{deploy stop} prevents the tutorial service from being supervised
-indefinitely; it preserves the deployment profile, bundle, log, and durable
-store. If no supported macOS or Linux user service manager is available, the
-prepared deployment is still valid. Stop at the reported error and use the
-manual's foreground-deployment section later.
-The generated service retries failures but does not restart a finite workflow
-after it completes successfully.
-
-\subsection{Optional: see the same connector pattern with Google Sheets}
-
-The reviewed-answer workflow does not need Google Sheets. A separate small
-example shows how a workflow can declare a table while Studio owns the Google
-account and concrete spreadsheet. One project has one workflow, so do not
-switch this tutorial project to the example. Create another project directory
-and import the example there.
-
-\begin{lstlisting}[style=shell]
-uv sync --extra google
-\end{lstlisting}
-
-This optional installation is needed only for Google connectors in a source
-checkout. An installed package uses
-\texttt{pip install "zippergen[google]"}. A managed deployment with a Gmail
-or Sheets requirement installs the same optional support automatically.
-
-\begin{lstlisting}[style=shell]
-mkdir "$HOME/Projects/zippergen-sheets-demo"
-cd "$HOME/Projects/zippergen-sheets-demo"
-zippergen
-project init zippergen-sheets-demo
-workflow import /path/to/zippergen/examples/google_sheets_records.py:google_sheet_records
-workflow validate
-connector setup
-run
-\end{lstlisting}
-
-\texttt{connector setup} guides browser authorization, asks for a spreadsheet
-and tab, checks access, and binds the result to the workflow's logical
-\texttt{project-records} requirement. The Python file contains the table
-columns, stable key, and exact read and write operations. It contains no
-spreadsheet ID, OAuth client, or token.
-
-On an SSH-only server, Studio does not try to open a browser there. It prints
-one \texttt{uvx} command to run on your own computer, not on the server.
-\texttt{uvx} fetches the helper without a local ZipperGen installation. The
-helper asks for the downloaded Desktop app JSON, opens the browser, and prints
-one long line starting with \texttt{zg-google-v1.} Copy that complete line
-back to Studio's hidden prompt. No \texttt{scp} command or SSH tunnel is
-needed.
-
-The larger call-intake example uses the same command for two resources:
-
-\begin{lstlisting}[style=shell]
-mkdir "$HOME/Projects/zippergen-call-intake"
-cd "$HOME/Projects/zippergen-call-intake"
-zippergen
-project init zippergen-call-intake
-workflow import /path/to/zippergen/examples/call_intake.py:call_intake
-workflow validate
-connector setup
-connector assignments check
-\end{lstlisting}
-
-Local browser authorization, or the private handoff for an SSH-only server,
-covers the Gmail and Google Sheets capabilities required by this workflow.
-Studio stores the resulting credential but not the Desktop app client file.
-Studio then asks for a Gmail search query, a spreadsheet, and a tab. The
-workflow source contains none of these machine-specific values. Its default
-reply mode creates Gmail drafts, so a first deployment does not send mail
-automatically. Studio records and checks the scopes that Google actually
-granted. Read-only requirements request read-only scopes. Writing to an
-existing spreadsheet requires Google's broader spreadsheets scope.
-
-Before this setup, enable both the Gmail API and Google Sheets API in the same
-Google Cloud project. Configure its OAuth consent screen and create a Desktop
-app OAuth client. For an external test application, add the Gmail account as a
-test user.
-
-This optional example performs a stable-key upsert instead of a blind append.
-That makes a retry after a crash safe. Return to the tutorial project by
-leaving Studio and changing back to its directory:
-
-\begin{lstlisting}[style=shell]
-exit
-cd "$HOME/Projects/zippergen-tutorial"
-zippergen
-\end{lstlisting}
-
-If this deployment was only for the tutorial and you no longer want it, enter:
-
-\begin{lstlisting}[style=shell]
-deploy remove reviewed-answer-tutorial
-\end{lstlisting}
-
-Studio first shows the service state and every deployment-owned path. After
-confirmation, it unregisters the service and moves the profile, private
-secrets, bundles, environment, stable store, and logs into a private archive.
-The workflow source, specification, implementation history, model configurations, and
-connector configurations remain. The permanent
-\texttt{deploy remove reviewed-answer-tutorial --purge} form deletes the same
-deployment-owned files instead. It requires the name explicitly and asks you
-to type it, so it is not the normal tutorial cleanup path.
-
-\section{What you have established}
-
-You have now completed the essential ZipperGen cycle:
+That is the whole of project creation. It writes three files and stops: it asks
+you nothing, and it configures nothing.
 
 \begin{itemize}
-  \item durable intent in \path{specification.md};
-  \item visible Python proposed by an assistant, or known shipped source;
-  \item global and participant-level inspection;
-  \item deterministic validation of every projection;
-  \item a free mock execution with explicit human authority;
-  \item interruption and recovery from the same SQLite history;
-  \item explicit human review of generated work; and
-  \item a named, diagnosed deployment prepared before service startup.
+  \item \texttt{zippergen.toml} — the project's visible configuration. It is
+        committed, and it never contains a credential.
+  \item \texttt{specification.md} — what the workflow is meant to do, in prose.
+  \item \texttt{AGENTS.md} — tells a coding agent to run
+        \texttt{zippergen skill} before touching workflow code.
 \end{itemize}
 
-The companion
-\path{docs/workflow-development-deployment-guide.tex} is the complete manual.
-Use it next for real provider connections and reusable model configurations,
-refinement, semantic diffs, external approval adapters, secrets, foreground
-deployment, logs, restart, recovery, troubleshooting, and the complete command
-sheet. Build this tutorial alone with \texttt{make docs-first-workflow}, or
-both documents with \texttt{make docs}; \path{docs/README.md} lists the TeX
-requirements.
+\section{Describe what you want}
+
+You can write the workflow yourself; the next section shows the code. But the
+intended path is to say what you want in ordinary language. Open a coding agent
+in this directory:
+
+\begin{lstlisting}[style=shell]
+claude
+\end{lstlisting}
+
+and ask for it:
+
+\begin{lstlisting}[style=agent]
+> Build a ZipperGen workflow that takes an email message, asks an LLM to
+  draft a short reply, and asks me to approve it before it is sent.
+\end{lstlisting}
+
+The agent reads \texttt{AGENTS.md}, which points it at \texttt{zippergen
+skill} — ZipperGen's own instructions for how to write a workflow, what to
+validate, and what never to touch. It then writes \texttt{specification.md} and
+\texttt{workflow.py}, and checks its work.
+
+\begin{notebox}{Where the skill comes from}
+\texttt{zippergen skill} prints instructions that ship inside the package, so
+they match the version you have installed. They are ordinary prose in the
+repository, not generated text — you can read them, and you can disagree with
+them.
+\end{notebox}
+
+\section{What comes out}
+
+Visible, readable Python. This is the whole coordination:
+
+\begin{lstlisting}[language=Python]
+@workflow
+def email_approval(message: str @ User) -> str:
+    User(message) >> Writer(message)
+    Writer: draft = draft_reply(message)
+    Writer(draft) >> User(draft)
+    User: approved = approve_reply(draft)
+    if approved @ User:
+        User: result = sent(draft)
+    else:
+        User: result = discarded()
+    return result @ User
+\end{lstlisting}
+
+Read it top to bottom and you have the entire message order. Four things are
+worth noticing.
+
+\texttt{User(message) >> Writer(message)} is a message. The left side sends,
+the right side receives, and the names in brackets say which variables carry
+the value.
+
+\texttt{Writer: draft = draft\_reply(message)} is an action performed by one
+participant. \texttt{draft\_reply} is an \texttt{@llm} action — a model call
+with a prompt and a declared output.
+
+\texttt{User: approved = approve\_reply(draft)} is a \texttt{@human} action. It
+stops and waits for a person.
+
+\texttt{if approved @ User} is a decision, and the \texttt{@ User} says who
+makes it. That annotation is the important one, and the next section shows why.
+
+\section{Check it}
+
+\begin{lstlisting}[style=shell]
+zippergen validate workflow.py:email_approval
+\end{lstlisting}
+
+\begin{lstlisting}
+Workflow email_approval: valid
+OK   lifelines: 2 unique lifeline(s): Writer, User
+OK   projection Writer: SeqStmt
+OK   projection User: SeqStmt
+OK   deployment declaration: 0 field(s), 0 package(s), 0 setup step(s)
+OK   canonical rendering: global and local code views rendered successfully
+\end{lstlisting}
+
+\texttt{validate} loads the module, projects the protocol for every
+participant, and renders it back. If it passes, the workflow is well formed and
+the deadlock-freedom guarantee applies to it.
+
+\section{The moment that matters}
+
+The workflow has one decision and the \texttt{User} makes it. Ask what each
+participant actually runs.
+
+The \texttt{User} is the decider, so the branch is there:
+
+\begin{lstlisting}[style=shell]
+zippergen show workflow.py:email_approval --agent User
+\end{lstlisting}
+
+\begin{lstlisting}[language=Python]
+@role('User')
+def email_approval__User(message: str) -> str:
+    send('Writer', message)
+    draft = recv('Writer')
+    approved = approve_reply(draft)
+    if approved:
+        result = sent(draft)
+    else:
+        result = discarded()
+\end{lstlisting}
+
+Now the \texttt{Writer}:
+
+\begin{lstlisting}[style=shell]
+zippergen show workflow.py:email_approval --agent Writer
+\end{lstlisting}
+
+\begin{lstlisting}[language=Python]
+@role('Writer')
+def email_approval__Writer() -> None:
+    message = recv('User')
+    draft = draft_reply(message)
+    send('User', draft)
+\end{lstlisting}
+
+\begin{notebox}{The Writer has no branch}
+Nobody wrote that. ZipperGen worked out that the \texttt{Writer} takes no part
+in the \texttt{User}'s decision, so the \texttt{Writer}'s local program does
+not mention it — and therefore cannot wait on it, disagree with it, or deadlock
+against it.
+
+In a hand-written multi-agent system this is where the bugs live: one agent
+waits for a message the other decided not to send. Here the question does not
+arise, because the projection removed it.
+\end{notebox}
+
+This is not a convenience. It is the construction the correctness proof is
+about: the projected local programs produce exactly the behaviours of the
+global protocol, and deadlock freedom follows for well-formed workflows.
+
+\section{Run it}
+
+No model key needed yet. \texttt{--llm mock} answers model calls with a
+placeholder:
+
+\begin{lstlisting}[style=shell]
+zippergen run workflow.py:email_approval --llm mock --execution memory \
+    --input message="Could we move our meeting to Thursday afternoon?"
+\end{lstlisting}
+
+\begin{lstlisting}
+Proposed reply:
+
+[draft_reply:draft]
+
+Send this reply? [y/n]: y
+{"result": "Sent: [draft_reply:draft]"}
+\end{lstlisting}
+
+The approval happened in your terminal, and answering \texttt{n} takes the
+other branch. The reply is a placeholder because \texttt{mock} does not call a
+model.
+
+\subsection{Making the test say something}
+
+\texttt{mock} answers every action the same way, which means a workflow driven
+by it takes one path and no other. To exercise a specific branch, script the
+answers. Put this in \texttt{replies.json}:
+
+\begin{lstlisting}
+{
+  "draft_reply": {"draft": "Thursday afternoon works for me. How about 3pm?"}
+}
+\end{lstlisting}
+
+\begin{lstlisting}[style=shell]
+zippergen run workflow.py:email_approval --llm scripted:replies.json \
+    --execution memory --input message="Could we move our meeting to Thursday?"
+\end{lstlisting}
+
+\begin{lstlisting}
+Proposed reply:
+
+Thursday afternoon works for me. How about 3pm?
+
+Send this reply? [y/n]: y
+{"result": "Sent: Thursday afternoon works for me. How about 3pm?"}
+\end{lstlisting}
+
+Keys are \texttt{action} or \texttt{Participant.action}. A bare object answers
+every call the same way; a \emph{list} is a finite sequence, and running past
+its end is an error. That distinction matters: if a change makes an action run
+more often than the script expects, the run fails instead of quietly repeating
+the last answer.
+
+\section{Use a real model}
+
+Set the key in your environment and name a provider:
+
+\begin{lstlisting}[style=shell]
+export OPENAI_API_KEY=sk-...
+zippergen run workflow.py:email_approval --llm openai:gpt-4o-mini \
+    --execution memory --input message="Could we move our meeting to Thursday?"
+\end{lstlisting}
+
+There is no ZipperGen credential store to set up for development. The
+environment is where a key belongs, and ZipperGen reads it from there.
+
+\section{Approval on your phone}
+
+So far the approval appeared in your terminal. To send it to Telegram instead,
+the workflow declares that it needs a place to ask a human, and you say which
+chat that is.
+
+\begin{lstlisting}[style=shell]
+zippergen connector configure telegram approvals --chat-id 12345678
+\end{lstlisting}
+
+\begin{lstlisting}
+Telegram bot token (input hidden):
+Saved the Telegram bot token for this computer.
+Saved connector configuration approvals (chat 12345678).
+\end{lstlisting}
+
+Two things went to two different places, on purpose:
+
+\begin{center}
+\begin{tabularx}{0.92\linewidth}{@{}lX@{}}
+\toprule
+\textbf{chat id} & written to \texttt{zippergen.toml}, committed, shared \\
+\textbf{bot token} & typed, never an argument, stays on this computer \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+The token is read without echo, so it does not reach your shell history. A
+colleague who clones the project gets the chat id and supplies their own token.
+
+\begin{warningbox}{This is the part that needs a person}
+A coding agent can write the workflow, validate it, and run it. It should not
+be given your credentials. Configuring a connector is deliberately something
+you do yourself, in your own terminal — which is the one moment in this
+tutorial where the two windows genuinely differ.
+\end{warningbox}
+
+\noindent
+\begin{minipage}[t]{0.485\linewidth}
+\textbf{\footnotesize Coding agent}\par\vspace{2pt}
+\begin{lstlisting}[style=pane]
+> Everything validates. To send
+  approvals to Telegram, run this
+  yourself:
+
+    zippergen connector configure
+      telegram approvals
+      --chat-id <your chat id>
+
+  I will not need the token.
+\end{lstlisting}
+\end{minipage}\hfill
+\begin{minipage}[t]{0.485\linewidth}
+\textbf{\footnotesize Your terminal}\par\vspace{2pt}
+\begin{lstlisting}[style=pane]
+$ zippergen connector configure
+    telegram approvals
+    --chat-id 12345678
+
+Telegram bot token (hidden):
+Saved the token for this computer.
+Saved configuration approvals.
+\end{lstlisting}
+\end{minipage}
+\par\smallskip
+
+\section{Runs that survive interruption}
+
+\texttt{zippergen run} executes once. \texttt{zippergen dev} records the run as
+it goes, so an interrupted run continues rather than starting over:
+
+\begin{lstlisting}[style=shell]
+zippergen dev workflow.py:email_approval --llm mock \
+    --input message="Could we move our meeting to Thursday?"
+\end{lstlisting}
+
+\begin{lstlisting}
+Workflow email_approval: valid
+Run email_approval-20260808-132719-612865000
+Proposed reply:
+...
+\end{lstlisting}
+
+Press Ctrl-C while it waits for your approval, then:
+
+\begin{lstlisting}[style=shell]
+zippergen dev --resume
+\end{lstlisting}
+
+The model call that already happened is not repeated. The run resumes at the
+point it stopped, because every step was recorded before it was taken.
+
+\section{Deploy it}
+
+Preparing a deployment and starting one are separate steps, and the difference
+matters. Preparing writes files and reaches nothing:
+
+\begin{lstlisting}[style=shell]
+zippergen deploy production --no-start
+\end{lstlisting}
+
+Starting is about to make real calls, so every model and connector is probed
+first, and a failure stops it:
+
+\begin{lstlisting}[style=shell]
+zippergen start production
+zippergen logs production
+zippergen status production
+\end{lstlisting}
+
+A deployment you no longer want:
+
+\begin{lstlisting}[style=shell]
+zippergen remove production
+\end{lstlisting}
+
+Its durable store is kept — that is the record of what actually ran, and it is
+the one thing no rebuild can recover. Everything else, the environment and
+service files and the bundled source, is written again by deploying again.
+\texttt{--purge} removes the store too, when you mean it.
+
+\section{What you have}
+
+\begin{center}
+\begin{tabularx}{0.94\linewidth}{@{}lX@{}}
+\toprule
+\texttt{specification.md} & what it should do, in prose, maintained by you and your agent \\
+\texttt{workflow.py} & the coordination, as visible Python \\
+\texttt{zippergen.toml} & which model, which chat — committed, no secrets \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+Three files in a directory, plus whatever your machine supplies: a model key in
+the environment, a bot token typed once.
+
+The thing worth remembering is the \texttt{Writer} with no branch. You wrote
+one protocol; ZipperGen derived what each participant runs, and derived it in a
+way that cannot deadlock. As the workflow grows — more participants, loops,
+parallel regions — that property is what stops the coordination becoming the
+hard part.
+
+\section{Where to go next}
+
+\begin{itemize}
+  \item \texttt{examples/diagnosis.py} — two reviewers argue until they agree.
+        A loop, and a decision inside it.
+  \item \texttt{examples/call\_intake.py} — reads a real mailbox, records to a
+        real spreadsheet, runs as a service.
+  \item \emph{Development and deployment guide} — the longer reference.
+  \item \texttt{zippergen skill} — what your coding agent is following. Worth
+        reading once yourself.
+\end{itemize}
 
 \end{document}
