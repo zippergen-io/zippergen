@@ -2655,6 +2655,59 @@ def _compact_command(args) -> int:
     return 0
 
 
+def _connector_configure_telegram_command(args) -> int:
+    """Save a Telegram bot and chat, reading the token without echoing it.
+
+    The token is typed, never passed as an argument, so it stays out of shell
+    history and out of any transcript.
+    """
+
+    import getpass
+
+    from zippergen.workspace import Workspace, WorkspaceError
+
+    workspace = Workspace(args.project)
+    token = workspace.connector_provider_secret("telegram", "bot_token")
+    if not token:
+        try:
+            token = getpass.getpass("Telegram bot token (input hidden): ").strip()
+        except (EOFError, KeyboardInterrupt):
+            raise SystemExit("Cancelled; nothing was saved.") from None
+        if not token:
+            raise SystemExit("A bot token is required.")
+        workspace.save_connector_provider_secret("telegram", "bot_token", token)
+        print("Saved the Telegram bot token for this computer.")
+    else:
+        print("Using the Telegram bot token already saved on this computer.")
+
+    try:
+        workspace.save_connector_configuration(
+            args.name,
+            {
+                "provider": "telegram",
+                "kind": "telegram",
+                "chat_id": str(args.chat_id),
+            },
+        )
+    except WorkspaceError as exc:
+        raise SystemExit(str(exc)) from exc
+    print(f"Saved connector configuration {args.name} (chat {args.chat_id}).")
+
+    if args.bind:
+        entry = workspace.workflow_entry
+        if not entry:
+            raise SystemExit(
+                "This project has no workflow yet, so there is nothing to "
+                "bind to. Add one, then re-run with --bind."
+            )
+        try:
+            workspace.bind_connector(entry, args.bind, args.name)
+        except WorkspaceError as exc:
+            raise SystemExit(str(exc)) from exc
+        print(f"Bound {args.bind} to {args.name}.")
+    return 0
+
+
 def _init_command(args) -> int:
     """Create a project and stop. No questionnaire, no configuration.
 
@@ -4192,6 +4245,39 @@ def main(argv=None) -> int:
         dest="connector_action",
         required=True,
     )
+    connector_configure = connector_sub.add_parser(
+        "configure",
+        help="save a connector for this project on this computer",
+    )
+    configure_sub = connector_configure.add_subparsers(
+        dest="connector_provider",
+        required=True,
+    )
+    configure_telegram = configure_sub.add_parser(
+        "telegram",
+        help="save a Telegram bot and chat for human approvals",
+    )
+    configure_telegram.add_argument(
+        "name",
+        help="Configuration name, e.g. approvals.",
+    )
+    configure_telegram.add_argument(
+        "--chat-id",
+        required=True,
+        help="Telegram chat id that receives the approval messages.",
+    )
+    configure_telegram.add_argument(
+        "--bind",
+        help=(
+            "Connector requirement to bind this configuration to, as declared "
+            "by the workflow."
+        ),
+    )
+    configure_telegram.add_argument(
+        "--project",
+        help="Project root; defaults to discovery from the current directory.",
+    )
+
     connector_authorize = connector_sub.add_parser(
         "authorize",
         help="create a private authorization handoff",
@@ -4523,6 +4609,12 @@ def main(argv=None) -> int:
         return _show_command(args)
     if args.cmd == "validate":
         return _validate_command(args)
+    if (
+        args.cmd == "connector"
+        and args.connector_action == "configure"
+        and args.connector_provider == "telegram"
+    ):
+        return _connector_configure_telegram_command(args)
     if args.cmd == "init":
         return _init_command(args)
     if args.cmd == "skill":
