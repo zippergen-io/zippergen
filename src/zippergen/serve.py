@@ -2173,21 +2173,35 @@ def _print_status(status: dict[str, object]) -> None:
 def _resolved_workflow_spec(args) -> str:
     """Use the project's workflow when the command line does not name one.
 
-    A single-workflow project already records its entry point, so making the
-    reader retype `workflow.py:email_approval` on every run buys nothing.
+    Convention for the simple case, explicit configuration for the ambiguous
+    one, in that order: an explicit argument, then `workflow_entry`, then the
+    single workflow in the project if there is exactly one. `zg init` runs
+    before any workflow exists, so a beginner should not have to record an
+    entry by hand before the first `zg validate`.
+
+    Inference is a convenience only. Nothing here writes to the manifest.
     """
 
     named = getattr(args, "workflow", None) or getattr(args, "target", None)
     if named:
         return str(named)
-    from zippergen.workspace import Workspace
+    from zippergen.workspace import Workspace, discover_workflow_specs
 
     workspace = Workspace(getattr(args, "project", None))
     entry = workspace.workflow_entry
     if not entry:
+        discovered = discover_workflow_specs(workspace.root)
+        if len(discovered) == 1:
+            return str(workspace.absolute_spec(discovered[0]))
+        if discovered:
+            raise SystemExit(
+                "This project has several workflows: "
+                + ", ".join(discovered)
+                + ". Name one, or set workflow_entry in zippergen.toml."
+            )
         raise SystemExit(
-            "No workflow was named and this project has none configured. "
-            "Give a workflow spec, or set workflow_entry in zippergen.toml."
+            "No workflow was named and none was found in this project. "
+            "Write a workflow, or give a workflow spec."
         )
     return str(workspace.absolute_spec(entry))
 

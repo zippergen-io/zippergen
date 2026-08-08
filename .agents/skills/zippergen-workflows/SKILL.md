@@ -25,14 +25,19 @@ over remembered syntax.
 - For an explanation or review, follow **Inspect as code** without editing.
 - Prepare or start a deployment only when the user asks for deployment work.
 
-A project records one workflow entry point as `workflow_entry` in
-`zippergen.toml`. Commands infer it, so `zg validate` and `zg show --agent
-Writer` normally need no workflow argument. Pass an explicit
-`path.py:workflow` when the project holds more than one, or when you are
-working outside a project.
+Commands resolve the workflow in this order:
 
-`zg init` does not set `workflow_entry`, because at that moment there is no
-workflow yet. When you write the workflow module, add the line yourself:
+1. an explicit `path.py:workflow` argument;
+2. `workflow_entry` in `zippergen.toml`;
+3. the project's only workflow, when there is exactly one;
+4. otherwise they stop and ask.
+
+So `zg validate` and `zg show --agent Writer` normally need no argument. A
+project with one workflow needs no `workflow_entry` at all — do not add one
+just to satisfy a command. Inference never writes to the manifest.
+
+Set `workflow_entry` when the project has several workflows, or when you want
+the choice recorded rather than inferred:
 
 ```toml
 workflow_entry = "workflow.py:email_approval"

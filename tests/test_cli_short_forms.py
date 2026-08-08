@@ -102,7 +102,7 @@ def test_a_directory_without_a_project_says_so(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("ZIPPERGEN_HOME", str(tmp_path / "home"))
 
-    with pytest.raises(SystemExit, match="no workflow was named|has none configured"):
+    with pytest.raises(SystemExit, match="none was found in this project"):
         serve.main(["validate"])
 
 
@@ -127,3 +127,57 @@ def test_diff_compares_a_baseline_against_the_project_workflow(
     assert serve.main(["diff", str(baseline)]) == 0
 
     assert "User(draft) >> Writer(draft)" in capsys.readouterr().out
+
+
+def test_a_single_workflow_is_inferred_without_a_manifest_entry(
+    tmp_path, monkeypatch, capsys
+):
+    """`zg init` runs before any workflow exists, so it cannot record one.
+
+    A beginner should reach `zg validate` without first hand-writing
+    workflow_entry into zippergen.toml.
+    """
+
+    root = tmp_path / "beginner"
+    root.mkdir()
+    shutil.copy(EXAMPLE, root / "workflow.py")
+    workspace = Workspace(root, home=tmp_path / "home")
+    workspace.initialize_project(name="beginner")
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(tmp_path / "home"))
+
+    assert serve.main(["validate"]) == 0
+
+    assert "email_approval: valid" in capsys.readouterr().out
+    # Inference is a convenience; it must not quietly rewrite the manifest.
+    assert "workflow_entry" not in workspace.manifest_path.read_text()
+
+
+def test_several_workflows_ask_for_an_explicit_choice(tmp_path, monkeypatch):
+    root = tmp_path / "ambiguous"
+    root.mkdir()
+    shutil.copy(EXAMPLE, root / "workflow.py")
+    shutil.copy(EXAMPLE, root / "second.py")
+    workspace = Workspace(root, home=tmp_path / "home")
+    workspace.initialize_project(name="ambiguous")
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(tmp_path / "home"))
+
+    with pytest.raises(SystemExit, match="several workflows"):
+        serve.main(["validate"])
+
+
+def test_a_manifest_entry_wins_over_discovery(tmp_path, monkeypatch, capsys):
+    root = tmp_path / "explicit"
+    root.mkdir()
+    shutil.copy(EXAMPLE, root / "workflow.py")
+    shutil.copy(EXAMPLE, root / "second.py")
+    workspace = Workspace(root, home=tmp_path / "home")
+    workspace.initialize_project(name="explicit")
+    workspace.select_workflow("second.py:email_approval", cwd=root)
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(tmp_path / "home"))
+
+    assert serve.main(["validate"]) == 0
+
+    assert "email_approval: valid" in capsys.readouterr().out

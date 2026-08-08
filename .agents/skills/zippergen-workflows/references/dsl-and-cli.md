@@ -385,9 +385,11 @@ List every source/support file needed by the deployment bundle.
 
 ## Semantic CLI contract
 
-`zg` is the short alias for `zippergen`. Inside a project the workflow is read
-from `zippergen.toml` and may be omitted; otherwise give a spec in either
-`module:workflow` or `path.py:workflow` form.
+`zg` is the short alias for `zippergen`. Inside a project the workflow may be
+omitted: commands take an explicit argument first, then `workflow_entry` from
+`zippergen.toml`, then the project's only workflow when there is exactly one.
+An explicit spec is given in either `module:workflow` or `path.py:workflow`
+form.
 
 ```bash
 # Global code view

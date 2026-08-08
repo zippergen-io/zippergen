@@ -479,7 +479,7 @@ def test_a_plain_run_outside_a_project_says_what_is_missing(tmp_path, monkeypatc
 
     monkeypatch.chdir(tmp_path)
 
-    with pytest.raises(SystemExit, match="has none configured"):
+    with pytest.raises(SystemExit, match="none was found in this project"):
         serve.main(["run"])
 
 
