@@ -1,6 +1,6 @@
 """Gmail connector runtime support.
 
-The workflow names a logical mailbox requirement. Studio supplies the Google
+The workflow names a logical mailbox requirement. The project supplies the Google
 account, search query, and private OAuth credential at run or deployment time.
 """
 
@@ -29,7 +29,7 @@ _GMAIL_API = "https://gmail.googleapis.com/gmail/v1/users"
 
 
 class GmailError(GoogleConnectorError):
-    """A clear Gmail connector error suitable for Studio output."""
+    """A clear Gmail connector error suitable for command output."""
 
 
 def _binding_records() -> dict[str, dict[str, object]]:

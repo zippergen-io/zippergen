@@ -457,8 +457,8 @@ def run_dev(
         selected = workflow_spec or workspace.workflow_entry
         if not selected:
             raise SystemExit(
-                "No project workflow is configured. Pass PATH.py:WORKFLOW once "
-                "or use 'workflow import PATH.py:WORKFLOW' in Studio."
+                "No project workflow is configured. Pass PATH.py:WORKFLOW, or "
+                "record one for this project with 'zippergen init'."
             )
         stored_spec = workspace.canonical_spec(selected, cwd=workspace.root)
         workflow, module = _load_and_validate(workspace, stored_spec)

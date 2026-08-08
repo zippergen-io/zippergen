@@ -1,6 +1,6 @@
 """Google Sheets connector runtime and OAuth support.
 
-Workflow code refers to a logical connector requirement. Studio supplies the
+Workflow code refers to a logical connector requirement. The project supplies the
 machine-specific spreadsheet, tab, and private OAuth credential at run or
 deployment time.
 """
@@ -32,7 +32,7 @@ _SHEETS_API = "https://sheets.googleapis.com/v4/spreadsheets"
 
 
 class GoogleSheetsError(GoogleConnectorError):
-    """A clear connector error suitable for Studio and workflow output."""
+    """A clear connector error suitable for command and workflow output."""
 
 
 def authorize_google_sheets(

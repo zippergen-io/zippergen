@@ -1,4 +1,4 @@
-"""Safe archival and purging of Studio-owned deployment artifacts."""
+"""Safe archival and purging of a deployment's artifacts."""
 
 from __future__ import annotations
 

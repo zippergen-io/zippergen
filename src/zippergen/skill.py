@@ -2,7 +2,7 @@
 
 A ZipperGen project is an ordinary directory. Nothing in it tells a coding
 agent how ZipperGen works, and until now the only delivery path was the
-instruction text Studio generated when it invoked an assistant itself — which
+instruction text the deleted shell generated when it invoked an assistant — which
 required a git checkout and disappears with the shell.
 
 This module makes the skill reachable from the installed package instead, so

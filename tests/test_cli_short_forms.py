@@ -104,3 +104,26 @@ def test_a_directory_without_a_project_says_so(tmp_path, monkeypatch):
 
     with pytest.raises(SystemExit, match="no workflow was named|has none configured"):
         serve.main(["validate"])
+
+
+def test_diff_compares_a_baseline_against_the_project_workflow(
+    project, tmp_path, capsys
+):
+    """One saved baseline plus one argument is the whole change-check ritual."""
+
+    baseline = tmp_path / "before.json"
+    assert serve.main(["snapshot", "-o", str(baseline)]) == 0
+    capsys.readouterr()
+
+    workflow = project / "workflow.py"
+    workflow.write_text(
+        workflow.read_text().replace(
+            "Writer(draft) >> User(draft)",
+            "Writer(draft) >> User(draft)\n    User(draft) >> Writer(draft)",
+            1,
+        )
+    )
+
+    assert serve.main(["diff", str(baseline)]) == 0
+
+    assert "User(draft) >> Writer(draft)" in capsys.readouterr().out

@@ -1,6 +1,6 @@
 ---
 name: zippergen-workflows
-description: Create, extend, refactor, inspect, validate, compare, and prepare deployment-ready ZipperGen Python workflows from one or more natural-language prompts. Use when Codex needs to translate a coordination description into ZipperGen lifelines, messages, actions, owned decisions, parallel regions, human approvals, deployment declarations, or tests; explain an existing workflow at global, communication-only, selected-agent, or single-agent detail; or modify an existing workflow while proving the intended semantic change with ZipperGen CLI views and diffs.
+description: Create, extend, refactor, inspect, validate, compare, and prepare deployment-ready ZipperGen Python workflows from one or more natural-language prompts. Use when a coding agent needs to translate a coordination description into ZipperGen lifelines, messages, actions, owned decisions, parallel regions, human approvals, deployment declarations, or tests; explain an existing workflow at global, communication-only, selected-agent, or single-agent detail; or modify an existing workflow while proving the intended semantic change with ZipperGen CLI views and diffs.
 ---
 
 # ZipperGen Workflows
@@ -9,7 +9,9 @@ Turn workflow intent into reviewable Python protocol code. Keep the global
 workflow as the source of truth, make participant boundaries explicit, and use
 ZipperGen's semantic tools to verify every generated or modified workflow.
 
-Invoke this repository skill explicitly as `$zippergen-workflows` when useful.
+There is no ZipperGen shell. A project is an ordinary directory, and every
+operation below is a CLI command you run like any other. `zg` is the short
+alias for `zippergen`; both are the same program.
 
 Read [references/dsl-and-cli.md](references/dsl-and-cli.md) before authoring or
 editing a workflow. Also inspect the repository's current `README.md`, nearby
@@ -19,21 +21,40 @@ over remembered syntax.
 ## Choose the operation
 
 - For a new workflow, follow **Create from prompts**.
-- For a change to an existing workflow, follow **Refine from prompts**.
+- For a change to an existing workflow, follow **Change an existing workflow**.
 - For an explanation or review, follow **Inspect as code** without editing.
 - Prepare or start a deployment only when the user asks for deployment work.
 
-Studio projects have one versioned workflow entry point in
-`zippergen.toml`. `workflow list` is read-only discovery. `workflow import`
-adopts a file already inside the project without copying it. Importing another
-workflow into an already configured project is a replacement and requires the
-user's confirmation before files or the manifest change.
+A project records one workflow entry point as `workflow_entry` in
+`zippergen.toml`. Commands infer it, so `zg validate` and `zg show --agent
+Writer` normally need no workflow argument. Pass an explicit
+`path.py:workflow` when the project holds more than one, or when you are
+working outside a project.
 
-Treat portability separately from secrecy. Named model and connector
-configurations, assignments, and connector bindings belong in
-`zippergen.toml`. Local endpoints, idle policy, cached checks, and credentials
-belong to private site state. Resolve configuration with one rule only: a site
-override wins when present, otherwise use the project value.
+`zg init` does not set `workflow_entry`, because at that moment there is no
+workflow yet. When you write the workflow module, add the line yourself:
+
+```toml
+workflow_entry = "workflow.py:email_approval"
+```
+
+Treat portability separately from secrecy. What every machine shares — the
+workflow entry point, named model and connector configurations, assignments,
+and bindings — belongs in `zippergen.toml` and is committed. What belongs to
+one machine — credentials, local endpoints, authorizations — lives in
+`ZIPPERGEN_HOME` and is never committed. Resolve configuration with one rule
+only: a site value wins when present, otherwise use the project value.
+
+## Keep the specification current
+
+You maintain `specification.md`: what the workflow is for, who takes part,
+what each participant decides, and what must stay true. It is prose for the
+user, not generated output, and no command reads it.
+
+Update it in the same change as the code whenever participants, decisions,
+external effects, or human control points change. When you are asked to work
+on a workflow that has no specification, read the code and write one first —
+it is how you and the user agree on intent before you edit.
 
 ## Model the intent first
 
@@ -55,7 +76,9 @@ Otherwise choose the smallest reasonable workflow and state the assumption.
 
 ## Create from prompts
 
-1. Inspect analogous examples and public APIs in the target repository.
+1. Inspect analogous examples and public APIs in the target repository. Use
+   `zg init` when the directory is not yet a project; it never overwrites an
+   existing file.
 2. Write a top-level Python module containing lifelines, variables, action
    declarations, one global `@workflow`, and deployment metadata when needed.
    Keep that global protocol readable: extract named `@fragment` helpers for
@@ -68,17 +91,17 @@ Otherwise choose the smallest reasonable workflow and state the assumption.
    at the lifeline that actually knows and owns the decision.
 5. Add focused tests that run with mock LLMs or fake services. Test protocol
    structure and safety behavior separately from live integrations.
-6. Human delivery is inferred from `@human` action sites and assigned through
-   Studio. Do not add a redundant connector requirement merely to route a
-   human action through Telegram or email. For a non-human external service,
+6. Human delivery is inferred from `@human` action sites and routed with
+   `zg connector assign`. Do not add a redundant connector requirement merely
+   to reach a person through Telegram. For a non-human external service,
    declare an exact connector capability and test that it appears in workflow
    semantics. For Google Sheets, keep columns and a stable key in code, label
    each `@effect` with its connector and operation, and use the built-in JSON
    row helpers instead of embedding spreadsheet credentials or identifiers.
    For Gmail, declare the exact mailbox operations and keep the account,
-   search query, and OAuth credential in Studio. Declare connector access
-   explicitly. Use `read-only` whenever the workflow does not modify the
-   external service.
+   search query, and OAuth credential in the connector configuration. Declare
+   connector access explicitly. Use `read-only` whenever the workflow does not
+   modify the external service.
 7. Run the validation and inspection gate below.
 
 Do not invent a generic agent for every function. A lifeline represents a
@@ -88,60 +111,62 @@ single long protocol may be decomposed into meaningful coordination
 subprograms. Keep participant transfers and owned control flow explicit, and
 avoid tiny fragments that merely scatter a short protocol across files.
 
-## Refine from prompts
+## Change an existing workflow
 
-1. Identify the exact workflow spec (`path.py:workflow` or
-   `module:workflow`) and read its module, tests, and deployment declaration.
-2. Before editing, write a semantic baseline to a unique temporary JSON path:
+1. Read the module, its tests, its specification, and its deployment
+   declaration before editing.
+2. Save a semantic baseline to a unique temporary path outside the project:
 
    ```bash
-   uv run zippergen snapshot path/to/workflow.py:workflow -o /tmp/<unique>-before.json
+   zg snapshot -o /tmp/<unique>-before.json
    ```
 
 3. Translate the requested change into expected additions, removals, and
    preserved behavior. Prefer a focused edit over a rewrite.
-4. Update the workflow code, action declarations, deployment metadata, and
-   tests together when the request crosses those boundaries.
-5. Run the validation gate, then compare the saved baseline to the edited
-   workflow:
+4. Update the workflow code, action declarations, deployment metadata,
+   specification, and tests together when the request crosses those
+   boundaries.
+5. Run the validation gate, then compare the baseline to the edited workflow:
 
    ```bash
-   uv run zippergen diff /tmp/<unique>-before.json path/to/workflow.py:workflow
+   zg diff /tmp/<unique>-before.json
    ```
 
-6. Inspect the semantic diff. Confirm every reported change is intended and
-   that expected changes are present. Investigate unexpected implementation,
-   message, control, participant, output, or deployment changes before handing
-   off the result.
-7. Report the semantic outcome, assumptions, tests, and any intentionally
+6. Confirm every reported change is intended and that every intended change is
+   reported. Investigate unexpected implementation, message, control,
+   participant, output, or deployment changes before handing off.
+7. Report the semantic outcome, assumptions, tests, and any deliberately
    unchanged behavior. Do not present a source-line diff as proof of protocol
    equivalence.
 
-Keep the temporary snapshot outside the project and remove it only by an exact,
-validated path when cleanup is useful.
+The semantic diff compares protocol structure and action fingerprints. It does
+not read inside a helper an action calls, and it cannot tell you a changed
+constant was wrong. Where behavior matters, prove it with a test.
 
 ## Run the validation gate
 
 Run these commands for every created or modified workflow:
 
 ```bash
-uv run zippergen validate path/to/workflow.py:workflow
-uv run zippergen show path/to/workflow.py:workflow --communications
-uv run zippergen show path/to/workflow.py:workflow --detail full
+zg validate
+zg show --communications
+zg show --detail full
 ```
 
 Then inspect every changed or newly introduced participant using exact local
 projection:
 
 ```bash
-uv run zippergen show path/to/workflow.py:workflow --agent AgentName
+zg show --agent AgentName
 ```
 
 Use `--format json` when programmatic checking helps. Run focused tests first,
 then the repository's broader suite and static checks in proportion to risk.
 When a specification names logical connectors, confirm every exact name in the
 full view or semantic JSON before reporting success.
+
 Treat load, projection, rendering, test, or type-check failures as blockers.
+
 Respect project boundaries when the application root contains a nested
 framework checkout. If `zippergen.toml` declares `framework_directory`, use
 that nested project's environment for ZipperGen commands, run application
@@ -151,6 +176,38 @@ suite separately only when framework source changed. Do not use transient
 dependency flags such as `--with pytest` during a restricted assistant run;
 use the project's declared, initially synchronized development dependencies
 and prefer the package runner's offline mode during verification.
+
+## Exercise both sides of a decision
+
+`--llm mock` returns one placeholder for every action, so a workflow with a
+branch runs only one path under it. That is not enough to claim a decision
+works. Two different things drive the two kinds of answer.
+
+**Model answers** come from a scripted file:
+
+```bash
+zg run --llm scripted:answers.json --input message=hello
+```
+
+Each key is `Participant.action`, or a bare `action` name as a fallback. A bare
+value repeats for every call; a list is a finite sequence, and running past its
+end is an error rather than a silent repeat:
+
+```json
+{"Writer.draft_reply": {"draft": "How about Thursday?"}}
+```
+
+**Human answers** are not scripted. A `@human` action asks a person on the
+terminal, or reaches them through an assigned connector. To drive one without a
+person, feed standard input:
+
+```bash
+printf 'y\n' | zg run --llm scripted:answers.json --input message=hello
+printf 'n\n' | zg run --llm scripted:answers.json --input message=hello
+```
+
+Run the workflow once per branch and assert the outcome. Prefer this over a
+live model whenever you are testing the protocol rather than the prompt.
 
 ## Inspect as code
 
@@ -168,26 +225,51 @@ Quote or summarize the rendered code rather than inventing a diagram. Preserve
 the distinction between a selected-agent focus view and exact single-agent
 projection.
 
+A participant that takes no part in a decision has no branch in its projection.
+When you explain a workflow, say so — it is the property the projection gives
+you, and it is checkable in one command.
+
 ## Prepare deployment
 
 Keep deployment declarations data-only and colocated with the workflow module.
 Declare required fields, secrets, packages, setup steps, and bundled files; do
 not embed credentials or copy secret values into ordinary profiles or tests.
 
+Connectors are configured once per machine and routed per workflow:
+
+```bash
+zg connector configure telegram --bind approvals
+zg connector assign User approvals
+```
+
+`configure` stores the credential in `ZIPPERGEN_HOME`; the routing it produces
+is committed with the project and holds no secret. Deployment reads both and
+refuses to start when a required connector is unbound, unauthorized, or
+assigned to a participant that has no `@human` action.
+
 Before starting or restarting anything, run:
 
 ```bash
-uv run zippergen validate path/to/workflow.py:workflow
-uv run zippergen show path/to/workflow.py:workflow --detail full
+zg validate
+zg show --detail full
 ```
 
 Use the guided path when deployment is explicitly authorized:
 
 ```bash
-uv run zippergen deploy path/to/workflow.py:workflow
+zg deploy --name production
 ```
 
 Afterward use the deployment name with `doctor`, `status`, `logs`, `restart`,
-and `configure --restart`. Never assume permission to send live messages,
-modify production data, complete OAuth, or restart a live service merely
-because the user requested workflow code.
+`stop`, `compact`, and `configure --restart`.
+
+Never assume permission to send live messages, modify production data,
+complete OAuth, or restart a live service merely because the user requested
+workflow code.
+
+## Tell the user what to do next
+
+End every piece of work by saying what state the project is in and what the
+obvious next command is — validate, run, assign a connector, deploy. The user
+moves between you and the shell, so a command they can paste is worth more than
+a description of it.

@@ -141,10 +141,10 @@ a recorded result is replayed without launching the assistant again. The
 requested repository operation should nevertheless be restart-safe because a
 process can fail after the CLI changes files but before its result is recorded.
 
-Human delivery needs no separate connector declaration. Studio discovers the
-participant from each `@human` action. It can assign a reusable Telegram or
-email configuration to the participant, with an optional action-level
-override.
+Human delivery needs no separate connector declaration. The participant is
+discovered from each `@human` action, and `zg connector assign` routes it to a
+saved configuration. Assign a participant to cover all of its human actions,
+or `Participant.action` to override a single one.
 
 Non-human services remain explicit, credential-free requirements:
 
@@ -185,10 +185,10 @@ def read_reviews() -> str:
 ```
 
 Use connector declarations when workflow behavior requires a non-human
-external capability independently of deployment configuration. Studio stores
-named configurations, assignments, and bindings in the versioned
-`zippergen.toml` manifest. Secrets and machine-specific observations remain
-private, while semantic snapshots and full
+external capability independently of deployment configuration. Named
+configurations, assignments, and bindings are stored in the committed
+`zippergen.toml` manifest. Secrets and machine-specific state remain
+private in `ZIPPERGEN_HOME`, while semantic snapshots and full
 views retain the logical kind, participant, access, capabilities, and each
 effect's logical connector operation. For Google Sheets writes, prefer a
 stable-key upsert to a blind append. This makes a retry after a crash safe.
@@ -218,10 +218,11 @@ def read_mail() -> str:
 Keep the account, Gmail search query, and OAuth token outside workflow source.
 The account and query are project configuration. The token is private site
 state.
-`connector setup` can authorize Gmail and Google Sheets together when the
-project workflow requires both. Declare `access="read-only"` for readers.
-Use `read-write` only when an action modifies Gmail or Sheets. Studio uses
-that declaration to request the narrowest supported Google OAuth scope.
+`zg connector authorize google` can authorize Gmail and Google Sheets together
+when the workflow requires both. Declare `access="read-only"` for readers. Use
+`read-write` only when an action modifies Gmail or Sheets. That declaration
+selects the narrowest supported Google OAuth scope, and deployment refuses to
+start if the granted scopes do not cover it.
 
 ## Owned control flow
 
@@ -384,32 +385,37 @@ List every source/support file needed by the deployment bundle.
 
 ## Semantic CLI contract
 
-Use a workflow spec in either `module:workflow` or `path.py:workflow` form.
+`zg` is the short alias for `zippergen`. Inside a project the workflow is read
+from `zippergen.toml` and may be omitted; otherwise give a spec in either
+`module:workflow` or `path.py:workflow` form.
 
 ```bash
 # Global code view
-uv run zippergen show path/to/workflow.py:workflow
+zg show
 
 # Communication-only view
-uv run zippergen show path/to/workflow.py:workflow --communications
+zg show --communications
 
 # Exact single-participant projection
-uv run zippergen show path/to/workflow.py:workflow --agent Writer
+zg show --agent Writer
 
 # Selected participants with explicit external boundaries
-uv run zippergen show path/to/workflow.py:workflow --agents Writer,Editor
+zg show --agents Writer,Editor
 
 # Action implementations, prompts, and deployment declaration
-uv run zippergen show path/to/workflow.py:workflow --detail full
+zg show --detail full
 
 # Machine-readable forms
-uv run zippergen show path/to/workflow.py:workflow --format json
-uv run zippergen validate path/to/workflow.py:workflow --json
+zg show --format json
+zg validate --json
 
-# Stable before/after refinement contract
-uv run zippergen snapshot path/to/workflow.py:workflow -o /tmp/before.json
-uv run zippergen diff /tmp/before.json path/to/workflow.py:workflow
-uv run zippergen diff /tmp/before.json path/to/workflow.py:workflow --format json
+# Stable before/after change contract
+zg snapshot -o /tmp/before.json
+zg diff /tmp/before.json
+zg diff /tmp/before.json --format json
+
+# An explicit spec always wins over the project entry
+zg show path/to/workflow.py:workflow --agent Writer
 ```
 
 The semantic diff compares meaning-bearing IR facts: participants, owned
@@ -417,69 +423,91 @@ inputs/outputs, messages and their control context, action kinds and
 implementations, action sites, control constructs, parallel regions, and
 deployment requirements. It deliberately ignores irrelevant source layout.
 
-Studio can also inspect the durable current position of projected programs:
+## Running
 
-```text
-run inspect [PARTICIPANT]
-deploy inspect [NAME] [PARTICIPANT]
-deploy storage [NAME]
-deploy storage compact [NAME]
+```bash
+# A plain run: nothing is written down
+zg run --llm mock --input message=hello
+
+# Scripted answers, so both sides of a decision can be exercised
+zg run --llm scripted:answers.json --input message=hello
+
+# Override one participant or one exact action
+zg run --llm openai:gpt-4o --llm-for User.approve_reply=mock
+
+# Record the run so it survives a stop, then continue it
+zg run --durable --input message=hello
+zg run --resume
 ```
 
-These commands read diagnostic per-participant locators from the SQLite store
-and render the matching local projection with active pointers. The locators
-are observation data, not recovery snapshots. Do not add workflow variables,
-action inputs, provider credentials, or other environment values to the
-default position view.
+A plain run keeps everything in memory and leaves no store behind. `--durable`
+records the run to SQLite and collects missing inputs interactively; `--resume`
+continues the project's most recent unfinished run, and `--run-id` picks a
+different one. Passing `--store` implies a durable run.
 
-`deploy storage` runs SQLite's structural quick check, then reports store, WAL,
-log, event, and snapshot sizes without changing them. Diagnostic traces are
-retained online in bounded batches and do not require a service stop.
-`deploy storage compact` requires a stopped deployment and removes only events
-covered by durable recovery snapshots. Completed human tasks and connector
-notifications remain as audit records. Keep stores owner-private on a local
-filesystem with reliable SQLite locking and `fsync`. Never edit durable rows
-directly. External effects must be idempotent because crash recovery or a
-future restore from an older backup can repeat unjournaled remote work.
-The events table has an explicit integer primary key. Database compaction must
-preserve these stable event identifiers because recovery floors refer to them.
+In a scripted file each key is `Participant.action`, falling back to a bare
+`action` name. A bare object repeats for every call; a list is a finite
+sequence, and a call past its end is an error rather than a silent repeat.
 
-## Studio natural-language commands
+A scripted file answers model actions only. A `@human` action asks a person on
+the terminal, or reaches them through an assigned connector; to drive one
+without a person, pipe the answer on standard input.
 
-Studio keeps one canonical `specification.md` and one workflow entry in
-`zippergen.toml`. `workflow edit-spec` changes the specification directly.
-For a described change, `workflow edit-refinement` writes an ignored scratch
-buffer and `workflow refine-spec` applies it without exposing implementation
-source to the specification assistant. `workflow implement` writes the
-committed `zippergen.lock` record. The project then derives implementation as
-`absent`, `stale`, `current`, or `external`, including on a fresh clone.
-In an interactive Git project, implementation offers one editable commit for
-the specification, implementation files, lock, and a manifest it changed. It
-does not include unrelated staged work and never pushes. `workflow status` and
-`deploy` warn, but do not block, when those related files are uncommitted.
-Non-Git and non-interactive use has no prompt or warning.
-Deployment blocks `absent` and `stale`. It warns and proceeds for `external`,
-because provenance is unknown rather than known to disagree.
-`workflow import PATH.py:NAME` also adopts a file already inside the project
-without copying it.
+## Deployment operation
 
-Inside `zippergen studio` (or plain `zippergen` in an interactive terminal),
-exact Studio syntax remains authoritative. Input that is not valid command
-syntax may be written as ordinary prose:
-
-```text
-What is the current state?
-Show me the whole protocol.
-Assign openai:gpt-4o-mini to Writer.
+```bash
+zg deploy --name production
+zg status production
+zg logs production
+zg doctor production
+zg restart production
+zg stop production
+zg compact production
+zg remove production
 ```
 
-Common requests are deterministic. More complex requests may use a
-repository-aware Codex or Claude CLI in read-only mode. The interpreter returns
-only a structured plan of documented Studio commands; Studio validates,
-displays, classifies, and executes the plan. `plan TEXT` never executes,
-`language` shows interpreter/learning status, and `language history` plus
-`language learned` expose owner-private interpretation records. Secret-looking
-prose is rejected before interpretation or storage.
+`status` and `doctor` read the SQLite store without changing it; `trace` and
+`tasks` show recent events and pending human tasks. `compact` requires a
+stopped deployment and removes only events covered by durable recovery
+snapshots. Completed human tasks and connector notifications remain as audit
+records. `remove` deletes a deployment but keeps its durable store unless you
+purge it.
+
+Keep stores owner-private on a local filesystem with reliable SQLite locking
+and `fsync`. Never edit durable rows directly. External effects must be
+idempotent, because crash recovery or a restore from an older backup can repeat
+unjournaled remote work. The events table has an explicit integer primary key,
+and compaction preserves those identifiers because recovery floors refer to
+them.
+
+## Connectors
+
+```bash
+# Save a connector on this computer and bind it to a requirement
+zg connector configure telegram --bind approvals
+zg connector configure google-sheets --bind records
+zg connector configure gmail --bind inbox
+
+# Route a participant's human actions to a saved connector
+zg connector assign User approvals
+
+# Authorize Google on this computer, or accept an authorization made elsewhere
+zg connector authorize google --scopes gmail.readonly
+zg connector accept google
+```
+
+`configure` writes the credential into `ZIPPERGEN_HOME`, outside the project.
+The routing it produces — which chat, which spreadsheet, which query — is
+committed with the project and contains no secret; the deployment refers to
+each credential by environment-variable name only.
+
+Deployment refuses to start when a required connector is unbound, when Google
+is unauthorized or its granted scopes do not cover the workflow, or when a
+connector is assigned to a participant that has no `@human` action.
+
+The credential file is written owner-readable and is not encrypted. Anyone who
+can read the account's files can read it. Treat `ZIPPERGEN_HOME` as you would
+an SSH key.
 
 ## Review checklist
 
@@ -495,3 +523,5 @@ Before handoff, verify:
 - Secrets occur only in environment-backed deployment fields.
 - `validate` succeeds and relevant local projections are readable.
 - The semantic diff contains exactly the requested changes.
+- Every branch of every decision has actually been run, not just one.
+- `specification.md` describes the workflow as it now stands.

@@ -3037,9 +3037,11 @@ def _semantic_input(spec: str) -> dict[str, object]:
 
 
 def _diff_command(args) -> int:
+    # With one argument, compare a saved baseline against the project workflow.
+    after = args.after or _resolved_workflow_spec(args)
     result = semantic_diff_models(
         _semantic_input(args.before),
-        _semantic_input(args.after),
+        _semantic_input(after),
     )
     if args.format == "json":
         print(json.dumps(result, indent=2, default=str))
@@ -4502,9 +4504,9 @@ def _connector_authorize_google_command(args) -> int:
         print(f"OAuth client: {client}")
         print(f"Credential expiry: {expiry}")
         print(
-            "Paste the private result below into the waiting Studio prompt. "
-            "It contains a refresh token, so do not share or save it in "
-            "shell history."
+            "On the other computer, run 'zippergen connector accept google' "
+            "and paste the private result below. It contains a refresh token, "
+            "so do not share it or save it in shell history."
         )
         print(encode_google_authorization(result))
         return 0
@@ -4795,7 +4797,15 @@ def main(argv=None) -> int:
 
     semantic_diff_parser = sub.add_parser("diff", help="compare two workflows by semantic IR changes")
     semantic_diff_parser.add_argument("before", help="Original workflow spec or semantic snapshot JSON.")
-    semantic_diff_parser.add_argument("after", help="Modified workflow spec or semantic snapshot JSON.")
+    semantic_diff_parser.add_argument(
+        "after",
+        nargs="?",
+        help=(
+            "Modified workflow spec or semantic snapshot JSON. Defaults to "
+            "this project's workflow, so a saved baseline can be compared "
+            "against the working tree with one argument."
+        ),
+    )
     semantic_diff_parser.add_argument("--format", choices=("code", "json"), default="code", help="Output format.")
 
     deploy = sub.add_parser("deploy", help="configure, validate, and start a workflow deployment")

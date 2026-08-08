@@ -91,45 +91,6 @@ def test_fresh_clone_resolves_workflow_from_manifest_without_private_state(tmp_p
     )
 
 
-def test_fresh_clone_derives_all_four_implementation_states_from_project_files(
-    tmp_path,
-):
-    absent_root = tmp_path / "absent"
-    absent_root.mkdir()
-    absent = Workspace(absent_root, home=tmp_path / "absent-home")
-    absent.initialize_project()
-    absent.save_specification("Return the request.")
-    assert Workspace(
-        absent_root, home=tmp_path / "absent-clone-home"
-    ).implementation_state()["state"] == "absent"
-
-    root = tmp_path / "project"
-    root.mkdir()
-    source = root / "workflow.py"
-    source.write_text("@workflow\ndef review(): pass\n")
-    original = Workspace(root, home=tmp_path / "original-home")
-    original.select_workflow("workflow.py:review", cwd=root)
-    original.save_specification("Return the request.")
-
-    external = Workspace(root, home=tmp_path / "external-home")
-    assert not external.state_path.exists()
-    assert external.implementation_state()["state"] == "external"
-
-    original.write_implementation_lock(["workflow.py"])
-    current = Workspace(root, home=tmp_path / "current-home")
-    assert not current.state_path.exists()
-    assert current.implementation_state()["state"] == "current"
-
-    original.save_specification("Return the request after review.")
-    stale = Workspace(root, home=tmp_path / "stale-home")
-    assert not stale.state_path.exists()
-    assert stale.implementation_state()["state"] == "stale"
-
-    original.save_specification("Return the request.")
-    source.write_text("@workflow\ndef review():\n    return 1\n")
-    edited = Workspace(root, home=tmp_path / "edited-home")
-    assert not edited.state_path.exists()
-    assert edited.implementation_state()["state"] == "external"
 
 
 def test_workspace_migrates_private_workflow_pointer_into_manifest(tmp_path):
@@ -175,7 +136,7 @@ def test_workspace_migration_rejects_nonportable_external_pointer(tmp_path):
     workspace.state_path.parent.mkdir(parents=True)
     workspace.state_path.write_text(json.dumps(state))
 
-    with pytest.raises(WorkspaceError, match="workflow import"):
+    with pytest.raises(WorkspaceError, match="workflow_entry in zippergen.toml"):
         workspace.migrate_workflow_entry()
 
     assert workspace.workflow_entry is None
@@ -291,7 +252,6 @@ def test_workspace_reset_archives_private_state_and_keeps_project_files(tmp_path
     workflow.write_text("@workflow\ndef review(): pass\n")
     workspace = Workspace(root, home=tmp_path / "state")
     workspace.initialize_project(name="Review project")
-    workspace.add_prompt(kind="initial", content="Keep source visible.")
     workspace.select_workflow("workflow.py:review", cwd=root)
     workspace.new_run(
         workflow_spec="workflow.py:review",
@@ -317,9 +277,6 @@ def test_workspace_reset_archives_private_state_and_keeps_project_files(tmp_path
     )
     workspace.save_secrets({"OPENAI_API_KEY": "private"})
     workspace.update(last_deployment="review-service")
-    drafts = root / ".zippergen" / "prompt-drafts"
-    drafts.mkdir(parents=True)
-    (drafts / "unfinished.md").write_text("Do not lose this draft.\n")
     deployment = workspace.home / "deployments" / "review-service.json"
     deployment.parent.mkdir(parents=True)
     deployment.write_text("{}\n")
@@ -341,9 +298,6 @@ def test_workspace_reset_archives_private_state_and_keeps_project_files(tmp_path
     assert list((backup / "workspace" / "requests").glob("*.json"))
     assert (backup / "project-local" / "current-task.md").exists()
     assert (backup / "project-local" / "assistant-result.json").exists()
-    assert (
-        backup / "project-local" / "prompt-drafts" / "unfinished.md"
-    ).exists()
     metadata = json.loads((backup / "reset.json").read_text())
     assert metadata["project_root"] == str(root)
     assert metadata["workspace_moved"] is True
@@ -351,7 +305,6 @@ def test_workspace_reset_archives_private_state_and_keeps_project_files(tmp_path
 
     assert workflow.exists()
     assert workspace.manifest_path.exists()
-    assert workspace.prompt("P001")["content"] == "Keep source visible."
     assert (root / ".git").exists()
     assert deployment.exists()
     assert not workspace.directory.exists()
@@ -604,145 +557,11 @@ def test_workspace_removing_unused_connector_removes_legacy_secrets(tmp_path):
     assert workspace.connector_secret("unused", "bot_token") is None
 
 
-def test_workspace_initializes_visible_project_and_manages_prompt_ledger(tmp_path):
-    root = tmp_path / "review-project"
-    root.mkdir()
-    workspace = Workspace(root, home=tmp_path / "state")
-
-    manifest = workspace.initialize_project(name="Reviewed answers")
-    initial = workspace.add_prompt(
-        kind="initial",
-        content="# Create reviewed answers\n\nNever return an unapproved draft.",
-    )
-    source = tmp_path / "retry change.md"
-    source.write_text(
-        "# Add bounded retries\n\nReturn an explicit failure after exhaustion.\n"
-    )
-    refinement = workspace.add_prompt(
-        kind="refinement",
-        content=source.read_text(),
-        source_path=source,
-        workflow_spec="workflows/review.py:review",
-    )
-
-    assert manifest["name"] == "Reviewed answers"
-    assert workspace.manifest_path.exists()
-    assert workspace.prompt_index_path.exists()
-    assert initial["id"] == "P001"
-    assert initial["file"] == "prompts/001-create-reviewed-answers.md"
-    assert refinement["id"] == "P002"
-    assert refinement["file"] == "prompts/002-add-bounded-retries.md"
-    assert source.exists()
-    assert "P001 [initial]" in workspace.prompt_context()
-    assert workspace.prompt_context().index("P001") < workspace.prompt_context().index(
-        "P002"
-    )
-    parsed = tomllib.loads(workspace.prompt_index_path.read_text())
-    assert [entry["id"] for entry in parsed["prompts"]] == ["P001", "P002"]
-
-    workspace.set_prompt_active("1", active=False)
-    workspace.move_prompt("P002", relation="before", other_id="P001")
-    replacement = workspace.replace_prompt(
-        "P002",
-        content="# Use three retries\n\nThe retry limit is three.",
-    )
-
-    records = workspace.list_prompts()
-    assert [record["id"] for record in records] == ["P002", "P003", "P001"]
-    assert records[0]["active"] is False
-    assert replacement["replaces"] == "P002"
-    assert replacement["active"] is True
-    context = workspace.prompt_context()
-    assert "Use three retries" in context
-    assert "Add bounded retries" not in context
-    assert "Create reviewed answers" not in context
 
 
-def test_workspace_registers_existing_project_prompt_idempotently(tmp_path):
-    root = tmp_path / "project"
-    prompt_directory = root / "prompts"
-    prompt_directory.mkdir(parents=True)
-    source = prompt_directory / "design.md"
-    source.write_text("# Design\n\nKeep the source visible.\n")
-    workspace = Workspace(root, home=tmp_path / "state")
+def test_workspace_manages_the_visible_specification(tmp_path):
+    """`specification.md` is a plain project file the agent maintains."""
 
-    first = workspace.add_prompt(
-        kind="initial",
-        content=source.read_text(),
-        source_path=source,
-    )
-    second = workspace.add_prompt(
-        kind="initial",
-        content=source.read_text(),
-        source_path=source,
-    )
-
-    assert first["created"] is True
-    assert second["created"] is False
-    assert second["id"] == first["id"]
-    assert len(workspace.list_prompts()) == 1
-
-    workspace.set_prompt_active("P001", active=False)
-    third = workspace.add_prompt(
-        kind="initial",
-        content=source.read_text(),
-        source_path=source,
-    )
-    assert third["created"] is False
-    assert third["active"] is True
-    assert workspace.prompt("P001")["active"] is True
-
-
-def test_workspace_updates_prompt_content_without_changing_identity(tmp_path):
-    root = tmp_path / "project"
-    root.mkdir()
-    workspace = Workspace(root, home=tmp_path / "state")
-    original = workspace.add_prompt(
-        kind="initial",
-        content="# Original title\n\nOriginal requirement.",
-    )
-
-    updated = workspace.update_prompt_content(
-        "P001",
-        content="# Clearer title\n\nCorrected wording.",
-    )
-
-    assert updated["id"] == original["id"]
-    assert updated["kind"] == original["kind"]
-    assert updated["file"] == original["file"]
-    assert updated["title"] == "Clearer title"
-    assert workspace.prompt("P001")["content"] == (
-        "# Clearer title\n\nCorrected wording."
-    )
-    assert len(workspace.list_prompts()) == 1
-
-
-def test_workspace_prompt_fingerprint_tracks_active_content_and_order(tmp_path):
-    root = tmp_path / "project"
-    root.mkdir()
-    workspace = Workspace(root, home=tmp_path / "state")
-    workspace.add_prompt(kind="initial", content="Original requirement.")
-    workspace.add_prompt(kind="refinement", content="Later requirement.")
-
-    original = workspace.prompt_ledger_fingerprint()
-
-    workspace.move_prompt("P002", relation="before", other_id="P001")
-    reordered = workspace.prompt_ledger_fingerprint()
-    assert reordered != original
-
-    workspace.update_prompt_content("P001", content="Corrected requirement.")
-    edited = workspace.prompt_ledger_fingerprint()
-    assert edited != reordered
-
-    workspace.set_prompt_active("P002", active=False)
-    archived = workspace.prompt_ledger_fingerprint()
-    assert archived != edited
-
-    workspace.set_prompt_active("P002", active=True)
-    assert workspace.prompt_ledger_fingerprint() == edited
-
-
-def test_workspace_manages_specification_and_consumable_refinement_buffer(tmp_path):
     root = tmp_path / "project"
     root.mkdir()
     (root / ".git").mkdir()
@@ -753,48 +572,12 @@ def test_workspace_manages_specification_and_consumable_refinement_buffer(tmp_pa
     assert manifest["specification_file"] == "specification.md"
     assert workspace.specification_path == root / "specification.md"
     assert workspace.specification() is None
-    assert not workspace.prompt_index_path.exists()
-    assert "prompts_directory" not in workspace.manifest_path.read_text()
 
     workspace.save_specification("# Reviewed answer\n\nRequire human approval.")
-    fingerprint = workspace.specification_fingerprint()
-    saved = workspace.save_refinement_buffer("Add bounded retries.")
 
-    assert saved["path"] == root / ".zippergen" / "refinement.md"
-    assert workspace.refinement_buffer() == "Add bounded retries."
-    assert workspace.specification_fingerprint() == fingerprint
-    assert "pending_specification_fingerprint" not in workspace.load()
-    assert "pending_specification_baseline" not in workspace.load()
-    assert "pending_refinement_created_at" not in workspace.load()
-    assert "pending_semantic_baseline" not in workspace.load()
-
-    assert workspace.consume_refinement_buffer() == "Add bounded retries."
-    assert workspace.refinement_buffer() is None
-    discarded = workspace.save_refinement_buffer("")
-    assert discarded["content"] is None
+    assert "Require human approval." in workspace.specification()
     ignored = (root / ".gitignore").read_text(encoding="utf-8")
     assert "/.zippergen/" in ignored.splitlines()
-    assert "zippergen.lock" not in ignored
-
-
-def test_workspace_migrates_active_legacy_prompts_without_deleting_history(tmp_path):
-    root = tmp_path / "project"
-    root.mkdir()
-    workspace = Workspace(root, home=tmp_path / "state")
-    first = workspace.add_prompt(kind="initial", content="Create a reviewer.")
-    second = workspace.add_prompt(
-        kind="refinement",
-        content="Add bounded retries.",
-    )
-
-    migrated = workspace.ensure_specification()
-
-    assert migrated["migrated"] is True
-    assert "Create a reviewer." in workspace.specification()
-    assert "Add bounded retries." in workspace.specification()
-    assert (root / str(first["file"])).exists()
-    assert (root / str(second["file"])).exists()
-    assert len(workspace.list_prompts()) == 2
 
 
 def test_workspace_provider_configuration_keeps_secrets_private(tmp_path):

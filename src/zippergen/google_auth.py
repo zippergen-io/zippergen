@@ -296,7 +296,7 @@ def authorize_google(
 
 
 def encode_google_authorization(result: GoogleAuthorization) -> str:
-    """Encode one private, checksummed browser-to-Studio handoff."""
+    """Encode one private, checksummed browser-to-CLI handoff."""
 
     try:
         credential = json.loads(result.authorized_user_json)
@@ -326,7 +326,7 @@ def encode_google_authorization(result: GoogleAuthorization) -> str:
 
 
 def decode_google_authorization(value: str) -> GoogleAuthorization:
-    """Decode and validate one private browser-to-Studio handoff."""
+    """Decode and validate one private browser-to-CLI handoff."""
 
     parts = value.strip().split(".")
     if len(parts) != 3 or parts[0] != _GOOGLE_AUTHORIZATION_PREFIX:
@@ -409,7 +409,7 @@ def credentials_from_json(value: str, *, scopes: Iterable[str]):
         # The refresh token already represents the scopes granted during the
         # browser authorization.  Google refresh requests do not need to
         # renegotiate them, and some Google OAuth clients reject a repeated
-        # scope parameter with ``invalid_scope``.  Studio keeps the verified
+        # scope parameter with ``invalid_scope``.  ZipperGen keeps the verified
         # grant separately in the private provider profile, so remove any
         # serialized scope hint before reconstructing the credential.
         serialized_scopes = info.pop("scopes", None)
