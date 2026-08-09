@@ -68,8 +68,10 @@ from zippergen.deployment_platform import (
 )
 from zippergen.connectors import connector_requirements_from_module
 from zippergen.models import (
+    apply_model_overrides,
     effective_llm_routes,
     normalize_llm_overrides,
+    project_model_routing,
     selected_llm_specs,
 )
 from zippergen.view import DETAILS, ViewOptions, workflow_view_data
@@ -1650,6 +1652,10 @@ def _resolved_workflow_spec(args) -> str:
 def _run_workflow_command(args) -> int:
     args.workflow = _resolved_workflow_spec(args)
     wf, module = load_workflow_spec(args.workflow)
+    from zippergen.durable_runs import default_llm_spec
+    from zippergen.workspace import Workspace
+
+    workspace = Workspace(getattr(args, "project", None))
     inputs = _parse_input_json(args.input_json)
     inputs.update(_parse_inputs(args.input))
     # Ask for anything the workflow needs that was not supplied, rather than
@@ -1661,10 +1667,21 @@ def _run_workflow_command(args) -> int:
             wf, module, inputs, interactive=True, input_func=input
         )
     options = _parse_options(args.option, services=args.services)
-    llms = normalize_llm_overrides(_parse_inputs(args.llm_for))
-    llm_idle_timeouts = _parse_llm_idle_timeouts(
-        args.llm_idle_timeout_for
+    routing = project_model_routing(
+        workspace,
+        workspace.canonical_spec(args.workflow, cwd=workspace.root),
+        wf,
+        fallback_default=default_llm_spec(module),
     )
+    routing = apply_model_overrides(
+        routing,
+        default_spec=args.llm,
+        overrides=_parse_inputs(args.llm_for),
+        idle_timeouts=_parse_llm_idle_timeouts(args.llm_idle_timeout_for),
+    )
+    selected_llm = routing.default_spec
+    llms = routing.overrides
+    llm_idle_timeouts = routing.idle_timeouts
 
     # Naming a store means wanting one; otherwise a plain run leaves nothing
     # behind, and --durable is the way to ask for a run you can come back to.
@@ -1683,7 +1700,7 @@ def _run_workflow_command(args) -> int:
         workflow_spec=args.workflow,
         workflow=wf,
         module=module,
-        llm=args.llm,
+        llm=selected_llm,
         llms=llms,
         assistant=args.assistant,
         llm_idle_timeout=args.llm_idle_timeout,
@@ -1707,13 +1724,11 @@ def _run_workflow_command(args) -> int:
     }
     if llms:
         wf.configure(
-            effective_llm_routes(wf, args.llm or "mock", llms),
+            effective_llm_routes(wf, selected_llm, llms),
             **configure_kwargs,
         )
-    elif args.llm:
-        wf.configure(args.llm, **configure_kwargs)
     else:
-        wf.configure(**configure_kwargs)
+        wf.configure(selected_llm, **configure_kwargs)
 
     result = wf(**inputs)
     print(json.dumps({"result": result}, default=str))
@@ -1742,6 +1757,10 @@ def _durable_run_command(args) -> int:
         provided_inputs=inputs,
         llm=args.llm,
         llms=normalize_llm_overrides(_parse_inputs(args.llm_for)),
+        llm_idle_timeout=args.llm_idle_timeout,
+        llm_idle_timeouts=_parse_llm_idle_timeouts(
+            args.llm_idle_timeout_for
+        ),
         assistant=args.assistant,
         options=_parse_options(args.option, services=args.services),
         services=args.services,
@@ -2835,10 +2854,20 @@ def _apply_deploy_arguments(
     profile.pop("show_decisions", None)
     if args.llm is not None:
         profile["llm"] = args.llm
+        # A global command-line model means every LLM action.  Keeping project
+        # assignments here would make `--llm mock` unexpectedly call paid
+        # providers for assigned participants.
+        profile["llms"] = {}
+        profile["llm_idle_timeouts"] = {}
     llms = normalize_llm_overrides(profile.get("llms"))
     for lifeline, model in normalize_llm_overrides(
         _parse_inputs(args.llm_for)
     ).items():
+        existing_idle_timeouts = _profile_mapping(
+            profile, "llm_idle_timeouts"
+        )
+        existing_idle_timeouts.pop(lifeline, None)
+        profile["llm_idle_timeouts"] = existing_idle_timeouts
         if model.lower() in {"inherit", "default"}:
             llms.pop(lifeline, None)
         else:
@@ -3141,6 +3170,41 @@ def _deploy_command(args) -> int:
             }
 
     profile["schema_version"] = 2
+    # A deployment snapshots the project's current routing.  Re-deploying is
+    # what applies later edits to zippergen.toml; configuring an already
+    # prepared deployment remains an explicit profile-only operation.
+    from zippergen.durable_runs import default_llm_spec
+    from zippergen.workspace import Workspace, WorkspaceError
+
+    source_project = str(profile.get("source_cwd") or profile.get("cwd") or "")
+    model_workspace = Workspace(
+        getattr(args, "project", None) or source_project or None
+    )
+    source_workflow = str(
+        profile.get("source_workflow") or profile.get("workflow") or args.target
+    )
+    try:
+        model_workflow_spec = model_workspace.resolve_workflow(source_workflow)
+    except WorkspaceError:
+        model_workflow_spec = model_workspace.canonical_spec(
+            source_workflow,
+            cwd=model_workspace.root,
+        )
+    model_routing = project_model_routing(
+        model_workspace,
+        model_workflow_spec,
+        workflow,
+        fallback_default=default_llm_spec(module),
+    )
+    if model_workspace.has_model_assignment_profile(model_workflow_spec):
+        profile["llm"] = model_routing.default_spec
+        profile["llms"] = model_routing.overrides
+        profile["llm_idle_timeout"] = None
+        profile["llm_idle_timeouts"] = model_routing.idle_timeouts
+    elif profile.get("llm") is None and not profile.get("llms"):
+        # A new deployment without project routing uses the workflow default.
+        # An existing deployment configured directly keeps its snapshot.
+        profile["llm"] = model_routing.default_spec
     if not args.yes and sys.stdin.isatty() and spec.description:
         print(spec.description)
         print()

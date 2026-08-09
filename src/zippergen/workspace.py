@@ -1386,6 +1386,36 @@ class Workspace:
             actions=migrated_actions,
         )
 
+    def has_model_assignment_profile(self, workflow_spec: str) -> bool:
+        """Whether this workflow has portable or legacy model assignments.
+
+        This check is deliberately read-only.  Runtime commands use it before
+        resolving named configurations so a project with no assignments keeps
+        the workflow's own default without creating configuration as a side
+        effect.
+        """
+
+        canonical = self.canonical_spec(workflow_spec, cwd=self.root)
+        state = self.load()
+        if self._is_project_workflow(canonical) and self.manifest_path.exists():
+            try:
+                raw_manifest = tomllib.loads(
+                    self.manifest_path.read_text(encoding="utf-8")
+                )
+            except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
+                raise WorkspaceError(
+                    f"Could not read project model assignments: {exc}"
+                ) from exc
+            raw_models = raw_manifest.get("models") or {}
+            if isinstance(raw_models, dict) and "assignments" in raw_models:
+                return True
+
+        raw_site = state.get("model_site_profiles") or {}
+        if isinstance(raw_site, dict) and raw_site.get(canonical):
+            return True
+        raw_legacy = state.get("model_profiles") or {}
+        return isinstance(raw_legacy, dict) and bool(raw_legacy.get(canonical))
+
     def save_model_assignment_profile(
         self,
         workflow_spec: str,
@@ -1635,6 +1665,7 @@ class Workspace:
         inputs: dict[str, object],
         llm: str,
         llms: dict[str, str] | None = None,
+        llm_idle_timeout: float | None = None,
         llm_idle_timeouts: dict[str, float] | None = None,
         assistant: str | None = None,
         options: dict[str, object] | None = None,
@@ -1668,6 +1699,7 @@ class Workspace:
             "inputs": dict(inputs),
             "llm": llm,
             "llms": dict(llms or {}),
+            "llm_idle_timeout": llm_idle_timeout,
             "llm_idle_timeouts": {
                 str(target): float(value)
                 for target, value in (llm_idle_timeouts or {}).items()

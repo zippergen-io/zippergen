@@ -455,6 +455,11 @@ zg run --input message="Could we move our meeting to Thursday?" --yes
 \end{center}
 
 Without \texttt{-{}-llm}, the assignments in \path{zippergen.toml} apply.
+The same resolution is used for plain runs, durable runs and deployments.
+\texttt{-{}-llm} is a global one-command override, so it replaces participant
+and action assignments. Use \texttt{-{}-llm-for} for a narrower temporary
+override. A deployment stores the resolved model specs in its profile; deploy
+again after changing the project assignments.
 
 \subsection{Deterministic testing}
 

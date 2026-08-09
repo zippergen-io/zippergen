@@ -50,6 +50,28 @@ one machine — credentials, local endpoints, authorizations — lives in
 `ZIPPERGEN_HOME` and is never committed. Resolve configuration with one rule
 only: a site value wins when present, otherwise use the project value.
 
+To assign a model, edit the project manifest. Do not hard-code the provider in
+the workflow or change a deployment field merely to route one participant:
+
+```toml
+[models.configurations."writer"]
+provider = "openai"
+model = "gpt-4o-mini"
+spec = "openai:gpt-4o-mini"
+
+[models.assignments]
+default = "mock"
+
+[models.assignments.lifelines]
+Writer = "writer"
+```
+
+Plain runs, durable runs, and deployments all read these assignments. Several
+participants may name the same configuration. Use
+`[models.assignments.actions]` with a quoted `"Writer.draft_reply"` key only
+when one action needs a different model. `zg run --llm mock` is a temporary
+global override and replaces all project assignments for that run.
+
 ## Keep the specification current
 
 You maintain `specification.md`: what the workflow is for, who takes part,

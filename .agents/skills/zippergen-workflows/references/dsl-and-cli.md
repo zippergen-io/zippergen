@@ -41,6 +41,36 @@ dictionaries with string keys. Use it for structured records and tool results.
 ZipperGen validates the whole value before durable execution. Do not pass
 arbitrary Python objects through workflow variables.
 
+## Model routing
+
+Keep model choice out of action declarations. Put named, portable model
+configurations and their participant or action assignments in
+`zippergen.toml`:
+
+```toml
+[models.configurations."writer"]
+provider = "openai"
+model = "gpt-4o-mini"
+spec = "openai:gpt-4o-mini"
+
+[models.assignments]
+default = "mock"
+
+[models.assignments.lifelines]
+Writer = "writer"
+
+[models.assignments.actions]
+"Reviewer.check_draft" = "writer"
+```
+
+The action form is more specific than the participant form. Plain runs,
+durable runs, and deployments resolve the same assignments. A deployment
+stores the concrete result as its operational snapshot, so redeploy after
+changing project routing. `--llm SPEC` replaces all assignments for one
+command. `--llm-for PARTICIPANT_OR_ACTION=SPEC` is a narrower temporary
+override. API keys remain in the environment or private site storage, never
+in this file.
+
 ## Action selection
 
 Choose an action by semantics, not convenience:

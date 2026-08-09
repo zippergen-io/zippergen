@@ -198,6 +198,22 @@ This is what projection means, and it is what the Lean proof is about.
 
 ## Deterministic testing
 
+Project model routing belongs in `zippergen.toml`, not in the workflow:
+
+```toml
+[models.configurations."writer"]
+provider = "openai"
+model = "gpt-4o-mini"
+spec = "openai:gpt-4o-mini"
+
+[models.assignments.lifelines]
+Writer = "writer"
+```
+
+`zg run`, `zg run --durable`, and `zg deploy` all use that assignment.
+`--llm mock` temporarily replaces all project assignments. Use
+`--llm-for Writer=SPEC` only for a narrower one-command override.
+
 `--llm mock` gives every action the same placeholder answer, so a run always
 takes the same path. To give model actions fixed answers instead, write them
 down in a file:
