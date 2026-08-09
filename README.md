@@ -210,6 +210,21 @@ wait for it, and it cannot block on it.
 
 This is what projection means, and it is what the Lean proof is about.
 
+## One configuration pattern
+
+Models and connectors use the same small grammar:
+
+```text
+zg TYPE configure NAME PROVIDER_OR_SPEC
+zg TYPE assign TARGET NAME
+zg TYPE check [NAME]
+zg TYPE remove NAME
+```
+
+A connector for an external service uses `bind REQUIREMENT NAME` instead of
+`assign`. The provider is an attribute of the named configuration, not another
+object to manage. `zg model`, `zg connector`, and `zg config` show the result.
+
 ## Deterministic testing
 
 Give the Writer a named model configuration, then assign it:
@@ -303,7 +318,7 @@ Sheets. Which chat, which spreadsheet, which Gmail query: that is project
 configuration, and it goes in `zippergen.toml`. Credentials never go there:
 
 ```bash
-zg connector configure telegram approvals --chat-id 12345678
+zg connector configure approvals telegram  # prompts for chat id and hidden token
 zg connector assign User approvals        # who gets asked, and where
 zg connector authorize google --scopes gmail.readonly,spreadsheets
 zg config check                         # check the whole project

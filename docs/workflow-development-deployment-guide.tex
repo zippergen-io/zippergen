@@ -443,6 +443,23 @@ Missing inputs are asked for in a terminal. In a script, supply them:
 zg run --input message="Could we move our meeting to Thursday?" --yes
 \end{lstlisting}
 
+\subsection{One configuration pattern}
+
+Models and connectors use the same small grammar:
+
+\begin{lstlisting}[style=shell]
+zg TYPE configure NAME PROVIDER_OR_SPEC
+zg TYPE assign TARGET NAME
+zg TYPE check [NAME]
+zg TYPE remove NAME
+\end{lstlisting}
+
+An external-service connector uses
+\texttt{connector bind REQUIREMENT NAME} instead of \texttt{assign}. The
+provider is an attribute of the named configuration, not another object to
+manage. Bare \texttt{zg model} and \texttt{zg connector} show each family.
+\texttt{zg config} shows the complete effective result.
+
 \subsection{Choosing a model}
 
 For a durable project choice, create a named configuration and assign it:
@@ -592,7 +609,7 @@ The terminal is right while developing and wrong for a deployment nobody is
 watching. Two commands, doing two different things:
 
 \begin{lstlisting}[style=shell]
-zg connector configure telegram approvals --chat-id 12345678
+zg connector configure approvals telegram
 zg connector assign User approvals
 \end{lstlisting}
 
@@ -619,10 +636,12 @@ zippergen_connectors = (
 and the project says which one, binding it to that requirement by name:
 
 \begin{lstlisting}[style=shell]
-zg connector configure gmail inbox \
-    --query "is:unread in:inbox" --bind call-mailbox
-zg connector configure google-sheets records \
-    --spreadsheet-id 1AbC... --tab Calls --bind call-records
+zg connector configure inbox gmail \
+    --query "is:unread in:inbox"
+zg connector bind call-mailbox inbox
+zg connector configure records google-sheets \
+    --spreadsheet-id 1AbC... --tab Calls
+zg connector bind call-records records
 \end{lstlisting}
 
 \subsection{Authorizing Google}
@@ -838,8 +857,9 @@ zg connector assign User approvals
 \texttt{model configure NAME SPEC} & save one named model configuration \\
 \texttt{model assign TARGET NAME} & route a participant or action \\
 \texttt{model unassign TARGET} / \texttt{model remove NAME} & remove routing or an unused configuration \\
-\texttt{connector configure telegram|gmail|google-sheets} & save one \\
+\texttt{connector configure NAME PROVIDER} & save one named configuration \\
 \texttt{connector assign TARGET NAME} & route human actions \\
+\texttt{connector bind REQUIREMENT NAME} & bind an external service \\
 \texttt{connector unassign TARGET} / \texttt{connector unbind REQUIREMENT} & remove connector routing \\
 \texttt{connector check [NAME]} / \texttt{connector remove NAME} & check or remove \\
 \texttt{connector authorize google} & browser flow, prints a result \\

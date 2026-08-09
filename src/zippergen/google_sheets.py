@@ -63,7 +63,8 @@ def _binding_records() -> dict[str, dict[str, object]]:
     if not raw:
         raise GoogleSheetsError(
             "No connector runtime configuration is active. Configure it with "
-            "'zippergen connector configure' and bind it, then deploy."
+            "'zippergen connector configure NAME google-sheets', bind it with "
+            "'zippergen connector bind REQUIREMENT NAME', then deploy."
         )
     try:
         value = json.loads(raw)

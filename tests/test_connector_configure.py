@@ -14,7 +14,12 @@ from pathlib import Path
 from zippergen.workspace import Workspace
 
 
-def _run(directory: Path, *arguments: str, token: str = "bot-token"):
+def _run(
+    directory: Path,
+    *arguments: str,
+    token: str = "bot-token",
+    input_text: str | None = None,
+):
     environment = dict(os.environ)
     environment["ZIPPERGEN_HOME"] = str(directory.parent / "home")
     return subprocess.run(
@@ -22,7 +27,7 @@ def _run(directory: Path, *arguments: str, token: str = "bot-token"):
         capture_output=True,
         text=True,
         cwd=directory,
-        input=f"{token}\n",
+        input=input_text if input_text is not None else f"{token}\n",
         env=environment,
         check=False,
     )
@@ -44,7 +49,7 @@ def _project(tmp_path: Path) -> Path:
 def test_it_saves_a_configuration_the_project_can_commit(tmp_path):
     root = _project(tmp_path)
 
-    result = _run(root, "connector", "configure", "telegram", "approvals", "--chat-id", "4242")
+    result = _run(root, "connector", "configure", "approvals", "telegram", "--chat-id", "4242")
 
     assert result.returncode == 0, result.stderr
     manifest = tomllib.loads((root / "zippergen.toml").read_text())
@@ -56,12 +61,32 @@ def test_it_saves_a_configuration_the_project_can_commit(tmp_path):
     }
 
 
+def test_telegram_setup_collects_the_chat_id_in_the_human_terminal(tmp_path):
+    root = _project(tmp_path)
+
+    result = _run(
+        root,
+        "connector",
+        "configure",
+        "approvals",
+        "telegram",
+        input_text="4242\nbot-token\n",
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "Telegram chat id:" in result.stdout
+    manifest = tomllib.loads((root / "zippergen.toml").read_text())
+    assert manifest["connectors"]["configurations"]["approvals"][
+        "chat_id"
+    ] == "4242"
+
+
 def test_the_bot_token_never_reaches_the_manifest(tmp_path):
     """The chat id is portable; the token belongs to one machine."""
 
     root = _project(tmp_path)
 
-    _run(root, "connector", "configure", "telegram", "approvals",
+    _run(root, "connector", "configure", "approvals", "telegram",
          "--chat-id", "4242", token="secret-bot-token")
 
     assert "secret-bot-token" not in (root / "zippergen.toml").read_text()
@@ -76,7 +101,7 @@ def test_the_token_is_not_passed_as_an_argument(tmp_path):
 
     root = _project(tmp_path)
 
-    result = _run(root, "connector", "configure", "telegram", "approvals", "--chat-id", "1")
+    result = _run(root, "connector", "configure", "approvals", "telegram", "--chat-id", "1")
 
     assert "--token" not in result.stderr
     assert "hidden" in result.stdout or "hidden" in result.stderr
@@ -84,9 +109,9 @@ def test_the_token_is_not_passed_as_an_argument(tmp_path):
 
 def test_an_existing_token_is_reused_rather_than_asked_for_again(tmp_path):
     root = _project(tmp_path)
-    _run(root, "connector", "configure", "telegram", "one", "--chat-id", "1", token="tok")
+    _run(root, "connector", "configure", "one", "telegram", "--chat-id", "1", token="tok")
 
-    second = _run(root, "connector", "configure", "telegram", "two", "--chat-id", "2", token="")
+    second = _run(root, "connector", "configure", "two", "telegram", "--chat-id", "2", token="")
 
     assert second.returncode == 0, second.stderr
     assert "already saved" in second.stdout
@@ -95,8 +120,23 @@ def test_an_existing_token_is_reused_rather_than_asked_for_again(tmp_path):
 def test_binding_without_a_workflow_says_so(tmp_path):
     root = _project(tmp_path)
 
-    result = _run(root, "connector", "configure", "telegram", "approvals",
-                  "--chat-id", "1", "--bind", "human-approval")
+    configured = _run(
+        root,
+        "connector",
+        "configure",
+        "approvals",
+        "telegram",
+        "--chat-id",
+        "1",
+    )
+    assert configured.returncode == 0, configured.stderr
+    result = _run(
+        root,
+        "connector",
+        "bind",
+        "human-approval",
+        "approvals",
+    )
 
     assert result.returncode != 0
     assert "none was found" in result.stderr.lower()
@@ -105,7 +145,7 @@ def test_binding_without_a_workflow_says_so(tmp_path):
 def test_a_sheets_configuration_records_the_spreadsheet_and_tab(tmp_path):
     root = _project(tmp_path)
 
-    result = _run(root, "connector", "configure", "google-sheets", "records",
+    result = _run(root, "connector", "configure", "records", "google-sheets",
                   "--spreadsheet-id", "1AbC_xyz", "--tab", "Calls")
 
     assert result.returncode == 0, result.stderr
@@ -118,10 +158,19 @@ def test_a_sheets_configuration_records_the_spreadsheet_and_tab(tmp_path):
     }
 
 
+def test_a_sheets_configuration_names_its_required_fields(tmp_path):
+    root = _project(tmp_path)
+
+    result = _run(root, "connector", "configure", "records", "google-sheets")
+
+    assert result.returncode != 0
+    assert "--spreadsheet-id and --tab" in result.stderr
+
+
 def test_a_gmail_configuration_records_the_mailbox_and_query(tmp_path):
     root = _project(tmp_path)
 
-    result = _run(root, "connector", "configure", "gmail", "inbox",
+    result = _run(root, "connector", "configure", "inbox", "gmail",
                   "--query", "is:unread from:clients@example.com")
 
     assert result.returncode == 0, result.stderr
@@ -137,7 +186,7 @@ def test_google_kinds_say_when_authorization_is_still_missing(tmp_path):
 
     root = _project(tmp_path)
 
-    result = _run(root, "connector", "configure", "google-sheets", "records",
+    result = _run(root, "connector", "configure", "records", "google-sheets",
                   "--spreadsheet-id", "1", "--tab", "T")
 
     assert "connector authorize google" in result.stdout
@@ -152,16 +201,44 @@ def test_binding_works_against_a_real_workflow_requirement(tmp_path):
     workspace = Workspace(root, home=root.parent / "home")
     workspace.initialize_project()
 
-    first = _run(root, "connector", "configure", "gmail", "inbox",
-                 "--bind", "call-mailbox")
-    second = _run(root, "connector", "configure", "google-sheets", "records",
-                  "--spreadsheet-id", "1", "--tab", "Calls",
-                  "--bind", "call-records")
+    first = _run(root, "connector", "configure", "inbox", "gmail")
+    first_binding = _run(
+        root, "connector", "bind", "call-mailbox", "inbox"
+    )
+    second = _run(root, "connector", "configure", "records", "google-sheets",
+                  "--spreadsheet-id", "1", "--tab", "Calls")
+    second_binding = _run(
+        root, "connector", "bind", "call-records", "records"
+    )
 
     assert first.returncode == 0, first.stderr
+    assert first_binding.returncode == 0, first_binding.stderr
     assert second.returncode == 0, second.stderr
+    assert second_binding.returncode == 0, second_binding.stderr
     manifest = tomllib.loads((root / "zippergen.toml").read_text())
     assert manifest["connectors"]["bindings"] == {
         "call-mailbox": "inbox",
         "call-records": "records",
     }
+
+
+def test_binding_rejects_the_wrong_connector_kind(tmp_path):
+    root = _project(tmp_path)
+    example = Path(__file__).resolve().parents[1] / "examples" / "call_intake.py"
+    (root / "workflow.py").write_text(example.read_text())
+    Workspace(root, home=root.parent / "home").initialize_project()
+    configured = _run(
+        root,
+        "connector",
+        "configure",
+        "approvals",
+        "telegram",
+        "--chat-id",
+        "1",
+    )
+
+    result = _run(root, "connector", "bind", "call-mailbox", "approvals")
+
+    assert configured.returncode == 0, configured.stderr
+    assert result.returncode != 0
+    assert "needs gmail" in result.stderr

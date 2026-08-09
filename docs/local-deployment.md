@@ -414,10 +414,12 @@ The recommended path from this checkout is:
 ```bash
 uv sync --extra google
 zg validate examples/call_intake.py:call_intake
-zg connector configure gmail call-mailbox \
-  --query 'is:unread in:inbox' --bind call-mailbox
-zg connector configure google-sheets call-records \
-  --spreadsheet-id SHEET_ID --tab Calls --bind call-records
+zg connector configure call-mailbox gmail \
+  --query 'is:unread in:inbox'
+zg connector bind call-mailbox call-mailbox
+zg connector configure call-records google-sheets \
+  --spreadsheet-id SHEET_ID --tab Calls
+zg connector bind call-records call-records
 zg deploy examples/call_intake.py:call_intake --name call-intake
 ```
 

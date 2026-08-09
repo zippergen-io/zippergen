@@ -50,6 +50,19 @@ one machine — credentials, local endpoints, authorizations — lives in
 `ZIPPERGEN_HOME` and is never committed. Resolve configuration with one rule
 only: a site value wins when present, otherwise use the project value.
 
+Models and connectors follow one grammar. First configure a name, then route a
+target to that name:
+
+```text
+TYPE configure NAME PROVIDER_OR_SPEC
+TYPE assign TARGET NAME
+```
+
+Use `zg connector bind REQUIREMENT NAME` for a declared external-service
+requirement. Providers are attributes of named configurations, not separate
+objects to manage. Bare `zg model` and `zg connector` show each family, while
+`zg config` shows the complete effective result.
+
 To assign a model, use the project commands. Do not hard-code the provider in
 the workflow or change a deployment field merely to route one participant:
 
@@ -288,9 +301,15 @@ not embed credentials or copy secret values into ordinary profiles or tests.
 Connectors are configured once per machine and routed per workflow:
 
 ```bash
-zg connector configure telegram approvals --chat-id CHAT_ID
+zg connector configure approvals telegram
 zg connector assign User approvals
 ```
+
+Telegram setup is a human-terminal handoff. Do not ask the user for the chat
+ID or bot token in the agent conversation, and do not run the configuration
+command on the user's behalf. Tell the user to run the first command in their
+own terminal. It asks there for the chat ID and then for the hidden bot token.
+After the user returns, you may run the non-secret assignment and checks.
 
 `configure` stores the credential in `ZIPPERGEN_HOME`; the routing it produces
 is committed with the project and holds no secret. Deployment reads both and

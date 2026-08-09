@@ -155,7 +155,7 @@ def connector_runtime(
         raise ConnectorWiringError(
             "These connector requirements are not bound to a configuration: "
             + ", ".join(unbound)
-            + ". Use 'zippergen connector configure ... --bind NAME'."
+            + ". Use 'zippergen connector bind REQUIREMENT CONFIGURATION'."
         )
     _check_google_authorization(workspace, requirements, bindings)
 
@@ -179,7 +179,7 @@ def connector_runtime(
             if not token:
                 raise ConnectorWiringError(
                     "The Telegram bot token is missing on this machine. Use "
-                    "'zippergen connector configure telegram'."
+                    "'zippergen connector configure NAME telegram'."
                 )
             secrets["bot_token"] = token
         elif provider == "google":

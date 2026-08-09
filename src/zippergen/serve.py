@@ -1936,6 +1936,7 @@ def _model_command(args) -> int:
 def _connector_management_command(args) -> int:
     from zippergen.project_configuration import (
         assign_connector,
+        bind_connector,
         configuration_report,
         configuration_scope_valid,
         render_connector_configuration,
@@ -1947,6 +1948,13 @@ def _connector_management_command(args) -> int:
     workspace = Workspace(getattr(args, "project", None))
     action = getattr(args, "connector_action", None)
     try:
+        if action == "bind":
+            bind_connector(workspace, args.requirement, args.configuration)
+            print(
+                f"Bound connector requirement {args.requirement} to "
+                f"configuration {args.configuration}."
+            )
+            return 0
         if action == "unassign":
             assign_connector(workspace, args.target, None)
             print(f"Removed connector assignment for {args.target}.")
@@ -2069,19 +2077,6 @@ def _compact_command(args) -> int:
     return 0
 
 
-def _bind_connector_requirement(workspace, requirement: str, name: str) -> None:
-    """Bind a saved configuration to a requirement the workflow declares."""
-
-    from zippergen.workspace import WorkspaceError
-
-    try:
-        entry = workspace.resolve_workflow()
-        workspace.bind_connector(entry, requirement, name)
-    except WorkspaceError as exc:
-        raise SystemExit(str(exc)) from exc
-    print(f"Bound {requirement} to {name}.")
-
-
 def _telegram_bot_token(workspace) -> None:
     """Read the bot token once, without echo, and keep it off this machine's argv."""
 
@@ -2098,6 +2093,21 @@ def _telegram_bot_token(workspace) -> None:
         raise SystemExit("A bot token is required.")
     workspace.save_connector_provider_secret("telegram", "bot_token", token)
     print("Saved the Telegram bot token for this computer.")
+
+
+def _telegram_chat_id(value: object) -> str:
+    """Collect the portable chat identifier in the user's terminal."""
+
+    chat_id = str(value or "").strip()
+    if chat_id:
+        return chat_id
+    try:
+        chat_id = input("Telegram chat id: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        raise SystemExit("Cancelled; nothing was saved.") from None
+    if not chat_id:
+        raise SystemExit("A Telegram chat id is required.")
+    return chat_id
 
 
 def _project_connector_runtime(
@@ -2212,7 +2222,7 @@ def _connector_assign_command(args) -> int:
 
 
 def _connector_configure_command(args) -> int:
-    """Save a connector for this project, and optionally bind it.
+    """Save one named connector configuration for this project.
 
     Portable fields — which chat, which spreadsheet, which mailbox query — go
     in `zippergen.toml` and are committed. Credentials never do: the Telegram
@@ -2225,14 +2235,27 @@ def _connector_configure_command(args) -> int:
     provider = args.connector_provider
 
     if provider == "telegram":
+        if args.spreadsheet_id or args.tab or args.account or args.query:
+            raise SystemExit(
+                "Telegram configuration uses --chat-id only."
+            )
+        chat_id = _telegram_chat_id(args.chat_id)
         _telegram_bot_token(workspace)
         values = {
             "provider": "telegram",
             "kind": "telegram",
-            "chat_id": str(args.chat_id),
+            "chat_id": chat_id,
         }
-        described = f"chat {args.chat_id}"
+        described = f"chat {chat_id}"
     elif provider == "google-sheets":
+        if args.chat_id or args.account or args.query:
+            raise SystemExit(
+                "Google Sheets configuration uses --spreadsheet-id and --tab."
+            )
+        if not args.spreadsheet_id or not args.tab:
+            raise SystemExit(
+                "Google Sheets configuration requires --spreadsheet-id and --tab."
+            )
         values = {
             "provider": "google",
             "kind": "google-sheets",
@@ -2241,13 +2264,18 @@ def _connector_configure_command(args) -> int:
         }
         described = f"tab {args.tab}"
     elif provider == "gmail":
+        if args.chat_id or args.spreadsheet_id or args.tab:
+            raise SystemExit(
+                "Gmail configuration does not use --chat-id, "
+                "--spreadsheet-id, or --tab."
+            )
         values = {
             "provider": "google",
             "kind": "gmail",
-            "account": str(args.account),
-            "query": str(args.query),
+            "account": str(args.account or "me"),
+            "query": str(args.query or "is:unread in:inbox"),
         }
-        described = f"query {args.query!r}"
+        described = f"query {values['query']!r}"
     else:  # pragma: no cover - argparse restricts the choices
         raise SystemExit(f"Unsupported connector provider {provider!r}.")
 
@@ -2264,8 +2292,6 @@ def _connector_configure_command(args) -> int:
         print("Google is not authorized on this computer yet. Run:")
         print("    zippergen connector authorize google --scopes <scopes>")
 
-    if args.bind:
-        _bind_connector_requirement(workspace, args.bind, args.name)
     return 0
 
 
@@ -3965,6 +3991,10 @@ def _parse_cli_args(
     model = sub.add_parser(
         "model",
         help="show and manage model configurations and assignments",
+        description=(
+            "One pattern: configure NAME SPEC, then assign TARGET NAME. "
+            "Run without an action to show everything."
+        ),
     )
     model_sub = model.add_subparsers(dest="model_action")
     model_configure = model_sub.add_parser(
@@ -4017,78 +4047,54 @@ def _parse_cli_args(
     connector = sub.add_parser(
         "connector",
         help="show and manage connector configurations and assignments",
+        description=(
+            "One pattern: configure NAME PROVIDER, then assign TARGET NAME "
+            "or bind REQUIREMENT NAME. Run without an action to show everything."
+        ),
     )
     connector_sub = connector.add_subparsers(
         dest="connector_action",
     )
     connector_configure = connector_sub.add_parser(
         "configure",
-        help="save a connector for this project on this computer",
+        help="save one named connector configuration",
     )
-    configure_sub = connector_configure.add_subparsers(
-        dest="connector_provider",
-        required=True,
-    )
-    configure_telegram = configure_sub.add_parser(
-        "telegram",
-        help="save a Telegram bot and chat for human approvals",
-    )
-    configure_telegram.add_argument(
+    connector_configure.add_argument(
         "name",
-        help="Configuration name, e.g. approvals.",
+        help="Configuration name, such as approvals, inbox, or records.",
     )
-    configure_telegram.add_argument(
+    connector_configure.add_argument(
+        "connector_provider",
+        choices=("telegram", "gmail", "google-sheets"),
+        help="Connector provider or service kind.",
+    )
+    connector_configure.add_argument(
         "--chat-id",
-        required=True,
-        help="Telegram chat id that receives the approval messages.",
-    )
-    configure_telegram.add_argument(
-        "--bind",
         help=(
-            "Connector requirement to bind this configuration to, as declared "
-            "by the workflow."
+            "Telegram chat id that receives approval messages. When omitted, "
+            "ask in the terminal."
         ),
     )
-    configure_telegram.add_argument(
+    connector_configure.add_argument(
         "--project",
         help="Project root; defaults to discovery from the current directory.",
     )
-
-    configure_sheets = configure_sub.add_parser(
-        "google-sheets",
-        help="save a Google spreadsheet and tab for a workflow to record into",
-    )
-    configure_sheets.add_argument("name", help="Configuration name, e.g. records.")
-    configure_sheets.add_argument(
+    connector_configure.add_argument(
         "--spreadsheet-id",
-        required=True,
         help="Spreadsheet id, the long value in its URL.",
     )
-    configure_sheets.add_argument(
+    connector_configure.add_argument(
         "--tab",
-        required=True,
         help="Sheet tab name.",
     )
-    configure_sheets.add_argument("--bind", help="Connector requirement to bind to.")
-    configure_sheets.add_argument("--project", help="Project root.")
-
-    configure_gmail = configure_sub.add_parser(
-        "gmail",
-        help="save a Gmail mailbox and search for a workflow to read",
-    )
-    configure_gmail.add_argument("name", help="Configuration name, e.g. inbox.")
-    configure_gmail.add_argument(
+    connector_configure.add_argument(
         "--account",
-        default="me",
         help="Mailbox to read. Default 'me', the authorized account.",
     )
-    configure_gmail.add_argument(
+    connector_configure.add_argument(
         "--query",
-        default="is:unread in:inbox",
         help="Gmail search that selects the messages to handle.",
     )
-    configure_gmail.add_argument("--bind", help="Connector requirement to bind to.")
-    configure_gmail.add_argument("--project", help="Project root.")
 
     connector_accept = connector_sub.add_parser(
         "accept",
@@ -4129,6 +4135,14 @@ def _parse_cli_args(
     )
     connector_unassign.add_argument("target")
     connector_unassign.add_argument("--project", help="Project root.")
+
+    connector_bind = connector_sub.add_parser(
+        "bind",
+        help="bind a workflow service requirement to a named configuration",
+    )
+    connector_bind.add_argument("requirement")
+    connector_bind.add_argument("configuration")
+    connector_bind.add_argument("--project", help="Project root.")
 
     connector_unbind = connector_sub.add_parser(
         "unbind",
@@ -4546,6 +4560,7 @@ def main(argv=None) -> int:
         return _connector_assign_command(args)
     if args.cmd == "connector" and args.connector_action in {
         None,
+        "bind",
         "unassign",
         "unbind",
         "check",

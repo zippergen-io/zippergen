@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from zippergen.serve import main
+from zippergen.serve import _parse_cli_args, main
 from zippergen.workspace import Workspace
 
 
@@ -50,6 +50,21 @@ def test_model_configuration_and_assignment_are_ordinary_commands(
     assert workspace.model_assignment_profile(
         "workflow.py:email_approval"
     )["lifelines"] == {"Writer": "writer"}
+
+
+def test_model_and_connector_configuration_share_name_first_grammar():
+    _parser, model = _parse_cli_args(
+        ["model", "configure", "writer", "openai:gpt-4o-mini"]
+    )
+    _parser, connector = _parse_cli_args(
+        ["connector", "configure", "approvals", "telegram"]
+    )
+
+    assert (model.name, model.spec) == ("writer", "openai:gpt-4o-mini")
+    assert (connector.name, connector.connector_provider) == (
+        "approvals",
+        "telegram",
+    )
 
 
 def test_model_assignment_rejects_a_target_that_cannot_call_an_llm(project):
@@ -140,6 +155,12 @@ def test_completion_uses_current_project_names(project, capsys):
     targets = capsys.readouterr().out.splitlines()
     assert "Writer" in targets
     assert "Writer.draft_reply" in targets
+    assert main(["__complete", "connector-providers"]) == 0
+    assert capsys.readouterr().out.splitlines() == [
+        "telegram",
+        "gmail",
+        "google-sheets",
+    ]
 
 
 @pytest.mark.parametrize("shell", ["zsh", "bash", "fish"])

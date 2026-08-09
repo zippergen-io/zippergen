@@ -238,7 +238,8 @@ stable-key upsert to a blind append. This makes a retry after a crash safe.
 Never put a spreadsheet ID, OAuth token, or credentials path in workflow code.
 The spreadsheet ID belongs in a named project connector configuration. The
 OAuth token remains private site state.
-Use `zg connector configure` to configure and bind the concrete resource.
+Use `zg connector configure NAME PROVIDER` to save the concrete resource, then
+`zg connector bind REQUIREMENT NAME` to connect the logical requirement to it.
 
 Gmail follows the same pattern:
 
@@ -522,12 +523,14 @@ them.
 ## Connectors
 
 ```bash
-# Save a human-delivery connector on this computer
-zg connector configure telegram approvals --chat-id CHAT_ID
+# Hand Telegram setup to the user's terminal. It prompts for chat id and token
+zg connector configure approvals telegram
 
 # Save external-service connectors and bind their declared requirements
-zg connector configure google-sheets records --spreadsheet-id SHEET_ID --tab Calls --bind review-log
-zg connector configure gmail inbox --query 'is:unread in:inbox' --bind mailbox
+zg connector configure records google-sheets --spreadsheet-id SHEET_ID --tab Calls
+zg connector bind review-log records
+zg connector configure inbox gmail --query 'is:unread in:inbox'
+zg connector bind mailbox inbox
 
 # Route a participant's human actions to a saved connector
 zg connector assign User approvals

@@ -874,6 +874,40 @@ def assign_connector(
     return saved
 
 
+def bind_connector(
+    workspace: Workspace,
+    requirement: str,
+    configuration: str,
+) -> dict[str, str]:
+    """Bind one declared service requirement to a named configuration."""
+
+    workflow = workspace.resolve_workflow()
+    _loaded, module = _load_project_workflow(workspace, workflow)
+    requirements = {
+        item.name: item for item in connector_requirements_from_module(module)
+    }
+    selected_requirement = requirements.get(requirement)
+    if selected_requirement is None:
+        raise WorkspaceError(
+            f"Unknown connector requirement {requirement!r}. Available: "
+            + (", ".join(sorted(requirements)) or "none")
+        )
+    configurations = workspace.connector_configurations()
+    selected_configuration = configurations.get(configuration)
+    if selected_configuration is None:
+        raise WorkspaceError(
+            f"Connector configuration does not exist: {configuration}."
+        )
+    configured_kind = str(selected_configuration.get("kind") or "")
+    if configured_kind != selected_requirement.kind:
+        raise WorkspaceError(
+            f"Connector requirement {requirement!r} needs "
+            f"{selected_requirement.kind}, but configuration "
+            f"{configuration!r} is {configured_kind or 'untyped'}."
+        )
+    return workspace.bind_connector(workflow, requirement, configuration)
+
+
 def _clear_site_assignment(
     workspace: Workspace,
     *,

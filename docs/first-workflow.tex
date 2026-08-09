@@ -524,10 +524,10 @@ question is delivered, which is project configuration.
 I have updated specification.md to say approvals go to Telegram, and
 zg validate still passes.
 
-One thing remains, and it needs you: the Telegram bot token. I do not
-need that credential and should not have it. In your own terminal:
+One setup remains, and it belongs in your terminal. I should not ask you
+for the chat id or bot token in this conversation. Run:
 
-    zg connector configure telegram approvals --chat-id <your chat id>
+    zg connector configure approvals telegram
     zg connector assign User approvals
 
 Tell me when that is done and I will check the configuration.
@@ -561,11 +561,10 @@ does not carry \texttt{ZIPPERGEN\_HOME}.
 Updated the specification.
 zg validate passes.
 
-The bot token needs you:
+Telegram setup needs your terminal:
 
     zg connector configure
-      telegram approvals
-      --chat-id <your chat id>
+      approvals telegram
     zg connector assign User
       approvals
 \end{lstlisting}
@@ -574,9 +573,9 @@ The bot token needs you:
 \textbf{\footnotesize Your terminal}\par\vspace{2pt}
 \begin{lstlisting}[style=pane]
 $ zg connector configure
-    telegram approvals
-    --chat-id 12345678
+    approvals telegram
 
+Telegram chat id: 12345678
 Telegram bot token (hidden):
 Saved the token for this computer.
 Saved configuration approvals.
@@ -710,7 +709,7 @@ git clone https://github.com/me/email-approval.git && cd email-approval
 python3 -m venv .venv && source .venv/bin/activate
 pip install zippergen
 
-zg connector configure telegram approvals --chat-id 4242
+zg connector configure approvals telegram
 zg connector assign User approvals
 
 zg deploy --name production --no-start
