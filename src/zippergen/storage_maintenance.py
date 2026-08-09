@@ -27,15 +27,6 @@ class StorageReport:
     integrity_ok: bool | None
     integrity_detail: str
 
-    @property
-    def total_bytes(self) -> int:
-        return self.database_bytes + self.wal_bytes + self.shm_bytes
-
-    @property
-    def total_events(self) -> int:
-        return sum(self.event_counts.values())
-
-
 @dataclass(frozen=True)
 class CompactionPlan:
     removable_messages: int

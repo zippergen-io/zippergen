@@ -10,7 +10,7 @@ def test_fixture_runs_inprocess_to_known_result():
 import threading
 from zippergen.projection import project
 from zippergen.store import open_store, load_snapshot
-from zippergen.serve import run_role
+from zippergen.role_runner import run_role
 
 
 def _run_both(path, seed):
@@ -64,7 +64,7 @@ class _Crash(Exception):
 
 def _run_role_crash_after_k_snapshots(path, role, local, seed, ns, k):
     """Mirror run_role, but raise _Crash right after writing the k-th snapshot."""
-    from zippergen.serve import _try_resume, _maybe_snapshot
+    from zippergen.role_runner import _try_resume, _maybe_snapshot
     conn = open_store(path)
     loop_paths = loop_node_paths(local)
     env, residual, since = _try_resume(conn, role, local, dict(seed))
@@ -131,7 +131,7 @@ def test_stale_snapshot_falls_back_to_full_replay(tmp_path):
 # ---------------------------------------------------------------------------
 # Task 4: Journal floor coherence validation
 # ---------------------------------------------------------------------------
-from zippergen.serve import _floor_coherent
+from zippergen.role_runner import _floor_coherent
 from zippergen.store import open_store as _open
 
 

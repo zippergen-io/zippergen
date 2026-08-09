@@ -105,11 +105,6 @@ def _channel_suffix(channel: str) -> str:
     return "" if channel == "main" else f", channel={channel!r}"
 
 
-def _indent(lines: list[str], level: int = 1) -> list[str]:
-    prefix = "    " * level
-    return [prefix + line if line else "" for line in lines]
-
-
 def _flatten_seq(stmt: AnyStmt) -> list[AnyStmt]:
     if isinstance(stmt, SeqStmt):
         return [*_flatten_seq(stmt.first), *_flatten_seq(stmt.second)]

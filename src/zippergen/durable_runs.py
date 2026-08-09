@@ -1,4 +1,4 @@
-"""Guided, project-aware durable development runs."""
+"""Project-aware durable runs that can be resumed after interruption."""
 
 from __future__ import annotations
 
@@ -25,6 +25,7 @@ from zippergen.rendering import StatusKind, TerminalRenderer
 from zippergen.semantic import semantic_snapshot, workflow_semantics
 from zippergen.syntax import Json, Workflow, validate_zvalue
 from zippergen.workspace import Workspace, WorkspaceError
+from zippergen.workflow_io import RunConfig, _call_setup_hook, load_workflow_spec
 
 InputFunc = Callable[[str], str]
 OutputFunc = Callable[[str], object]
@@ -315,11 +316,10 @@ def collect_workflow_inputs(
 
 
 def _load_and_validate(workspace: Workspace, stored_spec: str):
-    # Imported lazily to avoid making the state layer depend on the CLI module.
-    from zippergen.serve import _validate_workflow, load_workflow_spec
+    from zippergen.validation import validate_workflow
 
     workflow, module = load_workflow_spec(workspace.absolute_spec(stored_spec))
-    validation = _validate_workflow(workflow, module)
+    validation = validate_workflow(workflow, module)
     if not validation["valid"]:
         failures = [
             str(check["detail"])
@@ -347,8 +347,6 @@ def _run_setup_hook(
     services: str | None,
     timeout: float,
 ) -> None:
-    from zippergen.serve import RunConfig, _call_setup_hook
-
     setup_options = dict(options)
     if services is not None:
         setup_options["services"] = services
@@ -372,7 +370,7 @@ def _run_setup_hook(
     )
 
 
-def run_dev(
+def run_durable(
     workspace: Workspace,
     *,
     workflow_spec: str | None = None,
@@ -396,7 +394,7 @@ def run_dev(
     connector_snapshot: dict[str, object] | None = None,
     store_path: str | None = None,
 ) -> dict[str, Any]:
-    """Create or resume one managed durable development run."""
+    """Create or resume one recorded durable run."""
 
     if resume and workflow_spec is not None:
         raise SystemExit("Do not pass a workflow when using --resume.")
@@ -423,7 +421,7 @@ def run_dev(
     if resume:
         selected_run_id = run_id or workspace.current_run_id
         if not selected_run_id:
-            raise SystemExit("There is no current development run to resume.")
+            raise SystemExit("There is no current durable run to resume.")
         record = workspace.load_run(selected_run_id)
         if record.get("status") == "done":
             raise SystemExit(
@@ -564,7 +562,7 @@ def run_dev(
         else:
             run_rows.append(("Models", "none; no LLM actions", None))
         renderer.table(
-            "Development run",
+            "Durable run",
             run_rows,
         )
 

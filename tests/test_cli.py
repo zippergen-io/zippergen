@@ -9,7 +9,6 @@ import pytest
 from zippergen.serve import (
     _launchd_service_status,
     _start_deployment_connector_workers,
-    _systemd_boot_status,
     main,
 )
 from zippergen.store import (
@@ -36,6 +35,23 @@ def hello(topic: str @ User) -> str:
     User: reply = add_suffix(topic)
     return reply @ User
 """
+
+
+def _deploy_for_test(arguments: list[str]) -> int:
+    """Prepare through the public deployment path without external setup."""
+
+    return main(
+        [
+            "deploy",
+            *arguments,
+            "--no-start",
+            "--no-bundle",
+            "--no-install",
+            "--no-setup",
+            "--no-doctor",
+            "--yes",
+        ]
+    )
 
 
 def test_compact_reports_removed_store_events_and_log_archives(
@@ -409,15 +425,16 @@ def test_snapshot_then_diff_supports_assistant_refinement_loop(tmp_path, capsys)
     assert payload["changes"]["action_definitions"]["changed"][0]["name"] == "add_suffix"
 
 
-def test_dev_command_creates_a_managed_durable_run(tmp_path, monkeypatch, capsys):
+def test_run_durable_creates_a_managed_durable_run(tmp_path, monkeypatch, capsys):
     workflow_path = tmp_path / "dev_workflow.py"
     workflow_path.write_text(WORKFLOW_SOURCE)
     zippergen_home = tmp_path / "zg-home"
     monkeypatch.setenv("ZIPPERGEN_HOME", str(zippergen_home))
 
     rc = main([
-        "dev",
+        "run",
         f"{workflow_path}:hello",
+        "--durable",
         "--project",
         str(tmp_path),
         "--input",
@@ -447,23 +464,13 @@ def test_no_command_prints_help(capsys):
     assert "Studio" not in captured.out
 
 
-def test_dev_run_id_requires_resume():
-    try:
-        main(["dev", "--run-id", "old-run"])
-    except SystemExit as exc:
-        assert str(exc) == "--run-id requires --resume."
-    else:
-        raise AssertionError("--run-id without --resume should fail")
-
-
-def test_deploy_local_creates_profile_and_runs_by_name(tmp_path, monkeypatch, capsys):
+def test_deploy_prepares_a_profile_that_runs_by_name(tmp_path, monkeypatch, capsys):
     workflow_path = tmp_path / "deploy_workflow.py"
     workflow_path.write_text(WORKFLOW_SOURCE)
     zippergen_home = tmp_path / "zg-home"
     monkeypatch.setenv("ZIPPERGEN_HOME", str(zippergen_home))
 
-    rc = main([
-        "deploy-local",
+    rc = _deploy_for_test([
         f"{workflow_path}:hello",
         "--name",
         "hello-prod",
@@ -484,7 +491,7 @@ def test_deploy_local_creates_profile_and_runs_by_name(tmp_path, monkeypatch, ca
     store_path = zippergen_home / "runs" / "hello-prod.sqlite"
     profile = json.loads(profile_path.read_text())
     assert rc == 0
-    assert "Run: zippergen run-deployment hello-prod" in captured.out
+    assert "Status: zippergen status hello-prod" in captured.out
     assert profile["name"] == "hello-prod"
     assert profile["workflow"] == f"{workflow_path}:hello"
     assert profile["store"] == str(store_path)
@@ -520,8 +527,7 @@ def test_start_deployment_dry_run_prints_systemd_commands(tmp_path, monkeypatch,
     monkeypatch.setenv("ZIPPERGEN_HOME", str(zippergen_home))
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
     monkeypatch.setenv("ZIPPERGEN_SERVICE_MANAGER", "systemd")
-    main([
-        "deploy-local",
+    _deploy_for_test([
         f"{workflow_path}:hello",
         "--name",
         "hello-prod",
@@ -554,8 +560,7 @@ def test_start_deployment_dry_run_prints_launchd_commands(tmp_path, monkeypatch,
     monkeypatch.setenv("ZIPPERGEN_HOME", str(zippergen_home))
     monkeypatch.setenv("ZIPPERGEN_LAUNCH_AGENTS_DIR", str(launch_agents))
     monkeypatch.setenv("ZIPPERGEN_SERVICE_MANAGER", "launchd")
-    main([
-        "deploy-local",
+    _deploy_for_test([
         f"{workflow_path}:hello",
         "--name",
         "hello-prod",
@@ -580,53 +585,6 @@ def test_start_deployment_dry_run_prints_launchd_commands(tmp_path, monkeypatch,
     assert launchd["KeepAlive"] == {"SuccessfulExit": False}
 
 
-def test_systemd_boot_status_reports_server_boot_with_lingering(monkeypatch):
-    def fake_run(arguments, **_kwargs):
-        if "is-enabled" in arguments:
-            return subprocess.CompletedProcess(arguments, 0, stdout="enabled\n")
-        assert arguments[0] == "loginctl"
-        return subprocess.CompletedProcess(arguments, 0, stdout="yes\n")
-
-    monkeypatch.setattr("zippergen.serve.subprocess.run", fake_run)
-
-    status = _systemd_boot_status("reviewed-answer")
-
-    assert status["state"] == "server-boot"
-    assert status["kind"] == "success"
-    assert "automatic at server boot" in status["detail"]
-
-
-def test_systemd_boot_status_explains_when_lingering_is_disabled(monkeypatch):
-    def fake_run(arguments, **_kwargs):
-        if "is-enabled" in arguments:
-            return subprocess.CompletedProcess(arguments, 0, stdout="enabled\n")
-        return subprocess.CompletedProcess(arguments, 0, stdout="no\n")
-
-    monkeypatch.setattr("zippergen.serve.subprocess.run", fake_run)
-
-    status = _systemd_boot_status("reviewed-answer")
-
-    assert status["state"] == "user-login"
-    assert status["kind"] == "warning"
-    assert "requires account lingering" in status["detail"]
-
-
-def test_systemd_boot_status_explains_how_to_enable_manual_service(monkeypatch):
-    monkeypatch.setattr(
-        "zippergen.serve.subprocess.run",
-        lambda arguments, **_kwargs: subprocess.CompletedProcess(
-            arguments,
-            1,
-            stdout="disabled\n",
-        ),
-    )
-
-    status = _systemd_boot_status("reviewed-answer")
-
-    assert status["state"] == "manual"
-    assert "deploy start reviewed-answer" in status["detail"]
-
-
 @pytest.mark.parametrize("action", ["start", "restart"])
 def test_start_and_restart_refuse_a_deployment_that_fails_readiness(
     action,
@@ -639,9 +597,8 @@ def test_start_and_restart_refuse_a_deployment_that_fails_readiness(
     zippergen_home = tmp_path / "zg-home"
     monkeypatch.setenv("ZIPPERGEN_HOME", str(zippergen_home))
     monkeypatch.setenv("ZIPPERGEN_SERVICE_MANAGER", "systemd")
-    main(
+    _deploy_for_test(
         [
-            "deploy-local",
             f"{workflow_path}:hello",
             "--name",
             "hello-openai",
@@ -1035,8 +992,7 @@ def test_logs_command_tails_deployment_log(tmp_path, monkeypatch, capsys):
     workflow_path.write_text(WORKFLOW_SOURCE)
     zippergen_home = tmp_path / "zg-home"
     monkeypatch.setenv("ZIPPERGEN_HOME", str(zippergen_home))
-    main([
-        "deploy-local",
+    _deploy_for_test([
         f"{workflow_path}:hello",
         "--name",
         "hello-prod",
@@ -1063,8 +1019,7 @@ def test_logs_command_shows_only_the_current_log_generation(
     workflow_path.write_text(WORKFLOW_SOURCE)
     zippergen_home = tmp_path / "zg-home"
     monkeypatch.setenv("ZIPPERGEN_HOME", str(zippergen_home))
-    main([
-        "deploy-local",
+    _deploy_for_test([
         f"{workflow_path}:hello",
         "--name",
         "hello-prod",
@@ -1091,8 +1046,7 @@ def test_doctor_reports_deployment_checks(tmp_path, monkeypatch, capsys):
     workflow_path.write_text(WORKFLOW_SOURCE)
     zippergen_home = tmp_path / "zg-home"
     monkeypatch.setenv("ZIPPERGEN_HOME", str(zippergen_home))
-    main([
-        "deploy-local",
+    _deploy_for_test([
         f"{workflow_path}:hello",
         "--name",
         "hello-prod",

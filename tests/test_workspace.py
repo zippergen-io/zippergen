@@ -62,7 +62,9 @@ def test_workflow_entry_lives_in_visible_project_manifest(tmp_path):
     workflow_path.write_text("@workflow\ndef review(): pass\n")
 
     workspace = Workspace(root, home=home)
-    selected = workspace.select_workflow(str(workflow_path) + ":review")
+    workspace.initialize_project()
+    selected = "review.py:review"
+    workspace.select_workflow(selected)
 
     assert selected == "review.py:review"
     assert workspace.workflow_entry == "review.py:review"
@@ -79,6 +81,7 @@ def test_fresh_clone_resolves_workflow_from_manifest_without_private_state(tmp_p
     root.mkdir()
     (root / "workflow.py").write_text("@workflow\ndef review(): pass\n")
     original = Workspace(root, home=tmp_path / "original-home")
+    original.initialize_project()
     original.select_workflow("workflow.py:review", cwd=root)
 
     clone = Workspace(root, home=tmp_path / "empty-home")
@@ -91,55 +94,6 @@ def test_fresh_clone_resolves_workflow_from_manifest_without_private_state(tmp_p
     )
 
 
-
-
-def test_workspace_migrates_private_workflow_pointer_into_manifest(tmp_path):
-    root = tmp_path / "project"
-    root.mkdir()
-    (root / "workflow.py").write_text("@workflow\ndef review(): pass\n")
-    workspace = Workspace(root, home=tmp_path / "home")
-    workspace.initialize_project()
-    state = workspace.default_state()
-    state["current_workflow"] = "workflow.py:review"
-    workspace.state_path.parent.mkdir(parents=True)
-    workspace.state_path.write_text(json.dumps(state))
-
-    result = workspace.migrate_workflow_entry()
-
-    assert result["source"] == "private workspace"
-    assert workspace.workflow_entry == "workflow.py:review"
-    assert "current_workflow" not in workspace.load()
-
-
-def test_workspace_migration_uses_one_discovered_workflow(tmp_path):
-    root = tmp_path / "project"
-    root.mkdir()
-    (root / "workflow.py").write_text("@workflow\ndef review(): pass\n")
-    workspace = Workspace(root, home=tmp_path / "home")
-    workspace.initialize_project()
-
-    result = workspace.migrate_workflow_entry()
-
-    assert result["source"] == "discovery"
-    assert workspace.workflow_entry == "workflow.py:review"
-
-
-def test_workspace_migration_rejects_nonportable_external_pointer(tmp_path):
-    root = tmp_path / "project"
-    root.mkdir()
-    external = tmp_path / "external.py"
-    external.write_text("@workflow\ndef review(): pass\n")
-    workspace = Workspace(root, home=tmp_path / "home")
-    workspace.initialize_project()
-    state = workspace.default_state()
-    state["current_workflow"] = f"{external}:review"
-    workspace.state_path.parent.mkdir(parents=True)
-    workspace.state_path.write_text(json.dumps(state))
-
-    with pytest.raises(WorkspaceError, match="workflow_entry in zippergen.toml"):
-        workspace.migrate_workflow_entry()
-
-    assert workspace.workflow_entry is None
 
 
 def test_workspace_discards_legacy_current_store_pointer(tmp_path):
@@ -180,10 +134,6 @@ def test_workspace_creates_unique_managed_runs(tmp_path):
     assert Path(first["store"]).parent == workspace.runs_directory
     assert not Path(first["store"]).exists()
     assert workspace.current_run_id == second["run_id"]
-    assert [run["run_id"] for run in workspace.list_runs()] == [
-        second["run_id"],
-        first["run_id"],
-    ]
 
 
 def test_workspace_updates_run(tmp_path):
@@ -201,56 +151,6 @@ def test_workspace_updates_run(tmp_path):
     updated = workspace.update_run(run["run_id"], status="done", result="Hello!")
     assert updated["status"] == "done"
     assert updated["result"] == "Hello!"
-
-
-def test_workspace_keeps_model_profiles_per_workflow(tmp_path):
-    root = tmp_path / "project"
-    root.mkdir()
-    workspace = Workspace(root, home=tmp_path / "state")
-
-    saved = workspace.save_model_profile(
-        "review.py:review",
-        default="mock",
-        lifelines={"Writer": "openai:gpt-4o-mini"},
-    )
-
-    assert saved == {
-        "default": "mock",
-        "lifelines": {"Writer": "openai:gpt-4o-mini"},
-    }
-    assert workspace.model_profile("review.py:review") == saved
-    assert workspace.model_profile(
-        "summary.py:summary",
-        default="claude:claude-sonnet-4-6",
-    ) == {
-        "default": "claude:claude-sonnet-4-6",
-        "lifelines": {},
-    }
-
-
-def test_workspace_migrates_direct_models_to_named_configurations(tmp_path):
-    root = tmp_path / "project"
-    root.mkdir()
-    workspace = Workspace(root, home=tmp_path / "state")
-    workspace.save_model_profile(
-        "review.py:review",
-        default="mock",
-        lifelines={"Writer": "openai:gpt-4o-mini"},
-    )
-
-    assignments = workspace.model_assignment_profile("review.py:review")
-
-    assert assignments == {
-        "default": "mock",
-        "lifelines": {"Writer": "openai-gpt-4o-mini"},
-    }
-    assert workspace.model_configurations()["openai-gpt-4o-mini"]["spec"] == (
-        "openai:gpt-4o-mini"
-    )
-    assert workspace.model_profile("review.py:review") == {
-        "default": "mock",
-        "lifelines": {"Writer": "openai:gpt-4o-mini"},
-    }
 
 
 def test_workspace_configuration_edits_update_every_assignment(tmp_path):
@@ -280,11 +180,12 @@ def test_workspace_configuration_edits_update_every_assignment(tmp_path):
         },
     )
 
-    assert workspace.model_profile("review.py:review")["lifelines"] == {
-        "Writer": "openai:gpt-4.1-mini"
+    assert workspace.model_assignment_profile("review.py:review")["lifelines"] == {
+        "Writer": "writer"
     }
-    with pytest.raises(WorkspaceError, match="still assigned"):
-        workspace.remove_model_configuration("writer")
+    assert workspace.model_configurations()["writer"]["spec"] == (
+        "openai:gpt-4.1-mini"
+    )
 
 
 def test_workspace_validates_local_model_idle_release(tmp_path):
@@ -319,85 +220,6 @@ def test_workspace_validates_local_model_idle_release(tmp_path):
         )
 
 
-def test_workspace_connector_rename_updates_assignments_and_bindings(tmp_path):
-    root = tmp_path / "project"
-    root.mkdir()
-    workspace = Workspace(root, home=tmp_path / "state")
-    workspace.save_connector_configuration(
-        "approvals",
-        {
-            "provider": "telegram",
-            "kind": "telegram",
-            "chat_id": "123",
-        },
-    )
-    workspace.save_connector_assignment_profile(
-        "review.py:review",
-        lifelines={"Human": "approvals"},
-        actions={"Human.escalate": "approvals"},
-    )
-    workspace.bind_connector(
-        "review.py:review",
-        "audit-log",
-        "approvals",
-    )
-    workspace.save_connector_secret(
-        "approvals", "legacy-token", "private"
-    )
-
-    assert workspace.connector_configuration_usage("approvals") == (
-        "review.py:review",
-    )
-    assert workspace.connector_configuration_references("approvals") == (
-        ("review.py:review", "action", "Human.escalate"),
-        ("review.py:review", "participant", "Human"),
-        ("review.py:review", "requirement", "audit-log"),
-    )
-    with pytest.raises(
-        WorkspaceError,
-        match=(
-            r"still referenced by:.*action Human\.escalate.*"
-            r"participant Human.*requirement audit-log"
-        ),
-    ):
-        workspace.remove_connector_configuration("approvals")
-
-    workspace.rename_connector_configuration("approvals", "team-chat")
-
-    assert "approvals" not in workspace.connector_configurations()
-    assert "team-chat" in workspace.connector_configurations()
-    assert workspace.connector_assignment_profile("review.py:review") == {
-        "lifelines": {"Human": "team-chat"},
-        "actions": {"Human.escalate": "team-chat"},
-    }
-    assert workspace.connector_binding_profile("review.py:review") == {
-        "audit-log": "team-chat"
-    }
-    assert workspace.connector_secret(
-        "team-chat", "legacy-token"
-    ) == "private"
-
-
-def test_workspace_removing_unused_connector_removes_legacy_secrets(tmp_path):
-    root = tmp_path / "project"
-    root.mkdir()
-    workspace = Workspace(root, home=tmp_path / "state")
-    workspace.save_connector_configuration(
-        "unused",
-        {
-            "provider": "telegram",
-            "kind": "telegram",
-            "chat_id": "123",
-        },
-    )
-    workspace.save_connector_secret("unused", "bot_token", "private")
-
-    workspace.remove_connector_configuration("unused")
-
-    assert "unused" not in workspace.connector_configurations()
-    assert workspace.connector_secret("unused", "bot_token") is None
-
-
 
 
 def test_workspace_manages_the_visible_specification(tmp_path):
@@ -412,11 +234,14 @@ def test_workspace_manages_the_visible_specification(tmp_path):
 
     assert manifest["specification_file"] == "specification.md"
     assert workspace.specification_path == root / "specification.md"
-    assert workspace.specification() is None
+    assert not workspace.specification_path.exists()
 
-    workspace.save_specification("# Reviewed answer\n\nRequire human approval.")
+    workspace.specification_path.write_text(
+        "# Reviewed answer\n\nRequire human approval.\n",
+        encoding="utf-8",
+    )
 
-    assert "Require human approval." in workspace.specification()
+    assert "Require human approval." in workspace.specification_path.read_text()
     ignored = (root / ".gitignore").read_text(encoding="utf-8")
     assert "/tutorial-runtime/" in ignored.splitlines()
 
@@ -425,13 +250,14 @@ def test_workspace_provider_configuration_keeps_secrets_private(tmp_path):
     root = tmp_path / "project"
     root.mkdir()
     workspace = Workspace(root, home=tmp_path / "state")
-    workspace.save_provider_profile(
-        "openai",
-        {"kind": "api", "key_env": "OPENAI_API_KEY"},
-    )
-    workspace.save_provider_profile(
-        "local",
-        {"kind": "local", "base_url": "http://localhost:11434/v1"},
+    workspace.update(
+        providers={
+            "openai": {"kind": "api", "key_env": "OPENAI_API_KEY"},
+            "local": {
+                "kind": "local",
+                "base_url": "http://localhost:11434/v1",
+            },
+        }
     )
     workspace.save_secrets({"OPENAI_API_KEY": "private-key"})
 
@@ -472,7 +298,7 @@ def test_project_init_recognizes_and_ignores_nested_framework_checkout(tmp_path)
     assert "/zippergen/" in (root / ".gitignore").read_text().splitlines()
 
 
-def test_project_configuration_survives_a_fresh_clone_and_reports_only_site_gaps(
+def test_project_configuration_survives_a_fresh_clone(
     tmp_path,
 ):
     root = tmp_path / "project"
@@ -530,8 +356,13 @@ def test_project_configuration_survives_a_fresh_clone_and_reports_only_site_gaps
         "workflow.py:sample",
         lifelines={"Human": "approvals"},
     )
-    original.save_provider_profile(
-        "local", {"kind": "local", "base_url": "http://gpu:11434/v1"}
+    original.update(
+        providers={
+            "local": {
+                "kind": "local",
+                "base_url": "http://gpu:11434/v1",
+            }
+        }
     )
     original.save_secrets({"ANTHROPIC_API_KEY": "private"})
     original.save_connector_provider_secret(
@@ -557,31 +388,6 @@ def test_project_configuration_survives_a_fresh_clone_and_reports_only_site_gaps
         "lifelines": {"Human": "approvals"},
         "actions": {},
     }
-    assert [
-        (item["kind"], item["name"], item["command"])
-        for item in clone.missing_site_requirements()
-    ] == [
-        (
-            "secret",
-            "ANTHROPIC_API_KEY",
-            "model provider configure anthropic",
-        ),
-        (
-            "secret",
-            "Google authorization",
-            "connector provider configure google",
-        ),
-        (
-            "secret",
-            "Telegram bot token",
-            "connector provider configure telegram",
-        ),
-        (
-            "site fact",
-            "local model endpoint",
-            "model provider configure local",
-        ),
-    ]
     manifest_text = clone.manifest_path.read_text()
     assert "claude-opus-5" in manifest_text
     assert "sheet-123" in manifest_text

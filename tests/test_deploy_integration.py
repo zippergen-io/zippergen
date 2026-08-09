@@ -21,7 +21,7 @@ from zippergen.actions import llm as llm_deco
 from zippergen.projection import project
 from zippergen.store import open_store
 import zippergen.store as store_mod
-from zippergen.serve import run_role
+from zippergen.role_runner import run_role
 
 A = Lifeline("A")
 n = Var("n", int, default=0)

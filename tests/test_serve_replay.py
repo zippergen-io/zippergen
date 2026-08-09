@@ -4,8 +4,8 @@ from zippergen.syntax import Lifeline, Var, VarExpr, LitExpr, MsgStmt, IfStmt, S
 from zippergen.actions import pure
 from zippergen.projection import project
 from zippergen.store import open_store, DurableChannel
-from zippergen.serve import run_role, seed_env
-from zippergen.role_runner import RoleRunner
+from zippergen.serve import seed_env
+from zippergen.role_runner import RoleRunner, run_role
 from tests.test_examples_regression import _two_role_branch_workflow, A, B
 
 def _run_both(conn_a, conn_b, wf, seed):

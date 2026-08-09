@@ -23,8 +23,7 @@ classifiers = [
   "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 
-# No runtime dependencies. The only one, prompt-toolkit, existed for the
-# interactive Studio shell and went with it.
+# The core runtime uses only the Python standard library.
 dependencies = []
 
 [project.optional-dependencies]

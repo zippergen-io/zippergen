@@ -1,37 +1,11 @@
-"""Per-role durable runtime: project one role, replay its committed history,
-then run live, persisting each step atomically.
+"""Command-line execution, inspection, and local deployment entry point.
 
-Non-deterministic results are journaled so replay reconstructs them instead of
-re-executing: external acts (LLM/Human/Planner/Effect) and owner if/while
-decisions are recorded as ``kind='act'``/``'decision'`` rows and consumed on
-replay; a ``@pure`` act is deterministic by contract and recomputed. A blocking external
-call runs OUTSIDE the SQLite write transaction (the lock is released first), then
-its result is journaled and committed before env/residual advance.
-
-Limitations (v1):
-- External effects are at-least-once: a crash between an external call returning
-  and its journal row committing re-runs the act on restart. Harmless for an LLM
-  (paid twice); visible human actions are first materialized as durable
-  ``human_tasks`` rows and can be answered out-of-band. Irreversible effects
-  (e.g. sending mail) are NOT made exactly-once here — that needs effect-level
-  idempotency keys.
-- No snapshot fires inside a parallel region (the rebuilt residual changes
-  identity each step), so a crash replays the region from the enclosing loop
-  boundary; replay-length bounding inside parallel is a later refinement.
-- CPL Formula monitor state is persisted with role loop snapshots, so recovery
-  can resume from the same bounded causal-past summary.
-- A blocking external act in one parallel branch stalls that role's other
-  branches until it returns (no intra-role concurrency of external calls).
-
-See docs/superpowers/specs/2026-07-04-durable-deploy-hardening-design.md."""
+The per-role durable runtime lives in :mod:`zippergen.role_runner`; this module
+parses ordinary CLI commands and coordinates the supporting subsystems.
+"""
 from __future__ import annotations
 
 from zippergen.role_runner import (
-    JournalContext,
-    RoleRunner,
-    _floor_coherent,
-    _maybe_snapshot,
-    _try_resume,
     run_role,
 )
 
@@ -45,14 +19,10 @@ from zippergen.role_runner import (
 import argparse
 import getpass
 import hashlib
-import importlib
-import importlib.util
 import json
 import math
 import os
-import platform
 import plistlib
-import re
 import shlex
 import shutil
 import subprocess
@@ -73,13 +43,48 @@ from zippergen.deployment import (
     DeploymentSpec,
     deployment_spec_from_module,
 )
+from zippergen.deployment_platform import (
+    deployment_bundles_dir as _deployment_bundles_dir,
+    deployment_environment_dir as _deployment_environment_dir,
+    deployment_launchd_path as _deployment_launchd_path,
+    deployment_profile_path as _deployment_profile_path,
+    deployment_script_path as _deployment_script_path,
+    deployment_secrets_path as _deployment_secrets_path,
+    deployment_service_path as _deployment_service_path,
+    deployments_dir as _deployments_dir,
+    installed_launchd_path as _installed_launchd_path,
+    installed_systemd_service_path as _installed_systemd_service_path,
+    launchctl_command as _launchctl_command,
+    launchctl_domain as _launchctl_domain,
+    launchd_label as _launchd_label,
+    launchd_service_status as _launchd_service_status,
+    run_launchctl as _run_launchctl,
+    run_systemctl as _run_systemctl,
+    service_manager as _service_manager,
+    slug as _slug,
+    systemctl_command as _systemctl_command,
+    systemd_unit_name as _systemd_unit_name,
+    zippergen_home as _zippergen_home,
+)
 from zippergen.connectors import connector_requirements_from_module
 from zippergen.models import (
     effective_llm_routes,
     normalize_llm_overrides,
     selected_llm_specs,
 )
-from zippergen.view import DETAILS, ViewOptions, render_workflow, workflow_view_data
+from zippergen.view import DETAILS, ViewOptions, workflow_view_data
+from zippergen.workflow_io import (
+    RunConfig,
+    _call_setup_hook,
+    _looks_like_path,
+    _workflow_lifelines,
+    load_workflow,
+    load_workflow_spec,
+)
+from zippergen.validation import (
+    assistant_actions as _assistant_actions,
+    validate_workflow as _validate_workflow,
+)
 from zippergen.semantic import (
     read_semantic_snapshot,
     render_semantic_diff,
@@ -87,18 +92,7 @@ from zippergen.semantic import (
     semantic_snapshot,
     workflow_semantics,
 )
-from zippergen.syntax import (
-    ActStmt,
-    AssistantAction,
-    CoregionStmt,
-    EffectAction,
-    IfStmt,
-    ParallelStmt,
-    SeqStmt,
-    WhileStmt,
-    Workflow,
-    Lifeline,
-)
+from zippergen.syntax import Workflow
 from zippergen.projection import project
 from zippergen.store import (
     RECOVERY_COMPACTION_VERSION,
@@ -111,29 +105,6 @@ from zippergen.store import (
     mark_human_task_token_used,
     open_store,
 )
-
-
-@dataclass(frozen=True)
-class RunConfig:
-    """Configuration passed to an optional module-level ``zippergen_setup`` hook."""
-
-    workflow_spec: str
-    workflow: Workflow
-    module: ModuleType
-    llm: str | None
-    llms: dict[str, str]
-    assistant: str | None
-    llm_idle_timeout: float | None
-    llm_idle_timeouts: dict[str, float]
-    store_path: str | None
-    inputs: dict[str, object]
-    options: dict[str, object]
-    timeout: float
-    execution: str
-
-    def option(self, name: str, default: object = None) -> object:
-        return self.options.get(name, default)
-
 
 @dataclass(frozen=True)
 class DoctorConfig:
@@ -152,116 +123,16 @@ class DoctorConfig:
         return self.options.get(name, default)
 
 
-def _import_module_path(module_path: str) -> ModuleType:
-    path = Path(module_path).expanduser().resolve()
-    package_parts: list[str] = []
-    package_root = path.parent
-    while (package_root / "__init__.py").is_file():
-        package_parts.insert(0, package_root.name)
-        package_root = package_root.parent
-    if package_parts:
-        module_name = ".".join(
-            [
-                *package_parts,
-                *([] if path.name == "__init__.py" else [path.stem]),
-            ]
-        )
-        import_root = package_root
-    else:
-        module_name = (
-            f"_zippergen_wf_"
-            f"{hashlib.sha1(str(path).encode()).hexdigest()[:12]}"
-        )
-        import_root = path.parent
-    spec = importlib.util.spec_from_file_location(
-        module_name,
-        path,
-    )
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    modules_before = set(sys.modules)
-    sys.path.insert(0, str(import_root))
-    try:
-        spec.loader.exec_module(module)
-    finally:
-        for imported_name in set(sys.modules) - modules_before:
-            imported = sys.modules.get(imported_name)
-            imported_file = getattr(imported, "__file__", None)
-            if not imported_file:
-                continue
-            try:
-                local = Path(imported_file).resolve().is_relative_to(
-                    import_root
-                )
-            except OSError:
-                local = False
-            if local:
-                sys.modules.pop(imported_name, None)
-        try:
-            sys.path.remove(str(import_root))
-        except ValueError:
-            pass
-    return module
 
 
-def _looks_like_path(name: str) -> bool:
-    return name.endswith(".py") or "/" in name or "\\" in name or Path(name).exists()
 
 
-def _import_workflow_module(module_ref: str) -> ModuleType:
-    if _looks_like_path(module_ref):
-        return _import_module_path(module_ref)
-    return importlib.import_module(module_ref)
 
 
-def load_workflow_spec(spec_text: str) -> tuple[Workflow, ModuleType]:
-    """Load ``module:workflow`` or ``path.py:workflow``.
-
-    If no workflow name is supplied, the module must define exactly one
-    ``Workflow`` object.
-    """
-
-    module_ref, sep, workflow_name = spec_text.partition(":")
-    if not module_ref:
-        raise SystemExit("Workflow spec must be MODULE:WORKFLOW or PATH.py:WORKFLOW.")
-    module = _import_workflow_module(module_ref)
-    if sep:
-        try:
-            value = getattr(module, workflow_name)
-        except AttributeError as exc:
-            raise SystemExit(f"Workflow {workflow_name!r} not found in {module_ref!r}.") from exc
-        if not isinstance(value, Workflow):
-            raise SystemExit(f"{module_ref}:{workflow_name} is not a ZipperGen Workflow.")
-        return value, module
-
-    workflows = {
-        name: value
-        for name, value in vars(module).items()
-        if isinstance(value, Workflow)
-    }
-    if len(workflows) == 1:
-        return next(iter(workflows.values())), module
-    if not workflows:
-        raise SystemExit(f"No ZipperGen Workflow found in {module_ref!r}.")
-    names = ", ".join(sorted(workflows))
-    raise SystemExit(f"Multiple workflows found in {module_ref!r}: {names}. Use MODULE:WORKFLOW.")
 
 
-def load_workflow(module_path: str, role_name: str) -> tuple[Workflow, Lifeline]:
-    module = _import_module_path(module_path)
-    workflows = [value for value in vars(module).values() if isinstance(value, Workflow)]
-    if not workflows:
-        raise SystemExit(f"No ZipperGen Workflow found in {module_path!r}.")
-    wf = workflows[0]
-    lifelines = {ll.name: ll for ll in _workflow_lifelines(wf)}
-    if role_name not in lifelines:
-        raise SystemExit(f"role {role_name!r} not in workflow lifelines {sorted(lifelines)}")
-    return wf, lifelines[role_name]
 
 
-def _workflow_lifelines(wf: Workflow) -> tuple[Lifeline, ...]:
-    from zippergen.syntax import _ordered_workflow_lifelines
-    return _ordered_workflow_lifelines(wf)
 
 
 def seed_env(conn, role: str, wf: Workflow, inputs: dict) -> dict:
@@ -379,9 +250,6 @@ def _seed_inputs(wf: Workflow, inputs: dict) -> dict:
     return env
 
 
-def _slug(text: str) -> str:
-    text = re.sub(r"[^A-Za-z0-9_.-]+", "-", text.strip()).strip("-._")
-    return text or "workflow"
 
 
 def _default_store_path(workflow_spec: str, wf: Workflow) -> str:
@@ -399,68 +267,34 @@ def _ensure_store_parent(path: str) -> str:
     return str(expanded)
 
 
-def _zippergen_home() -> Path:
-    return Path(os.environ.get("ZIPPERGEN_HOME", str(Path.home() / ".zippergen"))).expanduser()
 
 
-def _deployments_dir() -> Path:
-    return _zippergen_home() / "deployments"
 
 
-def _deployment_profile_path(name: str) -> Path:
-    return _deployments_dir() / f"{_slug(name)}.json"
 
 
-def _deployment_script_path(name: str) -> Path:
-    return _deployments_dir() / f"{_slug(name)}.sh"
 
 
-def _deployment_service_path(name: str) -> Path:
-    return _deployments_dir() / f"zippergen-{_slug(name)}.service"
 
 
-def _deployment_launchd_path(name: str) -> Path:
-    return _deployments_dir() / f"io.zippergen.{_slug(name)}.plist"
 
 
-def _deployment_secrets_path(name: str) -> Path:
-    return _deployments_dir() / f"{_slug(name)}.secrets.json"
 
 
-def _deployment_environment_dir(name: str) -> Path:
-    return _zippergen_home() / "environments" / _slug(name)
 
 
-def _deployment_bundles_dir(name: str) -> Path:
-    return _zippergen_home() / "apps" / _slug(name)
 
 
-def _systemd_user_dir() -> Path:
-    config_home = Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config"))).expanduser()
-    return config_home / "systemd" / "user"
 
 
-def _systemd_unit_name(name: str) -> str:
-    return f"zippergen-{_slug(name)}.service"
 
 
-def _installed_systemd_service_path(name: str) -> Path:
-    return _systemd_user_dir() / _systemd_unit_name(name)
 
 
-def _launchd_label(name: str) -> str:
-    return f"io.zippergen.{_slug(name)}"
 
 
-def _launch_agents_dir() -> Path:
-    configured = os.environ.get("ZIPPERGEN_LAUNCH_AGENTS_DIR")
-    if configured:
-        return Path(configured).expanduser()
-    return Path.home() / "Library" / "LaunchAgents"
 
 
-def _installed_launchd_path(name: str) -> Path:
-    return _launch_agents_dir() / f"{_launchd_label(name)}.plist"
 
 
 def _default_deployment_store_path(name: str) -> str:
@@ -668,68 +502,16 @@ def _install_launchd_agent(profile: dict[str, object], *, dry_run: bool = False)
     return target
 
 
-def _systemctl_command(*args: str) -> list[str]:
-    systemctl = os.environ.get("ZIPPERGEN_SYSTEMCTL", "systemctl")
-    return [systemctl, "--user", *args]
 
 
-def _run_systemctl(args: list[str], *, dry_run: bool = False) -> None:
-    if dry_run:
-        print(shlex.join(args))
-        return
-    try:
-        subprocess.run(args, check=True)
-    except FileNotFoundError as exc:
-        raise SystemExit("systemctl was not found. Use `run-deployment` directly or install systemd user services.") from exc
-    except subprocess.CalledProcessError as exc:
-        command = shlex.join(args)
-        raise SystemExit(f"Command failed with exit code {exc.returncode}: {command}") from exc
 
 
-def _service_manager() -> str:
-    configured = os.environ.get("ZIPPERGEN_SERVICE_MANAGER", "").strip().lower()
-    if configured:
-        if configured not in {"systemd", "launchd"}:
-            raise SystemExit("ZIPPERGEN_SERVICE_MANAGER must be systemd or launchd.")
-        return configured
-    system = platform.system()
-    if system == "Darwin":
-        return "launchd"
-    if system == "Linux":
-        return "systemd"
-    raise SystemExit(
-        f"No supported deployment service manager for {system or 'this platform'}. "
-        "Use `zippergen run-deployment NAME` directly."
-    )
 
 
-def _launchctl_domain() -> str:
-    return f"gui/{os.getuid()}"
 
 
-def _launchctl_command(*args: str) -> list[str]:
-    launchctl = os.environ.get("ZIPPERGEN_LAUNCHCTL", "launchctl")
-    return [launchctl, *args]
 
 
-def _run_launchctl(
-    args: list[str],
-    *,
-    dry_run: bool = False,
-    check: bool = True,
-) -> subprocess.CompletedProcess | None:
-    if dry_run:
-        print(shlex.join(args))
-        return None
-    try:
-        return subprocess.run(args, check=check, capture_output=not check, text=True)
-    except FileNotFoundError as exc:
-        raise SystemExit(
-            "launchctl was not found. Use `run-deployment` directly or run on macOS."
-        ) from exc
-    except subprocess.CalledProcessError as exc:
-        command = shlex.join(args)
-        raise SystemExit(f"Command failed with exit code {exc.returncode}: {command}") from exc
 
 
 def _deployment_lifecycle_command(args, action: str) -> int:
@@ -899,183 +681,8 @@ def _systemd_active_check(name: str) -> dict[str, object]:
     return _doctor_check("warn", "systemd active", f"{unit} is not active: {state}", state=state)
 
 
-def _systemd_service_status(name: str) -> dict[str, object]:
-    unit = _systemd_unit_name(name)
-    try:
-        result = subprocess.run(
-            _systemctl_command(
-                "show",
-                unit,
-                "--property=LoadState,ActiveState,SubState,ExecMainStatus,NRestarts",
-            ),
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-    except FileNotFoundError:
-        return {
-            "manager": "systemd",
-            "service": unit,
-            "state": "unknown",
-            "healthy": False,
-            "detail": "systemctl was not found",
-        }
-    except subprocess.TimeoutExpired:
-        return {
-            "manager": "systemd",
-            "service": unit,
-            "state": "unknown",
-            "healthy": False,
-            "detail": "systemctl timed out",
-        }
-    values = {}
-    for raw in (result.stdout or "").splitlines():
-        key, separator, value = raw.partition("=")
-        if separator:
-            values[key] = value
-    active = values.get("ActiveState", "")
-    sub = values.get("SubState", "")
-    try:
-        exit_code = int(values.get("ExecMainStatus", "0"))
-    except ValueError:
-        exit_code = None
-    try:
-        restarts = int(values.get("NRestarts", "0"))
-    except ValueError:
-        restarts = 0
-    if result.returncode == 0 and active == "active" and sub == "running":
-        state = "running"
-        healthy = True
-        detail = f"{unit} is running"
-    elif active == "activating" or restarts and exit_code not in {None, 0}:
-        state = "restarting"
-        healthy = False
-        detail = (
-            f"{unit} is not healthy; {active or 'unknown'}/{sub or 'unknown'}, "
-            f"last exit code {exit_code}, {restarts} restart(s)"
-        )
-    elif (
-        result.returncode == 0
-        and active == "inactive"
-        and exit_code == 0
-    ):
-        state = "completed"
-        healthy = True
-        detail = f"{unit} completed successfully"
-    elif values.get("LoadState") == "not-found":
-        state = "not-loaded"
-        healthy = False
-        detail = f"{unit} is not installed"
-    else:
-        state = "loaded" if result.returncode == 0 else "not-loaded"
-        healthy = False
-        detail = f"{unit} is {active or sub or 'not active'}"
-    return {
-        "manager": "systemd",
-        "service": unit,
-        "state": state,
-        "healthy": healthy,
-        "detail": detail,
-        "last_exit_code": exit_code,
-        "restarts": restarts,
-        "active_state": active,
-        "sub_state": sub,
-    }
 
 
-def _launchd_service_status(name: str) -> dict[str, object]:
-    service = f"{_launchctl_domain()}/{_launchd_label(name)}"
-    try:
-        result = subprocess.run(
-            _launchctl_command("print", service),
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-    except FileNotFoundError:
-        return {
-            "manager": "launchd",
-            "service": service,
-            "state": "unknown",
-            "healthy": False,
-            "detail": "launchctl was not found",
-        }
-    except subprocess.TimeoutExpired:
-        return {
-            "manager": "launchd",
-            "service": service,
-            "state": "unknown",
-            "healthy": False,
-            "detail": "launchctl timed out",
-        }
-    if result.returncode != 0:
-        detail = (
-            result.stderr or result.stdout or "not loaded"
-        ).strip().splitlines()[0]
-        return {
-            "manager": "launchd",
-            "service": service,
-            "state": "not-loaded",
-            "healthy": False,
-            "detail": f"{service} is not loaded: {detail}",
-        }
-
-    output = result.stdout or ""
-    values: dict[str, str] = {}
-    for raw in output.splitlines():
-        if "=" not in raw:
-            continue
-        key, value = raw.strip().split("=", 1)
-        # `launchctl print` contains nested coalition blocks with repeated
-        # `state` and `active count` keys. The service-level values appear
-        # first and must not be overwritten by those nested records.
-        values.setdefault(key.strip(), value.strip())
-    state = values.get("state", "loaded")
-    try:
-        active_count = int(values.get("active count", "0"))
-    except ValueError:
-        active_count = 0
-    try:
-        runs = int(values.get("runs", "0"))
-    except ValueError:
-        runs = 0
-    try:
-        last_exit = int(values["last exit code"])
-    except (KeyError, ValueError):
-        last_exit = None
-
-    if state == "running" or active_count > 0:
-        health = "running"
-        healthy = True
-        detail = f"{service} is running"
-    elif last_exit not in {None, 0}:
-        health = "restarting"
-        healthy = False
-        detail = (
-            f"{service} is loaded but not running; last exit code "
-            f"{last_exit} after {runs} launch(es)"
-        )
-    elif last_exit == 0 and runs > 0:
-        health = "completed"
-        healthy = True
-        detail = f"{service} completed successfully"
-    else:
-        health = "loaded"
-        healthy = False
-        detail = f"{service} is loaded but has no active process"
-    return {
-        "manager": "launchd",
-        "service": service,
-        "state": health,
-        "healthy": healthy,
-        "detail": detail,
-        "active_count": active_count,
-        "runs": runs,
-        "last_exit_code": last_exit,
-        "raw_state": state,
-    }
 
 
 def _launchd_active_check(name: str) -> dict[str, object]:
@@ -1098,160 +705,12 @@ def _launchd_active_check(name: str) -> dict[str, object]:
     )
 
 
-def _deployment_service_status(name: str) -> dict[str, object]:
-    """Describe the supervised process, not merely service installation."""
-
-    try:
-        manager = _service_manager()
-    except SystemExit as exc:
-        return {
-            "manager": "unsupported",
-            "service": name,
-            "state": "unknown",
-            "healthy": False,
-            "detail": str(exc),
-        }
-    if manager == "launchd":
-        return _launchd_service_status(name)
-    return _systemd_service_status(name)
 
 
-def _systemd_linger_state() -> bool | None:
-    """Return whether the current user's systemd manager starts at boot."""
-
-    try:
-        result = subprocess.run(
-            [
-                os.environ.get("ZIPPERGEN_LOGINCTL", "loginctl"),
-                "show-user",
-                str(os.getuid()),
-                "--property=Linger",
-                "--value",
-            ],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        return None
-    if result.returncode != 0:
-        return None
-    value = (result.stdout or "").strip().casefold()
-    if value == "yes":
-        return True
-    if value == "no":
-        return False
-    return None
 
 
-def _systemd_boot_status(name: str) -> dict[str, str]:
-    """Describe persistent startup for one systemd user service."""
-
-    unit = _systemd_unit_name(name)
-    try:
-        result = subprocess.run(
-            _systemctl_command("is-enabled", unit),
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=5,
-        )
-    except FileNotFoundError:
-        return {
-            "state": "unknown",
-            "kind": "warning",
-            "detail": "unknown; systemctl was not found",
-        }
-    except subprocess.TimeoutExpired:
-        return {
-            "state": "unknown",
-            "kind": "warning",
-            "detail": "unknown; systemctl timed out",
-        }
-
-    enabled_state = (
-        (result.stdout or result.stderr or "").strip().casefold()
-    )
-    if result.returncode != 0 or enabled_state not in {
-        "enabled",
-        "enabled-runtime",
-        "linked",
-        "linked-runtime",
-        "alias",
-    }:
-        return {
-            "state": "manual",
-            "kind": "warning",
-            "detail": (
-                "manual startup; use 'deploy start "
-                f"{_slug(name)}' to enable automatic startup"
-            ),
-        }
-    if enabled_state.endswith("-runtime"):
-        return {
-            "state": "current-session",
-            "kind": "warning",
-            "detail": (
-                "automatic only for the current user session; run "
-                f"'deploy start {_slug(name)}' to enable persistent startup"
-            ),
-        }
-
-    linger = _systemd_linger_state()
-    if linger is True:
-        detail = (
-            "automatic at server boot; systemd user service and account "
-            "lingering are enabled"
-        )
-        state = "server-boot"
-        kind = "success"
-    elif linger is False:
-        detail = (
-            "automatic after user login; unattended server boot requires "
-            "account lingering"
-        )
-        state = "user-login"
-        kind = "warning"
-    else:
-        detail = (
-            "automatic when the systemd user manager starts; unattended "
-            "server boot depends on account lingering"
-        )
-        state = "user-manager"
-        kind = "info"
-    return {"state": state, "kind": kind, "detail": detail}
 
 
-def _deployment_boot_status(name: str) -> dict[str, str]:
-    """Describe when an installed deployment will start automatically."""
-
-    try:
-        manager = _service_manager()
-    except SystemExit as exc:
-        return {
-            "state": "unsupported",
-            "kind": "warning",
-            "detail": str(exc),
-        }
-    if manager == "systemd":
-        return _systemd_boot_status(name)
-
-    target = _installed_launchd_path(name)
-    if target.is_file():
-        return {
-            "state": "user-login",
-            "kind": "success",
-            "detail": "automatic at user login; launchd RunAtLoad is enabled",
-        }
-    return {
-        "state": "manual",
-        "kind": "warning",
-        "detail": (
-            "manual startup; use 'deploy start "
-            f"{_slug(name)}' to install automatic startup"
-        ),
-    }
 
 
 def _call_doctor_hook(
@@ -1870,13 +1329,6 @@ def _resolve_store_arg(args) -> str:
     raise SystemExit("Provide a deployment name or --store.")
 
 
-def _call_setup_hook(module: ModuleType, config: RunConfig) -> None:
-    setup = getattr(module, "zippergen_setup", None)
-    if setup is None:
-        return
-    if not callable(setup):
-        raise SystemExit("zippergen_setup exists but is not callable.")
-    setup(config)
 
 
 def _safe_json_loads(value):
@@ -2203,7 +1655,7 @@ def _run_workflow_command(args) -> int:
     # Ask for anything the workflow needs that was not supplied, rather than
     # refusing with a usage error.
     if sys.stdin.isatty() and not getattr(args, "yes", False):
-        from zippergen.dev import collect_workflow_inputs
+        from zippergen.durable_runs import collect_workflow_inputs
 
         inputs = collect_workflow_inputs(
             wf, module, inputs, interactive=True, input_func=input
@@ -2277,12 +1729,12 @@ def _durable_run_command(args) -> int:
     for.
     """
 
-    from zippergen.dev import run_dev
+    from zippergen.durable_runs import run_durable
     from zippergen.workspace import Workspace
 
     inputs = _parse_input_json(args.input_json)
     inputs.update(_parse_inputs(args.input))
-    run_dev(
+    run_durable(
         Workspace(getattr(args, "project", None)),
         workflow_spec=args.workflow,
         resume=args.resume,
@@ -2302,33 +1754,6 @@ def _durable_run_command(args) -> int:
             if getattr(args, "store", None)
             else None
         ),
-    )
-    return 0
-
-
-def _dev_command(args) -> int:
-    from zippergen.dev import run_dev
-    from zippergen.workspace import Workspace
-
-    inputs = _parse_input_json(args.input_json)
-    inputs.update(_parse_inputs(args.input))
-    options = _parse_options(args.option, services=args.services)
-    workspace = Workspace(args.project)
-    run_dev(
-        workspace,
-        workflow_spec=args.workflow,
-        resume=args.resume,
-        run_id=args.run_id,
-        provided_inputs=inputs,
-        llm=args.llm,
-        llms=normalize_llm_overrides(_parse_inputs(args.llm_for)),
-        assistant=args.assistant,
-        options=options,
-        services=args.services,
-        timeout=args.timeout,
-        interactive=not args.yes and sys.stdin.isatty(),
-        input_func=input,
-        output_func=print,
     )
     return 0
 
@@ -2362,280 +1787,6 @@ def _show_command(args) -> int:
     return 0
 
 
-def _validate_workflow(workflow: Workflow, module: ModuleType) -> dict[str, object]:
-    lifelines = _workflow_lifelines(workflow)
-    checks: list[dict[str, object]] = []
-    names = [lifeline.name for lifeline in lifelines]
-    if len(names) != len(set(names)):
-        checks.append({
-            "status": "fail",
-            "name": "lifelines",
-            "detail": "lifeline names are not unique",
-        })
-    else:
-        checks.append({
-            "status": "ok",
-            "name": "lifelines",
-            "detail": f"{len(lifelines)} unique lifeline(s): {', '.join(names)}",
-        })
-
-    projections: dict[str, str] = {}
-    for lifeline in lifelines:
-        try:
-            local = project(workflow, lifeline)
-            code = render_workflow(
-                workflow,
-                module,
-                options=ViewOptions(agent=lifeline.name),
-            )
-        except Exception as exc:
-            checks.append({
-                "status": "fail",
-                "name": f"projection {lifeline.name}",
-                "detail": f"{type(exc).__name__}: {exc}",
-            })
-        else:
-            projections[lifeline.name] = code
-            checks.append({
-                "status": "ok",
-                "name": f"projection {lifeline.name}",
-                "detail": type(local).__name__,
-            })
-
-    try:
-        declaration = deployment_spec_from_module(module)
-    except Exception as exc:
-        checks.append({
-            "status": "fail",
-            "name": "deployment declaration",
-            "detail": f"{type(exc).__name__}: {exc}",
-        })
-        deployment: dict[str, object] | None = None
-    else:
-        deployment = declaration.as_dict()
-        checks.append({
-            "status": "ok",
-            "name": "deployment declaration",
-            "detail": (
-                f"{len(declaration.fields)} field(s), "
-                f"{len(declaration.packages)} package(s), "
-                f"{len(declaration.setup)} setup step(s)"
-            ),
-        })
-
-    try:
-        connector_requirements = connector_requirements_from_module(module)
-    except (TypeError, ValueError) as exc:
-        checks.append({
-            "status": "fail",
-            "name": "connector requirements",
-            "detail": str(exc),
-        })
-    else:
-        participants = {item.name for item in lifelines}
-        requirement_names = {
-            requirement.name for requirement in connector_requirements
-        }
-        requirements_by_name = {
-            requirement.name: requirement
-            for requirement in connector_requirements
-        }
-        for requirement in connector_requirements:
-            if requirement.participant not in participants:
-                checks.append({
-                    "status": "fail",
-                    "name": f"connector {requirement.name}",
-                    "detail": (
-                        f"participant {requirement.participant!r} does not "
-                        "exist in the workflow"
-                    ),
-                })
-            else:
-                checks.append({
-                    "status": "ok",
-                    "name": f"connector {requirement.name}",
-                    "detail": (
-                        f"{requirement.kind}; {requirement.access}; participant "
-                        f"{requirement.participant}"
-                    ),
-                })
-        referenced_connectors = {
-            action.connector
-            for action in _workflow_actions(workflow)
-            if isinstance(action, EffectAction) and action.connector is not None
-        }
-        for connector_name in sorted(referenced_connectors):
-            if connector_name not in requirement_names:
-                checks.append({
-                    "status": "fail",
-                    "name": f"effect connector {connector_name}",
-                    "detail": (
-                        "the effect references an undeclared connector; add a "
-                        "matching ConnectorRequirement"
-                    ),
-                })
-            else:
-                checks.append({
-                    "status": "ok",
-                    "name": f"effect connector {connector_name}",
-                    "detail": "declared logical connector requirement",
-                })
-        for participant, action in _workflow_action_sites(workflow):
-            if not isinstance(action, EffectAction) or action.connector is None:
-                continue
-            requirement = requirements_by_name.get(action.connector)
-            if (
-                requirement is not None
-                and requirement.participant != participant
-            ):
-                checks.append({
-                    "status": "fail",
-                    "name": f"effect connector owner {action.name}",
-                    "detail": (
-                        f"action runs on {participant}, but connector "
-                        f"{requirement.name} belongs to "
-                        f"{requirement.participant}"
-                    ),
-                })
-
-    assistant_actions = _assistant_actions(workflow)
-    for action in assistant_actions:
-        checks.append({
-            "status": "ok",
-            "name": f"assistant access {action.name}",
-            "detail": (
-                f"{action.access}; enforced by the selected CLI permission mode"
-            ),
-        })
-        checks.append({
-            "status": (
-                "warn" if action.external_tools == "configured" else "ok"
-            ),
-            "name": f"assistant external tools {action.name}",
-            "detail": (
-                "configured assistant MCP/tool integrations are permitted"
-                if action.external_tools == "configured"
-                else "configured MCP/tool integrations and web access are disabled"
-            ),
-        })
-        shell_may_be_claude = action.backend in {None, "claude"}
-        shell_warning = action.shell == "enabled" and shell_may_be_claude
-        checks.append({
-            "status": "warn" if shell_warning else "ok",
-            "name": f"assistant shell {action.name}",
-            "detail": (
-                "enabled; a Claude selection receives Bash without structural "
-                "network isolation; use a separate fixed verification action "
-                "when possible"
-                if shell_warning
-                else (
-                    "enabled inside the Codex structural sandbox"
-                    if action.shell == "enabled"
-                    else (
-                        "restricted; Claude receives no Bash and Codex commands "
-                        "remain inside its structural sandbox"
-                    )
-                )
-            ),
-        })
-        module_file = getattr(module, "__file__", None)
-        if action.access == "write" and module_file:
-            requested_workspace = Path(action.workspace or ".").expanduser()
-            workspace_path = (
-                requested_workspace.resolve()
-                if requested_workspace.is_absolute()
-                else (Path.cwd() / requested_workspace).resolve()
-            )
-            workflow_source = Path(module_file).resolve()
-            if workflow_source.is_relative_to(workspace_path):
-                checks.append({
-                    "status": "warn",
-                    "name": f"assistant self-modification {action.name}",
-                    "detail": (
-                        f"write workspace {workspace_path} contains the "
-                        f"executing workflow source {workflow_source}; keep "
-                        "self-modification, deployment, and Git boundaries "
-                        "explicit in the reviewed instructions"
-                    ),
-                })
-        if action.instructions_path is None:
-            checks.append({
-                "status": "ok",
-                "name": f"assistant instructions {action.name}",
-                "detail": (
-                    f"inline Markdown; sha256 "
-                    f"{action.instructions_sha256[:12]}"
-                ),
-            })
-            continue
-        path = Path(action.instructions_path)
-        if not path.is_file():
-            checks.append({
-                "status": "fail",
-                "name": f"assistant instructions {action.name}",
-                "detail": f"file no longer exists: {path}",
-            })
-            continue
-        current_text = path.read_text(encoding="utf-8")
-        current_hash = hashlib.sha256(current_text.encode("utf-8")).hexdigest()
-        if current_hash != action.instructions_sha256:
-            checks.append({
-                "status": "fail",
-                "name": f"assistant instructions {action.name}",
-                "detail": (
-                    "file changed after the workflow was imported; reload the "
-                    f"workflow: {path}"
-                ),
-            })
-        else:
-            checks.append({
-                "status": "ok",
-                "name": f"assistant instructions {action.name}",
-                "detail": (
-                    f"{action.instructions_file}; sha256 "
-                    f"{action.instructions_sha256[:12]}; automatically bundled"
-                ),
-            })
-
-    try:
-        render_workflow(workflow, module, options=ViewOptions(detail="full"))
-    except Exception as exc:
-        checks.append({
-            "status": "fail",
-            "name": "canonical rendering",
-            "detail": f"{type(exc).__name__}: {exc}",
-        })
-    else:
-        checks.append({
-            "status": "ok",
-            "name": "canonical rendering",
-            "detail": "global and local code views rendered successfully",
-        })
-
-    return {
-        "workflow": workflow.name,
-        "valid": not any(check["status"] == "fail" for check in checks),
-        "lifelines": names,
-        "inputs": [
-            {
-                "name": name,
-                "type": getattr(value_type, "__name__", str(value_type)),
-                "lifeline": lifeline.name if lifeline else None,
-            }
-            for name, value_type, lifeline in workflow.inputs
-        ],
-        "outputs": [
-            {
-                "name": value.name,
-                "type": getattr(value.type, "__name__", str(value.type)),
-                "lifeline": lifeline.name,
-            }
-            for value, lifeline in workflow.outputs
-        ],
-        "deployment": deployment,
-        "checks": checks,
-        "projections": projections,
-    }
 
 
 def _validate_command(args) -> int:
@@ -2777,10 +1928,8 @@ def _project_connector_runtime(
 ) -> tuple[dict, dict[str, str]]:
     """Build deployment connector routing from the project's configuration.
 
-    Studio used to do this and pass the result through a hidden flag. With the
-    shell gone, `deploy` reads the project directly, so a Telegram approval
-    configured with `connector configure` and `connector assign` actually
-    reaches the deployment.
+    `deploy` reads the project directly, so connector configurations and
+    assignments reach the deployment without an intermediate UI layer.
 
     `deployed_workflow` and `deployed_project` are what an existing deployment
     already records about itself. Reconfiguring by name must wire that
@@ -3285,56 +2434,10 @@ def _copy_deployment_source(source: Path, target: Path) -> None:
         shutil.copy2(source, target)
 
 
-def _workflow_action_sites(
-    workflow: Workflow,
-) -> tuple[tuple[str, object], ...]:
-    """Return each action site and its owning participant."""
-
-    found: list[tuple[str, object]] = []
-
-    def visit(stmt) -> None:
-        if isinstance(stmt, ActStmt):
-            found.append((stmt.lifeline.name, stmt.action))
-        elif isinstance(stmt, SeqStmt):
-            visit(stmt.first)
-            visit(stmt.second)
-        elif isinstance(stmt, IfStmt):
-            visit(stmt.branch_true)
-            visit(stmt.branch_false)
-        elif isinstance(stmt, WhileStmt):
-            visit(stmt.body)
-            visit(stmt.exit_body)
-        elif isinstance(stmt, ParallelStmt):
-            for branch in stmt.branches:
-                visit(branch)
-        elif isinstance(stmt, CoregionStmt):
-            return
-
-    visit(workflow.body)
-    return tuple(found)
 
 
-def _workflow_actions(workflow: Workflow) -> tuple[object, ...]:
-    """Return each distinct first-class action used by a global workflow."""
-
-    found: list[object] = []
-    seen: set[int] = set()
-    for _participant, action in _workflow_action_sites(workflow):
-        if id(action) in seen:
-            continue
-        seen.add(id(action))
-        found.append(action)
-    return tuple(found)
 
 
-def _assistant_actions(workflow: Workflow) -> tuple[AssistantAction, ...]:
-    """Return each first-class assistant action used by a global workflow."""
-
-    return tuple(
-        action
-        for action in _workflow_actions(workflow)
-        if isinstance(action, AssistantAction)
-    )
 
 
 def _bundle_deployment(
@@ -4064,71 +3167,6 @@ def _configure_deployment_command(args) -> int:
     return rc
 
 
-def _deploy_local_command(args) -> int:
-    wf, _module = load_workflow_spec(args.workflow)
-    name = _slug(args.name or _deployment_name_from_workflow(args.workflow, wf))
-    profile_path = _deployment_profile_path(name)
-    if profile_path.exists() and not args.force:
-        raise SystemExit(f"Deployment profile already exists: {name}. Use --force to overwrite.")
-
-    inputs = _parse_input_json(args.input_json)
-    inputs.update(_parse_inputs(args.input))
-    options = _parse_options(args.option)
-    llms = normalize_llm_overrides(_parse_inputs(args.llm_for))
-    llm_idle_timeouts = _parse_llm_idle_timeouts(
-        args.llm_idle_timeout_for
-    )
-    effective_llm_routes(wf, args.llm or "mock", llms)
-    store_path = _ensure_store_parent(args.store or _default_deployment_store_path(name))
-    log_path = str(Path(args.log or _default_deployment_log_path(name)).expanduser())
-    Path(log_path).parent.mkdir(parents=True, exist_ok=True)
-    profile = {
-        "schema_version": 1,
-        "name": name,
-        "workflow": args.workflow,
-        "cwd": str(Path.cwd()),
-        "store": store_path,
-        "log": log_path,
-        "llm": args.llm,
-        "llms": llms,
-        "llm_idle_timeout": args.llm_idle_timeout,
-        "llm_idle_timeouts": llm_idle_timeouts,
-        "assistant": args.assistant,
-        "services": args.services,
-        "options": options,
-        "inputs": inputs,
-        "timeout": args.timeout,
-        "execution": "sqlite",
-        "recovery_compaction_version": RECOVERY_COMPACTION_VERSION,
-        "trace_retention_version": TRACE_RETENTION_VERSION,
-        "created_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-        "python": sys.executable,
-    }
-    _write_deployment_artifacts(profile)
-    _initialize_deployment_store(profile)
-
-    if args.json:
-        print(json.dumps({
-            **profile,
-            "profile": str(profile_path),
-            "script": str(_deployment_script_path(name)),
-            "systemd_unit": str(_deployment_service_path(name)),
-        }, default=str, sort_keys=True))
-        return 0
-
-    print(f"Deployment: {name}")
-    print(f"Profile: {profile_path}")
-    print(f"Store: {store_path}")
-    print(f"Log: {log_path}")
-    print(f"Run: zippergen run-deployment {name}")
-    print(f"Status: zippergen status {name}")
-    print(f"Trace: zippergen trace {name}")
-    print(f"Systemd unit template: {_deployment_service_path(name)}")
-    print("Install later with: mkdir -p ~/.config/systemd/user && cp "
-          f"{_deployment_service_path(name)} ~/.config/systemd/user/")
-    return 0
-
-
 def _run_deployment_command(args) -> int:
     profile = _load_deployment_profile(args.name)
     cwd = Path(str(profile.get("cwd") or ".")).expanduser()
@@ -4219,6 +3257,151 @@ def _status_command(args) -> int:
         print(json.dumps(status, default=str))
     else:
         _print_status(status)
+    return 0
+
+
+def _execution_age(updated_at: float | None) -> str:
+    if updated_at is None:
+        return "-"
+    seconds = max(0, int(time.time() - updated_at))
+    if seconds < 2:
+        return "just now"
+    if seconds < 60:
+        return f"{seconds}s"
+    minutes = seconds // 60
+    if minutes < 60:
+        return f"{minutes}m"
+    hours = minutes // 60
+    return f"{hours}h" if hours < 48 else f"{hours // 24}d"
+
+
+def _inspection_context(args) -> tuple[Workflow, str, str]:
+    """Resolve one deployment or durable run without mutating its state."""
+
+    from zippergen.workspace import Workspace, WorkspaceError
+
+    if args.deployment and args.store:
+        raise SystemExit("Use either a deployment name or --store, not both.")
+    if args.deployment:
+        profile = _load_deployment_profile(args.deployment)
+        workflow_spec = str(profile["workflow"])
+        cwd = Path(str(profile.get("cwd") or ".")).expanduser()
+        old_cwd = Path.cwd()
+        try:
+            os.chdir(cwd)
+            workflow, _module = load_workflow_spec(workflow_spec)
+        finally:
+            os.chdir(old_cwd)
+        return workflow, str(profile["store"]), f"deployment {args.deployment}"
+
+    workspace = Workspace(args.project)
+    if args.store:
+        try:
+            workflow_spec = workspace.resolve_workflow(args.workflow)
+        except WorkspaceError as exc:
+            raise SystemExit(str(exc)) from exc
+        workflow, _module = load_workflow_spec(
+            str(workspace.absolute_spec(workflow_spec))
+        )
+        return workflow, str(args.store), "explicit store"
+
+    record = workspace.current_run()
+    if record is None:
+        raise SystemExit(
+            "There is no current durable run. Name a deployment or use --store."
+        )
+    workflow_spec = str(record["workflow_spec"])
+    workflow, _module = load_workflow_spec(
+        str(workspace.absolute_spec(workflow_spec))
+    )
+    return workflow, str(record["store"]), f"run {record['run_id']}"
+
+
+def _inspect_command(args) -> int:
+    from zippergen.execution_inspection import (
+        default_focus,
+        participant_positions,
+        read_execution_states,
+        state_label,
+    )
+    from zippergen.rendering import TerminalRenderer
+    from zippergen.view import render_local_projection_with_pointers
+
+    workflow, store, subject = _inspection_context(args)
+    observed = read_execution_states(store)
+    positions = participant_positions(workflow, observed)
+    names = [position.participant for position in positions]
+    if args.agent:
+        focus = next(
+            (name for name in names if name.casefold() == args.agent.casefold()),
+            None,
+        )
+        if focus is None:
+            raise SystemExit(
+                f"Unknown participant {args.agent!r}. Available: "
+                f"{', '.join(names) or 'none'}."
+            )
+    else:
+        focus = default_focus(positions)
+
+    if args.json:
+        print(json.dumps({
+            "subject": subject,
+            "store": store,
+            "focus": focus,
+            "positions": [
+                {
+                    "participant": position.participant,
+                    "state": position.state,
+                    "state_label": state_label(position.state),
+                    "locators": [list(path) for path in position.locators],
+                    "location": position.location,
+                    "updated_at": position.updated_at,
+                    "detail": position.detail,
+                }
+                for position in positions
+            ],
+        }, indent=2, default=str))
+        return 0
+
+    renderer = TerminalRenderer()
+    renderer.section("Execution positions")
+    renderer.emit(f"Subject: {subject}")
+    renderer.emit(f"Store: {store}")
+    if not observed:
+        renderer.status(
+            "warning",
+            "No position data. The run may not have started yet.",
+        )
+    renderer.emit()
+    renderer.columns(
+        "Participants",
+        ("Focus", "Participant", "State", "Current position", "Elapsed"),
+        [
+            (
+                "▶" if position.participant == focus else "",
+                position.participant,
+                state_label(position.state),
+                position.location,
+                _execution_age(position.updated_at),
+            )
+            for position in positions
+        ],
+    )
+    if focus is not None:
+        selected = next(
+            position for position in positions
+            if position.participant == focus
+        )
+        renderer.emit()
+        renderer.section(f"{focus} local projection")
+        renderer.emit(
+            render_local_projection_with_pointers(
+                workflow,
+                focus,
+                selected.locators,
+            )
+        )
     return 0
 
 
@@ -4557,7 +3740,7 @@ def _parse_cli_args(
     ap = argparse.ArgumentParser(prog="zippergen")
     public_commands = (
         "connector,run,show,validate,init,skill,snapshot,diff,deploy,configure,"
-        "start,stop,remove,compact,restart,logs,doctor,status,trace,tasks,"
+        "start,stop,remove,compact,restart,logs,doctor,status,inspect,trace,tasks,"
         "approve,notify"
     )
     sub = ap.add_subparsers(dest="cmd", metavar="{" + public_commands + "}")
@@ -4695,23 +3878,6 @@ def _parse_cli_args(
         "--client",
         help="OAuth Desktop app JSON path; prompts when omitted.",
     )
-
-    # Superseded by `run --durable`. Kept, hidden, so existing scripts and
-    # deployment profiles that call it keep working.
-    dev = sub.add_parser("dev")
-    dev.add_argument("workflow", nargs="?")
-    dev.add_argument("--resume", action="store_true")
-    dev.add_argument("--run-id")
-    dev.add_argument("--project")
-    dev.add_argument("--llm", metavar="SPEC")
-    dev.add_argument("--assistant", choices=["codex", "claude"])
-    dev.add_argument("--llm-for", action="append", default=[], metavar="PARTICIPANT_OR_ACTION=SPEC")
-    dev.add_argument("--input", action="append", default=[], metavar="name=value")
-    dev.add_argument("--input-json")
-    dev.add_argument("--option", action="append", default=[], metavar="name=value")
-    dev.add_argument("--services", choices=["fake", "live"])
-    dev.add_argument("--timeout", type=float, default=0.0)
-    dev.add_argument("--yes", action="store_true")
 
     rn = sub.add_parser(
         "run",
@@ -4879,44 +4045,6 @@ def _parse_cli_args(
     configure.add_argument("--restart", action="store_true", help="Restart the service after configuration succeeds.")
     configure.set_defaults(no_start=True, no_bundle=True, no_install=True, no_setup=True)
 
-    dl = sub.add_parser("deploy-local")
-    dl.add_argument("workflow", help="Workflow spec: module:workflow or path.py:workflow")
-    dl.add_argument("--name", help="Deployment name. Defaults to a slug derived from the workflow.")
-    dl.add_argument("--llm", metavar="SPEC", help="LLM spec stored in the deployment profile.")
-    dl.add_argument(
-        "--llm-for",
-        action="append",
-        default=[],
-        metavar="PARTICIPANT_OR_ACTION=SPEC",
-        help="Override the LLM for one participant or exact action; repeat as needed.",
-    )
-    dl.add_argument("--llm-idle-timeout", type=float, help="Release a managed local LLM after this many idle seconds.")
-    dl.add_argument(
-        "--llm-idle-timeout-for",
-        action="append",
-        default=[],
-        metavar="PARTICIPANT_OR_ACTION=SECONDS",
-        help=argparse.SUPPRESS,
-    )
-    dl.add_argument(
-        "--llm-idle-timeouts-json",
-        help=argparse.SUPPRESS,
-    )
-    dl.add_argument(
-        "--assistant",
-        choices=("codex", "claude"),
-        help="Default coding-assistant backend for @assistant actions.",
-    )
-    dl.add_argument("--store", help="SQLite store path. Defaults to $ZIPPERGEN_HOME/runs/<name>.sqlite")
-    dl.add_argument("--log", help="Log path. Defaults to $ZIPPERGEN_HOME/logs/<name>.log")
-    dl.add_argument("--input", action="append", default=[], metavar="name=value", help="Workflow input value.")
-    dl.add_argument("--input-json", help="Workflow inputs as a JSON object.")
-    dl.add_argument("--option", action="append", default=[], metavar="name=value", help="Option passed to zippergen_setup(config).")
-    dl.add_argument("--services", choices=("fake", "live"), help="Shortcut stored as services=<value>.")
-    dl.add_argument("--timeout", type=float, default=0.0, help="Workflow timeout in seconds; default 0 for no deadline.")
-    dl.add_argument("--force", action="store_true", help="Overwrite an existing deployment profile.")
-    dl.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
-
     rd = sub.add_parser("run-deployment")
     rd.add_argument("name", help="Deployment name.")
 
@@ -4982,6 +4110,20 @@ def _parse_cli_args(
     st.add_argument("deployment", nargs="?", help="Deployment name.")
     st.add_argument("--store", help="SQLite store path.")
     st.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+
+    inspect_parser = sub.add_parser(
+        "inspect",
+        help="show the current durable program position for each participant",
+    )
+    inspect_parser.add_argument("deployment", nargs="?", help="Deployment name.")
+    inspect_parser.add_argument("--store", help="SQLite store path.")
+    inspect_parser.add_argument(
+        "--workflow",
+        help="Workflow spec for --store; defaults to this project's workflow.",
+    )
+    inspect_parser.add_argument("--project", help="Project root for a durable run.")
+    inspect_parser.add_argument("--agent", help="Participant whose local projection to show.")
+    inspect_parser.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
 
     tr = sub.add_parser("trace", help="show recent trace events from a local SQLite store")
     tr.add_argument("deployment", nargs="?", help="Deployment name.")
@@ -5055,10 +4197,6 @@ def main(argv=None) -> int:
         and args.connector_provider == "google"
     ):
         return _connector_authorize_google_command(args)
-    if args.cmd == "dev":
-        if args.run_id and not args.resume:
-            raise SystemExit("--run-id requires --resume.")
-        return _dev_command(args)
     if args.cmd == "run":
         if getattr(args, "run_id", None) and not args.resume:
             raise SystemExit("--run-id requires --resume.")
@@ -5106,8 +4244,6 @@ def main(argv=None) -> int:
         return _deploy_command(args)
     if args.cmd == "configure":
         return _configure_deployment_command(args)
-    if args.cmd == "deploy-local":
-        return _deploy_local_command(args)
     if args.cmd == "run-deployment":
         return _run_deployment_command(args)
     if args.cmd == "start":
@@ -5126,6 +4262,8 @@ def main(argv=None) -> int:
         return _doctor_command(args)
     if args.cmd == "status":
         return _status_command(args)
+    if args.cmd == "inspect":
+        return _inspect_command(args)
     if args.cmd == "trace":
         return _trace_command(args)
     if args.cmd == "tasks":

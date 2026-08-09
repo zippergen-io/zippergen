@@ -1,9 +1,4 @@
-"""Configuring a connector must not need the deleted Studio shell.
-
-This is what the Studio removal genuinely cost: creating and binding
-connectors lived in `studio_connectors.py` and nothing in the CLI replaced it.
-Telegram blocked the tutorial; Gmail and Sheets blocked `call_intake`. All
-three are back as ordinary commands over the same workspace methods.
+"""Connector configuration is an ordinary project and CLI operation.
 
 The split is the same everywhere: portable fields — which chat, which
 spreadsheet, which mailbox query — are committed to `zippergen.toml`;
@@ -154,9 +149,8 @@ def test_binding_works_against_a_real_workflow_requirement(tmp_path):
     root = _project(tmp_path)
     example = Path(__file__).resolve().parents[1] / "examples" / "call_intake.py"
     (root / "workflow.py").write_text(example.read_text())
-    Workspace(root, home=root.parent / "home").select_workflow(
-        "workflow.py:call_intake", cwd=root
-    )
+    workspace = Workspace(root, home=root.parent / "home")
+    workspace.initialize_project()
 
     first = _run(root, "connector", "configure", "gmail", "inbox",
                  "--bind", "call-mailbox")

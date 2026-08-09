@@ -1,12 +1,7 @@
-"""Creating a project is the one capability the CLI did not have.
+"""`init` creates the few files an ordinary ZipperGen project needs.
 
-Everything else Studio owned has a non-Studio path already: run, deploy and
-validate are CLI commands, model and connector assignment is `zippergen.toml`,
-Google authorization is `connector authorize`, and development credentials are
-environment variables. Project creation was the gap.
-
-`init` bootstraps files and stops. It asks nothing, configures nothing, and
-never overwrites — otherwise it becomes the questionnaire that Studio was.
+It bootstraps files and stops. It asks nothing, configures nothing, and never
+overwrites existing project guidance.
 """
 
 import subprocess

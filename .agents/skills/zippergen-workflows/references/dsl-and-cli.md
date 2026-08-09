@@ -439,6 +439,7 @@ zg run --llm openai:gpt-4o --llm-for User.approve_reply=mock
 
 # Record the run so it survives a stop, then continue it
 zg run --durable --input message=hello
+zg inspect --agent Writer
 zg run --resume
 ```
 
@@ -460,6 +461,7 @@ without a person, pipe the answer on standard input.
 ```bash
 zg deploy --name production
 zg status production
+zg inspect production
 zg logs production
 zg doctor production
 zg restart production
@@ -468,7 +470,8 @@ zg compact production
 zg remove production
 ```
 
-`status` and `doctor` read the SQLite store without changing it; `trace` and
+`status`, `inspect`, and `doctor` read durable state without changing it.
+`inspect` shows each participant's current local program position. `trace` and
 `tasks` show recent events and pending human tasks. `compact` requires a
 stopped deployment and removes only events covered by durable recovery
 snapshots. Completed human tasks and connector notifications remain as audit

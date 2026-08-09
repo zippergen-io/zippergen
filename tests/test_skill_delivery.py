@@ -1,10 +1,4 @@
-"""The coding-agent skill must reach an installed user, not only a checkout.
-
-Before this, the skill lived at the repository root outside `src/`, so
-`pip install zippergen` shipped a runtime with no instructions for an agent.
-The only delivery path was the prompt Studio generated when it invoked an
-assistant itself, which needs a git checkout and goes away with the shell.
-"""
+"""The coding-agent skill must reach an installed user, not only a checkout."""
 
 import subprocess
 import sys

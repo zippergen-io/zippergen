@@ -1,9 +1,7 @@
 """A configured connector must actually reach the deployment.
 
-Studio built this wiring and passed it to `deploy` through a hidden flag. When
-the shell went, so did the only producer of that flag — so a Telegram approval
-could be configured and assigned and still never arrive. `deploy` now reads the
-project directly.
+`deploy` reads the project configuration directly and snapshots the resulting
+routing without exposing credentials.
 
 The invariant throughout: the snapshot is durable routing and is committed with
 the deployment; the credential values live only in the environment.
@@ -31,7 +29,6 @@ def project(tmp_path):
     shutil.copy(EXAMPLE, root / "workflow.py")
     workspace = Workspace(root, home=tmp_path / "home")
     workspace.initialize_project(name="demo")
-    workspace.select_workflow(ENTRY, cwd=root)
     return workspace
 
 
@@ -163,7 +160,6 @@ def test_reconfiguring_a_deployment_ignores_the_surrounding_project(
     shutil.copy(EXAMPLE, other / "workflow.py")
     unrelated = Workspace(other, home=tmp_path / "home")
     unrelated.initialize_project(name="unrelated")
-    unrelated.select_workflow(ENTRY, cwd=other)
     monkeypatch.chdir(other)
     monkeypatch.setenv("ZIPPERGEN_HOME", str(tmp_path / "home"))
 

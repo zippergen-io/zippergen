@@ -501,13 +501,16 @@ real model would produce good text. Both matter, and they are different question
 
 \subsection{Durable runs}
 
-A durable run records each step before taking it, in its own SQLite store. An
-interrupted run resumes where it stopped, and a model call already made is not
-made again.
+A durable run records coordination state and completed external-action results
+in its own SQLite store. An ordinarily interrupted run resumes where it
+stopped. A crash after an external effect succeeds but before its result is
+recorded can repeat that effect, so irreversible connectors should use
+idempotency keys.
 
 \begin{lstlisting}[style=shell]
 zg run --durable --llm openai:gpt-4o-mini
 # Ctrl-C
+zg inspect --agent Writer
 zg run --resume
 \end{lstlisting}
 
@@ -656,6 +659,7 @@ zg deploy production          # redeploy the current source
 \toprule
 \texttt{zg status NAME} & is it running, and where is it \\
 \texttt{zg logs NAME} & what it has been doing \\
+\texttt{zg inspect NAME} & where each participant's local program is now \\
 \texttt{zg trace NAME} & recent protocol events \\
 \texttt{zg tasks NAME} & decisions waiting for a person \\
 \texttt{zg approve NAME} & answer one \\

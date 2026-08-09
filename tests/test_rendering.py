@@ -193,7 +193,7 @@ def test_column_renderer_truncates_identifiers_and_dates_without_splitting():
         [
             (
                 "tutorial_review-20260726-100626-683804000",
-                "development run",
+                "durable run",
                 "✓ done",
                 "2026-07-26 10:06",
             )

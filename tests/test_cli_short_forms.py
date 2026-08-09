@@ -39,7 +39,6 @@ def project(tmp_path, monkeypatch):
     shutil.copy(EXAMPLE, root / "workflow.py")
     workspace = Workspace(root, home=tmp_path / "home")
     workspace.initialize_project(name="email-approval")
-    workspace.select_workflow("workflow.py:email_approval", cwd=root)
     monkeypatch.chdir(root)
     monkeypatch.setenv("ZIPPERGEN_HOME", str(tmp_path / "home"))
     return root
@@ -54,7 +53,6 @@ def input_project(tmp_path, monkeypatch):
     shutil.copy(EXAMPLES / "hello.py", root / "workflow.py")
     workspace = Workspace(root, home=tmp_path / "home")
     workspace.initialize_project(name="hello")
-    workspace.select_workflow("workflow.py:hello", cwd=root)
     monkeypatch.chdir(root)
     monkeypatch.setenv("ZIPPERGEN_HOME", str(tmp_path / "home"))
     return root
@@ -223,6 +221,10 @@ def test_connector_assignment_infers_the_only_workflow_without_manifest_entry(
     assert workspace.connector_assignment_profile(
         "workflow.py:email_approval"
     )["lifelines"] == {"User": "approvals"}
+    manifest = workspace.manifest_path.read_text(encoding="utf-8")
+    assert "[connectors.assignments.lifelines]" in manifest
+    assert '"User" = "approvals"' in manifest
+    assert "workflow_entry" not in manifest
     assert "asked through approvals" in capsys.readouterr().out
 
 
@@ -263,7 +265,7 @@ def test_top_level_help_hides_legacy_internal_commands(capsys):
 
     output = capsys.readouterr().out
     assert "==SUPPRESS==" not in output
-    for command in ("dev", "deploy-local", "run-deployment", "serve"):
+    for command in ("run-deployment", "serve"):
         assert f"    {command} " not in output
 
 

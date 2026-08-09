@@ -605,6 +605,7 @@ Proposed reply:
 Press Ctrl-C while it waits for your approval, then:
 
 \begin{lstlisting}[style=shell]
+zg inspect --agent Writer
 zg run --resume
 \end{lstlisting}
 
@@ -631,6 +632,7 @@ first, and a failure stops it:
 zg start production
 zg logs production
 zg status production
+zg inspect production
 \end{lstlisting}
 
 A deployment you no longer want:

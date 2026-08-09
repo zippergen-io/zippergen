@@ -9,7 +9,7 @@ The split is the point. The snapshot is durable, portable and free of
 credentials; the environment holds the values and never leaves the machine that
 supplied them.
 
-Extracted from the deleted Studio shell. Nothing here renders or prompts.
+This is a pure configuration layer. Nothing here renders or prompts.
 """
 
 from __future__ import annotations
@@ -20,6 +20,7 @@ from typing import Any
 from zippergen.semantic import workflow_semantics
 from zippergen.syntax import Workflow, _ordered_workflow_lifelines
 from zippergen.workspace import Workspace
+from zippergen.deployment_platform import slug
 
 
 class ConnectorWiringError(RuntimeError):
@@ -27,11 +28,9 @@ class ConnectorWiringError(RuntimeError):
 
 
 def _environment_name(configuration: str, suffix: str) -> str:
-    from zippergen.serve import _slug
-
     return (
         "ZIPPERGEN_CONNECTOR_"
-        + _slug(configuration).replace("-", "_").upper()
+        + slug(configuration).replace("-", "_").upper()
         + suffix
     )
 

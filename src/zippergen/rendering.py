@@ -190,23 +190,6 @@ class TerminalRenderer:
         self.emit(title)
         self.emit(("═" if major else "─") * self.visible_width(title))
 
-    def wrapped_field(
-        self,
-        label: str,
-        value: object,
-        *,
-        label_width: int = 7,
-    ) -> None:
-        prefix = f"  {label:<{label_width}}  "
-        continuation = " " * self.visible_width(prefix)
-        lines = self.wrapped_lines(
-            value,
-            self.output_columns() - self.visible_width(prefix),
-        )
-        self.emit(prefix + lines[0])
-        for line in lines[1:]:
-            self.emit(continuation + line)
-
     def pad_cell(
         self,
         value: object,

@@ -232,6 +232,7 @@ you can continue it later:
 
 ```bash
 zg run --durable --llm mock   # Ctrl-C part way through
+zg inspect --agent Writer     # see where each participant is waiting
 zg run --resume               # carry on where it stopped
 ```
 
@@ -239,9 +240,14 @@ zg run --resume               # carry on where it stopped
 Run email_approval-20260808-135754-015850000
 ```
 
-A plain `run` just runs once. A durable run writes down every step before it
-takes it. If you stop it, it continues from there instead of starting again,
-and you do not pay twice for a model call that already happened.
+A plain `run` just runs once. A durable run records coordination state and
+completed external-action results. After an ordinary interruption it continues
+instead of starting again. A crash in the narrow interval after an external
+effect succeeds but before its result is recorded can repeat that effect, so
+irreversible connectors should use idempotency keys.
+
+For a deployment, `zg inspect production` reads the same position information
+from its durable store without changing the running service.
 
 Preparing a deployment and starting one are two different steps. `--no-start`
 writes the files and starts nothing. Without it, ZipperGen first checks every

@@ -1,16 +1,7 @@
-"""The agent-facing layer must not be built on top of Studio.
+"""The agent-facing layer depends directly on ordinary ZipperGen modules.
 
-Studio is dead architecture. It stays only until it can be deleted, and
-nothing new may depend on it — otherwise the replacement inherits exactly the
-complexity it exists to remove:
-
-    new layer -> wrappers -> Studio -> ZipperGen      (what we must not build)
-    new layer -> ZipperGen core                       (what we are building)
-
-Reusing Studio's *code* is fine and expected, but by extracting it downward
-into an ordinary module both callers can use — not by importing Studio.
-
-Add a module to AGENT_LAYER when it becomes part of that layer.
+The removed interactive application must not return as an intermediate layer.
+Add a module to AGENT_LAYER when it becomes part of the coding-agent surface.
 """
 
 import ast
@@ -20,13 +11,10 @@ import pytest
 
 PACKAGE = Path(__file__).resolve().parents[1] / "src" / "zippergen"
 
-# Modules that make up the agent-facing replacement. Each must be usable with
-# Studio deleted.
+# Modules that make up the agent-facing integration.
 AGENT_LAYER = ("skill.py",)
 
-# Modules on their way out. The fence is a denylist of dead architecture, not
-# an allow-list of approved core: core grows all the time and an allow-list
-# would turn every reasonable new module into a test failure.
+# Removed modules that must not be reintroduced as dependencies.
 DEAD_ARCHITECTURE = (
     "zippergen.studio",
     "zippergen.natural_language",
@@ -47,7 +35,7 @@ def _imported_modules(path: Path) -> set[str]:
 
 
 @pytest.mark.parametrize("module", AGENT_LAYER)
-def test_the_agent_layer_does_not_import_studio(module):
+def test_the_agent_layer_does_not_import_removed_application_modules(module):
     path = PACKAGE / module
     assert path.is_file(), f"{module} is listed in AGENT_LAYER but does not exist"
 
@@ -58,14 +46,13 @@ def test_the_agent_layer_does_not_import_studio(module):
     )
 
     assert not offending, (
-        f"{module} imports {', '.join(offending)}. If the logic it needs "
-        "exists only inside Studio, extract that logic into an ordinary "
-        "module and have both callers use it."
+        f"{module} imports removed application code: {', '.join(offending)}. "
+        "Put shared behavior in an ordinary core module."
     )
 
 
-def test_the_scripted_backend_is_independent_of_studio():
-    """It sits beside the real and mock backends, not above Studio."""
+def test_the_scripted_backend_is_an_ordinary_runtime_backend():
+    """It sits beside the real and mock backends."""
 
     assert not any(
         name.startswith(DEAD_ARCHITECTURE)

@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from zippergen import Json
-from zippergen.dev import _coerce_input, _parse_guided_value, run_dev
+from zippergen.durable_runs import _coerce_input, _parse_guided_value, run_durable
 from zippergen.rendering import TerminalRenderer
 from zippergen.store import open_store
 from zippergen.workspace import Workspace
@@ -117,7 +117,7 @@ def test_guided_input_rejects_non_json_values():
         _coerce_input("record", {"bad": (1, 2)}, Json)
 
 
-def test_dev_collects_multiple_inputs_and_reviews_inline(tmp_path):
+def test_durable_run_collects_multiple_inputs_and_reviews_inline(tmp_path):
     workspace = Workspace(_repository_root(), home=tmp_path / "home")
     responses = iter(
         [
@@ -129,7 +129,7 @@ def test_dev_collects_multiple_inputs_and_reviews_inline(tmp_path):
     )
     output: list[str] = []
 
-    record = run_dev(
+    record = run_durable(
         workspace,
         workflow_spec=TUTORIAL_SPEC,
         input_func=lambda prompt: next(responses),
@@ -152,7 +152,7 @@ def test_dev_collects_multiple_inputs_and_reviews_inline(tmp_path):
     assert output[-2] == "Result: [revise_reply:draft]"
 
 
-def test_development_run_records_non_secret_connector_routing(tmp_path):
+def test_durable_run_records_non_secret_connector_routing(tmp_path):
     workspace = Workspace(_repository_root(), home=tmp_path / "home")
     responses = iter(
         [
@@ -172,7 +172,7 @@ def test_development_run_records_non_secret_connector_routing(tmp_path):
         }
     }
 
-    record = run_dev(
+    record = run_durable(
         workspace,
         workflow_spec=TUTORIAL_SPEC,
         input_func=lambda prompt: next(responses),
@@ -184,13 +184,13 @@ def test_development_run_records_non_secret_connector_routing(tmp_path):
     assert stored["connectors"] == snapshot
 
 
-def test_dev_uses_shared_renderer_when_invoked_by_studio(tmp_path):
+def test_durable_run_uses_the_shared_renderer(tmp_path):
     workspace = Workspace(_repository_root(), home=tmp_path / "home")
     responses = iter(["Explain durable execution.", "1", "y"])
     output: list[str] = []
     renderer = TerminalRenderer(output.append, color=False)
 
-    record = run_dev(
+    record = run_durable(
         workspace,
         workflow_spec=TUTORIAL_SPEC,
         input_func=lambda prompt: next(responses),
@@ -199,7 +199,7 @@ def test_dev_uses_shared_renderer_when_invoked_by_studio(tmp_path):
     )
 
     assert record["status"] == "done"
-    assert "Development run" in output
+    assert "Durable run" in output
     assert "Run completed" in output
     assert any("✓ Workflow tutorial_review validated" in line for line in output)
     assert any("✓ done" in line for line in output)
@@ -208,7 +208,7 @@ def test_dev_uses_shared_renderer_when_invoked_by_studio(tmp_path):
     assert not any(line.startswith("Workflow tutorial_review:") for line in output)
 
 
-def test_dev_records_and_uses_assistant_backend(tmp_path, monkeypatch):
+def test_durable_run_records_and_uses_assistant_backend(tmp_path, monkeypatch):
     workspace = Workspace(_repository_root(), home=tmp_path / "home")
     selections = []
 
@@ -227,7 +227,7 @@ def test_dev_records_and_uses_assistant_backend(tmp_path, monkeypatch):
         fake_factory,
     )
 
-    record = run_dev(
+    record = run_durable(
         workspace,
         workflow_spec=(
             "examples/assistant_maintenance.py:assistant_maintenance"
@@ -244,14 +244,14 @@ def test_dev_records_and_uses_assistant_backend(tmp_path, monkeypatch):
     assert selections[-1] == ("codex", str(workspace.root))
 
 
-def test_dev_resume_claims_the_existing_pending_terminal_task(tmp_path):
+def test_durable_resume_claims_the_existing_pending_terminal_task(tmp_path):
     workspace = Workspace(_repository_root(), home=tmp_path / "home")
 
     def terminal_closed(prompt: str) -> str:
         raise RuntimeError("terminal closed during review")
 
     with pytest.raises(RuntimeError, match="terminal closed during review"):
-        run_dev(
+        run_durable(
             workspace,
             workflow_spec=TUTORIAL_SPEC,
             provided_inputs={"request": "Resume me", "max_retries": 1},
@@ -267,7 +267,7 @@ def test_dev_resume_claims_the_existing_pending_terminal_task(tmp_path):
         "SELECT COUNT(*) FROM human_tasks WHERE status='pending'"
     ).fetchone()[0] == 1
 
-    resumed = run_dev(
+    resumed = run_durable(
         workspace,
         resume=True,
         input_func=lambda prompt: "y",
@@ -282,7 +282,7 @@ def test_dev_resume_claims_the_existing_pending_terminal_task(tmp_path):
     ).fetchone()[0] == 1
 
 
-def test_dev_ctrl_c_keeps_terminal_input_on_main_thread_and_resumes(tmp_path):
+def test_durable_ctrl_c_keeps_terminal_input_on_main_thread_and_resumes(tmp_path):
     workspace = Workspace(_repository_root(), home=tmp_path / "home")
     input_threads = []
 
@@ -291,7 +291,7 @@ def test_dev_ctrl_c_keeps_terminal_input_on_main_thread_and_resumes(tmp_path):
         raise KeyboardInterrupt
 
     with pytest.raises(KeyboardInterrupt):
-        run_dev(
+        run_durable(
             workspace,
             workflow_spec=TUTORIAL_SPEC,
             provided_inputs={"request": "Interrupt me", "max_retries": 1},
@@ -313,7 +313,7 @@ def test_dev_ctrl_c_keeps_terminal_input_on_main_thread_and_resumes(tmp_path):
         "SELECT COUNT(*) FROM human_tasks WHERE status='pending'"
     ).fetchone()[0] == 1
 
-    resumed = run_dev(
+    resumed = run_durable(
         workspace,
         resume=True,
         input_func=lambda prompt: input_threads.append(threading.current_thread())
@@ -329,7 +329,7 @@ def test_dev_ctrl_c_keeps_terminal_input_on_main_thread_and_resumes(tmp_path):
     ).fetchone()[0] == 1
 
 
-def test_dev_rejects_resume_after_semantic_change(tmp_path):
+def test_durable_run_rejects_resume_after_semantic_change(tmp_path):
     root = tmp_path / "project"
     root.mkdir()
     workflow_path = root / "workflow.py"
@@ -344,7 +344,7 @@ def test_dev_rejects_resume_after_semantic_change(tmp_path):
         "    return result @ User\n"
     )
     workspace = Workspace(root, home=tmp_path / "home")
-    record = run_dev(
+    record = run_durable(
         workspace,
         workflow_spec="workflow.py:sample",
         provided_inputs={"value": "first"},
@@ -354,14 +354,14 @@ def test_dev_rejects_resume_after_semantic_change(tmp_path):
     workflow_path.write_text(workflow_path.read_text().replace("return value", "return value + '!'"))
 
     with pytest.raises(SystemExit, match="workflow meaning changed"):
-        run_dev(
+        run_durable(
             workspace,
             resume=True,
             output_func=lambda line: None,
         )
 
 
-def test_dev_collects_and_reuses_private_declared_secret(
+def test_durable_run_collects_and_reuses_private_declared_secret(
     tmp_path, monkeypatch
 ):
     root = tmp_path / "project"
@@ -371,7 +371,7 @@ def test_dev_collects_and_reuses_private_declared_secret(
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     output: list[str] = []
 
-    first = run_dev(
+    first = run_durable(
         workspace,
         workflow_spec="secret_workflow.py:secret_demo",
         provided_inputs={"value": "first"},
@@ -386,7 +386,7 @@ def test_dev_collects_and_reuses_private_declared_secret(
     assert "OPENAI_API_KEY" not in os.environ
     assert any("private development secret storage" in line for line in output)
 
-    second = run_dev(
+    second = run_durable(
         workspace,
         workflow_spec="secret_workflow.py:secret_demo",
         provided_inputs={"value": "second"},
@@ -397,7 +397,7 @@ def test_dev_collects_and_reuses_private_declared_secret(
     assert second["result"] == "second:True"
 
 
-def test_dev_routes_models_per_lifeline_and_collects_each_provider_secret(
+def test_durable_run_routes_models_and_collects_each_provider_secret(
     tmp_path, monkeypatch
 ):
     root = tmp_path / "project"
@@ -420,7 +420,7 @@ def test_dev_routes_models_per_lifeline_and_collects_each_provider_secret(
     )
     secrets = iter(["openai-secret", "anthropic-secret"])
 
-    record = run_dev(
+    record = run_durable(
         workspace,
         workflow_spec="routed_workflow.py:routed",
         provided_inputs={"value": "hello"},
@@ -448,13 +448,7 @@ def test_dev_routes_models_per_lifeline_and_collects_each_provider_secret(
 
 
 def test_run_durable_and_run_resume_reach_the_same_execution(tmp_path, monkeypatch):
-    """One verb for running a workflow; durability is a mode of running it.
-
-    `run` and `dev` were the same runtime with different bookkeeping — the
-    only difference being whether the run was recorded so it could be resumed.
-    Two verbs for that was a naming wart, so `run --durable` and `run --resume`
-    now reach it and `dev` survives only as a hidden alias.
-    """
+    """One verb runs workflows; durability is an explicit mode of that verb."""
 
     from zippergen import serve
 
@@ -501,17 +495,3 @@ def test_a_stored_run_cannot_request_memory_execution():
         serve.main(
             ["run", "wf.py:w", "--store", "run.sqlite", "--execution", "memory"]
         )
-
-
-def test_dev_remains_as_a_hidden_alias(capsys):
-    """Existing scripts and deployment profiles keep working."""
-
-    from zippergen import serve
-
-    _parser, parsed = serve._parse_cli_args(["dev", "wf.py:w", "--yes"])
-    assert parsed.cmd == "dev"
-
-    with pytest.raises(SystemExit):
-        serve.main(["--help"])
-    listed = capsys.readouterr().out
-    assert "    dev " not in listed

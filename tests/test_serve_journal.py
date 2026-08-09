@@ -3,7 +3,7 @@ from zippergen import Lifeline, Var, workflow
 from zippergen.actions import llm as llm_deco, pure
 from zippergen.projection import project
 from zippergen.store import open_store
-from zippergen.serve import run_role
+from zippergen.role_runner import run_role
 
 A = Lifeline("A"); B = Lifeline("B")
 n = Var("n", int, default=0); m = Var("m", int, default=0)

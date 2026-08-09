@@ -9,28 +9,28 @@ import shutil
 import time
 from typing import Iterable
 
-from zippergen.serve import (
-    _deployment_bundles_dir,
-    _deployment_environment_dir,
-    _deployment_launchd_path,
-    _deployment_profile_path,
-    _deployment_script_path,
-    _deployment_secrets_path,
-    _deployment_service_path,
-    _deployments_dir,
-    _installed_launchd_path,
-    _installed_systemd_service_path,
-    _launchctl_command,
-    _launchctl_domain,
-    _launchd_label,
-    _run_launchctl,
-    _run_systemctl,
-    _service_manager,
-    _slug,
-    _systemctl_command,
-    _systemd_unit_name,
-    _zippergen_home,
-    _deployment_service_status,
+from zippergen.deployment_platform import (
+    deployment_bundles_dir as _deployment_bundles_dir,
+    deployment_environment_dir as _deployment_environment_dir,
+    deployment_launchd_path as _deployment_launchd_path,
+    deployment_profile_path as _deployment_profile_path,
+    deployment_script_path as _deployment_script_path,
+    deployment_secrets_path as _deployment_secrets_path,
+    deployment_service_path as _deployment_service_path,
+    deployment_service_status as _deployment_service_status,
+    deployments_dir as _deployments_dir,
+    installed_launchd_path as _installed_launchd_path,
+    installed_systemd_service_path as _installed_systemd_service_path,
+    launchctl_command as _launchctl_command,
+    launchctl_domain as _launchctl_domain,
+    launchd_label as _launchd_label,
+    run_launchctl as _run_launchctl,
+    run_systemctl as _run_systemctl,
+    service_manager as _service_manager,
+    slug as _slug,
+    systemctl_command as _systemctl_command,
+    systemd_unit_name as _systemd_unit_name,
+    zippergen_home as _zippergen_home,
 )
 
 
@@ -58,15 +58,6 @@ class DeploymentRemovalResult:
     purged: bool
     artifact_count: int
     archive: Path | None
-
-
-@dataclass(frozen=True)
-class DeploymentLogResetResult:
-    name: str
-    log: Path
-    archived_bytes: int
-    archive: Path | None
-
 
 @dataclass(frozen=True)
 class DeploymentLogCompactionResult:
@@ -382,75 +373,6 @@ def _unique_log_archive(name: str) -> Path:
     return destination
 
 
-def reset_deployment_log(
-    name: str,
-    profile: dict[str, object],
-) -> DeploymentLogResetResult:
-    """Archive visible log history and begin a new logical log generation."""
-
-    raw_log = profile.get("log")
-    if not raw_log:
-        raise DeploymentRemovalError(
-            f"Deployment {name} has no log path configured."
-        )
-    log = Path(str(raw_log)).expanduser()
-    if log.exists() and (not log.is_file() or log.is_symlink()):
-        raise DeploymentRemovalError(
-            f"Expected a regular deployment log file: {log}"
-        )
-
-    try:
-        boundary = log.stat().st_size if log.is_file() else 0
-    except OSError as exc:
-        raise DeploymentRemovalError(
-            f"Could not inspect deployment log {log}: {exc}"
-        ) from exc
-
-    raw_offset = profile.get("log_generation_offset")
-    start = (
-        raw_offset
-        if isinstance(raw_offset, int) and 0 <= raw_offset <= boundary
-        else 0
-    )
-    visible_bytes = boundary - start
-    archive: Path | None = None
-    try:
-        if visible_bytes:
-            archive = _unique_log_archive(name)
-            with log.open("rb") as source, archive.open("xb") as destination:
-                source.seek(start)
-                remaining = visible_bytes
-                while remaining:
-                    chunk = source.read(min(1024 * 1024, remaining))
-                    if not chunk:
-                        raise OSError(
-                            "the deployment log became shorter during archival"
-                        )
-                    destination.write(chunk)
-                    remaining -= len(chunk)
-            archive.chmod(0o600)
-
-        profile["log_generation_offset"] = boundary
-        profile["log_history_reset_at"] = time.strftime(
-            "%Y-%m-%dT%H:%M:%S%z"
-        )
-        _deployment_profile_path(name).write_text(
-            json.dumps(profile, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
-    except Exception as exc:
-        if archive is not None:
-            archive.unlink(missing_ok=True)
-        raise DeploymentRemovalError(
-            f"Could not reset deployment log history safely: {exc}"
-        ) from exc
-
-    return DeploymentLogResetResult(
-        name=name,
-        log=log,
-        archived_bytes=visible_bytes,
-        archive=archive,
-    )
 
 
 def compact_deployment_logs(
