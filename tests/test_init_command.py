@@ -34,6 +34,7 @@ def test_it_creates_a_project_and_stops(tmp_path):
 
     assert sorted(path.name for path in tmp_path.iterdir()) == [
         "AGENTS.md",
+        "CLAUDE.md",
         "specification.md",
         "zippergen.toml",
     ]
@@ -68,6 +69,12 @@ def test_the_generated_agents_md_points_at_the_packaged_skill(tmp_path):
     assert "/home/" not in content
 
 
+def test_the_generated_claude_md_imports_the_shared_guidance(tmp_path):
+    _init(tmp_path)
+
+    assert (tmp_path / "CLAUDE.md").read_text() == "@AGENTS.md\n"
+
+
 def test_an_existing_agents_md_is_never_overwritten(tmp_path):
     """Someone else's guidance is not ours to replace."""
 
@@ -81,6 +88,18 @@ def test_an_existing_agents_md_is_never_overwritten(tmp_path):
     assert "left alone" in output
     # The user is told exactly what to add instead.
     assert "zippergen skill" in output
+
+
+def test_an_existing_claude_md_is_never_overwritten(tmp_path):
+    claude = tmp_path / "CLAUDE.md"
+    original = "# Existing Claude guidance\n"
+    claude.write_text(original)
+
+    output = _init(tmp_path)
+
+    assert claude.read_text() == original
+    assert "left alone" in output
+    assert "@AGENTS.md" in output
 
 
 def test_an_existing_specification_is_never_overwritten(tmp_path):
@@ -135,11 +154,8 @@ def test_it_asks_nothing(tmp_path):
     assert result.returncode == 0, result.stderr
 
 
-@pytest.mark.parametrize(
-    "filename",
-    ["zippergen.lock", "workflow.py", ".zippergen"],
-)
-def test_it_creates_nothing_beyond_the_three_files(tmp_path, filename):
+@pytest.mark.parametrize("filename", ["zippergen.lock", "workflow.py", ".zippergen"])
+def test_it_creates_no_workflow_lock_or_private_state(tmp_path, filename):
     """Configuration, the workflow and private state are not init's business."""
 
     _init(tmp_path)

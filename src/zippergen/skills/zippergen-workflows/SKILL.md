@@ -244,7 +244,7 @@ not embed credentials or copy secret values into ordinary profiles or tests.
 Connectors are configured once per machine and routed per workflow:
 
 ```bash
-zg connector configure telegram --bind approvals
+zg connector configure telegram approvals --chat-id CHAT_ID
 zg connector assign User approvals
 ```
 

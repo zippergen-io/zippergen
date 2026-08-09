@@ -184,6 +184,48 @@ def test_a_single_workflow_is_inferred_without_a_manifest_entry(
     assert "workflow_entry" not in workspace.manifest_path.read_text()
 
 
+def test_a_durable_run_infers_the_only_workflow_without_a_manifest_entry(
+    tmp_path, monkeypatch, capsys
+):
+    root = tmp_path / "durable-beginner"
+    root.mkdir()
+    shutil.copy(EXAMPLES / "hello.py", root / "workflow.py")
+    workspace = Workspace(root, home=tmp_path / "home")
+    workspace.initialize_project(name="durable-beginner")
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(tmp_path / "home"))
+
+    assert serve.main(
+        ["run", "--durable", "--llm", "mock", "--yes", "--input", "topic=hello"]
+    ) == 0
+
+    assert workspace.current_run()["status"] == "done"
+    assert "Workflow hello: valid" in capsys.readouterr().out
+
+
+def test_connector_assignment_infers_the_only_workflow_without_manifest_entry(
+    tmp_path, monkeypatch, capsys
+):
+    root = tmp_path / "connector-beginner"
+    root.mkdir()
+    shutil.copy(EXAMPLE, root / "workflow.py")
+    workspace = Workspace(root, home=tmp_path / "home")
+    workspace.initialize_project(name="connector-beginner")
+    workspace.save_connector_configuration(
+        "approvals",
+        {"provider": "telegram", "kind": "telegram", "chat_id": "123"},
+    )
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(tmp_path / "home"))
+
+    assert serve.main(["connector", "assign", "User", "approvals"]) == 0
+
+    assert workspace.connector_assignment_profile(
+        "workflow.py:email_approval"
+    )["lifelines"] == {"User": "approvals"}
+    assert "asked through approvals" in capsys.readouterr().out
+
+
 def test_several_workflows_ask_for_an_explicit_choice(tmp_path, monkeypatch):
     root = tmp_path / "ambiguous"
     root.mkdir()
@@ -212,6 +254,17 @@ def test_a_manifest_entry_wins_over_discovery(tmp_path, monkeypatch, capsys):
     assert serve.main(["validate"]) == 0
 
     assert "email_approval: valid" in capsys.readouterr().out
+
+
+def test_top_level_help_hides_legacy_internal_commands(capsys):
+    with pytest.raises(SystemExit) as exc:
+        serve.main(["--help"])
+    assert exc.value.code == 0
+
+    output = capsys.readouterr().out
+    assert "==SUPPRESS==" not in output
+    for command in ("dev", "deploy-local", "run-deployment", "serve"):
+        assert f"    {command} " not in output
 
 
 def test_a_projection_that_promises_a_result_shows_where_it_comes_from(

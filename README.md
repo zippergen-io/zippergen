@@ -69,14 +69,15 @@ mkdir email-approval && cd email-approval
 zippergen init
 ```
 
-That writes three files and stops. A manifest, an empty specification, and an
-`AGENTS.md` file that tells a coding agent where ZipperGen's instructions are:
+That writes four files and stops. A manifest, an empty specification, shared
+agent instructions, and a small pointer that makes Claude Code read them:
 
 ```
 ZipperGen project: email-approval
   zippergen.toml     created
   specification.md   created
   AGENTS.md          created
+  CLAUDE.md           created
 ```
 
 Now say what you want. You can write the workflow yourself, or open a coding

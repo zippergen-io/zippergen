@@ -187,14 +187,14 @@ A ZipperGen project is a directory. \texttt{zg init} creates one:
 \path{workflow.py} & yes & the coordination, as Python \\
 \path{zippergen.toml} & yes & models, connectors, entry point, no secrets \\
 \path{AGENTS.md} & yes & points a coding agent at \texttt{zg skill} \\
-\path{.zippergen/} & no & scratch \\
+\path{CLAUDE.md} & yes & points Claude Code at \path{AGENTS.md} \\
 \texttt{ZIPPERGEN\_HOME} & no & credentials, runs, deployments \\
 \bottomrule
 \end{tabularx}
 \end{center}
 
-The split that matters is the last two rows. Everything above them travels with
-the project. Everything in them describes one machine. A colleague who clones
+The split that matters is the last row. Everything above it travels with
+the project. The last row describes one machine. A colleague who clones
 the repository gets the workflow, the specification and the configuration, and
 supplies their own keys.
 
@@ -704,7 +704,8 @@ a clone and a running service.
 \section{Working with a coding agent}
 
 ZipperGen ships instructions for coding agents. \texttt{zg init} writes an
-\path{AGENTS.md} pointing at them, and \texttt{zg skill} prints them.
+\path{AGENTS.md} pointing at them and a \path{CLAUDE.md} that imports those
+same instructions for Claude Code. \texttt{zg skill} prints the full guidance.
 
 \begin{lstlisting}[style=shell]
 zg skill                  # what an agent should follow

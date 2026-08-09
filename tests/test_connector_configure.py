@@ -13,18 +13,22 @@ credentials are not.
 import subprocess
 import sys
 import tomllib
+import os
 from pathlib import Path
 
 from zippergen.workspace import Workspace
 
 
 def _run(directory: Path, *arguments: str, token: str = "bot-token"):
+    environment = dict(os.environ)
+    environment["ZIPPERGEN_HOME"] = str(directory.parent / "home")
     return subprocess.run(
         [sys.executable, "-m", "zippergen.serve", *arguments],
         capture_output=True,
         text=True,
         cwd=directory,
         input=f"{token}\n",
+        env=environment,
         check=False,
     )
 
@@ -36,6 +40,7 @@ def _project(tmp_path: Path) -> Path:
         [sys.executable, "-m", "zippergen.serve", "init"],
         cwd=root,
         capture_output=True,
+        env={**os.environ, "ZIPPERGEN_HOME": str(tmp_path / "home")},
         check=True,
     )
     return root
@@ -66,7 +71,7 @@ def test_the_bot_token_never_reaches_the_manifest(tmp_path):
 
     assert "secret-bot-token" not in (root / "zippergen.toml").read_text()
     # It is readable back on this machine, which is where it belongs.
-    assert Workspace(root).connector_provider_secret(
+    assert Workspace(root, home=root.parent / "home").connector_provider_secret(
         "telegram", "bot_token"
     ) == "secret-bot-token"
 
@@ -99,7 +104,7 @@ def test_binding_without_a_workflow_says_so(tmp_path):
                   "--chat-id", "1", "--bind", "human-approval")
 
     assert result.returncode != 0
-    assert "no workflow yet" in result.stderr
+    assert "none was found" in result.stderr.lower()
 
 
 def test_a_sheets_configuration_records_the_spreadsheet_and_tab(tmp_path):
@@ -149,7 +154,9 @@ def test_binding_works_against_a_real_workflow_requirement(tmp_path):
     root = _project(tmp_path)
     example = Path(__file__).resolve().parents[1] / "examples" / "call_intake.py"
     (root / "workflow.py").write_text(example.read_text())
-    Workspace(root).select_workflow("workflow.py:call_intake", cwd=root)
+    Workspace(root, home=root.parent / "home").select_workflow(
+        "workflow.py:call_intake", cwd=root
+    )
 
     first = _run(root, "connector", "configure", "gmail", "inbox",
                  "--bind", "call-mailbox")

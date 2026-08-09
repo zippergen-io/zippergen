@@ -24,7 +24,7 @@ from zippergen.models import (
 from zippergen.rendering import StatusKind, TerminalRenderer
 from zippergen.semantic import semantic_snapshot, workflow_semantics
 from zippergen.syntax import Json, Workflow, validate_zvalue
-from zippergen.workspace import Workspace
+from zippergen.workspace import Workspace, WorkspaceError
 
 InputFunc = Callable[[str], str]
 OutputFunc = Callable[[str], object]
@@ -394,6 +394,7 @@ def run_dev(
     human_connector_factory: Callable[[str], object] | None = None,
     connector_environment: dict[str, str] | None = None,
     connector_snapshot: dict[str, object] | None = None,
+    store_path: str | None = None,
 ) -> dict[str, Any]:
     """Create or resume one managed durable development run."""
 
@@ -408,6 +409,7 @@ def run_dev(
         or options
         or services is not None
         or connector_snapshot is not None
+        or store_path is not None
     ):
         raise SystemExit(
             "A resumed run uses its recorded workflow inputs and configuration."
@@ -454,12 +456,10 @@ def run_dev(
         else:
             renderer.status("info", f"Resuming run {selected_run_id}.")
     else:
-        selected = workflow_spec or workspace.workflow_entry
-        if not selected:
-            raise SystemExit(
-                "No project workflow is configured. Pass PATH.py:WORKFLOW, or "
-                "record one for this project with 'zippergen init'."
-            )
+        try:
+            selected = workspace.resolve_workflow(workflow_spec)
+        except WorkspaceError as exc:
+            raise SystemExit(str(exc)) from exc
         stored_spec = workspace.canonical_spec(selected, cwd=workspace.root)
         workflow, module = _load_and_validate(workspace, stored_spec)
         if renderer is None:
@@ -498,6 +498,7 @@ def run_dev(
             options=run_options,
             services=run_services,
             connectors=connector_snapshot,
+            store_path=store_path,
         )
         selected_run_id = str(record["run_id"])
         if renderer is None:

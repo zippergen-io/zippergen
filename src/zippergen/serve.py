@@ -2185,25 +2185,14 @@ def _resolved_workflow_spec(args) -> str:
     named = getattr(args, "workflow", None) or getattr(args, "target", None)
     if named:
         return str(named)
-    from zippergen.workspace import Workspace, discover_workflow_specs
+    from zippergen.workspace import Workspace, WorkspaceError
 
     workspace = Workspace(getattr(args, "project", None))
-    entry = workspace.workflow_entry
-    if not entry:
-        discovered = discover_workflow_specs(workspace.root)
-        if len(discovered) == 1:
-            return str(workspace.absolute_spec(discovered[0]))
-        if discovered:
-            raise SystemExit(
-                "This project has several workflows: "
-                + ", ".join(discovered)
-                + ". Name one, or set workflow_entry in zippergen.toml."
-            )
-        raise SystemExit(
-            "No workflow was named and none was found in this project. "
-            "Write a workflow, or give a workflow spec."
-        )
-    return str(workspace.absolute_spec(entry))
+    try:
+        resolved = workspace.resolve_workflow(str(named) if named else None)
+    except WorkspaceError as exc:
+        raise SystemExit(str(exc)) from exc
+    return str(workspace.absolute_spec(resolved))
 
 
 def _run_workflow_command(args) -> int:
@@ -2308,6 +2297,11 @@ def _durable_run_command(args) -> int:
         interactive=not args.yes and sys.stdin.isatty(),
         input_func=input,
         output_func=print,
+        store_path=(
+            _ensure_store_parent(args.store)
+            if getattr(args, "store", None)
+            else None
+        ),
     )
     return 0
 
@@ -2722,10 +2716,11 @@ def _compact_command(args) -> int:
     if store:
         outcome = compact_store(str(store))
         print(f"Store {store}")
-        for field in ("removed_events", "reclaimed_bytes"):
-            value = getattr(outcome, field, None)
-            if value is not None:
-                print(f"  {field.replace('_', ' ')}: {value}")
+        print(f"  removed events: {outcome.deleted_total}")
+        print(
+            "  reclaimed bytes: "
+            f"{max(0, outcome.before_bytes - outcome.after_bytes)}"
+        )
 
     try:
         logs = compact_deployment_logs(
@@ -2736,8 +2731,11 @@ def _compact_command(args) -> int:
     except DeploymentRemovalError as exc:
         raise SystemExit(str(exc)) from exc
     print(f"Logs: rotated, keeping {args.keep_archives} archive(s).")
-    if getattr(logs, "removed", None):
-        print(f"  removed: {logs.removed}")
+    if logs.removed_archives:
+        print(
+            f"  removed archives: {logs.removed_archives} "
+            f"({logs.removed_archive_bytes} bytes)"
+        )
     return 0
 
 
@@ -2746,13 +2744,8 @@ def _bind_connector_requirement(workspace, requirement: str, name: str) -> None:
 
     from zippergen.workspace import WorkspaceError
 
-    entry = workspace.workflow_entry
-    if not entry:
-        raise SystemExit(
-            "This project has no workflow yet, so there is nothing to bind "
-            "to. Add one, then re-run with --bind."
-        )
     try:
+        entry = workspace.resolve_workflow()
         workspace.bind_connector(entry, requirement, name)
     except WorkspaceError as exc:
         raise SystemExit(str(exc)) from exc
@@ -2796,7 +2789,7 @@ def _project_connector_runtime(
     """
 
     from zippergen.connector_wiring import connector_runtime
-    from zippergen.workspace import Workspace
+    from zippergen.workspace import Workspace, WorkspaceError
 
     workspace = Workspace(getattr(args, "project", None) or deployed_project)
     # Follow the workflow actually being deployed. Falling back to the
@@ -2804,10 +2797,11 @@ def _project_connector_runtime(
     # workflow was named explicitly.
     target = getattr(args, "target", None)
     entry = target if target and (":" in target or _looks_like_path(target)) else None
-    entry = entry or deployed_workflow or workspace.workflow_entry
-    if not entry:
+    entry = entry or deployed_workflow
+    try:
+        canonical = workspace.resolve_workflow(entry)
+    except WorkspaceError:
         return {}, {}
-    canonical = workspace.canonical_spec(entry, cwd=workspace.root)
     workflow, module = load_workflow_spec(str(workspace.absolute_spec(canonical)))
     return connector_runtime(workspace, canonical, workflow, module)
 
@@ -2880,12 +2874,10 @@ def _connector_assign_command(args) -> int:
     from zippergen.workspace import Workspace, WorkspaceError
 
     workspace = Workspace(getattr(args, "project", None))
-    entry = workspace.workflow_entry
-    if not entry:
-        raise SystemExit(
-            "This project has no workflow configured, so there is nothing to "
-            "assign a connector to."
-        )
+    try:
+        entry = workspace.resolve_workflow()
+    except WorkspaceError as exc:
+        raise SystemExit(str(exc)) from exc
     if args.configuration not in workspace.connector_configurations():
         known = ", ".join(sorted(workspace.connector_configurations())) or "none"
         raise SystemExit(
@@ -2977,7 +2969,7 @@ def _init_command(args) -> int:
     what you want.
     """
 
-    from zippergen.skill import agents_md
+    from zippergen.skill import agents_md, claude_md
     from zippergen.workspace import Workspace
 
     root = Path(args.directory).expanduser().resolve() if args.directory else Path.cwd()
@@ -3006,6 +2998,13 @@ def _init_command(args) -> int:
         agents.write_text(agents_md(str(manifest["name"])), encoding="utf-8")
         rows.append(("AGENTS.md", "created"))
 
+    claude = root / "CLAUDE.md"
+    if claude.exists():
+        rows.append(("CLAUDE.md", "exists; left alone"))
+    else:
+        claude.write_text(claude_md(), encoding="utf-8")
+        rows.append(("CLAUDE.md", "created"))
+
     print(f"ZipperGen project: {manifest['name']}")
     for filename, state in rows:
         print(f"  {filename:<18} {state}")
@@ -3016,6 +3015,12 @@ def _init_command(args) -> int:
         print()
         print("    Before editing workflow code, run `zippergen skill`")
         print("    and follow it completely.")
+    if claude.exists() and "@AGENTS.md" not in claude.read_text(encoding="utf-8"):
+        print()
+        print("CLAUDE.md was already here and was not changed. Add this so")
+        print("Claude Code reads the shared ZipperGen instructions:")
+        print()
+        print("    @AGENTS.md")
     return 0
 
 
@@ -4544,9 +4549,18 @@ def _connector_authorize_google_command(args) -> int:
         raise SystemExit(str(exc)) from exc
 
 
-def main(argv=None) -> int:
+def _parse_cli_args(
+    argv=None,
+) -> tuple[argparse.ArgumentParser, argparse.Namespace]:
+    """Build the real CLI parser and parse arguments without dispatching."""
+
     ap = argparse.ArgumentParser(prog="zippergen")
-    sub = ap.add_subparsers(dest="cmd")
+    public_commands = (
+        "connector,run,show,validate,init,skill,snapshot,diff,deploy,configure,"
+        "start,stop,remove,compact,restart,logs,doctor,status,trace,tasks,"
+        "approve,notify"
+    )
+    sub = ap.add_subparsers(dest="cmd", metavar="{" + public_commands + "}")
     connector = sub.add_parser(
         "connector",
         help="authorize a connector on this computer",
@@ -4684,7 +4698,7 @@ def main(argv=None) -> int:
 
     # Superseded by `run --durable`. Kept, hidden, so existing scripts and
     # deployment profiles that call it keep working.
-    dev = sub.add_parser("dev", help=argparse.SUPPRESS)
+    dev = sub.add_parser("dev")
     dev.add_argument("workflow", nargs="?")
     dev.add_argument("--resume", action="store_true")
     dev.add_argument("--run-id")
@@ -4732,7 +4746,13 @@ def main(argv=None) -> int:
         choices=("codex", "claude"),
         help="Default coding-assistant backend for @assistant actions.",
     )
-    rn.add_argument("--store", help="SQLite store path. Defaults to ~/.zippergen/runs/<workflow>.sqlite")
+    rn.add_argument(
+        "--store",
+        help=(
+            "SQLite path for a recorded, resumable run. Naming one implies "
+            "--durable."
+        ),
+    )
     rn.add_argument(
         "--durable",
         action="store_true",
@@ -4770,8 +4790,8 @@ def main(argv=None) -> int:
         default=None,
         help=(
             "Where the run keeps its state. Defaults to 'memory', which leaves "
-            "nothing behind, or to 'sqlite' when --store names one. Use "
-            "--durable for a recorded, resumable run."
+            "nothing behind. 'sqlite' uses an unregistered SQLite store; "
+            "use --durable or --store for a recorded, resumable run."
         ),
     )
 
@@ -4859,7 +4879,7 @@ def main(argv=None) -> int:
     configure.add_argument("--restart", action="store_true", help="Restart the service after configuration succeeds.")
     configure.set_defaults(no_start=True, no_bundle=True, no_install=True, no_setup=True)
 
-    dl = sub.add_parser("deploy-local", help="create a named local deployment profile")
+    dl = sub.add_parser("deploy-local")
     dl.add_argument("workflow", help="Workflow spec: module:workflow or path.py:workflow")
     dl.add_argument("--name", help="Deployment name. Defaults to a slug derived from the workflow.")
     dl.add_argument("--llm", metavar="SPEC", help="LLM spec stored in the deployment profile.")
@@ -4897,7 +4917,7 @@ def main(argv=None) -> int:
     dl.add_argument("--force", action="store_true", help="Overwrite an existing deployment profile.")
     dl.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
 
-    rd = sub.add_parser("run-deployment", help="run a named local deployment profile")
+    rd = sub.add_parser("run-deployment")
     rd.add_argument("name", help="Deployment name.")
 
     start = sub.add_parser("start", help="start a named deployment as a supervised user service")
@@ -5013,7 +5033,6 @@ def main(argv=None) -> int:
 
     sv = sub.add_parser(
         "serve",
-        help="legacy: run one role as a durable process",
         description="Legacy low-level per-role runner. Prefer `zippergen run` for local deployment.",
     )
     sv.add_argument("--workflow", required=True)
@@ -5021,6 +5040,11 @@ def main(argv=None) -> int:
     sv.add_argument("--store", required=True)
     sv.add_argument("--input", action="append", default=[], metavar="k=v")
     args = ap.parse_args(argv)
+    return ap, args
+
+
+def main(argv=None) -> int:
+    ap, args = _parse_cli_args(argv)
 
     if args.cmd is None:
         ap.print_help()
@@ -5038,7 +5062,22 @@ def main(argv=None) -> int:
     if args.cmd == "run":
         if getattr(args, "run_id", None) and not args.resume:
             raise SystemExit("--run-id requires --resume.")
-        if getattr(args, "durable", False) or getattr(args, "resume", False):
+        if (
+            args.execution == "memory"
+            and (
+                getattr(args, "durable", False)
+                or getattr(args, "resume", False)
+                or getattr(args, "store", None)
+            )
+        ):
+            raise SystemExit(
+                "A durable or stored run uses SQLite; remove '--execution memory'."
+            )
+        if (
+            getattr(args, "durable", False)
+            or getattr(args, "resume", False)
+            or getattr(args, "store", None)
+        ):
             return _durable_run_command(args)
         return _run_workflow_command(args)
     if args.cmd == "show":

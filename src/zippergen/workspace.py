@@ -3,13 +3,10 @@
 Visible project identity lives in ``zippergen.toml``: one canonical
 ``specification.md``, one workflow entry point, and portable model and connector
 configuration can be reviewed, versioned, and recovered from a clone.
-``zippergen.lock`` records the generated
-implementation relationship, while an ignored project-local refinement buffer
-is only scratch input. Machine-specific workspace state and its separate
-owner-only secret file stay below ``ZIPPERGEN_HOME`` rather than in the user's
-Git checkout; the ordinary workspace record is non-secret. The regular CLI
-remains stateless; the ``zippergen`` CLI uses this module to
-manage development runs.
+Machine-specific workspace state and its separate owner-only secret file stay
+below ``ZIPPERGEN_HOME`` rather than in the user's Git checkout; the ordinary
+workspace record is non-secret. The CLI uses this module to manage durable
+development runs and site-specific configuration.
 """
 
 from __future__ import annotations
@@ -20,7 +17,6 @@ import json
 import math
 import os
 import re
-import shutil
 import tempfile
 import time
 import tomllib
@@ -30,13 +26,8 @@ from typing import Any
 
 WORKSPACE_SCHEMA_VERSION = 1
 RUN_SCHEMA_VERSION = 1
-REQUEST_SCHEMA_VERSION = 1
-ASSISTANT_TASK_CONTRACT_VERSION = 3
 PROJECT_SCHEMA_VERSION = 1
 PROJECT_MANIFEST_NAME = "zippergen.toml"
-PROJECT_TASK_DIRECTORY = ".zippergen"
-CURRENT_TASK_NAME = "current-task.md"
-ASSISTANT_RESULT_NAME = "assistant-result.json"
 SPECIFICATION_FILE_NAME = "specification.md"
 PROJECT_CONFIGURATION_MARKER = "project_configuration_migrated"
 
@@ -326,21 +317,6 @@ class Workspace:
         self.state_path = self.directory / "workspace.json"
         self.secrets_path = self.directory / "development.secrets.json"
         self.runs_directory = self.directory / "runs"
-        self.requests_directory = self.directory / "requests"
-        self.resets_directory = self.home / "resets"
-
-
-    @property
-    def current_task_path(self) -> Path:
-        """Return the stable, project-local coding-assistant handoff path."""
-
-        return self.root / PROJECT_TASK_DIRECTORY / CURRENT_TASK_NAME
-
-    @property
-    def assistant_result_path(self) -> Path:
-        """Return the ephemeral, project-local assistant result handoff path."""
-
-        return self.root / PROJECT_TASK_DIRECTORY / ASSISTANT_RESULT_NAME
 
 
     @property
@@ -684,7 +660,7 @@ class Workspace:
             raise WorkspaceError("Project name must not be empty.")
         if not self.manifest_path.exists():
             raise WorkspaceError(
-                "The project manifest has not been created. Use 'project init' first."
+                "The project manifest has not been created. Run 'zg init' first."
             )
         manifest = self.project_manifest()
         old_name = str(manifest["name"])
@@ -1044,7 +1020,7 @@ class Workspace:
             existing = (
                 gitignore.read_text(encoding="utf-8") if gitignore.exists() else ""
             )
-            desired = [f"/{PROJECT_TASK_DIRECTORY}/", "/tutorial-runtime/"]
+            desired = ["/tutorial-runtime/"]
             if framework_directory:
                 desired.insert(0, f"/{framework_directory.rstrip('/')}/")
             current = {line.strip() for line in existing.splitlines()}
@@ -1055,7 +1031,7 @@ class Workspace:
                     gitignore,
                     existing
                     + separator
-                    + "# ZipperGen project-local tooling and transparent runtime\n"
+                    + "# ZipperGen transparent runtime\n"
                     + "\n".join(missing)
                     + "\n",
                 )
@@ -1124,11 +1100,6 @@ class Workspace:
             "schema_version": WORKSPACE_SCHEMA_VERSION,
             "project_root": str(self.root),
             "current_run": None,
-            "last_deployment": None,
-            "last_view": "protocol",
-            "current_request": None,
-            "task_cleared": False,
-            "editor_command": None,
             "model_profiles": {},
             "model_configurations": {},
             "model_configuration_overrides": {},
@@ -1145,133 +1116,6 @@ class Workspace:
             "updated_at": _timestamp(),
         }
 
-    def private_state_summary(self) -> dict[str, object]:
-        """Summarize project-private state without exposing secret values."""
-
-        warnings: list[str] = []
-        try:
-            state = self.load()
-        except (WorkspaceError, OSError, UnicodeDecodeError) as exc:
-            state = self.default_state()
-            warnings.append(str(exc))
-        try:
-            secret_count: int | str = len(self.load_secrets())
-        except (WorkspaceError, OSError, UnicodeDecodeError) as exc:
-            secret_count = "present but unreadable"
-            warnings.append(str(exc))
-        local_items = (
-            self.current_task_path,
-            self.assistant_result_path,
-        )
-        return {
-            "current_run": state.get("current_run"),
-            "last_deployment": state.get("last_deployment"),
-            "runs": len(list(self.runs_directory.glob("*.json"))),
-            "requests": len(list(self.requests_directory.glob("*.json"))),
-            "development_secrets": secret_count,
-            "model_profiles": len(state.get("model_profiles") or {}),
-            "model_configurations": len(
-                state.get("model_configurations") or {}
-            ),
-            "provider_profiles": len(state.get("providers") or {}),
-            "connector_configurations": len(
-                state.get("connector_configurations") or {}
-            ),
-            "workspace_exists": self.directory.exists(),
-            "project_local_exists": any(
-                path.exists() or path.is_symlink() for path in local_items
-            ),
-            "warnings": tuple(warnings),
-        }
-
-    def reset_private_state(self) -> dict[str, object]:
-        """Move this project's private state to a recoverable reset archive."""
-
-        local_directory = self.root / PROJECT_TASK_DIRECTORY
-        sources = [
-            (self.directory, "workspace"),
-            (self.current_task_path, f"project-local/{CURRENT_TASK_NAME}"),
-            (
-                self.assistant_result_path,
-                f"project-local/{ASSISTANT_RESULT_NAME}",
-            ),
-        ]
-        present = [
-            (source, name)
-            for source, name in sources
-            if source.exists() or source.is_symlink()
-        ]
-        if not present:
-            return {
-                "backup_directory": None,
-                "workspace_moved": False,
-                "project_local_moved": False,
-            }
-
-        self.resets_directory.mkdir(parents=True, exist_ok=True)
-        self.resets_directory.chmod(0o700)
-        base = f"{self.directory.name}-{_identifier_timestamp()}"
-        backup = self.resets_directory / base
-        suffix = 2
-        while backup.exists():
-            backup = self.resets_directory / f"{base}-{suffix}"
-            suffix += 1
-        backup.mkdir(mode=0o700)
-
-        moved: list[tuple[Path, Path]] = []
-        try:
-            for source, name in present:
-                destination = backup / name
-                destination.parent.mkdir(parents=True, exist_ok=True)
-                source.rename(destination)
-                moved.append((source, destination))
-            try:
-                local_directory.rmdir()
-            except OSError:
-                pass
-            metadata = backup / "reset.json"
-            _atomic_write_json(
-                metadata,
-                {
-                    "schema_version": 1,
-                    "project_root": str(self.root),
-                    "reset_at": _timestamp(),
-                    "workspace_source": str(self.directory),
-                    "project_local_source": str(local_directory),
-                    "workspace_moved": any(
-                        source == self.directory for source, _destination in moved
-                    ),
-                    "project_local_moved": any(
-                        source != self.directory for source, _destination in moved
-                    ),
-                },
-            )
-            metadata.chmod(0o600)
-        except OSError as exc:
-            for source, destination in reversed(moved):
-                if destination.exists() and not source.exists():
-                    source.parent.mkdir(parents=True, exist_ok=True)
-                    destination.rename(source)
-            for directory in (backup / "project-local", backup):
-                try:
-                    directory.rmdir()
-                except OSError:
-                    pass
-            raise WorkspaceError(
-                f"Could not reset private project state safely: {exc}"
-            ) from exc
-
-        return {
-            "backup_directory": backup,
-            "workspace_moved": any(
-                source == self.directory for source, _destination in moved
-            ),
-            "project_local_moved": any(
-                source != self.directory for source, _destination in moved
-            ),
-        }
-
-
     def load(self) -> dict[str, Any]:
         if not self.state_path.exists():
             return self.default_state()
@@ -1285,20 +1129,24 @@ class Workspace:
             raise WorkspaceError(
                 f"Workspace {self.state_path} belongs to another project root."
             )
-        # This field was added additively so existing workspaces keep working
-        # without a schema migration.
-        state.setdefault("current_request", None)
         # Durable state is resolved through its owning run or deployment.
         # Remove the former ambiguous navigation pointer from old workspaces.
         state.pop("current_store", None)
-        state.setdefault("task_cleared", False)
+        # Retire private state from the removed Studio authoring lifecycle.
+        for field in (
+            "current_request",
+            "task_cleared",
+            "editor_command",
+            "last_deployment",
+            "last_view",
+        ):
+            state.pop(field, None)
         state.pop("pending_specification_fingerprint", None)
         state.pop("pending_specification_baseline", None)
         state.pop("pending_refinement_created_at", None)
         state.pop("pending_semantic_baseline", None)
         state.pop("accepted_reviews", None)
         state.pop("deployment_review_overrides", None)
-        state.setdefault("editor_command", None)
         state.setdefault("model_profiles", {})
         state.setdefault("model_configurations", {})
         state.setdefault("model_configuration_overrides", {})
@@ -2377,6 +2225,32 @@ class Workspace:
         ignored = (str(framework),) if framework else ()
         return discover_workflow_specs(self.root, ignored_directories=ignored)
 
+    def resolve_workflow(self, explicit: str | None = None) -> str:
+        """Resolve the project's workflow without changing the manifest.
+
+        Convention covers the ordinary one-workflow project. Configuration is
+        required only when discovery is ambiguous.
+        """
+
+        if explicit:
+            return self.canonical_spec(explicit, cwd=self.root)
+        if self.workflow_entry:
+            return self.canonical_spec(self.workflow_entry, cwd=self.root)
+        discovered = self.discover_workflows()
+        if len(discovered) == 1:
+            return self.canonical_spec(discovered[0], cwd=self.root)
+        if discovered:
+            raise WorkspaceError(
+                "This project has several workflows: "
+                + ", ".join(discovered)
+                + ". Name one explicitly, or set workflow_entry in "
+                "zippergen.toml."
+            )
+        raise WorkspaceError(
+            "No workflow was named and none was found in this project. "
+            "Write a workflow, or give a workflow spec."
+        )
+
     def new_run(
         self,
         *,
@@ -2391,6 +2265,7 @@ class Workspace:
         options: dict[str, object] | None = None,
         services: str | None = None,
         connectors: dict[str, object] | None = None,
+        store_path: str | None = None,
     ) -> dict[str, Any]:
         created_at_ns = time.time_ns()
         base = (
@@ -2402,7 +2277,11 @@ class Workspace:
         while (self.runs_directory / f"{run_id}.json").exists():
             run_id = f"{base}-{suffix}"
             suffix += 1
-        store = self.runs_directory / f"{run_id}.sqlite"
+        store = (
+            Path(store_path).expanduser().resolve()
+            if store_path is not None
+            else self.runs_directory / f"{run_id}.sqlite"
+        )
         record: dict[str, Any] = {
             "schema_version": RUN_SCHEMA_VERSION,
             "run_id": run_id,
@@ -3337,164 +3216,3 @@ class Workspace:
 
         _atomic_write_json(self.secrets_path, dict(values))
         self.secrets_path.chmod(0o600)
-
-    def save_request(
-        self,
-        *,
-        kind: str,
-        prompt: str,
-        content: str,
-        workflow_spec: str | None = None,
-        prompt_id: str | None = None,
-        active_prompt_ids: tuple[str, ...] = (),
-        prompt_ledger_fingerprint: str | None = None,
-        specification_fingerprint: str | None = None,
-        baseline_file: str | Path | None = None,
-        refreshes_request: str | None = None,
-    ) -> dict[str, Any]:
-        base = f"{_identifier_timestamp()}-{_slug(kind)}"
-        request_id = base
-        suffix = 2
-        while (self.requests_directory / f"{request_id}.json").exists():
-            request_id = f"{base}-{suffix}"
-            suffix += 1
-        record: dict[str, Any] = {
-            "schema_version": REQUEST_SCHEMA_VERSION,
-            "task_contract_version": ASSISTANT_TASK_CONTRACT_VERSION,
-            "request_id": request_id,
-            "kind": kind,
-            "project_root": str(self.root),
-            "workflow_spec": workflow_spec,
-            "prompt_id": prompt_id,
-            "active_prompt_ids": list(active_prompt_ids),
-            "prompt_ledger_fingerprint": prompt_ledger_fingerprint,
-            "specification_file": str(self.specification_path),
-            "specification_fingerprint": specification_fingerprint,
-            "baseline_file": str(baseline_file) if baseline_file else None,
-            "refreshes_request": refreshes_request,
-            "prompt": prompt,
-            "content_file": str(self.requests_directory / f"{request_id}.md"),
-            "task_file": str(self.current_task_path),
-            "created_at": _timestamp(),
-            "status": "prepared",
-            "assistant": None,
-            "assistant_started_at": None,
-            "assistant_finished_at": None,
-            "assistant_exit_code": None,
-            "assistant_verification": None,
-            "assistant_verification_summary": None,
-            "assistant_verification_checks": [],
-            "assistant_result_error": None,
-            "assistant_report": None,
-            "assistant_cli_diagnostics": [],
-            "assistant_suppressed_diagnostics": 0,
-            "result_specification_fingerprint": None,
-        }
-        self.requests_directory.mkdir(parents=True, exist_ok=True)
-        task_content = content.rstrip() + "\n"
-        _atomic_write_text(Path(record["content_file"]), task_content)
-        _atomic_write_json(self.requests_directory / f"{request_id}.json", record)
-        _atomic_write_text(self.current_task_path, task_content)
-        self.update(current_request=request_id, task_cleared=False)
-        return record
-
-    def update_request(
-        self,
-        request_id: str,
-        **changes: object,
-    ) -> dict[str, Any]:
-        """Update one assistant handoff's lifecycle metadata."""
-
-        record = self.load_request(request_id)
-        record.update(changes)
-        record["updated_at"] = _timestamp()
-        _atomic_write_json(self.request_path(request_id), record)
-        return record
-
-    def clear_current_task(self, *, status: str = "closed") -> dict[str, Any]:
-        """Close the current handoff while retaining its private history."""
-
-        record = self.current_request()
-        if record is None:
-            raise WorkspaceError("There is no current task.")
-        closed = self.update_request(
-            str(record["request_id"]),
-            status=status,
-            closed_at=_timestamp(),
-        )
-        try:
-            self.current_task_path.unlink()
-        except FileNotFoundError:
-            pass
-        self.update(current_request=None, task_cleared=True)
-        return closed
-
-    def request_path(self, request_id: str) -> Path:
-        return self.requests_directory / f"{request_id}.json"
-
-    def load_request(self, request_id: str) -> dict[str, Any]:
-        record = _read_json(self.request_path(request_id))
-        if record.get("schema_version") != REQUEST_SCHEMA_VERSION:
-            raise WorkspaceError(
-                f"Unsupported assistant request schema in "
-                f"{self.request_path(request_id)}: "
-                f"{record.get('schema_version')!r}"
-            )
-        if Path(str(record.get("project_root"))).resolve() != self.root:
-            raise WorkspaceError(
-                f"Assistant request {request_id} belongs to another project root."
-            )
-        return record
-
-    def list_requests(self) -> list[dict[str, Any]]:
-        """Return archived coding-assistant requests, newest first."""
-
-        if not self.requests_directory.exists():
-            return []
-        records: list[dict[str, Any]] = []
-        for path in self.requests_directory.glob("*.json"):
-            try:
-                records.append(self.load_request(path.stem))
-            except WorkspaceError:
-                continue
-        return sorted(
-            records,
-            key=lambda record: (
-                str(record.get("created_at") or ""),
-                str(record.get("request_id") or ""),
-            ),
-            reverse=True,
-        )
-
-    def current_request(self) -> dict[str, Any] | None:
-        """Return the current handoff and restore its stable mirror if needed."""
-
-        state = self.load()
-        if state.get("task_cleared"):
-            return None
-        request_id = state.get("current_request")
-        record: dict[str, Any] | None = None
-        if request_id:
-            try:
-                record = self.load_request(str(request_id))
-            except WorkspaceError:
-                record = None
-        if record is None:
-            requests = self.list_requests()
-            record = requests[0] if requests else None
-        if record is None:
-            return None
-        content_file = Path(str(record.get("content_file") or ""))
-        try:
-            content = content_file.read_text(encoding="utf-8")
-        except (FileNotFoundError, OSError, UnicodeDecodeError) as exc:
-            raise WorkspaceError(
-                f"Could not restore current task from {content_file}: {exc}"
-            ) from exc
-        if not self.current_task_path.exists() or (
-            self.current_task_path.read_text(encoding="utf-8") != content
-        ):
-            _atomic_write_text(self.current_task_path, content)
-        if request_id != record.get("request_id"):
-            self.update(current_request=str(record["request_id"]))
-        return {**record, "task_file": str(self.current_task_path)}

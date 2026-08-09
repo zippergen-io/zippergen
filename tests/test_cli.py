@@ -2,6 +2,7 @@ import json
 import plistlib
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -35,6 +36,43 @@ def hello(topic: str @ User) -> str:
     User: reply = add_suffix(topic)
     return reply @ User
 """
+
+
+def test_compact_reports_removed_store_events_and_log_archives(
+    tmp_path, monkeypatch, capsys
+):
+    from zippergen import deployments, serve, storage_maintenance
+
+    store = tmp_path / "run.sqlite"
+    monkeypatch.setattr(
+        serve,
+        "_load_deployment_profile",
+        lambda _name: {"store": str(store)},
+    )
+    monkeypatch.setattr(
+        storage_maintenance,
+        "compact_store",
+        lambda _path: SimpleNamespace(
+            deleted_total=12,
+            before_bytes=4096,
+            after_bytes=1024,
+        ),
+    )
+    monkeypatch.setattr(
+        deployments,
+        "compact_deployment_logs",
+        lambda _name, _profile, *, keep_archives: SimpleNamespace(
+            removed_archives=2,
+            removed_archive_bytes=768,
+        ),
+    )
+
+    assert main(["compact", "demo", "--keep-archives", "1"]) == 0
+
+    output = capsys.readouterr().out
+    assert "removed events: 12" in output
+    assert "reclaimed bytes: 3072" in output
+    assert "removed archives: 2 (768 bytes)" in output
 
 SETUP_WORKFLOW_SOURCE = """
 from zippergen import Lifeline, pure, workflow
@@ -105,10 +143,14 @@ def guided(topic: str @ User) -> str:
 """
 
 
-def test_run_command_loads_workflow_from_path(tmp_path, capsys):
+def test_run_command_with_store_records_a_resumable_run(
+    tmp_path, monkeypatch, capsys
+):
     workflow_path = tmp_path / "sample_workflow.py"
     workflow_path.write_text(WORKFLOW_SOURCE)
     store_path = tmp_path / "run.sqlite"
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(tmp_path / "home"))
 
     rc = main([
         "run",
@@ -124,8 +166,12 @@ def test_run_command_loads_workflow_from_path(tmp_path, capsys):
     captured = capsys.readouterr()
     assert rc == 0
     assert store_path.exists()
-    assert f"Store: {store_path}" in captured.err
-    assert json.loads(captured.out) == {"result": "deploy!"}
+    workspace = Workspace(tmp_path, home=tmp_path / "home")
+    record = workspace.current_run()
+    assert record is not None
+    assert record["store"] == str(store_path)
+    assert record["status"] == "done"
+    assert "Result: deploy!" in captured.out
 
 
 def test_connector_authorize_google_emits_checked_private_handoff(
@@ -181,6 +227,8 @@ def test_run_command_loads_workflow_from_module(tmp_path, monkeypatch, capsys):
     workflow_path.write_text(WORKFLOW_SOURCE)
     store_path = tmp_path / "module-run.sqlite"
     monkeypatch.syspath_prepend(str(tmp_path))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(tmp_path / "home"))
 
     rc = main([
         "run",
@@ -196,13 +244,15 @@ def test_run_command_loads_workflow_from_module(tmp_path, monkeypatch, capsys):
     captured = capsys.readouterr()
     assert rc == 0
     assert store_path.exists()
-    assert json.loads(captured.out) == {"result": "local!"}
+    assert "Result: local!" in captured.out
 
 
-def test_run_command_zero_timeout_means_no_deadline(tmp_path, capsys):
+def test_run_command_zero_timeout_means_no_deadline(tmp_path, monkeypatch, capsys):
     workflow_path = tmp_path / "no_deadline_workflow.py"
     workflow_path.write_text(WORKFLOW_SOURCE)
     store_path = tmp_path / "no-deadline.sqlite"
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(tmp_path / "home"))
 
     rc = main([
         "run",
@@ -218,13 +268,15 @@ def test_run_command_zero_timeout_means_no_deadline(tmp_path, capsys):
     captured = capsys.readouterr()
     assert rc == 0
     assert store_path.exists()
-    assert json.loads(captured.out) == {"result": "steady!"}
+    assert "Result: steady!" in captured.out
 
 
-def test_run_command_calls_setup_hook_with_options(tmp_path, capsys):
+def test_run_command_calls_setup_hook_with_options(tmp_path, monkeypatch, capsys):
     workflow_path = tmp_path / "setup_workflow.py"
     workflow_path.write_text(SETUP_WORKFLOW_SOURCE)
     store_path = tmp_path / "setup-run.sqlite"
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(tmp_path / "home"))
 
     rc = main([
         "run",
@@ -244,7 +296,7 @@ def test_run_command_calls_setup_hook_with_options(tmp_path, capsys):
     captured = capsys.readouterr()
     assert rc == 0
     assert store_path.exists()
-    assert json.loads(captured.out) == {"result": "live:hook:deploy"}
+    assert "Result: live:hook:deploy" in captured.out
 
 
 def test_show_command_renders_code_and_agent_projection(tmp_path, capsys):
@@ -1105,10 +1157,12 @@ def test_status_rejects_deployment_and_store_together(tmp_path, monkeypatch):
         raise AssertionError("status should reject ambiguous store selection")
 
 
-def test_status_command_reports_completed_run(tmp_path, capsys):
+def test_status_command_reports_completed_run(tmp_path, monkeypatch, capsys):
     workflow_path = tmp_path / "status_workflow.py"
     workflow_path.write_text(WORKFLOW_SOURCE)
     store_path = tmp_path / "status-run.sqlite"
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(tmp_path / "home"))
     main([
         "run",
         f"{workflow_path}:hello",

@@ -409,32 +409,21 @@ positions, fellowships, and similar opportunities. It only sends certified
 senders to the LLM. Accepted messages are classified, converted to JSON,
 written to Google Sheets, and answered by a controlled Gmail draft or message.
 
-The recommended path is:
+The recommended path from this checkout is:
 
 ```bash
 uv sync --extra google
-zippergen
+zg validate examples/call_intake.py:call_intake
+zg connector configure gmail call-mailbox \
+  --query 'is:unread in:inbox' --bind call-mailbox
+zg connector configure google-sheets call-records \
+  --spreadsheet-id SHEET_ID --tab Calls --bind call-records
+zg deploy examples/call_intake.py:call_intake --name call-intake
 ```
 
-Then enter:
-
-```text
-project init call-intake
-workflow import examples/call_intake.py:call_intake
-workflow validate
-model setup
-connector setup
-connector assignments check
-deploy call-intake
-```
-
-`workflow import` records this one entry point in the versioned project
-manifest. Because the file is already in the project, nothing is copied.
-It is project setup, not a mode for switching among other example sources.
-
-`connector setup` uses one private Google provider authorization. It creates
-and checks separate Gmail and Google Sheets configurations and binds them to
-the workflow. The configurations and bindings are versioned in
+The connector commands use one private Google provider authorization. They
+create and check separate Gmail and Google Sheets configurations and bind them
+to the workflow. The configurations and bindings are versioned in
 `zippergen.toml`; only authorization and site observations remain private.
 The deployment questions cover application policy such as
 certified senders, the intake address, safe reply mode, and rate limits.

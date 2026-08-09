@@ -44,6 +44,10 @@ and follow it completely.
 Do not deploy or start a service unless you are asked to.
 """
 
+# Claude Code discovers CLAUDE.md, while Codex discovers AGENTS.md. Keep the
+# actual project instructions in one file and make Claude import that file.
+CLAUDE_MD_TEMPLATE = "@AGENTS.md\n"
+
 
 class SkillNotFound(RuntimeError):
     """The packaged skill is missing, so the install is incomplete."""
@@ -94,3 +98,9 @@ def agents_md(project: str, workflow: str = "workflow.py") -> str:
     """Return an AGENTS.md that points at the skill without an absolute path."""
 
     return AGENTS_MD_TEMPLATE.format(project=project, workflow=workflow)
+
+
+def claude_md() -> str:
+    """Point Claude Code at the same committed guidance Codex reads."""
+
+    return CLAUDE_MD_TEMPLATE

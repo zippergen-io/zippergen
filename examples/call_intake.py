@@ -10,9 +10,10 @@ the JSON email with corrected fields, preferably keeping the same call_id.
 Guided deployment:
 
     zippergen connector authorize google --scopes gmail.readonly,spreadsheets
-    zippergen connector configure gmail --bind inbox
-    zippergen connector configure google-sheets --bind call-records
-    zippergen deploy examples/call_intake.py:call_intake
+    zippergen connector configure gmail call-mailbox --bind call-mailbox
+    zippergen connector configure google-sheets call-records \
+        --spreadsheet-id SHEET_ID --tab Calls --bind call-records
+    zippergen deploy examples/call_intake.py:call_intake --name call-intake
 
 Configuration asks for one Google OAuth desktop client, a Gmail search query,
 and a spreadsheet tab, and stores them outside the project. No token paths or

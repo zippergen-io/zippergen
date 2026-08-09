@@ -483,18 +483,27 @@ def _read_scripted_entry(key: str, value: object) -> _ScriptedResponses:
     """A bare object repeats; a list is a finite, exhaustible sequence."""
 
     entries = value if isinstance(value, list) else [value]
+    normalized: list[dict[str, object]] = []
     for entry in entries:
         if not isinstance(entry, dict):
             raise RuntimeError(
                 f"Scripted responses for {key!r} must be objects mapping "
                 f"output name to value; got {type(entry).__name__}."
             )
+        response: dict[str, object] = {}
+        for output_name, output_value in entry.items():
+            if not isinstance(output_name, str):
+                raise RuntimeError(
+                    f"Scripted response output names for {key!r} must be strings."
+                )
+            response[output_name] = output_value
+        normalized.append(response)
     if not entries:
         raise RuntimeError(
             f"Scripted responses for {key!r} are empty; give at least one."
         )
     return _ScriptedResponses(
-        responses=tuple(dict(entry) for entry in entries),
+        responses=tuple(normalized),
         repeating=not isinstance(value, list),
     )
 

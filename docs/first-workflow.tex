@@ -198,6 +198,7 @@ ZipperGen project: email-approval
   zippergen.toml     created
   specification.md   created
   AGENTS.md          created
+  CLAUDE.md           created
 \end{lstlisting}
 
 \begin{notebox}{\texttt{zg} is short for \texttt{zippergen}}
@@ -206,7 +207,7 @@ uses \texttt{zg}, because the commands you type often are the ones worth
 shortening.
 \end{notebox}
 
-That is the whole of project creation. It writes three files and stops: it asks
+That is the whole of project creation. It writes four files and stops: it asks
 you nothing, and it configures nothing.
 
 \begin{itemize}
@@ -215,6 +216,7 @@ you nothing, and it configures nothing.
   \item \texttt{specification.md} says what the workflow is meant to do, in prose.
   \item \texttt{AGENTS.md} tells a coding agent to run
         \texttt{zippergen skill} before touching workflow code.
+  \item \texttt{CLAUDE.md} points Claude Code at the same shared instructions.
 \end{itemize}
 
 \section{Describe what you want}

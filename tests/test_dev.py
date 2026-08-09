@@ -494,16 +494,24 @@ def test_run_id_requires_resume():
         raise AssertionError("--run-id alone should be refused")
 
 
+def test_a_stored_run_cannot_request_memory_execution():
+    from zippergen import serve
+
+    with pytest.raises(SystemExit, match="uses SQLite"):
+        serve.main(
+            ["run", "wf.py:w", "--store", "run.sqlite", "--execution", "memory"]
+        )
+
+
 def test_dev_remains_as_a_hidden_alias(capsys):
     """Existing scripts and deployment profiles keep working."""
 
     from zippergen import serve
 
-    try:
-        serve.main(["--help"])
-    except SystemExit:
-        pass
-    listed = capsys.readouterr().out
+    _parser, parsed = serve._parse_cli_args(["dev", "wf.py:w", "--yes"])
+    assert parsed.cmd == "dev"
 
-    assert "dev" in listed  # still dispatchable
-    assert "run a workflow durably" not in listed  # but no longer advertised
+    with pytest.raises(SystemExit):
+        serve.main(["--help"])
+    listed = capsys.readouterr().out
+    assert "    dev " not in listed

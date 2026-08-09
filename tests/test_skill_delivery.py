@@ -8,6 +8,7 @@ assistant itself, which needs a git checkout and goes away with the shell.
 
 import subprocess
 import sys
+import shlex
 import tomllib
 from pathlib import Path
 
@@ -21,6 +22,7 @@ from zippergen.skill import (
     load_skill,
     skill_directory,
 )
+from zippergen.serve import _parse_cli_args
 
 REPO = Path(__file__).resolve().parents[1]
 CHECKOUT_SKILL = REPO / ".agents" / "skills" / SKILL_NAME
@@ -106,3 +108,24 @@ def test_the_command_prints_the_skill_and_the_agents_md(tmp_path):
     assert "# ZipperGen Workflows" in run("skill")
     assert "# Reference: dsl-and-cli" not in run("skill", "--no-references")
     assert "zippergen skill" in run("skill", "--agents-md", "--project", "demo")
+
+
+def test_every_standalone_skill_command_matches_the_real_parser():
+    """The skill is the user procedure, so its commands cannot drift."""
+
+    skill = load_skill()
+    documents = [skill.body, *(text for _name, text in skill.references)]
+    commands: list[str] = []
+    for document in documents:
+        for raw_line in document.splitlines():
+            line = raw_line.strip()
+            if "| zg " in line:
+                line = "zg " + line.split("| zg ", 1)[1]
+            if line.startswith(("zg ", "zippergen ")):
+                commands.append(line)
+
+    assert commands
+    for command in commands:
+        tokens = shlex.split(command, comments=True)
+        _parser, arguments = _parse_cli_args(tokens[1:])
+        assert arguments.cmd, command
