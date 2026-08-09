@@ -60,8 +60,9 @@ TYPE assign TARGET NAME
 
 Use `zg connector bind REQUIREMENT NAME` for a declared external-service
 requirement. Providers are attributes of named configurations, not separate
-objects to manage. Bare `zg model` and `zg connector` show each family, while
-`zg config` shows the complete effective result.
+objects to manage. For example, `approval-chat` is a user-chosen configuration
+name and `telegram` is its provider. Bare `zg model` and `zg connector` show
+each family, while `zg config` shows the complete effective result.
 
 To assign a model, use the project commands. Do not hard-code the provider in
 the workflow or change a deployment field merely to route one participant:
@@ -301,8 +302,8 @@ not embed credentials or copy secret values into ordinary profiles or tests.
 Connectors are configured once per machine and routed per workflow:
 
 ```bash
-zg connector configure approvals telegram
-zg connector assign User approvals
+zg connector configure approval-chat telegram
+zg connector assign User approval-chat
 ```
 
 Telegram setup is a human-terminal handoff. Do not ask the user for the chat

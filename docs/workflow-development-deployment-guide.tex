@@ -217,13 +217,13 @@ default = "mock"
 [models.assignments.lifelines]
 Writer = "openai-gpt-4o"
 
-[connectors.configurations."approvals"]
+[connectors.configurations."approval-chat"]
 provider = "telegram"
 kind = "telegram"
 chat_id = "12345678"
 
 [connectors.assignments.lifelines]
-User = "approvals"
+User = "approval-chat"
 \end{lstlisting}
 
 It is an ordinary file. Edit it in an editor, or let a coding agent edit it.
@@ -457,8 +457,10 @@ zg TYPE remove NAME
 An external-service connector uses
 \texttt{connector bind REQUIREMENT NAME} instead of \texttt{assign}. The
 provider is an attribute of the named configuration, not another object to
-manage. Bare \texttt{zg model} and \texttt{zg connector} show each family.
-\texttt{zg config} shows the complete effective result.
+manage. In the examples, \texttt{approval-chat} is a name chosen by the user
+and \texttt{telegram} is the provider. Bare \texttt{zg model} and
+\texttt{zg connector} show each family. \texttt{zg config} shows the complete
+effective result.
 
 \subsection{Choosing a model}
 
@@ -609,8 +611,8 @@ The terminal is right while developing and wrong for a deployment nobody is
 watching. Two commands, doing two different things:
 
 \begin{lstlisting}[style=shell]
-zg connector configure approvals telegram
-zg connector assign User approvals
+zg connector configure approval-chat telegram
+zg connector assign User approval-chat
 \end{lstlisting}
 
 The first says \emph{which} chat. The second says \emph{who} is asked there:
@@ -831,7 +833,7 @@ Configuring says which chat. Assigning says who is asked there. Both are
 needed:
 
 \begin{lstlisting}[style=shell]
-zg connector assign User approvals
+zg connector assign User approval-chat
 \end{lstlisting}
 
 \section{Command reference}

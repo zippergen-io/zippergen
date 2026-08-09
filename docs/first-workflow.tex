@@ -527,8 +527,8 @@ zg validate still passes.
 One setup remains, and it belongs in your terminal. I should not ask you
 for the chat id or bot token in this conversation. Run:
 
-    zg connector configure approvals telegram
-    zg connector assign User approvals
+    zg connector configure approval-chat telegram
+    zg connector assign User approval-chat
 
 Tell me when that is done and I will check the configuration.
 \end{lstlisting}
@@ -564,33 +564,35 @@ zg validate passes.
 Telegram setup needs your terminal:
 
     zg connector configure
-      approvals telegram
+      approval-chat telegram
     zg connector assign User
-      approvals
+      approval-chat
 \end{lstlisting}
 \end{minipage}\hfill
 \begin{minipage}[t]{0.485\linewidth}
 \textbf{\footnotesize Your terminal}\par\vspace{2pt}
 \begin{lstlisting}[style=pane]
 $ zg connector configure
-    approvals telegram
+    approval-chat telegram
 
 Telegram chat id: 12345678
 Telegram bot token (hidden):
 Saved the token for this computer.
-Saved configuration approvals.
+Saved configuration approval-chat.
 
 $ zg connector assign User
-    approvals
+    approval-chat
 User will be asked through
-  approvals.
+  approval-chat.
 \end{lstlisting}
 \end{minipage}
 \par\smallskip
 
-Two commands, doing two different things. The first says \emph{which} chat. The
-second says \emph{who} is asked there: the \texttt{User}, whose
-\texttt{@human} action is the approval.
+Here \texttt{approval-chat} is a name you choose, not a ZipperGen keyword.
+The first command creates that named configuration using the
+\texttt{telegram} provider and says \emph{which} chat. The second says
+\emph{who} is asked there: the \texttt{User}, whose \texttt{@human} action is
+the approval.
 
 And two things went to two different places, on purpose:
 
@@ -709,8 +711,8 @@ git clone https://github.com/me/email-approval.git && cd email-approval
 python3 -m venv .venv && source .venv/bin/activate
 pip install zippergen
 
-zg connector configure approvals telegram
-zg connector assign User approvals
+zg connector configure approval-chat telegram
+zg connector assign User approval-chat
 
 zg deploy --name production --no-start
 zg start production

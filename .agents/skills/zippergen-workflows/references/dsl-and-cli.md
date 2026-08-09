@@ -524,7 +524,7 @@ them.
 
 ```bash
 # Hand Telegram setup to the user's terminal. It prompts for chat id and token
-zg connector configure approvals telegram
+zg connector configure approval-chat telegram
 
 # Save external-service connectors and bind their declared requirements
 zg connector configure records google-sheets --spreadsheet-id SHEET_ID --tab Calls
@@ -533,7 +533,7 @@ zg connector configure inbox gmail --query 'is:unread in:inbox'
 zg connector bind mailbox inbox
 
 # Route a participant's human actions to a saved connector
-zg connector assign User approvals
+zg connector assign User approval-chat
 
 # Inspect and check all model and connector routing
 zg config

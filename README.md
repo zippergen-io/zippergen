@@ -223,7 +223,9 @@ zg TYPE remove NAME
 
 A connector for an external service uses `bind REQUIREMENT NAME` instead of
 `assign`. The provider is an attribute of the named configuration, not another
-object to manage. `zg model`, `zg connector`, and `zg config` show the result.
+object to manage. In the examples below, `approval-chat` is a name chosen by
+the user and `telegram` is the provider. `zg model`, `zg connector`, and
+`zg config` show the result.
 
 ## Deterministic testing
 
@@ -318,8 +320,8 @@ Sheets. Which chat, which spreadsheet, which Gmail query: that is project
 configuration, and it goes in `zippergen.toml`. Credentials never go there:
 
 ```bash
-zg connector configure approvals telegram  # prompts for chat id and hidden token
-zg connector assign User approvals        # who gets asked, and where
+zg connector configure approval-chat telegram  # prompts for chat id and hidden token
+zg connector assign User approval-chat        # who gets asked, and where
 zg connector authorize google --scopes gmail.readonly,spreadsheets
 zg config check                         # check the whole project
 zg config check --live                  # contact each configured provider

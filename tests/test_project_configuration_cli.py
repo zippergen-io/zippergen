@@ -57,12 +57,12 @@ def test_model_and_connector_configuration_share_name_first_grammar():
         ["model", "configure", "writer", "openai:gpt-4o-mini"]
     )
     _parser, connector = _parse_cli_args(
-        ["connector", "configure", "approvals", "telegram"]
+        ["connector", "configure", "approval-chat", "telegram"]
     )
 
     assert (model.name, model.spec) == ("writer", "openai:gpt-4o-mini")
     assert (connector.name, connector.connector_provider) == (
-        "approvals",
+        "approval-chat",
         "telegram",
     )
 
@@ -127,15 +127,15 @@ def test_validate_catches_a_stale_project_assignment(project):
 def test_connector_unassign_and_remove_are_symmetric(project):
     _root, workspace = project
     workspace.save_connector_configuration(
-        "approvals",
+        "approval-chat",
         {"provider": "telegram", "kind": "telegram", "chat_id": "42"},
     )
 
-    assert main(["connector", "assign", "User", "approvals"]) == 0
+    assert main(["connector", "assign", "User", "approval-chat"]) == 0
     assert main(["connector", "unassign", "User"]) == 0
-    assert main(["connector", "remove", "approvals"]) == 0
+    assert main(["connector", "remove", "approval-chat"]) == 0
 
-    assert "approvals" not in workspace.connector_configurations()
+    assert "approval-chat" not in workspace.connector_configurations()
 
 
 def test_completion_uses_current_project_names(project, capsys):

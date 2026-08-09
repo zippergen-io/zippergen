@@ -268,22 +268,22 @@ def test_connector_assignment_infers_the_only_workflow_without_manifest_entry(
     workspace = Workspace(root, home=tmp_path / "home")
     workspace.initialize_project(name="connector-beginner")
     workspace.save_connector_configuration(
-        "approvals",
+        "approval-chat",
         {"provider": "telegram", "kind": "telegram", "chat_id": "123"},
     )
     monkeypatch.chdir(root)
     monkeypatch.setenv("ZIPPERGEN_HOME", str(tmp_path / "home"))
 
-    assert serve.main(["connector", "assign", "User", "approvals"]) == 0
+    assert serve.main(["connector", "assign", "User", "approval-chat"]) == 0
 
     assert workspace.connector_assignment_profile(
         "workflow.py:email_approval"
-    )["lifelines"] == {"User": "approvals"}
+    )["lifelines"] == {"User": "approval-chat"}
     manifest = workspace.manifest_path.read_text(encoding="utf-8")
     assert "[connectors.assignments.lifelines]" in manifest
-    assert '"User" = "approvals"' in manifest
+    assert '"User" = "approval-chat"' in manifest
     assert "workflow_entry" not in manifest
-    assert "asked through approvals" in capsys.readouterr().out
+    assert "asked through approval-chat" in capsys.readouterr().out
 
 
 def test_several_workflows_ask_for_an_explicit_choice(tmp_path, monkeypatch):

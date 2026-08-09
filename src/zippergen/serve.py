@@ -4061,7 +4061,7 @@ def _parse_cli_args(
     )
     connector_configure.add_argument(
         "name",
-        help="Configuration name, such as approvals, inbox, or records.",
+        help="Configuration name, such as approval-chat, inbox, or records.",
     )
     connector_configure.add_argument(
         "connector_provider",

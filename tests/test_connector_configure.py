@@ -49,11 +49,11 @@ def _project(tmp_path: Path) -> Path:
 def test_it_saves_a_configuration_the_project_can_commit(tmp_path):
     root = _project(tmp_path)
 
-    result = _run(root, "connector", "configure", "approvals", "telegram", "--chat-id", "4242")
+    result = _run(root, "connector", "configure", "approval-chat", "telegram", "--chat-id", "4242")
 
     assert result.returncode == 0, result.stderr
     manifest = tomllib.loads((root / "zippergen.toml").read_text())
-    configuration = manifest["connectors"]["configurations"]["approvals"]
+    configuration = manifest["connectors"]["configurations"]["approval-chat"]
     assert configuration == {
         "provider": "telegram",
         "kind": "telegram",
@@ -68,7 +68,7 @@ def test_telegram_setup_collects_the_chat_id_in_the_human_terminal(tmp_path):
         root,
         "connector",
         "configure",
-        "approvals",
+        "approval-chat",
         "telegram",
         input_text="4242\nbot-token\n",
     )
@@ -76,7 +76,7 @@ def test_telegram_setup_collects_the_chat_id_in_the_human_terminal(tmp_path):
     assert result.returncode == 0, result.stderr
     assert "Telegram chat id:" in result.stdout
     manifest = tomllib.loads((root / "zippergen.toml").read_text())
-    assert manifest["connectors"]["configurations"]["approvals"][
+    assert manifest["connectors"]["configurations"]["approval-chat"][
         "chat_id"
     ] == "4242"
 
@@ -86,7 +86,7 @@ def test_the_bot_token_never_reaches_the_manifest(tmp_path):
 
     root = _project(tmp_path)
 
-    _run(root, "connector", "configure", "approvals", "telegram",
+    _run(root, "connector", "configure", "approval-chat", "telegram",
          "--chat-id", "4242", token="secret-bot-token")
 
     assert "secret-bot-token" not in (root / "zippergen.toml").read_text()
@@ -101,7 +101,7 @@ def test_the_token_is_not_passed_as_an_argument(tmp_path):
 
     root = _project(tmp_path)
 
-    result = _run(root, "connector", "configure", "approvals", "telegram", "--chat-id", "1")
+    result = _run(root, "connector", "configure", "approval-chat", "telegram", "--chat-id", "1")
 
     assert "--token" not in result.stderr
     assert "hidden" in result.stdout or "hidden" in result.stderr
@@ -124,7 +124,7 @@ def test_binding_without_a_workflow_says_so(tmp_path):
         root,
         "connector",
         "configure",
-        "approvals",
+        "approval-chat",
         "telegram",
         "--chat-id",
         "1",
@@ -135,7 +135,7 @@ def test_binding_without_a_workflow_says_so(tmp_path):
         "connector",
         "bind",
         "human-approval",
-        "approvals",
+        "approval-chat",
     )
 
     assert result.returncode != 0
@@ -231,13 +231,13 @@ def test_binding_rejects_the_wrong_connector_kind(tmp_path):
         root,
         "connector",
         "configure",
-        "approvals",
+        "approval-chat",
         "telegram",
         "--chat-id",
         "1",
     )
 
-    result = _run(root, "connector", "bind", "call-mailbox", "approvals")
+    result = _run(root, "connector", "bind", "call-mailbox", "approval-chat")
 
     assert configured.returncode == 0, configured.stderr
     assert result.returncode != 0
