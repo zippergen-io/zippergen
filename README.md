@@ -86,6 +86,13 @@ agent in that directory and ask for it:
 > Build a ZipperGen workflow that watches a mailbox directory, asks an LLM to
 > draft a short reply to each new message, and asks me to approve it before it
 > is sent. It should keep running and wait for the next message.
+>
+> Use plain `.txt` files directly inside `mailbox/`. A file containing only
+> `Can we meet on Thursday` is a complete message. Do not require `From` or
+> `Subject` headers, and do not add an `inbox/` subdirectory. Use `mailbox/` as
+> the local default rather than a required workflow input. The exact command
+> `zg run --llm mock` must reach the approval without asking a setup question.
+> Before reporting success, test that exact file, layout, and command.
 
 The agent runs `zippergen skill`, reads the instructions it prints, writes
 `specification.md` and `workflow.py`, then checks its own work. What comes out
@@ -120,8 +127,15 @@ Check it and run it:
 zg validate
 
 mkdir -p mailbox
-echo "Could we move our meeting to Thursday?" > mailbox/01.txt
+echo "Can we meet on Thursday" > mailbox/01.txt
 zg run --llm mock
+```
+
+Validation states the workflow inputs explicitly. For this workflow it must
+include:
+
+```
+OK   workflow inputs: none, the run starts without setup questions
 ```
 
 ```
@@ -198,7 +212,15 @@ This is what projection means, and it is what the Lean proof is about.
 
 ## Deterministic testing
 
-Project model routing belongs in `zippergen.toml`, not in the workflow:
+Give the Writer a named model configuration, then assign it:
+
+```bash
+zg model configure writer openai:gpt-4o-mini
+zg model assign Writer writer
+zg model
+```
+
+The commands write the portable routing to `zippergen.toml`:
 
 ```toml
 [models.configurations."writer"]
@@ -284,7 +306,14 @@ configuration, and it goes in `zippergen.toml`. Credentials never go there:
 zg connector configure telegram approvals --chat-id 12345678
 zg connector assign User approvals        # who gets asked, and where
 zg connector authorize google --scopes gmail.readonly,spreadsheets
+zg config check                         # check the whole project
+zg config check --live                  # contact each configured provider
 ```
+
+Use `zg config` at any time to see the effective model and connector
+configurations, assignments, bindings, and missing site credentials. It never
+prints credential values. `zg config --json` provides the same view for CI and
+coding agents.
 
 ## The CLI
 
@@ -293,14 +322,28 @@ init        create a project
 skill       print the coding-agent skill
 validate    load, project, and check a workflow
 show        render the protocol, or one participant's local program
+config      show or check all project configuration
+model       configure models and assign participants or actions
+connector   configure connectors, assignments, bindings, and authorization
 run         run a workflow; --durable records it, --resume continues one
 deploy      prepare and start a deployment
 start · stop · restart · logs · status · trace · tasks · approve
 remove · compact
-connector   configure Telegram, Gmail or Sheets; authorize Google
+completion  print shell completion for zsh, bash, or fish
 ```
 
 Run `zippergen <command> --help` for any of them.
+
+Enable completion in the current shell with one command:
+
+```bash
+eval "$(zg completion zsh)"       # zsh
+eval "$(zg completion bash)"      # bash
+zg completion fish | source       # fish
+```
+
+Completion includes current deployment names, model and connector
+configurations, participants, actions, and connector requirements.
 
 ## Examples and documentation
 

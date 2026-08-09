@@ -235,6 +235,13 @@ and ask for it:
 > Build a ZipperGen workflow that watches a mailbox directory, asks an LLM
   to draft a short reply to each new message, and asks me to approve it
   before it is sent. It should keep running and wait for the next message.
+
+  Use plain .txt files directly inside mailbox/. A file containing only
+  "Can we meet on Thursday" is a complete message. Do not require From or
+  Subject headers, and do not add an inbox/ subdirectory. Use mailbox/ as the
+  local default rather than a required workflow input. The exact command
+  "zg run --llm mock" must reach the approval without asking a setup question.
+  Before reporting success, test that exact file, layout, and command.
 \end{lstlisting}
 
 The agent reads \texttt{AGENTS.md}, which points it at \texttt{zg skill}.
@@ -328,9 +335,10 @@ zg validate
 \begin{lstlisting}
 Workflow email_approval: valid
 OK   lifelines: 2 unique lifeline(s): Writer, User
-OK   projection Writer: SeqStmt
+OK   projection Writer: WhileRecvStmt
 OK   projection User: SeqStmt
 OK   deployment declaration: 0 field(s), 0 package(s), 0 setup step(s)
+OK   workflow inputs: none, the run starts without setup questions
 OK   canonical rendering: global and local code views rendered successfully
 \end{lstlisting}
 
@@ -423,7 +431,18 @@ First put something in the mailbox. A message is just a text file:
 
 \begin{lstlisting}[style=shell]
 mkdir -p mailbox
-echo "Could we move our meeting to Thursday?" > mailbox/01.txt
+echo "Can we meet on Thursday" > mailbox/01.txt
+\end{lstlisting}
+
+The files go directly in \texttt{mailbox/}. There is no
+\texttt{mailbox/inbox/} directory. A plain one-line file is the message body,
+so headers such as \texttt{From} and \texttt{Subject} are optional.
+
+Validation also makes unexpected setup inputs visible. For this workflow it
+must report:
+
+\begin{lstlisting}
+OK   workflow inputs: none, the run starts without setup questions
 \end{lstlisting}
 
 No model key needed yet. \texttt{--llm mock} answers model calls with a
@@ -471,15 +490,21 @@ guide covers it. You do not need it yet.
 
 \section{Use a real model}
 
-Set the key in your environment and name a provider:
+Create a named configuration and assign the Writer to it:
 
 \begin{lstlisting}[style=shell]
+zg model configure writer openai:gpt-4o-mini
+zg model assign Writer writer
+zg model
 export OPENAI_API_KEY=sk-...
-zg run --llm openai:gpt-4o-mini
+zg run
 \end{lstlisting}
 
-There is no ZipperGen credential store to set up for development. The
-environment is where a key belongs, and ZipperGen reads it from there.
+The model identity and assignment are written to \path{zippergen.toml}, so they
+travel with the project. The key stays in the environment. Several
+participants can share the same named configuration, and one exact action can
+be assigned with a target such as \texttt{Writer.draft\_reply}.
+\texttt{zg run -{}-llm mock} remains useful as a temporary override.
 
 \section{Approval on your phone}
 
@@ -507,6 +532,11 @@ need that credential and should not have it. In your own terminal:
 
 Tell me when that is done and I will check the configuration.
 \end{lstlisting}
+
+The agent can check the complete result with \texttt{zg config}. You can use
+\texttt{zg config check} to check local credentials too, and
+\texttt{zg config check -{}-live} when you want ZipperGen to contact the real
+providers.
 
 That is the boundary, and it is worth being precise about it. The agent did
 everything it could and then stopped. The token is entered interactively in

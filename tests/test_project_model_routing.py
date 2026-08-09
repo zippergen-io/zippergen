@@ -167,3 +167,22 @@ def test_global_cli_model_replaces_project_assignments(
     profile = json.loads((home / "deployments" / "mock-prod.json").read_text())
     assert profile["llm"] == "mock"
     assert profile["llms"] == {}
+
+
+def test_global_cli_model_replaces_project_assignments_for_plain_run(
+    tmp_path, monkeypatch, capsys
+):
+    _configured_project(tmp_path, monkeypatch)
+
+    assert main([
+        "run",
+        "--llm",
+        "mock",
+        "--input",
+        "topic=hello",
+        "--yes",
+    ]) == 0
+
+    assert json.loads(capsys.readouterr().out) == {
+        "result": "[draft_reply:draft]"
+    }

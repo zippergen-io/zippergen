@@ -50,8 +50,16 @@ one machine — credentials, local endpoints, authorizations — lives in
 `ZIPPERGEN_HOME` and is never committed. Resolve configuration with one rule
 only: a site value wins when present, otherwise use the project value.
 
-To assign a model, edit the project manifest. Do not hard-code the provider in
+To assign a model, use the project commands. Do not hard-code the provider in
 the workflow or change a deployment field merely to route one participant:
+
+```bash
+zg model configure writer openai:gpt-4o-mini
+zg model assign Writer writer
+zg model
+```
+
+These commands produce ordinary, reviewable manifest data:
 
 ```toml
 [models.configurations."writer"]
@@ -71,6 +79,9 @@ participants may name the same configuration. Use
 `[models.assignments.actions]` with a quoted `"Writer.draft_reply"` key only
 when one action needs a different model. `zg run --llm mock` is a temporary
 global override and replaces all project assignments for that run.
+Use `zg config` to inspect the full effective configuration and `zg config
+check` to report missing credentials or invalid routes. Use `zg config check
+--live` only when a real provider call is wanted.
 
 ## Keep the specification current
 
@@ -118,6 +129,10 @@ Otherwise choose the smallest reasonable workflow and state the assumption.
    at the lifeline that actually knows and owns the decision.
 5. Add focused tests that run with mock LLMs or fake services. Test protocol
    structure and safety behavior separately from live integrations.
+   Treat paths, file layouts, sample contents, and commands in the request as
+   executable acceptance criteria. Test the exact examples before reporting
+   success. Do not silently add a directory level, require metadata the sample
+   does not contain, or replace the requested command with a different one.
 6. Human delivery is inferred from `@human` action sites and routed with
    `zg connector assign`. Do not add a redundant connector requirement merely
    to reach a person through Telegram. For a non-human external service,
@@ -130,6 +145,13 @@ Otherwise choose the smallest reasonable workflow and state the assumption.
    connector access explicitly. Use `read-only` whenever the workflow does not
    modify the external service.
 7. Run the validation and inspection gate below.
+
+Workflow inputs are protocol data with an initial owner. Do not turn an
+incidental local path into a required workflow input merely because an effect
+needs it. When the requested command has no `--input`, use a useful local
+default or an ordinary project option for operational settings. `zg validate`
+lists every declared workflow input. Check that list against the command the
+user expects to run.
 
 Do not invent a generic agent for every function. A lifeline represents a
 sequential participant or trust/ownership boundary, not merely a code module.

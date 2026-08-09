@@ -41,11 +41,24 @@ dictionaries with string keys. Use it for structured records and tool results.
 ZipperGen validates the whole value before durable execution. Do not pass
 arbitrary Python objects through workflow variables.
 
+Use workflow inputs for application data that belongs to a participant, not
+for every operational setting used by an effect. If the requested run command
+does not pass a directory or endpoint, give that setting a useful project
+default or expose it as an option. Preserve literal examples exactly. A sample
+file directly in `mailbox/` does not authorize an extra `inbox/` directory, and
+a plain text sample must not silently acquire mandatory headers. Run the exact
+documented command and exact sample before reporting success.
+
 ## Model routing
 
 Keep model choice out of action declarations. Put named, portable model
 configurations and their participant or action assignments in
 `zippergen.toml`:
+
+```bash
+zg model configure writer openai:gpt-4o-mini
+zg model assign Writer writer
+```
 
 ```toml
 [models.configurations."writer"]
@@ -378,21 +391,12 @@ zippergen_deployment = DeploymentSpec(
     description="Generate reviewed answers.",
     fields=(
         DeploymentField(
-            "llm",
-            "LLM provider and model",
-            target="llm",
-            default="openai:gpt-4o",
-            required=True,
-        ),
-        DeploymentField(
-            "openai_api_key",
-            "OpenAI API key",
+            "service_token",
+            "External service token",
             target="env",
-            env="OPENAI_API_KEY",
+            env="SERVICE_TOKEN",
             secret=True,
             required=True,
-            when="llm",
-            when_values=("openai*",),
         ),
     ),
     packages=(DeploymentPackage("external-client", "external_client"),),
@@ -527,6 +531,10 @@ zg connector configure gmail inbox --query 'is:unread in:inbox' --bind mailbox
 
 # Route a participant's human actions to a saved connector
 zg connector assign User approvals
+
+# Inspect and check all model and connector routing
+zg config
+zg config check
 
 # Authorize Google on this computer, or accept an authorization made elsewhere
 zg connector authorize google --scopes gmail.readonly

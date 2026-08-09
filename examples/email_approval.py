@@ -14,7 +14,7 @@ The mailbox here is a directory of text files, so the tutorial needs no
 credentials. `examples/call_intake.py` is the same shape against real Gmail.
 
     mkdir -p mailbox
-    echo "Could we move our meeting to Thursday?" > mailbox/01.txt
+    echo "Can we meet on Thursday" > mailbox/01.txt
     zippergen run examples/email_approval.py:email_approval --llm mock
 """
 

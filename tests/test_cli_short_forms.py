@@ -61,7 +61,12 @@ def input_project(tmp_path, monkeypatch):
 def test_validate_infers_the_project_workflow(project, capsys):
     assert serve.main(["validate"]) == 0
 
-    assert "email_approval: valid" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "email_approval: valid" in output
+    assert (
+        "workflow inputs: none, the run starts without setup questions"
+        in output
+    )
 
 
 def test_show_infers_the_project_workflow(project, capsys):
@@ -75,12 +80,16 @@ def test_show_infers_the_project_workflow(project, capsys):
 
 def test_run_infers_the_project_workflow(project, monkeypatch, capsys):
     monkeypatch.setattr("builtins.input", lambda _prompt="": "y")
-    _mailbox(project, "Could we move our meeting?")
+    mailbox = _mailbox(project, "Can we meet on Thursday")
 
     rc = serve.main(["run", "--llm", "mock", "--yes", *BUDGET])
 
     assert rc == 0
     assert "result" in capsys.readouterr().out
+    assert not (mailbox / "01.txt").exists()
+    assert (mailbox / "01.done").read_text(encoding="utf-8") == (
+        "Can we meet on Thursday"
+    )
 
 
 def test_an_explicit_spec_still_wins(project, capsys):
@@ -113,7 +122,56 @@ def test_a_missing_input_is_asked_for_in_a_terminal(
     rc = serve.main(["run", "--llm", "mock"])
 
     assert rc == 0
-    assert "result" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    assert "Workflow inputs\n═══════════════\n" in output
+    assert "result" in output
+
+
+def test_validate_lists_required_workflow_inputs(input_project, capsys):
+    assert serve.main(["validate"]) == 0
+
+    assert "workflow inputs: topic (str) @ User, required" in (
+        capsys.readouterr().out
+    )
+
+
+def test_plain_run_uses_a_declared_input_default_without_prompting(
+    tmp_path, monkeypatch, capsys
+):
+    root = tmp_path / "default-input"
+    root.mkdir()
+    (root / "workflow.py").write_text(
+        """
+from zippergen import DeploymentField, DeploymentSpec, Lifeline, pure, workflow
+
+User = Lifeline("User")
+zippergen_deployment = DeploymentSpec(fields=(
+    DeploymentField(
+        "directory",
+        "Directory",
+        target="input",
+        default="mailbox",
+    ),
+))
+
+@pure
+def identity(value: str) -> str:
+    return value
+
+@workflow
+def default_input(directory: str @ User) -> str:
+    User: result = identity(directory)
+    return result @ User
+""",
+        encoding="utf-8",
+    )
+    workspace = Workspace(root, home=tmp_path / "home")
+    workspace.initialize_project(name="default-input")
+    monkeypatch.chdir(root)
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(tmp_path / "home"))
+
+    assert serve.main(["run", "--llm", "mock", "--yes"]) == 0
+    assert '"result": "mailbox"' in capsys.readouterr().out
 
 
 def test_a_missing_input_outside_a_terminal_still_refuses_clearly(
@@ -121,7 +179,7 @@ def test_a_missing_input_outside_a_terminal_still_refuses_clearly(
 ):
     monkeypatch.setattr(serve.sys.stdin, "isatty", lambda: False)
 
-    with pytest.raises(Exception) as error:
+    with pytest.raises(SystemExit) as error:
         serve.main(["run", "--llm", "mock"])
 
     assert "topic" in str(error.value)

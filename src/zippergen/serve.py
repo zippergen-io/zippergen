@@ -1658,14 +1658,20 @@ def _run_workflow_command(args) -> int:
     workspace = Workspace(getattr(args, "project", None))
     inputs = _parse_input_json(args.input_json)
     inputs.update(_parse_inputs(args.input))
-    # Ask for anything the workflow needs that was not supplied, rather than
-    # refusing with a usage error.
-    if sys.stdin.isatty() and not getattr(args, "yes", False):
-        from zippergen.durable_runs import collect_workflow_inputs
+    # Apply declared defaults in every mode. Ask for a truly missing value only
+    # in an interactive terminal, and otherwise fail before starting threads.
+    from zippergen.durable_runs import collect_workflow_inputs
 
-        inputs = collect_workflow_inputs(
-            wf, module, inputs, interactive=True, input_func=input
-        )
+    inputs = collect_workflow_inputs(
+        wf,
+        module,
+        inputs,
+        interactive=(
+            sys.stdin.isatty() and not getattr(args, "yes", False)
+        ),
+        input_func=input,
+        output_func=print,
+    )
     options = _parse_options(args.option, services=args.services)
     routing = project_model_routing(
         workspace,
@@ -1812,6 +1818,32 @@ def _validate_command(args) -> int:
     args.workflow = _resolved_workflow_spec(args)
     workflow, module = load_workflow_spec(args.workflow)
     result = _validate_workflow(workflow, module)
+    from zippergen.project_configuration import configuration_report
+    from zippergen.workspace import Workspace, WorkspaceError
+
+    workspace = Workspace(getattr(args, "project", None))
+    try:
+        project_workflow = workspace.resolve_workflow()
+    except WorkspaceError:
+        project_workflow = None
+    validated_workflow = workspace.canonical_spec(args.workflow, cwd=Path.cwd())
+    if project_workflow == validated_workflow:
+        report = configuration_report(workspace, include_site_checks=False)
+        raw_configuration_checks = report["checks"]
+        assert isinstance(raw_configuration_checks, list)
+        configuration_checks = [
+            item
+            for item in raw_configuration_checks
+            if isinstance(item, dict)
+            and str(item.get("name") or "") != "workflow"
+        ]
+        checks = result["checks"]
+        assert isinstance(checks, list)
+        checks.extend(configuration_checks)
+        result["valid"] = not any(
+            isinstance(item, dict) and item.get("status") == "fail"
+            for item in checks
+        )
     if args.json:
         print(json.dumps(result, indent=2, default=str))
     else:
@@ -1820,6 +1852,134 @@ def _validate_command(args) -> int:
         for check in result["checks"]:  # type: ignore[union-attr]
             print(f"{str(check['status']).upper():4} {check['name']}: {check['detail']}")
     return 0 if result["valid"] else 1
+
+
+def _configuration_command(args) -> int:
+    from zippergen.project_configuration import (
+        configuration_report,
+        render_configuration,
+    )
+    from zippergen.rendering import TerminalRenderer
+    from zippergen.workspace import Workspace, WorkspaceError
+
+    check = getattr(args, "config_action", None) == "check"
+    try:
+        report = configuration_report(
+            Workspace(getattr(args, "project", None)),
+            live=bool(getattr(args, "live", False)),
+        )
+    except WorkspaceError as exc:
+        raise SystemExit(str(exc)) from exc
+    if getattr(args, "json", False):
+        print(json.dumps(report, indent=2, default=str))
+    else:
+        render_configuration(report, TerminalRenderer())
+    return 1 if check and not report["valid"] else 0
+
+
+def _model_command(args) -> int:
+    from zippergen.project_configuration import (
+        assign_model,
+        configuration_report,
+        configuration_scope_valid,
+        configure_model,
+        render_model_configuration,
+    )
+    from zippergen.rendering import TerminalRenderer
+    from zippergen.workspace import Workspace, WorkspaceError
+
+    workspace = Workspace(getattr(args, "project", None))
+    action = getattr(args, "model_action", None)
+    try:
+        if action == "configure":
+            value = configure_model(
+                workspace,
+                args.name,
+                args.spec,
+                idle_timeout=args.idle_timeout,
+                base_url=args.base_url,
+            )
+            print(f"Saved model configuration {args.name}: {value['spec']}")
+            return 0
+        if action in {"assign", "unassign"}:
+            configuration = args.configuration if action == "assign" else None
+            assign_model(workspace, args.target, configuration)
+            if configuration is None:
+                print(f"Removed model assignment for {args.target}.")
+            else:
+                print(f"Assigned {args.target} to model configuration {configuration}.")
+            return 0
+        if action == "remove":
+            workspace.remove_model_configuration(args.name)
+            print(f"Removed model configuration {args.name}.")
+            return 0
+        if action == "check" and args.name:
+            if args.name not in workspace.model_configurations():
+                raise WorkspaceError(
+                    f"Model configuration does not exist: {args.name}."
+                )
+        report = configuration_report(
+            workspace,
+            live=bool(action == "check" and args.live),
+            model_names=(args.name,) if action == "check" and args.name else (),
+        )
+    except WorkspaceError as exc:
+        raise SystemExit(str(exc)) from exc
+    render_model_configuration(report, TerminalRenderer())
+    return (
+        1
+        if action == "check" and not configuration_scope_valid(report, "model")
+        else 0
+    )
+
+
+def _connector_management_command(args) -> int:
+    from zippergen.project_configuration import (
+        assign_connector,
+        configuration_report,
+        configuration_scope_valid,
+        render_connector_configuration,
+        unbind_connector,
+    )
+    from zippergen.rendering import TerminalRenderer
+    from zippergen.workspace import Workspace, WorkspaceError
+
+    workspace = Workspace(getattr(args, "project", None))
+    action = getattr(args, "connector_action", None)
+    try:
+        if action == "unassign":
+            assign_connector(workspace, args.target, None)
+            print(f"Removed connector assignment for {args.target}.")
+            return 0
+        if action == "unbind":
+            unbind_connector(workspace, args.requirement)
+            print(f"Removed connector binding for {args.requirement}.")
+            return 0
+        if action == "remove":
+            workspace.remove_connector_configuration(args.name)
+            print(f"Removed connector configuration {args.name}.")
+            return 0
+        if action == "check" and args.name:
+            if args.name not in workspace.connector_configurations():
+                raise WorkspaceError(
+                    f"Connector configuration does not exist: {args.name}."
+                )
+        report = configuration_report(
+            workspace,
+            live=bool(action == "check" and args.live),
+            connector_names=(args.name,)
+            if action == "check" and args.name
+            else (),
+        )
+    except WorkspaceError as exc:
+        raise SystemExit(str(exc)) from exc
+    render_connector_configuration(report, TerminalRenderer())
+    return (
+        1
+        if action == "check"
+        and not configuration_scope_valid(report, "connector")
+        else 0
+    )
 
 
 SPECIFICATION_TEMPLATE = """# {name}
@@ -2039,32 +2199,12 @@ def _connector_assign_command(args) -> int:
     deployment nobody is watching.
     """
 
+    from zippergen.project_configuration import assign_connector
     from zippergen.workspace import Workspace, WorkspaceError
 
     workspace = Workspace(getattr(args, "project", None))
     try:
-        entry = workspace.resolve_workflow()
-    except WorkspaceError as exc:
-        raise SystemExit(str(exc)) from exc
-    if args.configuration not in workspace.connector_configurations():
-        known = ", ".join(sorted(workspace.connector_configurations())) or "none"
-        raise SystemExit(
-            f"No connector configuration named {args.configuration!r}. "
-            f"Saved: {known}. Use 'zippergen connector configure'."
-        )
-
-    profile = workspace.connector_assignment_profile(entry)
-    lifelines = dict(profile.get("lifelines") or {})
-    actions = dict(profile.get("actions") or {})
-    if "." in args.target:
-        actions[args.target] = args.configuration
-    else:
-        lifelines[args.target] = args.configuration
-
-    try:
-        workspace.save_connector_assignment_profile(
-            entry, lifelines=lifelines, actions=actions
-        )
+        assign_connector(workspace, args.target, args.configuration)
     except WorkspaceError as exc:
         raise SystemExit(str(exc)) from exc
     print(f"{args.target} will be asked through {args.configuration}.")
@@ -3803,18 +3943,83 @@ def _parse_cli_args(
 
     ap = argparse.ArgumentParser(prog="zippergen")
     public_commands = (
-        "connector,run,show,validate,init,skill,snapshot,diff,deploy,configure,"
+        "config,model,connector,completion,run,show,validate,init,skill,snapshot,diff,deploy,configure,"
         "start,stop,remove,compact,restart,logs,doctor,status,inspect,trace,tasks,"
         "approve,notify"
     )
     sub = ap.add_subparsers(dest="cmd", metavar="{" + public_commands + "}")
+
+    config = sub.add_parser(
+        "config",
+        help="show or check the effective project configuration",
+    )
+    config.add_argument("config_action", nargs="?", choices=("check",))
+    config.add_argument(
+        "--live",
+        action="store_true",
+        help="Contact configured providers; only meaningful with 'check'.",
+    )
+    config.add_argument("--json", action="store_true", help="Print JSON.")
+    config.add_argument("--project", help="Project root.")
+
+    model = sub.add_parser(
+        "model",
+        help="show and manage model configurations and assignments",
+    )
+    model_sub = model.add_subparsers(dest="model_action")
+    model_configure = model_sub.add_parser(
+        "configure",
+        help="save one named model configuration",
+    )
+    model_configure.add_argument("name")
+    model_configure.add_argument(
+        "spec",
+        help="Model spec such as openai:gpt-4o-mini or local:qwen2.5:14b.",
+    )
+    model_configure.add_argument("--base-url", help="Local provider base URL.")
+    model_configure.add_argument(
+        "--idle-timeout",
+        type=float,
+        help="Release a local model after this many idle seconds.",
+    )
+    model_configure.add_argument("--project", help="Project root.")
+    model_assign = model_sub.add_parser(
+        "assign",
+        help="assign a named configuration to a participant or action",
+    )
+    model_assign.add_argument("target", help="default, Participant, or Participant.action.")
+    model_assign.add_argument("configuration")
+    model_assign.add_argument("--project", help="Project root.")
+    model_unassign = model_sub.add_parser("unassign", help="remove one assignment")
+    model_unassign.add_argument("target")
+    model_unassign.add_argument("--project", help="Project root.")
+    model_check = model_sub.add_parser(
+        "check",
+        help="check model configuration and credentials",
+    )
+    model_check.add_argument("name", nargs="?")
+    model_check.add_argument("--live", action="store_true", help="Contact providers.")
+    model_check.add_argument("--project", help="Project root.")
+    model_remove = model_sub.add_parser("remove", help="remove an unused configuration")
+    model_remove.add_argument("name")
+    model_remove.add_argument("--project", help="Project root.")
+
+    completion = sub.add_parser(
+        "completion",
+        help="print shell completion for zsh, bash, or fish",
+    )
+    completion.add_argument("shell", choices=("zsh", "bash", "fish"))
+    internal_completion = sub.add_parser("__complete")
+    internal_completion.add_argument("kind")
+    internal_completion.add_argument("path", nargs="*")
+    internal_completion.add_argument("--project")
+
     connector = sub.add_parser(
         "connector",
-        help="authorize a connector on this computer",
+        help="show and manage connector configurations and assignments",
     )
     connector_sub = connector.add_subparsers(
         dest="connector_action",
-        required=True,
     )
     connector_configure = connector_sub.add_parser(
         "configure",
@@ -3917,6 +4122,35 @@ def _parse_cli_args(
         help="Name of a saved connector configuration.",
     )
     connector_assign.add_argument("--project", help="Project root.")
+
+    connector_unassign = connector_sub.add_parser(
+        "unassign",
+        help="remove one human-action assignment",
+    )
+    connector_unassign.add_argument("target")
+    connector_unassign.add_argument("--project", help="Project root.")
+
+    connector_unbind = connector_sub.add_parser(
+        "unbind",
+        help="remove one workflow requirement binding",
+    )
+    connector_unbind.add_argument("requirement")
+    connector_unbind.add_argument("--project", help="Project root.")
+
+    connector_check = connector_sub.add_parser(
+        "check",
+        help="check connector configuration and credentials",
+    )
+    connector_check.add_argument("name", nargs="?")
+    connector_check.add_argument("--live", action="store_true", help="Contact providers.")
+    connector_check.add_argument("--project", help="Project root.")
+
+    connector_remove = connector_sub.add_parser(
+        "remove",
+        help="remove an unused connector configuration",
+    )
+    connector_remove.add_argument("name")
+    connector_remove.add_argument("--project", help="Project root.")
 
     connector_authorize = connector_sub.add_parser(
         "authorize",
@@ -4255,6 +4489,26 @@ def main(argv=None) -> int:
     if args.cmd is None:
         ap.print_help()
         return 0
+    if args.cmd == "config":
+        if args.live and args.config_action != "check":
+            raise SystemExit("--live requires 'config check'.")
+        return _configuration_command(args)
+    if args.cmd == "model":
+        return _model_command(args)
+    if args.cmd == "completion":
+        from zippergen.completion import render_completion
+
+        print(render_completion(args.shell))
+        return 0
+    if args.cmd == "__complete":
+        from zippergen.completion import completion_candidates
+
+        print(
+            "\n".join(
+                completion_candidates(args.kind, args.project, tuple(args.path))
+            )
+        )
+        return 0
     if (
         args.cmd == "connector"
         and args.connector_action == "authorize"
@@ -4290,6 +4544,14 @@ def main(argv=None) -> int:
         return _connector_configure_command(args)
     if args.cmd == "connector" and args.connector_action == "assign":
         return _connector_assign_command(args)
+    if args.cmd == "connector" and args.connector_action in {
+        None,
+        "unassign",
+        "unbind",
+        "check",
+        "remove",
+    }:
+        return _connector_management_command(args)
     if (
         args.cmd == "connector"
         and args.connector_action == "accept"

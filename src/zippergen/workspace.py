@@ -1581,6 +1581,81 @@ class Workspace:
             }
         return profiles
 
+    def save_provider_profile(
+        self,
+        name: str,
+        values: dict[str, str],
+    ) -> dict[str, str]:
+        """Save machine-specific model-provider connection settings."""
+
+        normalized = name.strip().casefold()
+        if not re.fullmatch(r"[a-z][a-z0-9._-]{0,63}", normalized):
+            raise WorkspaceError(
+                "A model provider name must start with a letter and contain "
+                "only letters, digits, '.', '_' or '-'."
+            )
+        state = self.load()
+        raw = state.get("providers") or {}
+        if not isinstance(raw, dict):
+            raise WorkspaceError("Workspace providers must be an object.")
+        profiles = {
+            str(key): dict(value)
+            for key, value in raw.items()
+            if isinstance(value, dict)
+        }
+        profiles[normalized] = {
+            str(key): str(value)
+            for key, value in values.items()
+            if value is not None and str(value).strip()
+        }
+        self.update(providers=profiles)
+        return self.provider_profiles()[normalized]
+
+    def remove_model_configuration(self, name: str) -> None:
+        """Remove one unused named model configuration."""
+
+        normalized = name.strip()
+        if normalized == "mock":
+            raise WorkspaceError("The built-in mock configuration cannot be removed.")
+        configurations = self.model_configurations()
+        if normalized not in configurations:
+            raise WorkspaceError(f"Model configuration does not exist: {normalized}")
+        workflow = self.resolve_workflow()
+        profile = self.model_assignment_profile(workflow)
+        references = [
+            target
+            for group in ("lifelines", "actions")
+            for target, selected in dict(profile.get(group) or {}).items()
+            if selected == normalized
+        ]
+        if profile.get("default") == normalized:
+            references.insert(0, "default")
+        if references:
+            raise WorkspaceError(
+                f"Model configuration {normalized!r} is still assigned to: "
+                + ", ".join(references)
+                + ". Unassign it first."
+            )
+        manifest = self.project_manifest()
+        models = _object_table(manifest["models"], field="models")
+        project = _object_table(
+            models.get("configurations") or {},
+            field="models.configurations",
+        )
+        project.pop(normalized, None)
+        models["configurations"] = project
+        self._write_project_configuration(models=models)
+        state = self.load()
+        updates: dict[str, object] = {}
+        for key in ("model_configurations", "model_configuration_overrides"):
+            raw = state.get(key) or {}
+            if isinstance(raw, dict):
+                values = dict(raw)
+                values.pop(normalized, None)
+                updates[key] = values
+        if updates:
+            self.update(**updates)
+
     def development_provider_environment(
         self,
         model_specs: tuple[str, ...],
@@ -1998,6 +2073,58 @@ class Workspace:
         )
         return self.connector_configurations()[normalized]
 
+    def remove_connector_configuration(self, name: str) -> None:
+        """Remove one unused named connector configuration."""
+
+        normalized = name.strip()
+        configurations = self.connector_configurations()
+        if normalized not in configurations:
+            raise WorkspaceError(
+                f"Connector configuration does not exist: {normalized}"
+            )
+        workflow = self.resolve_workflow()
+        assignments = self.connector_assignment_profile(workflow)
+        bindings = self.connector_binding_profile(workflow)
+        references = [
+            target
+            for group in ("lifelines", "actions")
+            for target, selected in assignments[group].items()
+            if selected == normalized
+        ]
+        references.extend(
+            f"requirement {requirement}"
+            for requirement, selected in bindings.items()
+            if selected == normalized
+        )
+        if references:
+            raise WorkspaceError(
+                f"Connector configuration {normalized!r} is still used by: "
+                + ", ".join(references)
+                + ". Unassign or unbind it first."
+            )
+        manifest = self.project_manifest()
+        connectors = _object_table(manifest["connectors"], field="connectors")
+        project = _object_table(
+            connectors.get("configurations") or {},
+            field="connectors.configurations",
+        )
+        project.pop(normalized, None)
+        connectors["configurations"] = project
+        self._write_project_configuration(connectors=connectors)
+        state = self.load()
+        updates: dict[str, object] = {}
+        for key in (
+            "connector_configurations",
+            "connector_configuration_overrides",
+        ):
+            raw = state.get(key) or {}
+            if isinstance(raw, dict):
+                values = dict(raw)
+                values.pop(normalized, None)
+                updates[key] = values
+        if updates:
+            self.update(**updates)
+
     def connector_binding_profile(
         self,
         workflow_spec: str,
@@ -2082,6 +2209,75 @@ class Workspace:
             connector_bindings=profiles,
             **{PROJECT_CONFIGURATION_MARKER: True},
         )
+        return profile
+
+    def unbind_connector(
+        self,
+        workflow_spec: str,
+        requirement: str,
+    ) -> dict[str, str]:
+        """Remove one requirement binding from the portable project profile."""
+
+        self.migrate_project_configuration()
+        canonical = self.canonical_spec(workflow_spec, cwd=self.root)
+        effective = self.connector_binding_profile(canonical)
+        if requirement not in effective:
+            raise WorkspaceError(
+                f"Connector requirement is not bound: {requirement}."
+            )
+        if not self._is_project_workflow(canonical):
+            profile = dict(effective)
+            profile.pop(requirement)
+            state = self.load()
+            raw = state.get("connector_bindings") or {}
+            if not isinstance(raw, dict):
+                raise WorkspaceError(
+                    "Workspace connector_bindings must be an object."
+                )
+            profiles = {
+                str(name): dict(value)
+                for name, value in raw.items()
+                if isinstance(value, dict)
+            }
+            profiles[canonical] = profile
+            self.update(connector_bindings=profiles)
+            return profile
+        manifest = self.project_manifest()
+        connectors = _object_table(manifest["connectors"], field="connectors")
+        profile = {
+            str(name): str(value)
+            for name, value in _object_table(
+                connectors.get("bindings") or {},
+                field="connectors.bindings",
+            ).items()
+        }
+        profile.pop(requirement, None)
+        connectors["bindings"] = profile
+        self._write_project_configuration(connectors=connectors)
+        state = self.load()
+        raw = state.get("connector_bindings") or {}
+        profiles = {
+            str(name): dict(value)
+            for name, value in raw.items()
+            if isinstance(value, dict)
+        }
+        profiles[canonical] = profile
+        self.update(
+            connector_bindings=profiles,
+            **{PROJECT_CONFIGURATION_MARKER: True},
+        )
+        raw_site = state.get("connector_site_bindings") or {}
+        if isinstance(raw_site, dict):
+            site_profiles = dict(raw_site)
+            raw_site_profile = site_profiles.get(canonical)
+            if isinstance(raw_site_profile, dict):
+                site_profile = dict(raw_site_profile)
+                site_profile.pop(requirement, None)
+                if site_profile:
+                    site_profiles[canonical] = site_profile
+                else:
+                    site_profiles.pop(canonical, None)
+                self.update(connector_site_bindings=site_profiles)
         return profile
 
     def connector_assignment_profile(

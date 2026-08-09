@@ -363,7 +363,9 @@ def email_approval() -> int:
 \end{lstlisting}
 
 An input belongs to the participant that supplies it. The return says who holds
-the result.
+the result. \texttt{zg validate} lists all declared workflow inputs. If an
+interactive run still needs any values, it introduces them under a
+\texttt{Workflow inputs} heading and shows declared defaults.
 
 \section{Inspecting and validating}
 
@@ -443,6 +445,14 @@ zg run --input message="Could we move our meeting to Thursday?" --yes
 
 \subsection{Choosing a model}
 
+For a durable project choice, create a named configuration and assign it:
+
+\begin{lstlisting}[style=shell]
+zg model configure writer openai:gpt-4o-mini
+zg model assign Writer writer
+zg model
+\end{lstlisting}
+
 \begin{center}
 \begin{tabularx}{0.95\linewidth}{@{}lX@{}}
 \toprule
@@ -460,6 +470,11 @@ The same resolution is used for plain runs, durable runs and deployments.
 and action assignments. Use \texttt{-{}-llm-for} for a narrower temporary
 override. A deployment stores the resolved model specs in its profile; deploy
 again after changing the project assignments.
+
+\texttt{zg model check} checks the selected model credentials without printing
+them. Add \texttt{-{}-live} only when you want to make a small real provider
+request. Use \texttt{zg model unassign TARGET} before removing a configuration
+that is still referenced.
 
 \subsection{Deterministic testing}
 
@@ -819,10 +834,17 @@ zg connector assign User approvals
 \texttt{status} / \texttt{trace} / \texttt{tasks} / \texttt{approve} & inspect and answer \\
 \midrule
 \multicolumn{2}{@{}l}{\textbf{Configure}} \\
+\texttt{config} / \texttt{config check} & show or check all effective configuration \\
+\texttt{model configure NAME SPEC} & save one named model configuration \\
+\texttt{model assign TARGET NAME} & route a participant or action \\
+\texttt{model unassign TARGET} / \texttt{model remove NAME} & remove routing or an unused configuration \\
 \texttt{connector configure telegram|gmail|google-sheets} & save one \\
 \texttt{connector assign TARGET NAME} & route human actions \\
+\texttt{connector unassign TARGET} / \texttt{connector unbind REQUIREMENT} & remove connector routing \\
+\texttt{connector check [NAME]} / \texttt{connector remove NAME} & check or remove \\
 \texttt{connector authorize google} & browser flow, prints a result \\
 \texttt{connector accept google} & save that result here \\
+\texttt{completion zsh|bash|fish} & print dynamic shell completion \\
 \midrule
 \multicolumn{2}{@{}l}{\textbf{Deploy}} \\
 \texttt{deploy [-{}-name NAME] [-{}-no-start]} & prepare, and start \\

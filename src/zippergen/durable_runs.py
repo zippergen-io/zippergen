@@ -272,6 +272,7 @@ def collect_workflow_inputs(
     *,
     interactive: bool,
     input_func: InputFunc = input,
+    output_func: OutputFunc = print,
 ) -> dict[str, object]:
     """Collect typed workflow inputs from overrides and declared defaults."""
 
@@ -285,6 +286,14 @@ def collect_workflow_inputs(
 
     fields = _deployment_input_fields(module)
     collected: dict[str, object] = {}
+    missing = [
+        name
+        for name, _value_type, _lifeline in workflow.inputs
+        if name not in supplied
+    ]
+    if interactive and missing:
+        output_func("Workflow inputs")
+        output_func("═══════════════")
     for name, value_type, _lifeline in workflow.inputs:
         field = fields.get(name)
         has_default = field is not None and field.default is not None
@@ -483,6 +492,7 @@ def run_durable(
             provided_inputs,
             interactive=interactive,
             input_func=input_func,
+            output_func=output_func,
         )
         routing = project_model_routing(
             workspace,

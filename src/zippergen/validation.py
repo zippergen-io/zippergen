@@ -116,6 +116,7 @@ def validate_workflow(workflow: Workflow, module: ModuleType) -> dict[str, objec
                 "detail": type(local).__name__,
             })
 
+    declaration = None
     try:
         declaration = deployment_spec_from_module(module)
     except Exception as exc:
@@ -136,6 +137,33 @@ def validate_workflow(workflow: Workflow, module: ModuleType) -> dict[str, objec
                 f"{len(declaration.setup)} setup step(s)"
             ),
         })
+
+    input_fields = {
+        field.target_name: field
+        for field in (declaration.fields if declaration is not None else ())
+        if field.target == "input"
+    }
+    if workflow.inputs:
+        rendered_inputs: list[str] = []
+        for name, value_type, lifeline in workflow.inputs:
+            type_name = getattr(value_type, "__name__", str(value_type))
+            owner = f" @ {lifeline.name}" if lifeline is not None else ""
+            field = input_fields.get(name)
+            if field is not None and field.default is not None:
+                default = f", default {field.default!r}"
+            else:
+                default = ", required"
+            rendered_inputs.append(
+                f"{name} ({type_name}){owner}{default}"
+            )
+        input_detail = ", ".join(rendered_inputs)
+    else:
+        input_detail = "none, the run starts without setup questions"
+    checks.append({
+        "status": "ok",
+        "name": "workflow inputs",
+        "detail": input_detail,
+    })
 
     try:
         connector_requirements = connector_requirements_from_module(module)
