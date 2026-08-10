@@ -199,7 +199,7 @@ def test_diff_compares_a_baseline_against_the_project_workflow(
     """One saved baseline plus one argument is the whole change-check ritual."""
 
     baseline = tmp_path / "before.json"
-    assert serve.main(["snapshot", "-o", str(baseline)]) == 0
+    assert serve.main(["diff", "--save", str(baseline)]) == 0
     capsys.readouterr()
 
     workflow = project / "workflow.py"
@@ -323,7 +323,7 @@ def test_top_level_help_hides_legacy_internal_commands(capsys):
 
     output = capsys.readouterr().out
     assert "==SUPPRESS==" not in output
-    for command in ("run-deployment", "serve"):
+    for command in ("notify", "serve"):
         assert f"    {command} " not in output
 
 

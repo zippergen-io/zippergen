@@ -43,6 +43,7 @@ def _deploy_for_test(arguments: list[str]) -> int:
     return main(
         [
             "deploy",
+            "create",
             *arguments,
             "--no-start",
             "--no-bundle",
@@ -83,7 +84,7 @@ def test_compact_reports_removed_store_events_and_log_archives(
         ),
     )
 
-    assert main(["compact", "demo", "--keep-archives", "1"]) == 0
+    assert main(["deploy", "compact", "demo", "--keep-archives", "1"]) == 0
 
     output = capsys.readouterr().out
     assert "removed events: 12" in output
@@ -401,9 +402,9 @@ def test_snapshot_then_diff_supports_assistant_refinement_loop(tmp_path, capsys)
     workflow_path.write_text(WORKFLOW_SOURCE)
 
     rc = main([
-        "snapshot",
+        "diff",
         f"{workflow_path}:hello",
-        "--output",
+        "--save",
         str(snapshot_path),
     ])
     assert rc == 0
@@ -491,7 +492,7 @@ def test_deploy_prepares_a_profile_that_runs_by_name(tmp_path, monkeypatch, caps
     store_path = zippergen_home / "runs" / "hello-prod.sqlite"
     profile = json.loads(profile_path.read_text())
     assert rc == 0
-    assert "Status: zippergen status hello-prod" in captured.out
+    assert "Status: zippergen deploy status hello-prod" in captured.out
     assert profile["name"] == "hello-prod"
     assert profile["workflow"] == f"{workflow_path}:hello"
     assert profile["store"] == str(store_path)
@@ -506,13 +507,13 @@ def test_deploy_prepares_a_profile_that_runs_by_name(tmp_path, monkeypatch, caps
     assert connection.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 0
     connection.close()
 
-    rc = main(["run-deployment", "hello-prod"])
+    rc = main(["deploy", "run", "hello-prod"])
     captured = capsys.readouterr()
     assert rc == 0
     assert store_path.exists()
     assert json.loads(captured.out) == {"result": "deploy!"}
 
-    rc = main(["status", "hello-prod", "--json"])
+    rc = main(["deploy", "status", "hello-prod", "--json"])
     captured = capsys.readouterr()
     status = json.loads(captured.out)
     assert rc == 0
@@ -534,7 +535,7 @@ def test_start_deployment_dry_run_prints_systemd_commands(tmp_path, monkeypatch,
     ])
     capsys.readouterr()
 
-    rc = main(["start", "hello-prod", "--enable", "--dry-run"])
+    rc = main(["deploy", "start", "hello-prod", "--enable", "--dry-run"])
 
     captured = capsys.readouterr()
     assert rc == 0
@@ -567,7 +568,7 @@ def test_start_deployment_dry_run_prints_launchd_commands(tmp_path, monkeypatch,
     ])
     capsys.readouterr()
 
-    rc = main(["start", "hello-prod", "--dry-run"])
+    rc = main(["deploy", "start", "hello-prod", "--dry-run"])
 
     captured = capsys.readouterr()
     assert rc == 0
@@ -614,7 +615,7 @@ def test_start_and_restart_refuse_a_deployment_that_fails_readiness(
         ),
     )
 
-    rc = main([action, "hello-openai"])
+    rc = main(["deploy", action, "hello-openai"])
 
     captured = capsys.readouterr()
     assert rc == 1
@@ -664,6 +665,7 @@ def test_guided_deploy_persists_an_implicit_model_provider_secret(
     rc = main(
         [
             "deploy",
+            "create",
             f"{workflow_path}:hello",
             "--name",
             "hello-mistral",
@@ -714,6 +716,7 @@ def test_guided_deploy_preserves_google_connector_credential_json(
     rc = main(
         [
             "deploy",
+            "create",
             f"{workflow_path}:hello",
             "--name",
             "hello-google",
@@ -757,6 +760,7 @@ def test_guided_deploy_persists_a_local_provider_endpoint(
     rc = main(
         [
             "deploy",
+            "create",
             f"{workflow_path}:hello",
             "--name",
             "hello-local",
@@ -797,6 +801,7 @@ def test_guided_deploy_blocks_a_missing_selected_model_credential(
     rc = main(
         [
             "deploy",
+            "create",
             f"{workflow_path}:hello",
             "--name",
             "hello-mistral",
@@ -822,7 +827,7 @@ def test_guided_deploy_persists_config_and_private_secrets(tmp_path, monkeypatch
     monkeypatch.setenv("ZIPPERGEN_HOME", str(zippergen_home))
 
     rc = main([
-        "deploy",
+        "deploy", "create",
         f"{workflow_path}:guided",
         "--name",
         "guided-prod",
@@ -863,7 +868,7 @@ def test_guided_deploy_persists_config_and_private_secrets(tmp_path, monkeypatch
     connection.close()
 
     workflow_path.unlink()
-    rc = main(["run-deployment", "guided-prod"])
+    rc = main(["deploy", "run", "guided-prod"])
     captured = capsys.readouterr()
     assert rc == 0
     assert json.loads(captured.out) == {"result": "hello:safe:token:deploy"}
@@ -880,6 +885,7 @@ def test_explicit_redeploy_replaces_the_named_deployment_source(
     monkeypatch.setenv("ZIPPERGEN_HOME", str(zippergen_home))
     arguments = [
         "deploy",
+        "create",
         f"{workflow_path}:hello",
         "--name",
         "hello-redeploy",
@@ -929,7 +935,7 @@ def test_explicit_redeploy_replaces_the_named_deployment_source(
     ).read_text()
     workflow_path.unlink()
 
-    assert main(["run-deployment", "hello-redeploy"]) == 0
+    assert main(["deploy", "run", "hello-redeploy"]) == 0
     captured = capsys.readouterr()
     assert json.loads(captured.out) == {"result": "updated?"}
 
@@ -940,7 +946,7 @@ def test_configure_keeps_existing_secret_when_updating_public_field(tmp_path, mo
     zippergen_home = tmp_path / "zg-home"
     monkeypatch.setenv("ZIPPERGEN_HOME", str(zippergen_home))
     main([
-        "deploy",
+        "deploy", "create",
         f"{workflow_path}:guided",
         "--name",
         "guided-prod",
@@ -961,7 +967,7 @@ def test_configure_keeps_existing_secret_when_updating_public_field(tmp_path, mo
     profile_path.write_text(json.dumps(legacy_profile))
 
     rc = main([
-        "configure",
+        "deploy", "configure",
         "guided-prod",
         "--set",
         "prefix=updated",
@@ -1003,7 +1009,7 @@ def test_logs_command_tails_deployment_log(tmp_path, monkeypatch, capsys):
     with open(log_path, "w") as f:
         f.write("first\nsecond\nthird\n")
 
-    rc = main(["logs", "hello-prod", "--tail", "2"])
+    rc = main(["deploy", "logs", "hello-prod", "--tail", "2"])
 
     captured = capsys.readouterr()
     assert rc == 0
@@ -1034,7 +1040,7 @@ def test_logs_command_shows_only_the_current_log_generation(
     profile["log_generation_offset"] = len(old)
     profile_path.write_text(json.dumps(profile))
 
-    rc = main(["logs", "hello-prod", "--tail", "80"])
+    rc = main(["deploy", "logs", "hello-prod", "--tail", "80"])
 
     captured = capsys.readouterr()
     assert rc == 0
@@ -1053,7 +1059,7 @@ def test_doctor_reports_deployment_checks(tmp_path, monkeypatch, capsys):
     ])
     capsys.readouterr()
 
-    rc = main(["doctor", "hello-prod", "--json", "--no-systemd"])
+    rc = main(["deploy", "check", "hello-prod", "--json", "--no-systemd"])
 
     captured = capsys.readouterr()
     payload = json.loads(captured.out)
@@ -1083,7 +1089,7 @@ def test_doctor_returns_failure_for_broken_profile(tmp_path, monkeypatch, capsys
         "python": str(tmp_path / "missing-python"),
     }))
 
-    rc = main(["doctor", "broken", "--json", "--no-systemd"])
+    rc = main(["deploy", "check", "broken", "--json", "--no-systemd"])
 
     captured = capsys.readouterr()
     payload = json.loads(captured.out)
@@ -1104,7 +1110,7 @@ def test_status_rejects_deployment_and_store_together(tmp_path, monkeypatch):
     }))
 
     try:
-        main(["status", "demo", "--store", str(tmp_path / "other.sqlite")])
+        main(["deploy", "status", "demo", "--store", str(tmp_path / "other.sqlite")])
     except SystemExit as exc:
         assert "either a deployment name or --store" in str(exc)
     else:
@@ -1129,7 +1135,7 @@ def test_status_command_reports_completed_run(tmp_path, monkeypatch, capsys):
     ])
     capsys.readouterr()
 
-    rc = main(["status", "--store", str(store_path), "--json"])
+    rc = main(["deploy", "status", "--store", str(store_path), "--json"])
 
     captured = capsys.readouterr()
     status = json.loads(captured.out)
@@ -1161,7 +1167,7 @@ def test_status_command_reports_pending_human_task(tmp_path, capsys):
     )
     conn.close()
 
-    rc = main(["status", "--store", str(store_path)])
+    rc = main(["deploy", "status", "--store", str(store_path)])
 
     captured = capsys.readouterr()
     assert rc == 0
@@ -1173,7 +1179,7 @@ def test_status_command_reports_pending_human_task(tmp_path, capsys):
 def test_status_command_reports_missing_store(tmp_path, capsys):
     store_path = tmp_path / "missing.sqlite"
 
-    rc = main(["status", "--store", str(store_path), "--json"])
+    rc = main(["deploy", "status", "--store", str(store_path), "--json"])
 
     captured = capsys.readouterr()
     assert rc == 0
@@ -1519,3 +1525,35 @@ def test_deployment_starts_one_telegram_bridge_for_shared_routes(
         "Writer": "team-chat",
         "Reviewer": "team-chat",
     }
+
+
+def test_every_command_named_in_output_actually_exists():
+    """Messages that suggest a command must suggest a real one.
+
+    Renaming a command silently invalidates every string that mentions it. The
+    deployment consolidation left `zippergen logs NAME` in the success message
+    for a command that no longer existed, and only a manual run caught it.
+    """
+
+    import re
+    from pathlib import Path
+
+    from zippergen.serve import _parse_cli_args
+
+    source_root = Path(__file__).resolve().parents[1] / "src" / "zippergen"
+    mentioned: dict[str, str] = {}
+    for path in source_root.rglob("*.py"):
+        for number, line in enumerate(path.read_text().splitlines(), 1):
+            for match in re.finditer(r"\b(?:zippergen|zg) ([a-z][a-z-]{2,})", line):
+                verb = match.group(1)
+                if verb in {"zippergen", "zg"}:
+                    continue  # e.g. the completion script's `compdef _zg zg zippergen`
+                mentioned.setdefault(verb, f"{path.name}:{number}")
+
+    assert mentioned, "expected the source to suggest at least one command"
+    for verb, where in sorted(mentioned.items()):
+        try:
+            _parse_cli_args([verb, "--help"])
+        except SystemExit as exit_code:
+            # argparse exits 0 for --help on a real command, 2 for a bad one.
+            assert exit_code.code == 0, f"{where} names unknown command {verb!r}"

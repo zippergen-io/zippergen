@@ -119,7 +119,7 @@ def test_deployment_snapshots_project_model_assignments(
     root, home = _configured_project(tmp_path, monkeypatch)
 
     assert main([
-        "deploy",
+        "deploy", "create",
         "--name",
         "answer-prod",
         "--input",
@@ -148,7 +148,7 @@ def test_global_cli_model_replaces_project_assignments(
     _root, home = _configured_project(tmp_path, monkeypatch)
 
     assert main([
-        "deploy",
+        "deploy", "create",
         "--name",
         "mock-prod",
         "--llm",

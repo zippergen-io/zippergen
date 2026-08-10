@@ -415,7 +415,7 @@ def _run_args_from_deployment(profile: dict[str, object]):
 
 def _deployment_command(name: str, *, python_executable: str | None = None) -> str:
     python = python_executable or sys.executable
-    return f"{shlex.quote(python)} -m zippergen.serve run-deployment {shlex.quote(_slug(name))}"
+    return f"{shlex.quote(python)} -m zippergen.serve deploy run {shlex.quote(_slug(name))}"
 
 
 def _write_deployment_artifacts(profile: dict[str, object]) -> None:
@@ -2744,20 +2744,6 @@ def _skill_command(args) -> int:
     return 0
 
 
-def _snapshot_command(args) -> int:
-    args.workflow = _resolved_workflow_spec(args)
-    workflow, module = load_workflow_spec(args.workflow)
-    payload = json.dumps(semantic_snapshot(workflow, module), indent=2, default=str)
-    if args.output:
-        output_path = Path(args.output).expanduser().resolve()
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(payload + "\n")
-        print(f"Wrote semantic snapshot to {output_path}")
-    else:
-        print(payload)
-    return 0
-
-
 def _semantic_input(spec: str) -> dict[str, object]:
     candidate = Path(spec).expanduser()
     if candidate.is_file() and candidate.suffix.lower() == ".json":
@@ -2770,6 +2756,28 @@ def _semantic_input(spec: str) -> dict[str, object]:
 
 
 def _diff_command(args) -> int:
+    # Saving a baseline and comparing against one are the same conversation,
+    # so they are one command: --save writes, everything else compares.
+    if args.save:
+        spec = args.before or _resolved_workflow_spec(args)
+        workflow, module = load_workflow_spec(spec)
+        payload = json.dumps(
+            semantic_snapshot(workflow, module), indent=2, default=str
+        )
+        if args.save == "-":
+            print(payload)
+            return 0
+        output_path = Path(args.save).expanduser().resolve()
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_text(payload + "\n")
+        print(f"Wrote semantic baseline to {output_path}")
+        return 0
+
+    if not args.before:
+        raise SystemExit(
+            "Give a baseline to compare against, or save one first with "
+            "'zippergen diff --save PATH'."
+        )
     # With one argument, compare a saved baseline against the project workflow.
     after = args.after or _resolved_workflow_spec(args)
     result = semantic_diff_models(
@@ -3633,9 +3641,44 @@ def _finalize_guided_deployment(
 
     print(f"Deployment: {name}")
     if not getattr(args, "concise", False):
-        print(f"Status: zippergen status {name}")
-        print(f"Logs: zippergen logs {name} --follow")
-        print(f"Restart: zippergen restart {name}")
+        print(f"Status: zippergen deploy status {name}")
+        print(f"Logs: zippergen deploy logs {name} --follow")
+        print(f"Restart: zippergen deploy restart {name}")
+    return 0
+
+
+def _deployment_overview_command(args) -> int:
+    """Show every deployment. `zg deploy` with no action, like `zg model`."""
+
+    from zippergen.rendering import TerminalRenderer
+
+    directory = _deployments_dir()
+    profiles = sorted(directory.glob("*.json")) if directory.exists() else []
+    if not profiles:
+        print("No deployments yet. Create one with 'zippergen deploy create'.")
+        return 0
+
+    rows: list[tuple[object, ...]] = []
+    for path in profiles:
+        try:
+            profile = _load_deployment_profile(path.stem)
+        except SystemExit:
+            rows.append((path.stem, "unreadable", "-", "-"))
+            continue
+        store = Path(str(profile.get("store") or ""))
+        rows.append((
+            path.stem,
+            str(profile.get("source_workflow") or profile.get("workflow") or "-"),
+            str(profile.get("llm") or "-"),
+            "present" if store.exists() else "not created",
+        ))
+    TerminalRenderer().columns(
+        "Deployments",
+        ("Name", "Workflow", "Model", "Store"),
+        rows,
+    )
+    print()
+    print("Act on one with: zippergen deploy start|stop|logs|check NAME")
     return 0
 
 
@@ -4424,18 +4467,19 @@ def _connector_authorize_google_command(args) -> int:
         raise SystemExit(str(exc)) from exc
 
 
+# Registered so they keep working, kept out of the help list. `__complete`
+# backs shell completion, `serve` is the legacy per-role runner, and `notify`
+# is an adapter a deployment runs for itself rather than something you type.
+HIDDEN_COMMANDS = frozenset({"__complete", "serve", "notify"})
+
+
 def _parse_cli_args(
     argv=None,
 ) -> tuple[argparse.ArgumentParser, argparse.Namespace]:
     """Build the real CLI parser and parse arguments without dispatching."""
 
     ap = argparse.ArgumentParser(prog="zippergen")
-    public_commands = (
-        "config,model,assistant,connector,completion,run,show,validate,init,skill,snapshot,diff,deploy,configure,"
-        "start,stop,remove,compact,restart,logs,doctor,status,inspect,trace,tasks,"
-        "approve,notify"
-    )
-    sub = ap.add_subparsers(dest="cmd", metavar="{" + public_commands + "}")
+    sub = ap.add_subparsers(dest="cmd")
 
     config = sub.add_parser(
         "config",
@@ -4847,12 +4891,19 @@ def _parse_cli_args(
         help="Print SKILL.md alone, without the reference files it links.",
     )
 
-    snapshot = sub.add_parser("snapshot", help="save a stable semantic workflow baseline")
-    snapshot.add_argument("workflow", nargs="?", help="Workflow spec: module:workflow or path.py:workflow. Defaults to this project's workflow.")
-    snapshot.add_argument("--output", "-o", help="Write JSON to this path instead of standard output.")
-
-    semantic_diff_parser = sub.add_parser("diff", help="compare two workflows by semantic IR changes")
-    semantic_diff_parser.add_argument("before", help="Original workflow spec or semantic snapshot JSON.")
+    semantic_diff_parser = sub.add_parser(
+        "diff",
+        help="save a semantic baseline, or compare against one",
+        description=(
+            "Save a baseline with --save, then run 'zg diff BASELINE' after "
+            "editing to see exactly what changed in the protocol."
+        ),
+    )
+    semantic_diff_parser.add_argument(
+        "before",
+        nargs="?",
+        help="Original workflow spec or saved baseline JSON.",
+    )
     semantic_diff_parser.add_argument(
         "after",
         nargs="?",
@@ -4863,9 +4914,32 @@ def _parse_cli_args(
         ),
     )
     semantic_diff_parser.add_argument("--format", choices=("code", "json"), default="code", help="Output format.")
+    semantic_diff_parser.add_argument(
+        "--save",
+        metavar="PATH",
+        help=(
+            "Write a semantic baseline of this project's workflow to PATH "
+            "instead of comparing. Use '-' for standard output."
+        ),
+    )
 
-    deploy = sub.add_parser("deploy", help="configure, validate, and start a workflow deployment")
-    deploy.add_argument(
+    # One family, the same shape as model/assistant/connector: run it bare to
+    # see everything, then one verb per thing you can do to a deployment.
+    deploy = sub.add_parser(
+        "deploy",
+        help="show and manage deployments",
+        description=(
+            "One pattern: create a deployment, then act on it by name. "
+            "Run without an action to show every deployment."
+        ),
+    )
+    deploy_sub = deploy.add_subparsers(dest="deploy_action")
+
+    deploy_create = deploy_sub.add_parser(
+        "create",
+        help="configure, validate, and start a workflow deployment",
+    )
+    deploy_create.add_argument(
         "target",
         nargs="?",
         help=(
@@ -4874,71 +4948,61 @@ def _parse_cli_args(
             "--name."
         ),
     )
-    deploy.add_argument("--name", help="Deployment name; defaults to the workflow declaration or workflow name.")
-    _add_guided_deployment_arguments(deploy)
-    deploy.add_argument("--no-bundle", action="store_true", help="Run from source instead of snapshotting declared files.")
-    deploy.add_argument("--no-start", action="store_true", help="Configure the deployment without starting its service.")
+    deploy_create.add_argument("--name", help="Deployment name; defaults to the workflow declaration or workflow name.")
+    _add_guided_deployment_arguments(deploy_create)
+    deploy_create.add_argument("--no-bundle", action="store_true", help="Run from source instead of snapshotting declared files.")
+    deploy_create.add_argument("--no-start", action="store_true", help="Configure the deployment without starting its service.")
 
-    configure = sub.add_parser("configure", help="update a named deployment's persistent configuration")
-    configure.add_argument("name", help="Deployment name.")
-    _add_guided_deployment_arguments(configure, configure=True)
-    configure.add_argument("--restart", action="store_true", help="Restart the service after configuration succeeds.")
-    configure.set_defaults(no_start=True, no_bundle=True, no_install=True, no_setup=True)
+    deploy_configure = deploy_sub.add_parser(
+        "configure",
+        help="update a deployment's persistent configuration",
+    )
+    deploy_configure.add_argument("name", help="Deployment name.")
+    _add_guided_deployment_arguments(deploy_configure, configure=True)
+    deploy_configure.add_argument("--restart", action="store_true", help="Restart the service after configuration succeeds.")
+    deploy_configure.set_defaults(no_start=True, no_bundle=True, no_install=True, no_setup=True)
 
-    rd = sub.add_parser("run-deployment")
-    rd.add_argument("name", help="Deployment name.")
+    deploy_run = deploy_sub.add_parser("run")
+    deploy_run.add_argument("name", help="Deployment name.")
 
-    start = sub.add_parser("start", help="start a named deployment as a supervised user service")
-    start.add_argument("name", help="Deployment name.")
-    start.add_argument("--enable", action="store_true", help="Enable the service to start automatically for this user.")
-    start.add_argument("--dry-run", action="store_true", help="Print service-manager commands without running them.")
+    deploy_start = deploy_sub.add_parser("start", help="start a deployment as a supervised user service")
+    deploy_start.add_argument("name", help="Deployment name.")
+    deploy_start.add_argument("--enable", action="store_true", help="Enable the service to start automatically for this user.")
+    deploy_start.add_argument("--dry-run", action="store_true", help="Print service-manager commands without running them.")
 
-    stop = sub.add_parser("stop", help="stop a named supervised deployment")
-    stop.add_argument("name", help="Deployment name.")
-    stop.add_argument("--dry-run", action="store_true", help="Print the service-manager command without running it.")
+    deploy_stop = deploy_sub.add_parser("stop", help="stop a supervised deployment")
+    deploy_stop.add_argument("name", help="Deployment name.")
+    deploy_stop.add_argument("--dry-run", action="store_true", help="Print the service-manager command without running it.")
 
-    remove_parser = sub.add_parser(
+    deploy_restart = deploy_sub.add_parser("restart", help="restart a supervised deployment")
+    deploy_restart.add_argument("name", help="Deployment name.")
+    deploy_restart.add_argument("--dry-run", action="store_true", help="Print service-manager commands without running them.")
+
+    deploy_remove = deploy_sub.add_parser(
         "remove",
         help="delete a deployment, keeping its durable store unless purged",
     )
-    remove_parser.add_argument("name", help="Deployment name.")
-    remove_parser.add_argument(
-        "--purge",
-        action="store_true",
-        help="Delete the durable store and log too, leaving nothing.",
-    )
-    remove_parser.add_argument(
-        "--yes",
-        action="store_true",
-        help="Do not ask for confirmation.",
-    )
+    deploy_remove.add_argument("name", help="Deployment name.")
+    deploy_remove.add_argument("--purge", action="store_true", help="Delete the durable store and log too, leaving nothing.")
+    deploy_remove.add_argument("--yes", action="store_true", help="Do not ask for confirmation.")
 
-    compact_parser = sub.add_parser(
+    deploy_compact = deploy_sub.add_parser(
         "compact",
         help="reclaim space in a stopped deployment's store and logs",
     )
-    compact_parser.add_argument("name", help="Deployment name.")
-    compact_parser.add_argument(
-        "--keep-archives",
-        type=int,
-        default=3,
-        help="How many rotated log archives to retain. Default 3.",
-    )
+    deploy_compact.add_argument("name", help="Deployment name.")
+    deploy_compact.add_argument("--keep-archives", type=int, default=3, help="How many rotated log archives to retain. Default 3.")
 
-    restart = sub.add_parser("restart", help="restart a named supervised deployment")
-    restart.add_argument("name", help="Deployment name.")
-    restart.add_argument("--dry-run", action="store_true", help="Print service-manager commands without running them.")
+    deploy_logs = deploy_sub.add_parser("logs", help="show logs for a deployment")
+    deploy_logs.add_argument("name", help="Deployment name.")
+    deploy_logs.add_argument("--tail", type=int, default=80, help="Number of log lines to show.")
+    deploy_logs.add_argument("--follow", action="store_true", help="Keep watching the log file.")
+    deploy_logs.add_argument("--interval", type=float, default=1.0, help="Polling interval in seconds for --follow.")
 
-    logs = sub.add_parser("logs", help="show logs for a named deployment")
-    logs.add_argument("name", help="Deployment name.")
-    logs.add_argument("--tail", type=int, default=80, help="Number of log lines to show.")
-    logs.add_argument("--follow", action="store_true", help="Keep watching the log file.")
-    logs.add_argument("--interval", type=float, default=1.0, help="Polling interval in seconds for --follow.")
-
-    doctor = sub.add_parser("doctor", help="check a named local deployment for common problems")
-    doctor.add_argument("name", help="Deployment name.")
-    doctor.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
-    doctor.add_argument(
+    deploy_check = deploy_sub.add_parser("check", help="check a deployment for common problems")
+    deploy_check.add_argument("name", help="Deployment name.")
+    deploy_check.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    deploy_check.add_argument(
         "--no-service-check",
         "--no-systemd",
         dest="no_systemd",
@@ -4946,10 +5010,10 @@ def _parse_cli_args(
         help="Skip live launchd/systemd active-state checks.",
     )
 
-    st = sub.add_parser("status", help="show local SQLite deployment status")
-    st.add_argument("deployment", nargs="?", help="Deployment name.")
-    st.add_argument("--store", help="SQLite store path.")
-    st.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    deploy_status = deploy_sub.add_parser("status", help="show durable store status for a deployment")
+    deploy_status.add_argument("deployment", nargs="?", help="Deployment name.")
+    deploy_status.add_argument("--store", help="SQLite store path.")
+    deploy_status.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
 
     inspect_parser = sub.add_parser(
         "inspect",
@@ -5001,7 +5065,7 @@ def _parse_cli_args(
     apv.add_argument("--result-json", help="Complete with an explicit JSON object result.")
     apv.add_argument("--json", action="store_true", help="Print the completed task as JSON.")
 
-    nt = sub.add_parser("notify", help="run a notification adapter")
+    nt = sub.add_parser("notify", description="Notification adapter a deployment runs for itself.")
     notify_sub = nt.add_subparsers(dest="adapter", required=True)
     out = notify_sub.add_parser("stdout", help="print pending human tasks with approval tokens")
     out.add_argument("--store", required=True, help="SQLite store path.")
@@ -5031,6 +5095,14 @@ def _parse_cli_args(
     sv.add_argument("--role", required=True)
     sv.add_argument("--store", required=True)
     sv.add_argument("--input", action="append", default=[], metavar="k=v")
+
+    # Derive the visible command list from what is actually registered. A
+    # hand-written list drifts the moment a command is added or renamed, and
+    # this one had drifted.
+    sub.metavar = "{" + ",".join(
+        name for name in sub.choices if name not in HIDDEN_COMMANDS
+    ) + "}"
+
     args = ap.parse_args(argv)
     return ap, args
 
@@ -5117,32 +5189,30 @@ def main(argv=None) -> int:
         return _init_command(args)
     if args.cmd == "skill":
         return _skill_command(args)
-    if args.cmd == "snapshot":
-        return _snapshot_command(args)
     if args.cmd == "diff":
         return _diff_command(args)
     if args.cmd == "deploy":
-        return _deploy_command(args)
-    if args.cmd == "configure":
-        return _configure_deployment_command(args)
-    if args.cmd == "run-deployment":
-        return _run_deployment_command(args)
-    if args.cmd == "start":
-        return _deployment_lifecycle_command(args, "start")
-    if args.cmd == "remove":
-        return _remove_command(args)
-    if args.cmd == "compact":
-        return _compact_command(args)
-    if args.cmd == "stop":
-        return _deployment_lifecycle_command(args, "stop")
-    if args.cmd == "restart":
-        return _deployment_lifecycle_command(args, "restart")
-    if args.cmd == "logs":
-        return _logs_command(args)
-    if args.cmd == "doctor":
-        return _doctor_command(args)
-    if args.cmd == "status":
-        return _status_command(args)
+        action = getattr(args, "deploy_action", None)
+        if action is None:
+            return _deployment_overview_command(args)
+        if action == "create":
+            return _deploy_command(args)
+        if action == "configure":
+            return _configure_deployment_command(args)
+        if action == "run":
+            return _run_deployment_command(args)
+        if action in {"start", "stop", "restart"}:
+            return _deployment_lifecycle_command(args, action)
+        if action == "remove":
+            return _remove_command(args)
+        if action == "compact":
+            return _compact_command(args)
+        if action == "logs":
+            return _logs_command(args)
+        if action == "check":
+            return _doctor_command(args)
+        if action == "status":
+            return _status_command(args)
     if args.cmd == "inspect":
         return _inspect_command(args)
     if args.cmd == "trace":

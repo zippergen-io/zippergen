@@ -670,23 +670,23 @@ Preparing a deployment and starting one are separate steps, and the difference
 matters. Preparing writes files and reaches nothing:
 
 \begin{lstlisting}[style=shell]
-zg deploy --name production --no-start
+zg deploy create --name production --no-start
 \end{lstlisting}
 
 Starting is about to make real calls, so every model, assistant CLI, and connector is probed
 first, and a failure stops it:
 
 \begin{lstlisting}[style=shell]
-zg start production
-zg logs production
-zg status production
+zg deploy start production
+zg deploy logs production
+zg deploy status production
 zg inspect production --watch
 \end{lstlisting}
 
 A deployment you no longer want:
 
 \begin{lstlisting}[style=shell]
-zg remove production
+zg deploy remove production
 \end{lstlisting}
 
 Its durable store is kept. That is the record of what actually ran, and it is
@@ -731,8 +731,8 @@ pip install zippergen
 zg connector configure approval-chat telegram
 zg connector assign User approval-chat
 
-zg deploy --name production --no-start
-zg start production
+zg deploy create --name production --no-start
+zg deploy start production
 \end{lstlisting}
 
 The credentials did not arrive with the clone, because they were never in it.
@@ -744,8 +744,8 @@ The last two lines are the pair from the previous section, unchanged. Starting
 probes the model and the connector first, so a token typed wrongly here fails
 now rather than in the middle of an approval. On Linux \texttt{zg start}
 installs a small \texttt{systemd} user service that restarts the workflow if it
-fails. You never write that file, and \texttt{zg status}, \texttt{zg logs} and
-\texttt{zg stop} manage it from here.
+fails. You never write that file, and \texttt{zg deploy status},
+\texttt{zg deploy logs} and \texttt{zg deploy stop} manage it from here.
 
 This is the point of the loop. The workflow you built does not finish, so
 leaving it on a server is not a contrivance to show off a \texttt{deploy}

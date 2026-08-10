@@ -212,7 +212,7 @@ avoid tiny fragments that merely scatter a short protocol across files.
 2. Save a semantic baseline to a unique temporary path outside the project:
 
    ```bash
-   zg snapshot -o /tmp/<unique>-before.json
+   zg diff --save /tmp/<unique>-before.json
    ```
 
 3. Translate the requested change into expected additions, removals, and
@@ -358,11 +358,12 @@ zg show --detail full
 Use the guided path when deployment is explicitly authorized:
 
 ```bash
-zg deploy --name production
+zg deploy create --name production
 ```
 
-Afterward use the deployment name with `doctor`, `status`, `logs`, `restart`,
-`stop`, `compact`, and `configure --restart`.
+Everything else you do to a deployment is `zg deploy VERB NAME`: `status`,
+`logs`, `check`, `restart`, `stop`, `compact`, `remove`, and
+`configure --restart`. Run `zg deploy` with no verb to list them all.
 
 Never assume permission to send live messages, modify production data,
 complete OAuth, or restart a live service merely because the user requested

@@ -468,7 +468,7 @@ zg show --format json
 zg validate --json
 
 # Stable before/after change contract
-zg snapshot -o /tmp/before.json
+zg diff --save /tmp/before.json
 zg diff /tmp/before.json
 zg diff /tmp/before.json --format json
 
@@ -519,19 +519,23 @@ without a person, pipe the answer on standard input.
 
 ## Deployment operation
 
+One command, one verb per thing you can do. Run `zg deploy` with no verb to
+see every deployment.
+
 ```bash
-zg deploy --name production
-zg status production
-zg inspect production --watch
-zg logs production
-zg doctor production
-zg restart production
-zg stop production
-zg compact production
-zg remove production
+zg deploy create --name production
+zg deploy status production
+zg deploy logs production
+zg deploy check production
+zg deploy restart production
+zg deploy stop production
+zg deploy compact production
+zg deploy remove production
 ```
 
-`status`, `inspect`, and `doctor` read durable state without changing it.
+`zg inspect production --watch` shows the same deployment's live position.
+
+`status`, `inspect`, and `check` read durable state without changing it.
 `inspect` shows each participant's current local program position. Its
 `--watch` mode refreshes that view in place, once per second by default. Use
 `--interval SECONDS` to change the rate. `trace` and

@@ -432,7 +432,7 @@ says what you wrote. The local view says what will run.
 \end{tabularx}
 \end{center}
 
-A plain run leaves nothing behind, so \texttt{zg status} afterwards finds
+A plain run leaves nothing behind, so \texttt{zg deploy status} afterwards finds
 nothing. That is deliberate: throwaway runs should not accumulate. When you want
 to come back to a run, to resume it, inspect it, or answer a human action
 later, use \texttt{-{}-durable}.
@@ -741,8 +741,8 @@ For example, a workflow that marks mail as read needs
 \subsection{Prepare, then start}
 
 \begin{lstlisting}[style=shell]
-zg deploy --name production --no-start
-zg start production
+zg deploy create --name production --no-start
+zg deploy start production
 \end{lstlisting}
 
 These are deliberately separate. Preparing writes the bundle, a managed Python
@@ -753,7 +753,7 @@ every model, assistant CLI, and connector is probed first and a failure stops it
 After the first time, the deployment has a name and you use that:
 
 \begin{lstlisting}[style=shell]
-zg deploy production          # redeploy the current source
+zg deploy create production   # redeploy the current source
 \end{lstlisting}
 
 \subsection{Operating one}
@@ -761,17 +761,18 @@ zg deploy production          # redeploy the current source
 \begin{center}
 \begin{tabularx}{0.95\linewidth}{@{}lX@{}}
 \toprule
-\texttt{zg status NAME} & is it running, and where is it \\
-\texttt{zg logs NAME} & what it has been doing \\
+\texttt{zg deploy} & every deployment on this machine \\
+\texttt{zg deploy status NAME} & is it running, and where is it \\
+\texttt{zg deploy logs NAME} & what it has been doing \\
 \texttt{zg inspect NAME} & where each participant's local program is now \\
 \texttt{zg inspect NAME --watch} & keep that position open and refresh it in place \\
 \texttt{zg trace NAME} & recent protocol events \\
 \texttt{zg tasks NAME} & decisions waiting for a person \\
 \texttt{zg approve NAME} & answer one \\
-\texttt{zg doctor NAME} & readiness checks, in detail \\
-\texttt{zg stop} / \texttt{restart NAME} & move the service \\
-\texttt{zg compact NAME} & reclaim space, the service must be stopped \\
-\texttt{zg remove NAME} & delete it \\
+\texttt{zg deploy check NAME} & readiness checks, in detail \\
+\texttt{zg deploy stop} / \texttt{restart NAME} & move the service \\
+\texttt{zg deploy compact NAME} & reclaim space, the service must be stopped \\
+\texttt{zg deploy remove NAME} & delete it \\
 \bottomrule
 \end{tabularx}
 \end{center}
@@ -804,7 +805,7 @@ it, so look occasionally.
         Telegram token via \texttt{connector configure}, Google via
         \texttt{authorize} on your laptop and \texttt{accept} there.
   \item \texttt{zg deploy -{}-name production -{}-no-start}, then
-        \texttt{zg start production}.
+        \texttt{zg deploy start production}.
 \end{enumerate}
 
 Nothing secret is in the repository, so step 3 is the whole difference between
@@ -886,7 +887,7 @@ usual causes are a missing API key on that machine, a Google authorization that
 does not cover the workflow's scopes, or a Telegram token that was never
 supplied there.
 
-\subsection{\texttt{zg status} shows nothing after a run}
+\subsection{\texttt{zg deploy status} shows nothing after a run}
 
 A plain run keeps nothing. Use \texttt{-{}-durable} for a run you want to come
 back to.

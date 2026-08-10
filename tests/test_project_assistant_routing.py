@@ -294,7 +294,7 @@ def test_durable_run_and_deployment_snapshot_project_assistant_routes(
     assert captured[-1] == ("codex", {"Reviewer": "claude"})
 
     assert main([
-        "deploy",
+        "deploy", "create",
         "--name",
         "assistant-prod",
         "--input",
