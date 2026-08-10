@@ -568,6 +568,16 @@ zg inspect --agent Writer
 zg run --resume
 \end{lstlisting}
 
+To watch a live durable run from another terminal, use:
+
+\begin{lstlisting}[style=shell]
+zg inspect --watch --agent Writer
+\end{lstlisting}
+
+The display refreshes in place once per second. Ctrl-C closes the display and
+does not interrupt the run. Use \texttt{--interval SECONDS} when a slower
+refresh is more appropriate.
+
 \begin{center}
 \begin{tabularx}{0.95\linewidth}{@{}lX@{}}
 \toprule
@@ -729,6 +739,7 @@ zg deploy production          # redeploy the current source
 \texttt{zg status NAME} & is it running, and where is it \\
 \texttt{zg logs NAME} & what it has been doing \\
 \texttt{zg inspect NAME} & where each participant's local program is now \\
+\texttt{zg inspect NAME --watch} & keep that position open and refresh it in place \\
 \texttt{zg trace NAME} & recent protocol events \\
 \texttt{zg tasks NAME} & decisions waiting for a person \\
 \texttt{zg approve NAME} & answer one \\

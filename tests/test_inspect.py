@@ -1,7 +1,12 @@
 import json
+import os
 import shutil
+from io import StringIO
 from pathlib import Path
 
+import pytest
+
+from zippergen.live_display import _screen_lines, watch_frames
 from zippergen.locator import resolve_path, statement_node_paths
 from zippergen.projection import project
 from zippergen.serve import load_workflow_spec, main
@@ -88,3 +93,124 @@ def test_inspect_has_a_machine_readable_view(tmp_path, monkeypatch, capsys):
         "action": "draft_reply",
         "kind": "model",
     }
+
+
+def test_inspect_watch_refreshes_in_place_without_interrupting_execution(
+    tmp_path, monkeypatch, capsys
+):
+    record = _observed_run(tmp_path, monkeypatch)
+    frames: list[str] = []
+
+    monkeypatch.setattr(
+        "zippergen.live_display.live_display_available",
+        lambda: True,
+    )
+
+    def capture(frame, *, interval):
+        assert interval == 0.25
+        frames.append(frame(100))
+        return True
+
+    monkeypatch.setattr("zippergen.live_display.watch_frames", capture)
+
+    assert main(["inspect", "--watch", "--interval", "0.25"]) == 0
+
+    assert len(frames) == 1
+    assert "Execution positions" in frames[0]
+    assert "\n ▶" in frames[0]
+    assert "draft_reply" in frames[0]
+    output = capsys.readouterr().out
+    assert f"Stopped watching run {record['run_id']}." in output
+    assert "The execution was not interrupted." in output
+
+
+@pytest.mark.parametrize(
+    ("arguments", "message"),
+    [
+        (["--watch", "--json"], "Use either --watch or --json"),
+        (["--interval", "2"], "--interval requires --watch"),
+        (["--watch", "--interval", "0"], "must be a positive number"),
+    ],
+)
+def test_inspect_rejects_incoherent_watch_options(
+    tmp_path, monkeypatch, arguments, message
+):
+    _observed_run(tmp_path, monkeypatch)
+
+    with pytest.raises(SystemExit, match=message):
+        main(["inspect", *arguments])
+
+
+def test_inspect_watch_requires_a_terminal(tmp_path, monkeypatch):
+    _observed_run(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        "zippergen.live_display.live_display_available",
+        lambda: False,
+    )
+
+    with pytest.raises(SystemExit, match="requires an interactive terminal"):
+        main(["inspect", "--watch"])
+
+
+def test_live_display_changes_only_rows_that_changed():
+    stream = StringIO()
+    frames = iter(["stable\npointer one", "stable\npointer two"])
+    sleeps = 0
+
+    def pause(_interval):
+        nonlocal sleeps
+        sleeps += 1
+        if sleeps == 2:
+            raise KeyboardInterrupt
+
+    assert watch_frames(
+        lambda _columns: next(frames),
+        interval=1,
+        stream=stream,
+        terminal_size=lambda: os.terminal_size((80, 24)),
+        sleep=pause,
+    )
+
+    output = stream.getvalue()
+    assert output.count("stable") == 1
+    assert output.count("pointer one") == 1
+    assert output.count("pointer two") == 1
+    assert "\033[?1049h" in output
+    assert output.endswith("\033[?25h\033[?1049l")
+
+
+def test_live_display_keeps_the_program_pointer_in_a_short_terminal():
+    frame = "\n".join(
+        [
+            "Execution positions",
+            "Participants",
+            "▶ Writer waiting",
+            "Writer local projection",
+            "=======================",
+            *[f"  line {index}" for index in range(20)],
+            " ▶ current line",
+            *[f"  tail {index}" for index in range(20)],
+        ]
+    )
+
+    visible = _screen_lines(frame, 80, 12)
+
+    assert len(visible) <= 11
+    assert any("▶ current line" in line for line in visible)
+    assert "Writer local projection" in visible
+
+
+def test_live_display_restores_the_terminal_after_an_error():
+    stream = StringIO()
+
+    def fail(_columns):
+        raise RuntimeError("inspection failed")
+
+    with pytest.raises(RuntimeError, match="inspection failed"):
+        watch_frames(
+            fail,
+            stream=stream,
+            terminal_size=lambda: os.terminal_size((80, 24)),
+        )
+
+    assert stream.getvalue().endswith("\033[?25h\033[?1049l")

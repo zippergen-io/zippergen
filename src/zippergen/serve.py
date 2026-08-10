@@ -3747,54 +3747,45 @@ def _inspection_context(args) -> tuple[Workflow, str, str]:
     return workflow, str(record["store"]), f"run {record['run_id']}"
 
 
-def _inspect_command(args) -> int:
+def _inspection_snapshot(workflow: Workflow, store: str, agent: str | None):
     from zippergen.execution_inspection import (
         default_focus,
         participant_positions,
         read_execution_states,
-        state_label,
     )
-    from zippergen.rendering import TerminalRenderer
-    from zippergen.view import render_local_projection_with_pointers
 
-    workflow, store, subject = _inspection_context(args)
     observed = read_execution_states(store)
     positions = participant_positions(workflow, observed)
     names = [position.participant for position in positions]
-    if args.agent:
+    if agent:
         focus = next(
-            (name for name in names if name.casefold() == args.agent.casefold()),
+            (name for name in names if name.casefold() == agent.casefold()),
             None,
         )
         if focus is None:
             raise SystemExit(
-                f"Unknown participant {args.agent!r}. Available: "
+                f"Unknown participant {agent!r}. Available: "
                 f"{', '.join(names) or 'none'}."
             )
     else:
         focus = default_focus(positions)
+    return observed, positions, focus
 
-    if args.json:
-        print(json.dumps({
-            "subject": subject,
-            "store": store,
-            "focus": focus,
-            "positions": [
-                {
-                    "participant": position.participant,
-                    "state": position.state,
-                    "state_label": state_label(position.state),
-                    "locators": [list(path) for path in position.locators],
-                    "location": position.location,
-                    "updated_at": position.updated_at,
-                    "detail": position.detail,
-                }
-                for position in positions
-            ],
-        }, indent=2, default=str))
-        return 0
 
-    renderer = TerminalRenderer()
+def _render_inspection(
+    workflow: Workflow,
+    store: str,
+    subject: str,
+    observed,
+    positions,
+    focus: str | None,
+    renderer,
+    *,
+    projection_indent: int = 0,
+) -> None:
+    from zippergen.execution_inspection import state_label
+    from zippergen.view import render_local_projection_with_pointers
+
     renderer.section("Execution positions")
     renderer.emit(f"Subject: {subject}")
     renderer.emit(f"Store: {store}")
@@ -3830,8 +3821,97 @@ def _inspect_command(args) -> int:
                 workflow,
                 focus,
                 selected.locators,
+                indent=projection_indent,
             )
         )
+
+
+def _inspect_command(args) -> int:
+    from zippergen.execution_inspection import state_label
+    from zippergen.rendering import TerminalRenderer
+
+    if args.watch and args.json:
+        raise SystemExit("Use either --watch or --json, not both.")
+    if args.interval is not None and not args.watch:
+        raise SystemExit("--interval requires --watch.")
+    interval = 1.0 if args.interval is None else args.interval
+    if not math.isfinite(interval) or interval <= 0:
+        raise SystemExit("--interval must be a positive number.")
+
+    workflow, store, subject = _inspection_context(args)
+    observed, positions, focus = _inspection_snapshot(
+        workflow,
+        store,
+        args.agent,
+    )
+
+    if args.json:
+        print(json.dumps({
+            "subject": subject,
+            "store": store,
+            "focus": focus,
+            "positions": [
+                {
+                    "participant": position.participant,
+                    "state": position.state,
+                    "state_label": state_label(position.state),
+                    "locators": [list(path) for path in position.locators],
+                    "location": position.location,
+                    "updated_at": position.updated_at,
+                    "detail": position.detail,
+                }
+                for position in positions
+            ],
+        }, indent=2, default=str))
+        return 0
+
+    if args.watch:
+        from zippergen.live_display import (
+            live_display_available,
+            watch_frames,
+        )
+
+        if not live_display_available():
+            raise SystemExit("--watch requires an interactive terminal.")
+
+        def frame(columns: int) -> str:
+            live_observed, live_positions, live_focus = _inspection_snapshot(
+                workflow,
+                store,
+                args.agent,
+            )
+            lines: list[str] = []
+            live_renderer = TerminalRenderer(
+                output=lines.append,
+                color=False,
+                columns=lambda: columns,
+            )
+            _render_inspection(
+                workflow,
+                store,
+                subject,
+                live_observed,
+                live_positions,
+                live_focus,
+                live_renderer,
+                projection_indent=1,
+            )
+            return "\n".join(lines)
+
+        watch_frames(frame, interval=interval)
+        print(f"Stopped watching {subject}. The execution was not interrupted.")
+        return 0
+
+    renderer = TerminalRenderer()
+    _render_inspection(
+        workflow,
+        store,
+        subject,
+        observed,
+        positions,
+        focus,
+        renderer,
+    )
     return 0
 
 
@@ -4646,6 +4726,16 @@ def _parse_cli_args(
     inspect_parser.add_argument("--project", help="Project root for a durable run.")
     inspect_parser.add_argument("--agent", help="Participant whose local projection to show.")
     inspect_parser.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    inspect_parser.add_argument(
+        "--watch",
+        action="store_true",
+        help="Refresh the inspection in place until Ctrl-C.",
+    )
+    inspect_parser.add_argument(
+        "--interval",
+        type=float,
+        help="Refresh interval in seconds for --watch. Default 1.",
+    )
 
     tr = sub.add_parser("trace", help="show recent trace events from a local SQLite store")
     tr.add_argument("deployment", nargs="?", help="Deployment name.")

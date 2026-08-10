@@ -490,6 +490,11 @@ records the run to SQLite and collects missing inputs interactively; `--resume`
 continues the project's most recent unfinished run, and `--run-id` picks a
 different one. Passing `--store` implies a durable run.
 
+While a durable run is active in one terminal, another terminal can follow its
+program position with `zg inspect --watch`. Add `--agent NAME` to keep one
+participant's local projection in focus. Ctrl-C closes the view without
+interrupting the run.
+
 In a scripted file each key is `Participant.action`, falling back to a bare
 `action` name. A bare object repeats for every call; a list is a finite
 sequence, and a call past its end is an error rather than a silent repeat.
@@ -503,7 +508,7 @@ without a person, pipe the answer on standard input.
 ```bash
 zg deploy --name production
 zg status production
-zg inspect production
+zg inspect production --watch
 zg logs production
 zg doctor production
 zg restart production
@@ -513,7 +518,9 @@ zg remove production
 ```
 
 `status`, `inspect`, and `doctor` read durable state without changing it.
-`inspect` shows each participant's current local program position. `trace` and
+`inspect` shows each participant's current local program position. Its
+`--watch` mode refreshes that view in place, once per second by default. Use
+`--interval SECONDS` to change the rate. `trace` and
 `tasks` show recent events and pending human tasks. `compact` requires a
 stopped deployment and removes only events covered by durable recovery
 snapshots. Completed human tasks and connector notifications remain as audit

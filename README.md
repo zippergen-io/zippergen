@@ -312,8 +312,15 @@ instead of starting again. A crash in the narrow interval after an external
 effect succeeds but before its result is recorded can repeat that effect, so
 irreversible connectors should use idempotency keys.
 
-For a deployment, `zg inspect production` reads the same position information
-from its durable store without changing the running service.
+For a live view, keep the run open in one terminal and use another terminal:
+
+```bash
+zg inspect --watch --agent Writer
+```
+
+The view updates in place once per second. Ctrl-C closes only the view. It does
+not interrupt the run. For a deployment, `zg inspect production --watch` reads
+the same position information without changing the running service.
 
 Preparing a deployment and starting one are two different steps. `--no-start`
 writes the files and starts nothing. Without it, ZipperGen first checks every

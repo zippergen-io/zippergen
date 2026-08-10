@@ -650,6 +650,16 @@ zg run --resume
 The model call that already happened is not repeated. The run resumes at the
 point it stopped, because every step was recorded before it was taken.
 
+While a durable run is active in one terminal, another terminal can keep its
+program position open and refresh it once per second:
+
+\begin{lstlisting}[style=shell]
+zg inspect --watch --agent Writer
+\end{lstlisting}
+
+Pressing Ctrl-C in this view closes only the view. It does not interrupt the
+run.
+
 This matters more for a workflow that never ends than for one that finishes in
 a second. Stopping is the normal way this one exits. You press Ctrl-C, the
 machine reboots, the service restarts, and each time it picks up where it was rather than re-reading a mailbox it has already answered.
@@ -670,7 +680,7 @@ first, and a failure stops it:
 zg start production
 zg logs production
 zg status production
-zg inspect production
+zg inspect production --watch
 \end{lstlisting}
 
 A deployment you no longer want:
