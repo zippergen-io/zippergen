@@ -10,6 +10,11 @@ from pathlib import Path
 from types import ModuleType
 from typing import Any
 
+from zippergen.assistant_configuration import (
+    assistant_targets,
+    project_assistant_routing,
+    resolved_assistant_actions,
+)
 from zippergen.connector_wiring import human_action_sites
 from zippergen.connectors import connector_requirements_from_module
 from zippergen.models import project_model_routing, selected_llm_specs
@@ -230,6 +235,7 @@ def configuration_report(
     live: bool = False,
     include_site_checks: bool = True,
     model_names: tuple[str, ...] = (),
+    assistant_names: tuple[str, ...] = (),
     connector_names: tuple[str, ...] = (),
 ) -> dict[str, object]:
     """Return the effective, secret-free project configuration and checks."""
@@ -302,6 +308,63 @@ def configuration_report(
                     f"{len(routing.overrides)} explicit assignment(s)",
                 )
             )
+
+    assistant_configurations = workspace.assistant_configurations()
+    assistant_profile: dict[str, object] = {
+        "default": "",
+        "lifelines": {},
+        "actions": {},
+    }
+    resolved_assistants: list[dict[str, object]] = []
+    if workflow_spec is not None and workflow is not None and module is not None:
+        try:
+            assistant_profile = workspace.assistant_assignment_profile(
+                workflow_spec
+            )
+            assistant_routing = project_assistant_routing(
+                workspace,
+                workflow_spec,
+                workflow,
+                module=module,
+            )
+            effective = resolved_assistant_actions(
+                workflow,
+                assistant_routing,
+                module=module,
+                assignments=assistant_profile,
+            )
+        except (WorkspaceError, SystemExit, ValueError) as exc:
+            checks.append(_check("fail", "assistant assignments", str(exc)))
+        else:
+            resolved_assistants = [
+                {
+                    "target": item.target,
+                    "backend": item.backend,
+                    "configuration": item.configuration,
+                    "source": item.source,
+                    "access": item.access,
+                    "external_tools": item.external_tools,
+                    "shell": item.shell,
+                }
+                for item in effective
+            ]
+            missing = [item.target for item in effective if item.backend is None]
+            if missing:
+                checks.append(
+                    _check(
+                        "fail",
+                        "assistant assignments",
+                        "no backend selected for: " + ", ".join(missing),
+                    )
+                )
+            else:
+                checks.append(
+                    _check(
+                        "ok",
+                        "assistant assignments",
+                        f"{len(effective)} assistant action(s) resolved",
+                    )
+                )
 
     connector_configurations = workspace.connector_configurations()
     connector_assignments = (
@@ -395,6 +458,36 @@ def configuration_report(
                 )
             )
 
+        selected_assistant_backends = {
+            str(item.get("backend"))
+            for item in resolved_assistants
+            if item.get("backend") in {"codex", "claude"}
+        }
+        selected_assistant_backends.update(
+            assistant_configurations[name]["backend"]
+            for name in assistant_names
+            if name in assistant_configurations
+        )
+        if selected_assistant_backends:
+            from zippergen.assistant_backends import check_cli_assistant
+
+            for backend in sorted(selected_assistant_backends):
+                result = check_cli_assistant(backend)
+                site_facts.append(
+                    {
+                        "kind": "assistant CLI",
+                        "name": backend,
+                        "available": result.supported,
+                    }
+                )
+                checks.append(
+                    _check(
+                        "ok" if result.supported else "fail",
+                        f"assistant CLI {backend}",
+                        result.detail,
+                    )
+                )
+
         if live:
             unique_specs = dict.fromkeys(specs)
             for spec in unique_specs:
@@ -429,6 +522,14 @@ def configuration_report(
             "configurations": model_rows,
             "assignments": model_profile,
             "resolved": resolved_models,
+        },
+        "assistants": {
+            "configurations": [
+                {"name": name, **values}
+                for name, values in sorted(assistant_configurations.items())
+            ],
+            "assignments": assistant_profile,
+            "resolved": resolved_assistants,
         },
         "connectors": {
             "configurations": [
@@ -560,6 +661,7 @@ def render_configuration(report: dict[str, object], renderer: TerminalRenderer) 
         ("Target", "Configuration"),
         [tuple(row) for row in model_assignment_rows],
     )
+    _render_assistant_tables(report, renderer)
     connectors = report["connectors"]
     assert isinstance(connectors, dict)
     renderer.columns(
@@ -652,6 +754,68 @@ def render_model_configuration(
         rows,
     )
     _render_selected_checks(report, renderer, "model")
+
+
+def _render_assistant_tables(
+    report: dict[str, object],
+    renderer: TerminalRenderer,
+) -> None:
+    assistants = report["assistants"]
+    assert isinstance(assistants, dict)
+    renderer.columns(
+        "Assistant configurations",
+        ("Name", "Backend"),
+        [
+            (item.get("name"), item.get("backend"))
+            for item in assistants.get("configurations") or []
+            if isinstance(item, dict)
+        ],
+    )
+    assignments = assistants.get("assignments") or {}
+    assert isinstance(assignments, dict)
+    assignment_rows: list[tuple[object, object, object]] = []
+    if assignments.get("default"):
+        assignment_rows.append(
+            ("default", assignments["default"], "default")
+        )
+    for group in ("lifelines", "actions"):
+        values = assignments.get(group) or {}
+        if isinstance(values, dict):
+            assignment_rows.extend(
+                (target, configuration, group[:-1])
+                for target, configuration in sorted(values.items())
+            )
+    renderer.columns(
+        "Assistant assignments",
+        ("Target", "Configuration", "Scope"),
+        assignment_rows,
+    )
+    renderer.columns(
+        "Effective assistant routing",
+        ("Target", "Backend", "Source", "Access", "Tools", "Shell"),
+        [
+            (
+                item.get("target"),
+                item.get("backend") or "missing",
+                item.get("source"),
+                item.get("access"),
+                item.get("external_tools"),
+                item.get("shell"),
+            )
+            for item in assistants.get("resolved") or []
+            if isinstance(item, dict)
+        ],
+    )
+
+
+def render_assistant_configuration(
+    report: dict[str, object],
+    renderer: TerminalRenderer,
+) -> None:
+    """Render coding-assistant configurations and effective routing."""
+
+    _render_assistant_tables(report, renderer)
+    _render_selected_checks(report, renderer, "assistant")
 
 
 def render_connector_configuration(
@@ -799,8 +963,16 @@ def assign_model(
         )
     profile = workspace.model_assignment_profile(workflow, include_site=False)
     default = str(profile.get("default") or "mock")
-    lifelines = dict(profile.get("lifelines") or {})
-    actions = dict(profile.get("actions") or {})
+    raw_lifelines = profile.get("lifelines") or {}
+    raw_actions = profile.get("actions") or {}
+    if not isinstance(raw_lifelines, dict) or not isinstance(raw_actions, dict):
+        raise WorkspaceError("Project model assignments are malformed.")
+    lifelines = {
+        str(target): str(name) for target, name in raw_lifelines.items()
+    }
+    actions = {
+        str(target): str(name) for target, name in raw_actions.items()
+    }
     if target == "default":
         default = configuration or "mock"
     else:
@@ -822,6 +994,68 @@ def assign_model(
         target=target,
     )
     return saved
+
+
+def configure_assistant(
+    workspace: Workspace,
+    name: str,
+    backend: str,
+) -> dict[str, str]:
+    """Save one named Codex or Claude configuration."""
+
+    return workspace.save_assistant_configuration(name, backend)
+
+
+def assign_assistant(
+    workspace: Workspace,
+    target: str,
+    configuration: str | None,
+) -> dict[str, object]:
+    """Assign a named coding-assistant configuration to one target."""
+
+    workflow = workspace.resolve_workflow()
+    loaded, module = _load_project_workflow(workspace, workflow)
+    known = set(assistant_targets(loaded, module))
+    if target not in known:
+        raise WorkspaceError(
+            f"Unknown assistant assignment target {target!r}. Available: "
+            + (", ".join(sorted(known)) or "none")
+        )
+    if (
+        configuration is not None
+        and configuration not in workspace.assistant_configurations()
+    ):
+        raise WorkspaceError(
+            f"Assistant configuration does not exist: {configuration}."
+        )
+    profile = workspace.assistant_assignment_profile(workflow)
+    default = str(profile.get("default") or "")
+    raw_lifelines = profile.get("lifelines")
+    lifelines = (
+        {str(key): str(value) for key, value in raw_lifelines.items()}
+        if isinstance(raw_lifelines, dict)
+        else {}
+    )
+    raw_actions = profile.get("actions")
+    actions = (
+        {str(key): str(value) for key, value in raw_actions.items()}
+        if isinstance(raw_actions, dict)
+        else {}
+    )
+    if target == "default":
+        default = configuration or ""
+    else:
+        selected = actions if "." in target else lifelines
+        if configuration is None:
+            selected.pop(target, None)
+        else:
+            selected[target] = configuration
+    return workspace.save_assistant_assignment_profile(
+        workflow,
+        default=default,
+        lifelines=lifelines,
+        actions=actions,
+    )
 
 
 def assign_connector(

@@ -1,8 +1,9 @@
 """Project-aware state for the ZipperGen development experience.
 
 Visible project identity lives in ``zippergen.toml``: one canonical
-``specification.md``, one workflow entry point, and portable model and connector
-configuration can be reviewed, versioned, and recovered from a clone.
+``specification.md``, one workflow entry point, and portable model, assistant,
+and connector configuration can be reviewed, versioned, and recovered from a
+clone.
 Machine-specific workspace state and its separate owner-only secret file stay
 below ``ZIPPERGEN_HOME`` rather than in the user's Git checkout; the ordinary
 workspace record is non-secret. The CLI uses this module to manage durable
@@ -342,6 +343,14 @@ class Workspace:
                         "actions": {},
                     },
                 },
+                "assistants": {
+                    "configurations": {},
+                    "assignments": {
+                        "default": "",
+                        "lifelines": {},
+                        "actions": {},
+                    },
+                },
                 "connectors": {
                     "providers": {},
                     "configurations": {},
@@ -425,6 +434,29 @@ class Workspace:
                 field="models.assignments.actions",
             ),
         }
+        raw_assistants = manifest.get("assistants") or {}
+        if not isinstance(raw_assistants, dict):
+            raise WorkspaceError("Project assistants must be a table.")
+        assistant_configurations = _named_string_tables(
+            raw_assistants.get("configurations") or {},
+            field="assistants.configurations",
+        )
+        raw_assistant_assignments = raw_assistants.get("assignments") or {}
+        if not isinstance(raw_assistant_assignments, dict):
+            raise WorkspaceError(
+                "Project assistants.assignments must be a table."
+            )
+        assistant_assignments = {
+            "default": str(raw_assistant_assignments.get("default") or ""),
+            "lifelines": _string_values(
+                raw_assistant_assignments.get("lifelines") or {},
+                field="assistants.assignments.lifelines",
+            ),
+            "actions": _string_values(
+                raw_assistant_assignments.get("actions") or {},
+                field="assistants.assignments.actions",
+            ),
+        }
         raw_connectors = manifest.get("connectors") or {}
         if not isinstance(raw_connectors, dict):
             raise WorkspaceError("Project connectors must be a table.")
@@ -466,6 +498,10 @@ class Workspace:
                 "configurations": model_configurations,
                 "assignments": model_assignments,
             },
+            "assistants": {
+                "configurations": assistant_configurations,
+                "assignments": assistant_assignments,
+            },
             "connectors": {
                 "providers": connector_providers,
                 "configurations": connector_configurations,
@@ -479,6 +515,7 @@ class Workspace:
         self,
         *,
         models: dict[str, object] | None = None,
+        assistants: dict[str, object] | None = None,
         connectors: dict[str, object] | None = None,
     ) -> None:
         """Rewrite visible project configuration in deterministic TOML."""
@@ -488,6 +525,10 @@ class Workspace:
         model_data = _object_table(
             models if models is not None else manifest["models"],
             field="models",
+        )
+        assistant_data = _object_table(
+            assistants if assistants is not None else manifest["assistants"],
+            field="assistants",
         )
         connector_data = _object_table(
             connectors if connectors is not None else manifest["connectors"],
@@ -534,6 +575,37 @@ class Workspace:
             if values:
                 assert isinstance(values, dict)
                 lines.extend(["", f"[models.assignments.{label}]"])
+                lines.extend(
+                    f"{_toml_key(key)} = {_toml_string(value)}"
+                    for key, value in sorted(values.items())
+                )
+
+        assistant_configurations = assistant_data.get("configurations") or {}
+        assistant_assignments = assistant_data.get("assignments") or {}
+        assert isinstance(assistant_configurations, dict)
+        assert isinstance(assistant_assignments, dict)
+        for name, raw in sorted(assistant_configurations.items()):
+            assert isinstance(raw, dict)
+            lines.extend(
+                ["", f"[assistants.configurations.{_toml_key(name)}]"]
+            )
+            lines.extend(
+                f"{_toml_key(key)} = {_toml_string(value)}"
+                for key, value in sorted(raw.items())
+            )
+        assistant_default = str(assistant_assignments.get("default") or "")
+        assistant_lifelines = assistant_assignments.get("lifelines") or {}
+        assistant_actions = assistant_assignments.get("actions") or {}
+        if assistant_default:
+            lines.extend(["", "[assistants.assignments]"])
+            lines.append(f"default = {_toml_string(assistant_default)}")
+        for label, values in (
+            ("lifelines", assistant_lifelines),
+            ("actions", assistant_actions),
+        ):
+            if values:
+                assert isinstance(values, dict)
+                lines.extend(["", f"[assistants.assignments.{label}]"])
                 lines.extend(
                     f"{_toml_key(key)} = {_toml_string(value)}"
                     for key, value in sorted(values.items())
@@ -1622,12 +1694,18 @@ class Workspace:
             raise WorkspaceError(f"Model configuration does not exist: {normalized}")
         workflow = self.resolve_workflow()
         profile = self.model_assignment_profile(workflow)
-        references = [
-            target
-            for group in ("lifelines", "actions")
-            for target, selected in dict(profile.get(group) or {}).items()
-            if selected == normalized
-        ]
+        references: list[str] = []
+        for group in ("lifelines", "actions"):
+            raw = profile.get(group) or {}
+            if not isinstance(raw, dict):
+                raise WorkspaceError(
+                    "Project model assignments are malformed."
+                )
+            references.extend(
+                str(target)
+                for target, selected in raw.items()
+                if str(selected) == normalized
+            )
         if profile.get("default") == normalized:
             references.insert(0, "default")
         if references:
@@ -1655,6 +1733,210 @@ class Workspace:
                 updates[key] = values
         if updates:
             self.update(**updates)
+
+    def assistant_configurations(self) -> dict[str, dict[str, str]]:
+        """Return portable named coding-assistant configurations."""
+
+        raw = self.project_manifest().get("assistants") or {}
+        if not isinstance(raw, dict):
+            raise WorkspaceError("Project assistants must be a table.")
+        configurations = raw.get("configurations") or {}
+        if not isinstance(configurations, dict):
+            raise WorkspaceError(
+                "Project assistants.configurations must be a table."
+            )
+        result: dict[str, dict[str, str]] = {}
+        for name, configuration in configurations.items():
+            if not isinstance(configuration, dict):
+                raise WorkspaceError(
+                    f"Assistant configuration {name!r} must be a table."
+                )
+            backend = str(configuration.get("backend") or "").strip().casefold()
+            if backend not in {"codex", "claude"}:
+                raise WorkspaceError(
+                    f"Assistant configuration {name!r} must select backend "
+                    "'codex' or 'claude'."
+                )
+            result[str(name)] = {"backend": backend}
+        return result
+
+    def save_assistant_configuration(
+        self,
+        name: str,
+        backend: str,
+    ) -> dict[str, str]:
+        """Save one portable coding-assistant backend selection."""
+
+        normalized = name.strip()
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", normalized):
+            raise WorkspaceError(
+                "An assistant configuration name must start with a letter or "
+                "digit and contain only letters, digits, '.', '_' or '-'."
+            )
+        selected = backend.strip().casefold()
+        if selected not in {"codex", "claude"}:
+            raise WorkspaceError(
+                "An assistant configuration backend must be 'codex' or "
+                "'claude'."
+            )
+        manifest = self.project_manifest()
+        assistants = _object_table(
+            manifest["assistants"],
+            field="assistants",
+        )
+        configurations = _object_table(
+            assistants.get("configurations") or {},
+            field="assistants.configurations",
+        )
+        conflicting = next(
+            (
+                str(existing)
+                for existing in configurations
+                if str(existing).casefold() == normalized.casefold()
+                and str(existing) != normalized
+            ),
+            None,
+        )
+        if conflicting is not None:
+            raise WorkspaceError(
+                f"Assistant configuration {normalized!r} conflicts with "
+                f"existing name {conflicting!r}."
+            )
+        configurations[normalized] = {"backend": selected}
+        assistants["configurations"] = configurations
+        self._write_project_configuration(assistants=assistants)
+        return self.assistant_configurations()[normalized]
+
+    def assistant_assignment_profile(
+        self,
+        workflow_spec: str,
+    ) -> dict[str, object]:
+        """Return portable default, participant, and action assignments."""
+
+        canonical = self.canonical_spec(workflow_spec, cwd=self.root)
+        if not self._is_project_workflow(canonical):
+            return {"default": "", "lifelines": {}, "actions": {}}
+        raw = self.project_manifest().get("assistants") or {}
+        if not isinstance(raw, dict):
+            raise WorkspaceError("Project assistants must be a table.")
+        assignments = raw.get("assignments") or {}
+        if not isinstance(assignments, dict):
+            raise WorkspaceError(
+                "Project assistants.assignments must be a table."
+            )
+        result: dict[str, object] = {
+            "default": str(assignments.get("default") or ""),
+            "lifelines": {
+                str(target): str(configuration)
+                for target, configuration in dict(
+                    assignments.get("lifelines") or {}
+                ).items()
+            },
+            "actions": {
+                str(target): str(configuration)
+                for target, configuration in dict(
+                    assignments.get("actions") or {}
+                ).items()
+            },
+        }
+        return result
+
+    def has_assistant_assignment_profile(self, workflow_spec: str) -> bool:
+        """Whether the project declares any coding-assistant assignment."""
+
+        profile = self.assistant_assignment_profile(workflow_spec)
+        return bool(
+            profile.get("default")
+            or profile.get("lifelines")
+            or profile.get("actions")
+        )
+
+    def save_assistant_assignment_profile(
+        self,
+        workflow_spec: str,
+        *,
+        default: str,
+        lifelines: dict[str, str],
+        actions: dict[str, str],
+    ) -> dict[str, object]:
+        """Persist portable coding-assistant assignments."""
+
+        canonical = self.canonical_spec(workflow_spec, cwd=self.root)
+        if not self._is_project_workflow(canonical):
+            raise WorkspaceError(
+                "Assistant assignments can only be saved for this project's "
+                "workflow."
+            )
+        configurations = self.assistant_configurations()
+        selected = {
+            *(value for value in (default,) if value),
+            *lifelines.values(),
+            *actions.values(),
+        }
+        missing = sorted(selected - set(configurations))
+        if missing:
+            raise WorkspaceError(
+                "Unknown assistant configuration(s): " + ", ".join(missing)
+            )
+        manifest = self.project_manifest()
+        assistants = _object_table(
+            manifest["assistants"],
+            field="assistants",
+        )
+        assistants["assignments"] = {
+            "default": default,
+            "lifelines": {
+                str(target): str(configuration)
+                for target, configuration in sorted(lifelines.items())
+            },
+            "actions": {
+                str(target): str(configuration)
+                for target, configuration in sorted(actions.items())
+            },
+        }
+        self._write_project_configuration(assistants=assistants)
+        return self.assistant_assignment_profile(canonical)
+
+    def remove_assistant_configuration(self, name: str) -> None:
+        """Remove one unused named coding-assistant configuration."""
+
+        normalized = name.strip()
+        configurations = self.assistant_configurations()
+        if normalized not in configurations:
+            raise WorkspaceError(
+                f"Assistant configuration does not exist: {normalized}"
+            )
+        workflow = self.resolve_workflow()
+        profile = self.assistant_assignment_profile(workflow)
+        references: list[str] = []
+        for group in ("lifelines", "actions"):
+            assignments = profile.get(group)
+            if not isinstance(assignments, dict):
+                continue
+            references.extend(
+                str(target)
+                for target, selected in assignments.items()
+                if selected == normalized
+            )
+        if profile.get("default") == normalized:
+            references.insert(0, "default")
+        if references:
+            raise WorkspaceError(
+                f"Assistant configuration {normalized!r} is still assigned "
+                "to: " + ", ".join(references) + ". Unassign it first."
+            )
+        manifest = self.project_manifest()
+        assistants = _object_table(
+            manifest["assistants"],
+            field="assistants",
+        )
+        project = _object_table(
+            assistants.get("configurations") or {},
+            field="assistants.configurations",
+        )
+        project.pop(normalized, None)
+        assistants["configurations"] = project
+        self._write_project_configuration(assistants=assistants)
 
     def development_provider_environment(
         self,
@@ -1743,6 +2025,7 @@ class Workspace:
         llm_idle_timeout: float | None = None,
         llm_idle_timeouts: dict[str, float] | None = None,
         assistant: str | None = None,
+        assistants: dict[str, str] | None = None,
         options: dict[str, object] | None = None,
         services: str | None = None,
         connectors: dict[str, object] | None = None,
@@ -1780,6 +2063,7 @@ class Workspace:
                 for target, value in (llm_idle_timeouts or {}).items()
             },
             "assistant": assistant,
+            "assistants": dict(assistants or {}),
             "options": dict(options or {}),
             "services": services,
             "connectors": dict(connectors or {}),

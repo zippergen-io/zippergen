@@ -11,6 +11,11 @@ from contextlib import contextmanager
 from types import ModuleType
 from typing import Any
 
+from zippergen.assistant_configuration import (
+    apply_assistant_overrides,
+    normalize_assistant_overrides,
+    project_assistant_routing,
+)
 from zippergen.deployment import DeploymentField, deployment_spec_from_module
 from zippergen.human_backends import (
     make_cli_human_backend,
@@ -353,6 +358,7 @@ def _run_setup_hook(
     llm_idle_timeout: float | None,
     llm_idle_timeouts: dict[str, float],
     assistant: str | None,
+    assistants: dict[str, str],
     store_path: str,
     inputs: dict[str, object],
     options: dict[str, object],
@@ -371,6 +377,7 @@ def _run_setup_hook(
             llm=llm,
             llms=llms,
             assistant=assistant,
+            assistants=assistants,
             llm_idle_timeout=llm_idle_timeout,
             llm_idle_timeouts=llm_idle_timeouts,
             store_path=store_path,
@@ -394,6 +401,7 @@ def run_durable(
     llm_idle_timeout: float | None = None,
     llm_idle_timeouts: dict[str, float] | None = None,
     assistant: str | None = None,
+    assistants: dict[str, str] | None = None,
     options: dict[str, object] | None = None,
     services: str | None = None,
     timeout: float = 0.0,
@@ -418,6 +426,7 @@ def run_durable(
         or llm_idle_timeout is not None
         or llm_idle_timeouts
         or assistant is not None
+        or assistants
         or options
         or services is not None
         or connector_snapshot is not None
@@ -466,6 +475,9 @@ def run_durable(
         selected_assistant = (
             str(record["assistant"]) if record.get("assistant") else None
         )
+        selected_assistants = normalize_assistant_overrides(
+            record.get("assistants")
+        )
         run_options = dict(record.get("options") or {})
         run_services = record.get("services")
         if renderer is None:
@@ -510,7 +522,21 @@ def run_durable(
         selected_llms = routing.overrides
         selected_idle_timeout = llm_idle_timeout
         selected_idle_timeouts = routing.idle_timeouts
-        selected_assistant = assistant
+        assistant_routing = project_assistant_routing(
+            workspace,
+            stored_spec,
+            workflow,
+            module=module,
+        )
+        assistant_routing = apply_assistant_overrides(
+            assistant_routing,
+            default_backend=assistant,
+            overrides=assistants,
+            workflow=workflow,
+            module=module,
+        )
+        selected_assistant = assistant_routing.default_backend
+        selected_assistants = assistant_routing.overrides
         effective_llm_routes(workflow, selected_llm, selected_llms)
         run_options = dict(options or {})
         run_services = services
@@ -524,6 +550,7 @@ def run_durable(
             llm_idle_timeout=selected_idle_timeout,
             llm_idle_timeouts=selected_idle_timeouts,
             assistant=selected_assistant,
+            assistants=selected_assistants,
             options=run_options,
             services=run_services,
             connectors=connector_snapshot,
@@ -641,6 +668,7 @@ def run_durable(
                 llm_idle_timeout=selected_idle_timeout,
                 llm_idle_timeouts=selected_idle_timeouts,
                 assistant=selected_assistant,
+                assistants=selected_assistants,
                 store_path=store_path,
                 inputs=inputs,
                 options=run_options,
@@ -654,6 +682,8 @@ def run_durable(
                     selected_llm,
                     selected_llms,
                 )
+            from zippergen.assistant_backends import make_cli_assistant_backend
+
             workflow.configure(
                 llm_config,
                 llm_idle_timeout=selected_idle_timeout,
@@ -663,8 +693,18 @@ def run_durable(
                 timeout=timeout,
                 mock_delay=(0.0, 0.0),
                 human_backend=selected_human_backend,
-                assistant=selected_assistant,
-                assistant_root=str(workspace.root),
+                assistant_backend=(
+                    make_cli_assistant_backend(
+                        selected_assistant,
+                        project_root=str(workspace.root),
+                        routes=selected_assistants,
+                    )
+                    if selected_assistants
+                    else make_cli_assistant_backend(
+                        selected_assistant,
+                        project_root=str(workspace.root),
+                    )
+                ),
             )
             result = workflow(**inputs)
     except KeyboardInterrupt:

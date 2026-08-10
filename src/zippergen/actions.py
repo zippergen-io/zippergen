@@ -359,9 +359,10 @@ def assistant(
     as part of the semantic action definition, and automatically included in a
     guided deployment bundle.
 
-    ``backend`` may request ``"codex"`` or ``"claude"`` for this action.  When
-    omitted, the runtime default selected with
-    ``workflow.configure(assistant="...")`` or ``ZIPPERGEN_ASSISTANT`` is used.
+    ``backend`` is a compatibility fallback for requesting ``"codex"`` or
+    ``"claude"``. CLI projects should select the backend through a named
+    assistant configuration and participant or action assignment. Project
+    routing takes precedence over this fallback.
     ``access`` is ``"read-only"`` (the default) or ``"write"`` and is enforced
     through the selected CLI's non-interactive permission mode.
     ``external_tools`` is ``"none"`` (the default) or ``"configured"``.

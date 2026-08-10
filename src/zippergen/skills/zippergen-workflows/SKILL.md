@@ -44,14 +44,14 @@ workflow_entry = "workflow.py:email_approval"
 ```
 
 Treat portability separately from secrecy. What every machine shares — the
-workflow entry point, named model and connector configurations, assignments,
-and bindings — belongs in `zippergen.toml` and is committed. What belongs to
-one machine — credentials, local endpoints, authorizations — lives in
+workflow entry point, named model, assistant, and connector configurations,
+assignments, and bindings — belongs in `zippergen.toml` and is committed. What
+belongs to one machine — credentials, local endpoints, authorizations — lives in
 `ZIPPERGEN_HOME` and is never committed. Resolve configuration with one rule
 only: a site value wins when present, otherwise use the project value.
 
-Models and connectors follow one grammar. First configure a name, then route a
-target to that name:
+Models, coding assistants, and connectors follow one grammar. First configure
+a name, then route a target to that name:
 
 ```text
 TYPE configure NAME PROVIDER_OR_SPEC
@@ -61,8 +61,9 @@ TYPE assign TARGET NAME
 Use `zg connector bind REQUIREMENT NAME` for a declared external-service
 requirement. Providers are attributes of named configurations, not separate
 objects to manage. For example, `approval-chat` is a user-chosen configuration
-name and `telegram` is its provider. Bare `zg model` and `zg connector` show
-each family, while `zg config` shows the complete effective result.
+name and `telegram` is its provider. Bare `zg model`, `zg assistant`, and
+`zg connector` show each family, while `zg config` shows the complete effective
+result.
 
 In a human terminal, omitted required values are prompted. The prompt shows
 known targets and saved configurations when useful. Scripts and coding agents
@@ -110,6 +111,22 @@ global override and replaces all project assignments for that run.
 Use `zg config` to inspect the full effective configuration and `zg config
 check` to report missing credentials or invalid routes. Use `zg config check
 --live` only when a real provider call is wanted.
+
+For an `@assistant` action, choose Codex or Claude through a named project
+configuration. Do not hard-code the backend merely to route one project:
+
+```bash
+zg assistant configure coding-agent codex
+zg assistant assign Maintainer coding-agent
+zg assistant check
+```
+
+Use `Participant.action` when one assistant action needs a different backend.
+The named configuration selects the CLI only. Keep the fixed instructions and
+the `access`, `external_tools`, and `shell` permissions on `@assistant`.
+`zg assistant check` verifies the executable and required safety options. It
+does not authenticate. Codex and Claude keep their own login systems. Never ask
+the user for those credentials in the agent conversation.
 
 ## Keep the specification current
 

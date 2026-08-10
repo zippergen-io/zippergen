@@ -144,10 +144,24 @@ Exactly one of `instructions=` and `instructions_file=` is required. Markdown
 paths are project-relative, fingerprinted in semantic snapshots, validated,
 and included automatically in guided deployment bundles. The function
 parameters are typed workflow data passed separately from the static
-instructions. Select the runtime CLI with `workflow.configure(assistant="codex")`,
-`zippergen run ... --assistant codex`, `ZIPPERGEN_ASSISTANT=codex`, or a static
-`backend="codex"`/`backend="claude"` on the action. Prefer runtime selection
-when the same workflow must run in different environments.
+instructions. Select the runtime CLI with a named project configuration:
+
+```bash
+zg assistant configure coding-agent codex
+zg assistant assign Developer coding-agent
+zg assistant check
+```
+
+A participant assignment covers all of that participant's assistant actions.
+Use an exact target such as `Developer.update_release_notes` for one action.
+The same routing applies to plain runs, durable runs, and deployments. The
+low-level Python API may still pass `assistant_backend=` directly. The old
+static `backend=` field remains a compatibility fallback, but project routing
+takes precedence. Do not use it for new CLI projects.
+
+`zg assistant check` verifies that the selected executable exists and supports
+the required safety options. It does not inspect or manage authentication.
+Codex and Claude keep their own login systems.
 Assistant actions default to `access="read-only"`. Declare `access="write"`
 explicitly for actions that may change the repository. ZipperGen maps this
 policy to the selected CLI's non-interactive sandbox or permission mode; do not
@@ -242,11 +256,11 @@ Use `zg connector configure NAME PROVIDER` to save the concrete resource, then
 `zg connector bind REQUIREMENT NAME` to connect the logical requirement to it.
 
 In a human terminal, required values may be omitted and ZipperGen asks for
-them. This applies to model and connector configuration, assignment, and
-binding. Scripts and coding agents should pass the values explicitly. Model
-setup asks a person for provider and model separately, while explicit commands
-use `PROVIDER:MODEL`. API keys and connector credentials are prompted without
-echo and saved only in private site storage.
+them. This applies to model, assistant, and connector configuration,
+assignment, and binding. Scripts and coding agents should pass the values
+explicitly. Model setup asks a person for provider and model separately, while
+explicit commands use `PROVIDER:MODEL`. API keys and connector credentials are
+prompted without echo and saved only in private site storage.
 
 Gmail follows the same pattern:
 
@@ -549,7 +563,7 @@ zg connector bind mailbox inbox
 # Route a participant's human actions to a saved connector
 zg connector assign User approval-chat
 
-# Inspect and check all model and connector routing
+# Inspect and check all model, assistant, and connector routing
 zg config
 zg config check
 

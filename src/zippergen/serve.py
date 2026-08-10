@@ -74,6 +74,11 @@ from zippergen.models import (
     project_model_routing,
     selected_llm_specs,
 )
+from zippergen.assistant_configuration import (
+    apply_assistant_overrides,
+    normalize_assistant_overrides,
+    project_assistant_routing,
+)
 from zippergen.view import DETAILS, ViewOptions, workflow_view_data
 from zippergen.workflow_io import (
     RunConfig,
@@ -397,6 +402,7 @@ def _run_args_from_deployment(profile: dict[str, object]):
             profile.get("llm_idle_timeouts") or {}  # type: ignore[arg-type]
         ),
         assistant=profile.get("assistant") or None,
+        assistants=normalize_assistant_overrides(profile.get("assistants")),
         store=str(profile["store"]),
         input=[],
         input_json=json.dumps(profile.get("inputs") or {}, default=str),
@@ -908,12 +914,42 @@ def _doctor_checks(
             ))
 
     if workflow is not None:
-        assistant_actions = _assistant_actions(workflow)
-        default_assistant = profile.get("assistant")
+        from zippergen.assistant_backends import check_cli_assistant
+        from zippergen.assistant_configuration import (
+            effective_assistant_routes,
+            resolved_assistant_actions,
+        )
+
+        assistant_overrides = normalize_assistant_overrides(
+            profile.get("assistants")
+        )
+        assistant_routing = effective_assistant_routes(
+            workflow,
+            str(profile["assistant"]) if profile.get("assistant") else None,
+            assistant_overrides,
+            module=module,
+        )
+        profile_assignments = {
+            "default": "deployment" if assistant_routing.default_backend else "",
+            "lifelines": {
+                target: "deployment"
+                for target in assistant_overrides
+                if "." not in target
+            },
+            "actions": {
+                target: "deployment"
+                for target in assistant_overrides
+                if "." in target
+            },
+        }
+        resolved = resolved_assistant_actions(
+            workflow,
+            assistant_routing,
+            module=module,
+            assignments=profile_assignments,
+        )
         missing_selection = [
-            action.name
-            for action in assistant_actions
-            if action.backend is None and default_assistant not in {"codex", "claude"}
+            item.target for item in resolved if item.backend is None
         ]
         if missing_selection:
             checks.append(_doctor_check(
@@ -922,23 +958,21 @@ def _doctor_checks(
                 "no backend selected for: " + ", ".join(missing_selection),
             ))
         selected_assistants = {
-            str(action.backend or default_assistant)
-            for action in assistant_actions
-            if action.backend or default_assistant
+            str(item.backend) for item in resolved if item.backend
         }
         for selected in sorted(selected_assistants):
-            executable = shutil.which(selected)
-            if executable:
+            result = check_cli_assistant(selected)
+            if result.supported:
                 checks.append(_doctor_check(
                     "ok",
                     f"assistant {selected}",
-                    executable,
+                    result.detail,
                 ))
             else:
                 checks.append(_doctor_check(
                     "fail",
                     f"assistant {selected}",
-                    f"executable {selected!r} is not on PATH",
+                    result.detail,
                 ))
 
     environment = _deployment_environment(profile)
@@ -1688,6 +1722,21 @@ def _run_workflow_command(args) -> int:
     selected_llm = routing.default_spec
     llms = routing.overrides
     llm_idle_timeouts = routing.idle_timeouts
+    assistant_routing = project_assistant_routing(
+        workspace,
+        workspace.canonical_spec(args.workflow, cwd=workspace.root),
+        wf,
+        module=module,
+    )
+    assistant_routing = apply_assistant_overrides(
+        assistant_routing,
+        default_backend=args.assistant,
+        overrides=normalize_assistant_overrides(
+            getattr(args, "assistants", None)
+        ),
+        workflow=wf,
+        module=module,
+    )
 
     # Naming a store means wanting one; otherwise a plain run leaves nothing
     # behind, and --durable is the way to ask for a run you can come back to.
@@ -1708,7 +1757,8 @@ def _run_workflow_command(args) -> int:
         module=module,
         llm=selected_llm,
         llms=llms,
-        assistant=args.assistant,
+        assistant=assistant_routing.default_backend,
+        assistants=assistant_routing.overrides,
         llm_idle_timeout=args.llm_idle_timeout,
         llm_idle_timeouts=llm_idle_timeouts,
         store_path=store_path,
@@ -1725,9 +1775,22 @@ def _run_workflow_command(args) -> int:
         "llm_idle_timeouts": llm_idle_timeouts,
         "execution": execution,
         "store_path": store_path,
-        "assistant": args.assistant,
         "assistant_root": str(Path.cwd()),
     }
+    from zippergen.assistant_backends import make_cli_assistant_backend
+
+    configure_kwargs["assistant_backend"] = (
+        make_cli_assistant_backend(
+            assistant_routing.default_backend,
+            project_root=Path.cwd(),
+            routes=assistant_routing.overrides,
+        )
+        if assistant_routing.overrides
+        else make_cli_assistant_backend(
+            assistant_routing.default_backend,
+            project_root=Path.cwd(),
+        )
+    )
     if llms:
         wf.configure(
             effective_llm_routes(wf, selected_llm, llms),
@@ -1768,6 +1831,9 @@ def _durable_run_command(args) -> int:
             args.llm_idle_timeout_for
         ),
         assistant=args.assistant,
+        assistants=normalize_assistant_overrides(
+            getattr(args, "assistants", None)
+        ),
         options=_parse_options(args.option, services=args.services),
         services=args.services,
         timeout=args.timeout,
@@ -2060,6 +2126,111 @@ def _model_command(args) -> int:
     return (
         1
         if action == "check" and not configuration_scope_valid(report, "model")
+        else 0
+    )
+
+
+def _assistant_command(args) -> int:
+    """Show and manage named coding-assistant backend assignments."""
+
+    from zippergen.project_configuration import (
+        assign_assistant,
+        configuration_report,
+        configuration_scope_valid,
+        configure_assistant,
+        render_assistant_configuration,
+    )
+    from zippergen.rendering import TerminalRenderer
+    from zippergen.workspace import Workspace, WorkspaceError
+
+    workspace = Workspace(getattr(args, "project", None))
+    action = getattr(args, "assistant_action", None)
+    try:
+        if action == "configure":
+            name = _guided_required_value(
+                args.name,
+                label="Assistant configuration name",
+                command="zg assistant configure NAME BACKEND",
+            )
+            backend = _guided_required_value(
+                args.backend,
+                label="Assistant backend",
+                command="zg assistant configure NAME BACKEND",
+                choices=("codex", "claude"),
+            )
+            value = configure_assistant(workspace, name, backend)
+            print(
+                f"Saved assistant configuration {name}: "
+                f"{value['backend']}"
+            )
+            owner = (
+                "Codex CLI"
+                if value["backend"] == "codex"
+                else "Claude Code"
+            )
+            print(
+                f"Authentication remains managed by {owner}."
+            )
+            return 0
+        if action in {"assign", "unassign"}:
+            target = _guided_required_value(
+                args.target,
+                label="Assistant assignment target",
+                command=f"zg assistant {action} TARGET"
+                + (" CONFIGURATION" if action == "assign" else ""),
+                choices=_project_choices("assistant-targets", args.project),
+            )
+            configuration = None
+            if action == "assign":
+                configuration = _guided_required_value(
+                    args.configuration,
+                    label="Assistant configuration",
+                    command="zg assistant assign TARGET CONFIGURATION",
+                    choices=_project_choices(
+                        "assistant-configurations", args.project
+                    ),
+                )
+            assign_assistant(workspace, target, configuration)
+            if configuration is None:
+                print(f"Removed assistant assignment for {target}.")
+            else:
+                print(
+                    f"Assigned {target} to assistant configuration "
+                    f"{configuration}."
+                )
+            return 0
+        if action == "remove":
+            name = _guided_required_value(
+                args.name,
+                label="Assistant configuration",
+                command="zg assistant remove NAME",
+                choices=_project_choices(
+                    "assistant-configurations", args.project
+                ),
+            )
+            workspace.remove_assistant_configuration(name)
+            print(f"Removed assistant configuration {name}.")
+            return 0
+        if action == "check" and args.name:
+            if args.name not in workspace.assistant_configurations():
+                raise WorkspaceError(
+                    f"Assistant configuration does not exist: {args.name}."
+                )
+        report = configuration_report(
+            workspace,
+            assistant_names=(
+                (args.name,)
+                if action == "check" and args.name
+                else ()
+            ),
+        )
+    except WorkspaceError as exc:
+        raise SystemExit(str(exc)) from exc
+    render_assistant_configuration(report, TerminalRenderer())
+    return (
+        1
+        if action == "check"
+        and not configuration_scope_valid(report, "assistant")
         else 0
     )
 
@@ -3254,6 +3425,8 @@ def _apply_deploy_arguments(
         profile["llm_idle_timeouts"] = supplied_idle_timeouts
     if args.assistant is not None:
         profile["assistant"] = args.assistant
+    assistants = normalize_assistant_overrides(profile.get("assistants"))
+    profile["assistants"] = assistants
     if args.services is not None:
         profile["services"] = args.services
     if args.timeout is not None:
@@ -3525,6 +3698,7 @@ def _deploy_command(args) -> int:
                 "llm_idle_timeout": None,
                 "llm_idle_timeouts": {},
                 "assistant": None,
+                "assistants": {},
                 "services": None,
                 "options": {},
                 "inputs": {},
@@ -3571,6 +3745,14 @@ def _deploy_command(args) -> int:
         # A new deployment without project routing uses the workflow default.
         # An existing deployment configured directly keeps its snapshot.
         profile["llm"] = model_routing.default_spec
+    assistant_routing = project_assistant_routing(
+        model_workspace,
+        model_workflow_spec,
+        workflow,
+        module=module,
+    )
+    profile["assistant"] = assistant_routing.default_backend
+    profile["assistants"] = assistant_routing.overrides
     if not args.yes and sys.stdin.isatty() and spec.description:
         print(spec.description)
         print()
@@ -4131,7 +4313,7 @@ def _add_guided_deployment_arguments(
     parser.add_argument(
         "--assistant",
         choices=("codex", "claude"),
-        help="Default coding-assistant backend for @assistant actions.",
+        help=argparse.SUPPRESS,
     )
     parser.add_argument("--store", help="SQLite store path.")
     parser.add_argument("--log", help="Deployment log path.")
@@ -4249,7 +4431,7 @@ def _parse_cli_args(
 
     ap = argparse.ArgumentParser(prog="zippergen")
     public_commands = (
-        "config,model,connector,completion,run,show,validate,init,skill,snapshot,diff,deploy,configure,"
+        "config,model,assistant,connector,completion,run,show,validate,init,skill,snapshot,diff,deploy,configure,"
         "start,stop,remove,compact,restart,logs,doctor,status,inspect,trace,tasks,"
         "approve,notify"
     )
@@ -4318,6 +4500,62 @@ def _parse_cli_args(
     model_remove = model_sub.add_parser("remove", help="remove an unused configuration")
     model_remove.add_argument("name", nargs="?")
     model_remove.add_argument("--project", help="Project root.")
+
+    assistant = sub.add_parser(
+        "assistant",
+        help="show and manage coding-assistant configurations and assignments",
+        description=(
+            "One pattern: configure NAME BACKEND, then assign TARGET NAME. "
+            "Run without an action to show everything. In a terminal, omit "
+            "required values to be guided."
+        ),
+    )
+    assistant_sub = assistant.add_subparsers(dest="assistant_action")
+    assistant_configure = assistant_sub.add_parser(
+        "configure",
+        help="save one named Codex or Claude configuration",
+    )
+    assistant_configure.add_argument(
+        "name",
+        nargs="?",
+        help="User-defined configuration name, such as coding-agent.",
+    )
+    assistant_configure.add_argument(
+        "backend",
+        nargs="?",
+        choices=("codex", "claude"),
+        help="Coding-assistant CLI selected by this configuration.",
+    )
+    assistant_configure.add_argument("--project", help="Project root.")
+    assistant_assign = assistant_sub.add_parser(
+        "assign",
+        help="assign a configuration to a participant or exact action",
+    )
+    assistant_assign.add_argument(
+        "target",
+        nargs="?",
+        help="default, Participant, or Participant.action.",
+    )
+    assistant_assign.add_argument("configuration", nargs="?")
+    assistant_assign.add_argument("--project", help="Project root.")
+    assistant_unassign = assistant_sub.add_parser(
+        "unassign",
+        help="remove one assistant assignment",
+    )
+    assistant_unassign.add_argument("target", nargs="?")
+    assistant_unassign.add_argument("--project", help="Project root.")
+    assistant_check = assistant_sub.add_parser(
+        "check",
+        help="check CLI availability and required safety options",
+    )
+    assistant_check.add_argument("name", nargs="?")
+    assistant_check.add_argument("--project", help="Project root.")
+    assistant_remove = assistant_sub.add_parser(
+        "remove",
+        help="remove an unused assistant configuration",
+    )
+    assistant_remove.add_argument("name", nargs="?")
+    assistant_remove.add_argument("--project", help="Project root.")
 
     completion = sub.add_parser(
         "completion",
@@ -4512,7 +4750,7 @@ def _parse_cli_args(
     rn.add_argument(
         "--assistant",
         choices=("codex", "claude"),
-        help="Default coding-assistant backend for @assistant actions.",
+        help=argparse.SUPPRESS,
     )
     rn.add_argument(
         "--store",
@@ -4809,6 +5047,8 @@ def main(argv=None) -> int:
         return _configuration_command(args)
     if args.cmd == "model":
         return _model_command(args)
+    if args.cmd == "assistant":
+        return _assistant_command(args)
     if args.cmd == "completion":
         from zippergen.completion import render_completion
 

@@ -23,6 +23,7 @@ class RunConfig:
     llm: str | None
     llms: dict[str, str]
     assistant: str | None
+    assistants: dict[str, str]
     llm_idle_timeout: float | None
     llm_idle_timeouts: dict[str, float]
     store_path: str | None

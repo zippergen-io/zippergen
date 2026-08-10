@@ -6,7 +6,9 @@ import json
 import os
 import shutil
 import subprocess
-from collections.abc import Callable
+import threading
+from collections.abc import Callable, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 
 from zippergen.syntax import AssistantAction, Json, validate_zvalue
@@ -19,6 +21,104 @@ __all__ = [
 
 class AssistantExecutionError(RuntimeError):
     """Raised when a coding-assistant action cannot be executed."""
+
+
+@dataclass(frozen=True)
+class AssistantCliCheck:
+    """Local availability and safety-option support for one assistant CLI."""
+
+    backend: str
+    executable: str | None
+    supported: bool
+    detail: str
+
+
+_REQUIRED_CLI_OPTIONS = {
+    "codex": (
+        "--strict-config",
+        "--skip-git-repo-check",
+        "--cd",
+        "--sandbox",
+        "--ignore-user-config",
+        "--config",
+    ),
+    "claude": (
+        "--print",
+        "--permission-mode",
+        "--tools",
+        "--safe-mode",
+        "--no-chrome",
+        "--disable-slash-commands",
+        "--strict-mcp-config",
+    ),
+}
+
+
+def check_cli_assistant(backend: str) -> AssistantCliCheck:
+    """Check that a local CLI exposes every option ZipperGen relies on.
+
+    This does not run an assistant or inspect its login. Codex and Claude keep
+    ownership of their own authentication.
+    """
+
+    selected = backend.strip().casefold()
+    if selected not in _REQUIRED_CLI_OPTIONS:
+        return AssistantCliCheck(
+            selected,
+            None,
+            False,
+            "backend must be codex or claude",
+        )
+    executable = shutil.which(selected)
+    if executable is None:
+        return AssistantCliCheck(
+            selected,
+            None,
+            False,
+            f"executable {selected!r} is not on PATH",
+        )
+    command = [executable, "exec", "--help"] if selected == "codex" else [executable, "--help"]
+    try:
+        completed = subprocess.run(
+            command,
+            text=True,
+            capture_output=True,
+            check=False,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return AssistantCliCheck(
+            selected,
+            executable,
+            False,
+            f"could not inspect CLI options: {type(exc).__name__}: {exc}",
+        )
+    help_text = f"{completed.stdout}\n{completed.stderr}"
+    missing = [
+        option
+        for option in _REQUIRED_CLI_OPTIONS[selected]
+        if option not in help_text
+    ]
+    if completed.returncode != 0:
+        return AssistantCliCheck(
+            selected,
+            executable,
+            False,
+            f"help command exited with {completed.returncode}",
+        )
+    if missing:
+        return AssistantCliCheck(
+            selected,
+            executable,
+            False,
+            "required safety option(s) missing: " + ", ".join(missing),
+        )
+    return AssistantCliCheck(
+        selected,
+        executable,
+        True,
+        f"{executable} supports the required safety options",
+    )
 
 
 def _assistant_prompt(action: AssistantAction, inputs: dict[str, object]) -> str:
@@ -104,17 +204,33 @@ def make_cli_assistant_backend(
     default: str | None = None,
     *,
     project_root: str | os.PathLike[str] | None = None,
+    routes: Mapping[str, str] | None = None,
 ) -> Callable[[AssistantAction, dict[str, object]], dict[str, object]]:
     """Build a backend that invokes Codex CLI or Claude Code.
 
-    Selection order is the action's static ``backend``, this backend's
-    ``default``, then ``ZIPPERGEN_ASSISTANT``.  The backend never uses a shell;
-    arguments are passed directly to the selected executable.
+    Selection order is an exact action route, a participant route, this
+    backend's ``default``, the action's legacy static ``backend``, then the
+    legacy ``ZIPPERGEN_ASSISTANT`` fallback. The backend never uses a shell.
+    Arguments are passed directly to the selected executable.
     """
 
     if default is not None and default not in {"codex", "claude"}:
         raise ValueError(
             f"assistant backend must be 'codex' or 'claude', got {default!r}"
+        )
+    selected_routes = {
+        str(target): str(backend).casefold()
+        for target, backend in (routes or {}).items()
+    }
+    invalid = sorted(
+        target
+        for target, backend in selected_routes.items()
+        if backend not in {"codex", "claude"}
+    )
+    if invalid:
+        raise ValueError(
+            "assistant routes must select codex or claude for: "
+            + ", ".join(invalid)
         )
     root = Path(project_root or Path.cwd()).expanduser().resolve()
 
@@ -122,12 +238,20 @@ def make_cli_assistant_backend(
         action: AssistantAction,
         inputs: dict[str, object],
     ) -> dict[str, object]:
-        selected = action.backend or default or os.environ.get("ZIPPERGEN_ASSISTANT")
+        participant = threading.current_thread().name
+        target = f"{participant}.{action.name}"
+        selected = (
+            selected_routes.get(target)
+            or selected_routes.get(participant)
+            or default
+            or action.backend
+            or os.environ.get("ZIPPERGEN_ASSISTANT")
+        )
         if selected not in {"codex", "claude"}:
             raise AssistantExecutionError(
-                f"Assistant action '{action.name}' has no backend. Configure "
-                "the workflow with assistant='codex' or assistant='claude', "
-                "set ZIPPERGEN_ASSISTANT, or declare backend= on @assistant."
+                f"Assistant action '{action.name}' has no backend. Assign a "
+                "named assistant configuration, provide an assistant backend "
+                "to the runtime, or declare backend= on @assistant."
             )
         executable = shutil.which(selected)
         if executable is None:

@@ -185,7 +185,7 @@ A ZipperGen project is a directory. \texttt{zg init} creates one:
 \midrule
 \path{specification.md} & yes & what the workflow should do, in prose \\
 \path{workflow.py} & yes & the coordination, as Python \\
-\path{zippergen.toml} & yes & models, connectors, entry point, no secrets \\
+\path{zippergen.toml} & yes & models, assistants, connectors, entry point, no secrets \\
 \path{AGENTS.md} & yes & points a coding agent at \texttt{zg skill} \\
 \path{CLAUDE.md} & yes & points Claude Code at \path{AGENTS.md} \\
 \texttt{ZIPPERGEN\_HOME} & no & credentials, runs, deployments \\
@@ -445,7 +445,7 @@ zg run --input message="Could we move our meeting to Thursday?" --yes
 
 \subsection{One configuration pattern}
 
-Models and connectors use the same small grammar:
+Models, coding assistants, and connectors use the same small grammar:
 
 \begin{lstlisting}[style=shell]
 zg TYPE configure NAME PROVIDER_OR_SPEC
@@ -456,15 +456,15 @@ zg TYPE remove NAME
 
 An external-service connector uses
 \texttt{connector bind REQUIREMENT NAME} instead of \texttt{assign}. The
-provider is an attribute of the named configuration, not another object to
-manage. In the examples, \texttt{approval-chat} is a name chosen by the user
-and \texttt{telegram} is the provider. Bare \texttt{zg model} and
-\texttt{zg connector} show each family. \texttt{zg config} shows the complete
-effective result.
+provider or backend is an attribute of the named configuration, not another
+object to manage. In the examples, \texttt{approval-chat} is a name chosen by
+the user and \texttt{telegram} is the provider. Bare \texttt{zg model},
+\texttt{zg assistant}, and \texttt{zg connector} show each family.
+\texttt{zg config} shows the complete effective result.
 
 In an interactive terminal, required values may be left out. ZipperGen asks
 for them and shows known targets and configurations when useful. Thus
-\texttt{zg model configure}, \texttt{zg model assign}, and
+\texttt{zg model configure}, \texttt{zg assistant configure}, and
 \texttt{zg connector configure} are guided commands. A script or coding agent
 must pass the required values explicitly, so it cannot wait for an unseen
 question. Guided model setup asks for provider and model separately. Explicit
@@ -509,6 +509,31 @@ again after changing the project assignments.
 them. Add \texttt{-{}-live} only when you want to make a small real provider
 request. Use \texttt{zg model unassign TARGET} before removing a configuration
 that is still referenced.
+
+\subsection{Choosing a coding assistant}
+
+An \texttt{@assistant} action runs Codex or Claude against a repository. Choose
+the CLI with the same named configuration and assignment pattern:
+
+\begin{lstlisting}[style=shell]
+zg assistant configure coding-agent codex
+zg assistant assign Maintainer coding-agent
+zg assistant check
+\end{lstlisting}
+
+Assign a participant to cover all of its assistant actions. Use an exact target
+such as \path{Maintainer.update_release_notes} when one action needs a
+different backend. Plain runs, durable runs, and deployments use the same
+routing. A deployment stores the resolved backends in its profile, so deploy
+again after changing an assignment.
+
+Backend choice and action permissions are separate. The named configuration
+chooses Codex or Claude. The \texttt{@assistant} declaration still owns its
+fixed instructions and its \texttt{access}, \path{external_tools}, and
+\texttt{shell} policies. \texttt{zg config} shows all of them together.
+\texttt{zg assistant check} verifies that each selected CLI is installed and
+supports every safety option that ZipperGen relies on. It does not log in.
+Codex and Claude continue to manage their own authentication.
 
 \subsection{Deterministic testing}
 
@@ -723,7 +748,7 @@ zg start production
 These are deliberately separate. Preparing writes the bundle, a managed Python
 environment, and the service files, and reaches nothing. A deployment can be
 prepared today and started next week. Starting is about to make real calls, so
-every model and connector is probed first and a failure stops it.
+every model, assistant CLI, and connector is probed first and a failure stops it.
 
 After the first time, the deployment has a name and you use that:
 
@@ -856,7 +881,7 @@ action identically. Script the responses instead.
 
 \subsection{A deployment refuses to start}
 
-Starting probes every model and connector. The message names what failed. The
+Starting probes every model, assistant CLI, and connector. The message names what failed. The
 usual causes are a missing API key on that machine, a Google authorization that
 does not cover the workflow's scopes, or a Telegram token that was never
 supplied there.
@@ -898,6 +923,10 @@ zg connector assign User approval-chat
 \texttt{model configure NAME SPEC} & save one named model configuration \\
 \texttt{model assign TARGET NAME} & route a participant or action \\
 \texttt{model unassign TARGET} / \texttt{model remove NAME} & remove routing or an unused configuration \\
+\texttt{assistant configure NAME BACKEND} & save Codex or Claude under a project name \\
+\texttt{assistant assign TARGET NAME} & route an assistant participant or action \\
+\texttt{assistant check [NAME]} & verify the selected CLI and required safety options \\
+\texttt{assistant unassign TARGET} / \texttt{assistant remove NAME} & remove routing or an unused configuration \\
 \texttt{connector configure NAME PROVIDER} & save one named configuration \\
 \texttt{connector assign TARGET NAME} & route human actions \\
 \texttt{connector bind REQUIREMENT NAME} & bind an external service \\

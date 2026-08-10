@@ -212,7 +212,7 @@ This is what projection means, and it is what the Lean proof is about.
 
 ## One configuration pattern
 
-Models and connectors use the same small grammar:
+Models, coding assistants, and connectors use the same small grammar:
 
 ```text
 zg TYPE configure NAME PROVIDER_OR_SPEC
@@ -222,16 +222,31 @@ zg TYPE remove NAME
 ```
 
 A connector for an external service uses `bind REQUIREMENT NAME` instead of
-`assign`. The provider is an attribute of the named configuration, not another
-object to manage. In the examples below, `approval-chat` is a name chosen by
-the user and `telegram` is the provider. `zg model`, `zg connector`, and
-`zg config` show the result.
+`assign`. The provider or backend is an attribute of the named configuration,
+not another object to manage. In the examples below, `approval-chat` is a name
+chosen by the user and `telegram` is the provider. `zg model`, `zg assistant`,
+`zg connector`, and `zg config` show the result.
 
 When you work in a terminal, you may leave out required values. ZipperGen asks
 for them and shows available targets and saved configurations. For example,
-`zg model configure`, `zg model assign`, and `zg connector configure` are all
-guided. The model command asks for the provider and model separately. Scripts
-and coding agents should pass the compact `PROVIDER:MODEL` value explicitly.
+`zg model configure`, `zg assistant configure`, and `zg connector configure`
+are all guided. The model command asks for the provider and model separately.
+Scripts and coding agents should pass the compact `PROVIDER:MODEL` value
+explicitly.
+
+For an `@assistant` action, choose Codex or Claude with a named configuration:
+
+```bash
+zg assistant configure coding-agent codex
+zg assistant assign Maintainer coding-agent
+zg assistant check
+```
+
+Assign `Maintainer.action_name` when only one action needs a different
+backend. `zg config` shows the effective backend together with the action's
+`access`, `external_tools`, and `shell` policy. Those permissions remain part
+of the reviewed `@assistant` declaration. Codex and Claude continue to manage
+their own login and credentials.
 
 ## Deterministic testing
 
@@ -324,7 +339,8 @@ the same position information without changing the running service.
 
 Preparing a deployment and starting one are two different steps. `--no-start`
 writes the files and starts nothing. Without it, ZipperGen first checks every
-model and connector for real, and stops if one of them does not answer:
+model, assistant CLI, and connector, and stops if a required dependency is not
+ready:
 
 ```bash
 zg deploy --name production --no-start   # first time: names it
@@ -345,10 +361,10 @@ zg config check                         # check the whole project
 zg config check --live                  # contact each configured provider
 ```
 
-Use `zg config` at any time to see the effective model and connector
-configurations, assignments, bindings, and missing site credentials. It never
-prints credential values. `zg config --json` provides the same view for CI and
-coding agents.
+Use `zg config` at any time to see the effective model, assistant, and
+connector configurations, assignments, bindings, and missing site facts. It
+never prints credential values. `zg config --json` provides the same view for
+CI and coding agents.
 
 ## The CLI
 
@@ -359,6 +375,7 @@ validate    load, project, and check a workflow
 show        render the protocol, or one participant's local program
 config      show or check all project configuration
 model       configure models and assign participants or actions
+assistant   configure Codex or Claude and assign participants or actions
 connector   configure connectors, assignments, bindings, and authorization
 run         run a workflow; --durable records it, --resume continues one
 deploy      prepare and start a deployment
@@ -377,7 +394,7 @@ eval "$(zg completion bash)"      # bash
 zg completion fish | source       # fish
 ```
 
-Completion includes current deployment names, model and connector
+Completion includes current deployment names, model, assistant, and connector
 configurations, participants, actions, and connector requirements.
 
 ## Examples and documentation
