@@ -241,6 +241,13 @@ OAuth token remains private site state.
 Use `zg connector configure NAME PROVIDER` to save the concrete resource, then
 `zg connector bind REQUIREMENT NAME` to connect the logical requirement to it.
 
+In a human terminal, required values may be omitted and ZipperGen asks for
+them. This applies to model and connector configuration, assignment, and
+binding. Scripts and coding agents should pass the values explicitly. Model
+setup asks a person for provider and model separately, while explicit commands
+use `PROVIDER:MODEL`. API keys and connector credentials are prompted without
+echo and saved only in private site storage.
+
 Gmail follows the same pattern:
 
 ```python

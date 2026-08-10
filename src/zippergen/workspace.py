@@ -2488,3 +2488,15 @@ class Workspace:
 
         _atomic_write_json(self.secrets_path, dict(values))
         self.secrets_path.chmod(0o600)
+
+    def development_credential(self, name: str) -> str | None:
+        """Read one private credential used by development commands."""
+
+        return self.load_secrets().get(name)
+
+    def save_development_credential(self, name: str, value: str) -> None:
+        """Save one development credential without changing project files."""
+
+        secrets = self.load_secrets()
+        secrets[name] = value
+        self.save_secrets(secrets)

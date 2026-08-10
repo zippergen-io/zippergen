@@ -1877,6 +1877,108 @@ def _configuration_command(args) -> int:
     return 1 if check and not report["valid"] else 0
 
 
+def _guided_required_value(
+    value: object,
+    *,
+    label: str,
+    command: str,
+    choices: tuple[str, ...] = (),
+) -> str:
+    """Return a required CLI value, prompting only in a human terminal."""
+
+    entered = str(value or "").strip()
+    if entered:
+        return entered
+    if not sys.stdin.isatty():
+        raise SystemExit(
+            f"{label} is required. Pass it explicitly with: {command}"
+        )
+    if choices:
+        print(f"Available {label.casefold()}s: {', '.join(choices)}")
+    try:
+        entered = input(f"{label}: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        raise SystemExit("Cancelled. Nothing was saved.") from None
+    if not entered:
+        raise SystemExit(f"{label} is required. Nothing was saved.")
+    if choices and entered not in choices:
+        raise SystemExit(
+            f"Unknown {label.casefold()} {entered!r}. Available: "
+            + ", ".join(choices)
+        )
+    return entered
+
+
+def _project_choices(kind: str, project: str | None) -> tuple[str, ...]:
+    """Return live project choices used by both completion and prompts."""
+
+    from zippergen.completion import completion_candidates
+
+    return tuple(completion_candidates(kind, project))
+
+
+def _guided_model_spec(value: object) -> str:
+    """Collect a compact model spec through clear provider-specific prompts."""
+
+    entered = str(value or "").strip()
+    if entered:
+        return entered
+    provider = _guided_required_value(
+        None,
+        label="Model provider",
+        command="zg model configure NAME PROVIDER:MODEL",
+        choices=("openai", "anthropic", "mistral", "local", "scripted"),
+    )
+    if provider == "scripted":
+        path = _guided_required_value(
+            None,
+            label="Scripted response file",
+            command="zg model configure NAME scripted:PATH",
+        )
+        return f"scripted:{path}"
+    model = _guided_required_value(
+        None,
+        label="Model name",
+        command=f"zg model configure NAME {provider}:MODEL",
+    )
+    return f"{provider}:{model}"
+
+
+def _collect_model_credential(workspace, spec: str) -> None:
+    """Offer to save a model API key in private site storage."""
+
+    from zippergen.project_configuration import model_credential_name
+
+    credential = model_credential_name(spec)
+    if credential is None:
+        return
+    if workspace.development_credential(credential):
+        print(f"Using {credential} already saved on this computer.")
+        return
+    if os.environ.get(credential):
+        print(f"Found {credential} in the environment.")
+        return
+    if not sys.stdin.isatty():
+        print(
+            f"{credential} is not configured on this computer. Set it in the "
+            "environment or run this command interactively to save it privately."
+        )
+        return
+    try:
+        value = getpass.getpass(
+            f"{credential} (input hidden. Press Enter to configure later): "
+        ).strip()
+    except (EOFError, KeyboardInterrupt):
+        raise SystemExit(
+            "Cancelled. The model configuration was saved without a credential."
+        ) from None
+    if not value:
+        print(f"Skipped {credential}. Configure it before using this model.")
+        return
+    workspace.save_development_credential(credential, value)
+    print(f"Saved {credential} in private storage on this computer.")
+
+
 def _model_command(args) -> int:
     from zippergen.project_configuration import (
         assign_model,
@@ -1892,26 +1994,55 @@ def _model_command(args) -> int:
     action = getattr(args, "model_action", None)
     try:
         if action == "configure":
+            name = _guided_required_value(
+                args.name,
+                label="Model configuration name",
+                command="zg model configure NAME PROVIDER:MODEL",
+            )
+            spec = _guided_model_spec(args.spec)
             value = configure_model(
                 workspace,
-                args.name,
-                args.spec,
+                name,
+                spec,
                 idle_timeout=args.idle_timeout,
                 base_url=args.base_url,
             )
-            print(f"Saved model configuration {args.name}: {value['spec']}")
+            print(f"Saved model configuration {name}: {value['spec']}")
+            _collect_model_credential(workspace, str(value["spec"]))
             return 0
         if action in {"assign", "unassign"}:
-            configuration = args.configuration if action == "assign" else None
-            assign_model(workspace, args.target, configuration)
+            target = _guided_required_value(
+                args.target,
+                label="Model assignment target",
+                command=f"zg model {action} TARGET"
+                + (" CONFIGURATION" if action == "assign" else ""),
+                choices=_project_choices("model-targets", args.project),
+            )
+            configuration = None
+            if action == "assign":
+                configuration = _guided_required_value(
+                    args.configuration,
+                    label="Model configuration",
+                    command="zg model assign TARGET CONFIGURATION",
+                    choices=_project_choices(
+                        "model-configurations", args.project
+                    ),
+                )
+            assign_model(workspace, target, configuration)
             if configuration is None:
-                print(f"Removed model assignment for {args.target}.")
+                print(f"Removed model assignment for {target}.")
             else:
-                print(f"Assigned {args.target} to model configuration {configuration}.")
+                print(f"Assigned {target} to model configuration {configuration}.")
             return 0
         if action == "remove":
-            workspace.remove_model_configuration(args.name)
-            print(f"Removed model configuration {args.name}.")
+            name = _guided_required_value(
+                args.name,
+                label="Model configuration",
+                command="zg model remove NAME",
+                choices=_project_choices("model-configurations", args.project),
+            )
+            workspace.remove_model_configuration(name)
+            print(f"Removed model configuration {name}.")
             return 0
         if action == "check" and args.name:
             if args.name not in workspace.model_configurations():
@@ -1949,23 +2080,61 @@ def _connector_management_command(args) -> int:
     action = getattr(args, "connector_action", None)
     try:
         if action == "bind":
-            bind_connector(workspace, args.requirement, args.configuration)
+            requirement = _guided_required_value(
+                args.requirement,
+                label="Connector requirement",
+                command="zg connector bind REQUIREMENT CONFIGURATION",
+                choices=_project_choices(
+                    "connector-requirements", args.project
+                ),
+            )
+            configuration = _guided_required_value(
+                args.configuration,
+                label="Connector configuration",
+                command="zg connector bind REQUIREMENT CONFIGURATION",
+                choices=_project_choices(
+                    "connector-configurations", args.project
+                ),
+            )
+            bind_connector(workspace, requirement, configuration)
             print(
-                f"Bound connector requirement {args.requirement} to "
-                f"configuration {args.configuration}."
+                f"Bound connector requirement {requirement} to "
+                f"configuration {configuration}."
             )
             return 0
         if action == "unassign":
-            assign_connector(workspace, args.target, None)
-            print(f"Removed connector assignment for {args.target}.")
+            target = _guided_required_value(
+                args.target,
+                label="Human-action target",
+                command="zg connector unassign TARGET",
+                choices=_project_choices("connector-targets", args.project),
+            )
+            assign_connector(workspace, target, None)
+            print(f"Removed connector assignment for {target}.")
             return 0
         if action == "unbind":
-            unbind_connector(workspace, args.requirement)
-            print(f"Removed connector binding for {args.requirement}.")
+            requirement = _guided_required_value(
+                args.requirement,
+                label="Connector requirement",
+                command="zg connector unbind REQUIREMENT",
+                choices=_project_choices(
+                    "connector-requirements", args.project
+                ),
+            )
+            unbind_connector(workspace, requirement)
+            print(f"Removed connector binding for {requirement}.")
             return 0
         if action == "remove":
-            workspace.remove_connector_configuration(args.name)
-            print(f"Removed connector configuration {args.name}.")
+            name = _guided_required_value(
+                args.name,
+                label="Connector configuration",
+                command="zg connector remove NAME",
+                choices=_project_choices(
+                    "connector-configurations", args.project
+                ),
+            )
+            workspace.remove_connector_configuration(name)
+            print(f"Removed connector configuration {name}.")
             return 0
         if action == "check" and args.name:
             if args.name not in workspace.connector_configurations():
@@ -2098,16 +2267,11 @@ def _telegram_bot_token(workspace) -> None:
 def _telegram_chat_id(value: object) -> str:
     """Collect the portable chat identifier in the user's terminal."""
 
-    chat_id = str(value or "").strip()
-    if chat_id:
-        return chat_id
-    try:
-        chat_id = input("Telegram chat id: ").strip()
-    except (EOFError, KeyboardInterrupt):
-        raise SystemExit("Cancelled; nothing was saved.") from None
-    if not chat_id:
-        raise SystemExit("A Telegram chat id is required.")
-    return chat_id
+    return _guided_required_value(
+        value,
+        label="Telegram chat id",
+        command="zg connector configure NAME telegram --chat-id CHAT_ID",
+    )
 
 
 def _project_connector_runtime(
@@ -2214,10 +2378,24 @@ def _connector_assign_command(args) -> int:
 
     workspace = Workspace(getattr(args, "project", None))
     try:
-        assign_connector(workspace, args.target, args.configuration)
+        target = _guided_required_value(
+            args.target,
+            label="Human-action target",
+            command="zg connector assign TARGET CONFIGURATION",
+            choices=_project_choices("connector-targets", args.project),
+        )
+        configuration = _guided_required_value(
+            args.configuration,
+            label="Connector configuration",
+            command="zg connector assign TARGET CONFIGURATION",
+            choices=_project_choices(
+                "connector-configurations", args.project
+            ),
+        )
+        assign_connector(workspace, target, configuration)
     except WorkspaceError as exc:
         raise SystemExit(str(exc)) from exc
-    print(f"{args.target} will be asked through {args.configuration}.")
+    print(f"{target} will be asked through {configuration}.")
     return 0
 
 
@@ -2232,7 +2410,17 @@ def _connector_configure_command(args) -> int:
     from zippergen.workspace import Workspace, WorkspaceError
 
     workspace = Workspace(args.project)
-    provider = args.connector_provider
+    name = _guided_required_value(
+        args.name,
+        label="Connector configuration name",
+        command="zg connector configure NAME PROVIDER",
+    )
+    provider = _guided_required_value(
+        args.connector_provider,
+        label="Connector provider",
+        command="zg connector configure NAME PROVIDER",
+        choices=("telegram", "gmail", "google-sheets"),
+    )
 
     if provider == "telegram":
         if args.spreadsheet_id or args.tab or args.account or args.query:
@@ -2252,17 +2440,29 @@ def _connector_configure_command(args) -> int:
             raise SystemExit(
                 "Google Sheets configuration uses --spreadsheet-id and --tab."
             )
-        if not args.spreadsheet_id or not args.tab:
-            raise SystemExit(
-                "Google Sheets configuration requires --spreadsheet-id and --tab."
-            )
+        spreadsheet_id = _guided_required_value(
+            args.spreadsheet_id,
+            label="Google spreadsheet id",
+            command=(
+                "zg connector configure NAME google-sheets "
+                "--spreadsheet-id ID --tab TAB"
+            ),
+        )
+        tab = _guided_required_value(
+            args.tab,
+            label="Google Sheets tab",
+            command=(
+                "zg connector configure NAME google-sheets "
+                "--spreadsheet-id ID --tab TAB"
+            ),
+        )
         values = {
             "provider": "google",
             "kind": "google-sheets",
-            "spreadsheet_id": str(args.spreadsheet_id),
-            "tab": str(args.tab),
+            "spreadsheet_id": spreadsheet_id,
+            "tab": tab,
         }
-        described = f"tab {args.tab}"
+        described = f"tab {tab}"
     elif provider == "gmail":
         if args.chat_id or args.spreadsheet_id or args.tab:
             raise SystemExit(
@@ -2280,10 +2480,10 @@ def _connector_configure_command(args) -> int:
         raise SystemExit(f"Unsupported connector provider {provider!r}.")
 
     try:
-        workspace.save_connector_configuration(args.name, values)
+        workspace.save_connector_configuration(name, values)
     except WorkspaceError as exc:
         raise SystemExit(str(exc)) from exc
-    print(f"Saved connector configuration {args.name} ({described}).")
+    print(f"Saved connector configuration {name} ({described}).")
 
     if provider in {"google-sheets", "gmail"} and not workspace.connector_provider_secret(
         "google", "authorized_user_json"
@@ -3993,7 +4193,8 @@ def _parse_cli_args(
         help="show and manage model configurations and assignments",
         description=(
             "One pattern: configure NAME SPEC, then assign TARGET NAME. "
-            "Run without an action to show everything."
+            "Run without an action to show everything. In a terminal, omit "
+            "required values to be guided."
         ),
     )
     model_sub = model.add_subparsers(dest="model_action")
@@ -4001,10 +4202,14 @@ def _parse_cli_args(
         "configure",
         help="save one named model configuration",
     )
-    model_configure.add_argument("name")
+    model_configure.add_argument("name", nargs="?")
     model_configure.add_argument(
         "spec",
-        help="Model spec such as openai:gpt-4o-mini or local:qwen2.5:14b.",
+        nargs="?",
+        help=(
+            "Compact model spec such as openai:gpt-4o-mini or "
+            "local:qwen2.5:14b. When omitted, ask for provider and model."
+        ),
     )
     model_configure.add_argument("--base-url", help="Local provider base URL.")
     model_configure.add_argument(
@@ -4017,11 +4222,11 @@ def _parse_cli_args(
         "assign",
         help="assign a named configuration to a participant or action",
     )
-    model_assign.add_argument("target", help="default, Participant, or Participant.action.")
-    model_assign.add_argument("configuration")
+    model_assign.add_argument("target", nargs="?", help="default, Participant, or Participant.action.")
+    model_assign.add_argument("configuration", nargs="?")
     model_assign.add_argument("--project", help="Project root.")
     model_unassign = model_sub.add_parser("unassign", help="remove one assignment")
-    model_unassign.add_argument("target")
+    model_unassign.add_argument("target", nargs="?")
     model_unassign.add_argument("--project", help="Project root.")
     model_check = model_sub.add_parser(
         "check",
@@ -4031,7 +4236,7 @@ def _parse_cli_args(
     model_check.add_argument("--live", action="store_true", help="Contact providers.")
     model_check.add_argument("--project", help="Project root.")
     model_remove = model_sub.add_parser("remove", help="remove an unused configuration")
-    model_remove.add_argument("name")
+    model_remove.add_argument("name", nargs="?")
     model_remove.add_argument("--project", help="Project root.")
 
     completion = sub.add_parser(
@@ -4049,7 +4254,8 @@ def _parse_cli_args(
         help="show and manage connector configurations and assignments",
         description=(
             "One pattern: configure NAME PROVIDER, then assign TARGET NAME "
-            "or bind REQUIREMENT NAME. Run without an action to show everything."
+            "or bind REQUIREMENT NAME. Run without an action to show "
+            "everything. In a terminal, omit required values to be guided."
         ),
     )
     connector_sub = connector.add_subparsers(
@@ -4061,10 +4267,12 @@ def _parse_cli_args(
     )
     connector_configure.add_argument(
         "name",
+        nargs="?",
         help="Configuration name, such as approval-chat, inbox, or records.",
     )
     connector_configure.add_argument(
         "connector_provider",
+        nargs="?",
         choices=("telegram", "gmail", "google-sheets"),
         help="Connector provider or service kind.",
     )
@@ -4121,10 +4329,12 @@ def _parse_cli_args(
     )
     connector_assign.add_argument(
         "target",
+        nargs="?",
         help="Participant, or Participant.action for a single action.",
     )
     connector_assign.add_argument(
         "configuration",
+        nargs="?",
         help="Name of a saved connector configuration.",
     )
     connector_assign.add_argument("--project", help="Project root.")
@@ -4133,22 +4343,22 @@ def _parse_cli_args(
         "unassign",
         help="remove one human-action assignment",
     )
-    connector_unassign.add_argument("target")
+    connector_unassign.add_argument("target", nargs="?")
     connector_unassign.add_argument("--project", help="Project root.")
 
     connector_bind = connector_sub.add_parser(
         "bind",
         help="bind a workflow service requirement to a named configuration",
     )
-    connector_bind.add_argument("requirement")
-    connector_bind.add_argument("configuration")
+    connector_bind.add_argument("requirement", nargs="?")
+    connector_bind.add_argument("configuration", nargs="?")
     connector_bind.add_argument("--project", help="Project root.")
 
     connector_unbind = connector_sub.add_parser(
         "unbind",
         help="remove one workflow requirement binding",
     )
-    connector_unbind.add_argument("requirement")
+    connector_unbind.add_argument("requirement", nargs="?")
     connector_unbind.add_argument("--project", help="Project root.")
 
     connector_check = connector_sub.add_parser(
@@ -4163,7 +4373,7 @@ def _parse_cli_args(
         "remove",
         help="remove an unused connector configuration",
     )
-    connector_remove.add_argument("name")
+    connector_remove.add_argument("name", nargs="?")
     connector_remove.add_argument("--project", help="Project root.")
 
     connector_authorize = connector_sub.add_parser(

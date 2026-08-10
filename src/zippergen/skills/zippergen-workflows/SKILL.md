@@ -64,6 +64,12 @@ objects to manage. For example, `approval-chat` is a user-chosen configuration
 name and `telegram` is its provider. Bare `zg model` and `zg connector` show
 each family, while `zg config` shows the complete effective result.
 
+In a human terminal, omitted required values are prompted. The prompt shows
+known targets and saved configurations when useful. Scripts and coding agents
+must pass required values explicitly, so they fail clearly instead of waiting
+for input. Guided model setup asks for provider and model separately. Explicit
+commands keep the compact `PROVIDER:MODEL` form. The Python API never prompts.
+
 To assign a model, use the project commands. Do not hard-code the provider in
 the workflow or change a deployment field merely to route one participant:
 
@@ -72,6 +78,14 @@ zg model configure writer openai:gpt-4o-mini
 zg model assign Writer writer
 zg model
 ```
+
+The configuration command offers a hidden API-key prompt when the selected
+provider needs one and no key is available. Do not ask for that key in the
+agent conversation and do not enter it for the user. Run the explicit command
+to save the portable configuration. If it reports a missing credential, ask
+the user to run the same command in their own terminal or set the provider's
+normal environment variable. The key stays in private site storage and never
+enters `zippergen.toml`.
 
 These commands produce ordinary, reviewable manifest data:
 

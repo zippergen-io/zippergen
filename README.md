@@ -227,6 +227,12 @@ object to manage. In the examples below, `approval-chat` is a name chosen by
 the user and `telegram` is the provider. `zg model`, `zg connector`, and
 `zg config` show the result.
 
+When you work in a terminal, you may leave out required values. ZipperGen asks
+for them and shows available targets and saved configurations. For example,
+`zg model configure`, `zg model assign`, and `zg connector configure` are all
+guided. The model command asks for the provider and model separately. Scripts
+and coding agents should pass the compact `PROVIDER:MODEL` value explicitly.
+
 ## Deterministic testing
 
 Give the Writer a named model configuration, then assign it:
@@ -236,6 +242,11 @@ zg model configure writer openai:gpt-4o-mini
 zg model assign Writer writer
 zg model
 ```
+
+If `OPENAI_API_KEY` is not already available, the first command offers a
+hidden prompt. The key is saved in private storage on this computer. It is not
+written to `zippergen.toml`. You may instead set the normal environment
+variable before running the command.
 
 The commands write the portable routing to `zippergen.toml`:
 

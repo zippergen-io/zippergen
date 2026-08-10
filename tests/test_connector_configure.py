@@ -11,6 +11,7 @@ import tomllib
 import os
 from pathlib import Path
 
+from zippergen.serve import main
 from zippergen.workspace import Workspace
 
 
@@ -61,20 +62,23 @@ def test_it_saves_a_configuration_the_project_can_commit(tmp_path):
     }
 
 
-def test_telegram_setup_collects_the_chat_id_in_the_human_terminal(tmp_path):
+def test_telegram_setup_collects_the_chat_id_in_the_human_terminal(
+    tmp_path, monkeypatch
+):
     root = _project(tmp_path)
+    home = root.parent / "home"
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(home))
+    monkeypatch.chdir(root)
+    monkeypatch.setattr("zippergen.serve.sys.stdin.isatty", lambda: True)
+    answers = iter(["4242"])
+    monkeypatch.setattr("builtins.input", lambda _prompt: next(answers))
+    monkeypatch.setattr("getpass.getpass", lambda _prompt: "bot-token")
 
-    result = _run(
-        root,
-        "connector",
-        "configure",
-        "approval-chat",
-        "telegram",
-        input_text="4242\nbot-token\n",
+    result = main(
+        ["connector", "configure", "approval-chat", "telegram"]
     )
 
-    assert result.returncode == 0, result.stderr
-    assert "Telegram chat id:" in result.stdout
+    assert result == 0
     manifest = tomllib.loads((root / "zippergen.toml").read_text())
     assert manifest["connectors"]["configurations"]["approval-chat"][
         "chat_id"
@@ -164,7 +168,7 @@ def test_a_sheets_configuration_names_its_required_fields(tmp_path):
     result = _run(root, "connector", "configure", "records", "google-sheets")
 
     assert result.returncode != 0
-    assert "--spreadsheet-id and --tab" in result.stderr
+    assert "--spreadsheet-id ID --tab TAB" in result.stderr
 
 
 def test_a_gmail_configuration_records_the_mailbox_and_query(tmp_path):

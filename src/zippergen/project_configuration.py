@@ -31,7 +31,10 @@ def _provider(spec: str) -> str:
     return {"claude": "anthropic", "ollama": "local"}.get(value, value)
 
 
-def _model_secret(provider: str) -> str | None:
+def model_credential_name(spec: str) -> str | None:
+    """Return the private credential name used by one model specification."""
+
+    provider = _provider(spec)
     return {
         "openai": "OPENAI_API_KEY",
         "mistral": "MISTRAL_API_KEY",
@@ -339,7 +342,7 @@ def configuration_report(
         environment = workspace.development_provider_environment(specs)
         for spec in specs:
             provider = _provider(spec)
-            secret = _model_secret(provider)
+            secret = model_credential_name(spec)
             if secret:
                 available = bool(environment.get(secret) or os.environ.get(secret))
                 site_facts.append(
@@ -842,13 +845,19 @@ def assign_connector(
             f"Unknown human-action target {target!r}. Available: "
             + (", ".join(sorted(known)) or "none")
         )
-    if (
-        configuration is not None
-        and configuration not in workspace.connector_configurations()
-    ):
-        raise WorkspaceError(
-            f"Connector configuration does not exist: {configuration}."
-        )
+    configurations = workspace.connector_configurations()
+    if configuration is not None:
+        selected_configuration = configurations.get(configuration)
+        if selected_configuration is None:
+            raise WorkspaceError(
+                f"Connector configuration does not exist: {configuration}."
+            )
+        if selected_configuration.get("kind") != "telegram":
+            raise WorkspaceError(
+                f"Human actions need a Telegram configuration, but "
+                f"{configuration!r} is "
+                f"{selected_configuration.get('kind') or 'untyped'}."
+            )
     manifest_connectors = workspace.project_manifest().get("connectors") or {}
     assert isinstance(manifest_connectors, dict)
     profile = manifest_connectors.get("assignments") or {}

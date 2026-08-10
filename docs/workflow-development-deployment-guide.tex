@@ -462,6 +462,15 @@ and \texttt{telegram} is the provider. Bare \texttt{zg model} and
 \texttt{zg connector} show each family. \texttt{zg config} shows the complete
 effective result.
 
+In an interactive terminal, required values may be left out. ZipperGen asks
+for them and shows known targets and configurations when useful. Thus
+\texttt{zg model configure}, \texttt{zg model assign}, and
+\texttt{zg connector configure} are guided commands. A script or coding agent
+must pass the required values explicitly, so it cannot wait for an unseen
+question. Guided model setup asks for provider and model separately. Explicit
+commands use the compact \texttt{PROVIDER:MODEL} form. The Python API is always
+explicit and never prompts.
+
 \subsection{Choosing a model}
 
 For a durable project choice, create a named configuration and assign it:
@@ -471,6 +480,12 @@ zg model configure writer openai:gpt-4o-mini
 zg model assign Writer writer
 zg model
 \end{lstlisting}
+
+If the provider needs an API key and none is available, the configuration
+command offers a hidden prompt. The key is saved in private storage on this
+computer. It is never written to \path{zippergen.toml}. One provider key may
+serve several named model configurations. You may instead set the normal
+environment variable before running the command.
 
 \begin{center}
 \begin{tabularx}{0.95\linewidth}{@{}lX@{}}
@@ -591,7 +606,20 @@ zg run --llm openai:gpt-4o-mini
 \end{center}
 
 To fix the choice in the project rather than the command line, put it in
-\path{zippergen.toml} under \texttt{models}.
+\path{zippergen.toml} under \texttt{models}. The guided command does this and
+can also collect the key privately:
+
+\begin{lstlisting}[style=shell]
+zg model configure
+Model configuration name: writer
+Available model providers: openai, anthropic, mistral, local, scripted
+Model provider: openai
+Model name: gpt-4o-mini
+OPENAI_API_KEY (input hidden. Press Enter to configure later):
+\end{lstlisting}
+
+The name and model are project configuration. The key is a site credential.
+They are deliberately stored in different places.
 
 \subsection{Asking a person}
 

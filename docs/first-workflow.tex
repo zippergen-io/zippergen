@@ -496,15 +496,22 @@ Create a named configuration and assign the Writer to it:
 zg model configure writer openai:gpt-4o-mini
 zg model assign Writer writer
 zg model
-export OPENAI_API_KEY=sk-...
 zg run
 \end{lstlisting}
 
 The model identity and assignment are written to \path{zippergen.toml}, so they
-travel with the project. The key stays in the environment. Several
+travel with the project. If no key is available, the first command asks for
+\texttt{OPENAI\_API\_KEY} without echo and saves it privately on this computer.
+You can instead export the key before running the command. Several
 participants can share the same named configuration, and one exact action can
 be assigned with a target such as \texttt{Writer.draft\_reply}.
 \texttt{zg run -{}-llm mock} remains useful as a temporary override.
+
+When working by hand, you can also run \texttt{zg model configure} and
+\texttt{zg model assign} with no values. ZipperGen then asks the questions and
+shows the available choices. It asks for the provider and model separately.
+Full commands keep the compact \texttt{PROVIDER:MODEL} form and remain better
+for scripts and coding agents.
 
 \section{Approval on your phone}
 

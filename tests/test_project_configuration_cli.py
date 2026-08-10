@@ -67,6 +67,117 @@ def test_model_and_connector_configuration_share_name_first_grammar():
     )
 
 
+def test_model_configuration_is_fully_guided_in_a_terminal(
+    project, monkeypatch, capsys
+):
+    _root, workspace = project
+    answers = iter(
+        [
+            "writer",
+            "openai",
+            "gpt-4o-mini",
+            "Writer",
+            "writer",
+        ]
+    )
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setattr("zippergen.serve.sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda _prompt: next(answers))
+    monkeypatch.setattr("getpass.getpass", lambda _prompt: "private-key")
+
+    assert main(["model", "configure"]) == 0
+    assert main(["model", "assign"]) == 0
+
+    assert workspace.model_configurations()["writer"]["spec"] == (
+        "openai:gpt-4o-mini"
+    )
+    assert workspace.development_credential("OPENAI_API_KEY") == "private-key"
+    assert "private-key" not in (_root / "zippergen.toml").read_text()
+    assert workspace.secrets_path.stat().st_mode & 0o777 == 0o600
+    assert workspace.model_assignment_profile(
+        "workflow.py:email_approval"
+    )["lifelines"] == {"Writer": "writer"}
+    output = capsys.readouterr().out
+    assert "Available model assignment targets" in output
+    assert "Saved OPENAI_API_KEY in private storage" in output
+
+
+def test_guided_scripted_model_asks_for_a_response_file(project, monkeypatch):
+    _root, workspace = project
+    answers = iter(["responses", "scripted", "answers.json"])
+    monkeypatch.setattr("zippergen.serve.sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda _prompt: next(answers))
+
+    assert main(["model", "configure"]) == 0
+
+    assert workspace.model_configurations()["responses"]["spec"] == (
+        "scripted:answers.json"
+    )
+
+
+def test_existing_model_environment_credential_is_not_copied(
+    project, monkeypatch, capsys
+):
+    _root, workspace = project
+    monkeypatch.setenv("OPENAI_API_KEY", "environment-key")
+    monkeypatch.setattr("zippergen.serve.sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr(
+        "getpass.getpass",
+        lambda _prompt: pytest.fail("an environment credential must be reused"),
+    )
+
+    assert main(
+        ["model", "configure", "writer", "openai:gpt-4o-mini"]
+    ) == 0
+
+    assert workspace.development_credential("OPENAI_API_KEY") is None
+    assert "Found OPENAI_API_KEY in the environment" in capsys.readouterr().out
+
+
+def test_missing_required_values_do_not_prompt_outside_a_terminal(
+    project, monkeypatch
+):
+    monkeypatch.setattr("zippergen.serve.sys.stdin.isatty", lambda: False)
+    monkeypatch.setattr(
+        "builtins.input",
+        lambda _prompt: pytest.fail("a non-interactive command must not prompt"),
+    )
+
+    with pytest.raises(
+        SystemExit,
+        match=r"zg model configure NAME PROVIDER:MODEL",
+    ):
+        main(["model", "configure"])
+
+
+def test_connector_configuration_and_assignment_are_guided_the_same_way(
+    project, monkeypatch
+):
+    _root, workspace = project
+    workspace.save_connector_provider_secret("telegram", "bot_token", "private")
+    answers = iter(
+        [
+            "approval-chat",
+            "telegram",
+            "4242",
+            "User",
+            "approval-chat",
+        ]
+    )
+    monkeypatch.setattr("zippergen.serve.sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda _prompt: next(answers))
+
+    assert main(["connector", "configure"]) == 0
+    assert main(["connector", "assign"]) == 0
+
+    assert workspace.connector_configurations()["approval-chat"]["chat_id"] == (
+        "4242"
+    )
+    assert workspace.connector_assignment_profile(
+        "workflow.py:email_approval"
+    )["lifelines"] == {"User": "approval-chat"}
+
+
 def test_model_assignment_rejects_a_target_that_cannot_call_an_llm(project):
     main(["model", "configure", "writer", "openai:gpt-4o-mini"])
 
@@ -136,6 +247,22 @@ def test_connector_unassign_and_remove_are_symmetric(project):
     assert main(["connector", "remove", "approval-chat"]) == 0
 
     assert "approval-chat" not in workspace.connector_configurations()
+
+
+def test_human_action_assignment_rejects_a_service_connector(project):
+    _root, workspace = project
+    workspace.save_connector_configuration(
+        "inbox",
+        {
+            "provider": "google",
+            "kind": "gmail",
+            "account": "me",
+            "query": "is:unread",
+        },
+    )
+
+    with pytest.raises(SystemExit, match="need a Telegram configuration"):
+        main(["connector", "assign", "User", "inbox"])
 
 
 def test_completion_uses_current_project_names(project, capsys):
