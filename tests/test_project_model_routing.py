@@ -5,6 +5,16 @@ from zippergen.serve import main
 from zippergen.workspace import Workspace
 
 
+
+def _one_deployment(home, suffix=".json"):
+    """The project's one deployment, whatever name was derived for it."""
+
+    found = sorted((home / "deployments").glob(f"*{suffix}"))
+    if suffix == ".json":
+        found = [p for p in found if not p.name.endswith(".secrets.json")]
+    assert len(found) == 1, f"expected one {suffix} deployment file, got {found}"
+    return found[0]
+
 MODEL_WORKFLOW = """
 from zippergen import Lifeline, llm, workflow
 
@@ -119,9 +129,7 @@ def test_deployment_snapshots_project_model_assignments(
     root, home = _configured_project(tmp_path, monkeypatch)
 
     assert main([
-        "deploy", "create",
-        "--name",
-        "answer-prod",
+        "deploy",
         "--input",
         "topic=hello",
         "--no-start",
@@ -134,7 +142,7 @@ def test_deployment_snapshots_project_model_assignments(
     capsys.readouterr()
 
     profile = json.loads(
-        (home / "deployments" / "answer-prod.json").read_text()
+        _one_deployment(home).read_text()
     )
     assert profile["llm"] == "mock"
     assert profile["llms"] == {
@@ -148,9 +156,7 @@ def test_global_cli_model_replaces_project_assignments(
     _root, home = _configured_project(tmp_path, monkeypatch)
 
     assert main([
-        "deploy", "create",
-        "--name",
-        "mock-prod",
+        "deploy",
         "--llm",
         "mock",
         "--input",
@@ -164,7 +170,7 @@ def test_global_cli_model_replaces_project_assignments(
     ]) == 0
     capsys.readouterr()
 
-    profile = json.loads((home / "deployments" / "mock-prod.json").read_text())
+    profile = json.loads(_one_deployment(home).read_text())
     assert profile["llm"] == "mock"
     assert profile["llms"] == {}
 

@@ -443,7 +443,8 @@ List every source/support file needed by the deployment bundle.
 
 `zg` is the short alias for `zippergen`. Inside a project the workflow may be
 omitted: commands take an explicit argument first, then `workflow_entry` from
-`zippergen.toml`, then the project's only workflow when there is exactly one.
+`zippergen.toml` (set it with `zg config workflow SPEC`), then the project's
+only workflow when there is exactly one.
 An explicit spec is given in either `module:workflow` or `path.py:workflow`
 form.
 
@@ -519,21 +520,24 @@ without a person, pipe the answer on standard input.
 
 ## Deployment operation
 
-One command, one verb per thing you can do. Run `zg deploy` with no verb to
-see every deployment.
+A project has one workflow, so it has one deployment. `zg deploy` creates and
+starts it; every verb acts on that same one, so its name is never typed.
 
 ```bash
-zg deploy create --name production
-zg deploy status production
-zg deploy logs production
-zg deploy check production
-zg deploy restart production
-zg deploy stop production
-zg deploy compact production
-zg deploy remove production
+zg deploy
+zg deploy status
+zg deploy logs
+zg deploy check
+zg deploy restart
+zg deploy stop
+zg deploy compact
+zg deploy remove
 ```
 
-`zg inspect production --watch` shows the same deployment's live position.
+`zg inspect --watch` shows that deployment's live position.
+
+Use `--workflow SPEC` only when deploying from outside a project. There is no
+deployment name to pass: a project has one deployment.
 
 `status`, `inspect`, and `check` read durable state without changing it.
 `inspect` shows each participant's current local program position. Its

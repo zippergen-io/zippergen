@@ -37,13 +37,26 @@ def hello(topic: str @ User) -> str:
 """
 
 
+def _the_deployment(zippergen_home, suffix=".json"):
+    """The project's one deployment, whatever name was derived for it."""
+
+    found = sorted((zippergen_home / "deployments").glob(f"*{suffix}"))
+    if suffix == ".json":
+        found = [p for p in found if not p.name.endswith(".secrets.json")]
+    assert len(found) == 1, f"expected one {suffix} deployment file, got {found}"
+    return found[0]
+
+
 def _deploy_for_test(arguments: list[str]) -> int:
     """Prepare through the public deployment path without external setup."""
 
+    # These tests deploy an explicit workflow from a temp directory, which is
+    # the `--workflow` case; inside a project you would pass nothing.
+    if arguments and ":" in arguments[0] and not arguments[0].startswith("-"):
+        arguments = ["--workflow", *arguments]
     return main(
         [
             "deploy",
-            "create",
             *arguments,
             "--no-start",
             "--no-bundle",
@@ -61,10 +74,17 @@ def test_compact_reports_removed_store_events_and_log_archives(
     from zippergen import deployments, serve, storage_maintenance
 
     store = tmp_path / "run.sqlite"
+    home = tmp_path / "zg-home"
+    (home / "deployments").mkdir(parents=True)
+    (home / "deployments" / "demo.json").write_text(
+        json.dumps({"name": "demo", "source_cwd": str(Path.cwd()),
+                    "store": str(store)})
+    )
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(home))
     monkeypatch.setattr(
         serve,
         "_load_deployment_profile",
-        lambda _name: {"store": str(store)},
+        lambda _name: {"store": str(store), "source_cwd": str(Path.cwd())},
     )
     monkeypatch.setattr(
         storage_maintenance,
@@ -84,7 +104,7 @@ def test_compact_reports_removed_store_events_and_log_archives(
         ),
     )
 
-    assert main(["deploy", "compact", "demo", "--keep-archives", "1"]) == 0
+    assert main(["deploy", "compact", "--keep-archives", "1"]) == 0
 
     output = capsys.readouterr().out
     assert "removed events: 12" in output
@@ -473,8 +493,6 @@ def test_deploy_prepares_a_profile_that_runs_by_name(tmp_path, monkeypatch, caps
 
     rc = _deploy_for_test([
         f"{workflow_path}:hello",
-        "--name",
-        "hello-prod",
         "--llm",
         "mock",
         "--llm-for",
@@ -486,14 +504,14 @@ def test_deploy_prepares_a_profile_that_runs_by_name(tmp_path, monkeypatch, caps
     ])
 
     captured = capsys.readouterr()
-    profile_path = zippergen_home / "deployments" / "hello-prod.json"
-    script_path = zippergen_home / "deployments" / "hello-prod.sh"
-    service_path = zippergen_home / "deployments" / "zippergen-hello-prod.service"
-    store_path = zippergen_home / "runs" / "hello-prod.sqlite"
+    profile_path = _the_deployment(zippergen_home)
+    script_path = _the_deployment(zippergen_home, ".sh")
+    service_path = _the_deployment(zippergen_home, ".service")
+    store_path = zippergen_home / "runs" / "deploy_workflow-hello.sqlite"
     profile = json.loads(profile_path.read_text())
     assert rc == 0
-    assert "Status: zippergen deploy status hello-prod" in captured.out
-    assert profile["name"] == "hello-prod"
+    assert "Status: zippergen deploy status" in captured.out
+    assert profile["name"] == "deploy_workflow-hello"
     assert profile["workflow"] == f"{workflow_path}:hello"
     assert profile["store"] == str(store_path)
     assert profile["llm"] == "mock"
@@ -507,13 +525,13 @@ def test_deploy_prepares_a_profile_that_runs_by_name(tmp_path, monkeypatch, caps
     assert connection.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 0
     connection.close()
 
-    rc = main(["deploy", "run", "hello-prod"])
+    rc = main(["deploy", "run",])
     captured = capsys.readouterr()
     assert rc == 0
     assert store_path.exists()
     assert json.loads(captured.out) == {"result": "deploy!"}
 
-    rc = main(["deploy", "status", "hello-prod", "--json"])
+    rc = main(["deploy", "status", "--json"])
     captured = capsys.readouterr()
     status = json.loads(captured.out)
     assert rc == 0
@@ -530,24 +548,22 @@ def test_start_deployment_dry_run_prints_systemd_commands(tmp_path, monkeypatch,
     monkeypatch.setenv("ZIPPERGEN_SERVICE_MANAGER", "systemd")
     _deploy_for_test([
         f"{workflow_path}:hello",
-        "--name",
-        "hello-prod",
     ])
     capsys.readouterr()
 
-    rc = main(["deploy", "start", "hello-prod", "--enable", "--dry-run"])
+    rc = main(["deploy", "start", "--enable", "--dry-run"])
 
     captured = capsys.readouterr()
     assert rc == 0
     assert "Install systemd unit:" in captured.out
-    assert "zippergen-hello-prod.service" in captured.out
+    assert "zippergen-deploy_workflow-hello.service" in captured.out
     assert "systemctl --user daemon-reload" in captured.out
-    assert "systemctl --user enable zippergen-hello-prod.service" in captured.out
-    assert "systemctl --user start zippergen-hello-prod.service" in captured.out
+    assert "systemctl --user enable zippergen-deploy_workflow-hello.service" in captured.out
+    assert "systemctl --user start zippergen-deploy_workflow-hello.service" in captured.out
     service = (
         zippergen_home
         / "deployments"
-        / "zippergen-hello-prod.service"
+        / "zippergen-deploy_workflow-hello.service"
     ).read_text()
     assert "Restart=on-failure" in service
     assert "Restart=always" not in service
@@ -563,24 +579,22 @@ def test_start_deployment_dry_run_prints_launchd_commands(tmp_path, monkeypatch,
     monkeypatch.setenv("ZIPPERGEN_SERVICE_MANAGER", "launchd")
     _deploy_for_test([
         f"{workflow_path}:hello",
-        "--name",
-        "hello-prod",
     ])
     capsys.readouterr()
 
-    rc = main(["deploy", "start", "hello-prod", "--dry-run"])
+    rc = main(["deploy", "start", "--dry-run"])
 
     captured = capsys.readouterr()
     assert rc == 0
     assert "Install launchd agent:" in captured.out
-    assert "io.zippergen.hello-prod.plist" in captured.out
+    assert "io.zippergen.deploy_workflow-hello.plist" in captured.out
     assert "launchctl bootout" in captured.out
     assert "launchctl bootstrap" in captured.out
     launchd = plistlib.loads(
         (
             zippergen_home
             / "deployments"
-            / "io.zippergen.hello-prod.plist"
+            / "io.zippergen.deploy_workflow-hello.plist"
         ).read_bytes()
     )
     assert launchd["KeepAlive"] == {"SuccessfulExit": False}
@@ -601,8 +615,6 @@ def test_start_and_restart_refuse_a_deployment_that_fails_readiness(
     _deploy_for_test(
         [
             f"{workflow_path}:hello",
-            "--name",
-            "hello-openai",
             "--llm",
             "openai:gpt-4o-mini",
         ]
@@ -615,7 +627,7 @@ def test_start_and_restart_refuse_a_deployment_that_fails_readiness(
         ),
     )
 
-    rc = main(["deploy", action, "hello-openai"])
+    rc = main(["deploy", action])
 
     captured = capsys.readouterr()
     assert rc == 1
@@ -665,10 +677,8 @@ def test_guided_deploy_persists_an_implicit_model_provider_secret(
     rc = main(
         [
             "deploy",
-            "create",
+            "--workflow",
             f"{workflow_path}:hello",
-            "--name",
-            "hello-mistral",
             "--llm",
             "mistral:mistral-small-latest",
             "--provider-secret",
@@ -687,7 +697,7 @@ def test_guided_deploy_persists_an_implicit_model_provider_secret(
         (
             zippergen_home
             / "deployments"
-            / "hello-mistral.secrets.json"
+            / "deploy_workflow-hello.secrets.json"
         ).read_text()
     )
     assert secrets == {"MISTRAL_API_KEY": "private-key"}
@@ -716,10 +726,8 @@ def test_guided_deploy_preserves_google_connector_credential_json(
     rc = main(
         [
             "deploy",
-            "create",
+            "--workflow",
             f"{workflow_path}:hello",
-            "--name",
-            "hello-google",
             "--connector-secret",
             "ZIPPERGEN_CONNECTOR_MAILBOX_GOOGLE_CREDENTIAL="
             + credential,
@@ -734,11 +742,7 @@ def test_guided_deploy_preserves_google_connector_credential_json(
     assert rc == 0
     capsys.readouterr()
     secrets = json.loads(
-        (
-            zippergen_home
-            / "deployments"
-            / "hello-google.secrets.json"
-        ).read_text()
+        _the_deployment(zippergen_home, ".secrets.json").read_text()
     )
     stored = secrets[
         "ZIPPERGEN_CONNECTOR_MAILBOX_GOOGLE_CREDENTIAL"
@@ -760,10 +764,8 @@ def test_guided_deploy_persists_a_local_provider_endpoint(
     rc = main(
         [
             "deploy",
-            "create",
+            "--workflow",
             f"{workflow_path}:hello",
-            "--name",
-            "hello-local",
             "--llm",
             "local:qwen2.5:7b",
             "--provider-env",
@@ -780,7 +782,7 @@ def test_guided_deploy_persists_a_local_provider_endpoint(
     capsys.readouterr()
     profile = json.loads(
         (
-            zippergen_home / "deployments" / "hello-local.json"
+            _the_deployment(zippergen_home)
         ).read_text()
     )
     assert profile["environment"] == {
@@ -801,10 +803,8 @@ def test_guided_deploy_blocks_a_missing_selected_model_credential(
     rc = main(
         [
             "deploy",
-            "create",
+            "--workflow",
             f"{workflow_path}:hello",
-            "--name",
-            "hello-mistral",
             "--llm",
             "mistral:mistral-small-latest",
             "--yes",
@@ -827,10 +827,9 @@ def test_guided_deploy_persists_config_and_private_secrets(tmp_path, monkeypatch
     monkeypatch.setenv("ZIPPERGEN_HOME", str(zippergen_home))
 
     rc = main([
-        "deploy", "create",
+        "deploy",
+        "--workflow",
         f"{workflow_path}:guided",
-        "--name",
-        "guided-prod",
         "--input",
         "topic=deploy",
         "--set",
@@ -845,12 +844,12 @@ def test_guided_deploy_persists_config_and_private_secrets(tmp_path, monkeypatch
     ])
 
     captured = capsys.readouterr()
-    profile_path = zippergen_home / "deployments" / "guided-prod.json"
-    secrets_path = zippergen_home / "deployments" / "guided-prod.secrets.json"
+    profile_path = _the_deployment(zippergen_home)
+    secrets_path = _the_deployment(zippergen_home, ".secrets.json")
     profile_text = profile_path.read_text()
     profile = json.loads(profile_text)
     assert rc == 0
-    assert "Deployment: guided-prod" in captured.out
+    assert "Deployment: guided-demo" in captured.out
     assert profile["options"]["prefix"] == "hello"
     assert profile["environment"] == {"DEMO_MODE": "safe"}
     assert profile["secret_names"] == ["DEMO_TOKEN"]
@@ -859,7 +858,7 @@ def test_guided_deploy_persists_config_and_private_secrets(tmp_path, monkeypatch
     assert "top-secret" not in profile_text
     assert json.loads(secrets_path.read_text()) == {"DEMO_TOKEN": "top-secret"}
     assert secrets_path.stat().st_mode & 0o077 == 0
-    assert (zippergen_home / "deployments" / "io.zippergen.guided-prod.plist").exists()
+    assert (_the_deployment(zippergen_home, ".plist")).exists()
     assert Path(profile["bundle"]).exists()
     store_path = Path(profile["store"])
     assert store_path.exists()
@@ -868,7 +867,7 @@ def test_guided_deploy_persists_config_and_private_secrets(tmp_path, monkeypatch
     connection.close()
 
     workflow_path.unlink()
-    rc = main(["deploy", "run", "guided-prod"])
+    rc = main(["deploy", "run",])
     captured = capsys.readouterr()
     assert rc == 0
     assert json.loads(captured.out) == {"result": "hello:safe:token:deploy"}
@@ -885,10 +884,8 @@ def test_explicit_redeploy_replaces_the_named_deployment_source(
     monkeypatch.setenv("ZIPPERGEN_HOME", str(zippergen_home))
     arguments = [
         "deploy",
-        "create",
+        "--workflow",
         f"{workflow_path}:hello",
-        "--name",
-        "hello-redeploy",
         "--input",
         "topic=updated",
         "--yes",
@@ -901,7 +898,7 @@ def test_explicit_redeploy_replaces_the_named_deployment_source(
     assert main(arguments) == 0
     capsys.readouterr()
     first_profile = json.loads(
-        (zippergen_home / "deployments" / "hello-redeploy.json").read_text()
+        (_the_deployment(zippergen_home)).read_text()
     )
     first_bundle = Path(first_profile["bundle"])
     store_path = Path(first_profile["store"])
@@ -918,7 +915,7 @@ def test_explicit_redeploy_replaces_the_named_deployment_source(
     assert main(arguments) == 0
     capsys.readouterr()
     second_profile = json.loads(
-        (zippergen_home / "deployments" / "hello-redeploy.json").read_text()
+        (_the_deployment(zippergen_home)).read_text()
     )
     second_bundle = Path(second_profile["bundle"])
 
@@ -935,7 +932,7 @@ def test_explicit_redeploy_replaces_the_named_deployment_source(
     ).read_text()
     workflow_path.unlink()
 
-    assert main(["deploy", "run", "hello-redeploy"]) == 0
+    assert main(["deploy", "run",]) == 0
     captured = capsys.readouterr()
     assert json.loads(captured.out) == {"result": "updated?"}
 
@@ -946,10 +943,9 @@ def test_configure_keeps_existing_secret_when_updating_public_field(tmp_path, mo
     zippergen_home = tmp_path / "zg-home"
     monkeypatch.setenv("ZIPPERGEN_HOME", str(zippergen_home))
     main([
-        "deploy", "create",
+        "deploy",
+        "--workflow",
         f"{workflow_path}:guided",
-        "--name",
-        "guided-prod",
         "--set",
         "demo_token=top-secret",
         "--yes",
@@ -960,7 +956,7 @@ def test_configure_keeps_existing_secret_when_updating_public_field(tmp_path, mo
     ])
     capsys.readouterr()
 
-    profile_path = zippergen_home / "deployments" / "guided-prod.json"
+    profile_path = _the_deployment(zippergen_home)
     legacy_profile = json.loads(profile_path.read_text())
     legacy_profile["ui"] = True
     legacy_profile["show_decisions"] = True
@@ -968,7 +964,6 @@ def test_configure_keeps_existing_secret_when_updating_public_field(tmp_path, mo
 
     rc = main([
         "deploy", "configure",
-        "guided-prod",
         "--set",
         "prefix=updated",
         "--yes",
@@ -976,8 +971,8 @@ def test_configure_keeps_existing_secret_when_updating_public_field(tmp_path, mo
     ])
 
     capsys.readouterr()
-    profile = json.loads((zippergen_home / "deployments" / "guided-prod.json").read_text())
-    secrets = json.loads((zippergen_home / "deployments" / "guided-prod.secrets.json").read_text())
+    profile = json.loads((_the_deployment(zippergen_home)).read_text())
+    secrets = json.loads((_the_deployment(zippergen_home, ".secrets.json")).read_text())
     assert rc == 0
     assert profile["options"]["prefix"] == "updated"
     assert "ui" not in profile
@@ -1000,16 +995,14 @@ def test_logs_command_tails_deployment_log(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("ZIPPERGEN_HOME", str(zippergen_home))
     _deploy_for_test([
         f"{workflow_path}:hello",
-        "--name",
-        "hello-prod",
     ])
     capsys.readouterr()
-    profile = json.loads((zippergen_home / "deployments" / "hello-prod.json").read_text())
+    profile = json.loads((_the_deployment(zippergen_home)).read_text())
     log_path = profile["log"]
     with open(log_path, "w") as f:
         f.write("first\nsecond\nthird\n")
 
-    rc = main(["deploy", "logs", "hello-prod", "--tail", "2"])
+    rc = main(["deploy", "logs", "--tail", "2"])
 
     captured = capsys.readouterr()
     assert rc == 0
@@ -1027,11 +1020,9 @@ def test_logs_command_shows_only_the_current_log_generation(
     monkeypatch.setenv("ZIPPERGEN_HOME", str(zippergen_home))
     _deploy_for_test([
         f"{workflow_path}:hello",
-        "--name",
-        "hello-prod",
     ])
     capsys.readouterr()
-    profile_path = zippergen_home / "deployments" / "hello-prod.json"
+    profile_path = _the_deployment(zippergen_home)
     profile = json.loads(profile_path.read_text())
     log_path = Path(profile["log"])
     old = b"old failure\n"
@@ -1040,7 +1031,7 @@ def test_logs_command_shows_only_the_current_log_generation(
     profile["log_generation_offset"] = len(old)
     profile_path.write_text(json.dumps(profile))
 
-    rc = main(["deploy", "logs", "hello-prod", "--tail", "80"])
+    rc = main(["deploy", "logs", "--tail", "80"])
 
     captured = capsys.readouterr()
     assert rc == 0
@@ -1054,12 +1045,10 @@ def test_doctor_reports_deployment_checks(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("ZIPPERGEN_HOME", str(zippergen_home))
     _deploy_for_test([
         f"{workflow_path}:hello",
-        "--name",
-        "hello-prod",
     ])
     capsys.readouterr()
 
-    rc = main(["deploy", "check", "hello-prod", "--json", "--no-systemd"])
+    rc = main(["deploy", "check", "--json", "--no-systemd"])
 
     captured = capsys.readouterr()
     payload = json.loads(captured.out)
@@ -1082,6 +1071,7 @@ def test_doctor_returns_failure_for_broken_profile(tmp_path, monkeypatch, capsys
     deployments.mkdir(parents=True)
     (deployments / "broken.json").write_text(json.dumps({
         "name": "broken",
+        "source_cwd": str(Path.cwd()),
         "workflow": "missing.py:hello",
         "cwd": str(tmp_path / "missing-cwd"),
         "store": str(tmp_path / "runs" / "broken.sqlite"),
@@ -1089,7 +1079,7 @@ def test_doctor_returns_failure_for_broken_profile(tmp_path, monkeypatch, capsys
         "python": str(tmp_path / "missing-python"),
     }))
 
-    rc = main(["deploy", "check", "broken", "--json", "--no-systemd"])
+    rc = main(["deploy", "check", "--json", "--no-systemd"])
 
     captured = capsys.readouterr()
     payload = json.loads(captured.out)
@@ -1097,26 +1087,6 @@ def test_doctor_returns_failure_for_broken_profile(tmp_path, monkeypatch, capsys
     assert rc == 1
     assert any(check["name"] == "working directory" for check in failures)
     assert any(check["name"] == "run script" for check in failures)
-
-
-def test_status_rejects_deployment_and_store_together(tmp_path, monkeypatch):
-    zippergen_home = tmp_path / "zg-home"
-    monkeypatch.setenv("ZIPPERGEN_HOME", str(zippergen_home))
-    (zippergen_home / "deployments").mkdir(parents=True)
-    (zippergen_home / "deployments" / "demo.json").write_text(json.dumps({
-        "name": "demo",
-        "workflow": "missing.py:demo",
-        "store": str(tmp_path / "demo.sqlite"),
-    }))
-
-    try:
-        main(["deploy", "status", "demo", "--store", str(tmp_path / "other.sqlite")])
-    except SystemExit as exc:
-        assert "either a deployment name or --store" in str(exc)
-    else:
-        raise AssertionError("status should reject ambiguous store selection")
-
-
 def test_status_command_reports_completed_run(tmp_path, monkeypatch, capsys):
     workflow_path = tmp_path / "status_workflow.py"
     workflow_path.write_text(WORKFLOW_SOURCE)

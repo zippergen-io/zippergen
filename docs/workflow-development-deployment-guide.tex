@@ -228,7 +228,14 @@ User = "approval-chat"
 
 It is an ordinary file. Edit it in an editor, or let a coding agent edit it.
 Nothing in ZipperGen owns it. \texttt{workflow\_entry} is why most commands do
-not need you to name the workflow.
+not need you to name the workflow, and
+
+\begin{lstlisting}[style=shell]
+zg config workflow workflow.py:email_approval
+\end{lstlisting}
+
+records it without editing the file. With no argument it prints the current
+one. A project with a single workflow needs no entry at all.
 
 \emph{Named configurations} exist so several participants can share one and it
 changes in one place. \texttt{configurations} says what a thing is, and
@@ -741,8 +748,8 @@ For example, a workflow that marks mail as read needs
 \subsection{Prepare, then start}
 
 \begin{lstlisting}[style=shell]
-zg deploy create --name production --no-start
-zg deploy start production
+zg deploy --no-start
+zg deploy start
 \end{lstlisting}
 
 These are deliberately separate. Preparing writes the bundle, a managed Python
@@ -753,7 +760,7 @@ every model, assistant CLI, and connector is probed first and a failure stops it
 After the first time, the deployment has a name and you use that:
 
 \begin{lstlisting}[style=shell]
-zg deploy create production   # redeploy the current source
+zg deploy                     # redeploy the current source
 \end{lstlisting}
 
 \subsection{Operating one}
@@ -761,18 +768,17 @@ zg deploy create production   # redeploy the current source
 \begin{center}
 \begin{tabularx}{0.95\linewidth}{@{}lX@{}}
 \toprule
-\texttt{zg deploy} & every deployment on this machine \\
-\texttt{zg deploy status NAME} & is it running, and where is it \\
-\texttt{zg deploy logs NAME} & what it has been doing \\
+\texttt{zg deploy status} & is it running, and where is it \\
+\texttt{zg deploy logs} & what it has been doing \\
 \texttt{zg inspect NAME} & where each participant's local program is now \\
 \texttt{zg inspect NAME --watch} & keep that position open and refresh it in place \\
 \texttt{zg trace NAME} & recent protocol events \\
 \texttt{zg tasks NAME} & decisions waiting for a person \\
 \texttt{zg approve NAME} & answer one \\
-\texttt{zg deploy check NAME} & readiness checks, in detail \\
-\texttt{zg deploy stop} / \texttt{restart NAME} & move the service \\
-\texttt{zg deploy compact NAME} & reclaim space, the service must be stopped \\
-\texttt{zg deploy remove NAME} & delete it \\
+\texttt{zg deploy check} & readiness checks, in detail \\
+\texttt{zg deploy stop} / \texttt{restart} & move the service \\
+\texttt{zg deploy compact} & reclaim space, the service must be stopped \\
+\texttt{zg deploy remove} & delete it \\
 \bottomrule
 \end{tabularx}
 \end{center}
@@ -804,8 +810,7 @@ it, so look occasionally.
   \item Supply what the machine needs: model keys in the environment, the
         Telegram token via \texttt{connector configure}, Google via
         \texttt{authorize} on your laptop and \texttt{accept} there.
-  \item \texttt{zg deploy -{}-name production -{}-no-start}, then
-        \texttt{zg deploy start production}.
+  \item \texttt{zg deploy -{}-no-start}, then \texttt{zg deploy start}.
 \end{enumerate}
 
 Nothing secret is in the repository, so step 3 is the whole difference between

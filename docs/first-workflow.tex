@@ -670,23 +670,23 @@ Preparing a deployment and starting one are separate steps, and the difference
 matters. Preparing writes files and reaches nothing:
 
 \begin{lstlisting}[style=shell]
-zg deploy create --name production --no-start
+zg deploy --no-start
 \end{lstlisting}
 
 Starting is about to make real calls, so every model, assistant CLI, and connector is probed
 first, and a failure stops it:
 
 \begin{lstlisting}[style=shell]
-zg deploy start production
-zg deploy logs production
-zg deploy status production
-zg inspect production --watch
+zg deploy start
+zg deploy logs
+zg deploy status
+zg inspect --watch
 \end{lstlisting}
 
 A deployment you no longer want:
 
 \begin{lstlisting}[style=shell]
-zg deploy remove production
+zg deploy remove
 \end{lstlisting}
 
 Its durable store is kept. That is the record of what actually ran, and it is
@@ -731,8 +731,8 @@ pip install zippergen
 zg connector configure approval-chat telegram
 zg connector assign User approval-chat
 
-zg deploy create --name production --no-start
-zg deploy start production
+zg deploy --no-start
+zg deploy start
 \end{lstlisting}
 
 The credentials did not arrive with the clone, because they were never in it.

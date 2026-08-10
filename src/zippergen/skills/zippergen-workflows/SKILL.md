@@ -36,12 +36,14 @@ So `zg validate` and `zg show --agent Writer` normally need no argument. A
 project with one workflow needs no `workflow_entry` at all — do not add one
 just to satisfy a command. Inference never writes to the manifest.
 
-Set `workflow_entry` when the project has several workflows, or when you want
-the choice recorded rather than inferred:
+Record it when the project has several workflows, or when you want the choice
+written down rather than inferred:
 
-```toml
-workflow_entry = "workflow.py:email_approval"
+```bash
+zg config workflow workflow.py:email_approval
 ```
+
+`zg config workflow` with no argument prints the current one.
 
 Treat portability separately from secrecy. What every machine shares — the
 workflow entry point, named model, assistant, and connector configurations,
@@ -358,12 +360,13 @@ zg show --detail full
 Use the guided path when deployment is explicitly authorized:
 
 ```bash
-zg deploy create --name production
+zg deploy
 ```
 
-Everything else you do to a deployment is `zg deploy VERB NAME`: `status`,
-`logs`, `check`, `restart`, `stop`, `compact`, `remove`, and
-`configure --restart`. Run `zg deploy` with no verb to list them all.
+Everything else acts on that same deployment, so you do not name it:
+`zg deploy status`, `logs`, `check`, `restart`, `stop`, `compact`, `remove`,
+and `configure --restart`. A project has one deployment; two of them means two
+project directories.
 
 Never assume permission to send live messages, modify production data,
 complete OAuth, or restart a live service merely because the user requested

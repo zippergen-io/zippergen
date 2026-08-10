@@ -343,10 +343,10 @@ model, assistant CLI, and connector, and stops if a required dependency is not
 ready:
 
 ```bash
-zg deploy create --name production --no-start   # first time: names it
-zg deploy start production
-zg deploy logs production
-zg deploy remove production          # the durable store is kept
+zg deploy --no-start          # prepare, start nothing
+zg deploy start
+zg deploy logs
+zg deploy remove              # the durable store is kept
 ```
 
 A workflow can ask a person on Telegram, read Gmail, or write to Google

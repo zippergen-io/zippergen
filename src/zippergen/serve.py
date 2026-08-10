@@ -826,6 +826,44 @@ def _print_status(status: dict[str, object]) -> None:
             )
 
 
+def _resolved_deployment_name(args) -> str:
+    """Use this project's deployment when the command line does not name one.
+
+    A project has one workflow, so it has one deployment, and there is nothing
+    to name. Each profile records the directory it was created from, so "this
+    project's deployment" is an exact question rather than a guess.
+
+    Two deployments of one project means two project directories.
+    """
+
+    from zippergen.workspace import Workspace
+
+    root = Path(getattr(args, "project", None) or Workspace().root).resolve()
+    directory = _deployments_dir()
+    matches: list[str] = []
+    for path in sorted(directory.glob("*.json")) if directory.exists() else []:
+        try:
+            profile = _load_deployment_profile(path.stem)
+        except SystemExit:
+            continue
+        source = profile.get("source_cwd")
+        if source and Path(str(source)).resolve() == root:
+            matches.append(path.stem)
+
+    if len(matches) == 1:
+        return matches[0]
+    if matches:
+        raise SystemExit(
+            "This project has several deployments: "
+            + ", ".join(matches)
+            + ". A project should have one; remove the others from "
+            "ZIPPERGEN_HOME/deployments."
+        )
+    raise SystemExit(
+        "This project has no deployment yet. Create one with 'zippergen deploy'."
+    )
+
+
 def _resolved_workflow_spec(args) -> str:
     """Use the project's workflow when the command line does not name one.
 
@@ -1086,6 +1124,36 @@ def _validate_command(args) -> int:
         for check in result["checks"]:  # type: ignore[union-attr]
             print(f"{str(check['status']).upper():4} {check['name']}: {check['detail']}")
     return 0 if result["valid"] else 1
+
+
+def _select_workflow_command(args) -> int:
+    """Record which workflow this project is about.
+
+    Until now the only way to set `workflow_entry` was to edit
+    `zippergen.toml` by hand: `select_workflow` existed in the workspace but
+    nothing in the CLI called it.
+    """
+
+    from zippergen.workspace import Workspace, WorkspaceError
+
+    workspace = Workspace(getattr(args, "project", None))
+    if not args.spec:
+        entry = workspace.workflow_entry
+        if entry:
+            print(entry)
+            return 0
+        print(
+            "No workflow is recorded. Commands infer it while the project has "
+            "exactly one. Record it with 'zippergen config workflow SPEC'."
+        )
+        return 0
+
+    try:
+        selected = workspace.select_workflow(str(args.spec), replace=True)
+    except WorkspaceError as exc:
+        raise SystemExit(str(exc)) from exc
+    print(f"Project workflow: {selected}")
+    return 0
 
 
 def _configuration_command(args) -> int:
@@ -2762,78 +2830,27 @@ def _finalize_guided_deployment(
 
     print(f"Deployment: {name}")
     if not getattr(args, "concise", False):
-        print(f"Status: zippergen deploy status {name}")
-        print(f"Logs: zippergen deploy logs {name} --follow")
-        print(f"Restart: zippergen deploy restart {name}")
-    return 0
-
-
-def _deployment_overview_command(args) -> int:
-    """Show every deployment. `zg deploy` with no action, like `zg model`."""
-
-    from zippergen.rendering import TerminalRenderer
-
-    directory = _deployments_dir()
-    profiles = sorted(directory.glob("*.json")) if directory.exists() else []
-    if not profiles:
-        print("No deployments yet. Create one with 'zippergen deploy create'.")
-        return 0
-
-    rows: list[tuple[object, ...]] = []
-    for path in profiles:
-        try:
-            profile = _load_deployment_profile(path.stem)
-        except SystemExit:
-            rows.append((path.stem, "unreadable", "-", "-"))
-            continue
-        store = Path(str(profile.get("store") or ""))
-        rows.append((
-            path.stem,
-            str(profile.get("source_workflow") or profile.get("workflow") or "-"),
-            str(profile.get("llm") or "-"),
-            "present" if store.exists() else "not created",
-        ))
-    TerminalRenderer().columns(
-        "Deployments",
-        ("Name", "Workflow", "Model", "Store"),
-        rows,
-    )
-    print()
-    print("Act on one with: zippergen deploy start|stop|logs|check NAME")
+        print("Status: zippergen deploy status")
+        print("Logs: zippergen deploy logs --follow")
+        print("Restart: zippergen deploy restart")
     return 0
 
 
 def _deploy_command(args) -> int:
-    if not args.target:
-        args.target = _resolved_workflow_spec(args)
-    existing_path = _deployment_profile_path(args.target)
-    if existing_path.exists() and not _looks_like_path(args.target) and ":" not in args.target:
-        profile, workflow, module, spec = _deployment_context(args.target, source=True)
-        if args.name and _slug(args.name) != str(profile["name"]):
-            raise SystemExit("--name cannot rename an existing deployment.")
+    # The workflow comes from the project; --name only ever names the
+    # deployment. There is no third thing a bare word could mean, which is why
+    # this no longer has to guess what the user typed.
+    args.target = args.workflow or _resolved_workflow_spec(args)
+    try:
+        existing = _resolved_deployment_name(args)
+    except SystemExit:
+        existing = None
+    if existing:
+        # Redeploying: keep the deployment this project already has.
+        args.name = existing
+        profile, workflow, module, spec = _deployment_context(existing, source=True)
     else:
-        # A bare word that is neither a workflow nor a known deployment is
-        # almost always a deployment name typed before it existed.
-        if (
-            not _looks_like_path(args.target)
-            and ":" not in args.target
-            and not args.target.isidentifier()
-        ) or (
-            not _looks_like_path(args.target)
-            and ":" not in args.target
-            and not Path(f"{args.target}.py").exists()
-            and args.target not in sys.modules
-        ):
-            known = sorted(
-                path.stem for path in _deployments_dir().glob("*.json")
-            ) if _deployments_dir().exists() else []
-            raise SystemExit(
-                f"There is no deployment named {args.target!r}, and it is not "
-                "a workflow spec. To create it, name the workflow and pass "
-                f"--name {args.target}. "
-                + (f"Existing deployments: {', '.join(known)}." if known
-                   else "No deployments exist yet.")
-            )
+        args.name = None
         workflow, module = load_workflow_spec(args.target)
         spec = deployment_spec_from_module(module)
         name = _slug(args.name or spec.name or _deployment_name_from_workflow(args.target, workflow))
@@ -3606,7 +3623,12 @@ def _parse_cli_args(
         "config",
         help="show or check the effective project configuration",
     )
-    config.add_argument("config_action", nargs="?", choices=("check",))
+    config.add_argument("config_action", nargs="?", choices=("check", "workflow"))
+    config.add_argument(
+        "spec",
+        nargs="?",
+        help="With 'workflow': the workflow to select, as path.py:name.",
+    )
     config.add_argument(
         "--live",
         action="store_true",
@@ -4048,62 +4070,46 @@ def _parse_cli_args(
     # see everything, then one verb per thing you can do to a deployment.
     deploy = sub.add_parser(
         "deploy",
-        help="show and manage deployments",
+        help="deploy this project, and manage what is deployed",
         description=(
-            "One pattern: create a deployment, then act on it by name. "
-            "Run without an action to show every deployment."
+            "Run bare to configure, validate and start this project's "
+            "deployment. The verbs act on that same deployment, so you do not "
+            "normally type its name."
         ),
     )
+    deploy.add_argument(
+        "--workflow",
+        help="Workflow spec. Defaults to this project's workflow.",
+    )
+    _add_guided_deployment_arguments(deploy)
+    deploy.add_argument("--no-bundle", action="store_true", help="Run from source instead of snapshotting declared files.")
+    deploy.add_argument("--no-start", action="store_true", help="Configure the deployment without starting its service.")
     deploy_sub = deploy.add_subparsers(dest="deploy_action")
-
-    deploy_create = deploy_sub.add_parser(
-        "create",
-        help="configure, validate, and start a workflow deployment",
-    )
-    deploy_create.add_argument(
-        "target",
-        nargs="?",
-        help=(
-            "Workflow spec, or the name of a deployment that already exists. "
-            "Defaults to this project's workflow; name a new deployment with "
-            "--name."
-        ),
-    )
-    deploy_create.add_argument("--name", help="Deployment name; defaults to the workflow declaration or workflow name.")
-    _add_guided_deployment_arguments(deploy_create)
-    deploy_create.add_argument("--no-bundle", action="store_true", help="Run from source instead of snapshotting declared files.")
-    deploy_create.add_argument("--no-start", action="store_true", help="Configure the deployment without starting its service.")
 
     deploy_configure = deploy_sub.add_parser(
         "configure",
         help="update a deployment's persistent configuration",
     )
-    deploy_configure.add_argument("name", help="Deployment name.")
     _add_guided_deployment_arguments(deploy_configure, configure=True)
     deploy_configure.add_argument("--restart", action="store_true", help="Restart the service after configuration succeeds.")
     deploy_configure.set_defaults(no_start=True, no_bundle=True, no_install=True, no_setup=True)
 
     deploy_run = deploy_sub.add_parser("run")
-    deploy_run.add_argument("name", help="Deployment name.")
-
+    
     deploy_start = deploy_sub.add_parser("start", help="start a deployment as a supervised user service")
-    deploy_start.add_argument("name", help="Deployment name.")
     deploy_start.add_argument("--enable", action="store_true", help="Enable the service to start automatically for this user.")
     deploy_start.add_argument("--dry-run", action="store_true", help="Print service-manager commands without running them.")
 
     deploy_stop = deploy_sub.add_parser("stop", help="stop a supervised deployment")
-    deploy_stop.add_argument("name", help="Deployment name.")
     deploy_stop.add_argument("--dry-run", action="store_true", help="Print the service-manager command without running it.")
 
     deploy_restart = deploy_sub.add_parser("restart", help="restart a supervised deployment")
-    deploy_restart.add_argument("name", help="Deployment name.")
     deploy_restart.add_argument("--dry-run", action="store_true", help="Print service-manager commands without running them.")
 
     deploy_remove = deploy_sub.add_parser(
         "remove",
         help="delete a deployment, keeping its durable store unless purged",
     )
-    deploy_remove.add_argument("name", help="Deployment name.")
     deploy_remove.add_argument("--purge", action="store_true", help="Delete the durable store and log too, leaving nothing.")
     deploy_remove.add_argument("--yes", action="store_true", help="Do not ask for confirmation.")
 
@@ -4111,17 +4117,14 @@ def _parse_cli_args(
         "compact",
         help="reclaim space in a stopped deployment's store and logs",
     )
-    deploy_compact.add_argument("name", help="Deployment name.")
     deploy_compact.add_argument("--keep-archives", type=int, default=3, help="How many rotated log archives to retain. Default 3.")
 
     deploy_logs = deploy_sub.add_parser("logs", help="show logs for a deployment")
-    deploy_logs.add_argument("name", help="Deployment name.")
     deploy_logs.add_argument("--tail", type=int, default=80, help="Number of log lines to show.")
     deploy_logs.add_argument("--follow", action="store_true", help="Keep watching the log file.")
     deploy_logs.add_argument("--interval", type=float, default=1.0, help="Polling interval in seconds for --follow.")
 
     deploy_check = deploy_sub.add_parser("check", help="check a deployment for common problems")
-    deploy_check.add_argument("name", help="Deployment name.")
     deploy_check.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     deploy_check.add_argument(
         "--no-service-check",
@@ -4132,7 +4135,6 @@ def _parse_cli_args(
     )
 
     deploy_status = deploy_sub.add_parser("status", help="show durable store status for a deployment")
-    deploy_status.add_argument("deployment", nargs="?", help="Deployment name.")
     deploy_status.add_argument("--store", help="SQLite store path.")
     deploy_status.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
 
@@ -4237,6 +4239,8 @@ def main(argv=None) -> int:
     if args.cmd == "config":
         if args.live and args.config_action != "check":
             raise SystemExit("--live requires 'config check'.")
+        if args.config_action == "workflow":
+            return _select_workflow_command(args)
         return _configuration_command(args)
     if args.cmd == "model":
         return _model_command(args)
@@ -4315,9 +4319,16 @@ def main(argv=None) -> int:
     if args.cmd == "deploy":
         action = getattr(args, "deploy_action", None)
         if action is None:
-            return _deployment_overview_command(args)
-        if action == "create":
             return _deploy_command(args)
+        # Every verb acts on this project's deployment unless told otherwise.
+        # `status` reads `deployment`, the rest read `name`; resolve once and
+        # set both so one rule covers the family.
+        if not (action == "status" and getattr(args, "store", None)):
+            resolved = _resolved_deployment_name(args)
+            args.name = resolved
+            # `status` reads `deployment`; it no longer takes one as an
+            # argument, so the attribute has to be created, not updated.
+            args.deployment = resolved
         if action == "configure":
             return _configure_deployment_command(args)
         if action == "run":

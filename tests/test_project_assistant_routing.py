@@ -13,6 +13,16 @@ from zippergen.serve import main
 from zippergen.workspace import Workspace
 
 
+
+def _one_deployment(home, suffix=".json"):
+    """The project's one deployment, whatever name was derived for it."""
+
+    found = sorted((home / "deployments").glob(f"*{suffix}"))
+    if suffix == ".json":
+        found = [p for p in found if not p.name.endswith(".secrets.json")]
+    assert len(found) == 1, f"expected one {suffix} deployment file, got {found}"
+    return found[0]
+
 ASSISTANT_WORKFLOW = '''
 from zippergen import Lifeline, assistant, workflow
 
@@ -294,9 +304,7 @@ def test_durable_run_and_deployment_snapshot_project_assistant_routes(
     assert captured[-1] == ("codex", {"Reviewer": "claude"})
 
     assert main([
-        "deploy", "create",
-        "--name",
-        "assistant-prod",
+        "deploy",
         "--input",
         "request=change",
         "--no-start",
@@ -308,7 +316,7 @@ def test_durable_run_and_deployment_snapshot_project_assistant_routes(
     ]) == 0
     capsys.readouterr()
     profile = json.loads(
-        (home / "deployments" / "assistant-prod.json").read_text()
+        _one_deployment(home).read_text()
     )
     assert profile["assistant"] == "codex"
     assert profile["assistants"] == {"Reviewer": "claude"}
