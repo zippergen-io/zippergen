@@ -150,9 +150,9 @@ need a person.
   \draw[zgflow] (draft) -- (ask);
   \draw[zgflow] (ask) -- (send);
   \draw[zgflow] (ask) -- (drop);
-  \draw[zgflow] (send.east) .. controls +(right:8mm) and +(up:12mm) ..
-    node[right,font=\scriptsize,pos=0.35]{next message} (msg.north);
-  \draw[zgflow] (drop.east) .. controls +(right:8mm) and +(down:12mm) .. (msg.south);
+  \draw[zgflow] (send.west) .. controls +(left:12mm) and +(up:12mm) ..
+    node[above,font=\scriptsize,pos=0.5]{next message} (msg.north);
+  \draw[zgflow] (drop.west) .. controls +(left:12mm) and +(down:12mm) .. (msg.south);
 \end{tikzpicture}
 \end{center}
 
