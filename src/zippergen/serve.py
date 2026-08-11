@@ -20,6 +20,7 @@ import shlex
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from collections.abc import Mapping
@@ -125,6 +126,23 @@ from zippergen.store import (
     mark_human_task_token_used,
     open_store,
 )
+
+
+@contextmanager
+def _temporary_environment(values: Mapping[str, str]):
+    """Apply private runtime values for one foreground command."""
+
+    previous = {name: os.environ.get(name) for name in values}
+    os.environ.update({name: str(value) for name, value in values.items()})
+    try:
+        yield
+    finally:
+        for name, value in previous.items():
+            if value is None:
+                os.environ.pop(name, None)
+            else:
+                os.environ[name] = value
+
 
 def _parse_inputs(pairs: list[str]) -> dict:
     out: dict = {}
@@ -507,7 +525,7 @@ def _resolve_store_arg(args) -> str:
 
     from zippergen.workspace import Workspace
 
-    if getattr(args, "deployment", False):
+    if getattr(args, "execution_owner", "run") == "deploy":
         profile = _load_deployment_profile(_resolved_deployment_name(args))
         return str(profile["store"])
     workspace = Workspace(getattr(args, "project", None))
@@ -515,7 +533,7 @@ def _resolve_store_arg(args) -> str:
     if record is None:
         raise SystemExit(
             "There is no current durable run. Start one with "
-            "'zippergen run --durable', or use --deployment."
+            "'zippergen run --durable'."
         )
     return str(record["store"])
 
@@ -696,14 +714,14 @@ def _notify_stdout_task(task: dict, *, store_path: str) -> None:
         print(prefill)
     if token:
         print("\nApprove:")
-        print(f"  zippergen approve --deployment --token {token}")
+        print(f"  zippergen deploy approve --token {token}")
         if spec.get("output_type") == "bool":
             print("Decline:")
-            print(f"  zippergen approve --deployment --token {token} --no")
+            print(f"  zippergen deploy approve --token {token} --no")
         else:
             print("Respond:")
             print(
-                "  zippergen approve --deployment "
+                "  zippergen deploy approve "
                 f"--token {token} --value '<value>'"
             )
 
@@ -795,7 +813,38 @@ def _resolved_workflow_spec(args) -> str:
     return str(workspace.absolute_spec(resolved))
 
 
+def _guard_foreground_run(args) -> None:
+    """Make a concurrently running deployment visible before external work."""
+
+    from zippergen.deployment_platform import deployment_service_status
+
+    try:
+        name = _resolved_deployment_name(args)
+    except SystemExit:
+        return
+    service = deployment_service_status(name)
+    if service.get("state") not in {"running", "restarting"}:
+        return
+    warning = (
+        "This project's deployment is already running. A foreground run may "
+        "compete with it for Telegram updates, mailbox files, or other "
+        "external resources. Stop it with 'zippergen deploy stop' first."
+    )
+    if getattr(args, "yes", False):
+        print(f"WARNING: {warning}", file=sys.stderr)
+        return
+    if not sys.stdin.isatty():
+        raise SystemExit(warning + " Re-run with --yes only if this is intentional.")
+    answer = input(f"{warning}\nContinue anyway? [y/N]: ").strip().casefold()
+    if answer not in {"y", "yes"}:
+        raise SystemExit("Run cancelled; the deployment was not changed.")
+
+
 def _run_workflow_command(args) -> int:
+    # The hidden service entry point owns the deployment being reported as
+    # running. Only a public foreground run can compete with that service.
+    if not getattr(args, "store", None):
+        _guard_foreground_run(args)
     args.workflow = _resolved_workflow_spec(args)
     wf, module = load_workflow_spec(args.workflow)
     from zippergen.durable_runs import default_llm_spec
@@ -850,10 +899,55 @@ def _run_workflow_command(args) -> int:
         module=module,
     )
 
-    # A public plain run is always disposable. Deployment execution supplies
-    # its private SQLite store through the internal profile namespace.
+    from zippergen.connector_wiring import (
+        ConnectorWiringError,
+        connector_runtime,
+        human_connector_factory,
+    )
+
+    canonical = workspace.canonical_spec(args.workflow, cwd=workspace.root)
+    internal_store = getattr(args, "store", None)
+    try:
+        if internal_store:
+            connector_snapshot, connector_environment = {}, {}
+        else:
+            connector_snapshot, connector_environment = connector_runtime(
+                workspace, canonical, wf, module
+            )
+    except ConnectorWiringError as exc:
+        raise SystemExit(str(exc)) from exc
+    if connector_snapshot:
+        connector_environment["ZIPPERGEN_CONNECTORS_JSON"] = json.dumps(
+            connector_snapshot
+        )
+    runtime_environment = workspace.development_provider_environment(
+        selected_llm_specs(selected_llm, llms)
+    )
+    runtime_environment.update(connector_environment)
+    connector_factory = human_connector_factory(
+        connector_snapshot, connector_environment
+    )
+
+    # A public plain run remains disposable. A configured asynchronous human
+    # connector needs SQLite coordination while the process is alive, so use
+    # a private temporary store without turning the run into resumable state.
     execution = str(getattr(args, "execution", None) or "memory")
-    store_path = getattr(args, "store", None)
+    store_path = internal_store
+    connector_thread = None
+    connector_stop = None
+    temporary_root = None
+    if connector_factory is not None:
+        temporary_root = Path(tempfile.mkdtemp(prefix="zippergen-run-"))
+        store_path = str(temporary_root / "run.sqlite")
+        execution = "sqlite"
+        connector = connector_factory(store_path)
+        connector_stop = threading.Event()
+        connector_thread = threading.Thread(
+            target=connector.run_forever,
+            kwargs={"poll_timeout": 2.0, "stop_event": connector_stop},
+            name="connector-human",
+            daemon=True,
+        )
 
     config = RunConfig(
         workflow_spec=args.workflow,
@@ -871,8 +965,6 @@ def _run_workflow_command(args) -> int:
         timeout=args.timeout,
         execution=execution,
     )
-    _call_setup_hook(module, config)
-
     configure_kwargs = {
         "timeout": args.timeout,
         "llm_idle_timeout": args.llm_idle_timeout,
@@ -881,6 +973,10 @@ def _run_workflow_command(args) -> int:
         "store_path": store_path,
         "assistant_root": str(Path.cwd()),
     }
+    if connector_factory is not None:
+        from zippergen.human_backends import make_sqlite_human_backend
+
+        configure_kwargs["human_backend"] = make_sqlite_human_backend()
     from zippergen.assistant_backends import make_cli_assistant_backend
 
     configure_kwargs["assistant_backend"] = (
@@ -895,15 +991,30 @@ def _run_workflow_command(args) -> int:
             project_root=Path.cwd(),
         )
     )
-    if llms:
-        wf.configure(
-            effective_llm_routes(wf, selected_llm, llms),
-            **configure_kwargs,
-        )
-    else:
-        wf.configure(selected_llm, **configure_kwargs)
-
-    result = wf(**inputs)
+    try:
+        with _temporary_environment(runtime_environment):
+            _call_setup_hook(module, config)
+            if llms:
+                wf.configure(
+                    effective_llm_routes(wf, selected_llm, llms),
+                    **configure_kwargs,
+                )
+            else:
+                wf.configure(selected_llm, **configure_kwargs)
+            if connector_thread is not None:
+                connector_thread.start()
+                print("External human connector started for this run.")
+            result = wf(**inputs)
+    finally:
+        if connector_stop is not None:
+            connector_stop.set()
+        if connector_thread is not None:
+            connector_thread.join(timeout=15)
+        if (
+            temporary_root is not None
+            and (connector_thread is None or not connector_thread.is_alive())
+        ):
+            shutil.rmtree(temporary_root, ignore_errors=True)
     print(json.dumps({"result": result}, default=str))
     return 0
 
@@ -917,13 +1028,46 @@ def _durable_run_command(args) -> int:
     for.
     """
 
-    from zippergen.durable_runs import run_durable
-    from zippergen.workspace import Workspace
+    _guard_foreground_run(args)
 
+    from zippergen.connector_wiring import (
+        ConnectorWiringError,
+        connector_environment_from_snapshot,
+        connector_runtime,
+        human_connector_factory,
+    )
+    from zippergen.durable_runs import run_durable
+    from zippergen.workspace import Workspace, WorkspaceError
+
+    workspace = Workspace(getattr(args, "project", None))
     inputs = _parse_input_json(args.input_json)
     inputs.update(_parse_inputs(args.input))
+    try:
+        if args.resume:
+            record = workspace.current_run()
+            if record is None:
+                snapshot: dict[str, object] = {}
+            else:
+                snapshot = dict(record.get("connectors") or {})
+            connector_environment = connector_environment_from_snapshot(
+                workspace, snapshot
+            )
+        else:
+            selected = workspace.resolve_workflow(args.workflow)
+            workflow, module = load_workflow_spec(
+                str(workspace.absolute_spec(selected))
+            )
+            snapshot, connector_environment = connector_runtime(
+                workspace, selected, workflow, module
+            )
+    except (ConnectorWiringError, WorkspaceError) as exc:
+        raise SystemExit(str(exc)) from exc
+    if snapshot:
+        connector_environment["ZIPPERGEN_CONNECTORS_JSON"] = json.dumps(
+            snapshot
+        )
     run_durable(
-        Workspace(getattr(args, "project", None)),
+        workspace,
         workflow_spec=args.workflow,
         resume=args.resume,
         provided_inputs=inputs,
@@ -942,6 +1086,11 @@ def _durable_run_command(args) -> int:
         interactive=not args.yes and sys.stdin.isatty(),
         input_func=input,
         output_func=print,
+        human_connector_factory=human_connector_factory(
+            snapshot, connector_environment
+        ),
+        connector_environment=connector_environment,
+        connector_snapshot=snapshot if not args.resume else None,
     )
     return 0
 
@@ -1055,14 +1204,19 @@ def _configuration_command(args) -> int:
     try:
         report = configuration_report(
             Workspace(getattr(args, "project", None)),
-            live=bool(getattr(args, "live", False)),
+            live=check,
+            include_site_checks=check,
         )
     except WorkspaceError as exc:
         raise SystemExit(str(exc)) from exc
     if getattr(args, "json", False):
         print(json.dumps(report, indent=2, default=str))
     else:
-        render_configuration(report, TerminalRenderer())
+        render_configuration(
+            report,
+            TerminalRenderer(),
+            show_checks=check,
+        )
     return 1 if check and not report["valid"] else 0
 
 
@@ -1240,12 +1394,17 @@ def _model_command(args) -> int:
                 )
         report = configuration_report(
             workspace,
-            live=bool(action == "check" and args.live),
+            live=action == "check",
+            include_site_checks=action == "check",
             model_names=(args.name,) if action == "check" and args.name else (),
         )
     except WorkspaceError as exc:
         raise SystemExit(str(exc)) from exc
-    render_model_configuration(report, TerminalRenderer())
+    render_model_configuration(
+        report,
+        TerminalRenderer(),
+        show_checks=action == "check",
+    )
     return (
         1
         if action == "check" and not configuration_scope_valid(report, "model")
@@ -1341,6 +1500,7 @@ def _assistant_command(args) -> int:
                 )
         report = configuration_report(
             workspace,
+            include_site_checks=action == "check",
             assistant_names=(
                 (args.name,)
                 if action == "check" and args.name
@@ -1349,7 +1509,11 @@ def _assistant_command(args) -> int:
         )
     except WorkspaceError as exc:
         raise SystemExit(str(exc)) from exc
-    render_assistant_configuration(report, TerminalRenderer())
+    render_assistant_configuration(
+        report,
+        TerminalRenderer(),
+        show_checks=action == "check",
+    )
     return (
         1
         if action == "check"
@@ -1437,14 +1601,19 @@ def _connector_management_command(args) -> int:
                 )
         report = configuration_report(
             workspace,
-            live=bool(action == "check" and args.live),
+            live=action == "check",
+            include_site_checks=action == "check",
             connector_names=(args.name,)
             if action == "check" and args.name
             else (),
         )
     except WorkspaceError as exc:
         raise SystemExit(str(exc)) from exc
-    render_connector_configuration(report, TerminalRenderer())
+    render_connector_configuration(
+        report,
+        TerminalRenderer(),
+        show_checks=action == "check",
+    )
     return (
         1
         if action == "check"
@@ -2059,6 +2228,10 @@ def _collect_deployment_fields(
             path = Path(str(value)).expanduser()
             if not path.exists():
                 raise SystemExit(f"Deployment field {field.name!r} points to a missing path: {path}")
+            # Deployment services run from immutable source bundles. Preserve
+            # the external resource the user selected rather than re-resolving
+            # a relative path inside the bundle at service start.
+            values[field.name] = str(path.resolve())
 
     options: dict[str, object] = _profile_mapping(profile, "options")
     inputs: dict[str, object] = _profile_mapping(profile, "inputs")
@@ -2385,67 +2558,29 @@ def _start_deployment_connector_workers(
     raw = profile.get("connectors") or {}
     if not isinstance(raw, dict):
         return ()
-    human_routes = [
-        value
+    from zippergen.connector_wiring import human_connector_factory
+
+    factory = human_connector_factory(raw, os.environ)
+    if factory is None:
+        return ()
+    connector = factory(str(profile["store"]))
+    thread = threading.Thread(
+        target=connector.run_forever,
+        name="connector-telegram",
+        daemon=True,
+    )
+    thread.start()
+    targets = sorted(
+        str(value.get("target"))
         for value in raw.values()
         if isinstance(value, dict) and value.get("type") == "human"
-    ]
-    telegram_routes = [
-        value for value in human_routes
-        if value.get("kind") == "telegram"
-    ]
-    if not telegram_routes:
-        return ()
-
-    grouped: dict[str, list[dict[str, object]]] = {}
-    for route in telegram_routes:
-        token_env = str(route.get("token_env") or "")
-        if token_env:
-            grouped.setdefault(token_env, []).append(route)
-
-    threads: list[threading.Thread] = []
-    for token_env, records in grouped.items():
-        token = os.environ.get(token_env, "")
-        if not token:
-            raise SystemExit(
-                f"Telegram connector credential is missing: {token_env}."
-            )
-        routes: dict[str, dict[str, object]] = {}
-        assignments: dict[str, str] = {}
-        for route in records:
-            configuration = str(route.get("configuration") or "")
-            target = str(route.get("target") or "")
-            if not configuration or not target:
-                continue
-            routes[configuration] = route
-            assignments[target] = configuration
-        if not routes:
-            continue
-        from zippergen.telegram_notify import (
-            TelegramBotClient,
-            TelegramDeploymentNotifier,
-        )
-
-        notifier = TelegramDeploymentNotifier(
-            store_path=str(profile["store"]),
-            client=TelegramBotClient(token),
-            routes=routes,
-            assignments=assignments,
-        )
-        thread = threading.Thread(
-            target=notifier.run_forever,
-            name=f"connector-telegram-{len(threads) + 1}",
-            daemon=True,
-        )
-        thread.start()
-        threads.append(thread)
-        print(
-            "Telegram connector started for "
-            + ", ".join(sorted(assignments)),
-            file=sys.stderr,
-            flush=True,
-        )
-    return tuple(threads)
+    )
+    print(
+        "Telegram connector started for " + ", ".join(targets),
+        file=sys.stderr,
+        flush=True,
+    )
+    return (thread,)
 
 
 def _status_command(args) -> int:
@@ -2454,6 +2589,37 @@ def _status_command(args) -> int:
     if args.json:
         print(json.dumps(status, default=str))
     else:
+        _print_status(status)
+    return 0
+
+
+def _run_status_command(args) -> int:
+    """Show the selected durable run and the state it owns."""
+
+    from zippergen.workspace import Workspace
+
+    record = Workspace(getattr(args, "project", None)).current_run()
+    if record is None:
+        if args.json:
+            print(json.dumps({"run": None, "state": "absent"}))
+        else:
+            print("Current durable run: none")
+            print("Start one with: zippergen run --durable")
+        return 0
+    status = _store_status(str(record["store"]))
+    payload = {
+        "run": record.get("run_id"),
+        "workflow": record.get("workflow_spec"),
+        "run_status": record.get("status"),
+        "updated_at": record.get("updated_at"),
+        "durable_state": status,
+    }
+    if args.json:
+        print(json.dumps(payload, default=str))
+    else:
+        print(f"Run: {payload['run']}")
+        print(f"Status: {payload['run_status']}")
+        print(f"Workflow: {payload['workflow']}")
         _print_status(status)
     return 0
 
@@ -2478,7 +2644,7 @@ def _inspection_context(args) -> tuple[Workflow, str, str]:
 
     from zippergen.workspace import Workspace, WorkspaceError
 
-    if args.deployment:
+    if getattr(args, "execution_owner", "run") == "deploy":
         profile = _load_deployment_profile(_resolved_deployment_name(args))
         workflow_spec = str(profile["workflow"])
         cwd = Path(str(profile.get("cwd") or ".")).expanduser()
@@ -2495,7 +2661,7 @@ def _inspection_context(args) -> tuple[Workflow, str, str]:
     if record is None:
         raise SystemExit(
             "There is no current durable run. Start one with "
-            "'zippergen run --durable', or use --deployment."
+            "'zippergen run --durable'."
         )
     workflow_spec = str(record["workflow_spec"])
     workflow, _module = load_workflow_spec(
@@ -2871,6 +3037,66 @@ def _add_guided_deployment_arguments(
     parser.add_argument("--no-doctor", action="store_true", help=argparse.SUPPRESS)
 
 
+def _add_owned_execution_commands(subparsers, *, owner: str) -> None:
+    """Register observation commands under the run or deployment that owns state."""
+
+    inspect_parser = subparsers.add_parser(
+        "inspect",
+        help="show the current durable program position",
+    )
+    inspect_parser.set_defaults(execution_owner=owner)
+    inspect_parser.add_argument("--project", help="Project root.")
+    inspect_parser.add_argument("--agent", help="Participant whose local projection to show.")
+    inspect_parser.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    inspect_parser.add_argument(
+        "--watch",
+        action="store_true",
+        help="Refresh the inspection in place until Ctrl-C.",
+    )
+    inspect_parser.add_argument(
+        "--interval",
+        type=float,
+        help="Refresh interval in seconds for --watch. Default 1.",
+    )
+
+    trace_parser = subparsers.add_parser(
+        "trace",
+        help="show recent events from this execution",
+    )
+    trace_parser.set_defaults(execution_owner=owner)
+    trace_parser.add_argument("--project", help="Project root.")
+    trace_parser.add_argument("--tail", type=int, default=50, help="Maximum number of trace events to show.")
+    trace_parser.add_argument("--after", type=int, default=0, help="Only show trace events after this event rowid.")
+    trace_parser.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+
+    tasks_parser = subparsers.add_parser(
+        "tasks",
+        help="list human tasks in this execution",
+    )
+    tasks_parser.set_defaults(execution_owner=owner)
+    tasks_parser.add_argument("--project", help="Project root.")
+    tasks_parser.add_argument("--all", action="store_true", help="Include completed tasks.")
+    tasks_parser.add_argument("--limit", type=int, help="Maximum number of tasks to show.")
+    tasks_parser.add_argument("--tokens", action="store_true", help="Generate/show durable approval tokens.")
+    tasks_parser.add_argument("--channel", default="cli", help="Token channel name used with --tokens.")
+    tasks_parser.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+
+    approve_parser = subparsers.add_parser(
+        "approve",
+        help="complete a pending human task in this execution",
+    )
+    approve_parser.set_defaults(execution_owner=owner)
+    approve_parser.add_argument("--project", help="Project root.")
+    target = approve_parser.add_mutually_exclusive_group(required=True)
+    target.add_argument("--task", help="Human task id.")
+    target.add_argument("--token", help="Durable approval token.")
+    approve_parser.add_argument("--yes", action="store_true", help="Complete a boolean task with true.")
+    approve_parser.add_argument("--no", action="store_true", help="Complete a boolean task with false.")
+    approve_parser.add_argument("--value", help="Value for string tasks, or explicit true/false for boolean tasks.")
+    approve_parser.add_argument("--result-json", help="Complete with an explicit JSON object result.")
+    approve_parser.add_argument("--json", action="store_true", help="Print the completed task as JSON.")
+
+
 def _connector_authorize_google_command(args) -> int:
     """Authorize Google on the computer that owns the browser."""
 
@@ -2963,12 +3189,7 @@ def _parse_cli_args(
     config_sub = config.add_subparsers(dest="config_action")
     config_check = config_sub.add_parser(
         "check",
-        help="verify all effective project configuration",
-    )
-    config_check.add_argument(
-        "--live",
-        action="store_true",
-        help="Contact configured providers.",
+        help="verify readiness by contacting configured providers",
     )
     config_check.add_argument("--json", action="store_true", help="Print JSON.")
     config_check.add_argument("--project", help="Project root.")
@@ -3032,10 +3253,9 @@ def _parse_cli_args(
     model_unassign.add_argument("--project", help="Project root.")
     model_check = model_sub.add_parser(
         "check",
-        help="check model configuration and credentials",
+        help="check model readiness with a small provider request",
     )
     model_check.add_argument("name", nargs="?")
-    model_check.add_argument("--live", action="store_true", help="Contact providers.")
     model_check.add_argument("--project", help="Project root.")
     model_remove = model_sub.add_parser("remove", help="remove an unused configuration")
     model_remove.add_argument("name", nargs="?")
@@ -3221,10 +3441,9 @@ def _parse_cli_args(
 
     connector_check = connector_sub.add_parser(
         "check",
-        help="check connector configuration and credentials",
+        help="check connector readiness by contacting providers",
     )
     connector_check.add_argument("name", nargs="?")
-    connector_check.add_argument("--live", action="store_true", help="Contact providers.")
     connector_check.add_argument("--project", help="Project root.")
 
     connector_remove = connector_sub.add_parser(
@@ -3261,14 +3480,17 @@ def _parse_cli_args(
 
     rn = sub.add_parser(
         "run",
-        help="run a workflow; --durable records it so it can be resumed",
+        allow_abbrev=False,
+        help="run this project, and inspect a recorded run",
+        description=(
+            "Run bare for a disposable execution. --durable records a new "
+            "run and --resume continues it. The verbs inspect that recorded run."
+        ),
     )
     rn.add_argument(
-        "workflow",
-        nargs="?",
+        "--workflow",
         help=(
-            "Workflow spec: module:workflow or path.py:workflow. Optional with "
-            "--resume, which continues a recorded run."
+            "Explicit workflow spec; normally inferred from the project."
         ),
     )
     rn.add_argument("--llm", metavar="SPEC", help="LLM spec: mock, openai:gpt-4o, ollama:qwen2.5:7b, ...")
@@ -3312,7 +3534,16 @@ def _parse_cli_args(
     rn.add_argument("--input", action="append", default=[], metavar="name=value", help="Workflow input value.")
     rn.add_argument("--input-json", help="Workflow inputs as a JSON object.")
     rn.add_argument("--option", action="append", default=[], metavar="name=value", help="Option passed to zippergen_setup(config).")
-    rn.add_argument("--timeout", type=float, default=60.0, help="Workflow timeout in seconds; use 0 for no deadline.")
+    rn.add_argument("--timeout", type=float, default=0.0, help="Workflow timeout in seconds. Default 0 (no deadline).")
+    run_sub = rn.add_subparsers(dest="run_action")
+    run_status = run_sub.add_parser(
+        "status",
+        help="show the selected durable run and its state",
+    )
+    run_status.set_defaults(execution_owner="run")
+    run_status.add_argument("--project", help="Project root.")
+    run_status.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    _add_owned_execution_commands(run_sub, owner="run")
 
     show = sub.add_parser("show", help="render a workflow as a code-first semantic view")
     show.add_argument("workflow", nargs="?", help="Workflow spec: module:workflow or path.py:workflow. Defaults to this project's workflow.")
@@ -3402,6 +3633,7 @@ def _parse_cli_args(
     # see everything, then one verb per thing you can do to a deployment.
     deploy = sub.add_parser(
         "deploy",
+        allow_abbrev=False,
         help="deploy this project, and manage what is deployed",
         description=(
             "Run bare to configure, validate and start this project's "
@@ -3464,69 +3696,7 @@ def _parse_cli_args(
         action="store_true",
         help="Reset without asking for confirmation.",
     )
-
-    inspect_parser = sub.add_parser(
-        "inspect",
-        help="show the current durable program position for each participant",
-    )
-    inspect_parser.add_argument(
-        "--deployment",
-        action="store_true",
-        help="Inspect this project's deployment instead of its current durable run.",
-    )
-    inspect_parser.add_argument("--project", help="Project root for a durable run.")
-    inspect_parser.add_argument("--agent", help="Participant whose local projection to show.")
-    inspect_parser.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
-    inspect_parser.add_argument(
-        "--watch",
-        action="store_true",
-        help="Refresh the inspection in place until Ctrl-C.",
-    )
-    inspect_parser.add_argument(
-        "--interval",
-        type=float,
-        help="Refresh interval in seconds for --watch. Default 1.",
-    )
-
-    tr = sub.add_parser("trace", help="show recent events from owned durable state")
-    tr.add_argument(
-        "--deployment",
-        action="store_true",
-        help="Read this project's deployment store.",
-    )
-    tr.add_argument("--project", help="Project root for --deployment.")
-    tr.add_argument("--tail", type=int, default=50, help="Maximum number of trace events to show.")
-    tr.add_argument("--after", type=int, default=0, help="Only show trace events after this event rowid.")
-    tr.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
-
-    tk = sub.add_parser("tasks", help="list human tasks in owned durable state")
-    tk.add_argument(
-        "--deployment",
-        action="store_true",
-        help="Read this project's deployment instead of its current durable run.",
-    )
-    tk.add_argument("--project", help="Project root.")
-    tk.add_argument("--all", action="store_true", help="Include completed tasks.")
-    tk.add_argument("--limit", type=int, help="Maximum number of tasks to show.")
-    tk.add_argument("--tokens", action="store_true", help="Generate/show durable approval tokens.")
-    tk.add_argument("--channel", default="cli", help="Token channel name used with --tokens.")
-    tk.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
-
-    apv = sub.add_parser("approve", help="complete a pending human task")
-    apv.add_argument(
-        "--deployment",
-        action="store_true",
-        help="Use this project's deployment instead of its current durable run.",
-    )
-    apv.add_argument("--project", help="Project root.")
-    target = apv.add_mutually_exclusive_group(required=True)
-    target.add_argument("--task", help="Human task id.")
-    target.add_argument("--token", help="Durable approval token.")
-    apv.add_argument("--yes", action="store_true", help="Complete a boolean task with true.")
-    apv.add_argument("--no", action="store_true", help="Complete a boolean task with false.")
-    apv.add_argument("--value", help="Value for string tasks, or explicit true/false for boolean tasks.")
-    apv.add_argument("--result-json", help="Complete with an explicit JSON object result.")
-    apv.add_argument("--json", action="store_true", help="Print the completed task as JSON.")
+    _add_owned_execution_commands(deploy_sub, owner="deploy")
 
     internal_run = sub.add_parser("__run-deployment")
     internal_run.add_argument("--profile", required=True)
@@ -3603,6 +3773,17 @@ def main(argv=None) -> int:
     ):
         return _connector_authorize_google_command(args)
     if args.cmd == "run":
+        action = getattr(args, "run_action", None)
+        if action == "status":
+            return _run_status_command(args)
+        if action == "inspect":
+            return _inspect_command(args)
+        if action == "trace":
+            return _trace_command(args)
+        if action == "tasks":
+            return _tasks_command(args)
+        if action == "approve":
+            return _approve_command(args)
         if getattr(args, "durable", False) or getattr(args, "resume", False):
             return _durable_run_command(args)
         return _run_workflow_command(args)
@@ -3668,14 +3849,14 @@ def main(argv=None) -> int:
             return _doctor_command(args)
         if action == "status":
             return _status_command(args)
-    if args.cmd == "inspect":
-        return _inspect_command(args)
-    if args.cmd == "trace":
-        return _trace_command(args)
-    if args.cmd == "tasks":
-        return _tasks_command(args)
-    if args.cmd == "approve":
-        return _approve_command(args)
+        if action == "inspect":
+            return _inspect_command(args)
+        if action == "trace":
+            return _trace_command(args)
+        if action == "tasks":
+            return _tasks_command(args)
+        if action == "approve":
+            return _approve_command(args)
     if args.cmd == "notify" and args.adapter == "stdout":
         return _notify_stdout_command(args)
     if args.cmd == "notify" and args.adapter == "telegram":

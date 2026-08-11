@@ -457,7 +457,7 @@ def test_run_durable_and_run_resume_reach_the_same_execution(tmp_path, monkeypat
         serve, "_durable_run_command", lambda args: calls.append(vars(args)) or 0
     )
 
-    assert serve.main(["run", "wf.py:w", "--durable"]) == 0
+    assert serve.main(["run", "--workflow", "wf.py:w", "--durable"]) == 0
     assert serve.main(["run", "--resume"]) == 0
 
     assert calls[0]["durable"] is True
@@ -481,7 +481,7 @@ def test_run_does_not_expose_run_ids():
     from zippergen import serve
 
     with pytest.raises(SystemExit) as exc:
-        serve.main(["run", "wf.py:w", "--run-id", "old"])
+        serve.main(["run", "--workflow", "wf.py:w", "--run-id", "old"])
     assert exc.value.code == 2
 
 
@@ -490,6 +490,6 @@ def test_run_does_not_expose_store_or_execution_mode():
 
     with pytest.raises(SystemExit) as exc:
         serve.main(
-            ["run", "wf.py:w", "--store", "run.sqlite", "--execution", "memory"]
+            ["run", "--workflow", "wf.py:w", "--store", "run.sqlite", "--execution", "memory"]
         )
     assert exc.value.code == 2

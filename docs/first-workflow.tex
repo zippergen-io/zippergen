@@ -268,7 +268,9 @@ in the directory.
 \texttt{zg skill} prints instructions that ship inside the package, so they
 match the version you have installed. They are ordinary prose in the
 repository, not generated text. You can read them, and you can disagree with
-them.
+them. An already open Claude or Codex conversation does not refresh its context
+when ZipperGen is upgraded; start a new session, or explicitly ask it to run
+\texttt{zg skill} again.
 \end{notebox}
 
 \section{What comes out}
@@ -540,10 +542,10 @@ for the chat id or bot token in this conversation. Run:
 Tell me when that is done and I will check the configuration.
 \end{lstlisting}
 
-The agent can check the complete result with \texttt{zg config}. You can use
-\texttt{zg config check} to check local credentials too, and
-\texttt{zg config check -{}-live} when you want ZipperGen to contact the real
-providers.
+The agent can display the complete result with \texttt{zg config}, which does
+not contact providers. Use \texttt{zg config check} when you want ZipperGen to
+verify real readiness; it contacts configured providers and may send a small
+model request.
 
 That is the boundary, and it is worth being precise about it. The agent did
 everything it could and then stopped. The token is entered interactively in
@@ -643,7 +645,7 @@ Proposed reply:
 Press Ctrl-C while it waits for your approval, then:
 
 \begin{lstlisting}[style=shell]
-zg inspect --agent Writer
+zg run inspect --agent Writer
 zg run --resume
 \end{lstlisting}
 
@@ -654,7 +656,7 @@ While a durable run is active in one terminal, another terminal can keep its
 program position open and refresh it once per second:
 
 \begin{lstlisting}[style=shell]
-zg inspect --watch --agent Writer
+zg run inspect --watch --agent Writer
 \end{lstlisting}
 
 Pressing Ctrl-C in this view closes only the view. It does not interrupt the
@@ -666,22 +668,28 @@ machine reboots, the service restarts, and each time it picks up where it was ra
 
 \section{Deploy it}
 
-Preparing a deployment and starting one are separate steps, and the difference
-matters. Preparing writes files and reaches nothing:
+The ordinary deployment command prepares, checks, and starts the service. For
+this example it first asks for the mailbox directory; enter the project
+directory you used above, such as \texttt{mailbox}. ZipperGen records its
+absolute path so the service does not accidentally watch an empty directory
+inside its immutable source bundle:
 
 \begin{lstlisting}[style=shell]
-zg deploy --no-start
+zg deploy
 \end{lstlisting}
 
-Starting is about to make real calls, so every model, assistant CLI, and connector is probed
-first, and a failure stops it:
+Every model, assistant CLI, and connector is probed first, and a failure stops
+the deployment before it starts:
 
 \begin{lstlisting}[style=shell]
-zg deploy start
 zg deploy logs
 zg deploy status
-zg inspect --deployment --watch
+zg deploy inspect --watch
 \end{lstlisting}
+
+Use \texttt{zg deploy -{}-no-start} only when you deliberately want to prepare
+and review a stopped deployment before a later \texttt{zg deploy start}. It is
+not a required preliminary step.
 
 A deployment you no longer want:
 
@@ -731,8 +739,7 @@ pip install zippergen
 zg connector configure approval-chat telegram
 zg connector assign User approval-chat
 
-zg deploy --no-start
-zg deploy start
+zg deploy
 \end{lstlisting}
 
 The credentials did not arrive with the clone, because they were never in it.
@@ -740,11 +747,11 @@ The credentials did not arrive with the clone, because they were never in it.
 outside the project. That is why cloning gives the server the routing without
 giving it the secret.
 
-The last two lines are the pair from the previous section, unchanged. Starting
-probes the model and the connector first, so a token typed wrongly here fails
-now rather than in the middle of an approval. On Linux \texttt{zg deploy start}
-installs a small \texttt{systemd} user service that restarts the workflow if it
-fails. You never write that file, and \texttt{zg deploy status},
+The last command prepares, checks, and starts the deployment. It probes the
+model and connector first, so a token typed wrongly here fails now rather than
+in the middle of an approval. On Linux it installs a small \texttt{systemd}
+user service that restarts the workflow if it fails. You never write that
+file, and \texttt{zg deploy status},
 \texttt{zg deploy logs} and \texttt{zg deploy stop} manage it from here.
 
 This is the point of the loop. The workflow you built does not finish, so

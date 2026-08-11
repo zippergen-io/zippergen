@@ -1,3 +1,6 @@
+import sqlite3
+import threading
+
 from zippergen.store import (
     ensure_human_task,
     load_human_task,
@@ -6,6 +9,7 @@ from zippergen.store import (
     open_store,
 )
 from zippergen.telegram_notify import (
+    TelegramBotClient,
     TelegramDeploymentNotifier,
     TelegramNotifier,
     build_reply_markup,
@@ -42,6 +46,53 @@ class FakeTelegramClient:
             "message_id": message_id,
             "reply_markup": reply_markup,
         })
+
+
+def test_long_poll_http_timeout_has_margin_beyond_telegram_timeout(monkeypatch):
+    client = TelegramBotClient("private-token", timeout=20)
+    captured = {}
+
+    def request(method, *, request_timeout=None, **params):
+        captured.update(
+            method=method,
+            request_timeout=request_timeout,
+            params=params,
+        )
+        return {"result": []}
+
+    monkeypatch.setattr(client, "request", request)
+
+    assert client.get_updates(timeout=20) == []
+    assert captured == {
+        "method": "getUpdates",
+        "request_timeout": 30.0,
+        "params": {"timeout": 20},
+    }
+
+
+def test_notifier_identifies_store_errors_as_store_errors(
+    tmp_path, monkeypatch, capsys
+):
+    stop = threading.Event()
+    notifier = TelegramDeploymentNotifier(
+        str(tmp_path / "deployment.sqlite"),
+        FakeTelegramClient(),
+        routes={},
+        assignments={},
+    )
+
+    def fail_from_store():
+        stop.set()
+        raise sqlite3.OperationalError("disk I/O error")
+
+    monkeypatch.setattr(notifier, "send_pending_once", fail_from_store)
+
+    notifier.run_forever(interval=0, poll_timeout=0, stop_event=stop)
+
+    error = capsys.readouterr().err
+    assert "Durable store unavailable for Telegram delivery" in error
+    assert "disk I/O error" in error
+    assert "Telegram API retrying" not in error
 
 
 def _create_task(

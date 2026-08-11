@@ -59,6 +59,7 @@ def completion_candidates(
         "model-actions",
         "assistant-actions",
         "connector-actions",
+        "run-actions",
         "deploy-actions",
     }:
         return _parser_choices((kind.removesuffix("-actions"),))
@@ -161,7 +162,7 @@ _zg() {
     return
   fi
   case "$cmd:$CURRENT" in
-    config:3|workflow:3|model:3|assistant:3|connector:3|deploy:3)
+    config:3|workflow:3|model:3|assistant:3|connector:3|run:3|deploy:3)
       compadd -- ${(f)"$(zg __complete ${cmd}-actions 2>/dev/null)"}; return ;;
   esac
   case "$cmd:$action:$CURRENT" in
@@ -196,6 +197,7 @@ _zg_complete() {
   elif [[ $cmd == model && $COMP_CWORD -eq 2 ]]; then kind=model-actions
   elif [[ $cmd == assistant && $COMP_CWORD -eq 2 ]]; then kind=assistant-actions
   elif [[ $cmd == connector && $COMP_CWORD -eq 2 ]]; then kind=connector-actions
+  elif [[ $cmd == run && $COMP_CWORD -eq 2 ]]; then kind=run-actions
   elif [[ $cmd == deploy && $COMP_CWORD -eq 2 ]]; then kind=deploy-actions
   elif [[ $cmd == model && $action =~ ^(assign|unassign)$ && $COMP_CWORD -eq 3 ]]; then kind=model-targets
   elif [[ $cmd == model && $action == assign && $COMP_CWORD -eq 4 ]] || [[ $cmd == model && $action =~ ^(check|remove)$ && $COMP_CWORD -eq 3 ]]; then kind=model-configurations
@@ -215,13 +217,14 @@ complete -F _zg_complete zg zippergen'''
 
 _FISH = r'''# Install with: zg completion fish | source
 complete -c zg -c zippergen -f
-complete -c zg -c zippergen -n 'not __fish_seen_subcommand_from config workflow model assistant completion connector run show validate init skill snapshot diff deploy inspect trace tasks approve' -a '(zg __complete commands 2>/dev/null)'
+complete -c zg -c zippergen -n 'not __fish_seen_subcommand_from config workflow model assistant completion connector run show validate init skill snapshot diff deploy' -a '(zg __complete commands 2>/dev/null)'
 complete -c zg -c zippergen -n '__fish_seen_subcommand_from config; and not __fish_seen_subcommand_from check' -a '(zg __complete config-actions 2>/dev/null)'
 complete -c zg -c zippergen -n '__fish_seen_subcommand_from workflow; and not __fish_seen_subcommand_from select' -a '(zg __complete workflow-actions 2>/dev/null)'
 complete -c zg -c zippergen -n '__fish_seen_subcommand_from model; and not __fish_seen_subcommand_from configure assign unassign check remove' -a '(zg __complete model-actions 2>/dev/null)'
 complete -c zg -c zippergen -n '__fish_seen_subcommand_from assistant; and not __fish_seen_subcommand_from configure assign unassign check remove' -a '(zg __complete assistant-actions 2>/dev/null)'
 complete -c zg -c zippergen -n '__fish_seen_subcommand_from connector; and not __fish_seen_subcommand_from configure assign unassign bind unbind check remove authorize accept' -a '(zg __complete connector-actions 2>/dev/null)'
-complete -c zg -c zippergen -n '__fish_seen_subcommand_from deploy; and not __fish_seen_subcommand_from start stop restart remove compact logs check status reset' -a '(zg __complete deploy-actions 2>/dev/null)'
+complete -c zg -c zippergen -n '__fish_seen_subcommand_from run; and not __fish_seen_subcommand_from status inspect trace tasks approve' -a '(zg __complete run-actions 2>/dev/null)'
+complete -c zg -c zippergen -n '__fish_seen_subcommand_from deploy; and not __fish_seen_subcommand_from start stop restart remove compact logs check status reset inspect trace tasks approve' -a '(zg __complete deploy-actions 2>/dev/null)'
 complete -c zg -c zippergen -n '__fish_seen_subcommand_from model assign; and test (count (commandline -opc)) -eq 3' -a '(zg __complete model-targets 2>/dev/null)'
 complete -c zg -c zippergen -n '__fish_seen_subcommand_from model assign; and test (count (commandline -opc)) -eq 4' -a '(zg __complete model-configurations 2>/dev/null)'
 complete -c zg -c zippergen -n '__fish_seen_subcommand_from model check remove; and test (count (commandline -opc)) -eq 3' -a '(zg __complete model-configurations 2>/dev/null)'

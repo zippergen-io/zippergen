@@ -222,6 +222,43 @@ def test_config_check_reports_missing_site_credentials(project, capsys):
     assert "OPENAI_API_KEY" in capsys.readouterr().out
 
 
+def test_config_display_and_check_have_distinct_jobs(project, monkeypatch, capsys):
+    _root, workspace = project
+    workspace.save_model_configuration(
+        "writer",
+        {
+            "provider": "openai",
+            "model": "gpt-4o-mini",
+            "spec": "openai:gpt-4o-mini",
+        },
+    )
+    workspace.save_model_assignment_profile(
+        "workflow.py:email_approval",
+        default="mock",
+        lifelines={"Writer": "writer"},
+        actions={"Writer.draft_reply": "mock"},
+    )
+    monkeypatch.setattr(
+        "zippergen.project_configuration._live_model_check",
+        lambda *_args, **_kwargs: None,
+    )
+
+    assert main(["config"]) == 0
+    display = capsys.readouterr().out
+    assert "Models" in display
+    assert "Assistants" in display
+    assert "Connectors" in display
+    assert "Site" in display
+    assert "Writer" in display
+    assert "  draft_reply" in display
+    assert "Configuration checks" not in display
+
+    assert main(["config", "check"]) == 1
+    checked = capsys.readouterr().out
+    assert "Configuration checks" in checked
+    assert "OPENAI_API_KEY" in checked
+
+
 def test_validate_catches_a_stale_project_assignment(project):
     root, _workspace = project
     manifest = root / "zippergen.toml"

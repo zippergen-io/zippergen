@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import math
 import os
+from collections.abc import Mapping
 from contextlib import contextmanager
 from pathlib import Path
 from types import ModuleType
@@ -511,6 +512,7 @@ def configuration_report(
             )
 
     return {
+        "site_root": str(workspace.directory),
         "project": {
             "name": manifest.get("name"),
             "root": str(workspace.root),
@@ -619,7 +621,57 @@ def _append_live_connector_checks(
             checks.append(_check("ok", "live connector Google", "authorization refreshed"))
 
 
-def render_configuration(report: dict[str, object], renderer: TerminalRenderer) -> None:
+def _nested_assignment_rows(
+    assignments: dict[str, object],
+) -> list[tuple[object, object, object]]:
+    """Render participant routes with exact-action overrides directly below."""
+
+    rows: list[tuple[object, object, object]] = []
+    default = assignments.get("default")
+    if default:
+        rows.append(("default", default, "default"))
+    raw_lifelines = assignments.get("lifelines")
+    raw_actions = assignments.get("actions")
+    lifelines = (
+        {
+            str(target): str(configuration)
+            for target, configuration in raw_lifelines.items()
+        }
+        if isinstance(raw_lifelines, Mapping)
+        else {}
+    )
+    actions = (
+        {
+            str(target): str(configuration)
+            for target, configuration in raw_actions.items()
+        }
+        if isinstance(raw_actions, Mapping)
+        else {}
+    )
+    participants = sorted(
+        {*lifelines, *(target.partition(".")[0] for target in actions)}
+    )
+    for participant in participants:
+        rows.append(
+            (
+                participant,
+                lifelines.get(participant) or "inherits default",
+                "participant" if participant in lifelines else "inherited",
+            )
+        )
+        for target, configuration in sorted(actions.items()):
+            owner, separator, action = target.partition(".")
+            if separator and owner == participant:
+                rows.append((f"  {action}", configuration, "action override"))
+    return rows
+
+
+def render_configuration(
+    report: dict[str, object],
+    renderer: TerminalRenderer,
+    *,
+    show_checks: bool = False,
+) -> None:
     project = report["project"]
     assert isinstance(project, dict)
     renderer.table(
@@ -632,11 +684,12 @@ def render_configuration(report: dict[str, object], renderer: TerminalRenderer) 
             ("Manifest", project.get("manifest"), None),
         ],
     )
+    renderer.section("Models")
     models = report["models"]
     assert isinstance(models, dict)
     configurations = models.get("configurations") or []
     renderer.columns(
-        "Model configurations",
+        "Configurations",
         ("Name", "Spec", "Idle", "Source"),
         [
             (
@@ -651,21 +704,18 @@ def render_configuration(report: dict[str, object], renderer: TerminalRenderer) 
     )
     assignments = models.get("assignments") or {}
     assert isinstance(assignments, dict)
-    model_assignment_rows = [("default", assignments.get("default") or "mock")]
-    for group in ("lifelines", "actions"):
-        values = assignments.get(group) or {}
-        if isinstance(values, dict):
-            model_assignment_rows.extend(sorted(values.items()))
     renderer.columns(
-        "Model assignments",
-        ("Target", "Configuration"),
-        [tuple(row) for row in model_assignment_rows],
+        "Assignments",
+        ("Target", "Configuration", "Scope"),
+        _nested_assignment_rows(assignments),
     )
-    _render_assistant_tables(report, renderer)
+    renderer.section("Assistants")
+    _render_assistant_tables(report, renderer, compact_titles=True)
+    renderer.section("Connectors")
     connectors = report["connectors"]
     assert isinstance(connectors, dict)
     renderer.columns(
-        "Connector configurations",
+        "Configurations",
         ("Name", "Kind", "Resource"),
         [
             (
@@ -685,14 +735,25 @@ def render_configuration(report: dict[str, object], renderer: TerminalRenderer) 
         connector_rows.append((requirement, configuration, "requirement"))
     connector_assignments = connectors.get("assignments") or {}
     if isinstance(connector_assignments, dict):
-        for group in ("lifelines", "actions"):
-            for target, configuration in dict(connector_assignments.get(group) or {}).items():
-                connector_rows.append((target, configuration, "human action"))
+        connector_rows.extend(_nested_assignment_rows(connector_assignments))
     renderer.columns(
-        "Connector routing",
+        "Assignments and bindings",
         ("Target", "Configuration", "Purpose"),
         connector_rows,
     )
+    renderer.section("Site")
+    renderer.table(
+        "Private state",
+        [
+            (
+                "Location",
+                report.get("site_root") or "not available",
+                None,
+            )
+        ],
+    )
+    if not show_checks:
+        return
     raw_checks = report.get("checks") or []
     checks = raw_checks if isinstance(raw_checks, list) else []
     renderer.columns(
@@ -717,6 +778,8 @@ def render_configuration(report: dict[str, object], renderer: TerminalRenderer) 
 def render_model_configuration(
     report: dict[str, object],
     renderer: TerminalRenderer,
+    *,
+    show_checks: bool = True,
 ) -> None:
     """Render only the project's model configurations and effective routing."""
 
@@ -738,32 +801,25 @@ def render_model_configuration(
     )
     assignments = models.get("assignments") or {}
     assert isinstance(assignments, dict)
-    rows: list[tuple[object, object, object]] = [
-        ("default", assignments.get("default") or "mock", "default")
-    ]
-    for group in ("lifelines", "actions"):
-        values = assignments.get(group) or {}
-        if isinstance(values, dict):
-            rows.extend(
-                (target, configuration, group[:-1])
-                for target, configuration in sorted(values.items())
-            )
     renderer.columns(
         "Model assignments",
         ("Target", "Configuration", "Scope"),
-        rows,
+        _nested_assignment_rows(assignments),
     )
-    _render_selected_checks(report, renderer, "model")
+    if show_checks:
+        _render_selected_checks(report, renderer, "model")
 
 
 def _render_assistant_tables(
     report: dict[str, object],
     renderer: TerminalRenderer,
+    *,
+    compact_titles: bool = False,
 ) -> None:
     assistants = report["assistants"]
     assert isinstance(assistants, dict)
     renderer.columns(
-        "Assistant configurations",
+        "Configurations" if compact_titles else "Assistant configurations",
         ("Name", "Backend"),
         [
             (item.get("name"), item.get("backend"))
@@ -773,25 +829,13 @@ def _render_assistant_tables(
     )
     assignments = assistants.get("assignments") or {}
     assert isinstance(assignments, dict)
-    assignment_rows: list[tuple[object, object, object]] = []
-    if assignments.get("default"):
-        assignment_rows.append(
-            ("default", assignments["default"], "default")
-        )
-    for group in ("lifelines", "actions"):
-        values = assignments.get(group) or {}
-        if isinstance(values, dict):
-            assignment_rows.extend(
-                (target, configuration, group[:-1])
-                for target, configuration in sorted(values.items())
-            )
     renderer.columns(
-        "Assistant assignments",
+        "Assignments" if compact_titles else "Assistant assignments",
         ("Target", "Configuration", "Scope"),
-        assignment_rows,
+        _nested_assignment_rows(assignments),
     )
     renderer.columns(
-        "Effective assistant routing",
+        "Effective routing" if compact_titles else "Effective assistant routing",
         ("Target", "Backend", "Source", "Access", "Tools", "Shell"),
         [
             (
@@ -811,16 +855,21 @@ def _render_assistant_tables(
 def render_assistant_configuration(
     report: dict[str, object],
     renderer: TerminalRenderer,
+    *,
+    show_checks: bool = True,
 ) -> None:
     """Render coding-assistant configurations and effective routing."""
 
     _render_assistant_tables(report, renderer)
-    _render_selected_checks(report, renderer, "assistant")
+    if show_checks:
+        _render_selected_checks(report, renderer, "assistant")
 
 
 def render_connector_configuration(
     report: dict[str, object],
     renderer: TerminalRenderer,
+    *,
+    show_checks: bool = True,
 ) -> None:
     """Render only the project's connector configurations and routing."""
 
@@ -847,19 +896,14 @@ def render_connector_configuration(
         rows.append((requirement, configuration, "requirement"))
     assignments = connectors.get("assignments") or {}
     if isinstance(assignments, dict):
-        for group in ("lifelines", "actions"):
-            rows.extend(
-                (target, configuration, "human action")
-                for target, configuration in sorted(
-                    dict(assignments.get(group) or {}).items()
-                )
-            )
+        rows.extend(_nested_assignment_rows(assignments))
     renderer.columns(
         "Connector routing",
         ("Target", "Configuration", "Purpose"),
         rows,
     )
-    _render_selected_checks(report, renderer, "connector")
+    if show_checks:
+        _render_selected_checks(report, renderer, "connector")
 
 
 def _selected_checks(report: dict[str, object], scope: str) -> list[dict[str, object]]:

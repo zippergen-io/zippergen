@@ -13,6 +13,10 @@ There is no ZipperGen shell. A project is an ordinary directory, and every
 operation below is a CLI command you run like any other. `zg` is the short
 alias for `zippergen`; both are the same program.
 
+If ZipperGen is upgraded while an agent session is already open, run `zg
+skill` again and follow the refreshed text. An existing conversation does not
+retroactively acquire the installed package's new instructions.
+
 Read [references/dsl-and-cli.md](references/dsl-and-cli.md) before authoring or
 editing a workflow. Also inspect the repository's current `README.md`, nearby
 workflow modules, and tests when available; prefer the installed version's API
@@ -51,6 +55,11 @@ assignments, and bindings — belongs in `zippergen.toml` and is committed. What
 belongs to one machine — credentials, local endpoints, authorizations — lives in
 `ZIPPERGEN_HOME` and is never committed. Resolve configuration with one rule
 only: a site value wins when present, otherwise use the project value.
+Do not replace `ZIPPERGEN_HOME` for ordinary project checks or deployment: that
+would deliberately select a different set of site credentials. When a sandbox
+cannot read the user's private state, say so and ask the user to run `zg config
+check` in their own terminal; do not conclude that the credential was never
+saved.
 
 Models, coding assistants, and connectors follow one grammar. First configure
 a name, then route a target to that name:
@@ -110,9 +119,9 @@ participants may name the same configuration. Use
 `[models.assignments.actions]` with a quoted `"Writer.draft_reply"` key only
 when one action needs a different model. `zg run --llm mock` is a temporary
 global override and replaces all project assignments for that run.
-Use `zg config` to inspect the full effective configuration and `zg config
-check` to report missing credentials or invalid routes. Use `zg config check
---live` only when a real provider call is wanted.
+Use `zg config` to inspect the full effective configuration without contacting
+providers. `zg validate` is also offline. Use `zg config check` for readiness;
+it contacts the configured providers and may send a small model request.
 
 For an `@assistant` action, choose Codex or Claude through a named project
 configuration. Do not hard-code the backend merely to route one project:

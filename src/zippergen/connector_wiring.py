@@ -14,6 +14,7 @@ This is a pure configuration layer. Nothing here renders or prompts.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from types import ModuleType
 from typing import Any
 
@@ -269,3 +270,92 @@ def connector_runtime(
         snapshot[f"requirement:{requirement.name}"] = record
 
     return snapshot, environment
+
+
+def connector_environment_from_snapshot(
+    workspace: Workspace,
+    snapshot: Mapping[str, object],
+) -> dict[str, str]:
+    """Resolve this machine's secrets for an already-recorded connector snapshot."""
+
+    environment: dict[str, str] = {}
+    telegram_token = workspace.connector_provider_secret("telegram", "bot_token")
+    google_credential = workspace.connector_provider_secret(
+        "google", "authorized_user_json"
+    )
+    for raw in snapshot.values():
+        if not isinstance(raw, Mapping):
+            continue
+        token_env = str(raw.get("token_env") or "")
+        if token_env:
+            if not telegram_token:
+                raise ConnectorWiringError(
+                    "The Telegram bot token is missing on this machine. Use "
+                    "'zippergen connector configure NAME telegram'."
+                )
+            environment[token_env] = telegram_token
+        credential_env = str(raw.get("credential_env") or "")
+        if credential_env:
+            if not google_credential:
+                raise ConnectorWiringError(
+                    "Google is not authorized on this machine. Use "
+                    "'zippergen connector authorize google --scopes ...'."
+                )
+            environment[credential_env] = google_credential
+    return environment
+
+
+def human_connector_factory(
+    snapshot: Mapping[str, object],
+    environment: Mapping[str, str],
+):
+    """Build the store-bound Telegram bridge described by a routing snapshot."""
+
+    human_routes = [
+        dict(value)
+        for value in snapshot.values()
+        if isinstance(value, Mapping) and value.get("type") == "human"
+    ]
+    if not human_routes:
+        return None
+
+    grouped: dict[str, list[dict[str, object]]] = {}
+    for route in human_routes:
+        token_env = str(route.get("token_env") or "")
+        if token_env:
+            grouped.setdefault(token_env, []).append(route)
+
+    def build(store_path: str):
+        from zippergen.telegram_notify import (
+            TelegramBotClient,
+            TelegramDeploymentNotifier,
+            TelegramNotifierGroup,
+        )
+
+        notifiers = []
+        for token_env, records in sorted(grouped.items()):
+            token = str(environment.get(token_env) or "")
+            if not token:
+                raise ConnectorWiringError(
+                    f"Telegram connector credential is missing: {token_env}."
+                )
+            routes: dict[str, dict[str, object]] = {}
+            assignments: dict[str, str] = {}
+            for route in records:
+                configuration = str(route.get("configuration") or "")
+                target = str(route.get("target") or "")
+                if configuration and target:
+                    routes[configuration] = route
+                    assignments[target] = configuration
+            if routes:
+                notifiers.append(
+                    TelegramDeploymentNotifier(
+                        store_path=store_path,
+                        client=TelegramBotClient(token),
+                        routes=routes,
+                        assignments=assignments,
+                    )
+                )
+        return TelegramNotifierGroup(tuple(notifiers))
+
+    return build

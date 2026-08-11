@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -41,7 +43,13 @@ class TelegramBotClient:
         self.token = token
         self.timeout = timeout
 
-    def request(self, method: str, **params) -> dict:
+    def request(
+        self,
+        method: str,
+        *,
+        request_timeout: float | None = None,
+        **params,
+    ) -> dict:
         body = json.dumps(params).encode()
         req = urllib.request.Request(
             f"https://api.telegram.org/bot{self.token}/{method}",
@@ -50,7 +58,10 @@ class TelegramBotClient:
             method="POST",
         )
         try:
-            with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+            with urllib.request.urlopen(
+                req,
+                timeout=self.timeout if request_timeout is None else request_timeout,
+            ) as resp:
                 payload = json.loads(resp.read())
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode(errors="replace")
@@ -81,7 +92,18 @@ class TelegramBotClient:
             params["offset"] = offset
         if allowed_updates is not None:
             params["allowed_updates"] = allowed_updates
-        return list(self.request("getUpdates", **params).get("result", []))
+        # Telegram may legitimately hold the request for the full long-poll
+        # duration. The HTTP socket therefore needs a margin beyond the API
+        # timeout; using the same value makes ordinary empty polls race the
+        # client deadline and appear as failures.
+        http_timeout = max(self.timeout, float(timeout) + 10.0)
+        return list(
+            self.request(
+                "getUpdates",
+                request_timeout=http_timeout,
+                **params,
+            ).get("result", [])
+        )
 
     def answer_callback_query(self, callback_query_id: str, text: str | None = None) -> None:
         params: dict[str, Any] = {"callback_query_id": callback_query_id}
@@ -669,15 +691,58 @@ class TelegramDeploymentNotifier:
         *,
         interval: float = 2.0,
         poll_timeout: float = 20.0,
+        stop_event: threading.Event | None = None,
     ) -> None:
-        while True:
+        while stop_event is None or not stop_event.is_set():
             try:
                 self.send_pending_once()
                 self.poll_updates_once(timeout=poll_timeout)
-            except Exception as exc:
+            except sqlite3.DatabaseError as exc:
                 print(
-                    f"Telegram connector retrying after error: {exc}",
+                    f"Durable store unavailable for Telegram delivery "
+                    f"({self.store_path}): {exc}",
                     file=sys.stderr,
                     flush=True,
                 )
-            time.sleep(interval)
+            except Exception as exc:
+                print(
+                    f"Telegram API retrying after error: {exc}",
+                    file=sys.stderr,
+                    flush=True,
+                )
+            if stop_event is None:
+                time.sleep(interval)
+            else:
+                stop_event.wait(interval)
+
+
+@dataclass
+class TelegramNotifierGroup:
+    """Run one poller per Telegram bot behind one connector interface."""
+
+    notifiers: tuple[TelegramDeploymentNotifier, ...]
+
+    def run_forever(
+        self,
+        *,
+        interval: float = 2.0,
+        poll_timeout: float = 20.0,
+        stop_event: threading.Event | None = None,
+    ) -> None:
+        threads = [
+            threading.Thread(
+                target=notifier.run_forever,
+                kwargs={
+                    "interval": interval,
+                    "poll_timeout": poll_timeout,
+                    "stop_event": stop_event,
+                },
+                name=f"connector-telegram-poller-{index}",
+                daemon=True,
+            )
+            for index, notifier in enumerate(self.notifiers, start=1)
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join()

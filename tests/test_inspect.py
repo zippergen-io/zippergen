@@ -65,7 +65,7 @@ def test_inspect_shows_the_current_local_program_pointer(
 ):
     _observed_run(tmp_path, monkeypatch)
 
-    assert main(["inspect", "--agent", "Writer"]) == 0
+    assert main(["run", "inspect", "--agent", "Writer"]) == 0
 
     output = capsys.readouterr().out
     assert "Execution positions" in output
@@ -79,7 +79,7 @@ def test_inspect_shows_the_current_local_program_pointer(
 def test_inspect_has_a_machine_readable_view(tmp_path, monkeypatch, capsys):
     record = _observed_run(tmp_path, monkeypatch)
 
-    assert main(["inspect", "--json"]) == 0
+    assert main(["run", "inspect", "--json"]) == 0
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["subject"] == f"run {record['run_id']}"
@@ -111,7 +111,7 @@ def test_inspect_selects_the_projects_unnamed_deployment_explicitly(
         "store": record["store"],
     }))
 
-    assert main(["inspect", "--deployment", "--json"]) == 0
+    assert main(["deploy", "inspect", "--json"]) == 0
 
     payload = json.loads(capsys.readouterr().out)
     assert payload["subject"] == "project deployment"
@@ -136,7 +136,7 @@ def test_inspect_watch_refreshes_in_place_without_interrupting_execution(
 
     monkeypatch.setattr("zippergen.live_display.watch_frames", capture)
 
-    assert main(["inspect", "--watch", "--interval", "0.25"]) == 0
+    assert main(["run", "inspect", "--watch", "--interval", "0.25"]) == 0
 
     assert len(frames) == 1
     assert "Execution positions" in frames[0]
@@ -161,7 +161,7 @@ def test_inspect_rejects_incoherent_watch_options(
     _observed_run(tmp_path, monkeypatch)
 
     with pytest.raises(SystemExit, match=message):
-        main(["inspect", *arguments])
+        main(["run", "inspect", *arguments])
 
 
 def test_inspect_watch_requires_a_terminal(tmp_path, monkeypatch):
@@ -172,7 +172,7 @@ def test_inspect_watch_requires_a_terminal(tmp_path, monkeypatch):
     )
 
     with pytest.raises(SystemExit, match="requires an interactive terminal"):
-        main(["inspect", "--watch"])
+        main(["run", "inspect", "--watch"])
 
 
 def test_live_display_changes_only_rows_that_changed():

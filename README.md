@@ -313,7 +313,7 @@ you can continue it later:
 
 ```bash
 zg run --durable --llm mock   # Ctrl-C part way through
-zg inspect --agent Writer     # see where each participant is waiting
+zg run inspect --agent Writer # see where each participant is waiting
 zg run --resume               # carry on where it stopped
 ```
 
@@ -321,35 +321,48 @@ zg run --resume               # carry on where it stopped
 Run email_approval-20260808-135754-015850000
 ```
 
-A plain `run` just runs once. A durable run records coordination state and
+A plain `run` just runs once and has no deadline unless `--timeout SECONDS` is
+given. Both forms honor the project's connector routing; a disposable run may
+use temporary private coordination while Telegram is active, but leaves no
+resumable run behind. A durable run records coordination state and
 completed external-action results. After an ordinary interruption it continues
 instead of starting again. A crash in the narrow interval after an external
 effect succeeds but before its result is recorded can repeat that effect, so
 irreversible connectors should use idempotency keys.
 
+`zg run status` shows the currently selected durable run. Starting another
+`zg run --durable` selects a new, fresh run, so runs do not need a reset
+operation. If the project's deployment is already running, a foreground run
+warns before it can compete for Telegram updates, mailbox files, or other
+external resources.
+
 For a live view, keep the run open in one terminal and use another terminal:
 
 ```bash
-zg inspect --watch --agent Writer
+zg run inspect --watch --agent Writer
 ```
 
 The view updates in place once per second. Ctrl-C closes only the view. It does
 not interrupt the run. For the project's deployment,
-`zg inspect --deployment --watch` reads the same position information without
+`zg deploy inspect --watch` reads the same position information without
 changing the running service.
 
-Preparing a deployment and starting one are two different steps. `--no-start`
-writes the files and starts nothing. Without it, ZipperGen first checks every
-model, assistant CLI, and connector, and stops if a required dependency is not
-ready:
+The ordinary deployment command prepares, checks, and starts the service. It
+stops before starting when a model, assistant CLI, or connector is not ready:
 
 ```bash
-zg deploy --no-start          # prepare, start nothing
-zg deploy start
+zg deploy
+zg deploy status
 zg deploy logs
 zg deploy remove              # the durable store is kept
 zg deploy reset --yes         # archive durable state and start fresh
 ```
+
+Use `zg deploy --no-start` only when you deliberately want to prepare and
+review a stopped deployment before a later `zg deploy start`. It is not a
+required preliminary step. After a code change, run `zg deploy` again;
+`restart` reuses the existing bundle, while `reset` discards durable execution
+state and `remove` uninstalls the service.
 
 A workflow can ask a person on Telegram, read Gmail, or write to Google
 Sheets. Which chat, which spreadsheet, which Gmail query: that is project
@@ -359,13 +372,14 @@ configuration, and it goes in `zippergen.toml`. Credentials never go there:
 zg connector configure approval-chat telegram  # prompts for chat id and hidden token
 zg connector assign User approval-chat        # who gets asked, and where
 zg connector authorize google --scopes gmail.readonly,spreadsheets
-zg config check                         # check the whole project
-zg config check --live                  # contact each configured provider
+zg config check                         # contact and check configured providers
 ```
 
 Use `zg config` at any time to see the effective model, assistant, and
-connector configurations, assignments, bindings, and missing site facts. It
-never prints credential values. `zg config --json` provides the same view for
+connector configurations, assignments, bindings, and active private-state
+location. It does not contact providers and never prints credential values.
+`zg validate` is also offline; `zg config check` is the readiness operation and
+may send a small model request. `zg config --json` provides the same view for
 CI and coding agents.
 
 ## The CLI
@@ -387,20 +401,20 @@ zg
 │   └── configure · assign · unassign · bind · unbind · check · remove
 │       · authorize google · accept google
 ├── run
-├── inspect · trace · tasks · approve
+│   └── status · inspect · trace · tasks · approve
 ├── deploy
 │   └── start · stop · restart · status · logs · check
-│       · compact · reset · remove
+│       · inspect · trace · tasks · approve · compact · reset · remove
 └── completion
 ```
 
 `zg --help` renders this tree from the real command parser, so it cannot drift
 from the implementation. Run `zg <command> --help` for arguments and examples.
 
-Stores are not part of the ordinary command surface. A durable run owns its
-managed store; the project deployment owns another. `inspect`, `trace`,
-`tasks`, and `approve` use the current durable run by default and use the
-deployment with `--deployment`. To discard a deployment's durable history,
+Stores are not part of the ordinary command surface. Each durable run owns its
+managed store; the project deployment owns another. Their commands always
+begin with that owner, for example `zg run tasks` and `zg deploy tasks`. To
+discard a deployment's durable history,
 `zg deploy reset --yes` stops it, archives its SQLite files under
 `$ZIPPERGEN_HOME/trash/deployment-stores/`, creates an empty store, and starts
 the service again if it was running. The archive is never silently deleted.

@@ -365,8 +365,14 @@ def test_completion_uses_the_registered_command_tree():
         action for action in deploy_parser._actions
         if isinstance(action, argparse._SubParsersAction)
     )
+    run_parser = top_level.choices["run"]
+    run = next(
+        action for action in run_parser._actions
+        if isinstance(action, argparse._SubParsersAction)
+    )
 
     assert completion_candidates("commands") == expected_commands
+    assert completion_candidates("run-actions") == list(run.choices)
     assert completion_candidates("deploy-actions") == list(deploy.choices)
     assert "run" not in completion_candidates("deploy-actions")
     for shell in ("zsh", "bash", "fish"):

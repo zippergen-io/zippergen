@@ -10,8 +10,8 @@ Run the workflow in one terminal:
 
 Inspect and complete the pending task in another terminal:
 
-    uv run zippergen tasks
-    uv run zippergen approve --task TASK_ID --yes
+    uv run zippergen run tasks
+    uv run zippergen run approve --task TASK_ID --yes
 
 The durable store is managed by the project and is never passed between
 commands. The effect writes an idempotent local audit line so a crash after the

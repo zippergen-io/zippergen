@@ -493,17 +493,25 @@ zg run --llm openai:gpt-4o --llm-for User.approve_reply=mock
 
 # Record the run so it survives a stop, then continue it
 zg run --durable --input message=hello
-zg inspect --agent Writer
+zg run inspect --agent Writer
 zg run --resume
 ```
 
-A plain run keeps everything in memory and leaves no store behind. `--durable`
-records the run to SQLite and collects missing inputs interactively; `--resume`
-continues the project's most recent unfinished run. ZipperGen owns the store;
+A plain run leaves no resumable state behind. It may use temporary private
+SQLite coordination while an asynchronous connector is active. `--durable`
+retains the run and collects missing inputs interactively; `--resume`
+continues the project's most recent unfinished run. All modes honor the
+project's model, assistant, and connector routing. ZipperGen owns the store;
 ordinary commands never need its path.
 
+`zg run status` reports the currently selected durable run. Starting a new
+`zg run --durable` creates and selects fresh state; there is no run-reset
+ritual. Do not start a foreground run while the project's deployment is
+running unless the user explicitly intends both to compete for external
+resources. ZipperGen warns about that overlap.
+
 While a durable run is active in one terminal, another terminal can follow its
-program position with `zg inspect --watch`. Add `--agent NAME` to keep one
+program position with `zg run inspect --watch`. Add `--agent NAME` to keep one
 participant's local projection in focus. Ctrl-C closes the view without
 interrupting the run.
 
@@ -532,7 +540,7 @@ zg deploy reset --yes
 zg deploy remove
 ```
 
-`zg inspect --deployment --watch` shows that deployment's live position.
+`zg deploy inspect --watch` shows that deployment's live position.
 
 There is no workflow or deployment name to pass: the project identifies both.
 

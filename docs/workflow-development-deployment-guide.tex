@@ -511,10 +511,10 @@ and action assignments. Use \texttt{-{}-llm-for} for a narrower temporary
 override. A deployment stores the resolved model specs in its profile; deploy
 again after changing the project assignments.
 
-\texttt{zg model check} checks the selected model credentials without printing
-them. Add \texttt{-{}-live} only when you want to make a small real provider
-request. Use \texttt{zg model unassign TARGET} before removing a configuration
-that is still referenced.
+\texttt{zg model} displays routing without contacting a provider.
+\texttt{zg model check} verifies readiness and makes a small real provider
+request without printing the credential. Use \texttt{zg model unassign TARGET}
+before removing a configuration that is still referenced.
 
 \subsection{Choosing a coding assistant}
 
@@ -595,14 +595,20 @@ idempotency keys.
 \begin{lstlisting}[style=shell]
 zg run --durable --llm openai:gpt-4o-mini
 # Ctrl-C
-zg inspect --agent Writer
+zg run status
+zg run inspect --agent Writer
 zg run --resume
 \end{lstlisting}
+
+Starting another \texttt{zg run -{}-durable} creates and selects a fresh run;
+there is no run-reset operation. If this project's deployment is already
+running, a foreground run warns before it can compete for Telegram updates,
+mailbox files, or another external resource.
 
 To watch a live durable run from another terminal, use:
 
 \begin{lstlisting}[style=shell]
-zg inspect --watch --agent Writer
+zg run inspect --watch --agent Writer
 \end{lstlisting}
 
 The display refreshes in place once per second. Ctrl-C closes the display and
@@ -744,17 +750,17 @@ For example, a workflow that marks mail as read needs
 
 \section{Deployment}
 
-\subsection{Prepare, then start}
+\subsection{Deploy}
 
 \begin{lstlisting}[style=shell]
-zg deploy --no-start
-zg deploy start
+zg deploy
 \end{lstlisting}
 
-These are deliberately separate. Preparing writes the bundle, a managed Python
-environment, and the service files, and reaches nothing. A deployment can be
-prepared today and started next week. Starting is about to make real calls, so
-every model, assistant CLI, and connector is probed first and a failure stops it.
+The ordinary command writes the bundle, prepares the managed Python
+environment and service files, checks real dependencies, and starts the
+service. A failure stops it before starting. Use \texttt{-{}-no-start} only
+when you deliberately want preparation and review to stop before a later
+\texttt{zg deploy start}; it is not a required preliminary step.
 
 After the first time, the same command redeploys the current source:
 
@@ -769,11 +775,11 @@ zg deploy                     # redeploy the current source
 \toprule
 \texttt{zg deploy status} & is it running, and where is it \\
 \texttt{zg deploy logs} & what it has been doing \\
-\texttt{zg inspect --deployment} & where each participant's local program is now \\
-\texttt{zg inspect --deployment --watch} & keep that position open and refresh it in place \\
-\texttt{zg trace --deployment} & recent protocol events \\
-\texttt{zg tasks --deployment} & decisions waiting for a person \\
-\texttt{zg approve --deployment} & answer one \\
+\texttt{zg deploy inspect} & where each participant's local program is now \\
+\texttt{zg deploy inspect --watch} & keep that position open and refresh it in place \\
+\texttt{zg deploy trace} & recent protocol events \\
+\texttt{zg deploy tasks} & decisions waiting for a person \\
+\texttt{zg deploy approve} & answer one \\
 \texttt{zg deploy check} & readiness checks, in detail \\
 \texttt{zg deploy stop} / \texttt{zg deploy restart} & move the service \\
 \texttt{zg deploy compact} & reclaim space, the service must be stopped \\
@@ -810,7 +816,7 @@ it, so look occasionally.
   \item Supply what the machine needs: model keys in the environment, the
         Telegram token via \texttt{connector configure}, Google via
         \texttt{authorize} on your laptop and \texttt{accept} there.
-  \item \texttt{zg deploy -{}-no-start}, then \texttt{zg deploy start}.
+  \item \texttt{zg deploy} prepares, checks and starts the service.
 \end{enumerate}
 
 Nothing secret is in the repository, so step 3 is the whole difference between
@@ -821,6 +827,13 @@ a clone and a running service.
 ZipperGen ships instructions for coding agents. \texttt{zg init} writes an
 \path{AGENTS.md} pointing at them and a \path{CLAUDE.md} that imports those
 same instructions for Claude Code. \texttt{zg skill} prints the full guidance.
+
+An already open coding-agent conversation does not automatically reload that
+guidance after ZipperGen is upgraded. Start a new session, or explicitly ask
+the agent to run \texttt{zg skill} again. An agent sandbox may also use a
+different \texttt{ZIPPERGEN\_HOME}; \texttt{zg config} shows the active private
+state location, and credential readiness should be confirmed in the user's own
+terminal when the sandbox cannot read it.
 
 \begin{lstlisting}[style=shell]
 zg skill                  # what an agent should follow
@@ -877,8 +890,8 @@ zg show --agent ThatParticipant
 
 A projected program cannot wait for a message nobody sends, so if a participant
 is stuck the cause is usually an action that never returns, such as a model call
-without a timeout, or a human action nobody has answered. \texttt{zg tasks}
-lists the second kind.
+without a timeout, or a human action nobody has answered. Use \texttt{zg run
+tasks} for a durable run or \texttt{zg deploy tasks} for the deployment.
 
 \subsection{Only one branch ever runs}
 
@@ -922,7 +935,7 @@ zg connector assign User approval-chat
 \midrule
 \multicolumn{2}{@{}l}{\textbf{Run}} \\
 \texttt{run} & execute, with \texttt{-{}-durable} and \texttt{-{}-resume} \\
-\texttt{inspect} / \texttt{trace} / \texttt{tasks} / \texttt{approve} & observe or answer \\
+\texttt{run status/inspect/trace/tasks/approve} & observe or answer a durable run \\
 \midrule
 \multicolumn{2}{@{}l}{\textbf{Configure}} \\
 \texttt{config} / \texttt{config check} & show or check all effective configuration \\
@@ -943,10 +956,11 @@ zg connector assign User approval-chat
 \texttt{completion zsh|bash|fish} & print dynamic shell completion \\
 \midrule
 \multicolumn{2}{@{}l}{\textbf{Deploy}} \\
-\texttt{deploy [-{}-name NAME] [-{}-no-start]} & prepare, and start \\
-\texttt{start} / \texttt{stop} / \texttt{restart} & move the service \\
-\texttt{logs} / \texttt{doctor} & operate \\
-\texttt{compact} / \texttt{remove} & reclaim, delete \\
+\texttt{deploy [-{}-no-start]} & prepare, check, and normally start \\
+\texttt{deploy start/stop/restart} & move the service \\
+\texttt{deploy status/logs/check} & operate and diagnose \\
+\texttt{deploy inspect/trace/tasks/approve} & observe or answer the deployment \\
+\texttt{deploy compact/reset/remove} & reclaim, reset, or delete \\
 \bottomrule
 \end{tabularx}
 \end{center}

@@ -21,7 +21,7 @@ credentials. `examples/call_intake.py` is the same shape against real Gmail.
 import time
 from pathlib import Path
 
-from zippergen import Lifeline, Var, workflow
+from zippergen import DeploymentField, DeploymentSpec, Lifeline, Var, workflow
 from zippergen.actions import effect, human, llm, pure
 
 Writer = Lifeline("Writer")
@@ -126,3 +126,20 @@ def email_approval() -> int:
             User: handled = discard(handled)
         User: message = next_unread_message()
     return handled @ User
+
+
+# A foreground run defaults to ./mailbox. A deployment runs from an immutable
+# source bundle, so its live mailbox is an external site path selected during
+# `zg deploy` and stored as an absolute option.
+zippergen_deployment = DeploymentSpec(
+    description="Watch a mailbox directory and ask before sending a reply.",
+    fields=(
+        DeploymentField(
+            "mailbox",
+            "Mailbox directory to watch",
+            target="option",
+            required=True,
+            path_exists=True,
+        ),
+    ),
+)

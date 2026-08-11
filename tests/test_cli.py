@@ -3,6 +3,7 @@ import os
 import plistlib
 import shlex
 import subprocess
+import time
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -42,6 +43,69 @@ def hello(topic: str @ User) -> str:
 zippergen_deployment = DeploymentSpec(fields=(
     DeploymentField(
         "topic", "Topic", target="input", default="deploy", required=True
+    ),
+))
+"""
+
+
+CONNECTOR_ENV_WORKFLOW_SOURCE = """
+import os
+
+from zippergen import Lifeline, pure, workflow
+
+User = Lifeline("User")
+
+@pure
+def connector_environment() -> str:
+    return os.environ.get("ZIPPERGEN_CONNECTORS_JSON", "missing")
+
+@workflow
+def connector_demo() -> str:
+    User: value = connector_environment()
+    return value @ User
+"""
+
+
+HUMAN_CONNECTOR_WORKFLOW_SOURCE = """
+from zippergen import Lifeline, human, workflow
+
+User = Lifeline("User")
+
+@human(
+    kind="confirm",
+    instruction="Approve this run?",
+    outputs=["approved: bool"],
+)
+def approve() -> None: ...
+
+@workflow
+def human_connector_demo() -> bool:
+    User: approved = approve()
+    return approved @ User
+"""
+
+
+PATH_WORKFLOW_SOURCE = """
+from zippergen import DeploymentField, DeploymentSpec, Lifeline, pure, workflow
+
+User = Lifeline("User")
+
+@pure
+def identity(value: str) -> str:
+    return value
+
+@workflow
+def path_demo(directory: str @ User) -> str:
+    User: result = identity(directory)
+    return result @ User
+
+zippergen_deployment = DeploymentSpec(fields=(
+    DeploymentField(
+        "directory",
+        "External directory",
+        target="input",
+        required=True,
+        path_exists=True,
     ),
 ))
 """
@@ -318,6 +382,7 @@ def test_durable_run_records_a_resumable_run_with_an_owned_store(
 
     rc = main([
         "run",
+        "--workflow",
         f"{workflow_path}:hello",
         "--durable",
         "--input",
@@ -393,6 +458,7 @@ def test_run_command_loads_workflow_from_module(tmp_path, monkeypatch, capsys):
 
     rc = main([
         "run",
+        "--workflow",
         "sample_module_workflow:hello",
         "--input-json",
         '{"topic": "local"}',
@@ -413,6 +479,7 @@ def test_run_command_zero_timeout_means_no_deadline(tmp_path, monkeypatch, capsy
 
     rc = main([
         "run",
+        "--workflow",
         f"{workflow_path}:hello",
         "--input",
         "topic=steady",
@@ -425,6 +492,103 @@ def test_run_command_zero_timeout_means_no_deadline(tmp_path, monkeypatch, capsy
     assert json.loads(captured.out) == {"result": "steady!"}
 
 
+def test_run_defaults_to_no_deadline():
+    _parser, args = _parse_cli_args(["run"])
+
+    assert args.timeout == 0.0
+
+
+def test_plain_run_applies_project_connector_routing(
+    tmp_path, monkeypatch, capsys
+):
+    workflow_path = tmp_path / "connector_workflow.py"
+    workflow_path.write_text(CONNECTOR_ENV_WORKFLOW_SOURCE)
+    workspace = Workspace(tmp_path, home=tmp_path / "home")
+    workspace.initialize_project(name="connector-run")
+    workspace.select_workflow("connector_workflow.py:connector_demo")
+    snapshot = {
+        "requirement:mailbox": {
+            "type": "service",
+            "configuration": "inbox",
+            "provider": "google",
+        }
+    }
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(
+        "zippergen.connector_wiring.connector_runtime",
+        lambda *_args, **_kwargs: (snapshot, {}),
+    )
+
+    assert main(["run", "--yes"]) == 0
+
+    result = json.loads(capsys.readouterr().out)["result"]
+    assert json.loads(result) == snapshot
+    assert "ZIPPERGEN_CONNECTORS_JSON" not in os.environ
+
+
+def test_plain_run_uses_configured_external_human_connector(
+    tmp_path, monkeypatch, capsys
+):
+    from zippergen.store import complete_human_task
+
+    workflow_path = tmp_path / "human_connector_workflow.py"
+    workflow_path.write_text(HUMAN_CONNECTOR_WORKFLOW_SOURCE)
+    workspace = Workspace(tmp_path, home=tmp_path / "home")
+    workspace.initialize_project(name="human-connector-run")
+    workspace.select_workflow(
+        "human_connector_workflow.py:human_connector_demo"
+    )
+    snapshot = {
+        "human:User.approve": {
+            "type": "human",
+            "target": "User.approve",
+            "configuration": "approval-chat",
+            "provider": "telegram",
+        }
+    }
+
+    class CompletingConnector:
+        def __init__(self, store_path):
+            self.store_path = store_path
+
+        def run_forever(self, *, poll_timeout, stop_event):
+            while not stop_event.is_set():
+                conn = open_store(self.store_path)
+                try:
+                    row = conn.execute(
+                        "SELECT task_id FROM human_tasks "
+                        "WHERE status='pending' LIMIT 1"
+                    ).fetchone()
+                    if row is not None:
+                        complete_human_task(
+                            conn, row[0], {"approved": True}
+                        )
+                        return
+                finally:
+                    conn.close()
+                time.sleep(0.01)
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(tmp_path / "home"))
+    monkeypatch.setattr(
+        "zippergen.connector_wiring.connector_runtime",
+        lambda *_args, **_kwargs: (snapshot, {}),
+    )
+    monkeypatch.setattr(
+        "zippergen.connector_wiring.human_connector_factory",
+        lambda _snapshot, _environment: (
+            lambda store_path: CompletingConnector(store_path)
+        ),
+    )
+
+    assert main(["run", "--yes", "--timeout", "3"]) == 0
+
+    output = capsys.readouterr().out
+    assert "External human connector started for this run." in output
+    assert json.loads(output.splitlines()[-1]) == {"result": True}
+
+
 def test_run_command_calls_setup_hook_with_options(tmp_path, monkeypatch, capsys):
     workflow_path = tmp_path / "setup_workflow.py"
     workflow_path.write_text(SETUP_WORKFLOW_SOURCE)
@@ -433,6 +597,7 @@ def test_run_command_calls_setup_hook_with_options(tmp_path, monkeypatch, capsys
 
     rc = main([
         "run",
+        "--workflow",
         f"{workflow_path}:setup_hello",
         "--input",
         "topic=deploy",
@@ -586,6 +751,7 @@ def test_run_durable_creates_a_managed_durable_run(tmp_path, monkeypatch, capsys
 
     rc = main([
         "run",
+        "--workflow",
         f"{workflow_path}:hello",
         "--durable",
         "--project",
@@ -670,6 +836,65 @@ def test_deploy_prepares_a_profile_that_runs_for_its_project(tmp_path, monkeypat
     assert rc == 0
     assert status["store"] == str(store_path)
     assert status["state"] == "done"
+
+
+def test_deploy_records_external_paths_absolutely(
+    tmp_path, monkeypatch, capsys
+):
+    workflow_path = tmp_path / "path_workflow.py"
+    workflow_path.write_text(PATH_WORKFLOW_SOURCE)
+    mailbox = tmp_path / "mailbox"
+    mailbox.mkdir()
+    home = tmp_path / "zg-home"
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(home))
+    monkeypatch.chdir(tmp_path)
+
+    assert _deploy_for_test([
+        f"{workflow_path}:path_demo",
+        "--set",
+        "directory=mailbox",
+    ]) == 0
+    capsys.readouterr()
+
+    profile = json.loads(_the_deployment(home).read_text())
+    assert profile["inputs"]["directory"] == str(mailbox.resolve())
+
+
+def test_internal_deployment_run_does_not_conflict_with_its_own_service(
+    tmp_path, monkeypatch, capsys
+):
+    workflow_path = tmp_path / "workflow.py"
+    workflow_path.write_text(WORKFLOW_SOURCE)
+    home = tmp_path / "zg-home"
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(home))
+    monkeypatch.chdir(tmp_path)
+    assert _deploy_for_test([f"{workflow_path}:hello"]) == 0
+    capsys.readouterr()
+    monkeypatch.setattr(
+        "zippergen.deployment_platform.deployment_service_status",
+        lambda _name: {"state": "running"},
+    )
+
+    assert _run_prepared_deployment(home) == 0
+    assert json.loads(capsys.readouterr().out) == {"result": "deploy!"}
+
+
+def test_foreground_run_refuses_to_compete_with_running_deployment(
+    monkeypatch,
+):
+    from zippergen import serve
+
+    monkeypatch.setattr(
+        serve, "_resolved_deployment_name", lambda _args: "project-id"
+    )
+    monkeypatch.setattr(
+        "zippergen.deployment_platform.deployment_service_status",
+        lambda _name: {"state": "running"},
+    )
+    monkeypatch.setattr(serve.sys.stdin, "isatty", lambda: False)
+
+    with pytest.raises(SystemExit, match="deployment is already running"):
+        serve._guard_foreground_run(SimpleNamespace(yes=False))
 
 
 def test_two_projects_with_the_same_workflow_get_independent_deployments(
@@ -1368,7 +1593,7 @@ def test_trace_command_reports_recent_trace_events(tmp_path, monkeypatch, capsys
     )
     conn.close()
 
-    rc = main(["trace", "--deployment", "--tail", "1"])
+    rc = main(["deploy", "trace", "--tail", "1"])
 
     captured = capsys.readouterr()
     assert rc == 0
@@ -1393,7 +1618,7 @@ def test_trace_command_outputs_json_after_rowid(tmp_path, monkeypatch, capsys):
     )
     conn.close()
 
-    rc = main(["trace", "--deployment", "--after", str(first), "--json"])
+    rc = main(["deploy", "trace", "--after", str(first), "--json"])
 
     captured = capsys.readouterr()
     assert rc == 0
@@ -1431,7 +1656,7 @@ def test_tasks_command_lists_pending_tasks(tmp_path, monkeypatch, capsys):
     )
     conn.close()
 
-    rc = main(["tasks", "--deployment"])
+    rc = main(["deploy", "tasks"])
 
     captured = capsys.readouterr()
     assert rc == 0
@@ -1455,7 +1680,7 @@ def test_approve_command_completes_boolean_task(tmp_path, monkeypatch, capsys):
     )
     conn.close()
 
-    rc = main(["approve", "--deployment", "--task", "task-1", "--no"])
+    rc = main(["deploy", "approve", "--task", "task-1", "--no"])
 
     captured = capsys.readouterr()
     assert rc == 0
@@ -1483,8 +1708,8 @@ def test_approve_command_completes_string_task(tmp_path, monkeypatch, capsys):
     conn.close()
 
     rc = main([
+        "deploy",
         "approve",
-        "--deployment",
         "--task",
         "task-1",
         "--value",
@@ -1513,7 +1738,7 @@ def test_approve_command_requires_value_for_string_task(tmp_path, monkeypatch, c
     conn.close()
 
     try:
-        main(["approve", "--deployment", "--task", "task-1"])
+        main(["deploy", "approve", "--task", "task-1"])
     except SystemExit as exc:
         assert "requires --value" in str(exc)
     else:
@@ -1535,14 +1760,14 @@ def test_tasks_command_generates_stable_channel_tokens(tmp_path, monkeypatch, ca
     )
     conn.close()
 
-    rc = main(["tasks", "--deployment", "--tokens", "--channel", "email", "--json"])
+    rc = main(["deploy", "tasks", "--tokens", "--channel", "email", "--json"])
     captured = capsys.readouterr()
     first = json.loads(captured.out)
     assert rc == 0
     assert first[0]["token"].startswith("zg_")
     assert first[0]["token_channel"] == "email"
 
-    rc = main(["tasks", "--deployment", "--tokens", "--channel", "email", "--json"])
+    rc = main(["deploy", "tasks", "--tokens", "--channel", "email", "--json"])
     captured = capsys.readouterr()
     second = json.loads(captured.out)
     assert rc == 0
@@ -1564,10 +1789,10 @@ def test_approve_command_completes_task_by_token(tmp_path, monkeypatch, capsys):
     )
     conn.close()
 
-    main(["tasks", "--deployment", "--tokens", "--channel", "telegram", "--json"])
+    main(["deploy", "tasks", "--tokens", "--channel", "telegram", "--json"])
     token = json.loads(capsys.readouterr().out)[0]["token"]
 
-    rc = main(["approve", "--deployment", "--token", token, "--yes"])
+    rc = main(["deploy", "approve", "--token", token, "--yes"])
 
     captured = capsys.readouterr()
     assert rc == 0
@@ -1619,7 +1844,7 @@ def test_notify_stdout_prints_pending_task_with_token(tmp_path, capsys):
     assert "Action: User.approve (confirm)" in captured.out
     assert "Approve the deployment?" in captured.out
     assert "Production rollout" in captured.out
-    assert "zippergen approve --deployment" in captured.out
+    assert "zippergen deploy approve" in captured.out
     assert "--token zg_" in captured.out
     assert "--no" in captured.out
 
@@ -1643,7 +1868,7 @@ def test_deployment_starts_one_telegram_bridge_for_shared_routes(
     monkeypatch.setenv("ZIPPERGEN_CONNECTOR_TELEGRAM_TOKEN", "secret")
     monkeypatch.setattr(
         "zippergen.telegram_notify.TelegramDeploymentNotifier.run_forever",
-        lambda notifier: observed.append(
+        lambda notifier, **_kwargs: observed.append(
             (dict(notifier.assignments), dict(notifier.routes))
         ),
     )
