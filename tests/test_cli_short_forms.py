@@ -200,7 +200,7 @@ def test_diff_compares_a_baseline_against_the_project_workflow(
     """One saved baseline plus one argument is the whole change-check ritual."""
 
     baseline = tmp_path / "before.json"
-    assert serve.main(["diff", "--save", str(baseline)]) == 0
+    assert serve.main(["snapshot", str(baseline)]) == 0
     capsys.readouterr()
 
     workflow = project / "workflow.py"
@@ -239,6 +239,21 @@ def test_a_single_workflow_is_inferred_without_a_manifest_entry(
     assert "email_approval: valid" in capsys.readouterr().out
     # Inference is a convenience; it must not quietly rewrite the manifest.
     assert "workflow_entry" not in workspace.manifest_path.read_text()
+
+
+def test_workflow_shows_inferred_entry_and_selects_an_explicit_one(
+    project, capsys
+):
+    assert serve.main(["workflow"]) == 0
+    assert capsys.readouterr().out.strip() == "workflow.py:email_approval (inferred)"
+
+    assert serve.main(
+        ["workflow", "select", "workflow.py:email_approval"]
+    ) == 0
+    assert "Project workflow: workflow.py:email_approval" in (
+        capsys.readouterr().out
+    )
+    assert Workspace(project).workflow_entry == "workflow.py:email_approval"
 
 
 def test_a_durable_run_infers_the_only_workflow_without_a_manifest_entry(
@@ -327,6 +342,11 @@ def test_top_level_help_hides_legacy_internal_commands(capsys):
     for command in ("__run-deployment", "notify", "serve"):
         assert f"    {command} " not in output
 
+    with pytest.raises(SystemExit) as deploy_help:
+        serve.main(["deploy", "--help"])
+    assert deploy_help.value.code == 0
+    assert "    run " not in capsys.readouterr().out
+
 
 def test_completion_uses_the_registered_command_tree():
     from zippergen.completion import completion_candidates, render_completion
@@ -348,6 +368,7 @@ def test_completion_uses_the_registered_command_tree():
 
     assert completion_candidates("commands") == expected_commands
     assert completion_candidates("deploy-actions") == list(deploy.choices)
+    assert "run" not in completion_candidates("deploy-actions")
     for shell in ("zsh", "bash", "fish"):
         script = render_completion(shell)
         assert "deploy-actions" in script or "${cmd}-actions" in script

@@ -40,10 +40,10 @@ Record it when the project has several workflows, or when you want the choice
 written down rather than inferred:
 
 ```bash
-zg config workflow workflow.py:email_approval
+zg workflow select workflow.py:email_approval
 ```
 
-`zg config workflow` with no argument prints the current one.
+`zg workflow` with no argument prints the current or inferred one.
 
 Treat portability separately from secrecy. What every machine shares — the
 workflow entry point, named model, assistant, and connector configurations,
@@ -214,7 +214,7 @@ avoid tiny fragments that merely scatter a short protocol across files.
 2. Save a semantic baseline to a unique temporary path outside the project:
 
    ```bash
-   zg diff --save /tmp/<unique>-before.json
+   zg snapshot /tmp/<unique>-before.json
    ```
 
 3. Translate the requested change into expected additions, removals, and

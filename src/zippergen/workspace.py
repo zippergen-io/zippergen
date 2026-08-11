@@ -718,7 +718,7 @@ class Workspace:
         if existing is not None and not replace:
             raise WorkspaceError(
                 f"This project already uses {existing}. One project has one "
-                "workflow; 'zippergen config workflow SPEC' replaces it."
+                "workflow; 'zippergen workflow select SPEC' replaces it."
             )
         try:
             content = self.manifest_path.read_text(encoding="utf-8")
@@ -1566,7 +1566,7 @@ class Workspace:
                 "This project has several workflows: "
                 + ", ".join(discovered)
                 + ". Name one explicitly, or record one with "
-                "'zippergen config workflow SPEC'."
+                "'zippergen workflow select SPEC'."
             )
         raise WorkspaceError(
             "No workflow was named and none was found in this project. "

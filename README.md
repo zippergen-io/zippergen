@@ -374,10 +374,11 @@ The whole public surface fits in one tree:
 
 ```text
 zg
-├── init · skill · validate · show · diff
+├── init · skill · validate · show · snapshot · diff
 ├── config
-│   ├── check
-│   └── workflow
+│   └── check
+├── workflow
+│   └── select
 ├── model
 │   └── configure · assign · unassign · check · remove
 ├── assistant
@@ -388,7 +389,7 @@ zg
 ├── run
 ├── inspect · trace · tasks · approve
 ├── deploy
-│   └── run · start · stop · restart · status · logs · check
+│   └── start · stop · restart · status · logs · check
 │       · compact · reset · remove
 └── completion
 ```

@@ -231,7 +231,7 @@ Nothing in ZipperGen owns it. \texttt{workflow\_entry} is why most commands do
 not need you to name the workflow, and
 
 \begin{lstlisting}[style=shell]
-zg config workflow workflow.py:email_approval
+zg workflow select workflow.py:email_approval
 \end{lstlisting}
 
 records it without editing the file. With no argument it prints the current
@@ -922,7 +922,7 @@ zg connector assign User approval-chat
 \midrule
 \multicolumn{2}{@{}l}{\textbf{Run}} \\
 \texttt{run} & execute, with \texttt{-{}-durable} and \texttt{-{}-resume} \\
-\texttt{status} / \texttt{trace} / \texttt{tasks} / \texttt{approve} & inspect and answer \\
+\texttt{inspect} / \texttt{trace} / \texttt{tasks} / \texttt{approve} & observe or answer \\
 \midrule
 \multicolumn{2}{@{}l}{\textbf{Configure}} \\
 \texttt{config} / \texttt{config check} & show or check all effective configuration \\

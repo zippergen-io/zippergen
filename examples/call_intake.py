@@ -15,7 +15,7 @@ Guided deployment:
     zippergen connector configure call-records google-sheets \
         --spreadsheet-id SHEET_ID --tab Calls
     zippergen connector bind call-records call-records
-    zippergen config workflow examples/call_intake.py:call_intake
+    zippergen workflow select examples/call_intake.py:call_intake
     zippergen deploy
 
 Configuration asks for one Google OAuth desktop client, a Gmail search query,

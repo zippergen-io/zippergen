@@ -57,6 +57,13 @@ def _the_deployment(zippergen_home, suffix=".json"):
     return found[0]
 
 
+def _run_prepared_deployment(zippergen_home) -> int:
+    """Exercise the hidden entry point used by generated service scripts."""
+
+    profile = json.loads(_the_deployment(zippergen_home).read_text())
+    return main(["__run-deployment", "--profile", str(profile["name"])])
+
+
 def _deploy_for_test(arguments: list[str]) -> int:
     """Prepare through the public deployment path without external setup."""
 
@@ -460,6 +467,25 @@ def test_show_command_renders_code_and_agent_projection(tmp_path, capsys):
     assert "Generated local projection for User" in payload["code"]
 
 
+def test_show_rejects_multiple_scope_selectors_in_argparse(tmp_path, capsys):
+    workflow_path = tmp_path / "show_workflow.py"
+    workflow_path.write_text(WORKFLOW_SOURCE)
+
+    with pytest.raises(SystemExit) as error:
+        main(
+            [
+                "show",
+                f"{workflow_path}:hello",
+                "--communications",
+                "--agent",
+                "User",
+            ]
+        )
+
+    assert error.value.code == 2
+    assert "not allowed with argument" in capsys.readouterr().err
+
+
 def test_validate_command_checks_projection_and_deployment_metadata(tmp_path, capsys):
     workflow_path = tmp_path / "validate_workflow.py"
     workflow_path.write_text(WORKFLOW_SOURCE)
@@ -528,10 +554,9 @@ def test_snapshot_then_diff_supports_assistant_refinement_loop(tmp_path, capsys)
     workflow_path.write_text(WORKFLOW_SOURCE)
 
     rc = main([
-        "diff",
-        f"{workflow_path}:hello",
-        "--save",
+        "snapshot",
         str(snapshot_path),
+        f"{workflow_path}:hello",
     ])
     assert rc == 0
     assert json.loads(snapshot_path.read_text())["schema"] == "zippergen.workflow-semantics.v1"
@@ -1022,7 +1047,7 @@ def test_guided_deploy_persists_config_and_private_secrets(tmp_path, monkeypatch
     connection.close()
 
     workflow_path.unlink()
-    rc = main(["deploy", "run",])
+    rc = _run_prepared_deployment(zippergen_home)
     captured = capsys.readouterr()
     assert rc == 0
     assert json.loads(captured.out) == {"result": "hello:safe:token:deploy"}
@@ -1089,7 +1114,7 @@ def test_explicit_redeploy_replaces_the_named_deployment_source(
     ).read_text()
     workflow_path.unlink()
 
-    assert main(["deploy", "run",]) == 0
+    assert _run_prepared_deployment(zippergen_home) == 0
     captured = capsys.readouterr()
     assert json.loads(captured.out) == {"result": "updated?"}
 
@@ -1262,7 +1287,7 @@ def test_status_command_reports_completed_run(tmp_path, monkeypatch, capsys):
         "--no-doctor",
     ]) == 0
     capsys.readouterr()
-    assert main(["deploy", "run"]) == 0
+    assert _run_prepared_deployment(tmp_path / "zg-home") == 0
     capsys.readouterr()
 
     rc = main(["deploy", "status", "--json"])

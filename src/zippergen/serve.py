@@ -1017,26 +1017,22 @@ def _validate_command(args) -> int:
     return 0 if result["valid"] else 1
 
 
-def _select_workflow_command(args) -> int:
-    """Record which workflow this project is about.
-
-    Until now the only way to set `workflow_entry` was to edit
-    `zippergen.toml` by hand: `select_workflow` existed in the workspace but
-    nothing in the CLI called it.
-    """
+def _workflow_command(args) -> int:
+    """Show or explicitly select the workflow this project is about."""
 
     from zippergen.workspace import Workspace, WorkspaceError
 
     workspace = Workspace(getattr(args, "project", None))
-    if not args.spec:
+    if args.workflow_action is None:
         entry = workspace.workflow_entry
         if entry:
             print(entry)
             return 0
-        print(
-            "No workflow is recorded. Commands infer it while the project has "
-            "exactly one. Record it with 'zippergen config workflow SPEC'."
-        )
+        try:
+            inferred = workspace.resolve_workflow()
+        except WorkspaceError as exc:
+            raise SystemExit(str(exc)) from exc
+        print(f"{inferred} (inferred)")
         return 0
 
     try:
@@ -1934,28 +1930,29 @@ def _semantic_input(spec: str) -> dict[str, object]:
     return workflow_semantics(workflow, module)
 
 
-def _diff_command(args) -> int:
-    # Saving a baseline and comparing against one are the same conversation,
-    # so they are one command: --save writes, everything else compares.
-    if args.save:
-        spec = args.before or _resolved_workflow_spec(args)
-        workflow, module = load_workflow_spec(spec)
-        payload = json.dumps(
-            semantic_snapshot(workflow, module), indent=2, default=str
-        )
-        if args.save == "-":
-            print(payload)
-            return 0
-        output_path = Path(args.save).expanduser().resolve()
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-        output_path.write_text(payload + "\n")
-        print(f"Wrote semantic baseline to {output_path}")
-        return 0
+def _snapshot_command(args) -> int:
+    """Write one workflow's semantic baseline."""
 
+    spec = args.workflow or _resolved_workflow_spec(args)
+    workflow, module = load_workflow_spec(spec)
+    payload = json.dumps(
+        semantic_snapshot(workflow, module), indent=2, default=str
+    )
+    if args.path == "-":
+        print(payload)
+        return 0
+    output_path = Path(args.path).expanduser().resolve()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(payload + "\n")
+    print(f"Wrote semantic baseline to {output_path}")
+    return 0
+
+
+def _diff_command(args) -> int:
     if not args.before:
         raise SystemExit(
-            "Give a baseline to compare against, or save one first with "
-            "'zippergen diff --save PATH'."
+            "Give a baseline to compare against, or create one first with "
+            "'zippergen snapshot PATH'."
         )
     # With one argument, compare a saved baseline against the project workflow.
     after = args.after or _resolved_workflow_spec(args)
@@ -2940,8 +2937,9 @@ def _connector_authorize_google_command(args) -> int:
         raise SystemExit(str(exc)) from exc
 
 
-# Registered but kept out of help. `__complete` backs shell completion, while
-# `notify` is an adapter a deployment runs for itself rather than a user task.
+# Registered but kept out of help. `__complete` backs shell completion,
+# `__run-deployment` is the generated service entry point, and `notify` is an
+# adapter a deployment runs for itself rather than a user task.
 HIDDEN_COMMANDS = frozenset({"__complete", "__run-deployment", "notify"})
 
 
@@ -2974,16 +2972,23 @@ def _parse_cli_args(
     )
     config_check.add_argument("--json", action="store_true", help="Print JSON.")
     config_check.add_argument("--project", help="Project root.")
-    config_workflow = config_sub.add_parser(
+
+    workflow_parser = sub.add_parser(
         "workflow",
-        help="show or select the project's workflow entry",
+        help="show or select the workflow this project is about",
     )
-    config_workflow.add_argument(
-        "spec",
-        nargs="?",
-        help="Workflow to select, as path.py:name.",
+    workflow_parser.add_argument("--project", help="Project root.")
+    workflow_sub = workflow_parser.add_subparsers(dest="workflow_action")
+    workflow_select = workflow_sub.add_parser(
+        "select",
+        help="select the project's workflow entry",
     )
-    config_workflow.add_argument("--project", help="Project root.")
+    workflow_select.add_argument("spec", help="Workflow to select, as path.py:name.")
+    workflow_select.add_argument(
+        "--project",
+        default=argparse.SUPPRESS,
+        help="Project root.",
+    )
 
     model = sub.add_parser(
         "model",
@@ -3312,8 +3317,8 @@ def _parse_cli_args(
     show = sub.add_parser("show", help="render a workflow as a code-first semantic view")
     show.add_argument("workflow", nargs="?", help="Workflow spec: module:workflow or path.py:workflow. Defaults to this project's workflow.")
     show.add_argument("--detail", choices=DETAILS, default="protocol", help="Amount of implementation detail to include.")
-    show.add_argument("--communications", action="store_true", help="Show communication and control flow only.")
     focus = show.add_mutually_exclusive_group()
+    focus.add_argument("--communications", action="store_true", help="Show communication and control flow only.")
     focus.add_argument("--agent", help="Show the exact local projection for one agent.")
     focus.add_argument("--agents", help="Comma-separated agents to retain in a boundary-aware focus view.")
     show.add_argument("--format", choices=("code", "json"), default="code", help="Output format.")
@@ -3355,12 +3360,27 @@ def _parse_cli_args(
         help="Print SKILL.md alone, without the reference files it links.",
     )
 
+    snapshot_parser = sub.add_parser(
+        "snapshot",
+        help="write a semantic baseline for later comparison",
+    )
+    snapshot_parser.add_argument(
+        "path",
+        help="Output JSON path, or '-' for standard output.",
+    )
+    snapshot_parser.add_argument(
+        "workflow",
+        nargs="?",
+        help="Workflow spec; defaults to this project's workflow.",
+    )
+
     semantic_diff_parser = sub.add_parser(
         "diff",
-        help="save a semantic baseline, or compare against one",
+        help="compare a workflow against a semantic baseline",
         description=(
-            "Save a baseline with --save, then run 'zg diff BASELINE' after "
-            "editing to see exactly what changed in the protocol."
+            "Create a baseline with 'zg snapshot PATH', then run "
+            "'zg diff PATH' after editing to see exactly what changed in "
+            "the protocol."
         ),
     )
     semantic_diff_parser.add_argument(
@@ -3378,15 +3398,6 @@ def _parse_cli_args(
         ),
     )
     semantic_diff_parser.add_argument("--format", choices=("code", "json"), default="code", help="Output format.")
-    semantic_diff_parser.add_argument(
-        "--save",
-        metavar="PATH",
-        help=(
-            "Write a semantic baseline of this project's workflow to PATH "
-            "instead of comparing. Use '-' for standard output."
-        ),
-    )
-
     # One family, the same shape as model/assistant/connector: run it bare to
     # see everything, then one verb per thing you can do to a deployment.
     deploy = sub.add_parser(
@@ -3402,11 +3413,6 @@ def _parse_cli_args(
     deploy.add_argument("--no-bundle", action="store_true", help=argparse.SUPPRESS)
     deploy.add_argument("--no-start", action="store_true", help="Configure the deployment without starting its service.")
     deploy_sub = deploy.add_subparsers(dest="deploy_action")
-
-    deploy_sub.add_parser(
-        "run",
-        help="run the prepared deployment in the foreground",
-    )
 
     deploy_start = deploy_sub.add_parser("start", help="start a deployment as a supervised user service")
     deploy_start.add_argument("--enable", action="store_true", help="Enable the service to start automatically for this user.")
@@ -3569,9 +3575,9 @@ def main(argv=None) -> int:
         ap.print_help()
         return 0
     if args.cmd == "config":
-        if args.config_action == "workflow":
-            return _select_workflow_command(args)
         return _configuration_command(args)
+    if args.cmd == "workflow":
+        return _workflow_command(args)
     if args.cmd == "model":
         return _model_command(args)
     if args.cmd == "assistant":
@@ -3627,6 +3633,8 @@ def main(argv=None) -> int:
         return _init_command(args)
     if args.cmd == "skill":
         return _skill_command(args)
+    if args.cmd == "snapshot":
+        return _snapshot_command(args)
     if args.cmd == "diff":
         return _diff_command(args)
     if args.cmd == "__run-deployment":
@@ -3648,8 +3656,6 @@ def main(argv=None) -> int:
         args.deployment = resolved
         if action in {"start", "stop", "restart"}:
             return _deployment_lifecycle_command(args, action)
-        if action == "run":
-            return _run_deployment_command(args)
         if action == "remove":
             return _remove_command(args)
         if action == "compact":

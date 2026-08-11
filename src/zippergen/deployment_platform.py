@@ -91,7 +91,10 @@ def run_systemctl(args: list[str], *, dry_run: bool = False) -> None:
     try:
         subprocess.run(args, check=True)
     except FileNotFoundError as exc:
-        raise SystemExit("systemctl was not found. Use `zippergen deploy run` directly or install systemd user services.") from exc
+        raise SystemExit(
+            "systemctl was not found. Install systemd user services, or use "
+            "`zippergen run --durable` for foreground execution."
+        ) from exc
     except subprocess.CalledProcessError as exc:
         command = shlex.join(args)
         raise SystemExit(f"Command failed with exit code {exc.returncode}: {command}") from exc
@@ -110,7 +113,7 @@ def service_manager() -> str:
         return "systemd"
     raise SystemExit(
         f"No supported deployment service manager for {system or 'this platform'}. "
-        "Use `zippergen deploy run` directly."
+        "Use `zippergen run --durable` for foreground execution."
     )
 
 
@@ -136,7 +139,8 @@ def run_launchctl(
         return subprocess.run(args, check=check, capture_output=not check, text=True)
     except FileNotFoundError as exc:
         raise SystemExit(
-            "launchctl was not found. Use `zippergen deploy run` directly or run on macOS."
+            "launchctl was not found. Use `zippergen run --durable` for "
+            "foreground execution, or run on macOS."
         ) from exc
     except subprocess.CalledProcessError as exc:
         command = shlex.join(args)

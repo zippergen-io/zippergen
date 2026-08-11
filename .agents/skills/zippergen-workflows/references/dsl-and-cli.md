@@ -440,7 +440,7 @@ List every source/support file needed by the deployment bundle.
 
 `zg` is the short alias for `zippergen`. Inside a project the workflow may be
 omitted: commands take an explicit argument first, then `workflow_entry` from
-`zippergen.toml` (set it with `zg config workflow SPEC`), then the project's
+`zippergen.toml` (set it with `zg workflow select SPEC`), then the project's
 only workflow when there is exactly one.
 An explicit spec is given in either `module:workflow` or `path.py:workflow`
 form.
@@ -466,7 +466,7 @@ zg show --format json
 zg validate --json
 
 # Stable before/after change contract
-zg diff --save /tmp/before.json
+zg snapshot /tmp/before.json
 zg diff /tmp/before.json
 zg diff /tmp/before.json --format json
 
