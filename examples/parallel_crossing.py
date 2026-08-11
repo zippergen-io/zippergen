@@ -47,5 +47,5 @@ def crossing_messages(item: str @ Sender) -> str:
 
 
 if __name__ == "__main__":
-    crossing_messages.configure(llms="mock", timeout=30)
+    crossing_messages.configure(llm="mock", timeout=30)
     print(crossing_messages(item="batch-4"))

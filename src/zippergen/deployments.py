@@ -69,6 +69,16 @@ class DeploymentLogCompactionResult:
     removed_archive_bytes: int
 
 
+@dataclass(frozen=True)
+class DeploymentStoreResetResult:
+    """Recoverable replacement of one deployment's durable store."""
+
+    name: str
+    store: Path
+    archive: Path | None
+    archived_files: int
+
+
 def _path_present(path: Path) -> bool:
     return path.exists() or path.is_symlink()
 
@@ -371,6 +381,95 @@ def _unique_log_archive(name: str) -> Path:
         destination = root / f"{_slug(name)}-{timestamp}-{suffix}.log"
         suffix += 1
     return destination
+
+
+def _unique_store_archive(name: str) -> Path:
+    root = _zippergen_home() / "trash" / "deployment-stores"
+    root.mkdir(parents=True, exist_ok=True)
+    root.chmod(0o700)
+    timestamp = time.strftime("%Y%m%d-%H%M%S")
+    base = f"{_slug(name)}-{timestamp}"
+    destination = root / base
+    suffix = 2
+    while destination.exists():
+        destination = root / f"{base}-{suffix}"
+        suffix += 1
+    destination.mkdir(mode=0o700)
+    return destination
+
+
+def reset_deployment_store(
+    name: str,
+    profile: dict[str, object],
+) -> DeploymentStoreResetResult:
+    """Archive the current store and leave its configured path empty.
+
+    The caller must stop the supervised service first. Every member of the
+    SQLite file family is moved as one recoverable unit. A failure part way
+    through is rolled back so reset cannot silently leave half a database.
+    """
+
+    service = _deployment_service_status(name)
+    if service["state"] not in {"not-loaded", "completed"}:
+        raise DeploymentRemovalError(
+            f"Stop deployment {name} before resetting its durable state. "
+            f"Current service state: {service['detail']}"
+        )
+    raw_store = profile.get("store")
+    if not raw_store:
+        raise DeploymentRemovalError(
+            f"Deployment {name} has no durable store configured."
+        )
+    store = Path(str(raw_store)).expanduser()
+    present = tuple(path for path in _sqlite_family(store) if _path_present(path))
+    if not present:
+        return DeploymentStoreResetResult(name, store, None, 0)
+    if any(path.is_dir() or path.is_symlink() for path in present):
+        raise DeploymentRemovalError(
+            f"Expected regular SQLite files for deployment {name}: {store}"
+        )
+
+    destination = _unique_store_archive(name)
+    moved: list[tuple[Path, Path]] = []
+    try:
+        for source in present:
+            target = destination / source.name
+            shutil.move(str(source), str(target))
+            target.chmod(0o600)
+            moved.append((source, target))
+        metadata = destination / "reset.json"
+        metadata.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "deployment": name,
+                    "store": str(store),
+                    "reset_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                    "files": [target.name for _source, target in moved],
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        metadata.chmod(0o600)
+    except Exception as exc:
+        for source, target in reversed(moved):
+            if _path_present(target) and not _path_present(source):
+                source.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(target), str(source))
+        shutil.rmtree(destination, ignore_errors=True)
+        raise DeploymentRemovalError(
+            f"Could not reset deployment {name} safely: {exc}"
+        ) from exc
+
+    return DeploymentStoreResetResult(
+        name=name,
+        store=store,
+        archive=destination,
+        archived_files=len(moved),
+    )
 
 
 

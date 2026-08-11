@@ -60,7 +60,6 @@ def structured_handoff(payload: Json @ Author) -> Json:
 
 
 zippergen_deployment = DeploymentSpec(
-    name="editorial",
     fields=(DeploymentField("channel", "Publishing channel", default="draft"),),
 )
 

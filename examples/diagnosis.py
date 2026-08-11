@@ -140,8 +140,8 @@ def diagnosis_consensus(notes: str @ User, diagnosis: str @ User) -> str:
 
 if __name__ == "__main__":
     diagnosis_consensus.configure(
-        llms={"LLM1": "openai", "LLM2": "openai"},
-        # llms="mock",
+        llm={"LLM1": "openai", "LLM2": "openai"},
+        # llm="mock",
         timeout=600,
     )
     result = diagnosis_consensus(

@@ -80,6 +80,6 @@ def approval_workflow(request: str @ Planner) -> str:
 
 
 if __name__ == "__main__":
-    approval_workflow.configure(llms="mock", execution="memory")
+    approval_workflow.configure(llm="mock", execution="memory")
     result = approval_workflow(request="organise a team offsite")
     print(f"\nResult → {result}")

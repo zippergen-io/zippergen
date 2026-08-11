@@ -208,10 +208,9 @@ def make_cli_assistant_backend(
 ) -> Callable[[AssistantAction, dict[str, object]], dict[str, object]]:
     """Build a backend that invokes Codex CLI or Claude Code.
 
-    Selection order is an exact action route, a participant route, this
-    backend's ``default``, the action's legacy static ``backend``, then the
-    legacy ``ZIPPERGEN_ASSISTANT`` fallback. The backend never uses a shell.
-    Arguments are passed directly to the selected executable.
+    Selection order is an exact action route, a participant route, then this
+    backend's ``default``. The backend never uses a shell. Arguments are
+    passed directly to the selected executable.
     """
 
     if default is not None and default not in {"codex", "claude"}:
@@ -244,14 +243,12 @@ def make_cli_assistant_backend(
             selected_routes.get(target)
             or selected_routes.get(participant)
             or default
-            or action.backend
-            or os.environ.get("ZIPPERGEN_ASSISTANT")
         )
         if selected not in {"codex", "claude"}:
             raise AssistantExecutionError(
                 f"Assistant action '{action.name}' has no backend. Assign a "
                 "named assistant configuration, provide an assistant backend "
-                "to the runtime, or declare backend= on @assistant."
+                "to the runtime, or configure a project assignment."
             )
         executable = shutil.which(selected)
         if executable is None:

@@ -331,11 +331,6 @@ def test_workflow_configure_does_not_route_non_llm_participants():
     )
 
 
-def test_workflow_configure_rejects_llm_and_llms_together():
-    with pytest.raises(ValueError, match="either 'llm'"):
-        config_conflict.configure(llm="mock", llms="mock")
-
-
 def test_workflow_configure_rejects_negative_llm_idle_timeout():
     with pytest.raises(ValueError, match="llm_idle_timeout"):
         config_conflict.configure(llm="mock", llm_idle_timeout=-1)

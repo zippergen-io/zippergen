@@ -146,7 +146,7 @@ def main_pipeline(topic: str @ User) -> str:
 
 if __name__ == "__main__":
     main_pipeline.configure(
-        llms="mock",
+        llm="mock",
         timeout=120,
     )
 

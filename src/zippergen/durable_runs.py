@@ -87,9 +87,6 @@ def _deployment_input_fields(module: ModuleType) -> dict[str, DeploymentField]:
 
 
 def default_llm_spec(module: ModuleType) -> str:
-    for field in deployment_spec_from_module(module).fields:
-        if field.target == "llm" and field.default:
-            return str(field.default)
     return "mock"
 
 
@@ -127,7 +124,6 @@ def collect_development_environment(
     llms: dict[str, str] | None,
     inputs: dict[str, object],
     options: dict[str, object],
-    services: str | None,
     interactive: bool,
     input_func: InputFunc,
     secret_input_func: InputFunc,
@@ -140,11 +136,7 @@ def collect_development_environment(
     saved_secrets = workspace.load_secrets()
     values: dict[str, object] = {}
     for field in spec.fields:
-        if field.target == "llm":
-            values[field.name] = llm
-        elif field.target == "services":
-            values[field.name] = services
-        elif field.target == "input":
+        if field.target == "input":
             values[field.name] = inputs.get(field.target_name, field.default)
         elif field.target == "option":
             values[field.name] = options.get(field.target_name, field.default)
@@ -154,9 +146,7 @@ def collect_development_environment(
                 or saved_secrets.get(field.target_name)
                 or field.default
             )
-    values["__llm_field_names__"] = tuple(
-        field.name for field in spec.fields if field.target == "llm"
-    )
+    values["__llm_field_names__"] = ()
     values["__llm_specs__"] = selected_llm_specs(llm, llms)
 
     environment: dict[str, str] = {}
@@ -362,12 +352,8 @@ def _run_setup_hook(
     store_path: str,
     inputs: dict[str, object],
     options: dict[str, object],
-    services: str | None,
     timeout: float,
 ) -> None:
-    setup_options = dict(options)
-    if services is not None:
-        setup_options["services"] = services
     _call_setup_hook(
         module,
         RunConfig(
@@ -382,7 +368,7 @@ def _run_setup_hook(
             llm_idle_timeouts=llm_idle_timeouts,
             store_path=store_path,
             inputs=inputs,
-            options=setup_options,
+            options=dict(options),
             timeout=timeout,
             execution="sqlite",
         ),
@@ -394,7 +380,6 @@ def run_durable(
     *,
     workflow_spec: str | None = None,
     resume: bool = False,
-    run_id: str | None = None,
     provided_inputs: dict[str, object] | None = None,
     llm: str | None = None,
     llms: dict[str, str] | None = None,
@@ -403,7 +388,6 @@ def run_durable(
     assistant: str | None = None,
     assistants: dict[str, str] | None = None,
     options: dict[str, object] | None = None,
-    services: str | None = None,
     timeout: float = 0.0,
     interactive: bool = True,
     input_func: InputFunc = input,
@@ -413,7 +397,6 @@ def run_durable(
     human_connector_factory: Callable[[str], object] | None = None,
     connector_environment: dict[str, str] | None = None,
     connector_snapshot: dict[str, object] | None = None,
-    store_path: str | None = None,
 ) -> dict[str, Any]:
     """Create or resume one recorded durable run."""
 
@@ -428,9 +411,7 @@ def run_durable(
         or assistant is not None
         or assistants
         or options
-        or services is not None
         or connector_snapshot is not None
-        or store_path is not None
     ):
         raise SystemExit(
             "A resumed run uses its recorded workflow inputs and configuration."
@@ -442,7 +423,7 @@ def run_durable(
         secret_input_func = getpass.getpass
 
     if resume:
-        selected_run_id = run_id or workspace.current_run_id
+        selected_run_id = workspace.current_run_id
         if not selected_run_id:
             raise SystemExit("There is no current durable run to resume.")
         record = workspace.load_run(selected_run_id)
@@ -479,7 +460,6 @@ def run_durable(
             record.get("assistants")
         )
         run_options = dict(record.get("options") or {})
-        run_services = record.get("services")
         if renderer is None:
             output_func(f"Resuming run {selected_run_id}")
         else:
@@ -539,7 +519,6 @@ def run_durable(
         selected_assistants = assistant_routing.overrides
         effective_llm_routes(workflow, selected_llm, selected_llms)
         run_options = dict(options or {})
-        run_services = services
         record = workspace.new_run(
             workflow_spec=stored_spec,
             workflow_name=workflow.name,
@@ -552,9 +531,7 @@ def run_durable(
             assistant=selected_assistant,
             assistants=selected_assistants,
             options=run_options,
-            services=run_services,
             connectors=connector_snapshot,
-            store_path=store_path,
         )
         selected_run_id = str(record["run_id"])
         if renderer is None:
@@ -567,7 +544,6 @@ def run_durable(
         llms=selected_llms,
         inputs=inputs,
         options=run_options,
-        services=str(run_services) if run_services is not None else None,
         interactive=interactive,
         input_func=input_func,
         secret_input_func=secret_input_func,
@@ -672,7 +648,6 @@ def run_durable(
                 store_path=store_path,
                 inputs=inputs,
                 options=run_options,
-                services=str(run_services) if run_services is not None else None,
                 timeout=timeout,
             )
             llm_config: str | dict[str, str] = selected_llm

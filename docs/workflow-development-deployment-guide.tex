@@ -434,15 +434,14 @@ says what you wrote. The local view says what will run.
 \texttt{zg run} & execute once, nothing is kept \\
 \texttt{zg run -{}-durable} & record every step, so it can be resumed \\
 \texttt{zg run -{}-resume} & continue the most recent unfinished run \\
-\texttt{zg run -{}-resume -{}-run-id ID} & continue a particular one \\
 \bottomrule
 \end{tabularx}
 \end{center}
 
-A plain run leaves nothing behind, so \texttt{zg deploy status} afterwards finds
-nothing. That is deliberate: throwaway runs should not accumulate. When you want
-to come back to a run, to resume it, inspect it, or answer a human action
-later, use \texttt{-{}-durable}.
+A plain run leaves no durable record to resume or inspect. That is deliberate:
+throwaway runs should not accumulate. When you want to come back to a run, to
+resume it, inspect it, or answer a human action later, use
+\texttt{-{}-durable}.
 
 Missing inputs are asked for in a terminal. In a script, supply them:
 
@@ -757,7 +756,7 @@ environment, and the service files, and reaches nothing. A deployment can be
 prepared today and started next week. Starting is about to make real calls, so
 every model, assistant CLI, and connector is probed first and a failure stops it.
 
-After the first time, the deployment has a name and you use that:
+After the first time, the same command redeploys the current source:
 
 \begin{lstlisting}[style=shell]
 zg deploy                     # redeploy the current source
@@ -770,14 +769,15 @@ zg deploy                     # redeploy the current source
 \toprule
 \texttt{zg deploy status} & is it running, and where is it \\
 \texttt{zg deploy logs} & what it has been doing \\
-\texttt{zg inspect NAME} & where each participant's local program is now \\
-\texttt{zg inspect NAME --watch} & keep that position open and refresh it in place \\
-\texttt{zg trace NAME} & recent protocol events \\
-\texttt{zg tasks NAME} & decisions waiting for a person \\
-\texttt{zg approve NAME} & answer one \\
+\texttt{zg inspect --deployment} & where each participant's local program is now \\
+\texttt{zg inspect --deployment --watch} & keep that position open and refresh it in place \\
+\texttt{zg trace --deployment} & recent protocol events \\
+\texttt{zg tasks --deployment} & decisions waiting for a person \\
+\texttt{zg approve --deployment} & answer one \\
 \texttt{zg deploy check} & readiness checks, in detail \\
-\texttt{zg deploy stop} / \texttt{restart} & move the service \\
+\texttt{zg deploy stop} / \texttt{zg deploy restart} & move the service \\
 \texttt{zg deploy compact} & reclaim space, the service must be stopped \\
+\texttt{zg deploy reset --yes} & archive durable state and start fresh \\
 \texttt{zg deploy remove} & delete it \\
 \bottomrule
 \end{tabularx}
@@ -892,7 +892,7 @@ usual causes are a missing API key on that machine, a Google authorization that
 does not cover the workflow's scopes, or a Telegram token that was never
 supplied there.
 
-\subsection{\texttt{zg deploy status} shows nothing after a run}
+\subsection{A run cannot be resumed or inspected}
 
 A plain run keeps nothing. Use \texttt{-{}-durable} for a run you want to come
 back to.

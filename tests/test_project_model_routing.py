@@ -16,7 +16,7 @@ def _one_deployment(home, suffix=".json"):
     return found[0]
 
 MODEL_WORKFLOW = """
-from zippergen import Lifeline, llm, workflow
+from zippergen import DeploymentField, DeploymentSpec, Lifeline, llm, workflow
 
 User = Lifeline("User")
 Writer = Lifeline("Writer")
@@ -35,6 +35,10 @@ def answer(topic: str @ User) -> str:
     Writer: draft = draft_reply(topic)
     Writer(draft) >> User(draft)
     return draft @ User
+
+zippergen_deployment = DeploymentSpec(fields=(
+    DeploymentField("topic", "Topic", target="input", required=True),
+))
 """
 
 
@@ -130,7 +134,7 @@ def test_deployment_snapshots_project_model_assignments(
 
     assert main([
         "deploy",
-        "--input",
+        "--set",
         "topic=hello",
         "--no-start",
         "--no-bundle",
@@ -150,29 +154,17 @@ def test_deployment_snapshots_project_model_assignments(
     }
 
 
-def test_global_cli_model_replaces_project_assignments(
+def test_deploy_does_not_expose_a_global_model_override(
     tmp_path, monkeypatch, capsys
 ):
-    _root, home = _configured_project(tmp_path, monkeypatch)
+    _configured_project(tmp_path, monkeypatch)
 
-    assert main([
-        "deploy",
-        "--llm",
-        "mock",
-        "--input",
-        "topic=hello",
-        "--no-start",
-        "--no-bundle",
-        "--no-install",
-        "--no-setup",
-        "--no-doctor",
-        "--yes",
-    ]) == 0
-    capsys.readouterr()
-
-    profile = json.loads(_one_deployment(home).read_text())
-    assert profile["llm"] == "mock"
-    assert profile["llms"] == {}
+    try:
+        main(["deploy", "--llm", "mock"])
+    except SystemExit as exc:
+        assert exc.code == 2
+    else:  # pragma: no cover
+        raise AssertionError("deploy should use project model assignments")
 
 
 def test_global_cli_model_replaces_project_assignments_for_plain_run(

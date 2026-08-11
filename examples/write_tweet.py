@@ -9,9 +9,9 @@ Run without an API key:
     python examples/write_tweet.py
 
 The built-in mock backend produces placeholder output. To see real results:
-    write_tweet.configure(llms="openai")
-    write_tweet.configure(llms="mistral")
-    write_tweet.configure(llms="claude")
+    write_tweet.configure(llm="openai")
+    write_tweet.configure(llm="mistral")
+    write_tweet.configure(llm="claude")
 """
 
 from zippergen.syntax import Lifeline, Var
@@ -91,7 +91,7 @@ def write_tweet(topic: str @ User) -> str:
 
 if __name__ == "__main__":
     # No API key needed — runs with the built-in mock backend.
-    # Switch to a real LLM: write_tweet.configure(llms="openai")
-    write_tweet.configure(llms="mock", mock_delay=(0.5, 1.5))
+    # Switch to a real LLM: write_tweet.configure(llm="openai")
+    write_tweet.configure(llm="mock", mock_delay=(0.5, 1.5))
     result = write_tweet(topic="a git commit message that tells the truth")
     print(f"\nResult: {result}")

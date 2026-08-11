@@ -5,20 +5,13 @@ parses ordinary CLI commands and coordinates the supporting subsystems.
 """
 from __future__ import annotations
 
-from zippergen.role_runner import (
-    run_role,
-)
-
-
 # ---------------------------------------------------------------------------
 # CLI:
-#   `zippergen run MODULE_OR_PATH:WORKFLOW [--llm SPEC] [--store PATH] [--input k=v]`
-#   `zippergen serve --workflow PATH --role NAME --store PATH [--input k=v]`
-#       Legacy low-level per-role entry point; prefer `zippergen run`.
+#   `zippergen run [--llm SPEC] [--input k=v]`
+#   `zippergen run --durable` / `zippergen run --resume`
 # ---------------------------------------------------------------------------
 import argparse
 import getpass
-import hashlib
 import json
 import math
 import os
@@ -27,10 +20,8 @@ import shlex
 import shutil
 import subprocess
 import sys
-import tempfile
 import threading
 import time
-import venv
 from collections.abc import Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -44,8 +35,6 @@ from zippergen.deployment import (
     deployment_spec_from_module,
 )
 from zippergen.deployment_platform import (
-    deployment_bundles_dir as _deployment_bundles_dir,
-    deployment_environment_dir as _deployment_environment_dir,
     deployment_launchd_path as _deployment_launchd_path,
     deployment_profile_path as _deployment_profile_path,
     deployment_script_path as _deployment_script_path,
@@ -66,6 +55,10 @@ from zippergen.deployment_platform import (
     systemd_unit_name as _systemd_unit_name,
     zippergen_home as _zippergen_home,
 )
+from zippergen.deployment_environment import (
+    bundle_deployment as _bundle_deployment,
+    prepare_deployment_environment as _prepare_deployment_environment,
+)
 from zippergen.deployment_profiles import (
     _default_deployment_log_path,
     _default_deployment_store_path,
@@ -80,7 +73,6 @@ from zippergen.deployment_profiles import (
 )
 from zippergen.deployment_checks import (
     DoctorConfig,
-    _MODEL_PROVIDER_SECRETS,
     _call_doctor_hook,
     _doctor_check,
     _doctor_checks,
@@ -110,8 +102,6 @@ from zippergen.workflow_io import (
     RunConfig,
     _call_setup_hook,
     _looks_like_path,
-    _workflow_lifelines,
-    load_workflow,
     load_workflow_spec,
 )
 from zippergen.validation import (
@@ -126,10 +116,7 @@ from zippergen.semantic import (
     workflow_semantics,
 )
 from zippergen.syntax import Workflow
-from zippergen.projection import project
 from zippergen.store import (
-    RECOVERY_COMPACTION_VERSION,
-    TRACE_RETENTION_VERSION,
     complete_human_task,
     ensure_human_task_token,
     list_workflow_results,
@@ -138,28 +125,6 @@ from zippergen.store import (
     mark_human_task_token_used,
     open_store,
 )
-
-def seed_env(conn, role: str, wf: Workflow, inputs: dict) -> dict:
-    conn.execute("BEGIN IMMEDIATE")
-    try:
-        row = conn.execute(
-            "SELECT payload FROM events WHERE kind='seed' AND sender=? ORDER BY rowid LIMIT 1",
-            (role,),
-        ).fetchone()
-        if row is not None:
-            conn.execute("ROLLBACK")
-            return json.loads(row[0])
-        conn.execute(
-            "INSERT INTO events(sender,receiver,channel,kind,payload,causal_stamp) "
-            "VALUES(?,?,?,?,?,?)",
-            (role, None, None, "seed", json.dumps(inputs), None),
-        )
-        conn.execute("COMMIT")
-        return dict(inputs)
-    except BaseException:
-        conn.execute("ROLLBACK")
-        raise
-
 
 def _parse_inputs(pairs: list[str]) -> dict:
     out: dict = {}
@@ -174,24 +139,6 @@ def _parse_inputs(pairs: list[str]) -> dict:
     return out
 
 
-def _parse_secret_inputs(
-    pairs: list[str],
-    *,
-    option: str,
-) -> dict[str, str]:
-    """Split secret arguments without interpreting or rewriting their values."""
-
-    values: dict[str, str] = {}
-    for pair in pairs or []:
-        name, separator, value = pair.partition("=")
-        if not name or not separator:
-            raise SystemExit(
-                f"Invalid {option} {pair!r}; expected name=value."
-            )
-        values[name] = value
-    return values
-
-
 def _parse_input_json(text: str | None) -> dict:
     if not text:
         return {}
@@ -204,14 +151,8 @@ def _parse_input_json(text: str | None) -> dict:
     return value
 
 
-def _parse_options(pairs: list[str], *, services: str | None = None) -> dict:
-    options = _parse_inputs(pairs)
-    if services is not None:
-        existing = options.get("services")
-        if existing is not None and existing != services:
-            raise SystemExit("Use either --services or --option services=..., not both.")
-        options["services"] = services
-    return options
+def _parse_options(pairs: list[str]) -> dict:
+    return _parse_inputs(pairs)
 
 
 def _parse_llm_idle_timeouts(pairs: list[str]) -> dict[str, float]:
@@ -231,20 +172,6 @@ def _parse_llm_idle_timeouts(pairs: list[str]) -> dict[str, float]:
     return timeouts
 
 
-def _parse_llm_idle_timeouts_json(text: str | None) -> dict[str, float] | None:
-    if text is None:
-        return None
-    try:
-        value = json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise SystemExit(
-            "--llm-idle-timeouts-json must be a JSON object."
-        ) from exc
-    if not isinstance(value, dict):
-        raise SystemExit("--llm-idle-timeouts-json must be a JSON object.")
-    return _parse_llm_idle_timeouts(_jsonable_kv_pairs(value))
-
-
 def _seed_inputs(wf: Workflow, inputs: dict) -> dict:
     """Var defaults from the workflow namespace, overlaid by caller inputs —
     parity with the in-process run() seeding (runtime.py:1014)."""
@@ -254,21 +181,6 @@ def _seed_inputs(wf: Workflow, inputs: dict) -> dict:
     return env
 
 
-
-
-def _default_store_path(workflow_spec: str, wf: Workflow) -> str:
-    base = workflow_spec.split(":", 1)[0]
-    if _looks_like_path(base):
-        label = f"{Path(base).stem}.{wf.name}"
-    else:
-        label = f"{base}.{wf.name}"
-    return str(Path.home() / ".zippergen" / "runs" / f"{_slug(label)}.sqlite")
-
-
-def _ensure_store_parent(path: str) -> str:
-    expanded = Path(path).expanduser()
-    expanded.parent.mkdir(parents=True, exist_ok=True)
-    return str(expanded)
 
 
 
@@ -310,12 +222,6 @@ def _write_deployment_secrets(path: Path, values: dict[str, str]) -> None:
     path.chmod(0o600)
 
 
-def _deployment_name_from_workflow(workflow_spec: str, wf: Workflow) -> str:
-    base = workflow_spec.split(":", 1)[0]
-    stem = Path(base).stem if _looks_like_path(base) else base.rsplit(".", 1)[-1]
-    return _slug(f"{stem}-{wf.name}")
-
-
 def _jsonable_kv_pairs(values: Mapping[str, object]) -> list[str]:
     return [f"{key}={json.dumps(value, default=str)}" for key, value in sorted(values.items())]
 
@@ -337,7 +243,6 @@ def _run_args_from_deployment(profile: dict[str, object]):
         input=[],
         input_json=json.dumps(profile.get("inputs") or {}, default=str),
         option=_jsonable_kv_pairs(profile.get("options") or {}),  # type: ignore[arg-type]
-        services=profile.get("services") or None,
         timeout=timeout,
         execution=str(profile.get("execution", "sqlite")),
     )
@@ -345,7 +250,10 @@ def _run_args_from_deployment(profile: dict[str, object]):
 
 def _deployment_command(name: str, *, python_executable: str | None = None) -> str:
     python = python_executable or sys.executable
-    return f"{shlex.quote(python)} -m zippergen.serve deploy run {shlex.quote(_slug(name))}"
+    return (
+        f"{shlex.quote(python)} -m zippergen.serve __run-deployment "
+        f"--profile {shlex.quote(_slug(name))}"
+    )
 
 
 def _write_deployment_artifacts(profile: dict[str, object]) -> None:
@@ -595,16 +503,21 @@ def _doctor_command(args) -> int:
 
 
 def _resolve_store_arg(args) -> str:
-    deployment = getattr(args, "deployment", None)
-    store = getattr(args, "store", None)
-    if deployment and store:
-        raise SystemExit("Use either a deployment name or --store, not both.")
-    if deployment:
-        profile = _load_deployment_profile(deployment)
+    """Resolve durable state through its owning run or deployment."""
+
+    from zippergen.workspace import Workspace
+
+    if getattr(args, "deployment", False):
+        profile = _load_deployment_profile(_resolved_deployment_name(args))
         return str(profile["store"])
-    if store:
-        return str(store)
-    raise SystemExit("Provide a deployment name or --store.")
+    workspace = Workspace(getattr(args, "project", None))
+    record = workspace.current_run()
+    if record is None:
+        raise SystemExit(
+            "There is no current durable run. Start one with "
+            "'zippergen run --durable', or use --deployment."
+        )
+    return str(record["store"])
 
 
 
@@ -783,13 +696,16 @@ def _notify_stdout_task(task: dict, *, store_path: str) -> None:
         print(prefill)
     if token:
         print("\nApprove:")
-        print(f"  zippergen approve --store {store_path} --token {token}")
+        print(f"  zippergen approve --deployment --token {token}")
         if spec.get("output_type") == "bool":
             print("Decline:")
-            print(f"  zippergen approve --store {store_path} --token {token} --no")
+            print(f"  zippergen approve --deployment --token {token} --no")
         else:
             print("Respond:")
-            print(f"  zippergen approve --store {store_path} --token {token} --value '<value>'")
+            print(
+                "  zippergen approve --deployment "
+                f"--token {token} --value '<value>'"
+            )
 
 
 def _print_status(status: dict[str, object]) -> None:
@@ -827,41 +743,31 @@ def _print_status(status: dict[str, object]) -> None:
 
 
 def _resolved_deployment_name(args) -> str:
-    """Use this project's deployment when the command line does not name one.
+    """Return the private identity of this project's one deployment.
 
-    A project has one workflow, so it has one deployment, and there is nothing
-    to name. Each profile records the directory it was created from, so "this
-    project's deployment" is an exact question rather than a guess.
-
-    Two deployments of one project means two project directories.
+    The identity uses the same path-derived key as private workspace state. It
+    is stable for this project directory and cannot collide merely because two
+    projects use the same workflow filename or deployment declaration.
     """
 
     from zippergen.workspace import Workspace
 
-    root = Path(getattr(args, "project", None) or Workspace().root).resolve()
-    directory = _deployments_dir()
-    matches: list[str] = []
-    for path in sorted(directory.glob("*.json")) if directory.exists() else []:
-        try:
-            profile = _load_deployment_profile(path.stem)
-        except SystemExit:
-            continue
-        source = profile.get("source_cwd")
-        if source and Path(str(source)).resolve() == root:
-            matches.append(path.stem)
-
-    if len(matches) == 1:
-        return matches[0]
-    if matches:
+    workspace = Workspace(getattr(args, "project", None))
+    name = workspace.directory.name
+    path = _deployment_profile_path(name)
+    if not path.exists():
         raise SystemExit(
-            "This project has several deployments: "
-            + ", ".join(matches)
-            + ". A project should have one; remove the others from "
-            "ZIPPERGEN_HOME/deployments."
+            "This project has no deployment yet. Create one with "
+            "'zippergen deploy'."
         )
-    raise SystemExit(
-        "This project has no deployment yet. Create one with 'zippergen deploy'."
-    )
+    profile = _load_deployment_profile(name)
+    source = profile.get("source_cwd")
+    if not source or Path(str(source)).resolve() != workspace.root:
+        raise SystemExit(
+            f"Deployment profile {path} does not belong to this project. "
+            "Remove it and deploy again."
+        )
+    return name
 
 
 def _resolved_workflow_spec(args) -> str:
@@ -912,7 +818,7 @@ def _run_workflow_command(args) -> int:
         input_func=input,
         output_func=print,
     )
-    options = _parse_options(args.option, services=args.services)
+    options = _parse_options(args.option)
     routing = project_model_routing(
         workspace,
         workspace.canonical_spec(args.workflow, cwd=workspace.root),
@@ -936,7 +842,7 @@ def _run_workflow_command(args) -> int:
     )
     assistant_routing = apply_assistant_overrides(
         assistant_routing,
-        default_backend=args.assistant,
+        default_backend=getattr(args, "assistant", None),
         overrides=normalize_assistant_overrides(
             getattr(args, "assistants", None)
         ),
@@ -944,18 +850,10 @@ def _run_workflow_command(args) -> int:
         module=module,
     )
 
-    # Naming a store means wanting one; otherwise a plain run leaves nothing
-    # behind, and --durable is the way to ask for a run you can come back to.
-    execution = args.execution or ("sqlite" if args.store else "memory")
-    store_path = args.store
-    if execution == "sqlite":
-        store_path = _ensure_store_parent(store_path or _default_store_path(args.workflow, wf))
-        print(f"Store: {store_path}", file=sys.stderr)
-    elif store_path:
-        print(
-            "--store is ignored because --execution memory was requested.",
-            file=sys.stderr,
-        )
+    # A public plain run is always disposable. Deployment execution supplies
+    # its private SQLite store through the internal profile namespace.
+    execution = str(getattr(args, "execution", None) or "memory")
+    store_path = getattr(args, "store", None)
 
     config = RunConfig(
         workflow_spec=args.workflow,
@@ -1028,7 +926,6 @@ def _durable_run_command(args) -> int:
         Workspace(getattr(args, "project", None)),
         workflow_spec=args.workflow,
         resume=args.resume,
-        run_id=getattr(args, "run_id", None),
         provided_inputs=inputs,
         llm=args.llm,
         llms=normalize_llm_overrides(_parse_inputs(args.llm_for)),
@@ -1036,21 +933,15 @@ def _durable_run_command(args) -> int:
         llm_idle_timeouts=_parse_llm_idle_timeouts(
             args.llm_idle_timeout_for
         ),
-        assistant=args.assistant,
+        assistant=None,
         assistants=normalize_assistant_overrides(
             getattr(args, "assistants", None)
         ),
-        options=_parse_options(args.option, services=args.services),
-        services=args.services,
+        options=_parse_options(args.option),
         timeout=args.timeout,
         interactive=not args.yes and sys.stdin.isatty(),
         input_func=input,
         output_func=print,
-        store_path=(
-            _ensure_store_parent(args.store)
-            if getattr(args, "store", None)
-            else None
-        ),
     )
     return 0
 
@@ -1653,6 +1544,58 @@ def _compact_command(args) -> int:
     return 0
 
 
+def _reset_deployment_command(args) -> int:
+    """Replace deployment state with an empty store, keeping an archive."""
+
+    from zippergen.deployment_platform import deployment_service_status
+    from zippergen.deployments import (
+        DeploymentRemovalError,
+        reset_deployment_store,
+    )
+
+    profile = _load_deployment_profile(args.name)
+    if not args.yes:
+        if not sys.stdin.isatty():
+            raise SystemExit(
+                "Resetting deployment state requires confirmation. "
+                "Re-run with --yes."
+            )
+        answer = input(
+            "Archive the current deployment state and start fresh? [y/N]: "
+        ).strip().casefold()
+        if answer not in {"y", "yes"}:
+            print("Nothing was changed.")
+            return 1
+
+    service = deployment_service_status(args.name)
+    restart_after = service.get("state") in {"running", "restarting"}
+    needs_stop = service.get("state") not in {"not-loaded", "completed"}
+    lifecycle = argparse.Namespace(
+        name=args.name,
+        dry_run=False,
+        enable=False,
+        skip_readiness=False,
+    )
+    if needs_stop:
+        _deployment_lifecycle_command(lifecycle, "stop")
+    try:
+        result = reset_deployment_store(args.name, profile)
+    except DeploymentRemovalError as exc:
+        raise SystemExit(str(exc)) from exc
+    _initialize_deployment_store(profile)
+    print(f"Reset deployment state: {result.store}")
+    if result.archive is not None:
+        print(
+            f"Archived {result.archived_files} SQLite file(s): "
+            f"{result.archive}"
+        )
+    else:
+        print("There was no previous durable state to archive.")
+    if restart_after:
+        return _deployment_lifecycle_command(lifecycle, "start")
+    return 0
+
+
 def _telegram_bot_token(workspace) -> None:
     """Read the bot token once, without echo, and keep it off this machine's argv."""
 
@@ -2085,21 +2028,11 @@ def _collect_deployment_fields(
         if field.name in overrides:
             current = overrides[field.name]
         values[field.name] = current
-    global_llm = next(
-        (
-            values.get(field.name)
-            for field in spec.fields
-            if field.target == "llm"
-        ),
-        profile.get("llm"),
-    )
     values["__llm_specs__"] = selected_llm_specs(
-        global_llm,
+        profile.get("llm"),
         profile.get("llms"),
     )
-    values["__llm_field_names__"] = tuple(
-        field.name for field in spec.fields if field.target == "llm"
-    )
+    values["__llm_field_names__"] = ()
 
     for field in spec.fields:
         if not _field_enabled(field, values):
@@ -2142,11 +2075,7 @@ def _collect_deployment_fields(
         value = values.get(field.name)
         if value is None:
             continue
-        if field.target == "llm":
-            profile["llm"] = value
-        elif field.target == "services":
-            profile["services"] = value
-        elif field.target == "input":
+        if field.target == "input":
             inputs[field.target_name] = value
         elif field.target == "option":
             options[field.target_name] = value
@@ -2159,352 +2088,6 @@ def _collect_deployment_fields(
     profile["inputs"] = inputs
     profile["environment"] = environment
     return values, secrets
-
-
-def _deployment_python_path(environment_dir: Path) -> Path:
-    if os.name == "nt":
-        return environment_dir / "Scripts" / "python.exe"
-    return environment_dir / "bin" / "python"
-
-
-def _bundle_relative_path(source: Path, source_root: Path) -> Path:
-    try:
-        return source.relative_to(source_root)
-    except ValueError:
-        digest = hashlib.sha1(str(source).encode()).hexdigest()[:8]
-        return Path("external") / f"{digest}-{source.name}"
-
-
-def _copy_deployment_source(source: Path, target: Path) -> None:
-    if source.is_dir():
-        shutil.copytree(
-            source,
-            target,
-            ignore=shutil.ignore_patterns(".git", ".venv", "__pycache__", "*.pyc"),
-        )
-    else:
-        target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, target)
-
-
-
-
-
-
-
-
-def _bundle_deployment(
-    profile: dict[str, object],
-    spec: DeploymentSpec,
-    workflow: Workflow,
-) -> None:
-    source_cwd = Path(str(profile.get("source_cwd") or profile["cwd"])).expanduser().resolve()
-    source_workflow = str(profile.get("source_workflow") or profile["workflow"])
-    module_ref, separator, workflow_name = source_workflow.partition(":")
-    module_path = Path(module_ref).expanduser()
-    if not module_path.is_absolute():
-        module_path = source_cwd / module_path
-    if not module_path.exists():
-        # Importable modules are already versioned Python artifacts.  A later
-        # packaging layer can snapshot their entire distribution; path-based
-        # workflows get a concrete source bundle today.
-        profile.setdefault("source_cwd", str(source_cwd))
-        profile.setdefault("source_workflow", source_workflow)
-        return
-
-    version = f"{time.strftime('%Y%m%d-%H%M%S')}-{time.time_ns() % 1_000_000_000:09d}"
-    bundle_root = _deployment_bundles_dir(str(profile["name"])) / version
-    bundle_root.mkdir(parents=True, exist_ok=False)
-
-    sources = [module_path.resolve()]
-    for declared in spec.files:
-        path = Path(declared).expanduser()
-        if not path.is_absolute():
-            path = source_cwd / path
-        path = path.resolve()
-        if not path.exists():
-            raise SystemExit(f"Declared deployment file does not exist: {path}")
-        if path not in sources:
-            sources.append(path)
-    for action in _assistant_actions(workflow):
-        if action.instructions_path is None:
-            continue
-        path = Path(action.instructions_path).resolve()
-        try:
-            path.relative_to(source_cwd)
-        except ValueError as exc:
-            raise SystemExit(
-                f"Assistant instruction file for {action.name!r} is outside "
-                f"the project root and cannot be bundled portably: {path}"
-            ) from exc
-        if path not in sources:
-            sources.append(path)
-
-    copied: dict[Path, Path] = {}
-    for source in sources:
-        relative = _bundle_relative_path(source, source_cwd)
-        _copy_deployment_source(source, bundle_root / relative)
-        copied[source] = relative
-
-    workflow_relative = copied[module_path.resolve()]
-    profile["source_cwd"] = str(source_cwd)
-    profile["source_workflow"] = source_workflow
-    profile["cwd"] = str(bundle_root)
-    profile["workflow"] = str(workflow_relative) + (f":{workflow_name}" if separator else "")
-    profile["bundle"] = str(bundle_root)
-    profile["bundled_files"] = [str(path) for path in copied.values()]
-
-
-def _zippergen_install_requirement(
-    *,
-    extras: tuple[str, ...] = (),
-) -> str:
-    project_root = Path(__file__).resolve().parents[2]
-    if (project_root / "pyproject.toml").exists():
-        requirement = str(project_root)
-    else:
-        try:
-            from importlib.metadata import version
-
-            requirement = f"zippergen=={version('zippergen')}"
-        except Exception:
-            requirement = "zippergen"
-    if extras:
-        name, separator, version_spec = requirement.partition("==")
-        suffix = ",".join(sorted(set(extras)))
-        return (
-            f"{name}[{suffix}]=={version_spec}"
-            if separator
-            else f"{requirement}[{suffix}]"
-        )
-    return requirement
-
-
-def _checkout_revision(project_root: Path) -> str | None:
-    """Read a checkout revision without invoking Git or contacting a remote."""
-
-    git_marker = project_root / ".git"
-    try:
-        if git_marker.is_file():
-            marker = git_marker.read_text().strip()
-            if not marker.startswith("gitdir:"):
-                return None
-            git_dir = Path(marker.partition(":")[2].strip())
-            if not git_dir.is_absolute():
-                git_dir = (project_root / git_dir).resolve()
-        elif git_marker.is_dir():
-            git_dir = git_marker
-        else:
-            return None
-        head = (git_dir / "HEAD").read_text().strip()
-        if not head.startswith("ref:"):
-            return head if len(head) >= 12 else None
-        reference = head.partition(":")[2].strip()
-        loose = git_dir / reference
-        if loose.is_file():
-            return loose.read_text().strip()
-        packed = git_dir / "packed-refs"
-        if packed.is_file():
-            for line in packed.read_text().splitlines():
-                if not line or line.startswith(("#", "^")):
-                    continue
-                revision, _, name = line.partition(" ")
-                if name == reference:
-                    return revision
-    except OSError:
-        return None
-    return None
-
-
-def _zippergen_runtime_provenance() -> dict[str, str]:
-    """Describe the ZipperGen source selected for a deployment environment."""
-
-    from importlib.metadata import PackageNotFoundError, version
-
-    project_root = Path(__file__).resolve().parents[2]
-    try:
-        installed_version = version("zippergen")
-    except PackageNotFoundError:
-        installed_version = "unknown"
-    if (project_root / "pyproject.toml").is_file():
-        provenance = {
-            "kind": "source-checkout",
-            "version": installed_version,
-            "source": str(project_root),
-        }
-        digest = hashlib.sha256()
-        package_root = project_root / "src" / "zippergen"
-        source_files = (
-            [
-                path
-                for path in package_root.rglob("*")
-                if path.is_file()
-                and "__pycache__" not in path.parts
-                and path.suffix != ".pyc"
-            ]
-            if package_root.is_dir()
-            else []
-        )
-        for path in [project_root / "pyproject.toml", *sorted(source_files)]:
-            try:
-                relative = path.relative_to(project_root)
-                digest.update(str(relative).encode())
-                digest.update(b"\0")
-                digest.update(path.read_bytes())
-                digest.update(b"\0")
-            except OSError:
-                continue
-        provenance["source_sha256"] = digest.hexdigest()
-        revision = _checkout_revision(project_root)
-        if revision:
-            provenance["revision"] = revision
-        return provenance
-    return {
-        "kind": "package",
-        "version": installed_version,
-        "source": "installed package",
-    }
-
-
-def _deployment_zippergen_extras(
-    profile: dict[str, object],
-) -> tuple[str, ...]:
-    raw = profile.get("connectors") or {}
-    bindings = raw if isinstance(raw, dict) else {}
-    if any(
-        isinstance(value, dict)
-        and value.get("kind") in {"gmail", "google-sheets"}
-        for value in bindings.values()
-    ):
-        return ("google",)
-    return ()
-
-
-def _prepare_deployment_environment(
-    profile: dict[str, object],
-    spec: DeploymentSpec,
-    *,
-    skip_install: bool,
-) -> None:
-    requirements = [package.requirement for package in spec.packages]
-    profile["packages"] = requirements
-    zippergen_extras = _deployment_zippergen_extras(profile)
-    profile["zippergen_extras"] = list(zippergen_extras)
-    profile["zippergen_runtime"] = _zippergen_runtime_provenance()
-    profile["recovery_compaction_version"] = RECOVERY_COMPACTION_VERSION
-    profile["trace_retention_version"] = TRACE_RETENTION_VERSION
-    if skip_install:
-        profile["python"] = str(profile.get("python") or sys.executable)
-        return
-
-    name = str(profile["name"])
-    environment_dir = _deployment_environment_dir(name)
-    environment_dir.parent.mkdir(parents=True, exist_ok=True)
-    build_dir = Path(
-        tempfile.mkdtemp(
-            prefix=f".{_slug(name)}-building-",
-            dir=environment_dir.parent,
-        )
-    )
-    build_python = _deployment_python_path(build_dir)
-    uv = shutil.which("uv")
-    phase = "creating the environment"
-    print(f"Creating managed Python environment for {name}...")
-    try:
-        if uv is not None:
-            subprocess.run(
-                [
-                    uv,
-                    "venv",
-                    "--python",
-                    sys.executable,
-                    str(build_dir),
-                ],
-                check=True,
-            )
-            install = [
-                uv,
-                "pip",
-                "install",
-                "--refresh-package",
-                "zippergen",
-                "--python",
-                str(build_python),
-                _zippergen_install_requirement(extras=zippergen_extras),
-                *requirements,
-            ]
-        else:
-            venv.EnvBuilder(with_pip=True).create(build_dir)
-            install = [
-                str(build_python),
-                "-m",
-                "pip",
-                "install",
-                _zippergen_install_requirement(extras=zippergen_extras),
-                *requirements,
-            ]
-        phase = "installing deployment dependencies"
-        print("Installing deployment dependencies...")
-        subprocess.run(install, check=True)
-    except subprocess.CalledProcessError as exc:
-        shutil.rmtree(build_dir, ignore_errors=True)
-        outcome = (
-            f"signal {-exc.returncode}"
-            if exc.returncode < 0
-            else f"exit code {exc.returncode}"
-        )
-        guidance = (
-            " ZipperGen found uv and used it instead of ensurepip."
-            if uv is not None
-            else " Install uv and retry to avoid the standard-library "
-            "ensurepip bootstrap."
-        )
-        raise SystemExit(
-            f"Managed environment failed while {phase} ({outcome})."
-            f"{guidance} The previous deployment environment, if any, was "
-            "left unchanged."
-        ) from None
-    except (OSError, subprocess.SubprocessError) as exc:
-        shutil.rmtree(build_dir, ignore_errors=True)
-        raise SystemExit(
-            f"Managed environment failed while {phase}: {exc}. The previous "
-            "deployment environment, if any, was left unchanged."
-        ) from None
-    except KeyboardInterrupt:
-        shutil.rmtree(build_dir, ignore_errors=True)
-        raise
-    except Exception as exc:
-        shutil.rmtree(build_dir, ignore_errors=True)
-        raise SystemExit(
-            f"Managed environment failed while {phase}: {exc}. The previous "
-            "deployment environment, if any, was left unchanged."
-        ) from None
-
-    replaced: Path | None = None
-    try:
-        if environment_dir.exists() or environment_dir.is_symlink():
-            replaced = environment_dir.with_name(
-                f".{environment_dir.name}-replaced-"
-                f"{time.strftime('%Y%m%d-%H%M%S')}-"
-                f"{time.time_ns() % 1_000_000_000:09d}"
-            )
-            os.replace(environment_dir, replaced)
-        os.replace(build_dir, environment_dir)
-    except OSError as exc:
-        if replaced is not None and replaced.exists():
-            os.replace(replaced, environment_dir)
-        shutil.rmtree(build_dir, ignore_errors=True)
-        raise SystemExit(
-            f"Managed environment was built but could not replace "
-            f"{environment_dir}: {exc}. The previous environment was "
-            "restored."
-        ) from None
-    if replaced is not None:
-        shutil.rmtree(replaced, ignore_errors=True)
-
-    python = _deployment_python_path(environment_dir)
-    profile["python"] = str(python)
-    profile["environment_dir"] = str(environment_dir)
 
 
 def _setup_enabled(step: DeploymentSetup, values: dict[str, object]) -> bool:
@@ -2583,144 +2166,42 @@ def _apply_deploy_arguments(
     spec: DeploymentSpec,
     workflow: Workflow,
 ) -> tuple[dict[str, object], dict[str, str]]:
-    # Remove fields written by the retired browser viewer.
-    profile.pop("ui", None)
-    profile.pop("show_decisions", None)
-    if args.llm is not None:
-        profile["llm"] = args.llm
-        # A global command-line model means every LLM action.  Keeping project
-        # assignments here would make `--llm mock` unexpectedly call paid
-        # providers for assigned participants.
-        profile["llms"] = {}
-        profile["llm_idle_timeouts"] = {}
-    llms = normalize_llm_overrides(profile.get("llms"))
-    for lifeline, model in normalize_llm_overrides(
-        _parse_inputs(args.llm_for)
-    ).items():
-        existing_idle_timeouts = _profile_mapping(
-            profile, "llm_idle_timeouts"
-        )
-        existing_idle_timeouts.pop(lifeline, None)
-        profile["llm_idle_timeouts"] = existing_idle_timeouts
-        if model.lower() in {"inherit", "default"}:
-            llms.pop(lifeline, None)
-        else:
-            llms[lifeline] = model
-    effective_llm_routes(workflow, str(profile.get("llm") or "mock"), llms)
-    profile["llms"] = llms
-    if args.llm_idle_timeout is not None:
-        profile["llm_idle_timeout"] = args.llm_idle_timeout
-    supplied_idle_timeouts = _parse_llm_idle_timeouts_json(
-        args.llm_idle_timeouts_json
-    )
-    if supplied_idle_timeouts is None:
-        repeated_idle_timeouts = _parse_llm_idle_timeouts(
-            args.llm_idle_timeout_for
-        )
-        supplied_idle_timeouts = repeated_idle_timeouts or None
-    if supplied_idle_timeouts is not None:
-        profile["llm_idle_timeouts"] = supplied_idle_timeouts
-    if args.assistant is not None:
-        profile["assistant"] = args.assistant
-    assistants = normalize_assistant_overrides(profile.get("assistants"))
-    profile["assistants"] = assistants
-    if args.services is not None:
-        profile["services"] = args.services
     if args.timeout is not None:
         profile["timeout"] = args.timeout
-    if args.store is not None:
-        profile["store"] = _ensure_store_parent(args.store)
-    if args.log is not None:
-        profile["log"] = str(Path(args.log).expanduser())
-    project_root = getattr(args, "project_root", None)
-    if project_root:
-        profile["project_root"] = str(Path(project_root).expanduser().resolve())
-    project_alignment_json = getattr(args, "project_alignment_json", None)
-    if project_alignment_json is not None:
-        try:
-            project_alignment = json.loads(project_alignment_json)
-        except json.JSONDecodeError as exc:
-            raise SystemExit(
-                f"Project alignment metadata is not valid JSON: {exc}"
-            ) from exc
-        if not isinstance(project_alignment, dict):
-            raise SystemExit(
-                "Project alignment metadata must be a JSON object."
+    runtime_secrets: dict[str, str] = {}
+    try:
+        snapshot, connector_secrets = _project_connector_runtime(
+            args,
+            deployed_workflow=str(
+                profile.get("source_workflow") or profile.get("workflow") or ""
             )
-        profile["project_alignment"] = project_alignment
-    provider_environment = _parse_inputs(getattr(args, "provider_env", []))
-    unsupported_provider_environment = sorted(
-        set(provider_environment) - {"OLLAMA_BASE_URL"}
-    )
-    if unsupported_provider_environment:
-        raise SystemExit(
-            "Unsupported model-provider environment setting: "
-            + ", ".join(unsupported_provider_environment)
+            or None,
+            deployed_project=str(profile.get("source_cwd") or "") or None,
         )
-    environment_values = _profile_mapping(profile, "environment")
-    environment_values.update(
-        {
-            name: str(value)
-            for name, value in provider_environment.items()
-            if value is not None and str(value)
-        }
+    except Exception as exc:
+        from zippergen.connector_wiring import ConnectorWiringError
+
+        if isinstance(exc, ConnectorWiringError):
+            raise SystemExit(str(exc)) from exc
+        raise
+    profile["connectors"] = snapshot
+    runtime_secrets.update(connector_secrets)
+
+    from zippergen.workspace import Workspace
+
+    source_workspace = Workspace(str(profile.get("source_cwd") or Path.cwd()))
+    model_environment = source_workspace.development_provider_environment(
+        selected_llm_specs(profile.get("llm"), profile.get("llms"))
     )
-    profile["environment"] = environment_values
-    # Wire the project's connectors unless the caller passed a snapshot.
-    if getattr(args, "connectors_json", None) is None:
-        try:
-            snapshot, connector_environment = _project_connector_runtime(
-                args,
-                deployed_workflow=str(
-                    profile.get("source_workflow") or profile.get("workflow") or ""
-                )
-                or None,
-                deployed_project=str(profile.get("source_cwd") or "") or None,
-            )
-        except Exception as exc:  # surfaced as a clear refusal below
-            from zippergen.connector_wiring import ConnectorWiringError
-
-            if isinstance(exc, ConnectorWiringError):
-                raise SystemExit(str(exc)) from exc
-            raise
-        if snapshot:
-            profile["connectors"] = snapshot
-            environment_values.update(connector_environment)
-            profile["environment"] = environment_values
-
-    connectors_json = getattr(args, "connectors_json", None)
-    if connectors_json is not None:
-        try:
-            connector_bindings = json.loads(connectors_json)
-        except json.JSONDecodeError as exc:
-            raise SystemExit(
-                f"Connector bindings are not valid JSON: {exc}"
-            ) from exc
-        if not isinstance(connector_bindings, dict):
-            raise SystemExit("Connector bindings must be a JSON object.")
-        profile["connectors"] = connector_bindings
-
-    input_arguments = _parse_input_json(args.input_json)
-    input_arguments.update(_parse_inputs(args.input))
-    inputs: dict[str, object] = _profile_mapping(profile, "inputs")
-    inputs.update(input_arguments)
-    profile["inputs"] = inputs
-    option_arguments = _parse_inputs(args.option)
-    options: dict[str, object] = _profile_mapping(profile, "options")
-    options.update(option_arguments)
-    profile["options"] = options
+    public_environment = _profile_mapping(profile, "environment")
+    for name, value in model_environment.items():
+        if name.endswith("_API_KEY"):
+            runtime_secrets[name] = value
+        else:
+            public_environment[name] = value
+    profile["environment"] = public_environment
 
     overrides = _parse_inputs(args.set)
-    for field in spec.fields:
-        if field.target == "llm" and args.llm is not None:
-            overrides[field.name] = args.llm
-        elif field.target == "services" and args.services is not None:
-            overrides[field.name] = args.services
-        elif field.target == "option" and field.target_name in option_arguments:
-            overrides.setdefault(field.name, option_arguments[field.target_name])
-        elif field.target == "input" and field.target_name in input_arguments:
-            overrides.setdefault(field.name, input_arguments[field.target_name])
-
     interactive = not args.yes and sys.stdin.isatty()
     values, secrets = _collect_deployment_fields(
         spec,
@@ -2728,45 +2209,7 @@ def _apply_deploy_arguments(
         overrides=overrides,
         interactive=interactive,
     )
-    provider_secrets = _parse_secret_inputs(
-        getattr(args, "provider_secret", []),
-        option="--provider-secret",
-    )
-    unsupported = sorted(
-        set(provider_secrets) - set(_MODEL_PROVIDER_SECRETS.values())
-    )
-    if unsupported:
-        raise SystemExit(
-            "Unsupported model-provider secret: " + ", ".join(unsupported)
-        )
-    secrets.update(
-        {
-            name: str(value)
-            for name, value in provider_secrets.items()
-            if value is not None and str(value)
-        }
-    )
-    connector_secrets = _parse_secret_inputs(
-        getattr(args, "connector_secret", []),
-        option="--connector-secret",
-    )
-    unsupported_connector_secrets = sorted(
-        name
-        for name in connector_secrets
-        if not name.startswith("ZIPPERGEN_CONNECTOR_")
-    )
-    if unsupported_connector_secrets:
-        raise SystemExit(
-            "Unsupported connector secret: "
-            + ", ".join(unsupported_connector_secrets)
-        )
-    secrets.update(
-        {
-            name: str(value)
-            for name, value in connector_secrets.items()
-            if value is not None and str(value)
-        }
-    )
+    secrets.update(runtime_secrets)
     return values, secrets
 
 
@@ -2837,58 +2280,44 @@ def _finalize_guided_deployment(
 
 
 def _deploy_command(args) -> int:
-    # The workflow comes from the project; --name only ever names the
-    # deployment. There is no third thing a bare word could mean, which is why
-    # this no longer has to guess what the user typed.
-    args.target = args.workflow or _resolved_workflow_spec(args)
-    try:
+    # The workflow and the deployment both come from the project. The private
+    # deployment identity is path-derived and is never typed by the user.
+    from zippergen.workspace import Workspace
+
+    args.target = _resolved_workflow_spec(args)
+    deployment_name = Workspace(getattr(args, "project", None)).directory.name
+    if _deployment_profile_path(deployment_name).exists():
         existing = _resolved_deployment_name(args)
-    except SystemExit:
-        existing = None
-    if existing:
         # Redeploying: keep the deployment this project already has.
         args.name = existing
         profile, workflow, module, spec = _deployment_context(existing, source=True)
     else:
-        args.name = None
+        args.name = deployment_name
         workflow, module = load_workflow_spec(args.target)
         spec = deployment_spec_from_module(module)
-        name = _slug(args.name or spec.name or _deployment_name_from_workflow(args.target, workflow))
-        if _deployment_profile_path(name).exists():
-            profile = _load_deployment_profile(name)
-            # An explicit workflow target is a redeployment request. Preserve
-            # the named deployment's operational configuration, but bundle
-            # and validate the newly supplied source rather than silently
-            # falling back to the previous bundle.
-            profile["source_workflow"] = args.target
-            profile["source_cwd"] = str(Path.cwd())
-            profile["workflow"] = args.target
-            profile["cwd"] = str(Path.cwd())
-        else:
-            profile = {
-                "schema_version": 2,
-                "name": name,
-                "workflow": args.target,
-                "cwd": str(Path.cwd()),
-                "source_workflow": args.target,
-                "source_cwd": str(Path.cwd()),
-                "store": _default_deployment_store_path(name),
-                "log": _default_deployment_log_path(name),
-                "llm": None,
-                "llms": {},
-                "llm_idle_timeout": None,
-                "llm_idle_timeouts": {},
-                "assistant": None,
-                "assistants": {},
-                "services": None,
-                "options": {},
-                "inputs": {},
-                "environment": {},
-                "timeout": 0.0,
-                "execution": "sqlite",
-                "created_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-                "python": sys.executable,
-            }
+        profile = {
+            "schema_version": 2,
+            "name": deployment_name,
+            "workflow": args.target,
+            "cwd": str(Path.cwd()),
+            "source_workflow": args.target,
+            "source_cwd": str(Path.cwd()),
+            "store": _default_deployment_store_path(deployment_name),
+            "log": _default_deployment_log_path(deployment_name),
+            "llm": None,
+            "llms": {},
+            "llm_idle_timeout": None,
+            "llm_idle_timeouts": {},
+            "assistant": None,
+            "assistants": {},
+            "options": {},
+            "inputs": {},
+            "environment": {},
+            "timeout": 0.0,
+            "execution": "sqlite",
+            "created_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            "python": sys.executable,
+        }
 
     profile["schema_version"] = 2
     # A deployment snapshots the project's current routing.  Re-deploying is
@@ -2917,15 +2346,10 @@ def _deploy_command(args) -> int:
         workflow,
         fallback_default=default_llm_spec(module),
     )
-    if model_workspace.has_model_assignment_profile(model_workflow_spec):
-        profile["llm"] = model_routing.default_spec
-        profile["llms"] = model_routing.overrides
-        profile["llm_idle_timeout"] = None
-        profile["llm_idle_timeouts"] = model_routing.idle_timeouts
-    elif profile.get("llm") is None and not profile.get("llms"):
-        # A new deployment without project routing uses the workflow default.
-        # An existing deployment configured directly keeps its snapshot.
-        profile["llm"] = model_routing.default_spec
+    profile["llm"] = model_routing.default_spec
+    profile["llms"] = model_routing.overrides
+    profile["llm_idle_timeout"] = None
+    profile["llm_idle_timeouts"] = model_routing.idle_timeouts
     assistant_routing = project_assistant_routing(
         model_workspace,
         model_workflow_spec,
@@ -2941,23 +2365,6 @@ def _deploy_command(args) -> int:
     return _finalize_guided_deployment(
         profile, spec, workflow, values, secrets, args
     )
-
-
-def _configure_deployment_command(args) -> int:
-    profile, _workflow, _module, spec = _deployment_context(args.name)
-    values, secrets = _apply_deploy_arguments(profile, args, spec, _workflow)
-    rc = _finalize_guided_deployment(
-        profile, spec, _workflow, values, secrets, args
-    )
-    if rc == 0 and args.restart and args.no_start:
-        lifecycle_args = argparse.Namespace(
-            name=args.name,
-            enable=False,
-            dry_run=False,
-            skip_readiness=True,
-        )
-        return _deployment_lifecycle_command(lifecycle_args, "restart")
-    return rc
 
 
 def _run_deployment_command(args) -> int:
@@ -3045,7 +2452,8 @@ def _start_deployment_connector_workers(
 
 
 def _status_command(args) -> int:
-    status = _store_status(_resolve_store_arg(args))
+    profile = _load_deployment_profile(args.name)
+    status = _store_status(str(profile["store"]))
     if args.json:
         print(json.dumps(status, default=str))
     else:
@@ -3073,10 +2481,8 @@ def _inspection_context(args) -> tuple[Workflow, str, str]:
 
     from zippergen.workspace import Workspace, WorkspaceError
 
-    if args.deployment and args.store:
-        raise SystemExit("Use either a deployment name or --store, not both.")
     if args.deployment:
-        profile = _load_deployment_profile(args.deployment)
+        profile = _load_deployment_profile(_resolved_deployment_name(args))
         workflow_spec = str(profile["workflow"])
         cwd = Path(str(profile.get("cwd") or ".")).expanduser()
         old_cwd = Path.cwd()
@@ -3085,23 +2491,14 @@ def _inspection_context(args) -> tuple[Workflow, str, str]:
             workflow, _module = load_workflow_spec(workflow_spec)
         finally:
             os.chdir(old_cwd)
-        return workflow, str(profile["store"]), f"deployment {args.deployment}"
+        return workflow, str(profile["store"]), "project deployment"
 
     workspace = Workspace(args.project)
-    if args.store:
-        try:
-            workflow_spec = workspace.resolve_workflow(args.workflow)
-        except WorkspaceError as exc:
-            raise SystemExit(str(exc)) from exc
-        workflow, _module = load_workflow_spec(
-            str(workspace.absolute_spec(workflow_spec))
-        )
-        return workflow, str(args.store), "explicit store"
-
     record = workspace.current_run()
     if record is None:
         raise SystemExit(
-            "There is no current durable run. Name a deployment or use --store."
+            "There is no current durable run. Start one with "
+            "'zippergen run --durable', or use --deployment."
         )
     workflow_spec = str(record["workflow_spec"])
     workflow, _module = load_workflow_spec(
@@ -3288,11 +2685,12 @@ def _trace_command(args) -> int:
 
 
 def _tasks_command(args) -> int:
-    if not Path(args.store).expanduser().exists():
-        raise SystemExit(f"Store does not exist: {args.store}")
+    store = _resolve_store_arg(args)
+    if not Path(store).expanduser().exists():
+        raise SystemExit(f"Durable store does not exist yet: {store}")
     status = None if args.all else "pending"
     tasks = _load_human_tasks(
-        args.store,
+        store,
         status=status,
         limit=args.limit,
         with_tokens=args.tokens,
@@ -3357,9 +2755,9 @@ def _approve_result_from_args(task: dict, args) -> dict:
 
 
 def _approve_command(args) -> int:
-    store_path = str(Path(args.store).expanduser())
+    store_path = str(Path(_resolve_store_arg(args)).expanduser())
     if not Path(store_path).exists():
-        raise SystemExit(f"Store does not exist: {args.store}")
+        raise SystemExit(f"Durable store does not exist yet: {store_path}")
     conn = open_store(store_path)
     try:
         token_record = None
@@ -3465,78 +2863,15 @@ def _notify_telegram_command(args) -> int:
 
 def _add_guided_deployment_arguments(
     parser: argparse.ArgumentParser,
-    *,
-    configure: bool = False,
 ) -> None:
-    parser.add_argument("--llm", metavar="SPEC", help="LLM spec stored in the deployment profile.")
-    parser.add_argument(
-        "--llm-for",
-        action="append",
-        default=[],
-        metavar="PARTICIPANT_OR_ACTION=SPEC",
-        help=(
-            "Override the LLM for one participant or exact action; repeat as "
-            "needed. Use PARTICIPANT=inherit to remove an existing override."
-        ),
-    )
-    parser.add_argument("--llm-idle-timeout", type=float, help="Release a managed local LLM after this idle time.")
-    parser.add_argument(
-        "--llm-idle-timeout-for",
-        action="append",
-        default=[],
-        metavar="PARTICIPANT_OR_ACTION=SECONDS",
-        help=argparse.SUPPRESS,
-    )
-    parser.add_argument(
-        "--llm-idle-timeouts-json",
-        help=argparse.SUPPRESS,
-    )
-    parser.add_argument(
-        "--assistant",
-        choices=("codex", "claude"),
-        help=argparse.SUPPRESS,
-    )
-    parser.add_argument("--store", help="SQLite store path.")
-    parser.add_argument("--log", help="Deployment log path.")
-    parser.add_argument("--input", action="append", default=[], metavar="name=value", help="Workflow input value.")
-    parser.add_argument("--input-json", help="Workflow inputs as a JSON object.")
-    parser.add_argument("--option", action="append", default=[], metavar="name=value", help="Workflow setup option.")
     parser.add_argument("--set", action="append", default=[], metavar="field=value", help="Declared deployment field value.")
-    parser.add_argument(
-        "--provider-secret",
-        action="append",
-        default=[],
-        metavar="ENV=value",
-        help=argparse.SUPPRESS,
-    )
-    parser.add_argument("--project-root", help=argparse.SUPPRESS)
-    parser.add_argument("--project-alignment-json", help=argparse.SUPPRESS)
-    parser.add_argument("--connectors-json", help=argparse.SUPPRESS)
-    parser.add_argument(
-        "--connector-secret",
-        action="append",
-        default=[],
-        metavar="ENV=value",
-        help=argparse.SUPPRESS,
-    )
-    parser.add_argument(
-        "--provider-env",
-        action="append",
-        default=[],
-        metavar="ENV=value",
-        help=argparse.SUPPRESS,
-    )
-    parser.add_argument("--concise", action="store_true", help=argparse.SUPPRESS)
-    parser.add_argument("--services", choices=("fake", "live"), help="Workflow service mode.")
     parser.add_argument("--timeout", type=float, help="Workflow timeout; defaults to 0 (no deadline).")
     parser.add_argument("--yes", action="store_true", help="Accept defaults and existing environment values without prompting.")
-    if configure:
-        parser.add_argument("--install", dest="no_install", action="store_false", help="Update the managed Python environment.")
-        parser.add_argument("--setup", dest="no_setup", action="store_false", help="Run declared one-time setup commands.")
-    else:
-        parser.add_argument("--no-install", action="store_true", help="Do not create/update the managed Python environment.")
-        parser.add_argument("--no-setup", action="store_true", help="Skip declared one-time setup commands.")
-    parser.add_argument("--no-doctor", action="store_true", help="Skip readiness checks.")
+    # Test and recovery switches remain parseable, but are deliberately not
+    # part of the ordinary deployment contract.
+    parser.add_argument("--no-install", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--no-setup", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--no-doctor", action="store_true", help=argparse.SUPPRESS)
 
 
 def _connector_authorize_google_command(args) -> int:
@@ -3605,10 +2940,9 @@ def _connector_authorize_google_command(args) -> int:
         raise SystemExit(str(exc)) from exc
 
 
-# Registered so they keep working, kept out of the help list. `__complete`
-# backs shell completion, `serve` is the legacy per-role runner, and `notify`
-# is an adapter a deployment runs for itself rather than something you type.
-HIDDEN_COMMANDS = frozenset({"__complete", "serve", "notify"})
+# Registered but kept out of help. `__complete` backs shell completion, while
+# `notify` is an adapter a deployment runs for itself rather than a user task.
+HIDDEN_COMMANDS = frozenset({"__complete", "__run-deployment", "notify"})
 
 
 def _parse_cli_args(
@@ -3616,26 +2950,40 @@ def _parse_cli_args(
 ) -> tuple[argparse.ArgumentParser, argparse.Namespace]:
     """Build the real CLI parser and parse arguments without dispatching."""
 
-    ap = argparse.ArgumentParser(prog="zippergen")
+    ap = argparse.ArgumentParser(
+        prog="zippergen",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     sub = ap.add_subparsers(dest="cmd")
 
     config = sub.add_parser(
         "config",
         help="show or check the effective project configuration",
     )
-    config.add_argument("config_action", nargs="?", choices=("check", "workflow"))
-    config.add_argument(
-        "spec",
-        nargs="?",
-        help="With 'workflow': the workflow to select, as path.py:name.",
-    )
-    config.add_argument(
-        "--live",
-        action="store_true",
-        help="Contact configured providers; only meaningful with 'check'.",
-    )
     config.add_argument("--json", action="store_true", help="Print JSON.")
     config.add_argument("--project", help="Project root.")
+    config_sub = config.add_subparsers(dest="config_action")
+    config_check = config_sub.add_parser(
+        "check",
+        help="verify all effective project configuration",
+    )
+    config_check.add_argument(
+        "--live",
+        action="store_true",
+        help="Contact configured providers.",
+    )
+    config_check.add_argument("--json", action="store_true", help="Print JSON.")
+    config_check.add_argument("--project", help="Project root.")
+    config_workflow = config_sub.add_parser(
+        "workflow",
+        help="show or select the project's workflow entry",
+    )
+    config_workflow.add_argument(
+        "spec",
+        nargs="?",
+        help="Workflow to select, as path.py:name.",
+    )
+    config_workflow.add_argument("--project", help="Project root.")
 
     model = sub.add_parser(
         "model",
@@ -3935,18 +3283,6 @@ def _parse_cli_args(
         help=argparse.SUPPRESS,
     )
     rn.add_argument(
-        "--assistant",
-        choices=("codex", "claude"),
-        help=argparse.SUPPRESS,
-    )
-    rn.add_argument(
-        "--store",
-        help=(
-            "SQLite path for a recorded, resumable run. Naming one implies "
-            "--durable."
-        ),
-    )
-    rn.add_argument(
         "--durable",
         action="store_true",
         help=(
@@ -3960,10 +3296,6 @@ def _parse_cli_args(
         help="Continue the project's most recent unfinished run.",
     )
     rn.add_argument(
-        "--run-id",
-        help="Which recorded run to resume; requires --resume.",
-    )
-    rn.add_argument(
         "--project",
         help="Project root for a durable run; defaults to discovery.",
     )
@@ -3975,18 +3307,7 @@ def _parse_cli_args(
     rn.add_argument("--input", action="append", default=[], metavar="name=value", help="Workflow input value.")
     rn.add_argument("--input-json", help="Workflow inputs as a JSON object.")
     rn.add_argument("--option", action="append", default=[], metavar="name=value", help="Option passed to zippergen_setup(config).")
-    rn.add_argument("--services", choices=("fake", "live"), help="Shortcut for --option services=<value>.")
     rn.add_argument("--timeout", type=float, default=60.0, help="Workflow timeout in seconds; use 0 for no deadline.")
-    rn.add_argument(
-        "--execution",
-        choices=("sqlite", "memory"),
-        default=None,
-        help=(
-            "Where the run keeps its state. Defaults to 'memory', which leaves "
-            "nothing behind. 'sqlite' uses an unregistered SQLite store; "
-            "use --durable or --store for a recorded, resumable run."
-        ),
-    )
 
     show = sub.add_parser("show", help="render a workflow as a code-first semantic view")
     show.add_argument("workflow", nargs="?", help="Workflow spec: module:workflow or path.py:workflow. Defaults to this project's workflow.")
@@ -4077,25 +3398,16 @@ def _parse_cli_args(
             "normally type its name."
         ),
     )
-    deploy.add_argument(
-        "--workflow",
-        help="Workflow spec. Defaults to this project's workflow.",
-    )
     _add_guided_deployment_arguments(deploy)
-    deploy.add_argument("--no-bundle", action="store_true", help="Run from source instead of snapshotting declared files.")
+    deploy.add_argument("--no-bundle", action="store_true", help=argparse.SUPPRESS)
     deploy.add_argument("--no-start", action="store_true", help="Configure the deployment without starting its service.")
     deploy_sub = deploy.add_subparsers(dest="deploy_action")
 
-    deploy_configure = deploy_sub.add_parser(
-        "configure",
-        help="update a deployment's persistent configuration",
+    deploy_sub.add_parser(
+        "run",
+        help="run the prepared deployment in the foreground",
     )
-    _add_guided_deployment_arguments(deploy_configure, configure=True)
-    deploy_configure.add_argument("--restart", action="store_true", help="Restart the service after configuration succeeds.")
-    deploy_configure.set_defaults(no_start=True, no_bundle=True, no_install=True, no_setup=True)
 
-    deploy_run = deploy_sub.add_parser("run")
-    
     deploy_start = deploy_sub.add_parser("start", help="start a deployment as a supervised user service")
     deploy_start.add_argument("--enable", action="store_true", help="Enable the service to start automatically for this user.")
     deploy_start.add_argument("--dry-run", action="store_true", help="Print service-manager commands without running them.")
@@ -4131,22 +3443,30 @@ def _parse_cli_args(
         "--no-systemd",
         dest="no_systemd",
         action="store_true",
-        help="Skip live launchd/systemd active-state checks.",
+        help=argparse.SUPPRESS,
     )
 
     deploy_status = deploy_sub.add_parser("status", help="show durable store status for a deployment")
-    deploy_status.add_argument("--store", help="SQLite store path.")
     deploy_status.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+
+    deploy_reset = deploy_sub.add_parser(
+        "reset",
+        help="archive durable state and start this deployment fresh",
+    )
+    deploy_reset.add_argument(
+        "--yes",
+        action="store_true",
+        help="Reset without asking for confirmation.",
+    )
 
     inspect_parser = sub.add_parser(
         "inspect",
         help="show the current durable program position for each participant",
     )
-    inspect_parser.add_argument("deployment", nargs="?", help="Deployment name.")
-    inspect_parser.add_argument("--store", help="SQLite store path.")
     inspect_parser.add_argument(
-        "--workflow",
-        help="Workflow spec for --store; defaults to this project's workflow.",
+        "--deployment",
+        action="store_true",
+        help="Inspect this project's deployment instead of its current durable run.",
     )
     inspect_parser.add_argument("--project", help="Project root for a durable run.")
     inspect_parser.add_argument("--agent", help="Participant whose local projection to show.")
@@ -4162,15 +3482,24 @@ def _parse_cli_args(
         help="Refresh interval in seconds for --watch. Default 1.",
     )
 
-    tr = sub.add_parser("trace", help="show recent trace events from a local SQLite store")
-    tr.add_argument("deployment", nargs="?", help="Deployment name.")
-    tr.add_argument("--store", help="SQLite store path.")
+    tr = sub.add_parser("trace", help="show recent events from owned durable state")
+    tr.add_argument(
+        "--deployment",
+        action="store_true",
+        help="Read this project's deployment store.",
+    )
+    tr.add_argument("--project", help="Project root for --deployment.")
     tr.add_argument("--tail", type=int, default=50, help="Maximum number of trace events to show.")
     tr.add_argument("--after", type=int, default=0, help="Only show trace events after this event rowid.")
     tr.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
 
-    tk = sub.add_parser("tasks", help="list human tasks in a local SQLite store")
-    tk.add_argument("--store", required=True, help="SQLite store path.")
+    tk = sub.add_parser("tasks", help="list human tasks in owned durable state")
+    tk.add_argument(
+        "--deployment",
+        action="store_true",
+        help="Read this project's deployment instead of its current durable run.",
+    )
+    tk.add_argument("--project", help="Project root.")
     tk.add_argument("--all", action="store_true", help="Include completed tasks.")
     tk.add_argument("--limit", type=int, help="Maximum number of tasks to show.")
     tk.add_argument("--tokens", action="store_true", help="Generate/show durable approval tokens.")
@@ -4178,7 +3507,12 @@ def _parse_cli_args(
     tk.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
 
     apv = sub.add_parser("approve", help="complete a pending human task")
-    apv.add_argument("--store", required=True, help="SQLite store path.")
+    apv.add_argument(
+        "--deployment",
+        action="store_true",
+        help="Use this project's deployment instead of its current durable run.",
+    )
+    apv.add_argument("--project", help="Project root.")
     target = apv.add_mutually_exclusive_group(required=True)
     target.add_argument("--task", help="Human task id.")
     target.add_argument("--token", help="Durable approval token.")
@@ -4187,6 +3521,9 @@ def _parse_cli_args(
     apv.add_argument("--value", help="Value for string tasks, or explicit true/false for boolean tasks.")
     apv.add_argument("--result-json", help="Complete with an explicit JSON object result.")
     apv.add_argument("--json", action="store_true", help="Print the completed task as JSON.")
+
+    internal_run = sub.add_parser("__run-deployment")
+    internal_run.add_argument("--profile", required=True)
 
     nt = sub.add_parser("notify", description="Notification adapter a deployment runs for itself.")
     notify_sub = nt.add_subparsers(dest="adapter", required=True)
@@ -4210,21 +3547,16 @@ def _parse_cli_args(
     tg.add_argument("--resend", action="store_true", help="Resend already-notified pending tasks.")
     tg.add_argument("--quiet", action="store_true", help="Suppress progress messages.")
 
-    sv = sub.add_parser(
-        "serve",
-        description="Legacy low-level per-role runner. Prefer `zippergen run` for local deployment.",
-    )
-    sv.add_argument("--workflow", required=True)
-    sv.add_argument("--role", required=True)
-    sv.add_argument("--store", required=True)
-    sv.add_argument("--input", action="append", default=[], metavar="k=v")
-
     # Derive the visible command list from what is actually registered. A
     # hand-written list drifts the moment a command is added or renamed, and
     # this one had drifted.
     sub.metavar = "{" + ",".join(
         name for name in sub.choices if name not in HIDDEN_COMMANDS
     ) + "}"
+
+    from zippergen.cli_help import render_command_tree
+
+    ap.epilog = render_command_tree(ap, hidden=HIDDEN_COMMANDS)
 
     args = ap.parse_args(argv)
     return ap, args
@@ -4237,8 +3569,6 @@ def main(argv=None) -> int:
         ap.print_help()
         return 0
     if args.cmd == "config":
-        if args.live and args.config_action != "check":
-            raise SystemExit("--live requires 'config check'.")
         if args.config_action == "workflow":
             return _select_workflow_command(args)
         return _configuration_command(args)
@@ -4267,24 +3597,7 @@ def main(argv=None) -> int:
     ):
         return _connector_authorize_google_command(args)
     if args.cmd == "run":
-        if getattr(args, "run_id", None) and not args.resume:
-            raise SystemExit("--run-id requires --resume.")
-        if (
-            args.execution == "memory"
-            and (
-                getattr(args, "durable", False)
-                or getattr(args, "resume", False)
-                or getattr(args, "store", None)
-            )
-        ):
-            raise SystemExit(
-                "A durable or stored run uses SQLite; remove '--execution memory'."
-            )
-        if (
-            getattr(args, "durable", False)
-            or getattr(args, "resume", False)
-            or getattr(args, "store", None)
-        ):
+        if getattr(args, "durable", False) or getattr(args, "resume", False):
             return _durable_run_command(args)
         return _run_workflow_command(args)
     if args.cmd == "show":
@@ -4316,29 +3629,33 @@ def main(argv=None) -> int:
         return _skill_command(args)
     if args.cmd == "diff":
         return _diff_command(args)
+    if args.cmd == "__run-deployment":
+        profile = _load_deployment_profile(args.profile)
+        return _run_deployment_command(
+            argparse.Namespace(name=str(profile["name"]))
+        )
     if args.cmd == "deploy":
         action = getattr(args, "deploy_action", None)
         if action is None:
             return _deploy_command(args)
-        # Every verb acts on this project's deployment unless told otherwise.
-        # `status` reads `deployment`, the rest read `name`; resolve once and
-        # set both so one rule covers the family.
-        if not (action == "status" and getattr(args, "store", None)):
-            resolved = _resolved_deployment_name(args)
-            args.name = resolved
-            # `status` reads `deployment`; it no longer takes one as an
-            # argument, so the attribute has to be created, not updated.
-            args.deployment = resolved
-        if action == "configure":
-            return _configure_deployment_command(args)
-        if action == "run":
-            return _run_deployment_command(args)
+        # Every public verb acts on this project's deployment. The generated
+        # service script alone supplies the hidden profile identity because it
+        # runs from an immutable bundle rather than the source project.
+        resolved = _resolved_deployment_name(args)
+        args.name = resolved
+        # `status` reads `deployment`; it no longer takes one as an
+        # argument, so the attribute has to be created, not updated.
+        args.deployment = resolved
         if action in {"start", "stop", "restart"}:
             return _deployment_lifecycle_command(args, action)
+        if action == "run":
+            return _run_deployment_command(args)
         if action == "remove":
             return _remove_command(args)
         if action == "compact":
             return _compact_command(args)
+        if action == "reset":
+            return _reset_deployment_command(args)
         if action == "logs":
             return _logs_command(args)
         if action == "check":
@@ -4358,26 +3675,8 @@ def main(argv=None) -> int:
     if args.cmd == "notify" and args.adapter == "telegram":
         return _notify_telegram_command(args)
 
-    print("Warning: `zippergen serve` is a legacy low-level command; prefer `zippergen run`.", file=sys.stderr)
-    wf, role_ll = load_workflow(args.workflow, args.role)
-    lifelines = _workflow_lifelines(wf)
-    from zippergen.runtime import _build_formula_monitors
-    monitors, formula_conditions = _build_formula_monitors(wf, lifelines)
-    conn = open_store(args.store)
-    env = seed_env(conn, args.role, wf, _seed_inputs(wf, _parse_inputs(args.input)))
-    local = project(wf, role_ll)
-    final = run_role(
-        conn,
-        args.role,
-        local,
-        env,
-        wf.ns,
-        monitor=monitors.get(args.role),
-        formula_conditions=formula_conditions,
-    )
-    print(json.dumps({k: v for k, v in final.items()
-                      if isinstance(v, (bool, int, float, str, type(None)))}))
-    return 0
+    ap.error(f"unknown command: {args.cmd}")
+    return 2
 
 
 if __name__ == "__main__":

@@ -27,11 +27,6 @@ Modes
            # Telegram: message @BotFather → /newbot → set ZIPPERGEN_TELEGRAM_TOKEN
           Add --llm-idle-timeout 300 to release the local model while idle.
 default   Fake services + local Ollama model.
-
-Backward-compatible shortcuts:
-  --mock    Same as --llm mock --services fake.
-  --openai  Same as --llm openai:gpt-4o --services live.
-  --live    Same as --llm ollama:qwen2.5:7b --services live.
 """
 
 from zippergen import Lifeline, Var, branch, effect, fragment, llm, parallel, pure, workflow
@@ -1039,9 +1034,6 @@ if __name__ == "__main__":
         choices=("fake", "live"),
         help="Use fake in-memory services or real Gmail/Calendar/Telegram clients.",
     )
-    parser.add_argument("--mock", action="store_true", help="Shortcut for --llm mock --services fake.")
-    parser.add_argument("--openai", action="store_true", help="Shortcut for --llm openai:gpt-4o --services live.")
-    parser.add_argument("--live", action="store_true", help="Shortcut for --llm ollama:qwen2.5:7b --services live.")
     parser.add_argument("--timeout", type=float, default=3600.0, help="Workflow timeout in seconds; use 0 for no deadline.")
     parser.add_argument("--llm-idle-timeout", type=float, help="Release a managed local LLM after this many idle seconds.")
     parser.add_argument("--store", dest="store_path", help="SQLite store path.")
@@ -1053,22 +1045,8 @@ if __name__ == "__main__":
     )
     args = parser.parse_args()
 
-    preset_count = int(args.mock) + int(args.openai) + int(args.live)
-    if preset_count > 1:
-        parser.error("Use only one of --mock, --openai, or --live.")
-
-    if args.mock:
-        llm_spec = args.llm or "mock"
-        services = args.services or "fake"
-    elif args.openai:
-        llm_spec = args.llm or "openai:gpt-4o"
-        services = args.services or "live"
-    elif args.live:
-        llm_spec = args.llm or "ollama:qwen2.5:7b"
-        services = args.services or "live"
-    else:
-        llm_spec = args.llm or "ollama:qwen2.5:7b"
-        services = args.services or "fake"
+    llm_spec = args.llm or "ollama:qwen2.5:7b"
+    services = args.services or "fake"
 
     _setup_services(services)
 

@@ -109,7 +109,10 @@ def test_parallel_two_process_kill9(tmp_path):
     wf = os.path.join(os.path.dirname(__file__), "fixtures", "parallel_deploy.py")
 
     def serve(role, inputs):
-        cmd = [sys.executable, "-m", "zippergen.serve", "serve",
+        runner = os.path.join(
+            os.path.dirname(__file__), "fixtures", "run_role_process.py"
+        )
+        cmd = [sys.executable, runner,
                "--workflow", wf, "--role", role, "--store", store]
         for k, val in inputs.items():
             cmd += ["--input", f"{k}={val}"]

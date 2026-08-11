@@ -41,7 +41,6 @@ zippergen_connectors = (
 )
 
 zippergen_deployment = DeploymentSpec(
-    name="google-sheets-records",
     description=(
         "Write one keyed JSON record to Google Sheets and read the table back."
     ),

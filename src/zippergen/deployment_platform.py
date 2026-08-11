@@ -110,7 +110,7 @@ def service_manager() -> str:
         return "systemd"
     raise SystemExit(
         f"No supported deployment service manager for {system or 'this platform'}. "
-        "Use `zippergen deploy run NAME` directly."
+        "Use `zippergen deploy run` directly."
     )
 
 

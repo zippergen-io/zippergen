@@ -33,7 +33,7 @@ from typing import Any, TypeAlias
 __all__ = [
     "EventContext",
     "Formula",
-    "AtomicFormula", "OnFormula", "YFormula", "AtFormula", "YAFormula",
+    "AtomicFormula", "OnFormula", "YFormula", "AtFormula",
     "SinceFormula", "PastFormula", "ConstFormula",
     "AndFormula", "OrFormula", "NotFormula",
     "FieldTerm",
@@ -247,10 +247,6 @@ class AtFormula(Formula):
         return f"@{self.lifeline_name!r}({self.subformula!r})"
 
 
-# Backward-compatible alias.
-YAFormula = AtFormula
-
-
 @dataclass(frozen=True)
 class SinceFormula(Formula):
     """left S right: right held now, or left has held since a previous right."""
@@ -388,18 +384,10 @@ Here = _HereOperator()
 class _YOperator:
     """
     Y / Prev operator: Y(phi) — previous local event satisfies phi (strict).
-
-    Y[A](phi) is kept for backward compatibility and produces AtFormula
-    with non-strict semantics (same as At[A](phi)).
     """
 
     def __call__(self, phi: AnyFormula | Callable) -> YFormula:
         return YFormula(subformula=_as_formula(phi))
-
-    def __getitem__(self, lifeline: object) -> _AtPartial:
-        name = lifeline.name if hasattr(lifeline, "name") else str(lifeline)  # type: ignore[union-attr]
-        return _AtPartial(name)
-
 
 Y = _YOperator()
 """The Y / Prev temporal operator.  Use Y(phi) for the strict local previous."""

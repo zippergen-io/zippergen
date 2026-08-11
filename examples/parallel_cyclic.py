@@ -39,6 +39,6 @@ def feedback_exchange(text: str @ Analyst) -> str:
 
 
 if __name__ == "__main__":
-    feedback_exchange.configure(llms="mock")
+    feedback_exchange.configure(llm="mock")
     result = feedback_exchange(text="hello")
     print(f"feedback: {result}")

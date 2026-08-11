@@ -438,7 +438,7 @@ _CPLPlanner2  = Lifeline("CPLPlanner2")
 _CPLExecutor2 = Lifeline("CPLExecutor2")
 
 _approved_atom2 = atom(lambda env: env.get("approved", False))
-_ya_guard2      = Y[_CPLPlanner2](_approved_atom2)
+_ya_guard2      = At[_CPLPlanner2](_approved_atom2)
 
 
 @pure
@@ -563,7 +563,7 @@ _InlineExecutor = Lifeline("InlineExecutor")
 @workflow
 def _inline_formula_workflow(approved: bool @ _InlinePlanner) -> str:
     _InlinePlanner(approved) >> _InlineExecutor(approved)
-    if Y[_InlinePlanner](atom(lambda env: env.get("approved", False))) @ _InlineExecutor:
+    if At[_InlinePlanner](atom(lambda env: env.get("approved", False))) @ _InlineExecutor:
         _InlineExecutor: out = _yes_str(approved)
     else:
         _InlineExecutor: out = _no_str(approved)
@@ -623,7 +623,7 @@ _RelayDevice = Lifeline("RelayDevice")
 _Relay1 = Lifeline("Relay1")
 _Relay2 = Lifeline("Relay2")
 _Indicator = Lifeline("Indicator")
-_latest_device_on = Y[_RelayDevice](atom(lambda env: env.get("flag", False), src="flag"))
+_latest_device_on = At[_RelayDevice](atom(lambda env: env.get("flag", False), src="flag"))
 
 
 @workflow

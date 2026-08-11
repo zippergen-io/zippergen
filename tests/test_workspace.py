@@ -30,7 +30,7 @@ def test_project_root_prefers_nearest_zippergen_manifest(tmp_path):
     nested.mkdir(parents=True)
     (outer / ".git").mkdir()
     (project / "zippergen.toml").write_text(
-        'schema_version = 1\nname = "tutorial"\nprompts_directory = "prompts"\n'
+        'schema_version = 1\nname = "tutorial"\n'
     )
 
     assert discover_project_root(nested) == project
@@ -94,20 +94,6 @@ def test_fresh_clone_resolves_workflow_from_manifest_without_private_state(tmp_p
     )
 
 
-
-
-def test_workspace_discards_legacy_current_store_pointer(tmp_path):
-    root = tmp_path / "project"
-    root.mkdir()
-    workspace = Workspace(root, home=tmp_path / "state")
-    state = workspace.load()
-    state["current_store"] = str(tmp_path / "ambiguous.sqlite")
-    workspace.state_path.parent.mkdir(parents=True, exist_ok=True)
-    workspace.state_path.write_text(json.dumps(state))
-
-    loaded = workspace.load()
-
-    assert "current_store" not in loaded
 
 
 def test_workspace_creates_unique_managed_runs(tmp_path):
@@ -376,6 +362,7 @@ def test_project_configuration_survives_a_fresh_clone(
     assert clone.model_assignment_profile("workflow.py:sample") == {
         "default": "reviewer",
         "lifelines": {"Writer": "local-writer"},
+        "actions": {},
     }
     assert clone.model_configurations()["reviewer"]["spec"] == (
         "anthropic:claude-opus-5"
@@ -394,65 +381,3 @@ def test_project_configuration_survives_a_fresh_clone(
     assert "idle_timeout" not in manifest_text
     assert "http://gpu:11434/v1" not in manifest_text
     assert "private" not in manifest_text
-
-
-def test_legacy_configuration_migration_copies_portable_fields_without_deleting(
-    tmp_path,
-):
-    root = tmp_path / "project"
-    root.mkdir()
-    workspace = Workspace(root, home=tmp_path / "state")
-    workspace.initialize_project()
-    workspace.select_workflow("workflow.py:sample", cwd=root)
-    workspace.update(
-        model_configurations={
-            "writer": {
-                "provider": "local",
-                "model": "qwen2.5:14b",
-                "spec": "local:qwen2.5:14b",
-                "idle_timeout": "300",
-            }
-        },
-        model_profiles={
-            "workflow.py:sample": {
-                "default_configuration": "writer",
-                "lifeline_configurations": {},
-            }
-        },
-        connector_providers={"google": {"kind": "google", "scopes": "mail"}},
-        connector_configurations={
-            "mailbox": {
-                "provider": "google",
-                "kind": "gmail",
-                "account": "me",
-                "check_status": "available",
-            }
-        },
-        connector_bindings={"workflow.py:sample": {"mail": "mailbox"}},
-    )
-
-    result = workspace.migrate_project_configuration()
-
-    assert result["migrated"] is True
-    manifest = workspace.project_manifest()
-    assert manifest["models"]["configurations"]["writer"] == {
-        "provider": "local",
-        "model": "qwen2.5:14b",
-        "spec": "local:qwen2.5:14b",
-    }
-    assert manifest["models"]["assignments"]["default"] == "writer"
-    assert manifest["connectors"]["providers"] == {
-        "google": {"kind": "google"}
-    }
-    assert manifest["connectors"]["configurations"]["mailbox"] == {
-        "provider": "google",
-        "kind": "gmail",
-        "account": "me",
-    }
-    assert manifest["connectors"]["bindings"] == {"mail": "mailbox"}
-    state = workspace.load()
-    assert state["model_configurations"]["writer"]["idle_timeout"] == "300"
-    assert state["connector_providers"]["google"]["scopes"] == "mail"
-    assert state["connector_configurations"]["mailbox"]["check_status"] == (
-        "available"
-    )

@@ -93,10 +93,9 @@ after_workflow = Workflow(
 
 
 before_module = ModuleType("before")
-before_module.zippergen_deployment = DeploymentSpec(name="intake")
+before_module.zippergen_deployment = DeploymentSpec()
 after_module = ModuleType("after")
 after_module.zippergen_deployment = DeploymentSpec(
-    name="intake",
     fields=(DeploymentField("review_channel", "Review channel", required=True),),
 )
 

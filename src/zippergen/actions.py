@@ -344,7 +344,6 @@ def assistant(
     *,
     instructions: str | None = None,
     instructions_file: str | None = None,
-    backend: str | None = None,
     access: str = "read-only",
     external_tools: str = "none",
     shell: str = "restricted",
@@ -359,10 +358,6 @@ def assistant(
     as part of the semantic action definition, and automatically included in a
     guided deployment bundle.
 
-    ``backend`` is a compatibility fallback for requesting ``"codex"`` or
-    ``"claude"``. CLI projects should select the backend through a named
-    assistant configuration and participant or action assignment. Project
-    routing takes precedence over this fallback.
     ``access`` is ``"read-only"`` (the default) or ``"write"`` and is enforced
     through the selected CLI's non-interactive permission mode.
     ``external_tools`` is ``"none"`` (the default) or ``"configured"``.
@@ -382,10 +377,6 @@ def assistant(
         raise TypeError(
             "@assistant requires exactly one of 'instructions' or "
             "'instructions_file'."
-        )
-    if backend is not None and backend not in {"codex", "claude"}:
-        raise ValueError(
-            f"@assistant backend must be 'codex' or 'claude', got {backend!r}."
         )
     if access not in {"read-only", "write"}:
         raise ValueError(
@@ -432,7 +423,6 @@ def assistant(
             instructions_file=instructions_file,
             instructions_path=str(path) if path is not None else None,
             instructions_sha256=hashlib.sha256(text.encode("utf-8")).hexdigest(),
-            backend=backend,
             access=access,
             external_tools=external_tools,
             shell=shell,

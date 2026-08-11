@@ -155,9 +155,8 @@ zg assistant check
 A participant assignment covers all of that participant's assistant actions.
 Use an exact target such as `Developer.update_release_notes` for one action.
 The same routing applies to plain runs, durable runs, and deployments. The
-low-level Python API may still pass `assistant_backend=` directly. The old
-static `backend=` field remains a compatibility fallback, but project routing
-takes precedence. Do not use it for new CLI projects.
+low-level Python API may still pass `assistant_backend=` directly. Project
+routing is the only static way to select a backend for an `@assistant` action.
 
 `zg assistant check` verifies that the selected executable exists and supports
 the required safety options. It does not inspect or manage authentication.
@@ -375,9 +374,8 @@ on one another's intermediate results.
 
 ## Human actions
 
-Model human authority as a participant and a `@human` action. Prefer durable
-CLI or notification-backed approvals for deployments; browser UI is a legacy
-visualization surface.
+Model human authority as a participant and a `@human` action. Use the durable
+CLI directly, or assign a connector for deployment delivery.
 
 ```python
 from zippergen import human
@@ -409,7 +407,6 @@ from zippergen import (
 )
 
 zippergen_deployment = DeploymentSpec(
-    name="answer-workflow",
     description="Generate reviewed answers.",
     fields=(
         DeploymentField(
@@ -502,8 +499,8 @@ zg run --resume
 
 A plain run keeps everything in memory and leaves no store behind. `--durable`
 records the run to SQLite and collects missing inputs interactively; `--resume`
-continues the project's most recent unfinished run, and `--run-id` picks a
-different one. Passing `--store` implies a durable run.
+continues the project's most recent unfinished run. ZipperGen owns the store;
+ordinary commands never need its path.
 
 While a durable run is active in one terminal, another terminal can follow its
 program position with `zg inspect --watch`. Add `--agent NAME` to keep one
@@ -531,13 +528,13 @@ zg deploy check
 zg deploy restart
 zg deploy stop
 zg deploy compact
+zg deploy reset --yes
 zg deploy remove
 ```
 
-`zg inspect --watch` shows that deployment's live position.
+`zg inspect --deployment --watch` shows that deployment's live position.
 
-Use `--workflow SPEC` only when deploying from outside a project. There is no
-deployment name to pass: a project has one deployment.
+There is no workflow or deployment name to pass: the project identifies both.
 
 `status`, `inspect`, and `check` read durable state without changing it.
 `inspect` shows each participant's current local program position. Its
@@ -547,7 +544,9 @@ deployment name to pass: a project has one deployment.
 stopped deployment and removes only events covered by durable recovery
 snapshots. Completed human tasks and connector notifications remain as audit
 records. `remove` deletes a deployment but keeps its durable store unless you
-purge it.
+purge it. `reset` is the recoverable way to start over: it stops the service,
+archives the store and its SQLite sidecars under ZipperGen's trash directory,
+creates an empty store, and restarts the service if it was running.
 
 Keep stores owner-private on a local filesystem with reliable SQLite locking
 and `fsync`. Never edit durable rows directly. External effects must be

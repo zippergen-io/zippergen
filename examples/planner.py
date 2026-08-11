@@ -63,7 +63,7 @@ def open_planner_agent(request: str @ User, job_desc: str @ User, cv_sketch: str
 
 if __name__ == "__main__":
     open_planner_agent.configure(
-        llms={"Planner": "openai"},
+        llm={"Planner": "openai"},
         timeout=300,
     )
 

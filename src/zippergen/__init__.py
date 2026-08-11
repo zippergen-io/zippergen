@@ -18,7 +18,7 @@ from zippergen.google_sheets import *    # noqa: F401, F403
 from zippergen.google_gmail import *     # noqa: F401, F403
 
 # This list is deliberately explicit. Adding a name to a module's ``__all__``
-# must not silently expand the package-level compatibility surface.
+# must not silently expand the package-level public surface.
 __all__: list[str] = [
     # Syntax and intermediate representation.
     "ZType",
@@ -82,7 +82,6 @@ __all__: list[str] = [
     "load_scripted_script",
     "validate_local_idle_policies",
     "router_from_specs",
-    "router_from_env",
     "make_cli_human_backend",
     "make_sqlite_human_backend",
     "AssistantExecutionError",
@@ -94,7 +93,6 @@ __all__: list[str] = [
     "OnFormula",
     "YFormula",
     "AtFormula",
-    "YAFormula",
     "SinceFormula",
     "PastFormula",
     "ConstFormula",

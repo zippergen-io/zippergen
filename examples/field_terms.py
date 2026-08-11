@@ -103,7 +103,7 @@ def review_gate(rev: str @ Publisher, gk: str @ Publisher, doc: str @ Publisher)
 
 
 if __name__ == "__main__":
-    review_gate.configure(llms="mock")
+    review_gate.configure(llm="mock")
 
     print("Run 1 — matching versions, sufficient content:")
     r = review_gate(rev="v1.0", gk="v1.0", doc="A well-written document ready for release")

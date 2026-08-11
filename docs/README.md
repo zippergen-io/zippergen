@@ -26,7 +26,7 @@ docs/first-workflow.pdf
 docs/workflow-development-deployment-guide.pdf
 ```
 
-Those three files are committed and are the ones the project README links, so
+Those two files are committed and are the ones the project README links, so
 rebuild them whenever you change a `.tex` source. All auxiliary files stay under
 the ignored `docs/_build/` directory.
 
@@ -51,8 +51,6 @@ mkdir -p _build
 latexmk -pdf -interaction=nonstopmode -halt-on-error \
   -file-line-error -outdir=_build \
   first-workflow.tex
-latexmk -pdf -interaction=nonstopmode -halt-on-error \
-  -file-line-error -outdir=_build \
 latexmk -pdf -interaction=nonstopmode -halt-on-error \
   -file-line-error -outdir=_build \
   workflow-development-deployment-guide.tex

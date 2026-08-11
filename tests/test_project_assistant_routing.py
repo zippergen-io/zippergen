@@ -24,7 +24,7 @@ def _one_deployment(home, suffix=".json"):
     return found[0]
 
 ASSISTANT_WORKFLOW = '''
-from zippergen import Lifeline, assistant, workflow
+from zippergen import DeploymentField, DeploymentSpec, Lifeline, assistant, workflow
 
 Developer = Lifeline("Developer")
 Reviewer = Lifeline("Reviewer")
@@ -42,6 +42,15 @@ def maintenance(request: str @ Developer) -> str:
     Reviewer: report = review(result)
     Reviewer(report) >> Developer(report)
     return report @ Developer
+
+zippergen_deployment = DeploymentSpec(fields=(
+    DeploymentField(
+        name="request",
+        prompt="Maintenance request",
+        target="input",
+        required=True,
+    ),
+))
 '''
 
 
@@ -242,7 +251,7 @@ def test_effective_backend_uses_action_and_participant_project_routing(
     @assistant(instructions="Implement it.", access="write")
     def implement(request: str) -> str: ...
 
-    @assistant(instructions="Legacy fallback.", backend="claude", access="write")
+    @assistant(instructions="Use participant routing.", access="write")
     def fixed_backend(request: str) -> str: ...
 
     backend = make_cli_assistant_backend(
@@ -305,7 +314,7 @@ def test_durable_run_and_deployment_snapshot_project_assistant_routes(
 
     assert main([
         "deploy",
-        "--input",
+        "--set",
         "request=change",
         "--no-start",
         "--no-bundle",

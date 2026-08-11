@@ -1,23 +1,22 @@
-"""Small local deployment example with an out-of-band human approval.
+"""Small durable-run example with an out-of-band human approval.
 
 Run the workflow in one terminal:
 
-    uv run zippergen run examples/local_approval_deployment.py:local_approval \
-      --store ~/.zippergen/runs/local-approval.sqlite \
+    uv run zippergen run --durable \
+      examples/local_approval_deployment.py:local_approval \
       --input request="Create the Friday demo event" \
       --llm mock \
       --timeout 0
 
-Run a notifier in another terminal:
+Inspect and complete the pending task in another terminal:
 
-    uv run zippergen notify telegram \
-      --store ~/.zippergen/runs/local-approval.sqlite \
-      --watch
+    uv run zippergen tasks
+    uv run zippergen approve --task TASK_ID --yes
 
-Set ZIPPERGEN_TELEGRAM_TOKEN and ZIPPERGEN_TELEGRAM_CHAT_ID before starting the
-Telegram notifier. The effect writes an idempotent local audit line so a crash
-after the write but before journal commit does not duplicate the external side
-effect on retry.
+The durable store is managed by the project and is never passed between
+commands. The effect writes an idempotent local audit line so a crash after the
+write but before journal commit does not duplicate the external side effect on
+retry.
 """
 
 import hashlib

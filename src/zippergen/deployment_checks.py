@@ -1,4 +1,4 @@
-"""Readiness checks for a named deployment.
+"""Readiness checks for a project's deployment.
 
 `zippergen deploy check` answers one question: would this deployment start, and
 if not, why. Every check reports a status, a name and a detail, so the same
@@ -158,7 +158,6 @@ class DoctorConfig:
     store_path: str
     log_path: str
     options: dict[str, object]
-    services: str | None
 
     def option(self, name: str, default: object = None) -> object:
         return self.options.get(name, default)
@@ -728,9 +727,7 @@ def _doctor_checks(
         profile.get("llm"),
         profile.get("llms"),
     )
-    declared_values["__llm_field_names__"] = tuple(
-        field.name for field in deployment_spec.fields if field.target == "llm"
-    )
+    declared_values["__llm_field_names__"] = ()
     for field in deployment_spec.fields:
         if (
             field.secret
@@ -809,7 +806,6 @@ def _doctor_checks(
             store_path=str(store_path),
             log_path=str(log_path),
             options=_profile_options(profile),
-            services=str(profile.get("services") or "") or None,
         )
         with _profile_environment(profile):
             checks.extend(_call_doctor_hook(module, config))

@@ -1,11 +1,7 @@
-"""Reusable durable role runner.
-
-This module owns the per-role replay/live loop used by the local SQLite
-supervisor. `zippergen serve` still exposes the same machinery as a legacy
-low-level entry point.
-"""
+"""Reusable durable role runner and its replay bookkeeping."""
 from __future__ import annotations
 
+import json
 import sqlite3
 import threading
 import time
@@ -59,6 +55,31 @@ from zippergen.syntax import (
 class JournalContext:
     channel: object          # DurableChannel
     act_paths: dict          # id(node) -> child-index path
+
+
+def seed_env(conn, role: str, inputs: dict) -> dict:
+    """Record initial role inputs once, then return that durable seed."""
+
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        row = conn.execute(
+            "SELECT payload FROM events WHERE kind='seed' AND sender=? "
+            "ORDER BY rowid LIMIT 1",
+            (role,),
+        ).fetchone()
+        if row is not None:
+            conn.execute("ROLLBACK")
+            return json.loads(row[0])
+        conn.execute(
+            "INSERT INTO events(sender,receiver,channel,kind,payload,causal_stamp) "
+            "VALUES(?,?,?,?,?,?)",
+            (role, None, None, "seed", json.dumps(inputs), None),
+        )
+        conn.execute("COMMIT")
+        return dict(inputs)
+    except BaseException:
+        conn.execute("ROLLBACK")
+        raise
 
 
 def _floor_coherent(conn, role: str, floor: dict) -> bool:

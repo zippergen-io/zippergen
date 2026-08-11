@@ -61,5 +61,5 @@ def merge_candidate(candidate: str @ Orchestrator) -> str:
 
 
 if __name__ == "__main__":
-    merge_candidate.configure(llms="mock", timeout=30)
+    merge_candidate.configure(llm="mock", timeout=30)
     print(merge_candidate(candidate="patch-17 on main@8fd2"))

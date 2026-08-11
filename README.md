@@ -334,8 +334,9 @@ zg inspect --watch --agent Writer
 ```
 
 The view updates in place once per second. Ctrl-C closes only the view. It does
-not interrupt the run. For a deployment, `zg inspect production --watch` reads
-the same position information without changing the running service.
+not interrupt the run. For the project's deployment,
+`zg inspect --deployment --watch` reads the same position information without
+changing the running service.
 
 Preparing a deployment and starting one are two different steps. `--no-start`
 writes the files and starts nothing. Without it, ZipperGen first checks every
@@ -347,6 +348,7 @@ zg deploy --no-start          # prepare, start nothing
 zg deploy start
 zg deploy logs
 zg deploy remove              # the durable store is kept
+zg deploy reset --yes         # archive durable state and start fresh
 ```
 
 A workflow can ask a person on Telegram, read Gmail, or write to Google
@@ -368,23 +370,39 @@ CI and coding agents.
 
 ## The CLI
 
-```
-init        create a project
-skill       print the coding-agent skill
-validate    load, project, and check a workflow
-show        render the protocol, or one participant's local program
-config      show or check all project configuration
-model       configure models and assign participants or actions
-assistant   configure Codex or Claude and assign participants or actions
-connector   configure connectors, assignments, bindings, and authorization
-run         run a workflow; --durable records it, --resume continues one
-deploy      prepare and start a deployment
-start · stop · restart · logs · status · trace · tasks · approve
-remove · compact
-completion  print shell completion for zsh, bash, or fish
+The whole public surface fits in one tree:
+
+```text
+zg
+├── init · skill · validate · show · diff
+├── config
+│   ├── check
+│   └── workflow
+├── model
+│   └── configure · assign · unassign · check · remove
+├── assistant
+│   └── configure · assign · unassign · check · remove
+├── connector
+│   └── configure · assign · unassign · bind · unbind · check · remove
+│       · authorize google · accept google
+├── run
+├── inspect · trace · tasks · approve
+├── deploy
+│   └── run · start · stop · restart · status · logs · check
+│       · compact · reset · remove
+└── completion
 ```
 
-Run `zippergen <command> --help` for any of them.
+`zg --help` renders this tree from the real command parser, so it cannot drift
+from the implementation. Run `zg <command> --help` for arguments and examples.
+
+Stores are not part of the ordinary command surface. A durable run owns its
+managed store; the project deployment owns another. `inspect`, `trace`,
+`tasks`, and `approve` use the current durable run by default and use the
+deployment with `--deployment`. To discard a deployment's durable history,
+`zg deploy reset --yes` stops it, archives its SQLite files under
+`$ZIPPERGEN_HOME/trash/deployment-stores/`, creates an empty store, and starts
+the service again if it was running. The archive is never silently deleted.
 
 Enable completion in the current shell with one command:
 
@@ -394,7 +412,7 @@ eval "$(zg completion bash)"      # bash
 zg completion fish | source       # fish
 ```
 
-Completion includes current deployment names, model, assistant, and connector
+Completion includes deployment actions, model, assistant, and connector
 configurations, participants, actions, and connector requirements.
 
 ## Examples and documentation

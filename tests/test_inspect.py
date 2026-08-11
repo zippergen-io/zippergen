@@ -95,6 +95,29 @@ def test_inspect_has_a_machine_readable_view(tmp_path, monkeypatch, capsys):
     }
 
 
+def test_inspect_selects_the_projects_unnamed_deployment_explicitly(
+    tmp_path, monkeypatch, capsys
+):
+    record = _observed_run(tmp_path, monkeypatch)
+    workspace = Workspace()
+    name = workspace.directory.name
+    deployments = workspace.home / "deployments"
+    deployments.mkdir(parents=True)
+    (deployments / f"{name}.json").write_text(json.dumps({
+        "name": name,
+        "source_cwd": str(workspace.root),
+        "cwd": str(workspace.root),
+        "workflow": "workflow.py:email_approval",
+        "store": record["store"],
+    }))
+
+    assert main(["inspect", "--deployment", "--json"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["subject"] == "project deployment"
+    assert payload["store"] == record["store"]
+
+
 def test_inspect_watch_refreshes_in_place_without_interrupting_execution(
     tmp_path, monkeypatch, capsys
 ):

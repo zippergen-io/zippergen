@@ -42,5 +42,5 @@ def collect_reports(a: str @ Analyst_A, b: str @ Analyst_B) -> tuple:
 
 
 if __name__ == "__main__":
-    collect_reports.configure(llms="mock")
+    collect_reports.configure(llm="mock")
     print(collect_reports(a="ready from A", b="ready from B"))

@@ -6,12 +6,13 @@ Run this workflow from the repository that the assistants should inspect:
     uv run zippergen run examples/codex_claude_review.py:codex_claude_review \
       --input 'task=Implement the requested repository change.' \
       --input max_review_rounds=3 \
-      --store /tmp/zippergen-codex-claude.sqlite \
+      --durable \
       --timeout 0
 
-The action declarations select both CLIs explicitly. Codex owns repository
-changes; Claude is constrained to read-only review. Completion requires a
-Claude approval followed by a read-only Codex final assessment.
+Assign the Codex participant to a named Codex configuration and Claude to a
+named Claude configuration. The declarations retain security permissions,
+while project routing chooses the executable. Completion requires a Claude
+approval followed by a read-only Codex final assessment.
 """
 
 from zippergen import Lifeline, assistant, pure, workflow
@@ -24,7 +25,6 @@ Claude = Lifeline("Claude")
 
 @assistant(
     instructions_file="examples/prompts/codex_claude_review/implement.md",
-    backend="codex",
     access="write",
     external_tools="none",
     shell="restricted",
@@ -35,7 +35,6 @@ def implement_task(task: str) -> str: ...
 
 @assistant(
     instructions_file="examples/prompts/codex_claude_review/review.md",
-    backend="claude",
     access="read-only",
     external_tools="none",
     shell="restricted",
@@ -46,7 +45,6 @@ def review_candidate(task: str, implementation_summary: str) -> str: ...
 
 @assistant(
     instructions_file="examples/prompts/codex_claude_review/revise.md",
-    backend="codex",
     access="write",
     external_tools="none",
     shell="restricted",
@@ -57,7 +55,6 @@ def revise_candidate(task: str, review: str) -> str: ...
 
 @assistant(
     instructions_file="examples/prompts/codex_claude_review/finalize.md",
-    backend="codex",
     access="read-only",
     external_tools="none",
     shell="restricted",

@@ -236,8 +236,6 @@ def _render_action(action: object, *, full: bool) -> list[str]:
         arguments = [f"instructions={instruction_value!r}"]
         if action.instructions_file is not None:
             arguments = [f"instructions_file={action.instructions_file!r}"]
-        if action.backend is not None:
-            arguments.append(f"backend={action.backend!r}")
         arguments.append(f"access={action.access!r}")
         arguments.append(f"external_tools={action.external_tools!r}")
         arguments.append(f"shell={action.shell!r}")

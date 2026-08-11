@@ -227,8 +227,8 @@ def debate(topic: str @ Host) -> str:
 
 if __name__ == "__main__":
     debate.configure(
-        llms={"Pro": "openai", "Con": "openai", "Judge": "openai"},
-        # llms="mock",
+        llm={"Pro": "openai", "Con": "openai", "Judge": "openai"},
+        # llm="mock",
         timeout=600,
     )
     result = debate(topic="AI should replace human judges in courtrooms")

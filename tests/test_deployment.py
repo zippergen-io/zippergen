@@ -12,7 +12,6 @@ from zippergen.serve import _collect_deployment_fields
 
 def test_plain_mapping_declaration_normalizes_to_typed_jsonable_spec():
     spec = normalize_deployment_spec({
-        "name": "generated-workflow",
         "fields": [
             {
                 "name": "api_key",
@@ -73,7 +72,6 @@ def test_field_default_can_reference_an_earlier_field():
 
 def test_conditional_secret_is_enabled_by_a_per_lifeline_model():
     spec = DeploymentSpec(fields=(
-        DeploymentField("llm", "Default LLM", target="llm", default="mock"),
         DeploymentField(
             "openai_api_key",
             "OpenAI API key",

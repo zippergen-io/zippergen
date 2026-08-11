@@ -53,5 +53,5 @@ def status_indicator() -> tuple:
 
 
 if __name__ == "__main__":
-    status_indicator.configure(llms="mock")
+    status_indicator.configure(llm="mock")
     status_indicator()

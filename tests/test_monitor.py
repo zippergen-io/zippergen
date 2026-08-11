@@ -1,6 +1,6 @@
 """Tests for per-lifeline CPL monitor state (Algorithms 1 and 2 from the paper)."""
 import pytest
-from zippergen.formula import atom, At, Here, Y, P, since, on, subformulas, YAFormula
+from zippergen.formula import atom, At, Here, Y, P, since, on, subformulas, AtFormula
 from zippergen.monitor import MonitorState
 
 
@@ -144,8 +144,8 @@ def test_y_false_at_second_event_when_phi_was_false():
 
 def test_ya_false_when_remote_lifeline_not_seen():
     phi = atom(lambda env: True)
-    yaf = Y["A"](phi)    # Y[A](phi) via string key
-    assert isinstance(yaf, YAFormula)
+    yaf = At["A"](phi)    # At[A](phi) via string key
+    assert isinstance(yaf, AtFormula)
     m = make_monitor("B", ["A", "B"], yaf)
     m.on_event("act", {})
     # vc["A"] == 0 → Y_A(phi) = False
@@ -156,7 +156,7 @@ def test_ya_true_after_receiving_message_from_a():
     phi = atom(lambda env: env.get("approved", False))
     from zippergen.syntax import Lifeline
     A = Lifeline("A")
-    yaf = Y[A](phi)
+    yaf = At[A](phi)
     m = make_monitor("B", ["A", "B"], yaf)
     # Simulate B receiving a message from A where A's view of phi was True
     recv_vc = {"A": 1, "B": 0}

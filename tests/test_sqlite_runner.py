@@ -115,7 +115,7 @@ def sqlite_json_round(payload: Json @ JSONSource) -> Json:
 
 
 _sqlite_approved_atom = atom(lambda env: env.get("approved", False))
-_sqlite_ya_guard = Y[SQLiteCPLPlanner](_sqlite_approved_atom)
+_sqlite_ya_guard = At[SQLiteCPLPlanner](_sqlite_approved_atom)
 _sqlite_field_match_guard = At[SQLiteFieldSource].src == Here.gate
 _sqlite_formula_loop_guard = atom(
     lambda env: env.get("loop_n", 0) < env.get("loop_limit", 0),

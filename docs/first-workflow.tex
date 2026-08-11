@@ -680,7 +680,7 @@ first, and a failure stops it:
 zg deploy start
 zg deploy logs
 zg deploy status
-zg inspect --watch
+zg inspect --deployment --watch
 \end{lstlisting}
 
 A deployment you no longer want:
@@ -708,7 +708,7 @@ you have just been running. That is the whole mechanism.
   \node[zgstage] (agent) {coding agent\\(your laptop)};
   \node[zgstage, below=of agent] (files) {\texttt{workflow.py}\\\texttt{specification.md}\\\texttt{zippergen.toml}};
   \node[zgstage, right=16mm of files] (server) {project directory\\(the server)};
-  \node[zgstage, right=of server] (run) {\texttt{zg start}\\runs it};
+  \node[zgstage, right=of server] (run) {\texttt{zg deploy start}\\runs it};
   \draw[zgflow] (agent) -- (files);
   \draw[zgflow] (files) -- node[above,font=\scriptsize]{git} (server);
   \draw[zgflow] (server) -- (run);
@@ -742,7 +742,7 @@ giving it the secret.
 
 The last two lines are the pair from the previous section, unchanged. Starting
 probes the model and the connector first, so a token typed wrongly here fails
-now rather than in the middle of an approval. On Linux \texttt{zg start}
+now rather than in the middle of an approval. On Linux \texttt{zg deploy start}
 installs a small \texttt{systemd} user service that restarts the workflow if it
 fails. You never write that file, and \texttt{zg deploy status},
 \texttt{zg deploy logs} and \texttt{zg deploy stop} manage it from here.

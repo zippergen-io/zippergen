@@ -335,8 +335,8 @@ GmbH, a company incorporated in Munich, Germany ("Receiving Party").
 
 if __name__ == "__main__":
     contract_review.configure(
-        llms="mistral",
-        # llms={
+        llm="mistral",
+        # llm={
         #     "Jurisdiction":    make_openai_backend(api_key=os.environ["OPENAI_API_KEY_J"]),
         #     "Liability":       make_openai_backend(api_key=os.environ["OPENAI_API_KEY_L"]),
         #     "Confidentiality": make_openai_backend(api_key=os.environ["OPENAI_API_KEY_C"]),

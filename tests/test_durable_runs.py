@@ -22,7 +22,6 @@ User = Lifeline("User")
 
 zippergen_deployment = DeploymentSpec(
     fields=(
-        DeploymentField("llm", "LLM", target="llm", default="openai:test"),
         DeploymentField(
             "api_key",
             "Development API key",
@@ -56,7 +55,6 @@ Reviewer = Lifeline("Reviewer")
 
 zippergen_deployment = DeploymentSpec(
     fields=(
-        DeploymentField("llm", "Default LLM", target="llm", default="mock"),
         DeploymentField(
             "openai_api_key",
             "OpenAI API key",
@@ -375,6 +373,7 @@ def test_durable_run_collects_and_reuses_private_declared_secret(
         workspace,
         workflow_spec="secret_workflow.py:secret_demo",
         provided_inputs={"value": "first"},
+        llm="openai:test",
         secret_input_func=lambda prompt: "top-secret",
         output_func=output.append,
     )
@@ -390,6 +389,7 @@ def test_durable_run_collects_and_reuses_private_declared_secret(
         workspace,
         workflow_spec="secret_workflow.py:secret_demo",
         provided_inputs={"value": "second"},
+        llm="openai:test",
         secret_input_func=lambda prompt: pytest.fail("saved secret should be reused"),
         output_func=lambda line: None,
     )
@@ -477,21 +477,19 @@ def test_a_plain_run_outside_a_project_says_what_is_missing(tmp_path, monkeypatc
         serve.main(["run"])
 
 
-def test_run_id_requires_resume():
+def test_run_does_not_expose_run_ids():
     from zippergen import serve
 
-    try:
+    with pytest.raises(SystemExit) as exc:
         serve.main(["run", "wf.py:w", "--run-id", "old"])
-    except SystemExit as exc:
-        assert "--run-id requires --resume" in str(exc)
-    else:  # pragma: no cover
-        raise AssertionError("--run-id alone should be refused")
+    assert exc.value.code == 2
 
 
-def test_a_stored_run_cannot_request_memory_execution():
+def test_run_does_not_expose_store_or_execution_mode():
     from zippergen import serve
 
-    with pytest.raises(SystemExit, match="uses SQLite"):
+    with pytest.raises(SystemExit) as exc:
         serve.main(
             ["run", "wf.py:w", "--store", "run.sqlite", "--execution", "memory"]
         )
+    assert exc.value.code == 2

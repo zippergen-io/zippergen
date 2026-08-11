@@ -462,7 +462,6 @@ class AssistantAction:
     instructions_file: str | None = None
     instructions_path: str | None = field(default=None, repr=False, compare=False)
     instructions_sha256: str = ""
-    backend: str | None = None
     access: str = "read-only"
     external_tools: str = "none"
     shell: str = "restricted"
@@ -958,7 +957,6 @@ class Workflow:
                   backend: object = None,
                   trace:   object = None,
                   timeout: float  = 60.0,
-                  llms: str | Mapping[str, str | Callable] | None = None,
                   mock_delay: tuple[float, float] = (1.0, 2.0),
                   llm_idle_timeout: float | None = None,
                   llm_idle_timeouts: Mapping[str, float] | None = None,
@@ -981,14 +979,13 @@ class Workflow:
                   Defaults to the built-in mock backend.
         trace   : trace callable passed to ``run()``.
         timeout : per-thread timeout in seconds (default 60).
-        llms    : backward-compatible alias for ``llm``.
         mock_delay : delay range used by the mock backend when ``llm="mock"``.
         llm_idle_timeout : for local managed backends such as Ollama, release
                   the model after this many seconds without LLM calls.
         llm_idle_timeouts : optional participant or action-specific idle
                   release times for managed local backends.
-        execution : ``"sqlite"`` (default) or ``"memory"`` for the legacy
-                    in-process runner.
+        execution : ``"sqlite"`` for durable execution or ``"memory"`` for
+                    an in-process disposable run.
         store_path : optional SQLite store path used when ``execution="sqlite"``.
         human_backend : optional human-action callable. Development tools may
                   use the terminal backend with SQLite while deployed runs use
@@ -1002,7 +999,7 @@ class Workflow:
         """
         from zippergen.runtime import _workflow_configure
         return _workflow_configure(self, llm=llm, backend=backend, trace=trace, timeout=timeout,
-                                   llms=llms, mock_delay=mock_delay,
+                                   mock_delay=mock_delay,
                                    llm_idle_timeout=llm_idle_timeout,
                                    llm_idle_timeouts=llm_idle_timeouts,
                                    execution=execution, store_path=store_path,

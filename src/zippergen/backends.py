@@ -27,7 +27,6 @@ __all__ = [
     "load_scripted_script",
     "validate_local_idle_policies",
     "router_from_specs",
-    "router_from_env",
 ]
 
 
@@ -904,22 +903,3 @@ def router_from_specs(
             built_backends[lifeline_name] = backend
             labels.append(f"{lifeline_name}={label}")
     return make_lifeline_router(built_backends), ", ".join(labels)
-
-
-def router_from_env(
-    routes: dict[str, str | Callable],
-    *,
-    fallback: Callable | None = None,
-    fallback_label: str = "mock LLM",
-    idle_timeout: float | None = None,
-    idle_timeouts: Mapping[str, float] | None = None,
-) -> tuple[Callable, str]:
-    """Backward-compatible alias for :func:`router_from_specs`."""
-
-    return router_from_specs(
-        routes,
-        fallback=fallback,
-        fallback_label=fallback_label,
-        idle_timeout=idle_timeout,
-        idle_timeouts=idle_timeouts,
-    )

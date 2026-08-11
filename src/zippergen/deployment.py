@@ -17,7 +17,7 @@ from types import ModuleType
 from typing import Any, Mapping
 
 
-_FIELD_TARGETS = {"option", "env", "llm", "services", "input"}
+_FIELD_TARGETS = {"option", "env", "input"}
 
 
 @dataclass(frozen=True)
@@ -95,7 +95,6 @@ class DeploymentSetup:
 class DeploymentSpec:
     """Deployment requirements declared by a workflow module."""
 
-    name: str | None = None
     description: str = ""
     fields: tuple[DeploymentField, ...] = ()
     packages: tuple[DeploymentPackage, ...] = ()

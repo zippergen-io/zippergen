@@ -2,7 +2,7 @@ DOC_DIR := docs
 DOC_BUILD_DIR := $(DOC_DIR)/_build
 FIRST_WORKFLOW_DOC := first-workflow
 MANUAL_DOC := workflow-development-deployment-guide
-DOC_NAMES := $(FIRST_WORKFLOW_DOC) $(MANUAL_DOC) $(CALL_INTAKE_DOC)
+DOC_NAMES := $(FIRST_WORKFLOW_DOC) $(MANUAL_DOC)
 DOC_SOURCES := $(addprefix $(DOC_DIR)/,$(addsuffix .tex,$(DOC_NAMES)))
 
 .PHONY: docs docs-check docs-first-workflow docs-manual

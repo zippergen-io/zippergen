@@ -4,7 +4,9 @@ from pathlib import Path
 import pytest
 
 from zippergen.deployment import DeploymentSpec
-from zippergen.serve import _prepare_deployment_environment
+from zippergen.deployment_environment import (
+    prepare_deployment_environment as _prepare_deployment_environment,
+)
 
 
 def test_managed_environment_uses_uv_and_replaces_an_old_environment_atomically(
@@ -17,7 +19,7 @@ def test_managed_environment_uses_uv_and_replaces_an_old_environment_atomically(
     (environment / "old-environment").write_text("preserve until success\n")
     monkeypatch.setenv("ZIPPERGEN_HOME", str(home))
     monkeypatch.setattr(
-        "zippergen.serve.shutil.which",
+        "zippergen.deployment_environment.shutil.which",
         lambda name: "/tools/uv" if name == "uv" else None,
     )
     calls: list[list[str]] = []
@@ -32,7 +34,10 @@ def test_managed_environment_uses_uv_and_replaces_an_old_environment_atomically(
             python.write_text("managed python\n")
         return subprocess.CompletedProcess(command, 0)
 
-    monkeypatch.setattr("zippergen.serve.subprocess.run", fake_run)
+    monkeypatch.setattr(
+        "zippergen.deployment_environment.subprocess.run",
+        fake_run,
+    )
     profile: dict[str, object] = {"name": "reviewed-answer"}
 
     _prepare_deployment_environment(
@@ -64,7 +69,10 @@ def test_failed_ensurepip_keeps_the_previous_environment_and_has_guidance(
     sentinel = environment / "existing-environment"
     sentinel.write_text("still usable\n")
     monkeypatch.setenv("ZIPPERGEN_HOME", str(home))
-    monkeypatch.setattr("zippergen.serve.shutil.which", lambda _name: None)
+    monkeypatch.setattr(
+        "zippergen.deployment_environment.shutil.which",
+        lambda _name: None,
+    )
 
     class BrokenBuilder:
         def create(self, _target):
@@ -74,7 +82,7 @@ def test_failed_ensurepip_keeps_the_previous_environment_and_has_guidance(
             )
 
     monkeypatch.setattr(
-        "zippergen.serve.venv.EnvBuilder",
+        "zippergen.deployment_environment.venv.EnvBuilder",
         lambda **_kwargs: BrokenBuilder(),
     )
     profile: dict[str, object] = {"name": "reviewed-answer"}
@@ -101,7 +109,7 @@ def test_google_connector_deployment_installs_the_optional_extra(
     home = tmp_path / "home"
     monkeypatch.setenv("ZIPPERGEN_HOME", str(home))
     monkeypatch.setattr(
-        "zippergen.serve.shutil.which",
+        "zippergen.deployment_environment.shutil.which",
         lambda name: "/tools/uv" if name == "uv" else None,
     )
     calls: list[list[str]] = []
@@ -115,7 +123,10 @@ def test_google_connector_deployment_installs_the_optional_extra(
             python.write_text("managed python\n")
         return subprocess.CompletedProcess(command, 0)
 
-    monkeypatch.setattr("zippergen.serve.subprocess.run", fake_run)
+    monkeypatch.setattr(
+        "zippergen.deployment_environment.subprocess.run",
+        fake_run,
+    )
     profile: dict[str, object] = {
         "name": "google-service",
         "connectors": {

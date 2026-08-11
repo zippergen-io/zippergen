@@ -106,10 +106,6 @@ def _profile_field_value(
     field: DeploymentField,
     secrets: dict[str, str],
 ) -> object:
-    if field.target == "llm":
-        return profile.get("llm")
-    if field.target == "services":
-        return profile.get("services")
     if field.target == "input":
         values = profile.get("inputs") or {}
         return values.get(field.target_name) if isinstance(values, dict) else None

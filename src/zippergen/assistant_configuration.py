@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import os
 from collections.abc import Mapping
 from dataclasses import dataclass
 from types import ModuleType
@@ -188,7 +187,7 @@ def apply_assistant_overrides(
     workflow: Workflow,
     module: ModuleType | None = None,
 ) -> AssistantRouting:
-    """Apply legacy run-specific backend selections after project routing."""
+    """Apply an explicit runtime override after project routing."""
 
     merged = dict(routing.overrides)
     merged.update(normalize_assistant_overrides(overrides))
@@ -221,7 +220,6 @@ def resolved_assistant_actions(
     assert isinstance(lifelines, Mapping)
     assert isinstance(actions, Mapping)
     rows: list[ResolvedAssistantAction] = []
-    environment_default = os.environ.get("ZIPPERGEN_ASSISTANT")
     for participant, action_name in _assistant_sites(workflow, module):
         target = f"{participant}.{action_name}"
         action = definitions[action_name]
@@ -241,12 +239,6 @@ def resolved_assistant_actions(
         elif routing.default_backend:
             backend = routing.default_backend
             source = "runtime default"
-        elif action.backend:
-            backend = action.backend
-            source = "legacy action fallback"
-        elif environment_default in {"codex", "claude"}:
-            backend = environment_default
-            source = "environment"
         else:
             backend = None
             source = "missing"

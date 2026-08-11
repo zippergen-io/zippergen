@@ -6,7 +6,7 @@ The Executor may only run the plan if the latest causally visible
 Orchestrator event shows approval=True.
 
 Guard (evaluated by Executor):
-    Y[Orchestrator](atom(lambda env: env.get("approval", False)))
+    At[Orchestrator](atom(lambda env: env.get("approval", False)))
 
 Run with:
     python examples/temporal_guard.py
@@ -58,7 +58,7 @@ def blocked(plan: str) -> str:
 
 # Guard evaluated by Executor: the latest causally visible Orchestrator
 # event must record approval=True.
-approved_by_orchestrator = Y[Orchestrator](
+approved_by_orchestrator = At[Orchestrator](
     atom(lambda env: env.get("approval", False), src="approval")
 )
 
@@ -76,6 +76,6 @@ def guarded_execution(request: str @ Orchestrator) -> str:
 
 
 if __name__ == "__main__":
-    guarded_execution.configure(llms="mock")
+    guarded_execution.configure(llm="mock")
     r = guarded_execution(request="organise a team offsite")
     print(f"\nResult → {r}")

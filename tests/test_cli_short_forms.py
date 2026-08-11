@@ -9,6 +9,7 @@ so these commands infer it.
     zg validate
 """
 
+import argparse
 import shutil
 from pathlib import Path
 
@@ -323,8 +324,34 @@ def test_top_level_help_hides_legacy_internal_commands(capsys):
 
     output = capsys.readouterr().out
     assert "==SUPPRESS==" not in output
-    for command in ("notify", "serve"):
+    for command in ("__run-deployment", "notify", "serve"):
         assert f"    {command} " not in output
+
+
+def test_completion_uses_the_registered_command_tree():
+    from zippergen.completion import completion_candidates, render_completion
+    from zippergen.serve import HIDDEN_COMMANDS, _parse_cli_args
+
+    parser, _arguments = _parse_cli_args([])
+    top_level = next(
+        action for action in parser._actions
+        if isinstance(action, argparse._SubParsersAction)
+    )
+    expected_commands = [
+        name for name in top_level.choices if name not in HIDDEN_COMMANDS
+    ]
+    deploy_parser = top_level.choices["deploy"]
+    deploy = next(
+        action for action in deploy_parser._actions
+        if isinstance(action, argparse._SubParsersAction)
+    )
+
+    assert completion_candidates("commands") == expected_commands
+    assert completion_candidates("deploy-actions") == list(deploy.choices)
+    for shell in ("zsh", "bash", "fish"):
+        script = render_completion(shell)
+        assert "deploy-actions" in script or "${cmd}-actions" in script
+        assert "kind=deployments" not in script
 
 
 def test_a_projection_that_promises_a_result_shows_where_it_comes_from(

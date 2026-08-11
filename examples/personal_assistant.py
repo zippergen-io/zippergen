@@ -295,7 +295,7 @@ if __name__ == "__main__":
     import sys
 
     if "--mock" in sys.argv:
-        inbox_assistant.configure(llms="mock", execution="memory", timeout=60)
+        inbox_assistant.configure(llm="mock", execution="memory", timeout=60)
 
     elif "--live" in sys.argv:
         import importlib.util

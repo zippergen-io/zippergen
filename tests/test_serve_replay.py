@@ -4,8 +4,7 @@ from zippergen.syntax import Lifeline, Var, VarExpr, LitExpr, MsgStmt, IfStmt, S
 from zippergen.actions import pure
 from zippergen.projection import project
 from zippergen.store import open_store, DurableChannel
-from zippergen.serve import seed_env
-from zippergen.role_runner import RoleRunner, run_role
+from zippergen.role_runner import RoleRunner, run_role, seed_env
 from tests.test_examples_regression import _two_role_branch_workflow, A, B
 
 def _run_both(conn_a, conn_b, wf, seed):
@@ -57,11 +56,11 @@ def test_seed_env_persists_then_reads_back(tmp_path):
     path = str(tmp_path / "s.sqlite")
     wf = _two_role_branch_workflow()
     conn1 = open_store(path)
-    got1 = seed_env(conn1, "A", wf, {"x": 42})
+    got1 = seed_env(conn1, "A", {"x": 42})
     assert got1 == {"x": 42}
     # Restart: different inputs are ignored; the recorded seed wins.
     conn2 = open_store(path)
-    got2 = seed_env(conn2, "A", wf, {"x": -1})
+    got2 = seed_env(conn2, "A", {"x": -1})
     assert got2 == {"x": 42}
     rows = conn2.execute("SELECT COUNT(*) FROM events WHERE kind='seed' AND sender='A'").fetchone()[0]
     assert rows == 1

@@ -20,7 +20,8 @@ from zippergen import (
     workflow,
     workflow_semantics,
 )
-from zippergen.serve import _bundle_deployment, _validate_workflow
+from zippergen.deployment_environment import bundle_deployment as _bundle_deployment
+from zippergen.serve import _validate_workflow
 from zippergen.syntax import Workflow
 
 
@@ -36,7 +37,6 @@ def update_repository(request: str) -> str: ...
 
 @assistant(
     instructions="Update the repository and run the requested checks.",
-    backend="claude",
     access="write",
     shell="enabled",
 )
@@ -89,7 +89,6 @@ def test_assistant_decorator_loads_markdown_file(tmp_path, monkeypatch):
 
     @assistant(
         instructions_file="prompts/repair.md",
-        backend="claude",
         access="read-only",
     )
     def repair(issue: str) -> str: ...
@@ -97,7 +96,6 @@ def test_assistant_decorator_loads_markdown_file(tmp_path, monkeypatch):
     assert repair.instructions.startswith("# Repair")
     assert repair.instructions_file == "prompts/repair.md"
     assert repair.instructions_path == str(prompt)
-    assert repair.backend == "claude"
     assert repair.access == "read-only"
 
 
@@ -300,21 +298,22 @@ def test_cli_backend_enforces_read_only_codex_and_claude_modes(
 
     @assistant(
         instructions="Review without editing.",
-        backend="codex",
         access="read-only",
     )
     def codex_review(request: str) -> str: ...
 
     @assistant(
         instructions="Review without editing.",
-        backend="claude",
         access="read-only",
     )
     def claude_review(request: str) -> str: ...
 
-    backend = make_cli_assistant_backend(project_root=tmp_path)
-    backend(codex_review, {"request": "review"})
-    backend(claude_review, {"request": "review"})
+    make_cli_assistant_backend("codex", project_root=tmp_path)(
+        codex_review, {"request": "review"}
+    )
+    make_cli_assistant_backend("claude", project_root=tmp_path)(
+        claude_review, {"request": "review"}
+    )
 
     assert commands[0][6:8] == ["--sandbox", "read-only"]
     assert "--strict-config" in commands[0]
@@ -342,20 +341,18 @@ def test_claude_shell_requires_explicit_opt_in(tmp_path, monkeypatch):
 
     @assistant(
         instructions="Edit the requested files.",
-        backend="claude",
         access="write",
     )
     def restricted_edit(request: str) -> str: ...
 
     @assistant(
         instructions="Edit the files and run fixed checks.",
-        backend="claude",
         access="write",
         shell="enabled",
     )
     def shell_edit(request: str) -> str: ...
 
-    backend = make_cli_assistant_backend(project_root=tmp_path)
+    backend = make_cli_assistant_backend("claude", project_root=tmp_path)
     backend(restricted_edit, {"request": "edit"})
     backend(shell_edit, {"request": "edit and verify"})
 
@@ -389,21 +386,22 @@ def test_cli_backend_allows_configured_external_tools_only_by_opt_in(
 
     @assistant(
         instructions="Use the configured issue tracker.",
-        backend="codex",
         external_tools="configured",
     )
     def codex_external(request: str) -> str: ...
 
     @assistant(
         instructions="Use the configured issue tracker.",
-        backend="claude",
         external_tools="configured",
     )
     def claude_external(request: str) -> str: ...
 
-    backend = make_cli_assistant_backend(project_root=tmp_path)
-    backend(codex_external, {"request": "review"})
-    backend(claude_external, {"request": "review"})
+    make_cli_assistant_backend("codex", project_root=tmp_path)(
+        codex_external, {"request": "review"}
+    )
+    make_cli_assistant_backend("claude", project_root=tmp_path)(
+        claude_external, {"request": "review"}
+    )
 
     assert "--ignore-user-config" not in commands[0]
     assert "--strict-config" in commands[0]

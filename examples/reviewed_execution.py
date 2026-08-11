@@ -114,7 +114,7 @@ def reviewed_execution(task: str @ Planner) -> str:
 
 if __name__ == "__main__":
     reviewed_execution.configure(
-        llms="mock",
+        llm="mock",
         timeout=60,
         mock_delay=(5.0, 10.0),
     )

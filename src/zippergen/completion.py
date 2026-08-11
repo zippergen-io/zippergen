@@ -9,45 +9,64 @@ from zippergen.workspace import Workspace, WorkspaceError
 from zippergen.workflow_io import load_workflow_spec
 
 
-COMMANDS = (
-    "config", "model", "assistant", "connector", "completion", "run", "show", "validate",
-    "init", "skill", "snapshot", "diff", "deploy", "configure", "start",
-    "stop", "remove", "compact", "restart", "logs", "doctor", "status",
-    "inspect", "trace", "tasks", "approve", "notify",
-)
-MODEL_ACTIONS = ("configure", "assign", "unassign", "check", "remove")
-ASSISTANT_ACTIONS = ("configure", "assign", "unassign", "check", "remove")
-CONNECTOR_ACTIONS = (
-    "configure", "assign", "unassign", "bind", "unbind", "check", "remove",
-    "authorize", "accept",
-)
+def _parser_choices(path: tuple[str, ...] = ()) -> list[str]:
+    """Read command choices from the real parser instead of copying them."""
+
+    import argparse
+
+    from zippergen.serve import HIDDEN_COMMANDS, _parse_cli_args
+
+    parser, _arguments = _parse_cli_args([])
+    current = parser
+    for name in path:
+        subparsers = next(
+            (
+                action
+                for action in current._actions
+                if isinstance(action, argparse._SubParsersAction)
+            ),
+            None,
+        )
+        if subparsers is None or name not in subparsers.choices:
+            return []
+        current = subparsers.choices[name]
+    subparsers = next(
+        (
+            action
+            for action in current._actions
+            if isinstance(action, argparse._SubParsersAction)
+        ),
+        None,
+    )
+    if subparsers is None:
+        return []
+    hidden = HIDDEN_COMMANDS if not path else frozenset()
+    return [name for name in subparsers.choices if name not in hidden]
+
+
 def completion_candidates(
     kind: str,
     project: str | None = None,
     path: tuple[str, ...] = (),
 ) -> list[str]:
-    """Return current project or deployment names for shell completion."""
+    """Return parser-derived commands or project-derived configuration names."""
 
     if kind == "commands":
-        return list(COMMANDS)
-    if kind == "model-actions":
-        return list(MODEL_ACTIONS)
-    if kind == "assistant-actions":
-        return list(ASSISTANT_ACTIONS)
+        return _parser_choices()
+    if kind in {
+        "config-actions",
+        "model-actions",
+        "assistant-actions",
+        "connector-actions",
+        "deploy-actions",
+    }:
+        return _parser_choices((kind.removesuffix("-actions"),))
     if kind == "assistant-backends":
         return ["codex", "claude"]
-    if kind == "connector-actions":
-        return list(CONNECTOR_ACTIONS)
     if kind == "connector-providers":
         return ["telegram", "gmail", "google-sheets"]
     if kind == "options":
         return _option_candidates(path)
-    if kind == "deployments":
-        from zippergen.deployment_platform import deployments_dir
-
-        directory = deployments_dir()
-        return sorted(path.stem for path in directory.glob("*.json"))
-
     try:
         workspace = Workspace(project)
         if kind == "model-configurations":
@@ -140,15 +159,10 @@ _zg() {
     compadd -- ${(f)"$(zg __complete options $cmd $action 2>/dev/null)"}
     return
   fi
-  if [[ $cmd == model && CURRENT == 3 ]]; then
-    compadd -- ${(f)"$(zg __complete model-actions 2>/dev/null)"}; return
-  fi
-  if [[ $cmd == assistant && CURRENT == 3 ]]; then
-    compadd -- ${(f)"$(zg __complete assistant-actions 2>/dev/null)"}; return
-  fi
-  if [[ $cmd == connector && CURRENT == 3 ]]; then
-    compadd -- ${(f)"$(zg __complete connector-actions 2>/dev/null)"}; return
-  fi
+  case "$cmd:$CURRENT" in
+    config:3|model:3|assistant:3|connector:3|deploy:3)
+      compadd -- ${(f)"$(zg __complete ${cmd}-actions 2>/dev/null)"}; return ;;
+  esac
   case "$cmd:$action:$CURRENT" in
     model:assign:4|model:unassign:4) kind=model-targets ;;
     model:assign:5|model:check:4|model:remove:4) kind=model-configurations ;;
@@ -160,7 +174,6 @@ _zg() {
     connector:configure:5) kind=connector-providers ;;
     connector:bind:4|connector:unbind:4) kind=connector-requirements ;;
     connector:bind:5) kind=connector-configurations ;;
-    configure:*:3|start:*:3|stop:*:3|remove:*:3|compact:*:3|restart:*:3|logs:*:3|doctor:*:3|status:*:3|inspect:*:3|trace:*:3|tasks:*:3|approve:*:3) kind=deployments ;;
   esac
   [[ -n $kind ]] && compadd -- ${(f)"$(zg __complete $kind 2>/dev/null)"}
 }
@@ -177,9 +190,11 @@ _zg_complete() {
   if [[ $cur == -* ]]; then
     COMPREPLY=( $(compgen -W "$(zg __complete options "$cmd" "$action" 2>/dev/null)" -- "$cur") ); return
   elif [[ $COMP_CWORD -eq 1 ]]; then kind=commands
+  elif [[ $cmd == config && $COMP_CWORD -eq 2 ]]; then kind=config-actions
   elif [[ $cmd == model && $COMP_CWORD -eq 2 ]]; then kind=model-actions
   elif [[ $cmd == assistant && $COMP_CWORD -eq 2 ]]; then kind=assistant-actions
   elif [[ $cmd == connector && $COMP_CWORD -eq 2 ]]; then kind=connector-actions
+  elif [[ $cmd == deploy && $COMP_CWORD -eq 2 ]]; then kind=deploy-actions
   elif [[ $cmd == model && $action =~ ^(assign|unassign)$ && $COMP_CWORD -eq 3 ]]; then kind=model-targets
   elif [[ $cmd == model && $action == assign && $COMP_CWORD -eq 4 ]] || [[ $cmd == model && $action =~ ^(check|remove)$ && $COMP_CWORD -eq 3 ]]; then kind=model-configurations
   elif [[ $cmd == assistant && $action =~ ^(assign|unassign)$ && $COMP_CWORD -eq 3 ]]; then kind=assistant-targets
@@ -190,7 +205,6 @@ _zg_complete() {
   elif [[ $cmd == connector && $action == configure && $COMP_CWORD -eq 4 ]]; then kind=connector-providers
   elif [[ $cmd == connector && $action =~ ^(bind|unbind)$ && $COMP_CWORD -eq 3 ]]; then kind=connector-requirements
   elif [[ $cmd == connector && $action == bind && $COMP_CWORD -eq 4 ]]; then kind=connector-configurations
-  elif [[ " ${cmd} " == *" configure "* || " ${cmd} " == *" start "* || " ${cmd} " == *" stop "* || " ${cmd} " == *" remove "* || " ${cmd} " == *" compact "* || " ${cmd} " == *" restart "* || " ${cmd} " == *" logs "* || " ${cmd} " == *" doctor "* || " ${cmd} " == *" status "* || " ${cmd} " == *" inspect "* || " ${cmd} " == *" trace "* || " ${cmd} " == *" tasks "* || " ${cmd} " == *" approve "* ]] && [[ $COMP_CWORD -eq 2 ]]; then kind=deployments
   fi
   [[ -n $kind ]] && COMPREPLY=( $(compgen -W "$(zg __complete "$kind" 2>/dev/null)" -- "$cur") )
 }
@@ -199,10 +213,12 @@ complete -F _zg_complete zg zippergen'''
 
 _FISH = r'''# Install with: zg completion fish | source
 complete -c zg -c zippergen -f
-complete -c zg -c zippergen -n 'not __fish_seen_subcommand_from config model assistant connector completion run show validate init skill snapshot diff deploy configure start stop remove compact restart logs doctor status inspect trace tasks approve notify' -a '(zg __complete commands 2>/dev/null)'
+complete -c zg -c zippergen -n 'not __fish_seen_subcommand_from config model assistant completion connector run show validate init skill diff deploy inspect trace tasks approve' -a '(zg __complete commands 2>/dev/null)'
+complete -c zg -c zippergen -n '__fish_seen_subcommand_from config; and not __fish_seen_subcommand_from check workflow' -a '(zg __complete config-actions 2>/dev/null)'
 complete -c zg -c zippergen -n '__fish_seen_subcommand_from model; and not __fish_seen_subcommand_from configure assign unassign check remove' -a '(zg __complete model-actions 2>/dev/null)'
 complete -c zg -c zippergen -n '__fish_seen_subcommand_from assistant; and not __fish_seen_subcommand_from configure assign unassign check remove' -a '(zg __complete assistant-actions 2>/dev/null)'
 complete -c zg -c zippergen -n '__fish_seen_subcommand_from connector; and not __fish_seen_subcommand_from configure assign unassign bind unbind check remove authorize accept' -a '(zg __complete connector-actions 2>/dev/null)'
+complete -c zg -c zippergen -n '__fish_seen_subcommand_from deploy; and not __fish_seen_subcommand_from run start stop restart remove compact logs check status reset' -a '(zg __complete deploy-actions 2>/dev/null)'
 complete -c zg -c zippergen -n '__fish_seen_subcommand_from model assign; and test (count (commandline -opc)) -eq 3' -a '(zg __complete model-targets 2>/dev/null)'
 complete -c zg -c zippergen -n '__fish_seen_subcommand_from model assign; and test (count (commandline -opc)) -eq 4' -a '(zg __complete model-configurations 2>/dev/null)'
 complete -c zg -c zippergen -n '__fish_seen_subcommand_from model check remove; and test (count (commandline -opc)) -eq 3' -a '(zg __complete model-configurations 2>/dev/null)'
@@ -216,5 +232,4 @@ complete -c zg -c zippergen -n '__fish_seen_subcommand_from connector configure;
 complete -c zg -c zippergen -n '__fish_seen_subcommand_from connector check remove; and test (count (commandline -opc)) -eq 3' -a '(zg __complete connector-configurations 2>/dev/null)'
 complete -c zg -c zippergen -n '__fish_seen_subcommand_from connector bind unbind; and test (count (commandline -opc)) -eq 3' -a '(zg __complete connector-requirements 2>/dev/null)'
 complete -c zg -c zippergen -n '__fish_seen_subcommand_from connector bind; and test (count (commandline -opc)) -eq 4' -a '(zg __complete connector-configurations 2>/dev/null)'
-complete -c zg -c zippergen -n '__fish_seen_subcommand_from start stop remove compact restart logs doctor status inspect trace tasks approve; and test (count (commandline -opc)) -eq 2' -a '(zg __complete deployments 2>/dev/null)'
 '''

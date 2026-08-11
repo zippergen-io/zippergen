@@ -260,8 +260,9 @@ def validate_workflow(workflow: Workflow, module: ModuleType) -> dict[str, objec
                 else "configured MCP/tool integrations and web access are disabled"
             ),
         })
-        shell_may_be_claude = action.backend in {None, "claude"}
-        shell_warning = action.shell == "enabled" and shell_may_be_claude
+        # Workflow validation does not know the project's assistant routing.
+        # Any shell-enabled action may therefore be assigned to Claude.
+        shell_warning = action.shell == "enabled"
         checks.append({
             "status": "warn" if shell_warning else "ok",
             "name": f"assistant shell {action.name}",

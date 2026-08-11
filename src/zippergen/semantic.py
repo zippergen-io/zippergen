@@ -128,7 +128,6 @@ def _action_definition(action: object) -> dict[str, object]:
             "instructions_file": action.instructions_file,
             "instructions_sha256": action.instructions_sha256,
             "instructions": action.instructions,
-            "backend": action.backend,
             "access": action.access,
             "external_tools": action.external_tools,
             "shell": action.shell,
@@ -318,7 +317,6 @@ def workflow_semantics(
 
         declaration = deployment_spec_from_module(module)
         result["deployment"] = {
-            "name": declaration.name,
             "description": declaration.description,
             "fields": {
                 field.name: _json_value(field.__dict__) for field in declaration.fields

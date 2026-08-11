@@ -10,10 +10,13 @@ the JSON email with corrected fields, preferably keeping the same call_id.
 Guided deployment:
 
     zippergen connector authorize google --scopes gmail.readonly,spreadsheets
-    zippergen connector configure gmail call-mailbox --bind call-mailbox
-    zippergen connector configure google-sheets call-records \
-        --spreadsheet-id SHEET_ID --tab Calls --bind call-records
-    zippergen deploy examples/call_intake.py:call_intake --name call-intake
+    zippergen connector configure call-mailbox gmail
+    zippergen connector bind call-mailbox call-mailbox
+    zippergen connector configure call-records google-sheets \
+        --spreadsheet-id SHEET_ID --tab Calls
+    zippergen connector bind call-records call-records
+    zippergen config workflow examples/call_intake.py:call_intake
+    zippergen deploy
 
 Configuration asks for one Google OAuth desktop client, a Gmail search query,
 and a spreadsheet tab, and stores them outside the project. No token paths or
@@ -117,33 +120,15 @@ _poll_seconds = 60.0
 
 
 zippergen_deployment = DeploymentSpec(
-    name="call-intake",
     description=(
         "Watch a Gmail inbox for certified call announcements, extract structured "
         "records with an LLM, write Google Sheets, and send controlled replies."
     ),
     fields=(
         DeploymentField(
-            "llm",
-            "LLM provider and model",
-            target="llm",
-            default="openai:gpt-4o",
-            required=True,
-        ),
-        DeploymentField(
-            "openai_api_key",
-            "OpenAI API key",
-            target="env",
-            env="OPENAI_API_KEY",
-            required=True,
-            secret=True,
-            when="llm",
-            when_values=("openai*",),
-        ),
-        DeploymentField(
             "services",
             "Use fake or live external services",
-            target="services",
+            target="option",
             default="live",
             required=True,
             choices=("fake", "live"),
@@ -467,10 +452,10 @@ def zippergen_setup(config) -> None:
 
 
 def zippergen_doctor(config) -> list[dict[str, object]]:
-    """Workflow-specific readiness checks used by ``zippergen doctor``."""
+    """Workflow-specific readiness checks used by ``zippergen deploy check``."""
 
     checks: list[dict[str, object]] = []
-    services = str(config.services or config.option("services", "fake"))
+    services = str(config.option("services", "fake"))
     certified = _split_senders(config.option("certified", None))
     recipients = _split_senders(
         config.option("recipient", config.option("recipients", None))

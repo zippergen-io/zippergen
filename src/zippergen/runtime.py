@@ -1537,7 +1537,6 @@ def _workflow_configure(
     backend: object = None,
     trace: object = None,
     timeout: float = 60.0,
-    llms=None,
     mock_delay: tuple[float, float] = (1.0, 2.0),
     llm_idle_timeout: float | None = None,
     llm_idle_timeouts: Mapping[str, float] | None = None,
@@ -1548,8 +1547,6 @@ def _workflow_configure(
     assistant_backend: object | None = None,
     assistant_root: str | None = None,
 ) -> Workflow:
-    if llm is not None and llms is not None:
-        raise ValueError("Use either 'llm' or the legacy 'llms' option, not both.")
     if llm_idle_timeout is not None and (
         not math.isfinite(llm_idle_timeout) or llm_idle_timeout < 0
     ):
@@ -1568,8 +1565,6 @@ def _workflow_configure(
             raise ValueError("Use either positional backend/llm or 'backend=', not both.")
         backend = llm
         llm = None
-    llm_config = llm if llm is not None else llms
-
     if execution is not None:
         if execution not in {"memory", "sqlite"}:
             raise ValueError("execution must be 'memory' or 'sqlite'")
@@ -1577,15 +1572,15 @@ def _workflow_configure(
     if store_path is not None:
         wf._rt._store_path = store_path
 
-    if llm_config is not None:
+    if llm is not None:
         from zippergen.backends import router_from_specs
         from zippergen.models import effective_llm_routes
-        if llm_config == "mock":
+        if llm == "mock":
             routes: dict = {}
-        elif isinstance(llm_config, str):
-            routes = effective_llm_routes(wf, llm_config)
+        elif isinstance(llm, str):
+            routes = effective_llm_routes(wf, llm)
         else:
-            routes = {str(k): v for k, v in llm_config.items()}
+            routes = {str(k): v for k, v in llm.items()}
         built_backend, _label = router_from_specs(
             routes,
             fallback=lambda a, i: mock_llm(a, i, min_delay=mock_delay[0], max_delay=mock_delay[1]),

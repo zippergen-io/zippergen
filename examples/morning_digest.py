@@ -179,8 +179,8 @@ def inbox_triage(query: str @ User) -> str:
 
 if __name__ == "__main__":
     inbox_triage.configure(
-        llms="mistral",
-        # llms="mock",
+        llm="mistral",
+        # llm="mock",
         timeout=120,
     )
     result = inbox_triage(query="latest unread email")

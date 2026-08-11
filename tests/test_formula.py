@@ -1,7 +1,7 @@
 """Tests for formula IR and user API."""
 import pytest
 from zippergen.formula import (
-    AtomicFormula, OnFormula, YFormula, YAFormula,
+    AtomicFormula, OnFormula, YFormula, AtFormula,
     SinceFormula, PastFormula, ConstFormula,
     AndFormula, OrFormula, NotFormula, FieldTerm,
     atom, At, Here, Y, on, since, P, true, false, subformulas,
@@ -48,8 +48,8 @@ def test_Y_call_creates_y_formula():
 
 def test_Y_getitem_creates_ya_formula():
     phi = atom(lambda env: True)
-    f = Y[A](phi)
-    assert isinstance(f, YAFormula)
+    f = At[A](phi)
+    assert isinstance(f, AtFormula)
     assert f.lifeline_name == "A"
     assert f.subformula is phi
 
@@ -64,8 +64,8 @@ def test_Y_auto_wraps_callable():
 
 def test_Y_getitem_auto_wraps_callable():
     fn = lambda env: True
-    f = Y[A](fn)
-    assert isinstance(f, YAFormula)
+    f = At[A](fn)
+    assert isinstance(f, AtFormula)
     assert isinstance(f.subformula, AtomicFormula)
 
 
@@ -180,7 +180,7 @@ def test_subformulas_y_formula():
 
 def test_subformulas_ya_formula():
     phi = atom(lambda env: True)
-    yaf = Y[A](phi)
+    yaf = At[A](phi)
     result = subformulas(yaf)
     assert result == [phi, yaf]
 
@@ -228,7 +228,7 @@ def test_formula_is_formula_instance():
     phi = atom(lambda env: True)
     assert isinstance(phi, Formula)
     assert isinstance(Y(phi), Formula)
-    assert isinstance(Y[A](phi), Formula)
+    assert isinstance(At[A](phi), Formula)
     assert isinstance(on(A), Formula)
     assert isinstance(~phi, Formula)
     assert isinstance(phi & phi, Formula)

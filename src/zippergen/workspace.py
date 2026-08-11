@@ -30,8 +30,6 @@ RUN_SCHEMA_VERSION = 1
 PROJECT_SCHEMA_VERSION = 1
 PROJECT_MANIFEST_NAME = "zippergen.toml"
 SPECIFICATION_FILE_NAME = "specification.md"
-PROJECT_CONFIGURATION_MARKER = "project_configuration_migrated"
-
 _IGNORED_DISCOVERY_PARTS = {
     ".git",
     ".hg",
@@ -52,7 +50,6 @@ _MODEL_PROJECT_FIELDS = frozenset({"provider", "model", "spec"})
 # Checks are always live, so their results are never stored.  These are the
 # fields that describe one machine rather than the project.
 _MODEL_SITE_FIELDS = frozenset({"idle_timeout"})
-_CONNECTOR_SITE_FIELDS: frozenset[str] = frozenset()
 # Results of earlier versions' cached checks, stripped wherever they are read.
 _STALE_CHECK_FIELDS = frozenset({"check_status", "check_detail", "checked_at"})
 _PROVIDER_PROJECT_FIELDS = frozenset({"kind"})
@@ -333,7 +330,6 @@ class Workspace:
                 "name": self.root.name,
                 "specification_file": SPECIFICATION_FILE_NAME,
                 "workflow_entry": None,
-                "prompts_directory": "prompts",
                 "framework_directory": None,
                 "models": {
                     "configurations": {},
@@ -377,12 +373,6 @@ class Workspace:
         name = str(manifest.get("name") or "").strip()
         if not name:
             raise WorkspaceError(f"Project name is empty in {self.manifest_path}.")
-        prompts = str(manifest.get("prompts_directory") or "prompts")
-        _safe_project_directory(
-            self.root,
-            prompts,
-            field="prompts_directory",
-        )
         specification = str(
             manifest.get("specification_file") or SPECIFICATION_FILE_NAME
         )
@@ -492,7 +482,6 @@ class Workspace:
             "name": name,
             "specification_file": specification,
             "workflow_entry": workflow_entry,
-            "prompts_directory": prompts,
             "framework_directory": framework,
             "models": {
                 "configurations": model_configurations,
@@ -543,10 +532,6 @@ class Workspace:
         if manifest.get("workflow_entry"):
             lines.append(
                 f"workflow_entry = {_toml_string(manifest['workflow_entry'])}"
-            )
-        if manifest.get("prompts_directory") != "prompts":
-            lines.append(
-                f"prompts_directory = {_toml_string(manifest['prompts_directory'])}"
             )
         if manifest.get("framework_directory"):
             lines.append(
@@ -658,15 +643,9 @@ class Workspace:
         *,
         name: str | None = None,
         specification_file: str = SPECIFICATION_FILE_NAME,
-        prompts_directory: str = "prompts",
         framework_directory: str | None = None,
     ) -> dict[str, object]:
-        """Create the visible project manifest.
-
-        The canonical specification itself is created by ``create`` or
-        ``spec edit``. Legacy prompt-ledger files are left untouched and are
-        migrated only when their design context is first needed.
-        """
+        """Create the visible project manifest."""
 
         if self.manifest_path.exists():
             manifest = self.project_manifest()
@@ -679,11 +658,6 @@ class Workspace:
         project_name = str(name or self.root.name).strip()
         if not project_name:
             raise WorkspaceError("Project name must not be empty.")
-        _safe_project_directory(
-            self.root,
-            prompts_directory,
-            field="prompts_directory",
-        )
         _safe_project_file(
             self.root,
             specification_file,
@@ -775,197 +749,6 @@ class Workspace:
         _atomic_write_text(self.manifest_path, updated)
         return canonical
 
-    def migrate_project_configuration(self) -> dict[str, object]:
-        """Copy portable legacy configuration into the project manifest once."""
-
-        state = self.load()
-        if state.get(PROJECT_CONFIGURATION_MARKER):
-            return {"migrated": False, "reason": "already migrated"}
-        if not self.manifest_path.exists():
-            return {"migrated": False, "reason": "manifest missing"}
-        manifest = self.project_manifest()
-        models = _object_table(manifest["models"], field="models")
-        connectors = _object_table(manifest["connectors"], field="connectors")
-
-        raw_project_models = _object_table(
-            models.get("configurations") or {},
-            field="models.configurations",
-        )
-        project_models: dict[str, dict[str, str]] = {
-            str(name): {
-                str(key): str(item)
-                for key, item in value.items()
-                if item is not None
-            }
-            for name, value in raw_project_models.items()
-            if isinstance(value, dict)
-        }
-        raw_model_configurations = state.get("model_configurations") or {}
-        if not isinstance(raw_model_configurations, dict):
-            raise WorkspaceError(
-                "Workspace model_configurations must be an object."
-            )
-        for name, raw in raw_model_configurations.items():
-            if not isinstance(raw, dict):
-                continue
-            portable = {
-                str(key): str(value)
-                for key, value in raw.items()
-                if value is not None and str(key) in _MODEL_PROJECT_FIELDS
-            }
-            if portable:
-                project_models.setdefault(str(name), portable)
-
-        def ensure_direct_model(spec: object) -> str:
-            value = str(spec or "mock").strip() or "mock"
-            if value == "mock":
-                return "mock"
-            for config_name, config in project_models.items():
-                if config.get("spec") == value:
-                    return config_name
-            provider, separator, model = value.partition(":")
-            provider = {"claude": "anthropic", "ollama": "local"}.get(
-                provider.casefold(), provider.casefold()
-            )
-            canonical = f"{provider}:{model}" if separator else provider
-            stem = re.sub(
-                r"[^A-Za-z0-9._-]+", "-", f"{provider}-{model}"
-            ).strip("._-")[:56] or "model"
-            candidate = stem
-            suffix = 2
-            while candidate.casefold() in {
-                name.casefold() for name in project_models
-            }:
-                candidate = f"{stem[:59]}-{suffix}"
-                suffix += 1
-            project_models[candidate] = {
-                "provider": provider,
-                "model": model,
-                "spec": canonical,
-            }
-            return candidate
-
-        try:
-            current = self.resolve_workflow()
-        except WorkspaceError:
-            current = None
-        model_assignments: dict[str, object] = _object_table(
-            models.get("assignments") or {},
-            field="models.assignments",
-        )
-        has_project_model_assignments = bool(
-            model_assignments.get("default") not in {None, "mock"}
-            or model_assignments.get("lifelines")
-            or model_assignments.get("actions")
-        )
-        raw_profiles = state.get("model_profiles") or {}
-        if not isinstance(raw_profiles, dict):
-            raise WorkspaceError("Workspace model_profiles must be an object.")
-        raw_profile = raw_profiles.get(current) if current else None
-        if isinstance(raw_profile, dict) and not has_project_model_assignments:
-            named_default = raw_profile.get("default_configuration")
-            named_lifelines = raw_profile.get("lifeline_configurations")
-            named_actions = raw_profile.get("action_configurations")
-            if named_default and isinstance(named_lifelines, dict):
-                model_assignments = {
-                    "default": str(named_default),
-                    "lifelines": {
-                        str(name): str(value)
-                        for name, value in named_lifelines.items()
-                    },
-                    "actions": {
-                        str(name): str(value)
-                        for name, value in (
-                            named_actions.items()
-                            if isinstance(named_actions, dict)
-                            else ()
-                        )
-                    },
-                }
-            else:
-                raw_lifelines = raw_profile.get("lifelines") or {}
-                raw_actions = raw_profile.get("actions") or {}
-                model_assignments = {
-                    "default": ensure_direct_model(raw_profile.get("default")),
-                    "lifelines": {
-                        str(name): ensure_direct_model(value)
-                        for name, value in (
-                            raw_lifelines.items()
-                            if isinstance(raw_lifelines, dict)
-                            else ()
-                        )
-                    },
-                    "actions": {
-                        str(name): ensure_direct_model(value)
-                        for name, value in (
-                            raw_actions.items()
-                            if isinstance(raw_actions, dict)
-                            else ()
-                        )
-                    },
-                }
-        models["configurations"] = project_models
-        models["assignments"] = model_assignments
-
-        raw_connector_providers = state.get("connector_providers") or {}
-        raw_connector_configurations = state.get("connector_configurations") or {}
-        if not isinstance(raw_connector_providers, dict) or not isinstance(
-            raw_connector_configurations, dict
-        ):
-            raise WorkspaceError("Workspace connector configuration is malformed.")
-        project_providers = _object_table(
-            connectors.get("providers") or {},
-            field="connectors.providers",
-        )
-        for name, raw in raw_connector_providers.items():
-            if isinstance(raw, dict) and raw.get("kind") is not None:
-                project_providers.setdefault(
-                    str(name), {"kind": str(raw["kind"])}
-                )
-        project_connectors = _object_table(
-            connectors.get("configurations") or {},
-            field="connectors.configurations",
-        )
-        for name, raw in raw_connector_configurations.items():
-            if not isinstance(raw, dict):
-                continue
-            portable = {
-                str(key): str(value)
-                for key, value in raw.items()
-                if value is not None
-                and str(key) not in _CONNECTOR_SITE_FIELDS
-                and str(key) not in _STALE_CHECK_FIELDS
-            }
-            if portable:
-                project_connectors.setdefault(str(name), portable)
-        connectors["providers"] = project_providers
-        connectors["configurations"] = project_connectors
-        for state_key, manifest_key in (
-            ("connector_bindings", "bindings"),
-            ("connector_assignments", "assignments"),
-        ):
-            raw_profiles = state.get(state_key) or {}
-            if isinstance(raw_profiles, dict) and current:
-                profile = raw_profiles.get(current)
-                existing = connectors.get(manifest_key)
-                existing_values = (
-                    any(existing.values())
-                    if isinstance(existing, dict)
-                    else bool(existing)
-                )
-                if isinstance(profile, dict) and not existing_values:
-                    connectors[manifest_key] = dict(profile)
-
-        self._write_project_configuration(models=models, connectors=connectors)
-        self.update(**{PROJECT_CONFIGURATION_MARKER: True})
-        return {
-            "migrated": True,
-            "model_configurations": len(project_models),
-            "connector_configurations": len(project_connectors),
-            "model_assignments": bool(model_assignments),
-            "connector_assignments": bool(connectors.get("assignments")),
-        }
-
     def _ensure_project_gitignore(self, framework_directory: str | None) -> None:
         if (self.root / ".git").exists():
             gitignore = self.root / ".gitignore"
@@ -993,19 +776,13 @@ class Workspace:
             "schema_version": WORKSPACE_SCHEMA_VERSION,
             "project_root": str(self.root),
             "current_run": None,
-            "model_profiles": {},
-            "model_configurations": {},
             "model_configuration_overrides": {},
             "model_site_profiles": {},
             "providers": {},
             "connector_providers": {},
-            "connector_configurations": {},
-            "connector_bindings": {},
-            "connector_assignments": {},
             "connector_configuration_overrides": {},
             "connector_site_bindings": {},
             "connector_site_assignments": {},
-            PROJECT_CONFIGURATION_MARKER: False,
             "updated_at": _timestamp(),
         }
 
@@ -1022,37 +799,15 @@ class Workspace:
             raise WorkspaceError(
                 f"Workspace {self.state_path} belongs to another project root."
             )
-        # Durable state is resolved through its owning run or deployment.
-        # Remove the former ambiguous navigation pointer from old workspaces.
-        state.pop("current_store", None)
-        # Retire private state from the removed Studio authoring lifecycle.
-        for field in (
-            "current_request",
-            "task_cleared",
-            "editor_command",
-            "last_deployment",
-            "last_view",
-        ):
-            state.pop(field, None)
-        state.pop("pending_specification_fingerprint", None)
-        state.pop("pending_specification_baseline", None)
-        state.pop("pending_refinement_created_at", None)
-        state.pop("pending_semantic_baseline", None)
-        state.pop("accepted_reviews", None)
-        state.pop("deployment_review_overrides", None)
-        state.setdefault("model_profiles", {})
-        state.setdefault("model_configurations", {})
+        # Workspace state is intentionally limited to site facts. Project
+        # identity, configurations, and assignments live in zippergen.toml.
         state.setdefault("model_configuration_overrides", {})
         state.setdefault("model_site_profiles", {})
         state.setdefault("providers", {})
         state.setdefault("connector_providers", {})
-        state.setdefault("connector_configurations", {})
-        state.setdefault("connector_bindings", {})
-        state.setdefault("connector_assignments", {})
         state.setdefault("connector_configuration_overrides", {})
         state.setdefault("connector_site_bindings", {})
         state.setdefault("connector_site_assignments", {})
-        state.setdefault(PROJECT_CONFIGURATION_MARKER, False)
         return state
 
     def update(self, **changes: object) -> dict[str, Any]:
@@ -1105,11 +860,6 @@ class Workspace:
         """Return project model configurations with one site override."""
 
         state = self.load()
-        raw_site = state.get("model_configurations") or {}
-        if not isinstance(raw_site, dict):
-            raise WorkspaceError(
-                "Workspace model_configurations must be an object."
-            )
         manifest_models = self.project_manifest().get("models") or {}
         assert isinstance(manifest_models, dict)
         raw_project = manifest_models.get("configurations") or {}
@@ -1131,23 +881,6 @@ class Workspace:
                 for key, value in raw_configuration.items()
                 if value is not None and str(key) not in _STALE_CHECK_FIELDS
             }
-        migrated = bool(state.get(PROJECT_CONFIGURATION_MARKER))
-        for name, raw_configuration in raw_site.items():
-            if not isinstance(raw_configuration, dict):
-                raise WorkspaceError(
-                    f"Model configuration {name!r} must be an object."
-                )
-            site_values = {
-                str(key): str(value)
-                for key, value in raw_configuration.items()
-                if value is not None
-                and str(key) not in _STALE_CHECK_FIELDS
-                and (not migrated or str(key) in _MODEL_SITE_FIELDS)
-            }
-            if not migrated and str(name) not in configurations:
-                configurations[str(name)] = {}
-            if str(name) in configurations:
-                configurations[str(name)].update(site_values)
         raw_overrides = state.get("model_configuration_overrides") or {}
         if not isinstance(raw_overrides, dict):
             raise WorkspaceError(
@@ -1175,7 +908,6 @@ class Workspace:
     ) -> dict[str, str]:
         """Save portable model identity and machine-specific observations."""
 
-        self.migrate_project_configuration()
         normalized = name.strip()
         if (
             normalized.casefold() == "mock"
@@ -1217,11 +949,6 @@ class Workspace:
                 ),
             }
         state = self.load()
-        raw_site = state.get("model_configurations") or {}
-        if not isinstance(raw_site, dict):
-            raise WorkspaceError(
-                "Workspace model_configurations must be an object."
-            )
         manifest = self.project_manifest()
         models = _object_table(manifest["models"], field="models")
         raw_project = _object_table(
@@ -1231,7 +958,7 @@ class Workspace:
         conflicting = next(
             (
                 str(existing)
-                for existing in {**raw_project, **raw_site}
+                for existing in raw_project
                 if str(existing).casefold() == normalized.casefold()
                 and str(existing) != normalized
             ),
@@ -1256,28 +983,22 @@ class Workspace:
         models["configurations"] = project_configurations
         self._write_project_configuration(models=models)
 
-        site_configurations = dict(raw_site)
-        preserved = {
-            str(key): value
-            for key, value in dict(site_configurations.get(normalized) or {}).items()
-            if str(key) not in _MODEL_SITE_FIELDS
-            and str(key) not in _STALE_CHECK_FIELDS
+        raw_overrides = state.get("model_configuration_overrides") or {}
+        if not isinstance(raw_overrides, dict):
+            raise WorkspaceError(
+                "Workspace model_configuration_overrides must be an object."
+            )
+        site_overrides = dict(raw_overrides)
+        override = {
+            str(key): str(value)
+            for key, value in values.items()
+            if value is not None and str(key) in _MODEL_SITE_FIELDS
         }
-        preserved.update(
-            {
-                str(key): str(value)
-                for key, value in values.items()
-                if value is not None and str(key) in _MODEL_SITE_FIELDS
-            }
-        )
-        if preserved:
-            site_configurations[normalized] = preserved
+        if override:
+            site_overrides[normalized] = override
         else:
-            site_configurations.pop(normalized, None)
-        self.update(
-            model_configurations=site_configurations,
-            **{PROJECT_CONFIGURATION_MARKER: True},
-        )
+            site_overrides.pop(normalized, None)
+        self.update(model_configuration_overrides=site_overrides)
         return self.model_configurations()[normalized]
 
     def automatic_model_configuration_name(self, spec: str) -> str:
@@ -1306,33 +1027,6 @@ class Workspace:
             suffix += 1
         return candidate
 
-    def ensure_model_configuration(self, spec: str) -> str:
-        """Return a configuration name for a legacy direct model spec."""
-
-        normalized = spec.strip()
-        if normalized == "mock":
-            return "mock"
-        configurations = self.model_configurations()
-        for name, configuration in configurations.items():
-            if configuration.get("spec") == normalized:
-                return name
-        provider, separator, model = normalized.partition(":")
-        provider = {
-            "claude": "anthropic",
-            "ollama": "local",
-        }.get(provider.casefold(), provider.casefold())
-        canonical_spec = f"{provider}:{model}" if separator else provider
-        name = self.automatic_model_configuration_name(canonical_spec)
-        self.save_model_configuration(
-            name,
-            {
-                "provider": provider,
-                "model": model,
-                "spec": canonical_spec,
-            },
-        )
-        return name
-
     def model_assignment_profile(
         self,
         workflow_spec: str,
@@ -1340,7 +1034,7 @@ class Workspace:
         default: str = "mock",
         include_site: bool = True,
     ) -> dict[str, Any]:
-        """Return named configuration assignments, migrating legacy routes."""
+        """Return project assignments with this site's optional overrides."""
 
         state = self.load()
         canonical = self.canonical_spec(workflow_spec, cwd=self.root)
@@ -1350,116 +1044,51 @@ class Workspace:
         assert isinstance(project, dict)
         project_lifelines = project.get("lifelines") or {}
         project_actions = project.get("actions") or {}
-        is_project_workflow = self._is_project_workflow(canonical)
-        if is_project_workflow and (
-            state.get(PROJECT_CONFIGURATION_MARKER)
-            or project.get("default") != "mock"
-            or project_lifelines
-            or project_actions
+        if not isinstance(project_lifelines, dict) or not isinstance(
+            project_actions, dict
         ):
-            if not isinstance(project_lifelines, dict) or not isinstance(
-                project_actions, dict
-            ):
-                raise WorkspaceError("Project model assignments are malformed.")
-            result: dict[str, Any] = {
-                "default": str(project.get("default") or default),
-                "lifelines": {
-                    str(name): str(configuration)
-                    for name, configuration in project_lifelines.items()
-                },
-            }
-            if project_actions:
-                result["actions"] = {
-                    str(name): str(configuration)
-                    for name, configuration in project_actions.items()
-                }
-            if not include_site:
-                return result
-            raw_site_profiles = state.get("model_site_profiles") or {}
-            if not isinstance(raw_site_profiles, dict):
-                raise WorkspaceError(
-                    "Workspace model_site_profiles must be an object."
-                )
-            site = raw_site_profiles.get(canonical) or {}
-            if not isinstance(site, dict):
-                raise WorkspaceError(
-                    f"Model site assignments for {canonical} must be an object."
-                )
-            if site.get("default"):
-                result["default"] = str(site["default"])
-            for key in ("lifelines", "actions"):
-                values = site.get(key) or {}
-                if not isinstance(values, dict):
-                    raise WorkspaceError(
-                        f"Model site {key} for {canonical} must be an object."
-                    )
-                if values:
-                    merged = dict(result.get(key) or {})
-                    merged.update(
-                        {
-                            str(name): str(configuration)
-                            for name, configuration in values.items()
-                        }
-                    )
-                    result[key] = merged
-            return result
-        raw_profiles = state.get("model_profiles") or {}
-        if not isinstance(raw_profiles, dict):
-            raise WorkspaceError("Workspace model_profiles must be an object.")
-        raw_profile = raw_profiles.get(canonical) or {}
-        if not isinstance(raw_profile, dict):
-            raise WorkspaceError(f"Model profile for {canonical} must be an object.")
-        default_configuration = raw_profile.get("default_configuration")
-        raw_assignments = raw_profile.get("lifeline_configurations")
-        if default_configuration and isinstance(raw_assignments, dict):
-            raw_action_assignments = raw_profile.get("action_configurations") or {}
-            if not isinstance(raw_action_assignments, dict):
-                raise WorkspaceError(
-                    f"Model action assignments for {canonical} must be an object."
-                )
-            result = {
-                "default": str(default_configuration),
-                "lifelines": {
-                    str(name): str(configuration)
-                    for name, configuration in raw_assignments.items()
-                },
-            }
-            if raw_action_assignments:
-                result["actions"] = {
-                    str(name): str(configuration)
-                    for name, configuration in raw_action_assignments.items()
-                }
-            return result
-        raw_lifelines = raw_profile.get("lifelines") or {}
-        raw_actions = raw_profile.get("actions") or {}
-        if not isinstance(raw_lifelines, dict):
-            raise WorkspaceError(
-                f"Model lifeline overrides for {canonical} must be an object."
-            )
-        migrated_default = self.ensure_model_configuration(
-            str(raw_profile.get("default") or default)
-        )
-        migrated_lifelines = {
-            str(name): self.ensure_model_configuration(str(spec))
-            for name, spec in raw_lifelines.items()
+            raise WorkspaceError("Project model assignments are malformed.")
+        result: dict[str, Any] = {
+            "default": str(project.get("default") or default),
+            "lifelines": {
+                str(name): str(configuration)
+                for name, configuration in project_lifelines.items()
+            },
+            "actions": {
+                str(name): str(configuration)
+                for name, configuration in project_actions.items()
+            },
         }
-        if not isinstance(raw_actions, dict):
+        if not include_site:
+            return result
+        raw_site_profiles = state.get("model_site_profiles") or {}
+        if not isinstance(raw_site_profiles, dict):
             raise WorkspaceError(
-                f"Model action overrides for {canonical} must be an object."
+                "Workspace model_site_profiles must be an object."
             )
-        migrated_actions = {
-            str(name): self.ensure_model_configuration(str(spec))
-            for name, spec in raw_actions.items()
-        }
-        return self.save_model_assignment_profile(
-            canonical,
-            default=migrated_default,
-            lifelines=migrated_lifelines,
-            actions=migrated_actions,
-        )
+        site = raw_site_profiles.get(canonical) or {}
+        if not isinstance(site, dict):
+            raise WorkspaceError(
+                f"Model site assignments for {canonical} must be an object."
+            )
+        if site.get("default"):
+            result["default"] = str(site["default"])
+        for key in ("lifelines", "actions"):
+            values = site.get(key) or {}
+            if not isinstance(values, dict):
+                raise WorkspaceError(
+                    f"Model site {key} for {canonical} must be an object."
+                )
+            result[key].update(
+                {
+                    str(name): str(configuration)
+                    for name, configuration in values.items()
+                }
+            )
+        return result
 
     def has_model_assignment_profile(self, workflow_spec: str) -> bool:
-        """Whether this workflow has portable or legacy model assignments.
+        """Whether this workflow has project or site model assignments.
 
         This check is deliberately read-only.  Runtime commands use it before
         resolving named configurations so a project with no assignments keeps
@@ -1485,8 +1114,7 @@ class Workspace:
         raw_site = state.get("model_site_profiles") or {}
         if isinstance(raw_site, dict) and raw_site.get(canonical):
             return True
-        raw_legacy = state.get("model_profiles") or {}
-        return isinstance(raw_legacy, dict) and bool(raw_legacy.get(canonical))
+        return False
 
     def save_model_assignment_profile(
         self,
@@ -1499,7 +1127,6 @@ class Workspace:
     ) -> dict[str, Any]:
         """Persist project assignments or one private site override."""
 
-        self.migrate_project_configuration()
         configurations = self.model_configurations()
         action_assignments = dict(actions or {})
         names = {default, *lifelines.values(), *action_assignments.values()}
@@ -1549,35 +1176,6 @@ class Workspace:
                 "actions": dict(action_assignments),
             }
 
-        if not self._is_project_workflow(canonical):
-            raw_profiles = state.get("model_profiles") or {}
-            if not isinstance(raw_profiles, dict):
-                raise WorkspaceError("Workspace model_profiles must be an object.")
-            profiles = dict(raw_profiles)
-            profile: dict[str, object] = {
-                "default_configuration": default,
-                "lifeline_configurations": dict(lifelines),
-                "action_configurations": dict(action_assignments),
-                "default": configurations[default]["spec"],
-                "lifelines": {
-                    name: configurations[configuration]["spec"]
-                    for name, configuration in lifelines.items()
-                },
-                "actions": {
-                    name: configurations[configuration]["spec"]
-                    for name, configuration in action_assignments.items()
-                },
-            }
-            profiles[canonical] = profile
-            self.update(model_profiles=profiles)
-            result: dict[str, object] = {
-                "default": default,
-                "lifelines": dict(lifelines),
-            }
-            if action_assignments:
-                result["actions"] = dict(action_assignments)
-            return result
-
         manifest = self.project_manifest()
         models = _object_table(manifest["models"], field="models")
         models["assignments"] = {
@@ -1592,36 +1190,6 @@ class Workspace:
             },
         }
         self._write_project_configuration(models=models)
-        raw_profiles = state.get("model_profiles") or {}
-        if not isinstance(raw_profiles, dict):
-            raise WorkspaceError("Workspace model_profiles must be an object.")
-        profiles = dict(raw_profiles)
-        profile: dict[str, object] = {
-            "default_configuration": default,
-            "lifeline_configurations": {
-                str(name): str(configuration)
-                for name, configuration in sorted(lifelines.items())
-            },
-            "default": configurations[default]["spec"],
-            "lifelines": {
-                str(name): configurations[configuration]["spec"]
-                for name, configuration in sorted(lifelines.items())
-            },
-        }
-        if action_assignments:
-            profile["action_configurations"] = {
-                str(name): str(configuration)
-                for name, configuration in sorted(action_assignments.items())
-            }
-            profile["actions"] = {
-                str(name): configurations[configuration]["spec"]
-                for name, configuration in sorted(action_assignments.items())
-            }
-        profiles[canonical] = profile
-        self.update(
-            model_profiles=profiles,
-            **{PROJECT_CONFIGURATION_MARKER: True},
-        )
         lifeline_assignments = {
             str(name): str(configuration)
             for name, configuration in sorted(lifelines.items())
@@ -1725,7 +1293,7 @@ class Workspace:
         self._write_project_configuration(models=models)
         state = self.load()
         updates: dict[str, object] = {}
-        for key in ("model_configurations", "model_configuration_overrides"):
+        for key in ("model_configuration_overrides",):
             raw = state.get(key) or {}
             if isinstance(raw, dict):
                 values = dict(raw)
@@ -2027,7 +1595,6 @@ class Workspace:
         assistant: str | None = None,
         assistants: dict[str, str] | None = None,
         options: dict[str, object] | None = None,
-        services: str | None = None,
         connectors: dict[str, object] | None = None,
         store_path: str | None = None,
     ) -> dict[str, Any]:
@@ -2065,7 +1632,6 @@ class Workspace:
             "assistant": assistant,
             "assistants": dict(assistants or {}),
             "options": dict(options or {}),
-            "services": services,
             "connectors": dict(connectors or {}),
             "status": "created",
             "result": None,
@@ -2114,11 +1680,6 @@ class Workspace:
         """Return project connector configurations with site observations."""
 
         state = self.load()
-        raw_site = state.get("connector_configurations") or {}
-        if not isinstance(raw_site, dict):
-            raise WorkspaceError(
-                "Workspace connector_configurations must be an object."
-            )
         manifest_connectors = self.project_manifest().get("connectors") or {}
         assert isinstance(manifest_connectors, dict)
         raw_project = manifest_connectors.get("configurations") or {}
@@ -2134,23 +1695,6 @@ class Workspace:
                 for key, item in value.items()
                 if item is not None and str(key) not in _STALE_CHECK_FIELDS
             }
-        migrated = bool(state.get(PROJECT_CONFIGURATION_MARKER))
-        for name, value in raw_site.items():
-            if not isinstance(value, dict):
-                raise WorkspaceError(
-                    f"Connector configuration {name!r} must be an object."
-                )
-            site_values = {
-                str(key): str(item)
-                for key, item in value.items()
-                if item is not None
-                and str(key) not in _STALE_CHECK_FIELDS
-                and (not migrated or str(key) in _CONNECTOR_SITE_FIELDS)
-            }
-            if not migrated and str(name) not in configurations:
-                configurations[str(name)] = {}
-            if str(name) in configurations:
-                configurations[str(name)].update(site_values)
         raw_overrides = state.get("connector_configuration_overrides") or {}
         if not isinstance(raw_overrides, dict):
             raise WorkspaceError(
@@ -2181,7 +1725,6 @@ class Workspace:
                 profiles[str(name)] = {
                     str(key): str(item) for key, item in value.items()
                 }
-        migrated = bool(self.load().get(PROJECT_CONFIGURATION_MARKER))
         for name, value in raw_site.items():
             if not isinstance(value, dict):
                 raise WorkspaceError(
@@ -2191,7 +1734,7 @@ class Workspace:
                 str(key): str(item)
                 for key, item in value.items()
                 if item is not None
-                and (not migrated or str(key) not in _PROVIDER_PROJECT_FIELDS)
+                and str(key) not in _PROVIDER_PROJECT_FIELDS
             })
         return profiles
 
@@ -2202,7 +1745,6 @@ class Workspace:
     ) -> dict[str, str]:
         """Save portable provider kind and machine-specific observations."""
 
-        self.migrate_project_configuration()
         normalized = name.strip().casefold()
         if not re.fullmatch(r"[a-z][a-z0-9._-]{0,63}", normalized):
             raise WorkspaceError(
@@ -2232,24 +1774,16 @@ class Workspace:
         if not isinstance(raw_site, dict):
             raise WorkspaceError("Workspace connector_providers must be an object.")
         site = dict(raw_site)
-        preserved = {
-            str(key): value
-            for key, value in dict(site.get(normalized) or {}).items()
-            if str(key) in _PROVIDER_PROJECT_FIELDS
+        site_values = {
+            key: value
+            for key, value in profile.items()
+            if key not in _PROVIDER_PROJECT_FIELDS
         }
-        preserved.update(
-            {
-                key: value
-                for key, value in profile.items()
-                if key not in _PROVIDER_PROJECT_FIELDS
-            }
-        )
-        if preserved:
-            site[normalized] = preserved
-        self.update(
-            connector_providers=site,
-            **{PROJECT_CONFIGURATION_MARKER: True},
-        )
+        if site_values:
+            site[normalized] = site_values
+        else:
+            site.pop(normalized, None)
+        self.update(connector_providers=site)
         return self.connector_provider_profiles()[normalized]
 
     @staticmethod
@@ -2284,7 +1818,6 @@ class Workspace:
     ) -> dict[str, str]:
         """Save a portable connector target plus private site observations."""
 
-        self.migrate_project_configuration()
         normalized = name.strip()
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", normalized):
             raise WorkspaceError(
@@ -2323,38 +1856,10 @@ class Workspace:
         project_configurations[normalized] = {
             key: value
             for key, value in configuration.items()
-            if key not in _CONNECTOR_SITE_FIELDS
-            and key not in _STALE_CHECK_FIELDS
+            if key not in _STALE_CHECK_FIELDS
         }
         connectors["configurations"] = project_configurations
         self._write_project_configuration(connectors=connectors)
-        state = self.load()
-        raw_site = state.get("connector_configurations") or {}
-        if not isinstance(raw_site, dict):
-            raise WorkspaceError(
-                "Workspace connector_configurations must be an object."
-            )
-        site = dict(raw_site)
-        preserved = {
-            str(key): value
-            for key, value in dict(site.get(normalized) or {}).items()
-            if str(key) not in _CONNECTOR_SITE_FIELDS
-        }
-        preserved.update(
-            {
-                key: value
-                for key, value in configuration.items()
-                if key in _CONNECTOR_SITE_FIELDS
-            }
-        )
-        if preserved:
-            site[normalized] = preserved
-        else:
-            site.pop(normalized, None)
-        self.update(
-            connector_configurations=site,
-            **{PROJECT_CONFIGURATION_MARKER: True},
-        )
         return self.connector_configurations()[normalized]
 
     def remove_connector_configuration(self, name: str) -> None:
@@ -2398,7 +1903,6 @@ class Workspace:
         state = self.load()
         updates: dict[str, object] = {}
         for key in (
-            "connector_configurations",
             "connector_configuration_overrides",
         ):
             raw = state.get(key) or {}
@@ -2421,34 +1925,19 @@ class Workspace:
         assert isinstance(manifest_connectors, dict)
         project = manifest_connectors.get("bindings") or {}
         assert isinstance(project, dict)
-        is_project_workflow = self._is_project_workflow(canonical)
-        if is_project_workflow and (
-            state.get(PROJECT_CONFIGURATION_MARKER) or project
-        ):
-            result = {str(name): str(value) for name, value in project.items()}
-            raw_site = state.get("connector_site_bindings") or {}
-            if not isinstance(raw_site, dict):
-                raise WorkspaceError(
-                    "Workspace connector_site_bindings must be an object."
-                )
-            site = raw_site.get(canonical) or {}
-            if not isinstance(site, dict):
-                raise WorkspaceError(
-                    f"Connector site bindings for {canonical!r} must be an object."
-                )
-            result.update({str(name): str(value) for name, value in site.items()})
-            return result
-        raw = state.get("connector_bindings") or {}
-        if not isinstance(raw, dict):
+        result = {str(name): str(value) for name, value in project.items()}
+        raw_site = state.get("connector_site_bindings") or {}
+        if not isinstance(raw_site, dict):
             raise WorkspaceError(
-                "Workspace connector_bindings must be an object."
+                "Workspace connector_site_bindings must be an object."
             )
-        profile = raw.get(canonical) or {}
-        if not isinstance(profile, dict):
+        site = raw_site.get(canonical) or {}
+        if not isinstance(site, dict):
             raise WorkspaceError(
-                f"Connector bindings for {canonical!r} must be an object."
+                f"Connector site bindings for {canonical!r} must be an object."
             )
-        return {str(name): str(value) for name, value in profile.items()}
+        result.update({str(name): str(value) for name, value in site.items()})
+        return result
 
     def bind_connector(
         self,
@@ -2458,41 +1947,24 @@ class Workspace:
     ) -> dict[str, str]:
         """Bind one logical workflow requirement to a named configuration."""
 
-        self.migrate_project_configuration()
         configurations = self.connector_configurations()
         if configuration not in configurations:
             raise WorkspaceError(
                 f"Connector configuration does not exist: {configuration}."
             )
         canonical = self.canonical_spec(workflow_spec, cwd=self.root)
-        state = self.load()
-        raw = state.get("connector_bindings") or {}
-        if not isinstance(raw, dict):
-            raise WorkspaceError(
-                "Workspace connector_bindings must be an object."
-            )
-        profiles = {
-            str(name): dict(value)
-            for name, value in raw.items()
-            if isinstance(value, dict)
-        }
-        profile = {
-            str(name): str(value)
-            for name, value in profiles.get(canonical, {}).items()
-        }
-        profile[str(requirement)] = configuration
-        profiles[canonical] = profile
-        if not self._is_project_workflow(canonical):
-            self.update(connector_bindings=profiles)
-            return profile
         manifest = self.project_manifest()
         connectors = _object_table(manifest["connectors"], field="connectors")
+        profile = {
+            str(name): str(value)
+            for name, value in _object_table(
+                connectors.get("bindings") or {},
+                field="connectors.bindings",
+            ).items()
+        }
+        profile[str(requirement)] = configuration
         connectors["bindings"] = profile
         self._write_project_configuration(connectors=connectors)
-        self.update(
-            connector_bindings=profiles,
-            **{PROJECT_CONFIGURATION_MARKER: True},
-        )
         return profile
 
     def unbind_connector(
@@ -2502,30 +1974,12 @@ class Workspace:
     ) -> dict[str, str]:
         """Remove one requirement binding from the portable project profile."""
 
-        self.migrate_project_configuration()
         canonical = self.canonical_spec(workflow_spec, cwd=self.root)
         effective = self.connector_binding_profile(canonical)
         if requirement not in effective:
             raise WorkspaceError(
                 f"Connector requirement is not bound: {requirement}."
             )
-        if not self._is_project_workflow(canonical):
-            profile = dict(effective)
-            profile.pop(requirement)
-            state = self.load()
-            raw = state.get("connector_bindings") or {}
-            if not isinstance(raw, dict):
-                raise WorkspaceError(
-                    "Workspace connector_bindings must be an object."
-                )
-            profiles = {
-                str(name): dict(value)
-                for name, value in raw.items()
-                if isinstance(value, dict)
-            }
-            profiles[canonical] = profile
-            self.update(connector_bindings=profiles)
-            return profile
         manifest = self.project_manifest()
         connectors = _object_table(manifest["connectors"], field="connectors")
         profile = {
@@ -2539,17 +1993,6 @@ class Workspace:
         connectors["bindings"] = profile
         self._write_project_configuration(connectors=connectors)
         state = self.load()
-        raw = state.get("connector_bindings") or {}
-        profiles = {
-            str(name): dict(value)
-            for name, value in raw.items()
-            if isinstance(value, dict)
-        }
-        profiles[canonical] = profile
-        self.update(
-            connector_bindings=profiles,
-            **{PROJECT_CONFIGURATION_MARKER: True},
-        )
         raw_site = state.get("connector_site_bindings") or {}
         if isinstance(raw_site, dict):
             site_profiles = dict(raw_site)
@@ -2576,73 +2019,43 @@ class Workspace:
         assert isinstance(manifest_connectors, dict)
         project = manifest_connectors.get("assignments") or {}
         assert isinstance(project, dict)
-        is_project_workflow = self._is_project_workflow(canonical)
-        if is_project_workflow and (
-            state.get(PROJECT_CONFIGURATION_MARKER) or any(project.values())
-        ):
-            result = {
-                "lifelines": {
-                    str(name): str(configuration)
-                    for name, configuration in dict(
-                        project.get("lifelines") or {}
-                    ).items()
-                },
-                "actions": {
-                    str(name): str(configuration)
-                    for name, configuration in dict(
-                        project.get("actions") or {}
-                    ).items()
-                },
-            }
-            raw_site = state.get("connector_site_assignments") or {}
-            if not isinstance(raw_site, dict):
-                raise WorkspaceError(
-                    "Workspace connector_site_assignments must be an object."
-                )
-            site = raw_site.get(canonical) or {}
-            if not isinstance(site, dict):
-                raise WorkspaceError(
-                    f"Connector site assignments for {canonical!r} are malformed."
-                )
-            for key in ("lifelines", "actions"):
-                values = site.get(key) or {}
-                if not isinstance(values, dict):
-                    raise WorkspaceError(
-                        f"Connector site {key} for {canonical!r} are malformed."
-                    )
-                result[key].update(
-                    {
-                        str(name): str(configuration)
-                        for name, configuration in values.items()
-                    }
-                )
-            return result
-        raw = state.get("connector_assignments") or {}
-        if not isinstance(raw, dict):
-            raise WorkspaceError(
-                "Workspace connector_assignments must be an object."
-            )
-        profile = raw.get(canonical) or {}
-        if not isinstance(profile, dict):
-            raise WorkspaceError(
-                f"Connector assignments for {canonical!r} must be an object."
-            )
-        lifelines = profile.get("lifelines") or {}
-        actions = profile.get("actions") or {}
-        if not isinstance(lifelines, dict) or not isinstance(actions, dict):
-            raise WorkspaceError(
-                f"Connector assignments for {canonical!r} are malformed."
-            )
-        return {
+        result = {
             "lifelines": {
                 str(name): str(configuration)
-                for name, configuration in lifelines.items()
+                for name, configuration in dict(
+                    project.get("lifelines") or {}
+                ).items()
             },
             "actions": {
                 str(name): str(configuration)
-                for name, configuration in actions.items()
+                for name, configuration in dict(
+                    project.get("actions") or {}
+                ).items()
             },
         }
+        raw_site = state.get("connector_site_assignments") or {}
+        if not isinstance(raw_site, dict):
+            raise WorkspaceError(
+                "Workspace connector_site_assignments must be an object."
+            )
+        site = raw_site.get(canonical) or {}
+        if not isinstance(site, dict):
+            raise WorkspaceError(
+                f"Connector site assignments for {canonical!r} are malformed."
+            )
+        for key in ("lifelines", "actions"):
+            values = site.get(key) or {}
+            if not isinstance(values, dict):
+                raise WorkspaceError(
+                    f"Connector site {key} for {canonical!r} are malformed."
+                )
+            result[key].update(
+                {
+                    str(name): str(configuration)
+                    for name, configuration in values.items()
+                }
+            )
+        return result
 
     def save_connector_assignment_profile(
         self,
@@ -2654,7 +2067,6 @@ class Workspace:
     ) -> dict[str, dict[str, str]]:
         """Persist reusable configuration routes for human actions."""
 
-        self.migrate_project_configuration()
         action_assignments = dict(actions or {})
         configurations = self.connector_configurations()
         missing = sorted(
@@ -2709,39 +2121,10 @@ class Workspace:
                 site_profiles.pop(canonical, None)
             self.update(connector_site_assignments=site_profiles)
             return profile
-        if not self._is_project_workflow(canonical):
-            raw = state.get("connector_assignments") or {}
-            if not isinstance(raw, dict):
-                raise WorkspaceError(
-                    "Workspace connector_assignments must be an object."
-                )
-            profiles = {
-                str(name): dict(value)
-                for name, value in raw.items()
-                if isinstance(value, dict)
-            }
-            profiles[canonical] = profile
-            self.update(connector_assignments=profiles)
-            return profile
-        raw = state.get("connector_assignments") or {}
-        if not isinstance(raw, dict):
-            raise WorkspaceError(
-                "Workspace connector_assignments must be an object."
-            )
-        profiles = {
-            str(name): dict(value)
-            for name, value in raw.items()
-            if isinstance(value, dict)
-        }
-        profiles[canonical] = profile
         manifest = self.project_manifest()
         connectors = _object_table(manifest["connectors"], field="connectors")
         connectors["assignments"] = profile
         self._write_project_configuration(connectors=connectors)
-        self.update(
-            connector_assignments=profiles,
-            **{PROJECT_CONFIGURATION_MARKER: True},
-        )
         return profile
 
     @staticmethod

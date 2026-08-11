@@ -53,8 +53,8 @@ def test_call_intake_declares_guided_deployment_requirements():
     spec = module.zippergen_deployment
     fields = {field.name: field for field in spec.fields}
 
-    assert spec.name == "call-intake"
-    assert fields["openai_api_key"].secret is True
+    assert spec.description.startswith("Watch a Gmail inbox")
+    assert "openai_api_key" not in fields
     assert fields["certified"].required is True
     assert fields["recipient"].required is True
     assert "sheet_id" not in fields

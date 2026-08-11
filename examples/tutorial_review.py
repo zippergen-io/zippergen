@@ -5,13 +5,12 @@ Start with the built-in mock LLM and an in-terminal approval:
 
     uv run python examples/tutorial_review.py
 
-Use the durable SQLite runner and approve from another terminal:
+Use a managed durable run and approve from another terminal:
 
-    uv run zippergen run examples/tutorial_review.py:tutorial_review \
+    uv run zippergen run --durable examples/tutorial_review.py:tutorial_review \
       --llm mock \
       --input request="Explain why the sky is blue in two sentences." \
       --input max_retries=2 \
-      --store /tmp/zippergen-tutorial-review.sqlite \
       --timeout 0
 """
 
@@ -132,22 +131,14 @@ def tutorial_review(
     return draft @ Requester
 
 
-# This data-only declaration drives `zippergen deploy`. The OpenAI key is
-# requested only after the LLM setting is changed from `mock` to `openai:...`.
+# This data-only declaration drives `zippergen deploy`. Model selection and
+# credentials come from the project's named model configuration.
 zippergen_deployment = DeploymentSpec(
-    name="tutorial-review",
     description=(
         "Draft a reply with an LLM and wait for a durable human approval. "
         "The default mock backend needs no API key."
     ),
     fields=(
-        DeploymentField(
-            "llm",
-            "LLM provider and model",
-            target="llm",
-            default="mock",
-            required=True,
-        ),
         DeploymentField(
             "request",
             "Request to answer",
@@ -162,26 +153,6 @@ zippergen_deployment = DeploymentSpec(
             default=2,
             required=True,
             help="Use zero or a positive integer.",
-        ),
-        DeploymentField(
-            "openai_api_key",
-            "OpenAI API key",
-            target="env",
-            env="OPENAI_API_KEY",
-            secret=True,
-            required=True,
-            when="llm",
-            when_values=("openai*",),
-        ),
-        DeploymentField(
-            "anthropic_api_key",
-            "Anthropic API key",
-            target="env",
-            env="ANTHROPIC_API_KEY",
-            secret=True,
-            required=True,
-            when="llm",
-            when_values=("anthropic*", "claude*"),
         ),
     ),
     files=("examples/tutorial_review.py",),

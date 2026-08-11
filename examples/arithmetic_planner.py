@@ -105,7 +105,7 @@ if __name__ == "__main__":
     from zippergen.backends import make_openai_backend
 
     arithmetic_planner.configure(
-        llms={"Planner": make_openai_backend(api_key=os.environ["OPENAI_API_KEY"], model="gpt-4o")},
+        llm={"Planner": make_openai_backend(api_key=os.environ["OPENAI_API_KEY"], model="gpt-4o")},
         timeout=120,
     )
 

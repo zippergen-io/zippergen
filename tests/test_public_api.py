@@ -1,4 +1,4 @@
-"""Checks for the intentional package-level compatibility surface."""
+"""Checks for the intentional package-level public surface."""
 
 import zippergen
 from zippergen import (

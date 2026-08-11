@@ -12,9 +12,8 @@ settled — real partial-progress coverage instead of a race that only ever
 hits "before anything happened" or "after everything happened".
 
 `@workflow` functions must live at module top level (the builder reads this
-file's source for AST rewriting), and this module is loaded via
-`python -m zippergen.serve serve --workflow <this file>`, so it must define
-exactly one `Workflow` object at module scope (see serve.load_workflow).
+file's source for AST rewriting), and the test-only subprocess runner expects
+exactly one `Workflow` object at module scope.
 """
 import time
 

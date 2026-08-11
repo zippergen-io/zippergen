@@ -83,6 +83,6 @@ def parallel_while_smoke() -> str:
 
 
 if __name__ == "__main__":
-    parallel_while_smoke.configure(llms="mock")
+    parallel_while_smoke.configure(llm="mock")
     result = parallel_while_smoke()
     print(f"\nResult: {result}")
