@@ -31,6 +31,7 @@ from zippergen.syntax import (
     seq,
     validate_zvalue,
 )
+from zippergen.control import PartialReceiveAny
 from zippergen.projection import project
 from zippergen.formula import Formula as _Formula, subformulas as _subformulas
 from zippergen.monitor import MonitorState
@@ -41,10 +42,11 @@ __all__ = ["run", "mock_llm", "console_trace", "tee_traces"]
 
 @dataclass(frozen=True)
 class PendingExternal:
-    """Durable-mode signal: a live external act needs its backend run OUTSIDE the
-    write transaction. Carries the node (for its action/outputs) and evaluated
-    inputs. Returned in the residual slot with progressed=False; never produced
-    when journal is None."""
+    """Durable-mode signal: an external act must run with no transaction open.
+
+    Carries the node (for its action and outputs) and the evaluated inputs.
+    Returned in the residual slot with progressed=False; never produced outside
+    durable mode."""
     node: object
     inputs: dict
 
@@ -508,48 +510,6 @@ def _input_hash(named_inputs: dict) -> str | None:
         return None   # non-serializable inputs (incl. circular refs) -> skip hash (locator+kind still assert)
 
 
-def _condition_formula_repr(condition, formula_conditions: dict[int, _Formula]) -> str | None:
-    formula = formula_conditions.get(id(condition))
-    if formula is None and isinstance(condition, _Formula):
-        formula = condition
-    return repr(formula) if formula is not None else None
-
-
-def _eval_choice_condition(
-    condition,
-    env: Env,
-    ns: dict,
-    monitor,
-    formula_conditions: dict[int, _Formula],
-) -> tuple[bool, str | None]:
-    cached_formula = formula_conditions.get(id(condition))
-    if cached_formula is not None:
-        cond_formula = cached_formula
-        cond_value = None
-    elif isinstance(condition, _Formula):
-        cond_formula: _Formula | None = condition
-        cond_value = None
-    else:
-        raw = condition(_CondEnv(env, ns))
-        if isinstance(raw, _Formula):
-            cond_formula = raw
-            cond_value = None
-        else:
-            cond_formula = None
-            cond_value = raw
-    if cond_formula is not None and monitor is None:
-        raise RuntimeError(
-            f"CPL Formula guard {cond_formula!r} on lifeline '{threading.current_thread().name}' "
-            "but no monitor was built. Make the Formula guard discoverable before execution."
-        )
-    if monitor:
-        monitor.on_event("choice", env)
-    if cond_formula is not None:
-        assert monitor is not None
-        return monitor.guard_value(cond_formula), repr(cond_formula)
-    return bool(cond_value), None
-
-
 def _step(
     stmt: LocalStmt,
     env: Env,
@@ -561,8 +521,9 @@ def _step(
     trace,
     formula_conditions: dict[int, _Formula],
     stop: threading.Event | None,
-    journal=None,
+    durable: bool = False,
     assistant_backend=None,
+    resolved: dict | None = None,
 ) -> tuple[LocalStmt | PendingExternal, bool]:
     """Execute at most one enabled local step.
 
@@ -570,12 +531,11 @@ def _step(
     residual with ``progressed=False`` so the local parallel scheduler can try
     another branch.
 
-    When ``journal`` is not ``None`` (durable mode), a live external act
-    (LLM/Human/Planner) is NOT executed inline — instead a ``PendingExternal``
-    is returned (with ``progressed=False``) so the driver can run the backend
-    outside the write transaction. A replayed external act (already recorded
-    in the journal) is applied directly from the recorded outputs, without
-    calling the backend. Pure acts are always executed inline, journal or not.
+    In durable mode an external act (LLM/assistant/human/effect) is NOT run
+    inline. A ``PendingExternal`` comes back instead, so the driver can call the
+    outside world with no SQLite transaction open and then commit the result and
+    the successor control state together. Pure acts are deterministic, so they
+    run inline either way.
     """
     if assistant_backend is None:
         from zippergen.assistant_backends import make_cli_assistant_backend
@@ -596,24 +556,25 @@ def _step(
             return EmptyStmt(), True
 
         case ActStmt(lifeline=_, action=action, inputs=ins, outputs=outs):
-            if journal is None or isinstance(action, PureAction):
-                # in-process, or a pure (deterministic, non-journaled) act
+            if not durable or isinstance(action, PureAction):
+                # in-process, or a pure (deterministic) act that is cheap to redo
                 _exec(
                     stmt, env, ch, ns, llm_backend, human_backend, assistant_backend,
                     monitor, trace, formula_conditions, stop,
                 )
                 return EmptyStmt(), True
-            locator = journal.act_paths[id(stmt)]
             in_vals = tuple(_eval(x, env) for x in ins)
             named_inputs = {name: val for (name, _), val in zip(action.inputs, in_vals)}
-            recorded = journal.channel.consume_journal("act", locator, _input_hash(named_inputs), strict=False)
-            if recorded is not None:                 # replay: apply, no backend call
-                out_map = recorded["outputs"]
+            if resolved is not None and id(stmt) in resolved:
+                # The driver already ran this action outside the transaction.
+                # Applying the outputs and advancing control happen together, in
+                # the caller's single commit.
+                out_map = resolved[id(stmt)]
                 env.update(out_map)
                 if monitor:
                     monitor.on_event("act", env)
                 if trace and _action_visible(action):
-                    act_seq = recorded.get("human_task") or _next_act_seq()
+                    act_seq = _next_act_seq()
                     trace({
                         "type": "act_start",
                         "lifeline": threading.current_thread().name,
@@ -633,7 +594,7 @@ def _step(
                         **_monitor_trace_fields(monitor),
                     })
                 return EmptyStmt(), True
-            return PendingExternal(stmt, named_inputs), False   # live: serve resolves it
+            return PendingExternal(stmt, named_inputs), False   # driver resolves it
 
         case RecvStmt(lifeline=A, bindings=ys, sender=B, channel=channel):
             item = _try_channel_get(ch, B.name, A.name, channel)
@@ -654,30 +615,36 @@ def _step(
                 })
             return EmptyStmt(), True
 
-        case ReceiveAnyStmt(lifeline=A, receives=receives, channel=channel):
+        case ReceiveAnyStmt() | PartialReceiveAny():
+            origin = stmt.origin if isinstance(stmt, PartialReceiveAny) else stmt
+            A = stmt.lifeline
+            channel = stmt.channel
+            receives = stmt.receives
             pending = {sender.name: (sender, ys) for sender, ys in receives}
             selected = _try_channel_get_any(ch, A.name, set(pending), channel)
-            if selected is not None:
-                sender_name, item = selected
-                sender, ys = pending[sender_name]
-                seq_no, values, recv_vc, recv_view, recv_field_view = item
-                _bind(ys, values, env)
-                if monitor:
-                    monitor.on_event("recv", env, recv_vc=recv_vc, recv_view=recv_view, recv_field_view=recv_field_view)
-                if trace:
-                    trace({
-                        "type": "recv",
-                        "to": A.name, "from": sender.name,
-                        "channel": channel,
-                        "bindings": _bound_dict(ys, values),
-                        "seq": seq_no,
-                        **_recv_trace_fields(monitor, recv_vc),
-                    })
-                remaining = tuple((s, b) for s, b in receives if s.name != sender_name)
-                if not remaining:
-                    return EmptyStmt(), True
-                return ReceiveAnyStmt(A, remaining, channel), True
-            return stmt, False
+            if selected is None:
+                return stmt, False
+            sender_name, item = selected
+            sender, ys = pending[sender_name]
+            seq_no, values, recv_vc, recv_view, recv_field_view = item
+            _bind(ys, values, env)
+            if monitor:
+                monitor.on_event("recv", env, recv_vc=recv_vc, recv_view=recv_view, recv_field_view=recv_field_view)
+            if trace:
+                trace({
+                    "type": "recv",
+                    "to": A.name, "from": sender.name,
+                    "channel": channel,
+                    "bindings": _bound_dict(ys, values),
+                    "seq": seq_no,
+                    **_recv_trace_fields(monitor, recv_vc),
+                })
+            # Keep pointing at the static node so the control state stays exactly
+            # representable; only the outstanding sender set shrinks.
+            remaining = tuple(name for name in pending if name != sender_name)
+            if not remaining:
+                return EmptyStmt(), True
+            return PartialReceiveAny(origin, remaining), True
 
         case SeqStmt(first=p1, second=p2):
             first = cast(LocalStmt, p1)
@@ -686,8 +653,8 @@ def _step(
                 return second, True
             new_first, progressed = _step(
                 first, env, ch, ns, llm_backend, human_backend, monitor, trace,
-                formula_conditions, stop, journal=journal,
-                assistant_backend=assistant_backend,
+                formula_conditions, stop, durable=durable,
+                assistant_backend=assistant_backend, resolved=resolved,
             )
             if isinstance(new_first, PendingExternal):
                 return new_first, False
@@ -696,26 +663,6 @@ def _step(
             return cast(LocalStmt, seq(new_first, second)), True
 
         case IfStmt(condition=c, owner=B, branch_true=t, branch_false=f):
-            if journal is not None:
-                loc = journal.act_paths[id(stmt)]
-                rec = journal.channel.consume_journal("decision", loc, strict=False)
-                if rec is not None:
-                    if monitor:
-                        monitor.on_event("choice", env)
-                    flag = bool(rec["value"])
-                    formula_repr = _condition_formula_repr(c, formula_conditions)
-                    if trace:
-                        trace({"type": "decision", "lifeline": B.name, "kind": "if", "value": flag,
-                               "condition": getattr(c, "_src", None), "formula": formula_repr,
-                               **_monitor_trace_fields(monitor)})
-                    return cast(LocalStmt, t if flag else f), True
-                flag, formula_repr = _eval_choice_condition(c, env, ns, monitor, formula_conditions)
-                journal.channel.record_decision({"status": "done", "locator": loc, "value": flag})
-                if trace:
-                    trace({"type": "decision", "lifeline": B.name, "kind": "if", "value": flag,
-                           "condition": getattr(c, "_src", None), "formula": formula_repr,
-                           **_monitor_trace_fields(monitor)})
-                return cast(LocalStmt, t if flag else f), True
             cached_formula = formula_conditions.get(id(c))
             if cached_formula is not None:
                 cond_formula = cached_formula
@@ -772,24 +719,6 @@ def _step(
             return cast(LocalStmt, t if flag else f), True
 
         case WhileStmt(condition=c, owner=B, body=body, exit_body=exit_b):
-            if journal is not None:
-                loc = journal.act_paths[id(stmt)]
-                rec = journal.channel.consume_journal("decision", loc, strict=False)
-                if rec is not None:
-                    if monitor:
-                        monitor.on_event("choice", env)
-                    flag = bool(rec["value"])
-                    formula_repr = _condition_formula_repr(c, formula_conditions)
-                else:
-                    flag, formula_repr = _eval_choice_condition(c, env, ns, monitor, formula_conditions)
-                    journal.channel.record_decision({"status": "done", "locator": loc, "value": flag})
-                if trace:
-                    trace({"type": "decision", "lifeline": B.name, "kind": "while", "value": flag,
-                           "condition": getattr(c, "_src", None), "formula": formula_repr,
-                           **_monitor_trace_fields(monitor)})
-                if not flag:
-                    return cast(LocalStmt, exit_b), True
-                return cast(LocalStmt, seq(body, stmt)), True
             cached_formula = formula_conditions.get(id(c))
             if cached_formula is not None:
                 wc_formula = cached_formula
@@ -849,7 +778,7 @@ def _step(
                 return cast(LocalStmt, seq(body, stmt)), True
             return cast(LocalStmt, exit_b), True
 
-        case ParallelLocalStmt(branches=branches, branch_indices=labels) if journal is None:
+        case ParallelLocalStmt(branches=branches, branch_indices=labels) if not durable:
             _exec(
                 stmt, env, ch, ns, llm_backend, human_backend, assistant_backend,
                 monitor, trace, formula_conditions, stop,
@@ -863,8 +792,8 @@ def _step(
                     continue
                 new_branch, progressed = _step(
                     branch, env, ch, ns, llm_backend, human_backend, monitor, trace,
-                    formula_conditions, stop, journal=journal,
-                    assistant_backend=assistant_backend)
+                    formula_conditions, stop, durable=durable,
+                    assistant_backend=assistant_backend, resolved=resolved)
                 if isinstance(new_branch, PendingExternal):
                     return new_branch, False           # propagate up; serve resolves
                 residuals[i] = new_branch

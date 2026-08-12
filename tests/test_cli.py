@@ -21,7 +21,7 @@ from zippergen.store import (
     load_human_task,
     load_human_task_token,
     open_store,
-    record_trace_event,
+    record_history,
 )
 from zippergen.workspace import Workspace
 
@@ -207,9 +207,7 @@ def _prepared_deployment_store(
     return Path(str(profile["store"]))
 
 
-def test_compact_reports_removed_store_events_and_log_archives(
-    tmp_path, monkeypatch, capsys
-):
+def test_compact_drops_history_and_rotates_logs(tmp_path, monkeypatch, capsys):
     from zippergen import deployments, serve, storage_maintenance
 
     store = tmp_path / "run.sqlite"
@@ -233,12 +231,9 @@ def test_compact_reports_removed_store_events_and_log_archives(
     )
     monkeypatch.setattr(
         storage_maintenance,
-        "compact_store",
-        lambda _path: SimpleNamespace(
-            deleted_total=12,
-            before_bytes=4096,
-            after_bytes=1024,
-            plan=SimpleNamespace(roles_without_snapshot=("Writer",)),
+        "prune_store_history",
+        lambda _path, *, keep: SimpleNamespace(
+            removed_rows=12, before_bytes=4096, after_bytes=1024
         ),
     )
     monkeypatch.setattr(
@@ -249,30 +244,20 @@ def test_compact_reports_removed_store_events_and_log_archives(
             removed_archive_bytes=768,
         ),
     )
-    monkeypatch.setattr(
-        "zippergen.deployment_platform.deployment_service_status",
-        lambda _name: {"state": "not-loaded", "detail": "no service"},
-    )
 
     assert main(["deploy", "compact", "--keep-archives", "1"]) == 0
 
     output = capsys.readouterr().out
-    assert "removed events: 12" in output
+    assert "removed history rows: 12" in output
     assert "reclaimed bytes: 3072" in output
     assert "removed archives: 2 (768 bytes)" in output
-    # A role with no snapshot blocks collection, so say so rather than let the
-    # operator conclude that compaction is broken.
-    assert "nothing collectable for: Writer" in output
 
 
-def test_compact_stops_a_running_deployment_and_restarts_it(
-    tmp_path, monkeypatch, capsys
-):
-    """Compaction deletes rows then VACUUMs, which fights live roles.
+def test_compact_never_touches_the_running_service(tmp_path, monkeypatch, capsys):
+    """Durable state has nothing to compact, so nothing has to stop.
 
-    'deploy reset' already stops and restarts around its work. Compaction must
-    do the same: without it the store is vacuumed under the running service and
-    the log rotation then refuses outright, leaving the command half done.
+    History is not read by recovery, so pruning it is safe at any moment. This
+    pins that the stop/restart dance the old compaction needed is really gone.
     """
 
     from zippergen import deployments, serve, storage_maintenance
@@ -298,25 +283,17 @@ def test_compact_stops_a_running_deployment_and_restarts_it(
     )
     monkeypatch.setattr(
         storage_maintenance,
-        "compact_store",
-        lambda _path: SimpleNamespace(
-            deleted_total=3,
-            before_bytes=2048,
-            after_bytes=1024,
-            plan=SimpleNamespace(roles_without_snapshot=()),
+        "prune_store_history",
+        lambda _path, *, keep: SimpleNamespace(
+            removed_rows=0, before_bytes=0, after_bytes=0
         ),
     )
     monkeypatch.setattr(
         deployments,
         "compact_deployment_logs",
         lambda _name, _profile, *, keep_archives: SimpleNamespace(
-            removed_archives=0,
-            removed_archive_bytes=0,
+            removed_archives=0, removed_archive_bytes=0
         ),
-    )
-    monkeypatch.setattr(
-        "zippergen.deployment_platform.deployment_service_status",
-        lambda _name: {"state": "running", "detail": "service is running"},
     )
     lifecycle: list[str] = []
     monkeypatch.setattr(
@@ -327,10 +304,7 @@ def test_compact_stops_a_running_deployment_and_restarts_it(
 
     assert main(["deploy", "compact"]) == 0
 
-    assert lifecycle == ["stop", "start"]
-    output = capsys.readouterr().out
-    assert "Stopping the deployment" in output
-    assert "Restarting the deployment" in output
+    assert lifecycle == [], "compaction must not stop or start the deployment"
 
 
 def test_deploy_reset_archives_and_recreates_its_owned_store(
@@ -903,7 +877,7 @@ def test_deploy_prepares_a_profile_that_runs_for_its_project(tmp_path, monkeypat
     assert service_path.exists()
     assert store_path.exists()
     connection = open_store(str(store_path))
-    assert connection.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 0
+    assert connection.execute("SELECT COUNT(*) FROM role_state").fetchone()[0] == 0
     connection.close()
 
     deployed = subprocess.run(
@@ -1396,7 +1370,7 @@ def test_guided_deploy_persists_config_and_private_secrets(tmp_path, monkeypatch
     store_path = Path(profile["store"])
     assert store_path.exists()
     connection = open_store(str(store_path))
-    assert connection.execute("SELECT COUNT(*) FROM events").fetchone()[0] == 0
+    assert connection.execute("SELECT COUNT(*) FROM role_state").fetchone()[0] == 0
     connection.close()
 
     workflow_path.unlink()
@@ -1654,7 +1628,8 @@ def test_status_command_reports_completed_run(tmp_path, monkeypatch, capsys):
     status = json.loads(captured.out)
     assert rc == 0
     assert status["state"] == "done"
-    assert status["event_count"] > 0
+    assert [role["status"] for role in status["roles"]] == ["done"]
+    assert status["outstanding_messages"] == []
     assert status["workflow_results"] == [
         {
             "workflow": "hello",
@@ -1708,12 +1683,12 @@ def test_status_command_reports_missing_store(tmp_path, monkeypatch, capsys):
 def test_trace_command_reports_recent_trace_events(tmp_path, monkeypatch, capsys):
     store_path = _prepared_deployment_store(tmp_path, monkeypatch, capsys)
     conn = open_store(str(store_path))
-    first = record_trace_event(
+    first = record_history(
         conn,
         "Writer",
         {"type": "send", "from": "Writer", "to": "User", "channel": "main", "values": ["old"]},
     )
-    second = record_trace_event(
+    second = record_history(
         conn,
         "User",
         {
@@ -1739,12 +1714,12 @@ def test_trace_command_reports_recent_trace_events(tmp_path, monkeypatch, capsys
 def test_trace_command_outputs_json_after_rowid(tmp_path, monkeypatch, capsys):
     store_path = _prepared_deployment_store(tmp_path, monkeypatch, capsys)
     conn = open_store(str(store_path))
-    first = record_trace_event(
+    first = record_history(
         conn,
         "Writer",
         {"type": "act_start", "action": "draft", "action_kind": "llm", "inputs": {"topic": "x"}},
     )
-    second = record_trace_event(
+    second = record_history(
         conn,
         "Writer",
         {"type": "act", "action": "draft", "action_kind": "llm", "outputs": {"reply": "hello"}},

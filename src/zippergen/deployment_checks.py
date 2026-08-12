@@ -26,7 +26,12 @@ from zippergen.assistant_configuration import normalize_assistant_overrides
 from zippergen.models import selected_llm_specs
 from zippergen.workflow_io import load_workflow_spec
 from zippergen.syntax import Workflow
-from zippergen.store import list_workflow_results, open_store
+from zippergen.store import (
+    list_outstanding_messages,
+    list_role_states,
+    list_workflow_results,
+    open_store,
+)
 from zippergen.deployment_platform import (
     deployment_launchd_path as _deployment_launchd_path,
     deployment_profile_path as _deployment_profile_path,
@@ -85,11 +90,8 @@ def _store_status(store_path: str) -> dict[str, object]:
 
     conn = open_store(str(path))
     try:
-        event_count = conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
-        last_event = conn.execute(
-            "SELECT rowid, sender, receiver, channel, kind, payload "
-            "FROM events ORDER BY rowid DESC LIMIT 1"
-        ).fetchone()
+        roles = list_role_states(conn)
+        outstanding = list_outstanding_messages(conn)
         human_rows = conn.execute(
             "SELECT task_id, role, action, status, created_at, updated_at "
             "FROM human_tasks ORDER BY updated_at DESC"
@@ -116,31 +118,28 @@ def _store_status(store_path: str) -> dict[str, object]:
     elif results:
         state = "done"
         summary = f"{len(results)} workflow result(s)"
-    elif event_count:
+    elif roles:
         state = "active"
-        summary = "events recorded; no result yet"
+        summary = f"{len(roles)} role(s) in progress; no result yet"
     else:
         state = "empty"
         summary = "store is initialized but empty"
-
-    last_event_dict = None
-    if last_event is not None:
-        last_event_dict = {
-            "rowid": last_event[0],
-            "sender": last_event[1],
-            "receiver": last_event[2],
-            "channel": last_event[3],
-            "kind": last_event[4],
-            "payload": _safe_json_loads(last_event[5]),
-        }
 
     return {
         "store": str(path),
         "exists": True,
         "state": state,
         "summary": summary,
-        "event_count": event_count,
-        "last_event": last_event_dict,
+        "roles": [
+            {
+                "role": row["role"],
+                "status": row["status"],
+                "steps": row["seq"],
+                "updated_at": row["updated_at"],
+            }
+            for row in roles
+        ],
+        "outstanding_messages": outstanding,
         "pending_human_tasks": pending_tasks,
         "done_human_task_count": done_task_count,
         "workflow_results": results,

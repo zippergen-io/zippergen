@@ -10,7 +10,8 @@ from zippergen.live_display import _screen_lines, watch_frames
 from zippergen.locator import resolve_path, statement_node_paths
 from zippergen.projection import project
 from zippergen.serve import load_workflow_spec, main
-from zippergen.store import open_store, write_execution_state
+from zippergen.control import encode_control
+from zippergen.store import open_store, write_role_state
 from zippergen.syntax import ActStmt, _ordered_workflow_lifelines
 from zippergen.workspace import Workspace
 
@@ -46,14 +47,20 @@ def _observed_run(tmp_path, monkeypatch):
         for path in statement_node_paths(local).values()
         if isinstance(resolve_path(local, path), ActStmt)
     )
+    node = resolve_path(local, action_path)
     connection = open_store(str(record["store"]))
-    write_execution_state(
+    connection.execute("BEGIN IMMEDIATE")
+    write_role_state(
         connection,
         "Writer",
-        "running_model",
-        [action_path],
-        {"action": "draft_reply", "kind": "model"},
+        env={},
+        control=encode_control(local, node),
+        monitor=None,
+        seq=1,
+        status="running_model",
+        detail={"action": "draft_reply", "kind": "model"},
     )
+    connection.execute("COMMIT")
     connection.close()
     monkeypatch.chdir(root)
     monkeypatch.setenv("ZIPPERGEN_HOME", str(home))

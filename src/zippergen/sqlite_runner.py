@@ -13,10 +13,11 @@ import time
 from pathlib import Path
 from typing import cast
 
+from zippergen.control import program_fingerprint
 from zippergen.projection import project
 from zippergen.role_runner import RoleRunner
 from zippergen.runtime import _build_formula_monitors, console_trace, mock_llm
-from zippergen.store import open_store, write_workflow_result
+from zippergen.store import claim_workflow_identity, open_store, write_workflow_result
 from zippergen.syntax import (
     Lifeline,
     Var,
@@ -37,29 +38,6 @@ def _default_env(wf: Workflow) -> dict:
         for k, v in wf.ns.items()
         if isinstance(v, Var)
     }
-
-
-def _seed_role_env(conn, role: str, env: dict) -> dict:
-    """Persist one role's seed env, returning an existing seed on restart."""
-    conn.execute("BEGIN IMMEDIATE")
-    try:
-        row = conn.execute(
-            "SELECT payload FROM events WHERE kind='seed' AND sender=? ORDER BY rowid LIMIT 1",
-            (role,),
-        ).fetchone()
-        if row is not None:
-            conn.execute("ROLLBACK")
-            return json.loads(row[0])
-        conn.execute(
-            "INSERT INTO events(sender,receiver,channel,kind,payload,causal_stamp) "
-            "VALUES(?,?,?,?,?,?)",
-            (role, None, None, "seed", json.dumps(env), None),
-        )
-        conn.execute("COMMIT")
-        return dict(env)
-    except BaseException:
-        conn.execute("ROLLBACK")
-        raise
 
 
 def _workflow_result(wf: Workflow, final_envs: dict[str, dict]) -> object:
@@ -111,34 +89,47 @@ class LocalSupervisor:
         self.timeout = timeout
         self.stop = threading.Event()
 
-    def _seed_all(self) -> dict[str, dict]:
-        seeded: dict[str, dict] = {}
+    def _starting_envs(self) -> dict[str, dict]:
+        """Build each role's starting variables.
+
+        These are only used when a role has no durable state yet. A resuming
+        role reads its own committed environment instead.
+        """
+
+        starting: dict[str, dict] = {}
+        for lifeline in self.lifelines:
+            env = _default_env(self.wf)
+            supplied = self.initial_envs.get(lifeline.name, {})
+            env.update(supplied)
+            for name, ztype, owner in self.wf.inputs:
+                if (
+                    owner is not None
+                    and owner.name == lifeline.name
+                    and name in supplied
+                ):
+                    env[name] = _clone_zvalue(
+                        validate_zvalue(
+                            supplied[name],
+                            ztype,
+                            context=f"{self.wf.name} input {name!r}",
+                        ),
+                        ztype,
+                    )
+            starting[lifeline.name] = env
+        return starting
+
+    def _claim_identity(self, local_programs: dict[str, object]) -> None:
+        """Refuse to resume durable state written by different code."""
+
         conn = open_store(self.store_path)
         try:
-            for lifeline in self.lifelines:
-                env = _default_env(self.wf)
-                supplied = self.initial_envs.get(lifeline.name, {})
-                env.update(supplied)
-                for name, ztype, owner in self.wf.inputs:
-                    if (
-                        owner is not None
-                        and owner.name == lifeline.name
-                        and name in supplied
-                    ):
-                        env[name] = _clone_zvalue(
-                            validate_zvalue(
-                                supplied[name],
-                                ztype,
-                                context=(
-                                    f"{self.wf.name} input {name!r}"
-                                ),
-                            ),
-                            ztype,
-                        )
-                seeded[lifeline.name] = _seed_role_env(conn, lifeline.name, env)
+            claim_workflow_identity(
+                conn,
+                self.wf.name,
+                program_fingerprint(local_programs),
+            )
         finally:
             conn.close()
-        return seeded
 
     def _load_existing_result(self) -> object:
         conn = open_store(self.store_path)
@@ -158,7 +149,11 @@ class LocalSupervisor:
         if existing is not _NO_RESULT:
             return existing
 
-        seeded_envs = self._seed_all()
+        local_programs = {
+            lifeline.name: project(self.wf, lifeline) for lifeline in self.lifelines
+        }
+        self._claim_identity(local_programs)
+        starting_envs = self._starting_envs()
         monitors, formula_conditions = _build_formula_monitors(self.wf, self.lifelines)
         result_boxes: dict[str, object] = {}
         threads: list[threading.Thread] = []
@@ -171,7 +166,7 @@ class LocalSupervisor:
             human_backend = human_dispatcher.worker_backend
 
         def make_target(lifeline: Lifeline, seed_env: dict):
-            local_stmt = project(self.wf, lifeline)
+            local_stmt = local_programs[lifeline.name]
 
             def target() -> None:
                 conn = open_store(self.store_path)
@@ -201,7 +196,7 @@ class LocalSupervisor:
 
         for lifeline in self.lifelines:
             t = threading.Thread(
-                target=make_target(lifeline, seeded_envs[lifeline.name]),
+                target=make_target(lifeline, starting_envs[lifeline.name]),
                 name=lifeline.name,
                 daemon=True,
             )

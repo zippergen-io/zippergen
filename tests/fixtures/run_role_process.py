@@ -6,7 +6,7 @@ import argparse
 import json
 
 from zippergen.projection import project
-from zippergen.role_runner import run_role, seed_env
+from zippergen.role_runner import run_role
 from zippergen.store import open_store
 from zippergen.workflow_io import _workflow_lifelines, load_workflow_spec
 
@@ -34,12 +34,13 @@ def main() -> int:
     if args.role not in lifelines:
         parser.error(f"unknown role {args.role!r}")
     connection = open_store(args.store)
-    environment = seed_env(connection, args.role, inputs)
+    # The starting inputs are only used the first time; a restarted role reads
+    # its own committed environment instead.
     result = run_role(
         connection,
         args.role,
         project(workflow, lifelines[args.role]),
-        environment,
+        inputs,
         workflow.ns,
     )
     print(json.dumps(result, default=str))

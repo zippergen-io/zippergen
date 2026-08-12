@@ -18,7 +18,6 @@ from zippergen.deployment_platform import (
     deployment_environment_dir,
     slug,
 )
-from zippergen.store import RECOVERY_COMPACTION_VERSION, TRACE_RETENTION_VERSION
 from zippergen.syntax import Workflow
 from zippergen.validation import assistant_actions
 
@@ -262,8 +261,6 @@ def prepare_deployment_environment(
     zippergen_extras = _deployment_zippergen_extras(profile)
     profile["zippergen_extras"] = list(zippergen_extras)
     profile["zippergen_runtime"] = _zippergen_runtime_provenance()
-    profile["recovery_compaction_version"] = RECOVERY_COMPACTION_VERSION
-    profile["trace_retention_version"] = TRACE_RETENTION_VERSION
     if skip_install:
         profile["python"] = str(profile.get("python") or sys.executable)
         return

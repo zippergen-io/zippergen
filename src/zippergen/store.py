@@ -1,6 +1,24 @@
-"""SQLite-backed durable event store: transport, replay log, and observation
-stream in one append-only table. All writes serialize through one file, so
-`rowid` is a global total order consistent with causality.
+"""SQLite-backed durable state: what the computation *is*, not what it did.
+
+The store holds the current live state of the distributed computation:
+
+* ``role_state``            one row per lifeline: variables, control state, monitor
+* ``outstanding_messages``  sends that no receiver has absorbed yet
+* ``human_tasks`` (+ tokens, notifications)  asynchronous requests that outlive
+  the process
+* ``adapter_state``         connector bookkeeping
+* ``workflow_results``      the value a finished workflow returned
+* ``history``               optional, for inspection only
+
+Recovery is: read ``role_state``, read ``outstanding_messages``, continue. There
+is no log to replay, no snapshot to validate, and nothing to compact. Deleting
+every row of ``history`` cannot affect whether a deployment resumes.
+
+The crash rule, stated once and relied on everywhere:
+
+    The durable role state describes what is known to have completed. Whatever
+    the control state points at has not necessarily completed, and may run
+    again after a crash.
 """
 from __future__ import annotations
 
@@ -10,88 +28,64 @@ import secrets
 import sqlite3
 import threading
 import time
-from collections import deque
 from pathlib import Path
 
 
-RECOVERY_COMPACTION_VERSION = 1
-TRACE_RETENTION_VERSION = 1
-TRACE_RETENTION_KEEP = 10_000
-TRACE_RETENTION_BATCH = 1_000
+SCHEMA_VERSION = 2
+
+HISTORY_RETENTION_KEEP = 10_000
+HISTORY_RETENTION_BATCH = 1_000
 
 
-class ReplayMismatch(Exception):
-    """A step re-executing during replay diverged from the committed log
-    (different payload/locator/kind). Raised loudly rather than corrupting state."""
+class StoreSchemaError(Exception):
+    """The store on disk does not match the durable model this code implements."""
 
 
 def _lastrowid(cur) -> int:
     rowid = cur.lastrowid
     if rowid is None:
-        raise RuntimeError("SQLite did not return a lastrowid for an inserted event.")
+        raise RuntimeError("SQLite did not return a lastrowid for an inserted row.")
     return int(rowid)
 
 
 SCHEMA = """
-CREATE TABLE IF NOT EXISTS events (
-  rowid        INTEGER PRIMARY KEY,
-  sender       TEXT NOT NULL,
-  receiver     TEXT,
-  channel      TEXT,
-  kind         TEXT NOT NULL,       -- 'seed'|'msg'|'ctrl'|'act'|'decision'|'trace'
-                                    -- @effect results are recorded as 'act'.
-  payload      BLOB,
-  causal_stamp BLOB
-);
-CREATE INDEX IF NOT EXISTS events_by_channel
-  ON events(receiver, sender, channel, rowid);
-CREATE INDEX IF NOT EXISTS events_trace_rowid
-  ON events(rowid) WHERE kind='trace';
-
-CREATE TABLE IF NOT EXISTS cursors (
-  role     TEXT NOT NULL,
-  chan_key TEXT NOT NULL,           -- "sender|receiver|channel"
-  consumed INTEGER NOT NULL,        -- highest rowid consumed on this key
-  PRIMARY KEY (role, chan_key)
-);
-
-CREATE TABLE IF NOT EXISTS snapshots (
-  role    TEXT PRIMARY KEY,
-  env     BLOB NOT NULL,            -- json-encoded local environment
-  locator BLOB NOT NULL,            -- json-encoded child-index path to the loop node
-  floor   BLOB NOT NULL,            -- json-encoded per-channel replay floor
-  monitor BLOB                     -- optional json-encoded CPL monitor state
-);
-
-CREATE TABLE IF NOT EXISTS recovery_high_water (
-  role    TEXT PRIMARY KEY,
-  out     INTEGER NOT NULL DEFAULT 0,
-  journal INTEGER NOT NULL DEFAULT 0
-);
-
-CREATE TABLE IF NOT EXISTS maintenance_state (
+CREATE TABLE IF NOT EXISTS store_meta (
   key   TEXT PRIMARY KEY,
-  value INTEGER NOT NULL
+  value TEXT NOT NULL
 );
 
-CREATE TABLE IF NOT EXISTS execution_states (
+CREATE TABLE IF NOT EXISTS role_state (
   role       TEXT PRIMARY KEY,
-  state      TEXT NOT NULL,
-  locators   BLOB NOT NULL,         -- json-encoded current statement paths
-  detail     BLOB NOT NULL,         -- json-encoded non-sensitive status metadata
+  env        TEXT NOT NULL,       -- json object of variable values
+  control    TEXT NOT NULL,       -- json control state (see control.py)
+  monitor    TEXT,                -- json CPL monitor state incl. vector clock
+  seq        INTEGER NOT NULL,    -- committed steps; distinguishes loop visits
+  status     TEXT NOT NULL,       -- running|blocked|waiting_receive|waiting_human|...
+  detail     TEXT NOT NULL,       -- json, non-sensitive status metadata
   updated_at REAL NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS outstanding_messages (
+  id           INTEGER PRIMARY KEY,   -- send order; the only ordering fact kept
+  sender       TEXT NOT NULL,
+  receiver     TEXT NOT NULL,
+  channel      TEXT NOT NULL,
+  payload      TEXT NOT NULL,
+  causal_stamp TEXT
+);
+CREATE INDEX IF NOT EXISTS outstanding_by_route
+  ON outstanding_messages(receiver, sender, channel, id);
 
 CREATE TABLE IF NOT EXISTS human_tasks (
   task_id    TEXT PRIMARY KEY,
   role       TEXT NOT NULL,
-  locator    BLOB NOT NULL,
+  locator    TEXT NOT NULL,
   action     TEXT NOT NULL,
   input_hash TEXT,
-  inputs     BLOB NOT NULL,
-  spec       BLOB NOT NULL,
+  inputs     TEXT NOT NULL,
+  spec       TEXT NOT NULL,
   status     TEXT NOT NULL,
-  result     BLOB,
+  result     TEXT,
   created_at REAL NOT NULL,
   updated_at REAL NOT NULL
 );
@@ -122,15 +116,22 @@ CREATE INDEX IF NOT EXISTS human_task_notifications_by_channel
 
 CREATE TABLE IF NOT EXISTS adapter_state (
   key        TEXT PRIMARY KEY,
-  value      BLOB NOT NULL,
+  value      TEXT NOT NULL,
   updated_at REAL NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS workflow_results (
   workflow   TEXT PRIMARY KEY,
-  value      BLOB NOT NULL,
+  value      TEXT NOT NULL,
   created_at REAL NOT NULL,
   updated_at REAL NOT NULL
+);
+
+-- Optional. Never read during recovery. Prunable at will.
+CREATE TABLE IF NOT EXISTS history (
+  id      INTEGER PRIMARY KEY,
+  role    TEXT NOT NULL,
+  payload TEXT NOT NULL
 );
 """
 
@@ -139,106 +140,198 @@ def open_store(path: str) -> sqlite3.Connection:
     connection_path = path
     if path != ":memory:" and not path.startswith("file:"):
         store_path = Path(path).expanduser()
-        # The durable store contains workflow data and human approval tokens.
-        # Create it owner-private before SQLite first opens it, rather than
-        # relying on the process umask and tightening permissions afterward.
+        # The store holds workflow variables and human approval tokens. Create it
+        # owner-private before SQLite first opens it rather than relying on umask.
         fd = os.open(store_path, os.O_RDWR | os.O_CREAT, 0o600)
         os.close(fd)
         store_path.chmod(0o600)
         connection_path = str(store_path)
 
-    # isolation_level=None -> autocommit; we drive BEGIN/COMMIT explicitly.
-    # check_same_thread=False: a role's connection is created by the supervisor
-    # and driven from the role's loop (a different thread in tests / deployment);
-    # each connection is still used by only one thread at a time.
-    #
-    # timeout= at connect time + busy_timeout pragma, both set BEFORE any
-    # lock-taking pragma/statement, so SQLite's busy handler covers ordinary
-    # lock contention (e.g. the SCHEMA executescript below racing a peer's
-    # first-open transaction).
+    # isolation_level=None -> autocommit; transactions are driven explicitly.
+    # check_same_thread=False: a role's connection is created by the supervisor and
+    # driven from that role's thread; only one thread uses it at a time.
     conn = sqlite3.connect(
         connection_path,
         isolation_level=None,
         check_same_thread=False,
         timeout=5.0,
     )
-    conn.execute("PRAGMA busy_timeout=5000")  # wait, don't fail, on concurrent writers
+    conn.execute("PRAGMA busy_timeout=5000")
 
-    # Switching journal_mode to WAL requires SQLite to upgrade its lock, and
-    # SQLite deliberately does NOT invoke the busy-timeout handler for that
-    # upgrade (doing so risks deadlock between two connections both trying to
-    # upgrade). So when two connections open the same brand-new database file
-    # at the same time, the loser can get `database is locked` from this
-    # PRAGMA immediately, regardless of busy_timeout. WAL is a persistent,
-    # file-level property, so it's always safe to retry (or discover it's
-    # already WAL because the peer won the race) — wrap it in a short bounded
-    # retry loop instead of letting the race surface as a hard failure.
+    # Switching to WAL takes a lock upgrade that SQLite deliberately does not run
+    # the busy handler for, so two processes opening a fresh file together can see
+    # "database is locked" here regardless of busy_timeout. WAL is a persistent
+    # file property, so retrying is always safe.
     for attempt in range(50):
         try:
             conn.execute("PRAGMA journal_mode=WAL")
             break
-        except sqlite3.OperationalError as e:
-            if "database is locked" not in str(e) or attempt == 49:
+        except sqlite3.OperationalError as exc:
+            if "database is locked" not in str(exc) or attempt == 49:
                 raise
             time.sleep(0.05)
 
-    # FULL is normally SQLite's default, but it is a per-connection setting
-    # whose compile-time default can vary. State the durability contract rather
-    # than inheriting an environmental assumption.
+    # State the durability contract rather than inheriting a compile-time default.
     conn.execute("PRAGMA synchronous=FULL")
 
+    _reject_replay_era_store(conn)
     conn.executescript(SCHEMA)
+    conn.execute(
+        "INSERT INTO store_meta(key,value) VALUES('schema_version',?) "
+        "ON CONFLICT(key) DO NOTHING",
+        (str(SCHEMA_VERSION),),
+    )
     if path != ":memory:" and not path.startswith("file:"):
-        for family_path in (
+        for family in (
             Path(connection_path),
             Path(f"{connection_path}-wal"),
             Path(f"{connection_path}-shm"),
         ):
-            if family_path.exists():
-                family_path.chmod(0o600)
-    columns = {
-        str(row[1])
-        for row in conn.execute("PRAGMA table_info(snapshots)").fetchall()
-    }
-    if "monitor" not in columns:
-        try:
-            conn.execute("ALTER TABLE snapshots ADD COLUMN monitor BLOB")
-        except sqlite3.OperationalError as exc:
-            if "duplicate column name" not in str(exc).lower():
-                raise
+            if family.exists():
+                family.chmod(0o600)
     return conn
 
 
-def chan_key(sender: str, receiver: str, channel: str) -> str:
-    return f"{sender}|{receiver}|{channel}"
+def _reject_replay_era_store(conn: sqlite3.Connection) -> None:
+    """Refuse a store written by the replay/snapshot design.
+
+    Its recovery state lives in an event log and per-role snapshots that no
+    longer exist. There is nothing to migrate to, because the old store kept
+    positions into a log rather than the interpreter state itself.
+    """
+
+    row = conn.execute(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name IN "
+        "('events','snapshots','cursors','recovery_high_water') LIMIT 1"
+    ).fetchone()
+    if row is not None:
+        raise StoreSchemaError(
+            "This durable store was written by an older ZipperGen that recovered "
+            "by replaying an event log. Its state cannot be carried over. Reset "
+            "the deployment with 'zg deploy reset', or delete the run store and "
+            "start again."
+        )
 
 
-def write_snapshot(
+# ---------------------------------------------------------------------------
+# Store identity
+# ---------------------------------------------------------------------------
+
+
+def read_meta(conn, key: str) -> str | None:
+    row = conn.execute("SELECT value FROM store_meta WHERE key=?", (key,)).fetchone()
+    return None if row is None else str(row[0])
+
+
+def write_meta(conn, key: str, value: str) -> None:
+    conn.execute(
+        "INSERT INTO store_meta(key,value) VALUES(?,?) "
+        "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        (key, str(value)),
+    )
+
+
+class WorkflowIdentityError(Exception):
+    """Durable state belongs to a different program than the one being resumed."""
+
+
+def claim_workflow_identity(conn, workflow: str, fingerprint: str) -> None:
+    """Bind a store to one workflow and one projected program, or refuse it.
+
+    Control state is child-index paths into the projected programs, so resuming
+    under changed code would silently mean something else. This is checked once,
+    explicitly, at startup rather than being inferred from a divergence later.
+    """
+
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        stored_workflow = read_meta(conn, "workflow")
+        stored_fingerprint = read_meta(conn, "workflow_fingerprint")
+        if stored_workflow is None and stored_fingerprint is None:
+            write_meta(conn, "workflow", workflow)
+            write_meta(conn, "workflow_fingerprint", fingerprint)
+            conn.execute("COMMIT")
+            return
+        conn.execute("COMMIT")
+    except BaseException:
+        conn.execute("ROLLBACK")
+        raise
+    if stored_workflow != workflow:
+        raise WorkflowIdentityError(
+            f"This store holds durable state for workflow {stored_workflow!r}, "
+            f"not {workflow!r}. Reset the deployment to start a new one."
+        )
+    if stored_fingerprint != fingerprint:
+        raise WorkflowIdentityError(
+            "The workflow changed since this durable state was written, so the "
+            "stored control positions no longer mean the same thing. Reset the "
+            "deployment with 'zg deploy reset' to start fresh, or restore the "
+            "previous version of the workflow to resume it."
+        )
+
+
+# ---------------------------------------------------------------------------
+# Role state: the whole of a lifeline's recoverable position
+# ---------------------------------------------------------------------------
+
+
+def load_role_state(conn, role: str) -> dict | None:
+    row = conn.execute(
+        "SELECT env, control, monitor, seq, status, detail FROM role_state WHERE role=?",
+        (role,),
+    ).fetchone()
+    if row is None:
+        return None
+    return {
+        "env": json.loads(row[0]),
+        "control": json.loads(row[1]),
+        "monitor": json.loads(row[2]) if row[2] is not None else None,
+        "seq": int(row[3]),
+        "status": row[4],
+        "detail": json.loads(row[5]),
+    }
+
+
+def write_role_state(
     conn,
     role: str,
+    *,
     env: dict,
-    locator: list,
-    floor: dict,
-    monitor: dict | None = None,
+    control: dict,
+    monitor: dict | None,
+    seq: int,
+    status: str,
+    detail: dict | None = None,
 ) -> None:
-    # Serialize BEFORE opening the transaction so a non-serializable env raises
-    # here (caller skips the snapshot) without leaving a dangling transaction.
-    payload = (
-        role,
-        json.dumps(env),
-        json.dumps(locator),
-        json.dumps(floor),
-        json.dumps(monitor) if monitor is not None else None,
+    """Write a role's whole durable position. Caller owns the transaction."""
+
+    conn.execute(
+        "INSERT INTO role_state(role,env,control,monitor,seq,status,detail,updated_at) "
+        "VALUES(?,?,?,?,?,?,?,?) "
+        "ON CONFLICT(role) DO UPDATE SET env=excluded.env, control=excluded.control, "
+        "monitor=excluded.monitor, seq=excluded.seq, status=excluded.status, "
+        "detail=excluded.detail, updated_at=excluded.updated_at",
+        (
+            role,
+            json.dumps(env),
+            json.dumps(control),
+            None if monitor is None else json.dumps(monitor),
+            int(seq),
+            status,
+            json.dumps(_json_safe(detail or {})),
+            time.time(),
+        ),
     )
+
+
+def set_role_status(conn, role: str, status: str, detail: dict | None = None) -> None:
+    """Update only the diagnostic status. Short standalone transaction."""
+
     conn.execute("BEGIN IMMEDIATE")
     try:
         conn.execute(
-            "INSERT INTO snapshots(role, env, locator, floor, monitor) "
-            "VALUES(?,?,?,?,?) "
-            "ON CONFLICT(role) DO UPDATE SET env=excluded.env, "
-            "locator=excluded.locator, floor=excluded.floor, "
-            "monitor=excluded.monitor",
-            payload,
+            "UPDATE role_state SET status=?, detail=?, updated_at=? WHERE role=?",
+            (status, json.dumps(_json_safe(detail or {})), time.time(), role),
         )
         conn.execute("COMMIT")
     except BaseException:
@@ -246,102 +339,18 @@ def write_snapshot(
         raise
 
 
-def load_snapshot(conn, role: str) -> dict | None:
-    row = conn.execute(
-        "SELECT env, locator, floor, monitor FROM snapshots WHERE role=?",
-        (role,),
-    ).fetchone()
-    if row is None:
-        return None
-    snapshot = {
-        "env": json.loads(row[0]),
-        "locator": json.loads(row[1]),
-        "floor": json.loads(row[2]),
-    }
-    if row[3] is not None:
-        snapshot["monitor"] = json.loads(row[3])
-    return snapshot
-
-
-def _update_recovery_high_water(
-    conn,
-    role: str,
-    *,
-    out: int = 0,
-    journal: int = 0,
-) -> None:
-    conn.execute(
-        "INSERT INTO recovery_high_water(role,out,journal) VALUES(?,?,?) "
-        "ON CONFLICT(role) DO UPDATE SET "
-        "out=MAX(recovery_high_water.out, excluded.out), "
-        "journal=MAX(recovery_high_water.journal, excluded.journal)",
-        (role, out, journal),
-    )
-
-
-def backfill_recovery_high_water(conn) -> None:
-    """Preserve monotonic replay high-water marks before event compaction."""
-
-    for role, out, journal in conn.execute(
-        "SELECT sender, "
-        "MAX(CASE WHEN kind IN ('msg','ctrl') THEN rowid ELSE 0 END), "
-        "MAX(CASE WHEN kind IN ('act','decision') "
-        "THEN rowid ELSE 0 END) "
-        "FROM events GROUP BY sender"
-    ).fetchall():
-        _update_recovery_high_water(
-            conn,
-            str(role),
-            out=int(out or 0),
-            journal=int(journal or 0),
-        )
-
-
-def recovery_high_water(conn, role: str) -> dict[str, int]:
-    row = conn.execute(
-        "SELECT out,journal FROM recovery_high_water WHERE role=?",
-        (role,),
-    ).fetchone()
-    return {
-        "out": int(row[0]) if row is not None else 0,
-        "journal": int(row[1]) if row is not None else 0,
-    }
-
-
-def write_execution_state(
-    conn,
-    role: str,
-    state: str,
-    locators: list[list[int]],
-    detail: dict | None = None,
-) -> None:
-    """Persist diagnostic execution state without exposing the role environment."""
-
-    locator_payload = json.dumps(locators)
-    detail_payload = json.dumps(_json_safe(detail or {}))
-    now = time.time()
-    conn.execute(
-        "INSERT INTO execution_states(role,state,locators,detail,updated_at) "
-        "VALUES(?,?,?,?,?) "
-        "ON CONFLICT(role) DO UPDATE SET "
-        "state=excluded.state, locators=excluded.locators, "
-        "detail=excluded.detail, updated_at=excluded.updated_at",
-        (role, state, locator_payload, detail_payload, now),
-    )
-
-
-def list_execution_states(conn) -> list[dict]:
+def list_role_states(conn) -> list[dict]:
     rows = conn.execute(
-        "SELECT role,state,locators,detail,updated_at "
-        "FROM execution_states ORDER BY role"
+        "SELECT role,control,seq,status,detail,updated_at FROM role_state ORDER BY role"
     ).fetchall()
     return [
         {
             "role": row[0],
-            "state": row[1],
-            "locators": json.loads(row[2]),
-            "detail": json.loads(row[3]),
-            "updated_at": row[4],
+            "control": json.loads(row[1]),
+            "seq": int(row[2]),
+            "status": row[3],
+            "detail": json.loads(row[4]),
+            "updated_at": row[5],
         }
         for row in rows
     ]
@@ -350,13 +359,16 @@ def list_execution_states(conn) -> list[dict]:
 def _json_safe(value):
     if value is None or isinstance(value, (bool, int, float, str)):
         return value
-    if isinstance(value, tuple):
-        return [_json_safe(v) for v in value]
-    if isinstance(value, list):
-        return [_json_safe(v) for v in value]
+    if isinstance(value, (tuple, list)):
+        return [_json_safe(item) for item in value]
     if isinstance(value, dict):
-        return {str(k): _json_safe(v) for k, v in value.items()}
+        return {str(key): _json_safe(item) for key, item in value.items()}
     return str(value)
+
+
+# ---------------------------------------------------------------------------
+# Workflow results
+# ---------------------------------------------------------------------------
 
 
 def write_workflow_result(conn, workflow: str, value: object) -> None:
@@ -402,86 +414,55 @@ def list_workflow_results(conn) -> list[dict]:
     ]
 
 
-def prune_trace_events(
-    conn,
-    *,
-    keep: int = TRACE_RETENTION_KEEP,
-) -> int:
-    """Keep only the newest diagnostic traces without touching replay data."""
+# ---------------------------------------------------------------------------
+# History: inspection only, never consulted by recovery
+# ---------------------------------------------------------------------------
 
+
+def prune_history(conn, *, keep: int = HISTORY_RETENTION_KEEP) -> int:
     if keep < 0:
         raise ValueError("keep must be zero or greater")
     if keep == 0:
-        cursor = conn.execute("DELETE FROM events WHERE kind='trace'")
-    else:
-        cutoff = conn.execute(
-            "SELECT rowid FROM events WHERE kind='trace' "
-            "ORDER BY rowid DESC LIMIT 1 OFFSET ?",
-            (keep - 1,),
-        ).fetchone()
-        cursor = (
-            conn.execute(
-                "DELETE FROM events WHERE kind='trace' AND rowid<?",
-                (int(cutoff[0]),),
-            )
-            if cutoff is not None
-            else None
-        )
-    conn.execute(
-        "INSERT INTO maintenance_state(key,value) "
-        "VALUES('trace_since_prune',0) "
-        "ON CONFLICT(key) DO UPDATE SET value=0"
-    )
-    if cursor is None:
+        cursor = conn.execute("DELETE FROM history")
+        return int(cursor.rowcount) if cursor.rowcount >= 0 else 0
+    cutoff = conn.execute(
+        "SELECT id FROM history ORDER BY id DESC LIMIT 1 OFFSET ?", (keep - 1,)
+    ).fetchone()
+    if cutoff is None:
         return 0
+    cursor = conn.execute("DELETE FROM history WHERE id<?", (int(cutoff[0]),))
     return int(cursor.rowcount) if cursor.rowcount >= 0 else 0
 
 
-def record_trace_event(conn, role: str, event: dict) -> int:
+def record_history(conn, role: str, event: dict) -> int:
     cur = conn.execute(
-        "INSERT INTO events(sender,receiver,channel,kind,payload,causal_stamp) "
-        "VALUES(?,?,?,?,?,?)",
-        (role, None, None, "trace", json.dumps(_json_safe(event)), None),
+        "INSERT INTO history(role,payload) VALUES(?,?)",
+        (role, json.dumps(_json_safe(event))),
     )
     rowid = _lastrowid(cur)
-    conn.execute(
-        "INSERT INTO maintenance_state(key,value) "
-        "VALUES('trace_since_prune',?) "
-        "ON CONFLICT(key) DO UPDATE SET value=value+1",
-        (1,),
-    )
-    pending = conn.execute(
-        "SELECT value FROM maintenance_state "
-        "WHERE key='trace_since_prune'"
-    ).fetchone()
-    if pending is not None and int(pending[0]) >= TRACE_RETENTION_BATCH:
-        prune_trace_events(conn, keep=TRACE_RETENTION_KEEP)
+    if rowid % HISTORY_RETENTION_BATCH == 0:
+        prune_history(conn, keep=HISTORY_RETENTION_KEEP)
     return rowid
 
 
-def list_trace_events(conn, after_rowid: int = 0) -> list[dict]:
+def list_history(conn, after_id: int = 0) -> list[dict]:
     rows = conn.execute(
-        "SELECT rowid, payload FROM events "
-        "WHERE kind='trace' AND rowid>? ORDER BY rowid",
-        (after_rowid,),
+        "SELECT id, payload FROM history WHERE id>? ORDER BY id", (after_id,)
     ).fetchall()
-    return [
-        {"rowid": row[0], "event": json.loads(row[1])}
-        for row in rows
-    ]
+    return [{"rowid": row[0], "event": json.loads(row[1])} for row in rows]
 
 
-def human_task_id(
-    role: str,
-    locator: list,
-    input_hash: str | None,
-    journal_after: int,
-) -> str:
+# ---------------------------------------------------------------------------
+# Human tasks: genuinely asynchronous, and outlive the interpreter process
+# ---------------------------------------------------------------------------
+
+
+def human_task_id(role: str, locator: list, input_hash: str | None, nonce: object) -> str:
     payload = {
         "role": role,
         "locator": locator,
         "input_hash": input_hash,
-        "journal_after": journal_after,
+        "nonce": nonce,
     }
     import hashlib
     return hashlib.sha1(json.dumps(payload, sort_keys=True).encode()).hexdigest()[:24]
@@ -540,8 +521,8 @@ def complete_human_task(conn, task_id: str, result: dict) -> dict:
 def ensure_human_task_token(conn, task_id: str, *, channel: str = "default") -> dict:
     """Return a durable random token for a human task/channel pair.
 
-    Tokens are intended for external adapters such as email, Telegram, or Slack.
-    The raw task id is stable but not meant to be the only approval credential
+    Tokens are for external adapters such as email, Telegram, or Slack. The raw
+    task id is stable but is not meant to be the only approval credential
     outside trusted local CLI use.
     """
 
@@ -667,15 +648,7 @@ def load_human_task_notification_by_external(
         "WHERE channel=? AND target=? AND external_id=?",
         (str(channel), str(target), str(external_id)),
     ).fetchone()
-    if row is None:
-        return None
-    return {
-        "task_id": row[0],
-        "channel": row[1],
-        "target": row[2],
-        "external_id": row[3],
-        "sent_at": row[4],
-    }
+    return _notification_row(row) if row is not None else None
 
 
 def load_human_task_notification(
@@ -715,7 +688,6 @@ def load_human_task(conn, task_id: str) -> dict | None:
     ).fetchone()
     if row is None:
         return None
-    result = json.loads(row[8]) if row[8] is not None else None
     return {
         "task_id": row[0],
         "role": row[1],
@@ -725,20 +697,21 @@ def load_human_task(conn, task_id: str) -> dict | None:
         "inputs": json.loads(row[5]),
         "spec": json.loads(row[6]),
         "status": row[7],
-        "result": result,
+        "result": json.loads(row[8]) if row[8] is not None else None,
         "created_at": row[9],
         "updated_at": row[10],
     }
 
 
+# ---------------------------------------------------------------------------
+# Outstanding messages
+# ---------------------------------------------------------------------------
+
+
 Item = tuple[int, tuple, "dict | None", "dict | None", "dict | None"]
 
 
-def _encode_causal_stamp(
-    vc: dict | None,
-    view: dict | None,
-    field_view: dict | None,
-) -> str | None:
+def _encode_causal_stamp(vc, view, field_view) -> str | None:
     if vc is None and view is None and field_view is None:
         return None
     return json.dumps({"vc": vc, "view": view, "field_view": field_view})
@@ -748,7 +721,7 @@ def _decode_view(view: dict | None) -> dict | None:
     if view is None:
         return None
     return {
-        str(lifeline): {int(formula_id): bool(value) for formula_id, value in values.items()}
+        str(lifeline): {int(formula): bool(value) for formula, value in values.items()}
         for lifeline, values in view.items()
     }
 
@@ -757,222 +730,55 @@ def _decode_causal_stamp(stamp) -> tuple[dict | None, dict | None, dict | None]:
     if stamp is None:
         return None, None, None
     data = json.loads(stamp)
-    if (
-        isinstance(data, dict)
-        and set(data.keys()) <= {"vc", "view", "field_view"}
-        and (data.get("vc") is None or isinstance(data.get("vc"), dict))
-    ):
-        return data.get("vc"), _decode_view(data.get("view")), data.get("field_view")
-    # Backward compatibility: old stores kept only the vector clock in this column.
-    return data, None, None
+    return data.get("vc"), _decode_view(data.get("view")), data.get("field_view")
 
 
 class DurableChannel:
-    """Channel backed by the shared event store, with replay/live semantics.
+    """Communication that has not yet been absorbed by a receiver.
 
-    Same put/try_get/get surface as InProcessChannel. Consumption is tentative
-    until commit_txn(): only then does the durable consume-cursor advance, in the
-    same transaction as any emitted sends. On restart the constructor rebuilds
-    per-key replay queues from the committed log so re-execution reserves recorded
-    sends (no re-INSERT) and re-serves recorded recvs (no live read).
+    A send inserts a row. A receive takes the lowest-id row on its route and
+    hands it to the interpreter. The row is not deleted immediately: it is held
+    as *taken* until the role commits, so that consuming a message and advancing
+    the receiver's state are one transaction. If that transaction rolls back,
+    the message is still outstanding and nothing was lost.
+
+    ``id`` is the only ordering fact kept. It gives FIFO per route and a
+    deterministic winner for a coregion receive across routes.
     """
 
-    def __init__(self, conn: sqlite3.Connection, role: str, since: dict | None = None) -> None:
+    def __init__(self, conn: sqlite3.Connection, role: str) -> None:
         self.conn = conn
         self.role = role
-        self.since = since   # None => full replay; else {"out": int, "cursors": {chan_key: int}}
-        self._consumed: dict[tuple[str, str, str], int] = {}
-        self._tentative: dict[tuple[str, str, str], int] = {}
-        self._replay_outbox: deque = deque()
-        self._replay_inbox: dict[tuple[str, str, str], deque] = {}
-        self._journal_consumed: int = (since or {}).get("journal", 0)
-        self._journal_floor: int = self._journal_consumed
-        self._journal_seen: set[int] = set()
-        self._load_cursors()
-        self._load_replay()
-
-    # ---- startup reconstruction -------------------------------------------
-    def _load_cursors(self) -> None:
-        for ck, consumed in self.conn.execute(
-            "SELECT chan_key, consumed FROM cursors WHERE role=?", (self.role,)
-        ).fetchall():
-            sender, receiver, channel = ck.split("|")
-            self._consumed[(sender, receiver, channel)] = consumed
-
-    def _load_replay(self) -> None:
-        # With a snapshot floor (self.since), replay only the tail: own sends after
-        # floor["out"], and inbound consumed after each channel's floor cursor.
-        # With since=None, out_floor=0 and per-channel lo=0 -> full history (as before).
-        out_floor = self.since["out"] if self.since else 0
-        for rowid, receiver, channel in self.conn.execute(
-            "SELECT rowid, receiver, channel FROM events "
-            "WHERE sender=? AND kind IN ('msg','ctrl') AND rowid>? ORDER BY rowid",
-            (self.role, out_floor),
-        ).fetchall():
-            self._replay_outbox.append((rowid, receiver, channel))
-        cursor_floors = self.since["cursors"] if self.since else {}
-        for (sender, receiver, channel), consumed in self._consumed.items():
-            lo = cursor_floors.get(chan_key(sender, receiver, channel), 0)
-            rows = self.conn.execute(
-                "SELECT rowid, payload, causal_stamp FROM events "
-                "WHERE sender=? AND receiver=? AND channel=? AND rowid>? AND rowid<=? "
-                "ORDER BY rowid",
-                (sender, receiver, channel, lo, consumed),
-            ).fetchall()
-            if rows:
-                self._replay_inbox[(sender, receiver, channel)] = deque(rows)
-
-    def replaying(self) -> bool:
-        return bool(self._replay_outbox) or any(self._replay_inbox.values())
-
-    def position(self) -> dict:
-        """Committed own-send, receive-cursor, and journal replay floors."""
-        row = self.conn.execute(
-            "SELECT MAX(rowid) FROM events WHERE sender=? AND kind IN ('msg','ctrl')",
-            (self.role,),
-        ).fetchone()
-        durable = recovery_high_water(self.conn, self.role)
-        return {
-            "out": max(int(row[0] or 0), durable["out"]),
-            "cursors": {chan_key(*key): rowid for key, rowid in self._consumed.items()},
-            "journal": max(self._journal_consumed, durable["journal"]),
-        }
-
-    def journal_position(self) -> int:
-        return self._journal_consumed
-
-    # ---- role-local journal (external act outputs + owner decisions) --------
-    def record_act(self, payload: dict) -> int:
-        """INSERT an act-journal row. Does NOT advance the journal cursor — the
-        result is applied by a separate consume pass (apply-after-commit)."""
-        cur = self.conn.execute(
-            "INSERT INTO events(sender,receiver,channel,kind,payload,causal_stamp) "
-            "VALUES(?,?,?,?,?,?)",
-            (self.role, None, None, "act", json.dumps(payload), None),
-        )
-        rowid = _lastrowid(cur)
-        _update_recovery_high_water(
-            self.conn,
-            self.role,
-            journal=rowid,
-        )
-        return rowid
-
-    def record_decision(self, payload: dict) -> int:
-        """INSERT a decision-journal row and advance the cursor past it (the
-        value is recorded and consumed in one step; no separate consume pass)."""
-        cur = self.conn.execute(
-            "INSERT INTO events(sender,receiver,channel,kind,payload,causal_stamp) "
-            "VALUES(?,?,?,?,?,?)",
-            (self.role, None, None, "decision", json.dumps(payload), None),
-        )
-        rowid = _lastrowid(cur)
-        _update_recovery_high_water(
-            self.conn,
-            self.role,
-            journal=rowid,
-        )
-        self._journal_seen.add(rowid)
-        self._journal_consumed = max(self._journal_consumed, rowid)
-        return rowid
-
-    def consume_journal(self, expected_kind: str, locator: list,
-                        input_hash: str | None = None, *,
-                        strict: bool = True) -> dict | None:
-        """Return a committed journal row for this role.
-
-        ``strict=True`` preserves the simple FIFO replay invariant used by unit
-        tests and non-parallel reasoning. Runtime replay uses ``strict=False``
-        because a single lifeline can own multiple local parallel branches whose
-        enabled order can differ while still referring to the same committed
-        action/decision rows.
-        """
-        if strict:
-            row = self.conn.execute(
-                "SELECT rowid, kind, payload FROM events "
-                "WHERE sender=? AND kind IN ('act','decision') AND rowid>? "
-                "ORDER BY rowid LIMIT 1",
-                (self.role, self._journal_consumed),
-            ).fetchone()
-            if row is None:
-                return None
-            candidates = [row]
-        else:
-            candidates = self.conn.execute(
-                "SELECT rowid, kind, payload FROM events "
-                "WHERE sender=? AND kind IN ('act','decision') AND rowid>? "
-                "ORDER BY rowid",
-                (self.role, self._journal_floor),
-            ).fetchall()
-        for rowid, kind, payload in candidates:
-            if rowid in self._journal_seen:
-                continue
-            data = json.loads(payload)
-            if kind != expected_kind or data.get("locator") != locator:
-                if strict:
-                    raise ReplayMismatch(
-                        f"journal diverged at rowid {rowid}: recorded {kind}/{data.get('locator')}, "
-                        f"executing {expected_kind}/{locator}")
-                continue
-            if input_hash is not None and data.get("input_hash") not in (None, input_hash):
-                if strict:
-                    raise ReplayMismatch(
-                        f"journal input_hash diverged at rowid {rowid}: "
-                        f"recorded {data.get('input_hash')!r}, recomputed {input_hash!r}")
-                continue
-            self._journal_seen.add(rowid)
-            self._journal_consumed = max(self._journal_consumed, rowid)
-            return data
-        return None
+        self._taken: list[int] = []
 
     # ---- interpreter-facing surface ---------------------------------------
     def put(self, sender: str, receiver: str, channel: str, values: tuple,
             vc: dict | None = None, view: dict | None = None,
             field_view: dict | None = None) -> int:
-        if self._replay_outbox:
-            rowid, exp_receiver, exp_channel = self._replay_outbox.popleft()
-            if receiver != exp_receiver or channel != exp_channel:
-                raise ReplayMismatch(
-                    f"send target diverged: replay expected {exp_receiver}/{exp_channel}, "
-                    f"got {receiver}/{channel}")
-            recorded = self.conn.execute(
-                "SELECT payload FROM events WHERE rowid=?", (rowid,)).fetchone()[0]
-            if json.loads(recorded) != list(values):
-                raise ReplayMismatch(
-                    f"send payload diverged at rowid {rowid}: "
-                    f"recorded {recorded!r}, recomputed {list(values)!r}")
-            return rowid
         cur = self.conn.execute(
-            "INSERT INTO events(sender,receiver,channel,kind,payload,causal_stamp) "
-            "VALUES(?,?,?,?,?,?)",
-            (sender, receiver, channel, "msg", json.dumps(list(values)),
-             _encode_causal_stamp(vc, view, field_view)),
+            "INSERT INTO outstanding_messages(sender,receiver,channel,payload,causal_stamp) "
+            "VALUES(?,?,?,?,?)",
+            (
+                sender,
+                receiver,
+                channel,
+                json.dumps(list(values)),
+                _encode_causal_stamp(vc, view, field_view),
+            ),
         )
-        rowid = _lastrowid(cur)
-        _update_recovery_high_water(
-            self.conn,
-            sender,
-            out=rowid,
-        )
-        return rowid
+        return _lastrowid(cur)
 
     def try_get(self, sender: str, receiver: str, channel: str) -> Item | None:
-        key = (sender, receiver, channel)
-        dq = self._replay_inbox.get(key)
-        if dq:
-            rowid, payload, stamp = dq.popleft()
-            return self._row_to_item(rowid, payload, stamp)
-        floor = self._tentative.get(key, self._consumed.get(key, 0))
+        clause, params = self._not_taken()
         row = self.conn.execute(
-            "SELECT rowid, payload, causal_stamp FROM events "
-            "WHERE sender=? AND receiver=? AND channel=? AND rowid>? ORDER BY rowid LIMIT 1",
-            (sender, receiver, channel, floor),
+            "SELECT id, payload, causal_stamp FROM outstanding_messages "
+            f"WHERE sender=? AND receiver=? AND channel=?{clause} ORDER BY id LIMIT 1",
+            (sender, receiver, channel, *params),
         ).fetchone()
         if row is None:
             return None
-        rowid, payload, stamp = row
-        self._tentative[key] = rowid
-        return self._row_to_item(rowid, payload, stamp)
+        self._taken.append(int(row[0]))
+        return self._row_to_item(*row)
 
     def try_get_any(
         self,
@@ -980,45 +786,27 @@ class DurableChannel:
         senders: set[str],
         channel: str,
     ) -> tuple[str, Item] | None:
-        """Return the earliest available head message across candidate senders.
+        """Take the earliest available message across candidate senders.
 
-        Each individual sender/receiver/channel stream is FIFO. For receive-any
-        constructs, durable execution also needs a deterministic cross-stream
-        choice when multiple stream heads are available. SQLite rowid is the
-        committed global order, so choose the smallest head rowid and tentatively
-        advance only that stream's cursor.
+        Each route is FIFO on its own. Across routes the send order (``id``) is
+        the deterministic tie-break, so a restart makes the same choice.
         """
 
-        candidates: list[tuple[int, str, object, object]] = []
-        for sender in senders:
-            key = (sender, receiver, channel)
-            dq = self._replay_inbox.get(key)
-            if dq:
-                rowid, payload, stamp = dq[0]
-                candidates.append((rowid, sender, payload, stamp))
-                continue
-            floor = self._tentative.get(key, self._consumed.get(key, 0))
-            row = self.conn.execute(
-                "SELECT rowid, payload, causal_stamp FROM events "
-                "WHERE sender=? AND receiver=? AND channel=? AND rowid>? "
-                "ORDER BY rowid LIMIT 1",
-                (sender, receiver, channel, floor),
-            ).fetchone()
-            if row is not None:
-                rowid, payload, stamp = row
-                candidates.append((rowid, sender, payload, stamp))
-
-        if not candidates:
+        if not senders:
             return None
-
-        rowid, sender, payload, stamp = min(candidates, key=lambda candidate: candidate[0])
-        key = (sender, receiver, channel)
-        dq = self._replay_inbox.get(key)
-        if dq and dq[0][0] == rowid:
-            dq.popleft()
-        else:
-            self._tentative[key] = rowid
-        return sender, self._row_to_item(rowid, payload, stamp)
+        names = sorted(senders)
+        senders_in = ",".join("?" for _ in names)
+        clause, params = self._not_taken()
+        row = self.conn.execute(
+            "SELECT id, sender, payload, causal_stamp FROM outstanding_messages "
+            f"WHERE receiver=? AND channel=? AND sender IN ({senders_in}){clause} "
+            "ORDER BY id LIMIT 1",
+            (receiver, channel, *names, *params),
+        ).fetchone()
+        if row is None:
+            return None
+        self._taken.append(int(row[0]))
+        return str(row[1]), self._row_to_item(row[0], row[2], row[3])
 
     def get(self, sender: str, receiver: str, channel: str, *,
             stop: threading.Event | None = None) -> Item:
@@ -1030,24 +818,53 @@ class DurableChannel:
                 raise RuntimeError("Workflow cancelled")
             time.sleep(0.02)
 
+    def _not_taken(self) -> tuple[str, tuple]:
+        """Exclude rows already taken in this transaction.
+
+        The clause is omitted entirely when nothing is taken: `id NOT IN (NULL)`
+        is unknown rather than true in SQL, so an empty list must not be spelled
+        as a NULL placeholder.
+        """
+
+        if not self._taken:
+            return "", ()
+        placeholders = ",".join("?" for _ in self._taken)
+        return f" AND id NOT IN ({placeholders})", tuple(self._taken)
+
     @staticmethod
-    def _row_to_item(rowid: int, payload, stamp) -> Item:
+    def _row_to_item(rowid, payload, stamp) -> Item:
         values = tuple(json.loads(payload)) if payload is not None else ()
         vc, view, field_view = _decode_causal_stamp(stamp)
-        return (rowid, values, vc, view, field_view)
+        return (int(rowid), values, vc, view, field_view)
 
-    # ---- transaction lifecycle (driven by the per-role loop) --------------
-    def commit_txn(self) -> None:
-        for key, rowid in self._tentative.items():
-            self.conn.execute(
-                "INSERT INTO cursors(role, chan_key, consumed) VALUES(?,?,?) "
-                "ON CONFLICT(role, chan_key) DO UPDATE SET consumed=excluded.consumed",
-                (self.role, chan_key(*key), rowid),
-            )
-        self.conn.execute("COMMIT")
-        self._consumed.update(self._tentative)
-        self._tentative.clear()
+    # ---- transaction lifecycle (driven by the role loop) -------------------
+    def delete_taken(self) -> None:
+        """Remove consumed messages. Caller is inside the committing transaction."""
 
-    def rollback_txn(self) -> None:
-        self.conn.execute("ROLLBACK")
-        self._tentative.clear()
+        if not self._taken:
+            return
+        placeholders = ",".join("?" for _ in self._taken)
+        self.conn.execute(
+            f"DELETE FROM outstanding_messages WHERE id IN ({placeholders})",
+            tuple(self._taken),
+        )
+
+    def clear_taken(self) -> None:
+        self._taken.clear()
+
+
+def list_outstanding_messages(conn) -> list[dict]:
+    rows = conn.execute(
+        "SELECT id, sender, receiver, channel, payload FROM outstanding_messages "
+        "ORDER BY id"
+    ).fetchall()
+    return [
+        {
+            "id": row[0],
+            "sender": row[1],
+            "receiver": row[2],
+            "channel": row[3],
+            "payload": json.loads(row[4]),
+        }
+        for row in rows
+    ]

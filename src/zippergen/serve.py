@@ -571,9 +571,8 @@ def _load_trace_events(
     conn = open_store(str(path))
     try:
         rows = conn.execute(
-            "SELECT rowid, sender, payload FROM events "
-            "WHERE kind='trace' AND rowid>? "
-            "ORDER BY rowid DESC LIMIT ?",
+            "SELECT id, role, payload FROM history WHERE id>? "
+            "ORDER BY id DESC LIMIT ?",
             (after_rowid, limit),
         ).fetchall()
     finally:
@@ -734,14 +733,23 @@ def _print_status(status: dict[str, object]) -> None:
     if not status.get("exists"):
         return
 
-    print(f"Events: {status['event_count']}")
-    last_event = status.get("last_event")
-    if isinstance(last_event, dict):
-        sender = last_event.get("sender")
-        receiver = last_event.get("receiver") or "-"
-        kind = last_event.get("kind")
-        rowid = last_event.get("rowid")
-        print(f"Last event: #{rowid} {kind} {sender}->{receiver}")
+    roles = status.get("roles")
+    if isinstance(roles, list):
+        print(f"Roles: {len(roles)}")
+        for role in roles:
+            print(
+                f"  {role['role']}: {role['status']} "
+                f"after {role['steps']} step(s)"
+            )
+
+    outstanding = status.get("outstanding_messages")
+    if isinstance(outstanding, list):
+        print(f"Outstanding messages: {len(outstanding)}")
+        for message in outstanding[:10]:
+            print(
+                f"  #{message['id']} {message['sender']}->{message['receiver']} "
+                f"on {message['channel']}"
+            )
 
     tasks = status.get("pending_human_tasks")
     if isinstance(tasks, list):
@@ -1925,47 +1933,26 @@ def _deployment_prune_command(args) -> int:
 
 
 def _compact_command(args) -> int:
-    """Reclaim space in a deployment's durable store and logs.
+    """Drop optional history and rotate logs.
 
-    Compaction deletes rows and then VACUUMs, which contends with the roles of a
-    live service. So it stops the service first and restarts it afterward, the
-    same lifecycle 'deploy reset' uses. Nothing here destroys recoverable state,
-    so it does not ask first, but it does say what it did.
+    Durable state is the current state of the computation, so there is nothing
+    to compact in it. Only history accumulates, and recovery never reads it, so
+    this does not touch the running deployment.
     """
 
-    from zippergen.deployment_platform import deployment_service_status
     from zippergen.deployments import DeploymentRemovalError, compact_deployment_logs
-    from zippergen.storage_maintenance import compact_store
+    from zippergen.storage_maintenance import prune_store_history
 
     profile = _load_deployment_profile(args.name)
-    service = deployment_service_status(args.name)
-    restart_after = service.get("state") in {"running", "restarting"}
-    needs_stop = service.get("state") not in {"not-loaded", "completed"}
-    lifecycle = argparse.Namespace(
-        name=args.name,
-        dry_run=False,
-        enable=False,
-        skip_readiness=False,
-    )
-    if needs_stop:
-        print("Stopping the deployment so compaction can take the write lock.")
-        _deployment_lifecycle_command(lifecycle, "stop")
-
     store = profile.get("store")
     if store:
-        outcome = compact_store(str(store))
+        outcome = prune_store_history(str(store), keep=args.keep_history)
         print(f"Store {store}")
-        print(f"  removed events: {outcome.deleted_total}")
+        print(f"  removed history rows: {outcome.removed_rows}")
         print(
             "  reclaimed bytes: "
             f"{max(0, outcome.before_bytes - outcome.after_bytes)}"
         )
-        if outcome.plan.roles_without_snapshot:
-            blocked = ", ".join(outcome.plan.roles_without_snapshot)
-            print(
-                f"  nothing collectable for: {blocked} "
-                "(no snapshot, so their events are still needed)"
-            )
 
     try:
         logs = compact_deployment_logs(
@@ -1981,9 +1968,6 @@ def _compact_command(args) -> int:
             f"  removed archives: {logs.removed_archives} "
             f"({logs.removed_archive_bytes} bytes)"
         )
-    if restart_after:
-        print("Restarting the deployment.")
-        return _deployment_lifecycle_command(lifecycle, "start")
     return 0
 
 
@@ -4002,9 +3986,10 @@ def _parse_cli_args(
 
     deploy_compact = deploy_sub.add_parser(
         "compact",
-        help="reclaim space in a stopped deployment's store and logs",
+        help="drop optional history and rotate logs",
     )
     deploy_compact.add_argument("--keep-archives", type=int, default=3, help="How many rotated log archives to retain. Default 3.")
+    deploy_compact.add_argument("--keep-history", type=int, default=0, help="How many history rows to retain. Default 0, meaning drop all of it.")
 
     deploy_logs = deploy_sub.add_parser("logs", help="show logs for a deployment")
     deploy_logs.add_argument("--tail", type=int, default=80, help="Number of log lines to show.")

@@ -1,10 +1,8 @@
-"""End-to-end integration tests for the durable-deploy hardening feature:
-at-least-once external-effect semantics on a crash before the journal commit,
-that a blocking external act does not hold the SQLite write lock, and a real
-two-process parallel `kill -9` resume.
+"""End-to-end durable behaviour, including a real two-process `kill -9`.
 
-Cross-restart memoization of an external act is covered separately in
-tests/test_serve_journal.py::test_external_act_memoized_across_restart.
+Three properties: an external action whose result never committed runs again on
+restart, a blocking external action does not hold the SQLite write lock, and a
+SIGKILLed role resumes from its committed state without redoing committed work.
 """
 import json
 import os
@@ -42,41 +40,56 @@ def solo(n: int @ A):
     return label @ A
 
 
-def test_at_least_once_replays_act_on_crash_before_commit(tmp_path, monkeypatch):
-    """Crash after the external call returns but before the act row commits ->
-    on restart the act re-executes (at-least-once); final state is correct and
-    the log holds exactly one committed act row."""
+def test_an_external_action_runs_again_when_its_result_did_not_commit(
+    tmp_path, monkeypatch
+):
+    """The documented weaker guarantee, at the real commit boundary.
+
+    The model call returns, then the process dies before the transaction that
+    would record the result and advance the control state. On restart the
+    control state still points at the action, so it runs a second time.
+    """
+
     path = str(tmp_path / "s.sqlite")
     calls = {"n": 0}
 
     def backend(action, inputs):
         calls["n"] += 1
-        return {"label": 42}                          # deterministic result
+        return {"label": 42}
 
     la = project(solo, A)
 
-    # First attempt: raise right after record_act's INSERT, before COMMIT persists.
-    orig_record = store_mod.DurableChannel.record_act
+    import zippergen.role_runner as role_runner_mod
 
-    def crash_record(self, payload):
-        orig_record(self, payload)                    # INSERT into the open txn
-        raise sqlite3.OperationalError("simulated crash before act commit")
+    real_write = role_runner_mod.write_role_state
+    crashed = {"done": False}
 
-    monkeypatch.setattr(store_mod.DurableChannel, "record_act", crash_record)
+    def crash_once(conn, role, **kwargs):
+        # Let the initial state write through, then die on the commit that
+        # would record the model's answer.
+        if not crashed["done"] and kwargs.get("seq", 0) > 0:
+            crashed["done"] = True
+            raise sqlite3.OperationalError("simulated crash before commit")
+        return real_write(conn, role, **kwargs)
+
+    monkeypatch.setattr(role_runner_mod, "write_role_state", crash_once)
 
     conn1 = open_store(path)
     with pytest.raises(sqlite3.OperationalError):
         run_role(conn1, "A", la, {"n": 1}, solo.ns, llm_backend=backend)
-    conn1.close()                                     # release the uncommitted txn's lock
-    assert calls["n"] == 1
+    conn1.close()
+    assert calls["n"] == 1, "the model was called"
 
-    # Restart cleanly: the act row was never committed -> re-execute, then finish.
-    monkeypatch.setattr(store_mod.DurableChannel, "record_act", orig_record)
+    state = open_store(path).execute(
+        "SELECT env FROM role_state WHERE role='A'"
+    ).fetchone()
+    assert "label" not in json.loads(state[0]), "but nothing recorded its answer"
+
+    monkeypatch.setattr(role_runner_mod, "write_role_state", real_write)
     env = run_role(open_store(path), "A", la, {"n": 1}, solo.ns, llm_backend=backend)
-    assert calls["n"] == 2 and env["label"] == 42
-    acts = open_store(path).execute(
-        "SELECT COUNT(*) FROM events WHERE sender='A' AND kind='act'").fetchone()[0]
-    assert acts == 1                                  # exactly one committed act row
+
+    assert calls["n"] == 2, "so it is called again; this is the documented rule"
+    assert env["label"] == 42
 
 
 def test_blocking_external_act_does_not_hold_write_lock(tmp_path):
@@ -97,8 +110,10 @@ def test_blocking_external_act_does_not_hold_write_lock(tmp_path):
     assert started.wait(timeout=5)                    # A is now inside the slow act
     other = open_store(path)
     other.execute("BEGIN IMMEDIATE")                  # would block/raise if A held the lock
-    other.execute("INSERT INTO events(sender,receiver,channel,kind,payload,causal_stamp)"
-                  " VALUES('B',NULL,NULL,'msg','[1]',NULL)")
+    other.execute(
+        "INSERT INTO outstanding_messages(sender,receiver,channel,payload)"
+        " VALUES('B','C','main','[1]')"
+    )
     other.execute("COMMIT")
     t.join(timeout=10)
     assert not t.is_alive()

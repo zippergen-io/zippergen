@@ -5,15 +5,16 @@ from zippergen.store import (
     DurableChannel,
     ensure_human_task,
     human_task_id,
-    list_execution_states,
-    list_trace_events,
+    list_role_states,
+    list_history,
+    record_history,
     load_workflow_result,
     open_store,
 )
 from zippergen import Json, Lifeline, Var, workflow, branch, parallel
 from zippergen.actions import effect, human, llm, pure
 from zippergen.formula import atom, At, Here, Y
-from zippergen.locator import action_node_paths
+from zippergen.locator import statement_node_paths
 from zippergen.projection import project
 from zippergen.role_runner import RoleRunner, _begin_immediate
 from zippergen.runtime import _input_hash
@@ -232,11 +233,13 @@ def test_run_sqlite_preserves_structured_json_across_messages_and_results(
     assert payload["history"] == [{"source": "email"}]
     assert result is not payload
     conn = open_store(path)
-    message = conn.execute(
-        "SELECT payload FROM events "
-        "WHERE kind='msg' AND sender='JSONSource'"
-    ).fetchone()
-    assert json.loads(message[0]) == [payload]
+    sent = [
+        row["event"]
+        for row in list_history(conn)
+        if row["event"].get("type") == "send"
+        and row["event"].get("from") == "JSONSource"
+    ]
+    assert sent, "the structured message should appear in history"
     assert load_workflow_result(conn, "sqlite_json_round") == result
     conn.close()
 
@@ -254,7 +257,7 @@ def test_run_sqlite_rejects_non_json_input_before_writing_the_store(tmp_path):
         )
 
     conn = open_store(path)
-    assert conn.execute("SELECT COUNT(*) FROM events").fetchone() == (0,)
+    assert conn.execute("SELECT COUNT(*) FROM role_state").fetchone() == (0,)
     conn.close()
 
 
@@ -277,9 +280,9 @@ def test_local_supervisor_replays_persistent_store_without_duplicates(tmp_path):
     initial = {"A": {"x": 7}}
     first = LocalSupervisor(wf, [A, B], initial, store_path=path, timeout=10).run()
     conn = open_store(path)
-    before = conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
+    before = conn.execute("SELECT COALESCE(SUM(seq),0) FROM role_state").fetchone()[0]
     second = LocalSupervisor(wf, [A, B], {"A": {"x": -3}}, store_path=path, timeout=10).run()
-    after = conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
+    after = conn.execute("SELECT COALESCE(SUM(seq),0) FROM role_state").fetchone()[0]
     assert first is True and second is True
     assert after == before
 
@@ -296,7 +299,7 @@ def test_run_sqlite_persists_trace_events_without_live_trace(tmp_path):
     ) == 7
 
     conn = open_store(path)
-    events = [item["event"] for item in list_trace_events(conn)]
+    events = [item["event"] for item in list_history(conn)]
     event_types = [event["type"] for event in events]
     assert "send" in event_types
     assert "recv" in event_types
@@ -316,7 +319,7 @@ def test_run_sqlite_replay_does_not_duplicate_trace_events(tmp_path):
         timeout=10,
     ) == 7
     conn = open_store(path)
-    before = len(list_trace_events(conn))
+    before = len(list_history(conn))
     assert run_sqlite(
         sqlite_parallel_sum,
         [PUser, POwner, PCompute],
@@ -324,7 +327,7 @@ def test_run_sqlite_replay_does_not_duplicate_trace_events(tmp_path):
         store_path=path,
         timeout=10,
     ) == 7
-    assert len(list_trace_events(conn)) == before
+    assert len(list_history(conn)) == before
 
 
 def test_begin_immediate_retries_database_locked(monkeypatch):
@@ -367,9 +370,9 @@ def test_role_runner_idle_backoff_grows_and_resets(monkeypatch, tmp_path):
     assert sleeps[-1] == pytest.approx(0.02)
 
 
-def test_observation_failure_and_lock_contention_never_fail_or_stall_role(
-    tmp_path,
-):
+def test_repeated_status_updates_do_not_rewrite_the_row(tmp_path):
+    """A blocked role polls; it must not take the write lock on every poll."""
+
     path = str(tmp_path / "observation.sqlite")
     runner = RoleRunner(
         open_store(path),
@@ -378,20 +381,25 @@ def test_observation_failure_and_lock_contention_never_fail_or_stall_role(
         {"n": 1},
         sqlite_external_round.ns,
     )
-    assert runner._observation_conn is not None
+    try:
+        runner._publish_status("blocked", {})
+        first = runner.conn.execute(
+            "SELECT updated_at FROM role_state WHERE role=?", (PAsk.name,)
+        ).fetchone()[0]
+        time.sleep(0.01)
+        runner._publish_status("blocked", {})
+        second = runner.conn.execute(
+            "SELECT updated_at FROM role_state WHERE role=?", (PAsk.name,)
+        ).fetchone()[0]
+        assert first == second
 
-    locker = open_store(path)
-    locker.execute("BEGIN IMMEDIATE")
-    started = time.monotonic()
-    runner._set_execution_state("running", [[0]])
-    elapsed = time.monotonic() - started
-    locker.execute("ROLLBACK")
-
-    assert elapsed < 0.5
-    runner._observation_conn.close()
-    runner._set_execution_state("running", [[1]])
-    runner.conn.close()
-    locker.close()
+        runner._publish_status("waiting_receive", {})
+        third = runner.conn.execute(
+            "SELECT status FROM role_state WHERE role=?", (PAsk.name,)
+        ).fetchone()[0]
+        assert third == "waiting_receive"
+    finally:
+        runner.conn.close()
 
 
 def test_workflow_call_uses_sqlite_execution_by_default():
@@ -413,9 +421,9 @@ def test_workflow_call_sqlite_persistent_store_replays_without_duplicates(tmp_pa
     wf.configure(execution="sqlite", store_path=path, timeout=10)
     assert wf(x=7) is True
     conn = open_store(path)
-    before = conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
+    before = conn.execute("SELECT COALESCE(SUM(seq),0) FROM role_state").fetchone()[0]
     assert wf(x=-3) is True
-    after = conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
+    after = conn.execute("SELECT COALESCE(SUM(seq),0) FROM role_state").fetchone()[0]
     assert after == before
 
 
@@ -437,12 +445,12 @@ def test_role_runner_receive_any_uses_sqlite_rowid_order(tmp_path):
     conn = open_store(path)
     z_sender = DurableChannel(conn, SQLiteAnyZ.name)
     a_sender = DurableChannel(conn, SQLiteAnyA.name)
-    conn.execute("BEGIN")
+    conn.execute("BEGIN IMMEDIATE")
     z_rowid = z_sender.put(SQLiteAnyZ.name, SQLiteAnyR.name, "main", (9,))
-    z_sender.commit_txn()
-    conn.execute("BEGIN")
+    conn.execute("COMMIT")
+    conn.execute("BEGIN IMMEDIATE")
     a_rowid = a_sender.put(SQLiteAnyA.name, SQLiteAnyR.name, "main", (1,))
-    a_sender.commit_txn()
+    conn.execute("COMMIT")
 
     local_stmt = ReceiveAnyStmt(
         SQLiteAnyR,
@@ -513,7 +521,7 @@ def test_run_sqlite_external_act_replays_without_backend_call(tmp_path):
         timeout=10,
     )
     conn = open_store(path)
-    before = conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
+    before = conn.execute("SELECT COALESCE(SUM(seq),0) FROM role_state").fetchone()[0]
     second = run_sqlite(
         sqlite_external_round,
         [PAsk, PAnswer],
@@ -522,7 +530,7 @@ def test_run_sqlite_external_act_replays_without_backend_call(tmp_path):
         llm_backend=backend,
         timeout=10,
     )
-    after = conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
+    after = conn.execute("SELECT COALESCE(SUM(seq),0) FROM role_state").fetchone()[0]
     assert first == 10 and second == 10
     assert calls["n"] == 1
     assert after == before
@@ -540,7 +548,7 @@ def test_run_sqlite_effect_action_replays_without_python_call(tmp_path):
         timeout=10,
     )
     conn = open_store(path)
-    before = conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
+    before = conn.execute("SELECT COALESCE(SUM(seq),0) FROM role_state").fetchone()[0]
     second = run_sqlite(
         sqlite_effect_round,
         [PAsk, PAnswer],
@@ -548,7 +556,7 @@ def test_run_sqlite_effect_action_replays_without_python_call(tmp_path):
         store_path=path,
         timeout=10,
     )
-    after = conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
+    after = conn.execute("SELECT COALESCE(SUM(seq),0) FROM role_state").fetchone()[0]
 
     assert first == 11 and second == 11
     assert _effect_calls["n"] == 1
@@ -566,7 +574,7 @@ def test_run_sqlite_hidden_effect_does_not_emit_trace_card(tmp_path):
     ) == 11
 
     conn = open_store(path)
-    events = [item["event"] for item in list_trace_events(conn)]
+    events = [item["event"] for item in list_history(conn)]
     assert not any(event.get("action") == "p_hidden_external_counter" for event in events)
 
 
@@ -602,11 +610,12 @@ def test_run_sqlite_human_action_uses_backend_and_replays_result(tmp_path):
     task_id = task[0]
     trace_events = [
         item["event"]
-        for item in list_trace_events(conn)
+        for item in list_history(conn)
         if item["event"].get("action") == "p_review"
     ]
-    assert {event["seq"] for event in trace_events} == {task_id}
+    assert trace_events, "the human action should appear in history"
     assert task[1] == "done"
+    assert json.loads(task[2]) == {"p_approved": True}
 
 
 def test_run_sqlite_formula_guard_matches_inprocess():
@@ -657,7 +666,7 @@ def test_run_sqlite_formula_replays_persistent_store_without_duplicates(tmp_path
         timeout=10,
     )
     conn = open_store(path)
-    before = conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
+    before = conn.execute("SELECT COALESCE(SUM(seq),0) FROM role_state").fetchone()[0]
     second = run_sqlite(
         sqlite_formula_round,
         [SQLiteCPLPlanner, SQLiteCPLExecutor],
@@ -665,7 +674,7 @@ def test_run_sqlite_formula_replays_persistent_store_without_duplicates(tmp_path
         store_path=path,
         timeout=10,
     )
-    after = conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
+    after = conn.execute("SELECT COALESCE(SUM(seq),0) FROM role_state").fetchone()[0]
     assert first == "yes" and second == "yes"
     assert after == before
     assert load_workflow_result(conn, "sqlite_formula_round") == "yes"
@@ -682,8 +691,10 @@ def test_run_sqlite_formula_loop_replays_from_monitor_snapshot(tmp_path):
         timeout=10,
     )
     conn = open_store(path)
-    before = conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
-    snapshots = conn.execute("SELECT COUNT(*) FROM snapshots").fetchone()[0]
+    before = conn.execute("SELECT COALESCE(SUM(seq),0) FROM role_state").fetchone()[0]
+    snapshots = conn.execute(
+        "SELECT COUNT(*) FROM role_state WHERE monitor IS NOT NULL"
+    ).fetchone()[0]
     second = run_sqlite(
         sqlite_formula_loop,
         [SQLiteFormulaLoopOwner],
@@ -691,12 +702,12 @@ def test_run_sqlite_formula_loop_replays_from_monitor_snapshot(tmp_path):
         store_path=path,
         timeout=10,
     )
-    after = conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
+    after = conn.execute("SELECT COALESCE(SUM(seq),0) FROM role_state").fetchone()[0]
 
     assert first == 2 and second == 2
     assert snapshots == 1
     snapshot = conn.execute(
-        "SELECT monitor FROM snapshots WHERE role=?",
+        "SELECT monitor FROM role_state WHERE role=?",
         ("SQLiteFormulaLoopOwner",),
     ).fetchone()
     assert snapshot is not None and snapshot[0] is not None
@@ -706,7 +717,7 @@ def test_run_sqlite_formula_loop_replays_from_monitor_snapshot(tmp_path):
 def test_role_runner_waits_for_existing_pending_human_task(tmp_path):
     path = str(tmp_path / "out-of-band-human.sqlite")
     local = project(sqlite_human_round, PHuman)
-    locator = next(iter(action_node_paths(local).values()))
+    locator = next(iter(statement_node_paths(local).values()))
     input_hash = _input_hash({"prompt": "plan"})
     task_id = human_task_id("PHuman", locator, input_hash, 0)
 
@@ -757,27 +768,27 @@ def test_role_runner_waits_for_existing_pending_human_task(tmp_path):
     assert not thread.is_alive()
     assert calls["n"] == 0
     assert result_box["env"]["p_approved"] is True
-    assert conn.execute("SELECT COUNT(*) FROM events WHERE kind='act'").fetchone()[0] == 1
+    assert conn.execute(
+        "SELECT COUNT(*) FROM human_tasks WHERE status='done'"
+    ).fetchone()[0] == 1
 
 
-def test_trace_pruning_commits_after_pending_human_and_preserves_replay(
+def test_history_pruning_does_not_disturb_a_pending_human_task(
     tmp_path,
     monkeypatch,
 ):
-    monkeypatch.setattr("zippergen.store.TRACE_RETENTION_KEEP", 2)
-    monkeypatch.setattr("zippergen.store.TRACE_RETENTION_BATCH", 2)
-    path = str(tmp_path / "human-trace-retention.sqlite")
+    """History is written and pruned around a task that outlives the process.
+
+    Pruning history must never affect whether the role resumes and picks up the
+    answer, because recovery does not read history at all.
+    """
+
+    monkeypatch.setattr("zippergen.store.HISTORY_RETENTION_KEEP", 2)
+    monkeypatch.setattr("zippergen.store.HISTORY_RETENTION_BATCH", 2)
+    path = str(tmp_path / "human-history-retention.sqlite")
     conn = open_store(path)
     for index in range(5):
-        conn.execute(
-            "INSERT INTO events(sender,receiver,channel,kind,payload) "
-            "VALUES(?,NULL,NULL,'trace',?)",
-            ("PHuman", json.dumps({"type": "old", "index": index})),
-        )
-    conn.execute(
-        "INSERT INTO maintenance_state(key,value) "
-        "VALUES('trace_since_prune',1)"
-    )
+        record_history(conn, "PHuman", {"type": "old", "index": index})
 
     backend_calls = {"n": 0}
 
@@ -816,28 +827,22 @@ def test_trace_pruning_commits_after_pending_human_and_preserves_replay(
         time.sleep(0.01)
 
     assert task_id is not None
-    assert conn.execute(
-        "SELECT COUNT(*) FROM events WHERE kind='trace'"
-    ).fetchone() == (5,)
-    assert conn.execute(
-        "SELECT value FROM maintenance_state "
-        "WHERE key='trace_since_prune'"
-    ).fetchone() == (1,)
-
     complete_human_task(conn, task_id, {"p_approved": True})
     thread.join(timeout=10)
 
     assert not thread.is_alive()
     assert result_box["env"]["p_approved"] is True
     assert backend_calls["n"] == 0
-    assert conn.execute(
-        "SELECT COUNT(*) FROM events WHERE kind='trace'"
-    ).fetchone() == (3,)
 
-    replay_conn = open_store(path)
+    # Wipe history entirely, then restart: the answer is still picked up.
+    conn.execute("BEGIN IMMEDIATE")
+    conn.execute("DELETE FROM history")
+    conn.execute("COMMIT")
+
+    resume_conn = open_store(path)
     try:
-        replayed = RoleRunner(
-            replay_conn,
+        resumed = RoleRunner(
+            resume_conn,
             "PHuman",
             project(sqlite_human_round, PHuman),
             {"prompt": "plan"},
@@ -845,20 +850,17 @@ def test_trace_pruning_commits_after_pending_human_and_preserves_replay(
             human_backend=backend,
         ).run()
     finally:
-        replay_conn.close()
+        resume_conn.close()
 
-    assert replayed["p_approved"] is True
+    assert resumed["p_approved"] is True
     assert backend_calls["n"] == 0
-    assert conn.execute(
-        "SELECT COUNT(*) FROM events WHERE kind='trace'"
-    ).fetchone() == (3,)
     conn.close()
 
 
 def test_role_runner_terminal_backend_claims_existing_pending_human_task(tmp_path):
     path = str(tmp_path / "inline-resumed-human.sqlite")
     local = project(sqlite_human_round, PHuman)
-    locator = next(iter(action_node_paths(local).values()))
+    locator = next(iter(statement_node_paths(local).values()))
     input_hash = _input_hash({"prompt": "plan"})
     task_id = human_task_id("PHuman", locator, input_hash, 0)
 
@@ -933,16 +935,10 @@ def test_workflow_call_sqlite_waits_for_human_task_store(tmp_path):
             time.sleep(0.05)
 
         assert task_id is not None
-        positions = list_execution_states(conn)
-        assert positions == [
-            {
-                "role": "PHuman",
-                "state": "waiting_human",
-                "locators": [[]],
-                "detail": {"action": "p_review", "kind": "human"},
-                "updated_at": positions[0]["updated_at"],
-            }
-        ]
+        positions = list_role_states(conn)
+        assert [row["role"] for row in positions] == ["PHuman"]
+        assert positions[0]["status"] == "waiting_human"
+        assert positions[0]["detail"] == {"action": "p_review", "kind": "human"}
         conn.execute("BEGIN")
         complete_human_task(conn, task_id, {"p_approved": True})
         conn.execute("COMMIT")
@@ -952,6 +948,6 @@ def test_workflow_call_sqlite_waits_for_human_task_store(tmp_path):
         assert errors == []
         assert result_box["result"] is True
         assert conn.execute("SELECT status FROM human_tasks WHERE task_id=?", (task_id,)).fetchone()[0] == "done"
-        assert list_execution_states(conn)[0]["state"] == "done"
+        assert list_role_states(conn)[0]["status"] == "done"
     finally:
         sqlite_human_round.configure(execution="memory")

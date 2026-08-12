@@ -6,9 +6,10 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
+from zippergen.control import ControlError, decode_control, frontier_paths
 from zippergen.locator import resolve_path
 from zippergen.projection import project
-from zippergen.store import list_execution_states
+from zippergen.store import list_role_states
 from zippergen.syntax import Workflow, _ordered_workflow_lifelines
 from zippergen.view import describe_local_statement
 
@@ -54,7 +55,7 @@ _FOCUS_PRIORITY = {
 
 
 def read_execution_states(path: str | Path) -> list[dict]:
-    """Read observation rows without creating or migrating a missing store."""
+    """Read durable role state without creating or migrating a missing store."""
 
     store = Path(path).expanduser()
     if not store.is_file():
@@ -62,7 +63,7 @@ def read_execution_states(path: str | Path) -> list[dict]:
     connection = sqlite3.connect(f"file:{store.resolve()}?mode=ro", uri=True)
     try:
         try:
-            return list_execution_states(connection)
+            return list_role_states(connection)
         except sqlite3.OperationalError as exc:
             if "no such table" in str(exc).lower():
                 return []
@@ -97,13 +98,16 @@ def participant_positions(
                 )
             )
             continue
-        raw_locators = row.get("locators")
-        locators = tuple(
-            tuple(int(index) for index in path)
-            for path in raw_locators
-            if isinstance(path, list)
-        ) if isinstance(raw_locators, list) else ()
+        # The control state is the position, so derive the display from it
+        # rather than storing the same fact twice.
         local = project(workflow, lifeline)
+        try:
+            residual = decode_control(local, row.get("control") or {})
+            locators = tuple(
+                tuple(path) for path in frontier_paths(local, residual)
+            )
+        except ControlError:
+            locators = ()
         descriptions = []
         for locator in locators:
             node = resolve_path(local, list(locator))
@@ -118,7 +122,7 @@ def participant_positions(
         safe_detail = detail if isinstance(detail, dict) else {}
         if descriptions:
             location = " · ".join(descriptions)
-        elif row.get("state") == "done":
+        elif row.get("status") == "done":
             location = "end of local program"
         elif safe_detail.get("action"):
             location = f"action {safe_detail['action']}"
@@ -127,7 +131,7 @@ def participant_positions(
         positions.append(
             ParticipantPosition(
                 participant=lifeline.name,
-                state=str(row.get("state") or "not_started"),
+                state=str(row.get("status") or "not_started"),
                 locators=locators,
                 location=location,
                 updated_at=(

@@ -706,7 +706,7 @@ def test_monitor_trace_includes_vector_clock_metadata():
 
 
 # ---------------------------------------------------------------------------
-# Durable mode: PendingExternal + _step journal path
+# Durable mode: external acts surface as PendingExternal, decisions are local
 # ---------------------------------------------------------------------------
 
 from zippergen.runtime import _step, PendingExternal, mock_llm
@@ -716,146 +716,105 @@ from zippergen.actions import pure
 A = Lifeline("A")
 _x = Var("x", int); _y = Var("y", int); _z = Var("z", int)
 
+
 @pure
 def inc(x: int) -> int:
     return x + 1
 
+
 def _llm_act():
-    # Construct the LLMAction IR node directly (no @llm decorator needed for a unit test).
     from zippergen.syntax import LLMAction
     action = LLMAction("ask", (("x", int),), (("y", int),), "s", "{x}", "text")
     return ActStmt(A, action, (VarExpr(_x),), (_y,))
 
-def _llm_act_output(name: str, output: Var):
-    from zippergen.syntax import LLMAction
-    action = LLMAction(name, (("x", int),), ((output.name, int),), "s", "{x}", "text")
-    return ActStmt(A, action, (VarExpr(_x),), (output,))
 
-class _FakeJournal:
-    def __init__(self, channel, act_paths):
-        self.channel = channel; self.act_paths = act_paths
-
-class _FakeChannel:
-    def __init__(self, result=None):
-        self._result = result
-    def consume_journal(self, kind, locator, input_hash=None, *, strict=True):
-        return self._result
-
-def test_step_external_act_live_returns_pending():
+def test_step_external_act_returns_pending_and_touches_nothing():
     act = _llm_act()
-    j = _FakeJournal(_FakeChannel(result=None), {id(act): [0]})
     env = {"x": 5}
-    out, progressed = _step(act, env, None, {}, mock_llm, None, None, None, {}, None, journal=j)
+    out, progressed = _step(
+        act, env, None, {}, mock_llm, None, None, None, {}, None, durable=True
+    )
     assert isinstance(out, PendingExternal) and out.node is act
     assert out.inputs == {"x": 5} and progressed is False
-    assert env == {"x": 5}                       # nothing mutated
+    assert env == {"x": 5}
+
+
+def test_a_resolved_external_act_applies_its_outputs_and_advances():
+    """The driver runs the action outside the transaction, then hands back the
+    result so applying it and moving on happen in one commit."""
+
+    act = _llm_act()
+    env = {"x": 5}
+
+    def boom(*a, **k):
+        raise AssertionError("the backend must not be called again")
+
+    out, progressed = _step(
+        act, env, None, {}, boom, None, None, None, {}, None,
+        durable=True, resolved={id(act): {"y": 99}},
+    )
+    from zippergen.syntax import EmptyStmt
+    assert progressed is True and isinstance(out, EmptyStmt)
+    assert env["y"] == 99
+
 
 def test_parallel_branch_pending_external_propagates():
-    # A live external act at a parallel branch head must surface as PendingExternal
-    # from the ParallelLocalStmt step (durable mode), not be swallowed.
     from zippergen.syntax import ParallelLocalStmt
     act = _llm_act()
     region = ParallelLocalStmt((act,), (0,))
-    j = _FakeJournal(_FakeChannel(result=None), {id(act): [0]})
     env = {"x": 5}
-    out, progressed = _step(region, env, None, {}, mock_llm, None, None, None, {}, None, journal=j)
+    out, progressed = _step(
+        region, env, None, {}, mock_llm, None, None, None, {}, None, durable=True
+    )
     assert isinstance(out, PendingExternal) and out.node is act
-    assert progressed is False and env == {"x": 5}   # propagated up, nothing mutated
+    assert progressed is False and env == {"x": 5}
 
-def test_step_external_act_replay_consumes_no_backend():
-    act = _llm_act()
-    result = {"status": "done", "locator": [0], "outputs": {"y": 99}}
-    j = _FakeJournal(_FakeChannel(result=result), {id(act): [0]})
-    env = {"x": 5}
-    def boom(*a, **k):  # backend must NOT be called on replay
-        raise AssertionError("backend called during replay")
-    out, progressed = _step(act, env, None, {}, boom, None, None, None, {}, None, journal=j)
-    assert progressed is True and env["y"] == 99
-
-def test_parallel_external_replay_matches_journal_rows_by_locator():
-    from zippergen.syntax import ParallelLocalStmt, EmptyStmt
-
-    class _MatchingChannel:
-        def __init__(self, rows):
-            self.rows = list(rows)
-            self.seen: set[int] = set()
-            self.calls = []
-
-        def consume_journal(self, kind, locator, input_hash=None, *, strict=True):
-            self.calls.append((kind, list(locator), strict))
-            for i, row in enumerate(self.rows):
-                if i in self.seen:
-                    continue
-                if row["kind"] == kind and row["locator"] == locator:
-                    self.seen.add(i)
-                    return row
-            return None
-
-    act0 = _llm_act_output("ask_y", _y)
-    act1 = _llm_act_output("ask_z", _z)
-    region = ParallelLocalStmt((act0, act1), (0, 1))
-    channel = _MatchingChannel([
-        {"kind": "act", "status": "done", "locator": [1], "outputs": {"z": 1}},
-        {"kind": "act", "status": "done", "locator": [0], "outputs": {"y": 2}},
-    ])
-    j = _FakeJournal(channel, {id(act0): [0], id(act1): [1]})
-    env = {"x": 5}
-
-    out, progressed = _step(region, env, None, {}, mock_llm, None, None, None, {}, None, journal=j)
-    assert progressed is True and env["y"] == 2
-    assert isinstance(out, ParallelLocalStmt)
-
-    out, progressed = _step(out, env, None, {}, mock_llm, None, None, None, {}, None, journal=j)
-    assert progressed is True and env["z"] == 1
-    assert isinstance(out, EmptyStmt)
-    assert channel.calls == [("act", [0], False), ("act", [1], False)]
 
 def test_step_pure_act_inline_even_in_durable_mode():
     act = ActStmt(A, inc, (VarExpr(_x),), (_y,))
-    j = _FakeJournal(_FakeChannel(result=None), {id(act): [0]})
     from zippergen.channels import InProcessChannel
     env = {"x": 5}
-    out, progressed = _step(act, env, InProcessChannel(), {}, mock_llm, None, None, None, {}, None, journal=j)
-    assert progressed is True and env["y"] == 6  # pure recomputed, not journaled
+    out, progressed = _step(
+        act, env, InProcessChannel(), {}, mock_llm, None, None, None, {}, None,
+        durable=True,
+    )
+    assert progressed is True and env["y"] == 6
 
 
 # ---------------------------------------------------------------------------
-# Durable mode: owner IfStmt/WhileStmt decision journaling
+# Durable mode: an owner decision is just evaluated, never journaled
 # ---------------------------------------------------------------------------
 
 from zippergen.syntax import IfStmt, SkipStmt
 
 
-class _RecordingChannel:
-    def __init__(self, result=None):
-        self._result = result; self.decided = None
-    def consume_journal(self, kind, locator, input_hash=None, *, strict=True):
-        return self._result
-    def record_decision(self, payload):
-        self.decided = payload; return 1
-
-def test_owner_decision_live_journals_and_uses_value():
+def test_owner_decision_is_evaluated_locally_in_durable_mode():
     t, f = SkipStmt(A), SkipStmt(Lifeline("B"))
     node = IfStmt(condition=lambda _e: True, owner=A, branch_true=t, branch_false=f)
-    ch = _RecordingChannel(result=None)
-    j = _FakeJournal(ch, {id(node): [7]})
-    out, progressed = _step(node, {}, None, {}, mock_llm, None, None, None, {}, None, journal=j)
+    out, progressed = _step(
+        node, {}, None, {}, mock_llm, None, None, None, {}, None, durable=True
+    )
     assert progressed is True and out is t
-    assert ch.decided == {"status": "done", "locator": [7], "value": True}
 
-def test_owner_decision_replay_uses_recorded_value_no_guard():
+
+def test_owner_decision_is_recomputed_after_a_restart():
+    """Deterministic guards need nothing durable: re-evaluating gives the same
+    branch, because the variables it reads are the committed ones."""
+
     t, f = SkipStmt(A), SkipStmt(Lifeline("B"))
-    def boom(_e):
-        raise AssertionError("guard evaluated during replay")
-    node = IfStmt(condition=boom, owner=A, branch_true=t, branch_false=f)
-    ch = _RecordingChannel(result={"status": "done", "locator": [7], "value": False})
-    j = _FakeJournal(ch, {id(node): [7]})
-    out, progressed = _step(node, {}, None, {}, mock_llm, None, None, None, {}, None, journal=j)
-    assert progressed is True and out is f      # recorded False, guard never called
+    node = IfStmt(
+        condition=lambda e: e.flag, owner=A, branch_true=t, branch_false=f
+    )
+    for _attempt in range(3):
+        out, progressed = _step(
+            node, {"flag": False}, None, {}, mock_llm, None,
+            None, None, {}, None, durable=True,
+        )
+        assert progressed is True and out is f
 
 
 # ---------------------------------------------------------------------------
-# Durable mode: ParallelLocalStmt as a true single step
+# Durable mode: ParallelLocalStmt is a true single step
 # ---------------------------------------------------------------------------
 
 from zippergen.syntax import ParallelLocalStmt, SkipStmt as _Skip, SeqStmt
@@ -865,28 +824,33 @@ def test_parallel_durable_single_step_advances_one_branch():
     b0 = SeqStmt(_Skip(A), _Skip(A))
     b1 = _Skip(A)
     region = ParallelLocalStmt((b0, b1), (0, 1))
-    j = _FakeJournal(_FakeChannel(result=None), {})
-    out, progressed = _step(region, {}, None, {}, mock_llm, None, None, None, {}, None, journal=j)
+    out, progressed = _step(
+        region, {}, None, {}, mock_llm, None, None, None, {}, None, durable=True
+    )
     assert progressed is True and isinstance(out, ParallelLocalStmt)
-    # exactly one branch advanced; region not run to completion in one step
     assert out is not region
+
 
 def test_parallel_durable_completes_and_inprocess_delegates(monkeypatch):
     region = ParallelLocalStmt((_Skip(A),), (0,))
-    j = _FakeJournal(_FakeChannel(result=None), {})
-    out, progressed = _step(region, {}, None, {}, mock_llm, None, None, None, {}, None, journal=j)
+    out, progressed = _step(
+        region, {}, None, {}, mock_llm, None, None, None, {}, None, durable=True
+    )
     from zippergen.syntax import EmptyStmt
     assert isinstance(out, EmptyStmt) and progressed is True
-    # journal=None path must still call _exec (in-process behavior preserved)
+
+    # In-process mode must still delegate the whole region to _exec.
     called = {"exec": False}
     import zippergen.runtime as rt
     real_exec = rt._exec
+
     def spy(stmt, *a, **k):
         if isinstance(stmt, ParallelLocalStmt):
             called["exec"] = True
         return real_exec(stmt, *a, **k)
+
     monkeypatch.setattr(rt, "_exec", spy)
     from zippergen.channels import InProcessChannel
     rt._step(ParallelLocalStmt((_Skip(A),), (0,)), {}, InProcessChannel(), {},
-             mock_llm, None, None, None, {}, None, journal=None)
+             mock_llm, None, None, None, {}, None)
     assert called["exec"] is True
