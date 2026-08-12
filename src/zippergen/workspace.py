@@ -160,6 +160,13 @@ def _atomic_write_text(path: Path, value: str) -> None:
 
 
 def _toml_string(value: object) -> str:
+    if value is None:
+        # str(None) is the four-letter word "None", which TOML would happily
+        # store as a real value. An absent field must be an omitted key.
+        raise WorkspaceError(
+            "Cannot write an absent value into the project manifest. Omit the "
+            "key instead."
+        )
     return json.dumps(str(value), ensure_ascii=False)
 
 
@@ -559,10 +566,17 @@ class Workspace:
         lines = [
             "# Visible, versionable ZipperGen project configuration.",
             f"schema_version = {PROJECT_SCHEMA_VERSION}",
-            f"project_id = {_toml_string(manifest['project_id'])}",
+        ]
+        # A project made before project_id existed has none, and must keep none.
+        # The workspace key hashes this value, so writing a placeholder here, or
+        # backfilling a fresh id, would move the project to a different
+        # workspace directory and strand the credentials saved in the old one.
+        if manifest.get("project_id"):
+            lines.append(f"project_id = {_toml_string(manifest['project_id'])}")
+        lines.extend([
             f"name = {_toml_string(manifest['name'])}",
             f"specification_file = {_toml_string(manifest['specification_file'])}",
-        ]
+        ])
         if manifest.get("workflow_entry"):
             lines.append(
                 f"workflow_entry = {_toml_string(manifest['workflow_entry'])}"

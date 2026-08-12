@@ -247,6 +247,46 @@ def test_reinitializing_the_same_path_creates_a_new_private_identity(tmp_path):
     assert second.directory != first_directory
 
 
+def test_a_manifest_without_a_project_id_keeps_its_workspace_after_a_write(
+    tmp_path,
+):
+    """A project older than project_id must not be moved by a config write.
+
+    The workspace key hashes project_id, so writing anything in place of an
+    absent one, including the string "None", sends the project to a different
+    workspace directory and strands the credentials already saved there.
+
+    One write is enough to catch this. A placeholder is stable once stored, so
+    comparing two later writes to each other would pass on the broken code.
+    """
+
+    root = tmp_path / "project"
+    root.mkdir()
+    (root / "workflow.py").touch()
+    (root / "zippergen.toml").write_text(
+        'schema_version = 1\nname = "demo"\n'
+        'specification_file = "workflow.py"\n',
+        encoding="utf-8",
+    )
+    before = Workspace(root, home=tmp_path / "state").directory
+
+    Workspace(root, home=tmp_path / "state").save_model_configuration(
+        "writer",
+        {"spec": "openai:gpt-4o-mini", "provider": "openai"},
+    )
+
+    written = (root / "zippergen.toml").read_text(encoding="utf-8")
+    assert "project_id" not in written
+    assert Workspace(root, home=tmp_path / "state").directory == before
+
+
+def test_an_absent_manifest_value_is_never_written_as_text(tmp_path):
+    from zippergen.workspace import _toml_string
+
+    with pytest.raises(WorkspaceError):
+        _toml_string(None)
+
+
 def test_workspace_provider_configuration_keeps_secrets_private(tmp_path):
     root = tmp_path / "project"
     root.mkdir()
