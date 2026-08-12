@@ -38,7 +38,8 @@ CREATE TABLE IF NOT EXISTS events (
   sender       TEXT NOT NULL,
   receiver     TEXT,
   channel      TEXT,
-  kind         TEXT NOT NULL,       -- 'seed'|'msg'|'ctrl'|'act'|'decision'|'trace'|'effect'
+  kind         TEXT NOT NULL,       -- 'seed'|'msg'|'ctrl'|'act'|'decision'|'trace'
+                                    -- @effect results are recorded as 'act'.
   payload      BLOB,
   causal_stamp BLOB
 );
@@ -284,7 +285,7 @@ def backfill_recovery_high_water(conn) -> None:
     for role, out, journal in conn.execute(
         "SELECT sender, "
         "MAX(CASE WHEN kind IN ('msg','ctrl') THEN rowid ELSE 0 END), "
-        "MAX(CASE WHEN kind IN ('act','decision','effect') "
+        "MAX(CASE WHEN kind IN ('act','decision') "
         "THEN rowid ELSE 0 END) "
         "FROM events GROUP BY sender"
     ).fetchall():

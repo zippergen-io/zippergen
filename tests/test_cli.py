@@ -238,6 +238,7 @@ def test_compact_reports_removed_store_events_and_log_archives(
             deleted_total=12,
             before_bytes=4096,
             after_bytes=1024,
+            plan=SimpleNamespace(roles_without_snapshot=("Writer",)),
         ),
     )
     monkeypatch.setattr(
@@ -248,6 +249,10 @@ def test_compact_reports_removed_store_events_and_log_archives(
             removed_archive_bytes=768,
         ),
     )
+    monkeypatch.setattr(
+        "zippergen.deployment_platform.deployment_service_status",
+        lambda _name: {"state": "not-loaded", "detail": "no service"},
+    )
 
     assert main(["deploy", "compact", "--keep-archives", "1"]) == 0
 
@@ -255,6 +260,77 @@ def test_compact_reports_removed_store_events_and_log_archives(
     assert "removed events: 12" in output
     assert "reclaimed bytes: 3072" in output
     assert "removed archives: 2 (768 bytes)" in output
+    # A role with no snapshot blocks collection, so say so rather than let the
+    # operator conclude that compaction is broken.
+    assert "nothing collectable for: Writer" in output
+
+
+def test_compact_stops_a_running_deployment_and_restarts_it(
+    tmp_path, monkeypatch, capsys
+):
+    """Compaction deletes rows then VACUUMs, which fights live roles.
+
+    'deploy reset' already stops and restarts around its work. Compaction must
+    do the same: without it the store is vacuumed under the running service and
+    the log rotation then refuses outright, leaving the command half done.
+    """
+
+    from zippergen import deployments, serve, storage_maintenance
+
+    store = tmp_path / "run.sqlite"
+    home = tmp_path / "zg-home"
+    (home / "deployments").mkdir(parents=True)
+    name = Workspace(home=home).directory.name
+    (home / "deployments" / f"{name}.json").write_text(
+        json.dumps({"name": name, "source_cwd": str(Path.cwd()),
+                    "project_id": Workspace().project_manifest().get("project_id"),
+                    "store": str(store)})
+    )
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(home))
+    monkeypatch.setattr(
+        serve,
+        "_load_deployment_profile",
+        lambda _name: {
+            "store": str(store),
+            "source_cwd": str(Path.cwd()),
+            "project_id": Workspace().project_manifest().get("project_id"),
+        },
+    )
+    monkeypatch.setattr(
+        storage_maintenance,
+        "compact_store",
+        lambda _path: SimpleNamespace(
+            deleted_total=3,
+            before_bytes=2048,
+            after_bytes=1024,
+            plan=SimpleNamespace(roles_without_snapshot=()),
+        ),
+    )
+    monkeypatch.setattr(
+        deployments,
+        "compact_deployment_logs",
+        lambda _name, _profile, *, keep_archives: SimpleNamespace(
+            removed_archives=0,
+            removed_archive_bytes=0,
+        ),
+    )
+    monkeypatch.setattr(
+        "zippergen.deployment_platform.deployment_service_status",
+        lambda _name: {"state": "running", "detail": "service is running"},
+    )
+    lifecycle: list[str] = []
+    monkeypatch.setattr(
+        serve,
+        "_deployment_lifecycle_command",
+        lambda _args, action: lifecycle.append(action) or 0,
+    )
+
+    assert main(["deploy", "compact"]) == 0
+
+    assert lifecycle == ["stop", "start"]
+    output = capsys.readouterr().out
+    assert "Stopping the deployment" in output
+    assert "Restarting the deployment" in output
 
 
 def test_deploy_reset_archives_and_recreates_its_owned_store(

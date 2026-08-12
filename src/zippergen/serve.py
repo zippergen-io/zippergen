@@ -1925,12 +1925,32 @@ def _deployment_prune_command(args) -> int:
 
 
 def _compact_command(args) -> int:
-    """Reclaim space in a stopped deployment's durable store and logs."""
+    """Reclaim space in a deployment's durable store and logs.
 
+    Compaction deletes rows and then VACUUMs, which contends with the roles of a
+    live service. So it stops the service first and restarts it afterward, the
+    same lifecycle 'deploy reset' uses. Nothing here destroys recoverable state,
+    so it does not ask first, but it does say what it did.
+    """
+
+    from zippergen.deployment_platform import deployment_service_status
     from zippergen.deployments import DeploymentRemovalError, compact_deployment_logs
     from zippergen.storage_maintenance import compact_store
 
     profile = _load_deployment_profile(args.name)
+    service = deployment_service_status(args.name)
+    restart_after = service.get("state") in {"running", "restarting"}
+    needs_stop = service.get("state") not in {"not-loaded", "completed"}
+    lifecycle = argparse.Namespace(
+        name=args.name,
+        dry_run=False,
+        enable=False,
+        skip_readiness=False,
+    )
+    if needs_stop:
+        print("Stopping the deployment so compaction can take the write lock.")
+        _deployment_lifecycle_command(lifecycle, "stop")
+
     store = profile.get("store")
     if store:
         outcome = compact_store(str(store))
@@ -1940,6 +1960,12 @@ def _compact_command(args) -> int:
             "  reclaimed bytes: "
             f"{max(0, outcome.before_bytes - outcome.after_bytes)}"
         )
+        if outcome.plan.roles_without_snapshot:
+            blocked = ", ".join(outcome.plan.roles_without_snapshot)
+            print(
+                f"  nothing collectable for: {blocked} "
+                "(no snapshot, so their events are still needed)"
+            )
 
     try:
         logs = compact_deployment_logs(
@@ -1955,6 +1981,9 @@ def _compact_command(args) -> int:
             f"  removed archives: {logs.removed_archives} "
             f"({logs.removed_archive_bytes} bytes)"
         )
+    if restart_after:
+        print("Restarting the deployment.")
+        return _deployment_lifecycle_command(lifecycle, "start")
     return 0
 
 

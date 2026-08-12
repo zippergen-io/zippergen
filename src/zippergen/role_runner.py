@@ -100,7 +100,7 @@ def _floor_coherent(conn, role: str, floor: dict) -> bool:
         return False
     max_journal = conn.execute(
         "SELECT MAX(rowid) FROM events "
-        "WHERE sender=? AND kind IN ('act','decision','effect')",
+        "WHERE sender=? AND kind IN ('act','decision')",
         (role,),
     ).fetchone()[0] or 0
     max_journal = max(int(max_journal), recorded["journal"])

@@ -268,7 +268,7 @@ def _collectable_counts(conn: sqlite3.Connection) -> CompactionPlan:
     removable_journal = 0
     for rowid, sender, receiver, channel, kind in conn.execute(
         "SELECT rowid,sender,receiver,channel,kind FROM events "
-        "WHERE kind IN ('msg','ctrl','act','decision','effect') "
+        "WHERE kind IN ('msg','ctrl','act','decision') "
         "ORDER BY rowid"
     ):
         rowid = int(rowid)
@@ -333,7 +333,7 @@ def compact_store(path: str | Path) -> CompactionResult:
             pending: list[tuple[int, str]] = []
             for rowid, sender, receiver, channel, kind in conn.execute(
                 "SELECT rowid,sender,receiver,channel,kind FROM events "
-                "WHERE kind IN ('msg','ctrl','act','decision','effect')"
+                "WHERE kind IN ('msg','ctrl','act','decision')"
             ):
                 rowid = int(rowid)
                 sender_floor = floors.get(str(sender))
