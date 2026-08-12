@@ -580,14 +580,18 @@ zg connector assign User approval-chat
 
 # Inspect and check all model, assistant, and connector routing
 zg config
-zg config check
+zg check
 
 # Authorize Google on this computer, or accept an authorization made elsewhere
 zg connector authorize google --scopes gmail.readonly
 zg connector accept google
 ```
 
-`configure` writes the credential into `ZIPPERGEN_HOME`, outside the project.
+`configure` creates or updates the named configuration. In an interactive
+terminal, an existing configuration's current values become the defaults.
+
+`configure` writes the credential into the owner-only
+`ZIPPERGEN_HOME/workspaces/<project>/development.secrets.json`, outside the project.
 The routing it produces — which chat, which spreadsheet, which query — is
 committed with the project and contains no secret; the deployment refers to
 each credential by environment-variable name only.

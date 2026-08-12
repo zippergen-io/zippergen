@@ -763,9 +763,9 @@ def _print_status(status: dict[str, object]) -> None:
 def _resolved_deployment_name(args) -> str:
     """Return the private identity of this project's one deployment.
 
-    The identity uses the same path-derived key as private workspace state. It
-    is stable for this project directory and cannot collide merely because two
-    projects use the same workflow filename or deployment declaration.
+    The identity combines the project path with the versioned project id used
+    by private workspace state. Reinitializing a path therefore cannot inherit
+    the previous project's deployment.
     """
 
     from zippergen.workspace import Workspace
@@ -784,6 +784,14 @@ def _resolved_deployment_name(args) -> str:
         raise SystemExit(
             f"Deployment profile {path} does not belong to this project. "
             "Remove it and deploy again."
+        )
+    profile_project_id = str(profile.get("project_id") or "")
+    project_id = str(workspace.project_manifest().get("project_id") or "")
+    if profile_project_id != project_id:
+        raise SystemExit(
+            "This deployment belongs to an earlier project identity at the "
+            "same path. Inspect it with 'zg deploy list' and remove orphaned "
+            "deployments with 'zg deploy prune'."
         )
     return name
 
@@ -813,22 +821,50 @@ def _resolved_workflow_spec(args) -> str:
     return str(workspace.absolute_spec(resolved))
 
 
+def _require_project(args):
+    """Resolve and require an initialized project for project-scoped commands."""
+
+    from zippergen.workspace import Workspace, WorkspaceError
+
+    workspace = Workspace(getattr(args, "project", None))
+    try:
+        workspace.require_project()
+    except WorkspaceError as exc:
+        raise SystemExit(str(exc)) from exc
+    return workspace
+
+
 def _guard_foreground_run(args) -> None:
     """Make a concurrently running deployment visible before external work."""
 
     from zippergen.deployment_platform import deployment_service_status
 
-    try:
-        name = _resolved_deployment_name(args)
-    except SystemExit:
-        return
-    service = deployment_service_status(name)
-    if service.get("state") not in {"running", "restarting"}:
+    workspace = _require_project(args)
+    competing: list[str] = []
+    for path in sorted(_deployments_dir().glob("*.json")):
+        if path.name.endswith(".secrets.json"):
+            continue
+        try:
+            profile = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(profile, dict):
+            continue
+        source = profile.get("source_cwd")
+        if not source or Path(str(source)).resolve() != workspace.root:
+            continue
+        name = str(profile.get("name") or path.stem)
+        service = deployment_service_status(name)
+        if service.get("state") in {"running", "restarting"}:
+            competing.append(name)
+    if not competing:
         return
     warning = (
-        "This project's deployment is already running. A foreground run may "
+        "A deployment associated with this project path is already running "
+        f"({', '.join(competing)}). A foreground run may "
         "compete with it for Telegram updates, mailbox files, or other "
-        "external resources. Stop it with 'zippergen deploy stop' first."
+        "external resources. Use 'zg deploy list' to inspect it; stop the "
+        "current deployment or prune an orphan before running."
     )
     if getattr(args, "yes", False):
         print(f"WARNING: {warning}", file=sys.stderr)
@@ -1200,12 +1236,15 @@ def _configuration_command(args) -> int:
     from zippergen.rendering import TerminalRenderer
     from zippergen.workspace import Workspace, WorkspaceError
 
-    check = getattr(args, "config_action", None) == "check"
+    workspace = Workspace(getattr(args, "project", None))
     try:
         report = configuration_report(
-            Workspace(getattr(args, "project", None)),
-            live=check,
-            include_site_checks=check,
+            workspace,
+            live=False,
+            include_site_checks=True,
+            model_names=tuple(workspace.model_configurations()),
+            assistant_names=tuple(workspace.assistant_configurations()),
+            connector_names=tuple(workspace.connector_configurations()),
         )
     except WorkspaceError as exc:
         raise SystemExit(str(exc)) from exc
@@ -1215,9 +1254,38 @@ def _configuration_command(args) -> int:
         render_configuration(
             report,
             TerminalRenderer(),
-            show_checks=check,
+            show_checks=False,
         )
-    return 1 if check and not report["valid"] else 0
+    return 0
+
+
+def _check_command(args) -> int:
+    """Perform one live, project-wide readiness check."""
+
+    from zippergen.project_configuration import (
+        configuration_report,
+        render_readiness,
+    )
+    from zippergen.rendering import TerminalRenderer
+    from zippergen.workspace import WorkspaceError
+
+    workspace = _require_project(args)
+    try:
+        report = configuration_report(
+            workspace,
+            live=True,
+            include_site_checks=True,
+            model_names=tuple(workspace.model_configurations()),
+            assistant_names=tuple(workspace.assistant_configurations()),
+            connector_names=tuple(workspace.connector_configurations()),
+        )
+    except WorkspaceError as exc:
+        raise SystemExit(str(exc)) from exc
+    if getattr(args, "json", False):
+        print(json.dumps(report, indent=2, default=str))
+    else:
+        render_readiness(report, TerminalRenderer())
+    return 0 if report["valid"] else 1
 
 
 def _guided_required_value(
@@ -1226,6 +1294,7 @@ def _guided_required_value(
     label: str,
     command: str,
     choices: tuple[str, ...] = (),
+    default: str | None = None,
 ) -> str:
     """Return a required CLI value, prompting only in a human terminal."""
 
@@ -1233,15 +1302,20 @@ def _guided_required_value(
     if entered:
         return entered
     if not sys.stdin.isatty():
+        if default:
+            return default
         raise SystemExit(
             f"{label} is required. Pass it explicitly with: {command}"
         )
     if choices:
         print(f"Available {label.casefold()}s: {', '.join(choices)}")
     try:
-        entered = input(f"{label}: ").strip()
+        suffix = f" [{default}]" if default else ""
+        entered = input(f"{label}{suffix}: ").strip()
     except (EOFError, KeyboardInterrupt):
         raise SystemExit("Cancelled. Nothing was saved.") from None
+    if not entered and default:
+        entered = default
     if not entered:
         raise SystemExit(f"{label} is required. Nothing was saved.")
     if choices and entered not in choices:
@@ -1260,12 +1334,20 @@ def _project_choices(kind: str, project: str | None) -> tuple[str, ...]:
     return tuple(completion_candidates(kind, project))
 
 
-def _guided_model_spec(value: object) -> str:
+def _guided_model_spec(value: object, *, default: str | None = None) -> str:
     """Collect a compact model spec through clear provider-specific prompts."""
 
     entered = str(value or "").strip()
     if entered:
         return entered
+    if default and not sys.stdin.isatty():
+        return default
+    if default and sys.stdin.isatty():
+        try:
+            entered = input(f"Model specification [{default}]: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            raise SystemExit("Cancelled. Nothing was saved.") from None
+        return entered or default
     provider = _guided_required_value(
         None,
         label="Model provider",
@@ -1319,7 +1401,39 @@ def _collect_model_credential(workspace, spec: str) -> None:
         print(f"Skipped {credential}. Configure it before using this model.")
         return
     workspace.save_development_credential(credential, value)
-    print(f"Saved {credential} in private storage on this computer.")
+    print(f"Saved {credential} in {workspace.secrets_path} (owner-only file).")
+
+
+def _model_credential_command(workspace, name: object) -> int:
+    """Prompt for the credential required by one named model configuration."""
+
+    from zippergen.project_configuration import model_credential_name
+    from zippergen.workspace import WorkspaceError
+
+    configurations = workspace.model_configurations()
+    selected = _guided_required_value(
+        name,
+        label="Model configuration",
+        command="zg model credential NAME",
+        choices=tuple(sorted(configurations)),
+    )
+    configuration = configurations.get(selected)
+    if configuration is None:
+        raise WorkspaceError(f"Model configuration does not exist: {selected}.")
+    spec = str(configuration.get("spec") or "")
+    credential = model_credential_name(spec)
+    if credential is None:
+        print(f"Model configuration {selected} does not require an API key.")
+        return 0
+    try:
+        value = getpass.getpass(f"{credential} (input hidden): ").strip()
+    except (EOFError, KeyboardInterrupt):
+        raise SystemExit("Cancelled. Nothing was saved.") from None
+    if not value:
+        raise SystemExit("No credential entered. Nothing was saved.")
+    workspace.save_development_credential(credential, value)
+    print(f"Saved {credential} in {workspace.secrets_path} (owner-only file).")
+    return 0
 
 
 def _model_command(args) -> int:
@@ -1342,17 +1456,30 @@ def _model_command(args) -> int:
                 label="Model configuration name",
                 command="zg model configure NAME PROVIDER:MODEL",
             )
-            spec = _guided_model_spec(args.spec)
+            existing = workspace.model_configurations().get(name) or {}
+            spec = _guided_model_spec(
+                args.spec,
+                default=str(existing.get("spec") or "") or None,
+            )
+            idle_timeout = args.idle_timeout
+            if (
+                idle_timeout is None
+                and str(spec).partition(":")[0] in {"local", "ollama"}
+                and existing.get("idle_timeout") is not None
+            ):
+                idle_timeout = float(str(existing["idle_timeout"]))
             value = configure_model(
                 workspace,
                 name,
                 spec,
-                idle_timeout=args.idle_timeout,
+                idle_timeout=idle_timeout,
                 base_url=args.base_url,
             )
             print(f"Saved model configuration {name}: {value['spec']}")
             _collect_model_credential(workspace, str(value["spec"]))
             return 0
+        if action == "credential":
+            return _model_credential_command(workspace, args.name)
         if action in {"assign", "unassign"}:
             target = _guided_required_value(
                 args.target,
@@ -1392,11 +1519,14 @@ def _model_command(args) -> int:
                 raise WorkspaceError(
                     f"Model configuration does not exist: {args.name}."
                 )
+        selected_name = str(getattr(args, "name", "") or "")
         report = configuration_report(
             workspace,
             live=action == "check",
-            include_site_checks=action == "check",
-            model_names=(args.name,) if action == "check" and args.name else (),
+            include_site_checks=True,
+            model_names=(selected_name,)
+            if selected_name
+            else tuple(workspace.model_configurations()),
         )
     except WorkspaceError as exc:
         raise SystemExit(str(exc)) from exc
@@ -1434,11 +1564,13 @@ def _assistant_command(args) -> int:
                 label="Assistant configuration name",
                 command="zg assistant configure NAME BACKEND",
             )
+            existing = workspace.assistant_configurations().get(name) or {}
             backend = _guided_required_value(
                 args.backend,
                 label="Assistant backend",
                 command="zg assistant configure NAME BACKEND",
                 choices=("codex", "claude"),
+                default=str(existing.get("backend") or "") or None,
             )
             value = configure_assistant(workspace, name, backend)
             print(
@@ -1498,13 +1630,14 @@ def _assistant_command(args) -> int:
                 raise WorkspaceError(
                     f"Assistant configuration does not exist: {args.name}."
                 )
+        selected_name = str(getattr(args, "name", "") or "")
         report = configuration_report(
             workspace,
-            include_site_checks=action == "check",
+            include_site_checks=True,
             assistant_names=(
-                (args.name,)
-                if action == "check" and args.name
-                else ()
+                (selected_name,)
+                if selected_name
+                else tuple(workspace.assistant_configurations())
             ),
         )
     except WorkspaceError as exc:
@@ -1599,13 +1732,14 @@ def _connector_management_command(args) -> int:
                 raise WorkspaceError(
                     f"Connector configuration does not exist: {args.name}."
                 )
+        selected_name = str(getattr(args, "name", "") or "")
         report = configuration_report(
             workspace,
             live=action == "check",
-            include_site_checks=action == "check",
-            connector_names=(args.name,)
-            if action == "check" and args.name
-            else (),
+            include_site_checks=True,
+            connector_names=(selected_name,)
+            if selected_name
+            else tuple(workspace.connector_configurations()),
         )
     except WorkspaceError as exc:
         raise SystemExit(str(exc)) from exc
@@ -1672,6 +1806,117 @@ def _remove_command(args) -> int:
     print(f"Removed {result.name}: {result.artifact_count} artifact(s). {service}")
     if result.archive is not None:
         print(f"  Archive: {result.archive}")
+    return 0
+
+
+def _deployment_inventory() -> list[dict[str, object]]:
+    """Return every host deployment and whether its owning project still exists."""
+
+    from zippergen.deployment_platform import deployment_service_status
+    from zippergen.workspace import Workspace, WorkspaceError
+
+    rows: list[dict[str, object]] = []
+    for path in sorted(_deployments_dir().glob("*.json")):
+        if path.name.endswith(".secrets.json"):
+            continue
+        try:
+            profile = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            rows.append(
+                {
+                    "name": path.stem,
+                    "project": "unknown",
+                    "ownership": f"invalid profile: {exc}",
+                    "orphaned": True,
+                    "service": "unknown",
+                }
+            )
+            continue
+        if not isinstance(profile, dict):
+            continue
+        name = str(profile.get("name") or path.stem)
+        source = Path(str(profile.get("source_cwd") or "")).expanduser()
+        orphaned = False
+        ownership = "current"
+        if not source.is_dir():
+            orphaned = True
+            ownership = "project directory is missing"
+        elif not (source / "zippergen.toml").is_file():
+            orphaned = True
+            ownership = "project manifest is missing"
+        else:
+            try:
+                current_id = str(
+                    Workspace(source).project_manifest().get("project_id") or ""
+                )
+            except WorkspaceError as exc:
+                orphaned = True
+                ownership = f"project manifest is invalid: {exc}"
+            else:
+                recorded_id = str(profile.get("project_id") or "")
+                if recorded_id != current_id:
+                    orphaned = True
+                    ownership = "project identity changed"
+        service = deployment_service_status(name)
+        rows.append(
+            {
+                "name": name,
+                "project": str(source) if str(source) else "unknown",
+                "ownership": ownership,
+                "orphaned": orphaned,
+                "service": service.get("state") or "unknown",
+            }
+        )
+    return rows
+
+
+def _deployment_list_command(args) -> int:
+    from zippergen.rendering import TerminalRenderer
+
+    rows = _deployment_inventory()
+    if getattr(args, "json", False):
+        print(json.dumps(rows, indent=2, default=str))
+        return 0
+    renderer = TerminalRenderer()
+    renderer.framed_section("Host deployments")
+    if not rows:
+        renderer.empty("Deployments", "No deployments on this computer.")
+        return 0
+    renderer.columns(
+        "Deployments",
+        ("State", "Deployment", "Service", "Project", "Ownership"),
+        [
+            (
+                renderer.status_mark("warning" if row["orphaned"] else "success"),
+                row["name"],
+                row["service"],
+                row["project"],
+                row["ownership"],
+            )
+            for row in rows
+        ],
+    )
+    return 0
+
+
+def _deployment_prune_command(args) -> int:
+    orphaned = [row for row in _deployment_inventory() if row["orphaned"]]
+    if not orphaned:
+        print("No orphaned deployments.")
+        return 0
+    names = [str(row["name"]) for row in orphaned]
+    print("Orphaned deployments: " + ", ".join(names))
+    if not args.yes:
+        if not sys.stdin.isatty():
+            raise SystemExit("Re-run with --yes to archive and remove them.")
+        answer = input(
+            "Archive their durable stores and logs, then remove them? [y/N]: "
+        ).strip().casefold()
+        if answer not in {"y", "yes"}:
+            print("Nothing was changed.")
+            return 1
+    for name in names:
+        _remove_command(argparse.Namespace(name=name, purge=False, yes=True))
     return 0
 
 
@@ -1776,7 +2021,10 @@ def _telegram_bot_token(workspace) -> None:
     if not token:
         raise SystemExit("A bot token is required.")
     workspace.save_connector_provider_secret("telegram", "bot_token", token)
-    print("Saved the Telegram bot token for this computer.")
+    print(
+        f"Saved the Telegram bot token in {workspace.secrets_path} "
+        "(owner-only file)."
+    )
 
 
 def _telegram_chat_id(value: object) -> str:
@@ -1873,7 +2121,10 @@ def _connector_accept_google_command(args) -> int:
             "credential_expiry": expiry,
         },
     )
-    print("Google authorization saved for this computer.")
+    print(
+        f"Google authorization saved in {workspace.secrets_path} "
+        "(owner-only file)."
+    )
     print(f"  Granted: {granted}")
     print(f"  Expiry:  {expiry}")
     return 0
@@ -1930,11 +2181,20 @@ def _connector_configure_command(args) -> int:
         label="Connector configuration name",
         command="zg connector configure NAME PROVIDER",
     )
+    existing = workspace.connector_configurations().get(name) or {}
+    existing_kind = str(
+        existing.get("kind") or existing.get("provider") or ""
+    )
     provider = _guided_required_value(
         args.connector_provider,
         label="Connector provider",
         command="zg connector configure NAME PROVIDER",
         choices=("telegram", "gmail", "google-sheets"),
+        default=(
+            existing_kind
+            if existing_kind in {"telegram", "gmail", "google-sheets"}
+            else None
+        ),
     )
 
     if provider == "telegram":
@@ -1942,7 +2202,12 @@ def _connector_configure_command(args) -> int:
             raise SystemExit(
                 "Telegram configuration uses --chat-id only."
             )
-        chat_id = _telegram_chat_id(args.chat_id)
+        chat_id = _guided_required_value(
+            args.chat_id,
+            label="Telegram chat id",
+            command="zg connector configure NAME telegram --chat-id CHAT_ID",
+            default=str(existing.get("chat_id") or "") or None,
+        )
         _telegram_bot_token(workspace)
         values = {
             "provider": "telegram",
@@ -1962,6 +2227,7 @@ def _connector_configure_command(args) -> int:
                 "zg connector configure NAME google-sheets "
                 "--spreadsheet-id ID --tab TAB"
             ),
+            default=str(existing.get("spreadsheet_id") or "") or None,
         )
         tab = _guided_required_value(
             args.tab,
@@ -1970,6 +2236,7 @@ def _connector_configure_command(args) -> int:
                 "zg connector configure NAME google-sheets "
                 "--spreadsheet-id ID --tab TAB"
             ),
+            default=str(existing.get("tab") or "") or None,
         )
         values = {
             "provider": "google",
@@ -1987,8 +2254,10 @@ def _connector_configure_command(args) -> int:
         values = {
             "provider": "google",
             "kind": "gmail",
-            "account": str(args.account or "me"),
-            "query": str(args.query or "is:unread in:inbox"),
+            "account": str(args.account or existing.get("account") or "me"),
+            "query": str(
+                args.query or existing.get("query") or "is:unread in:inbox"
+            ),
         }
         described = f"query {values['query']!r}"
     else:  # pragma: no cover - argparse restricts the choices
@@ -2451,11 +2720,16 @@ def _finalize_guided_deployment(
 
 def _deploy_command(args) -> int:
     # The workflow and the deployment both come from the project. The private
-    # deployment identity is path-derived and is never typed by the user.
+    # deployment identity is derived from project path + project id and is
+    # never typed by the user.
     from zippergen.workspace import Workspace
 
     args.target = _resolved_workflow_spec(args)
-    deployment_name = Workspace(getattr(args, "project", None)).directory.name
+    deployment_workspace = Workspace(getattr(args, "project", None))
+    workspace_project_id = str(
+        deployment_workspace.project_manifest().get("project_id") or ""
+    )
+    deployment_name = deployment_workspace.directory.name
     if _deployment_profile_path(deployment_name).exists():
         existing = _resolved_deployment_name(args)
         # Redeploying: keep the deployment this project already has.
@@ -2468,6 +2742,7 @@ def _deploy_command(args) -> int:
         profile = {
             "schema_version": 2,
             "name": deployment_name,
+            "project_id": workspace_project_id,
             "workflow": args.target,
             "cwd": str(Path.cwd()),
             "source_workflow": args.target,
@@ -2490,6 +2765,7 @@ def _deploy_command(args) -> int:
         }
 
     profile["schema_version"] = 2
+    profile["project_id"] = workspace_project_id
     # A deployment snapshots the project's current routing.  Re-deploying is
     # what applies later edits to zippergen.toml; configuring an already
     # prepared deployment remains an explicit profile-only operation.
@@ -3182,17 +3458,17 @@ def _parse_cli_args(
 
     config = sub.add_parser(
         "config",
-        help="show or check the effective project configuration",
+        help="show the effective project configuration and local availability",
     )
     config.add_argument("--json", action="store_true", help="Print JSON.")
     config.add_argument("--project", help="Project root.")
-    config_sub = config.add_subparsers(dest="config_action")
-    config_check = config_sub.add_parser(
+
+    check = sub.add_parser(
         "check",
-        help="verify readiness by contacting configured providers",
+        help="check the workflow, routing, credentials, and live providers",
     )
-    config_check.add_argument("--json", action="store_true", help="Print JSON.")
-    config_check.add_argument("--project", help="Project root.")
+    check.add_argument("--json", action="store_true", help="Print JSON.")
+    check.add_argument("--project", help="Project root.")
 
     workflow_parser = sub.add_parser(
         "workflow",
@@ -3238,7 +3514,10 @@ def _parse_cli_args(
     model_configure.add_argument(
         "--idle-timeout",
         type=float,
-        help="Release a local model after this many idle seconds.",
+        help=(
+            "Unload a local Ollama model after this many seconds without an "
+            "active call; 0 unloads after each call."
+        ),
     )
     model_configure.add_argument("--project", help="Project root.")
     model_assign = model_sub.add_parser(
@@ -3257,6 +3536,12 @@ def _parse_cli_args(
     )
     model_check.add_argument("name", nargs="?")
     model_check.add_argument("--project", help="Project root.")
+    model_credential = model_sub.add_parser(
+        "credential",
+        help="save the API key required by one model configuration",
+    )
+    model_credential.add_argument("name", nargs="?")
+    model_credential.add_argument("--project", help="Project root.")
     model_remove = model_sub.add_parser("remove", help="remove an unused configuration")
     model_remove.add_argument("name", nargs="?")
     model_remove.add_argument("--project", help="Project root.")
@@ -3646,6 +3931,20 @@ def _parse_cli_args(
     deploy.add_argument("--no-start", action="store_true", help="Configure the deployment without starting its service.")
     deploy_sub = deploy.add_subparsers(dest="deploy_action")
 
+    deploy_list = deploy_sub.add_parser(
+        "list",
+        help="show every deployment on this computer, including orphans",
+    )
+    deploy_list.add_argument("--json", action="store_true", help="Print JSON.")
+
+    deploy_prune = deploy_sub.add_parser(
+        "prune",
+        help="archive and remove deployments whose owning project is gone",
+    )
+    deploy_prune.add_argument(
+        "--yes", action="store_true", help="Do not ask for confirmation."
+    )
+
     deploy_start = deploy_sub.add_parser("start", help="start a deployment as a supervised user service")
     deploy_start.add_argument("--enable", action="store_true", help="Enable the service to start automatically for this user.")
     deploy_start.add_argument("--dry-run", action="store_true", help="Print service-manager commands without running them.")
@@ -3744,8 +4043,33 @@ def main(argv=None) -> int:
     if args.cmd is None:
         ap.print_help()
         return 0
+    project_scoped = args.cmd in {
+        "config",
+        "check",
+        "workflow",
+        "model",
+        "assistant",
+        "run",
+        "deploy",
+    }
+    if args.cmd == "deploy" and getattr(args, "deploy_action", None) in {
+        "list",
+        "prune",
+    }:
+        project_scoped = False
+    if args.cmd == "connector":
+        project_scoped = not (
+            args.connector_action == "authorize"
+            and args.connector_provider == "google"
+        )
+    if args.cmd in {"show", "validate"} and not getattr(args, "workflow", None):
+        project_scoped = True
+    if project_scoped:
+        _require_project(args)
     if args.cmd == "config":
         return _configuration_command(args)
+    if args.cmd == "check":
+        return _check_command(args)
     if args.cmd == "workflow":
         return _workflow_command(args)
     if args.cmd == "model":
@@ -3827,6 +4151,10 @@ def main(argv=None) -> int:
         action = getattr(args, "deploy_action", None)
         if action is None:
             return _deploy_command(args)
+        if action == "list":
+            return _deployment_list_command(args)
+        if action == "prune":
+            return _deployment_prune_command(args)
         # Every public verb acts on this project's deployment. The generated
         # service script alone supplies the hidden profile identity because it
         # runs from an immutable bundle rather than the source project.

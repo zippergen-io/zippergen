@@ -119,9 +119,10 @@ participants may name the same configuration. Use
 `[models.assignments.actions]` with a quoted `"Writer.draft_reply"` key only
 when one action needs a different model. `zg run --llm mock` is a temporary
 global override and replaces all project assignments for that run.
-Use `zg config` to inspect the full effective configuration without contacting
-providers. `zg validate` is also offline. Use `zg config check` for readiness;
-it contacts the configured providers and may send a small model request.
+Use `zg config` to inspect the full effective configuration and missing local
+facts without contacting providers. `zg validate` is also offline. Use
+`zg check` for project-wide readiness; it contacts configured providers and
+may send a small model request.
 
 For an `@assistant` action, choose Codex or Claude through a named project
 configuration. Do not hard-code the backend merely to route one project:

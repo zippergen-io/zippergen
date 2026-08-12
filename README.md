@@ -230,7 +230,8 @@ chosen by the user and `telegram` is the provider. `zg model`, `zg assistant`,
 When you work in a terminal, you may leave out required values. ZipperGen asks
 for them and shows available targets and saved configurations. For example,
 `zg model configure`, `zg assistant configure`, and `zg connector configure`
-are all guided. The model command asks for the provider and model separately.
+are all guided. Reusing a name updates that configuration and presents its
+current values as defaults. The model command asks for the provider and model separately.
 Scripts and coding agents should pass the compact `PROVIDER:MODEL` value
 explicitly.
 
@@ -259,9 +260,15 @@ zg model
 ```
 
 If `OPENAI_API_KEY` is not already available, the first command offers a
-hidden prompt. The key is saved in private storage on this computer. It is not
-written to `zippergen.toml`. You may instead set the normal environment
-variable before running the command.
+hidden prompt. The key is saved in the owner-only
+`$ZIPPERGEN_HOME/workspaces/<project>/development.secrets.json` file on this
+computer. It is not written to `zippergen.toml`. You may instead set the
+normal environment variable before running the command, or save it later with
+`zg model credential writer`.
+
+For local Ollama configurations, `Idle release` means how long ZipperGen keeps
+the model loaded after the last active call. `0` unloads it after every call;
+an unset value leaves the provider policy unchanged.
 
 The commands write the portable routing to `zippergen.toml`:
 
@@ -372,15 +379,17 @@ configuration, and it goes in `zippergen.toml`. Credentials never go there:
 zg connector configure approval-chat telegram  # prompts for chat id and hidden token
 zg connector assign User approval-chat        # who gets asked, and where
 zg connector authorize google --scopes gmail.readonly,spreadsheets
-zg config check                         # contact and check configured providers
+zg check                                # check all routing and live providers
 ```
 
 Use `zg config` at any time to see the effective model, assistant, and
-connector configurations, assignments, bindings, and active private-state
-location. It does not contact providers and never prints credential values.
-`zg validate` is also offline; `zg config check` is the readiness operation and
-may send a small model request. `zg config --json` provides the same view for
-CI and coding agents.
+connector configurations, assignments, bindings, active private-state
+location, and which local credentials or tools are available. It does not
+contact providers and never prints credential values. `zg validate` is also
+offline; `zg check` is the project-wide readiness operation and may send a
+small model request. `zg config --json` and `zg check --json` provide the same
+views for CI and coding agents. Family checks such as `zg model check` narrow
+the diagnosis; without a name they check every saved configuration.
 
 ## The CLI
 
@@ -388,13 +397,12 @@ The whole public surface fits in one tree:
 
 ```text
 zg
-├── init · skill · validate · show · snapshot · diff
+├── init · skill · validate · show · snapshot · diff · check
 ├── config
-│   └── check
 ├── workflow
 │   └── select
 ├── model
-│   └── configure · assign · unassign · check · remove
+│   └── configure · assign · unassign · credential · check · remove
 ├── assistant
 │   └── configure · assign · unassign · check · remove
 ├── connector
@@ -403,7 +411,7 @@ zg
 ├── run
 │   └── status · inspect · trace · tasks · approve
 ├── deploy
-│   └── start · stop · restart · status · logs · check
+│   └── list · prune · start · stop · restart · status · logs · check
 │       · inspect · trace · tasks · approve · compact · reset · remove
 └── completion
 ```
@@ -418,6 +426,10 @@ discard a deployment's durable history,
 `zg deploy reset --yes` stops it, archives its SQLite files under
 `$ZIPPERGEN_HOME/trash/deployment-stores/`, creates an empty store, and starts
 the service again if it was running. The archive is never silently deleted.
+`zg deploy list` also works outside a project and shows every deployment on
+the computer. If a project directory was deleted or reinitialized, use
+`zg deploy prune`; it unregisters orphaned services and archives their durable
+stores and logs rather than deleting them.
 
 Enable completion in the current shell with one command:
 

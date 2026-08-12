@@ -105,6 +105,7 @@ def test_inspect_selects_the_projects_unnamed_deployment_explicitly(
     deployments.mkdir(parents=True)
     (deployments / f"{name}.json").write_text(json.dumps({
         "name": name,
+        "project_id": workspace.project_manifest().get("project_id"),
         "source_cwd": str(workspace.root),
         "cwd": str(workspace.root),
         "workflow": "workflow.py:email_approval",

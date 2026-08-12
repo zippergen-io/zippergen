@@ -99,7 +99,8 @@ def test_model_configuration_is_fully_guided_in_a_terminal(
     )["lifelines"] == {"Writer": "writer"}
     output = capsys.readouterr().out
     assert "Available model assignment targets" in output
-    assert "Saved OPENAI_API_KEY in private storage" in output
+    assert "Saved OPENAI_API_KEY in" in output
+    assert "owner-only file" in output
 
 
 def test_guided_scripted_model_asks_for_a_response_file(project, monkeypatch):
@@ -218,8 +219,74 @@ def test_config_check_reports_missing_site_credentials(project, capsys):
     main(["model", "assign", "Writer", "writer"])
     capsys.readouterr()
 
-    assert main(["config", "check"]) == 1
+    assert main(["check"]) == 1
     assert "OPENAI_API_KEY" in capsys.readouterr().out
+
+
+def test_config_reports_an_unassigned_model_credential_without_contacting_it(
+    project, monkeypatch, capsys
+):
+    main(["model", "configure", "unused", "openai:gpt-4o-mini"])
+    capsys.readouterr()
+    monkeypatch.setattr(
+        "zippergen.project_configuration._live_model_check",
+        lambda *_args, **_kwargs: pytest.fail("config must remain offline"),
+    )
+
+    assert main(["config"]) == 0
+    output = capsys.readouterr().out
+    assert "OPENAI_API_KEY" in output
+    assert "Local requirements" in output
+
+
+def test_model_credential_saves_to_the_named_projects_private_file(
+    project, monkeypatch, capsys
+):
+    _root, workspace = project
+    main(["model", "configure", "writer", "openai:gpt-4o-mini"])
+    capsys.readouterr()
+    monkeypatch.setattr("getpass.getpass", lambda _prompt: "new-secret")
+
+    assert main(["model", "credential", "writer"]) == 0
+    assert workspace.development_credential("OPENAI_API_KEY") == "new-secret"
+    assert str(workspace.secrets_path) in capsys.readouterr().out
+
+
+def test_reconfiguring_interactively_keeps_existing_values_as_defaults(
+    project, monkeypatch
+):
+    _root, workspace = project
+    main([
+        "model", "configure", "writer", "local:qwen2.5:14b",
+        "--idle-timeout", "300",
+    ])
+    monkeypatch.setattr("zippergen.serve.sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda _prompt: "")
+
+    assert main(["model", "configure", "writer"]) == 0
+    assert workspace.model_configurations()["writer"] == {
+        "provider": "local",
+        "model": "qwen2.5:14b",
+        "spec": "local:qwen2.5:14b",
+        "idle_timeout": "300",
+    }
+
+
+def test_reconfiguring_interactively_keeps_existing_values_as_defaults(
+    project, monkeypatch
+):
+    _root, workspace = project
+    main(["model", "configure", "writer", "local:qwen2.5:14b", "--idle-timeout", "300"])
+    monkeypatch.setattr("zippergen.serve.sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda _prompt: "")
+
+    assert main(["model", "configure", "writer"]) == 0
+    assert workspace.model_configurations()["writer"] == {
+        "provider": "local",
+        "model": "qwen2.5:14b",
+        "spec": "local:qwen2.5:14b",
+        "idle_timeout": "300",
+    }
 
 
 def test_config_display_and_check_have_distinct_jobs(project, monkeypatch, capsys):
@@ -256,10 +323,10 @@ def test_config_display_and_check_have_distinct_jobs(project, monkeypatch, capsy
     assert "Models\n══════" not in display
     assert "Configurations\n══════════════" in display
 
-    assert main(["config", "check"]) == 1
+    assert main(["check"]) == 1
     checked = capsys.readouterr().out
-    assert "Readiness" in checked
-    assert "Checks\n══════" in checked
+    assert "Project readiness" in checked
+    assert "Credentials and local tools\n═══════════════════════════" in checked
     assert "OPENAI_API_KEY" in checked
 
 

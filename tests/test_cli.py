@@ -218,13 +218,18 @@ def test_compact_reports_removed_store_events_and_log_archives(
     name = Workspace(home=home).directory.name
     (home / "deployments" / f"{name}.json").write_text(
         json.dumps({"name": name, "source_cwd": str(Path.cwd()),
+                    "project_id": Workspace().project_manifest().get("project_id"),
                     "store": str(store)})
     )
     monkeypatch.setenv("ZIPPERGEN_HOME", str(home))
     monkeypatch.setattr(
         serve,
         "_load_deployment_profile",
-        lambda _name: {"store": str(store), "source_cwd": str(Path.cwd())},
+        lambda _name: {
+            "store": str(store),
+            "source_cwd": str(Path.cwd()),
+            "project_id": Workspace().project_manifest().get("project_id"),
+        },
     )
     monkeypatch.setattr(
         storage_maintenance,
@@ -379,6 +384,7 @@ def test_durable_run_records_a_resumable_run_with_an_owned_store(
     workflow_path.write_text(WORKFLOW_SOURCE)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("ZIPPERGEN_HOME", str(tmp_path / "home"))
+    Workspace(tmp_path, home=tmp_path / "home").initialize_project()
 
     rc = main([
         "run",
@@ -455,6 +461,7 @@ def test_run_command_loads_workflow_from_module(tmp_path, monkeypatch, capsys):
     monkeypatch.syspath_prepend(str(tmp_path))
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("ZIPPERGEN_HOME", str(tmp_path / "home"))
+    Workspace(tmp_path, home=tmp_path / "home").initialize_project()
 
     rc = main([
         "run",
@@ -476,6 +483,7 @@ def test_run_command_zero_timeout_means_no_deadline(tmp_path, monkeypatch, capsy
     workflow_path.write_text(WORKFLOW_SOURCE)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("ZIPPERGEN_HOME", str(tmp_path / "home"))
+    Workspace(tmp_path, home=tmp_path / "home").initialize_project()
 
     rc = main([
         "run",
@@ -594,6 +602,7 @@ def test_run_command_calls_setup_hook_with_options(tmp_path, monkeypatch, capsys
     workflow_path.write_text(SETUP_WORKFLOW_SOURCE)
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("ZIPPERGEN_HOME", str(tmp_path / "home"))
+    Workspace(tmp_path, home=tmp_path / "home").initialize_project()
 
     rc = main([
         "run",
@@ -748,6 +757,7 @@ def test_run_durable_creates_a_managed_durable_run(tmp_path, monkeypatch, capsys
     zippergen_home = tmp_path / "zg-home"
     monkeypatch.setenv("ZIPPERGEN_HOME", str(zippergen_home))
     monkeypatch.chdir(tmp_path)
+    Workspace(tmp_path, home=zippergen_home).initialize_project()
 
     rc = main([
         "run",
@@ -880,20 +890,29 @@ def test_internal_deployment_run_does_not_conflict_with_its_own_service(
 
 
 def test_foreground_run_refuses_to_compete_with_running_deployment(
-    monkeypatch,
+    tmp_path, monkeypatch,
 ):
     from zippergen import serve
 
-    monkeypatch.setattr(
-        serve, "_resolved_deployment_name", lambda _args: "project-id"
-    )
+    home = tmp_path / "home"
+    workspace = Workspace(tmp_path, home=home)
+    workspace.initialize_project()
+    deployments = home / "deployments"
+    deployments.mkdir(parents=True)
+    (deployments / "project-id.json").write_text(json.dumps({
+        "name": "project-id",
+        "source_cwd": str(tmp_path),
+        "project_id": workspace.project_manifest()["project_id"],
+    }))
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(home))
     monkeypatch.setattr(
         "zippergen.deployment_platform.deployment_service_status",
         lambda _name: {"state": "running"},
     )
     monkeypatch.setattr(serve.sys.stdin, "isatty", lambda: False)
 
-    with pytest.raises(SystemExit, match="deployment is already running"):
+    with pytest.raises(SystemExit, match="deployment associated.*already running"):
         serve._guard_foreground_run(SimpleNamespace(yes=False))
 
 
@@ -935,6 +954,39 @@ def test_two_projects_with_the_same_workflow_get_independent_deployments(
     }
     assert len({profile["name"] for profile in profiles}) == 2
     assert len({profile["store"] for profile in profiles}) == 2
+
+
+def test_deploy_list_and_prune_find_a_deleted_projects_deployment(
+    tmp_path, monkeypatch, capsys
+):
+    from zippergen import serve
+
+    home = tmp_path / "home"
+    deployments = home / "deployments"
+    deployments.mkdir(parents=True)
+    (deployments / "orphan.json").write_text(json.dumps({
+        "name": "orphan",
+        "source_cwd": str(tmp_path / "deleted-project"),
+        "project_id": "old-project",
+    }))
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(home))
+    monkeypatch.setattr(
+        "zippergen.deployment_platform.deployment_service_status",
+        lambda _name: {"state": "running"},
+    )
+    removed = []
+    monkeypatch.setattr(
+        serve,
+        "_remove_command",
+        lambda args: removed.append((args.name, args.purge, args.yes)) or 0,
+    )
+
+    assert main(["deploy", "list"]) == 0
+    output = capsys.readouterr().out
+    assert "orphan" in output
+    assert "project directory is missing" in output
+    assert main(["deploy", "prune", "--yes"]) == 0
+    assert removed == [("orphan", False, True)]
 
 
 def test_start_deployment_dry_run_prints_systemd_commands(tmp_path, monkeypatch, capsys):
@@ -1483,6 +1535,7 @@ def test_doctor_returns_failure_for_broken_profile(tmp_path, monkeypatch, capsys
     (deployments / f"{name}.json").write_text(json.dumps({
         "name": name,
         "source_cwd": str(Path.cwd()),
+        "project_id": Workspace().project_manifest().get("project_id"),
         "workflow": "missing.py:hello",
         "cwd": str(tmp_path / "missing-cwd"),
         "store": str(tmp_path / "runs" / "broken.sqlite"),

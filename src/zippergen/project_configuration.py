@@ -511,6 +511,184 @@ def configuration_report(
                 extra_names=connector_names,
             )
 
+    effective_routing: list[dict[str, object]] = []
+    if workflow is not None and module is not None:
+        def check_passes(name: str) -> bool:
+            matching = [item for item in checks if item.get("name") == name]
+            return not matching or all(item.get("status") == "ok" for item in matching)
+
+        semantics = workflow_semantics(workflow, module=module)
+        sites = semantics.get("action_sites") or []
+        seen_sites: set[tuple[str, str, str]] = set()
+        raw_model_overrides = resolved_models.get("overrides") or {}
+        model_overrides = (
+            {str(key): value for key, value in raw_model_overrides.items()}
+            if isinstance(raw_model_overrides, Mapping)
+            else {}
+        )
+        raw_model_actions = model_profile.get("actions") or {}
+        model_actions = (
+            {str(key): value for key, value in raw_model_actions.items()}
+            if isinstance(raw_model_actions, Mapping)
+            else {}
+        )
+        raw_model_lifelines = model_profile.get("lifelines") or {}
+        model_lifelines = (
+            {str(key): value for key, value in raw_model_lifelines.items()}
+            if isinstance(raw_model_lifelines, Mapping)
+            else {}
+        )
+        assistant_by_target = {
+            str(item.get("target")): item for item in resolved_assistants
+        }
+        connector_actions = dict(connector_assignments.get("actions") or {})
+        connector_lifelines = dict(connector_assignments.get("lifelines") or {})
+        for raw in sites if isinstance(sites, list) else []:
+            if not isinstance(raw, dict):
+                continue
+            participant = str(raw.get("lifeline") or "")
+            action = str(raw.get("action") or "")
+            kind = str(raw.get("kind") or "")
+            if kind not in {"llm", "assistant", "human"}:
+                continue
+            key = (participant, action, kind)
+            if key in seen_sites:
+                continue
+            seen_sites.add(key)
+            target = f"{participant}.{action}"
+            if kind == "llm":
+                selected = str(
+                    model_overrides.get(target)
+                    or model_overrides.get(participant)
+                    or resolved_models.get("default")
+                    or "mock"
+                )
+                configuration = str(
+                    model_actions.get(target)
+                    or model_lifelines.get(participant)
+                    or model_profile.get("default")
+                    or "workflow default"
+                )
+                credential = model_credential_name(selected)
+                available = credential is None or any(
+                    item.get("kind") == "model credential"
+                    and item.get("name") == credential
+                    and item.get("available")
+                    for item in site_facts
+                )
+                if live:
+                    available = available and check_passes(f"live model {selected}")
+                effective_routing.append(
+                    {
+                        "participant": participant,
+                        "action": action,
+                        "kind": "model",
+                        "configuration": configuration,
+                        "effective": selected,
+                        "available": available,
+                    }
+                )
+            elif kind == "assistant":
+                item = assistant_by_target.get(target) or {}
+                backend = item.get("backend")
+                available = bool(backend) and any(
+                    fact.get("kind") == "assistant CLI"
+                    and fact.get("name") == backend
+                    and fact.get("available")
+                    for fact in site_facts
+                )
+                effective_routing.append(
+                    {
+                        "participant": participant,
+                        "action": action,
+                        "kind": "assistant",
+                        "configuration": item.get("configuration") or "missing",
+                        "effective": backend or "missing",
+                        "available": available,
+                    }
+                )
+            else:
+                configuration = str(
+                    connector_actions.get(target)
+                    or connector_lifelines.get(participant)
+                    or "terminal"
+                )
+                available = True
+                if configuration != "terminal":
+                    provider = str(
+                        connector_configurations.get(configuration, {}).get("provider")
+                        or ""
+                    )
+                    credential_label = {
+                        "telegram": "Telegram bot token",
+                        "google": "Google authorization",
+                    }.get(provider)
+                    if credential_label:
+                        available = any(
+                            fact.get("kind") == "connector credential"
+                            and fact.get("name") == credential_label
+                            and fact.get("available")
+                            for fact in site_facts
+                        )
+                    if live:
+                        live_name = (
+                            "live connector Google"
+                            if provider == "google"
+                            else f"live connector {configuration}"
+                        )
+                        available = available and check_passes(live_name)
+                effective_routing.append(
+                    {
+                        "participant": participant,
+                        "action": action,
+                        "kind": "human",
+                        "configuration": configuration,
+                        "effective": configuration,
+                        "available": available,
+                    }
+                )
+        for requirement in connector_requirements_from_module(module):
+            configuration = connector_bindings.get(requirement.name)
+            available = bool(configuration)
+            if configuration:
+                provider = str(
+                    connector_configurations.get(configuration, {}).get("provider")
+                    or ""
+                )
+                if provider in {"telegram", "google"}:
+                    available = any(
+                        fact.get("kind") == "connector credential"
+                        and (
+                            (
+                                provider == "telegram"
+                                and fact.get("name") == "Telegram bot token"
+                            )
+                            or (
+                                provider == "google"
+                                and fact.get("name") == "Google authorization"
+                            )
+                        )
+                        and fact.get("available")
+                        for fact in site_facts
+                    )
+                if live:
+                    live_name = (
+                        "live connector Google"
+                        if provider == "google"
+                        else f"live connector {configuration}"
+                    )
+                    available = available and check_passes(live_name)
+            effective_routing.append(
+                {
+                    "participant": requirement.participant,
+                    "action": requirement.name,
+                    "kind": requirement.kind,
+                    "configuration": configuration or "missing",
+                    "effective": configuration or "missing",
+                    "available": available,
+                }
+            )
+
     return {
         "site_root": str(workspace.directory),
         "project": {
@@ -542,6 +720,7 @@ def configuration_report(
             "assignments": connector_assignments,
         },
         "site_facts": site_facts,
+        "effective_routing": effective_routing,
         "checks": checks,
         "valid": not any(item["status"] == "fail" for item in checks),
     }
@@ -682,6 +861,17 @@ def _render_columns_or_empty(
         renderer.empty(title, empty)
 
 
+def _idle_release_display(item: Mapping[str, object]) -> str:
+    value = item.get("idle_timeout")
+    provider = str(item.get("spec") or "").partition(":")[0]
+    if provider not in {"local", "ollama"}:
+        return "not applicable"
+    if value is None or str(value).strip() == "":
+        return "not set"
+    seconds = float(str(value))
+    return "after each call" if seconds == 0 else f"after {seconds:g} s"
+
+
 def render_configuration(
     report: dict[str, object],
     renderer: TerminalRenderer,
@@ -709,7 +899,7 @@ def render_configuration(
         (
             item.get("name"),
             item.get("spec") or "-",
-            item.get("idle_timeout") or "-",
+            _idle_release_display(item),
             item.get("source"),
         )
         for item in configurations
@@ -718,7 +908,7 @@ def render_configuration(
     _render_columns_or_empty(
         renderer,
         "Configurations",
-        ("Name", "Spec", "Idle", "Source"),
+        ("Name", "Spec", "Idle release", "Source"),
         model_configuration_rows,
         empty="No configurations.",
     )
@@ -779,6 +969,25 @@ def render_configuration(
             )
         ],
     )
+    raw_site_facts = report.get("site_facts") or []
+    site_facts = raw_site_facts if isinstance(raw_site_facts, list) else []
+    _render_columns_or_empty(
+        renderer,
+        "Local requirements",
+        ("Status", "Kind", "Requirement"),
+        [
+            (
+                renderer.status_mark(
+                    "success" if item.get("available") else "error"
+                ),
+                item.get("kind"),
+                item.get("name"),
+            )
+            for item in site_facts
+            if isinstance(item, dict)
+        ],
+        empty="No local credentials or tools are required.",
+    )
     if not show_checks:
         return
     raw_checks = report.get("checks") or []
@@ -805,6 +1014,92 @@ def render_configuration(
     )
 
 
+def render_readiness(
+    report: dict[str, object],
+    renderer: TerminalRenderer,
+) -> None:
+    """Render one live readiness view grouped by participant and dependency."""
+
+    renderer.framed_section("Project readiness")
+    project = report.get("project") or {}
+    assert isinstance(project, dict)
+    renderer.table(
+        "Workflow",
+        [
+            ("Project", project.get("name"), None),
+            ("Workflow", project.get("workflow") or "not resolved", None),
+            (
+                "Overall",
+                "ready" if report.get("valid") else "not ready",
+                "success" if report.get("valid") else "error",
+            ),
+        ],
+    )
+    routes = report.get("effective_routing") or []
+    route_rows = routes if isinstance(routes, list) else []
+    _render_columns_or_empty(
+        renderer,
+        "Effective routing",
+        ("Status", "Participant", "Action", "Kind", "Configuration", "Effective"),
+        [
+            (
+                renderer.status_mark(
+                    "success" if item.get("available") else "error"
+                ),
+                item.get("participant"),
+                item.get("action"),
+                item.get("kind"),
+                item.get("configuration"),
+                item.get("effective"),
+            )
+            for item in route_rows
+            if isinstance(item, dict)
+        ],
+        empty="No model, assistant, human, or connector routes.",
+    )
+    raw_checks = report.get("checks") or []
+    checks = raw_checks if isinstance(raw_checks, list) else []
+    categories = (
+        (
+            "Structure and assignments",
+            lambda name: "live " not in name
+            and "credential" not in name
+            and " CLI " not in f" {name} ",
+        ),
+        (
+            "Credentials and local tools",
+            lambda name: "credential" in name or " CLI " in f" {name} ",
+        ),
+        ("Live providers", lambda name: name.startswith("live ")),
+    )
+    for title, selected in categories:
+        rows = []
+        for item in checks:
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or "")
+            if not selected(name):
+                continue
+            rows.append(
+                (
+                    renderer.status_mark(
+                        "success" if item.get("status") == "ok" else (
+                            "warning" if item.get("status") == "warn" else "error"
+                        )
+                    ),
+                    name,
+                    item.get("detail"),
+                )
+            )
+        _render_columns_or_empty(
+            renderer,
+            title,
+            ("Status", "Check", "Detail"),
+            rows,
+            empty="No checks.",
+        )
+
+
 def render_model_configuration(
     report: dict[str, object],
     renderer: TerminalRenderer,
@@ -820,7 +1115,7 @@ def render_model_configuration(
         (
             item.get("name"),
             item.get("spec") or "-",
-            item.get("idle_timeout") or "-",
+            _idle_release_display(item),
             item.get("source"),
         )
         for item in models.get("configurations") or []
@@ -829,7 +1124,7 @@ def render_model_configuration(
     _render_columns_or_empty(
         renderer,
         "Configurations",
-        ("Name", "Spec", "Idle", "Source"),
+        ("Name", "Spec", "Idle release", "Source"),
         configuration_rows,
         empty="No configurations.",
     )

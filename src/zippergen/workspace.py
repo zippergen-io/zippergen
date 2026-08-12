@@ -21,6 +21,7 @@ import re
 import tempfile
 import time
 import tomllib
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -91,8 +92,9 @@ def _slug(text: str) -> str:
     return value or "project"
 
 
-def _workspace_key(root: Path) -> str:
-    digest = hashlib.sha256(str(root).encode()).hexdigest()[:10]
+def _workspace_key(root: Path, project_id: str | None = None) -> str:
+    identity = f"{root}\0{project_id or ''}"
+    digest = hashlib.sha256(identity.encode()).hexdigest()[:10]
     return f"{_slug(root.name)}-{digest}"
 
 
@@ -300,10 +302,39 @@ class Workspace:
             else discover_project_root()
         )
         self.home = Path(home).expanduser() if home is not None else zippergen_home()
-        self.directory = self.home / "workspaces" / _workspace_key(self.root)
-        self.state_path = self.directory / "workspace.json"
-        self.secrets_path = self.directory / "development.secrets.json"
-        self.runs_directory = self.directory / "runs"
+
+    def _project_id(self) -> str | None:
+        """Read only the portable identity needed to locate private state."""
+
+        try:
+            raw = tomllib.loads(self.manifest_path.read_text(encoding="utf-8"))
+        except (
+            FileNotFoundError,
+            OSError,
+            UnicodeDecodeError,
+            tomllib.TOMLDecodeError,
+        ):
+            return None
+        value = str(raw.get("project_id") or "").strip()
+        return value or None
+
+    @property
+    def directory(self) -> Path:
+        return self.home / "workspaces" / _workspace_key(
+            self.root, self._project_id()
+        )
+
+    @property
+    def state_path(self) -> Path:
+        return self.directory / "workspace.json"
+
+    @property
+    def secrets_path(self) -> Path:
+        return self.directory / "development.secrets.json"
+
+    @property
+    def runs_directory(self) -> Path:
+        return self.directory / "runs"
 
 
     @property
@@ -327,6 +358,7 @@ class Workspace:
         if not self.manifest_path.exists():
             return {
                 "schema_version": PROJECT_SCHEMA_VERSION,
+                "project_id": None,
                 "name": self.root.name,
                 "specification_file": SPECIFICATION_FILE_NAME,
                 "workflow_entry": None,
@@ -479,6 +511,7 @@ class Workspace:
         )
         return {
             "schema_version": PROJECT_SCHEMA_VERSION,
+            "project_id": str(manifest.get("project_id") or "").strip() or None,
             "name": name,
             "specification_file": specification,
             "workflow_entry": workflow_entry,
@@ -526,6 +559,7 @@ class Workspace:
         lines = [
             "# Visible, versionable ZipperGen project configuration.",
             f"schema_version = {PROJECT_SCHEMA_VERSION}",
+            f"project_id = {_toml_string(manifest['project_id'])}",
             f"name = {_toml_string(manifest['name'])}",
             f"specification_file = {_toml_string(manifest['specification_file'])}",
         ]
@@ -676,6 +710,7 @@ class Workspace:
         content = (
             "# Visible, versionable ZipperGen project configuration.\n"
             f"schema_version = {PROJECT_SCHEMA_VERSION}\n"
+            f"project_id = {_toml_string(uuid.uuid4().hex)}\n"
             f"name = {_toml_string(project_name)}\n"
             f"specification_file = {_toml_string(specification_file)}\n"
         )
@@ -685,6 +720,16 @@ class Workspace:
             )
         _atomic_write_text(self.manifest_path, content)
         self._ensure_project_gitignore(framework_directory)
+        return self.project_manifest()
+
+    def require_project(self) -> dict[str, object]:
+        """Return the manifest or reject an accidental non-project directory."""
+
+        if not self.manifest_path.is_file():
+            raise WorkspaceError(
+                f"Not a ZipperGen project: {self.root}. Run 'zg init' in the "
+                "project directory first."
+            )
         return self.project_manifest()
 
     @property

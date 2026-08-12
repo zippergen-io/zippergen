@@ -488,8 +488,9 @@ zg model
 \end{lstlisting}
 
 If the provider needs an API key and none is available, the configuration
-command offers a hidden prompt. The key is saved in private storage on this
-computer. It is never written to \path{zippergen.toml}. One provider key may
+command offers a hidden prompt. The key is saved in the owner-only
+\path{ZIPPERGEN_HOME/workspaces/<project>/development.secrets.json} file on
+this computer. It is never written to \path{zippergen.toml}. One provider key may
 serve several named model configurations. You may instead set the normal
 environment variable before running the command.
 
@@ -938,9 +939,10 @@ zg connector assign User approval-chat
 \texttt{run status/inspect/trace/tasks/approve} & observe or answer a durable run \\
 \midrule
 \multicolumn{2}{@{}l}{\textbf{Configure}} \\
-\texttt{config} / \texttt{config check} & show or check all effective configuration \\
+\texttt{config} / \texttt{check} & show offline configuration or check all live readiness \\
 \texttt{model configure NAME SPEC} & save one named model configuration \\
 \texttt{model assign TARGET NAME} & route a participant or action \\
+\texttt{model credential NAME} & save the provider key in private site storage \\
 \texttt{model unassign TARGET} / \texttt{model remove NAME} & remove routing or an unused configuration \\
 \texttt{assistant configure NAME BACKEND} & save Codex or Claude under a project name \\
 \texttt{assistant assign TARGET NAME} & route an assistant participant or action \\
@@ -957,6 +959,7 @@ zg connector assign User approval-chat
 \midrule
 \multicolumn{2}{@{}l}{\textbf{Deploy}} \\
 \texttt{deploy [-{}-no-start]} & prepare, check, and normally start \\
+\texttt{deploy list/prune} & find deployments and archive orphans \\
 \texttt{deploy start/stop/restart} & move the service \\
 \texttt{deploy status/logs/check} & operate and diagnose \\
 \texttt{deploy inspect/trace/tasks/approve} & observe or answer the deployment \\

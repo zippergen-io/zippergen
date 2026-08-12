@@ -190,8 +190,23 @@ def test_a_directory_without_a_project_says_so(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("ZIPPERGEN_HOME", str(tmp_path / "home"))
 
-    with pytest.raises(SystemExit, match="none was found in this project"):
+    with pytest.raises(SystemExit, match="Not a ZipperGen project"):
         serve.main(["validate"])
+
+
+@pytest.mark.parametrize(
+    "command",
+    (["config"], ["model"], ["connector"], ["run", "--llm", "mock"]),
+)
+def test_project_commands_never_initialize_an_accidental_directory(
+    tmp_path, monkeypatch, command
+):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(tmp_path / "home"))
+
+    with pytest.raises(SystemExit, match="Not a ZipperGen project"):
+        serve.main(command)
+    assert not (tmp_path / "zippergen.toml").exists()
 
 
 def test_diff_compares_a_baseline_against_the_project_workflow(

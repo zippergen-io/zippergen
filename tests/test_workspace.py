@@ -232,6 +232,21 @@ def test_workspace_manages_the_visible_specification(tmp_path):
     assert "/tutorial-runtime/" in ignored.splitlines()
 
 
+def test_reinitializing_the_same_path_creates_a_new_private_identity(tmp_path):
+    root = tmp_path / "project"
+    root.mkdir()
+    first = Workspace(root, home=tmp_path / "state")
+    first_manifest = first.initialize_project(name="First")
+    first_directory = first.directory
+
+    first.manifest_path.unlink()
+    second = Workspace(root, home=tmp_path / "state")
+    second_manifest = second.initialize_project(name="Second")
+
+    assert second_manifest["project_id"] != first_manifest["project_id"]
+    assert second.directory != first_directory
+
+
 def test_workspace_provider_configuration_keeps_secrets_private(tmp_path):
     root = tmp_path / "project"
     root.mkdir()
