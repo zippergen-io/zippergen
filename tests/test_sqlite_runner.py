@@ -280,9 +280,9 @@ def test_local_supervisor_replays_persistent_store_without_duplicates(tmp_path):
     initial = {"A": {"x": 7}}
     first = LocalSupervisor(wf, [A, B], initial, store_path=path, timeout=10).run()
     conn = open_store(path)
-    before = conn.execute("SELECT COALESCE(SUM(seq),0) FROM role_state").fetchone()[0]
+    before = conn.execute("SELECT COALESCE(SUM(steps),0) FROM role_state").fetchone()[0]
     second = LocalSupervisor(wf, [A, B], {"A": {"x": -3}}, store_path=path, timeout=10).run()
-    after = conn.execute("SELECT COALESCE(SUM(seq),0) FROM role_state").fetchone()[0]
+    after = conn.execute("SELECT COALESCE(SUM(steps),0) FROM role_state").fetchone()[0]
     assert first is True and second is True
     assert after == before
 
@@ -421,9 +421,9 @@ def test_workflow_call_sqlite_persistent_store_replays_without_duplicates(tmp_pa
     wf.configure(execution="sqlite", store_path=path, timeout=10)
     assert wf(x=7) is True
     conn = open_store(path)
-    before = conn.execute("SELECT COALESCE(SUM(seq),0) FROM role_state").fetchone()[0]
+    before = conn.execute("SELECT COALESCE(SUM(steps),0) FROM role_state").fetchone()[0]
     assert wf(x=-3) is True
-    after = conn.execute("SELECT COALESCE(SUM(seq),0) FROM role_state").fetchone()[0]
+    after = conn.execute("SELECT COALESCE(SUM(steps),0) FROM role_state").fetchone()[0]
     assert after == before
 
 
@@ -521,7 +521,7 @@ def test_run_sqlite_external_act_replays_without_backend_call(tmp_path):
         timeout=10,
     )
     conn = open_store(path)
-    before = conn.execute("SELECT COALESCE(SUM(seq),0) FROM role_state").fetchone()[0]
+    before = conn.execute("SELECT COALESCE(SUM(steps),0) FROM role_state").fetchone()[0]
     second = run_sqlite(
         sqlite_external_round,
         [PAsk, PAnswer],
@@ -530,7 +530,7 @@ def test_run_sqlite_external_act_replays_without_backend_call(tmp_path):
         llm_backend=backend,
         timeout=10,
     )
-    after = conn.execute("SELECT COALESCE(SUM(seq),0) FROM role_state").fetchone()[0]
+    after = conn.execute("SELECT COALESCE(SUM(steps),0) FROM role_state").fetchone()[0]
     assert first == 10 and second == 10
     assert calls["n"] == 1
     assert after == before
@@ -548,7 +548,7 @@ def test_run_sqlite_effect_action_replays_without_python_call(tmp_path):
         timeout=10,
     )
     conn = open_store(path)
-    before = conn.execute("SELECT COALESCE(SUM(seq),0) FROM role_state").fetchone()[0]
+    before = conn.execute("SELECT COALESCE(SUM(steps),0) FROM role_state").fetchone()[0]
     second = run_sqlite(
         sqlite_effect_round,
         [PAsk, PAnswer],
@@ -556,7 +556,7 @@ def test_run_sqlite_effect_action_replays_without_python_call(tmp_path):
         store_path=path,
         timeout=10,
     )
-    after = conn.execute("SELECT COALESCE(SUM(seq),0) FROM role_state").fetchone()[0]
+    after = conn.execute("SELECT COALESCE(SUM(steps),0) FROM role_state").fetchone()[0]
 
     assert first == 11 and second == 11
     assert _effect_calls["n"] == 1
@@ -666,7 +666,7 @@ def test_run_sqlite_formula_replays_persistent_store_without_duplicates(tmp_path
         timeout=10,
     )
     conn = open_store(path)
-    before = conn.execute("SELECT COALESCE(SUM(seq),0) FROM role_state").fetchone()[0]
+    before = conn.execute("SELECT COALESCE(SUM(steps),0) FROM role_state").fetchone()[0]
     second = run_sqlite(
         sqlite_formula_round,
         [SQLiteCPLPlanner, SQLiteCPLExecutor],
@@ -674,7 +674,7 @@ def test_run_sqlite_formula_replays_persistent_store_without_duplicates(tmp_path
         store_path=path,
         timeout=10,
     )
-    after = conn.execute("SELECT COALESCE(SUM(seq),0) FROM role_state").fetchone()[0]
+    after = conn.execute("SELECT COALESCE(SUM(steps),0) FROM role_state").fetchone()[0]
     assert first == "yes" and second == "yes"
     assert after == before
     assert load_workflow_result(conn, "sqlite_formula_round") == "yes"
@@ -691,7 +691,7 @@ def test_run_sqlite_formula_loop_replays_from_monitor_snapshot(tmp_path):
         timeout=10,
     )
     conn = open_store(path)
-    before = conn.execute("SELECT COALESCE(SUM(seq),0) FROM role_state").fetchone()[0]
+    before = conn.execute("SELECT COALESCE(SUM(steps),0) FROM role_state").fetchone()[0]
     snapshots = conn.execute(
         "SELECT COUNT(*) FROM role_state WHERE monitor IS NOT NULL"
     ).fetchone()[0]
@@ -702,7 +702,7 @@ def test_run_sqlite_formula_loop_replays_from_monitor_snapshot(tmp_path):
         store_path=path,
         timeout=10,
     )
-    after = conn.execute("SELECT COALESCE(SUM(seq),0) FROM role_state").fetchone()[0]
+    after = conn.execute("SELECT COALESCE(SUM(steps),0) FROM role_state").fetchone()[0]
 
     assert first == 2 and second == 2
     assert snapshots == 1

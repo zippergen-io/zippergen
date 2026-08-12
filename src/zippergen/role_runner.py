@@ -180,14 +180,14 @@ class RoleRunner:
             if existing is not None:
                 self.conn.execute("ROLLBACK")
                 return self._adopt(existing)
-            self.seq = 0
+            self.steps = 0
             write_role_state(
                 self.conn,
                 self.role,
                 env=seeded,
                 control=encode_control(self.local_stmt, self.local_stmt),
                 monitor=self._monitor_state(),
-                seq=0,
+                steps=0,
                 status="running",
             )
             self.conn.execute("COMMIT")
@@ -199,7 +199,7 @@ class RoleRunner:
     def _adopt(self, state: dict):
         if self.monitor is not None and state["monitor"] is not None:
             self.monitor.restore_state(state["monitor"])
-        self.seq = state["seq"]
+        self.steps = state["steps"]
         return dict(state["env"]), decode_control(self.local_stmt, state["control"])
 
     def _monitor_state(self) -> dict | None:
@@ -226,12 +226,12 @@ class RoleRunner:
             env=self.env,
             control=encode_control(self.local_stmt, residual),
             monitor=self._monitor_state(),
-            seq=self.seq + 1,
+            steps=self.steps + 1,
             status=status,
             detail=detail,
         )
         self.conn.execute("COMMIT")
-        self.seq += 1
+        self.steps += 1
         self.channel.clear_taken()
         self._status_signature = (status, tuple(sorted((detail or {}).items())))
 
@@ -363,13 +363,13 @@ class RoleRunner:
         """Distinguish repeat visits to the same human action across a loop.
 
         Two iterations reach the same statement with the same inputs and must
-        still ask twice, so position alone is not enough. ``seq`` is the count
-        of committed steps, which is durable and identical after a restart, so
-        a crashed-and-resumed role re-finds its pending question instead of
+        still ask twice, so position alone is not enough. ``steps`` is the
+        count of committed steps: durable, and identical after a restart, so a
+        crashed-and-resumed role re-finds its pending question instead of
         asking a second one.
         """
 
-        return self.seq
+        return self.steps
 
     def _resolve_external(self, pending: PendingExternal) -> dict:
         node = cast(ActStmt, pending.node)

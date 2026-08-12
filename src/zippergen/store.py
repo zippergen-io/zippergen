@@ -59,7 +59,7 @@ CREATE TABLE IF NOT EXISTS role_state (
   env        TEXT NOT NULL,       -- json object of variable values
   control    TEXT NOT NULL,       -- json control state (see control.py)
   monitor    TEXT,                -- json CPL monitor state incl. vector clock
-  seq        INTEGER NOT NULL,    -- committed steps; distinguishes loop visits
+  steps      INTEGER NOT NULL,    -- committed steps; distinguishes loop visits
   status     TEXT NOT NULL,       -- running|blocked|waiting_receive|waiting_human|...
   detail     TEXT NOT NULL,       -- json, non-sensitive status metadata
   updated_at REAL NOT NULL
@@ -277,7 +277,7 @@ def claim_workflow_identity(conn, workflow: str, fingerprint: str) -> None:
 
 def load_role_state(conn, role: str) -> dict | None:
     row = conn.execute(
-        "SELECT env, control, monitor, seq, status, detail FROM role_state WHERE role=?",
+        "SELECT env, control, monitor, steps, status, detail FROM role_state WHERE role=?",
         (role,),
     ).fetchone()
     if row is None:
@@ -286,7 +286,7 @@ def load_role_state(conn, role: str) -> dict | None:
         "env": json.loads(row[0]),
         "control": json.loads(row[1]),
         "monitor": json.loads(row[2]) if row[2] is not None else None,
-        "seq": int(row[3]),
+        "steps": int(row[3]),
         "status": row[4],
         "detail": json.loads(row[5]),
     }
@@ -299,24 +299,24 @@ def write_role_state(
     env: dict,
     control: dict,
     monitor: dict | None,
-    seq: int,
+    steps: int,
     status: str,
     detail: dict | None = None,
 ) -> None:
     """Write a role's whole durable position. Caller owns the transaction."""
 
     conn.execute(
-        "INSERT INTO role_state(role,env,control,monitor,seq,status,detail,updated_at) "
+        "INSERT INTO role_state(role,env,control,monitor,steps,status,detail,updated_at) "
         "VALUES(?,?,?,?,?,?,?,?) "
         "ON CONFLICT(role) DO UPDATE SET env=excluded.env, control=excluded.control, "
-        "monitor=excluded.monitor, seq=excluded.seq, status=excluded.status, "
+        "monitor=excluded.monitor, steps=excluded.steps, status=excluded.status, "
         "detail=excluded.detail, updated_at=excluded.updated_at",
         (
             role,
             json.dumps(env),
             json.dumps(control),
             None if monitor is None else json.dumps(monitor),
-            int(seq),
+            int(steps),
             status,
             json.dumps(_json_safe(detail or {})),
             time.time(),
@@ -341,13 +341,13 @@ def set_role_status(conn, role: str, status: str, detail: dict | None = None) ->
 
 def list_role_states(conn) -> list[dict]:
     rows = conn.execute(
-        "SELECT role,control,seq,status,detail,updated_at FROM role_state ORDER BY role"
+        "SELECT role,control,steps,status,detail,updated_at FROM role_state ORDER BY role"
     ).fetchall()
     return [
         {
             "role": row[0],
             "control": json.loads(row[1]),
-            "seq": int(row[2]),
+            "steps": int(row[2]),
             "status": row[3],
             "detail": json.loads(row[4]),
             "updated_at": row[5],

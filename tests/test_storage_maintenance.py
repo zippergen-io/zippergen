@@ -33,7 +33,7 @@ def _populated_store(path: str, *, history_rows: int = 5) -> None:
             env={"x": 1},
             control={"k": "done"},
             monitor=None,
-            seq=3,
+            steps=3,
             status="done",
         )
         conn.execute(

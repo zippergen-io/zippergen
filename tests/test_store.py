@@ -93,7 +93,7 @@ def test_role_state_round_trips_and_keeps_only_the_latest(tmp_path):
             env={"x": 1},
             control={"k": "at", "p": [0]},
             monitor={"vc": {"A": 1}},
-            seq=1,
+            steps=1,
             status="running",
         )
         conn.execute("COMMIT")
@@ -104,7 +104,7 @@ def test_role_state_round_trips_and_keeps_only_the_latest(tmp_path):
             env={"x": 2},
             control={"k": "done"},
             monitor=None,
-            seq=2,
+            steps=2,
             status="done",
         )
         conn.execute("COMMIT")
@@ -113,7 +113,7 @@ def test_role_state_round_trips_and_keeps_only_the_latest(tmp_path):
         assert state["env"] == {"x": 2}
         assert state["control"] == {"k": "done"}
         assert state["monitor"] is None
-        assert state["seq"] == 2
+        assert state["steps"] == 2
         assert len(list_role_states(conn)) == 1
     finally:
         conn.close()
@@ -129,7 +129,7 @@ def test_status_updates_do_not_disturb_recovery_state(tmp_path):
             env={"x": 1},
             control={"k": "at", "p": [0]},
             monitor=None,
-            seq=7,
+            steps=7,
             status="running",
         )
         conn.execute("COMMIT")
@@ -140,7 +140,7 @@ def test_status_updates_do_not_disturb_recovery_state(tmp_path):
         assert state["status"] == "waiting_human"
         assert state["detail"] == {"action": "approve"}
         assert state["control"] == {"k": "at", "p": [0]}
-        assert state["seq"] == 7
+        assert state["steps"] == 7
     finally:
         conn.close()
 

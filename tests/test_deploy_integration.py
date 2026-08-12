@@ -67,7 +67,7 @@ def test_an_external_action_runs_again_when_its_result_did_not_commit(
     def crash_once(conn, role, **kwargs):
         # Let the initial state write through, then die on the commit that
         # would record the model's answer.
-        if not crashed["done"] and kwargs.get("seq", 0) > 0:
+        if not crashed["done"] and kwargs.get("steps", 0) > 0:
             crashed["done"] = True
             raise sqlite3.OperationalError("simulated crash before commit")
         return real_write(conn, role, **kwargs)

@@ -134,7 +134,7 @@ def _store_status(store_path: str) -> dict[str, object]:
             {
                 "role": row["role"],
                 "status": row["status"],
-                "steps": row["seq"],
+                "steps": row["steps"],
                 "updated_at": row["updated_at"],
             }
             for row in roles

@@ -215,7 +215,21 @@ def _shape(node) -> list:
             )
     action = getattr(node, "action", None)
     if action is not None:
+        # Name and declared output types. The implementation body and any prompt
+        # text are deliberately excluded: they do not move a position, so they
+        # do not invalidate stored control state. The types are included because
+        # committed variables are stored under these names, and a changed type
+        # would leave the wrong kind of value sitting in the environment.
         fields.append(["action", getattr(action, "name", type(action).__name__)])
+        fields.append(
+            [
+                "signature",
+                [
+                    [str(name), getattr(kind, "__name__", str(kind))]
+                    for name, kind in (getattr(action, "outputs", ()) or ())
+                ],
+            ]
+        )
     for name in ("bindings", "outputs"):
         value = getattr(node, name, None)
         if value:

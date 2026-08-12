@@ -235,6 +235,21 @@ def monitored_loop(limit: int @ A) -> int:
     return total @ A
 
 
+# A monitored two-role workflow, so sends carry a causal stamp.
+sent_guard = atom(lambda env: env.get("sent", 0) > 0, src="sent > 0")
+
+
+@workflow
+def stamped_two_role(n: int @ A) -> int:
+    A: sent = double(n)
+    if sent_guard @ A:
+        A(sent) >> B(sent)
+    else:
+        A(sent) >> B(sent)
+    B: got = add_one(sent)
+    return got @ B
+
+
 # ---------------------------------------------------------------------------
 # 1-2. Deterministic sequential execution, and crashing across a step
 # ---------------------------------------------------------------------------
@@ -367,6 +382,67 @@ def test_a_coregion_receive_takes_the_earliest_send_across_routes(tmp_path):
         assert order == ["C", "A", "B"], "send order decides, not sender name"
     finally:
         conn.close()
+
+
+def test_a_send_and_the_senders_advance_commit_together(tmp_path):
+    """Either both or neither. This is what makes 'never duplicated' true.
+
+        not committed:  no message,  old sender position
+        committed:      message,     new sender position
+    """
+
+    store = str(tmp_path / "run.sqlite")
+
+    # Crash on the commit that would both insert the message and advance A.
+    # `double` commits first, so budget=1 lands exactly on the send.
+    assert _drive(store, two_role, A, {"n": 4}, budget=1) == "crashed"
+
+    before_control = _state(store, "A")["control"]
+    assert _messages(store) == [], "an uncommitted send left no message"
+
+    _drive_until_blocked(store, two_role, A, {"n": 4})
+
+    after = _state(store, "A")
+    assert len(_messages(store)) == 1, "the committed send left exactly one"
+    assert after["control"] != before_control, "and the sender moved past it"
+
+
+def test_the_causal_stamp_is_written_with_the_senders_own_state(tmp_path):
+    """CPL's send side, not just its receive side.
+
+    The outgoing message carries the stamp, and the sender's monitor state
+    advances, in the same commit. A crash cannot leave a stamped message whose
+    sender never recorded the event, or the reverse.
+    """
+
+    store = str(tmp_path / "run.sqlite")
+    monitors, conditions = _build_formula_monitors(
+        stamped_two_role, _ordered_workflow_lifelines(stamped_two_role)
+    )
+    _drive_until_blocked(
+        store,
+        stamped_two_role,
+        A,
+        {"n": 4},
+        monitor=monitors["A"],
+        formula_conditions=conditions,
+    )
+
+    conn = open_store(store)
+    try:
+        stamp = conn.execute(
+            "SELECT causal_stamp FROM outstanding_messages ORDER BY id LIMIT 1"
+        ).fetchone()
+    finally:
+        conn.close()
+    assert stamp is not None and stamp[0] is not None, "the send carried a stamp"
+
+    sender_state = _state(store, "A")
+    assert sender_state["monitor"] is not None
+    sent_clock = json.loads(stamp[0])["vc"]
+    assert sender_state["monitor"]["vc"]["A"] >= sent_clock["A"], (
+        "the sender's own clock is at least as far along as what it stamped"
+    )
 
 
 def test_a_crashed_sender_does_not_send_its_message_twice(tmp_path):
@@ -657,7 +733,7 @@ def test_monitor_state_round_trips_through_the_store(tmp_path):
             env={},
             control={"k": "done"},
             monitor=before,
-            seq=0,
+            steps=0,
             status="running",
         )
         conn.execute("COMMIT")
@@ -737,6 +813,43 @@ def test_adding_a_statement_changes_the_fingerprint():
     assert program_fingerprint(
         {"A": project(before_edit, A)}
     ) != program_fingerprint({"A": project(after_edit, A)})
+
+
+def test_exactly_what_the_fingerprint_covers():
+    """Pin the guarantee, both halves, so nobody has to guess it.
+
+    The fingerprint answers one question: are the stored control positions still
+    meaningful? Positions are paths, so it covers the shape of the program and
+    which statement sits at each position, plus the declared output types,
+    because committed variables are stored under those names. It does not cover
+    an action's implementation or an LLM's prompt, which cannot move a path.
+    """
+
+    from zippergen.syntax import ActStmt, LLMAction, PureAction, VarExpr
+
+    x, y = Var("x", int), Var("y", int)
+
+    def fingerprint(action):
+        return program_fingerprint({"A": ActStmt(A, action, (VarExpr(x),), (y,))})
+
+    base = PureAction("calc", (("x", int),), (("y", int),), lambda v: v * 2)
+
+    # Not covered: the same action computing something else.
+    other_body = PureAction("calc", (("x", int),), (("y", int),), lambda v: v * 999)
+    assert fingerprint(base) == fingerprint(other_body)
+
+    # Not covered: a rewritten prompt.
+    prompt_one = LLMAction("ask", (("x", int),), (("y", str),), "one", "{x}", "text")
+    prompt_two = LLMAction("ask", (("x", int),), (("y", str),), "TWO", "OTHER {x}", "text")
+    assert fingerprint(prompt_one) == fingerprint(prompt_two)
+
+    # Covered: a different action in that position.
+    renamed = PureAction("calc_v2", (("x", int),), (("y", int),), lambda v: v * 2)
+    assert fingerprint(base) != fingerprint(renamed)
+
+    # Covered: a changed output type, because the committed value has that type.
+    retyped = PureAction("calc", (("x", int),), (("y", str),), lambda v: str(v))
+    assert fingerprint(base) != fingerprint(retyped)
 
 
 def test_changing_a_workflow_changes_its_fingerprint():

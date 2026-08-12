@@ -56,7 +56,7 @@ def _observed_run(tmp_path, monkeypatch):
         env={},
         control=encode_control(local, node),
         monitor=None,
-        seq=1,
+        steps=1,
         status="running_model",
         detail={"action": "draft_reply", "kind": "model"},
     )

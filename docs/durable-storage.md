@@ -6,7 +6,7 @@ A ZipperGen deployment keeps its state in one SQLite file. That file holds the
 Recovery is: read the state, continue. There is no log to replay, no snapshot to
 validate, no compaction, and nothing whose correctness needs an argument.
 
-You should be able to understand the whole model from the schema below, six
+You should be able to understand the whole model from the schema below, seven
 invariants, and the twenty-line loop in `role_runner.py`.
 
 ---
@@ -15,7 +15,7 @@ invariants, and the twenty-line loop in `role_runner.py`.
 
 ```sql
 role_state            -- one row per lifeline: its whole position
-  role, env, control, monitor, seq, status, detail, updated_at
+  role, env, control, monitor, steps, status, detail, updated_at
 
 outstanding_messages  -- sends nobody has absorbed yet
   id, sender, receiver, channel, payload, causal_stamp
@@ -36,8 +36,8 @@ That is all of it. Nine tables, and only the first two are the computation.
 - `env` is the role's variables, as JSON.
 - `control` is where the role is in its program. Section 2.
 - `monitor` is CPL monitor state, which includes the vector clock.
-- `seq` counts committed steps. It is what tells two visits to the same human
-  action in a loop apart.
+- `steps` counts committed steps. It is what tells two visits to the same
+  human action in a loop apart.
 - `status` and `detail` are for `zg run inspect`. Recovery ignores them.
 
 **The durable state is `role_state` plus `outstanding_messages` plus
@@ -107,6 +107,14 @@ transaction.** A receive takes the lowest-id row on its route, and that row is
 deleted in the same commit that advances the receiver. If the transaction rolls
 back, the message is still outstanding and nothing was lost.
 
+**I2b. Emitting a message and advancing the sender are the same transaction.**
+The mirror of I2, and what makes "a send is never duplicated" true:
+
+```
+not committed:  no message,  old sender position
+committed:      message,     new sender position
+```
+
 **I3. No transaction is open across the outside world.** An LLM call, a human
 question, a network effect: the transaction is dropped first, the call is made,
 and a second short transaction commits the result together with the successor
@@ -140,7 +148,7 @@ One rule covers everything:
 | **A send** | Never duplicated. The sender's control state is past it once committed. |
 | **An LLM call** | May be called again if its result did not commit. That can cost money and can give a different answer. |
 | **An `@effect`** | May run again if its result did not commit, **including its outside-world side effect**. An email can be sent twice. |
-| **A human task** | Survives restarts. Asked once, answered once. |
+| **A human task** | One durable task identity, surviving restart, accepting one answer. The *notification* that announces it may be sent more than once. |
 
 The LLM and effect guarantee is deliberate, and it is the honest one. The
 window is real: the provider may have completed the request while ZipperGen
@@ -156,11 +164,39 @@ thread an idempotency key through `@effect`.
 
 A human question can sit unanswered for days while nothing is running. So it
 has durable identity of its own: a `human_tasks` row with a stable id derived
-from the role, the position, the inputs, and `seq`. A restarted role recomputes
-the same id and re-finds its pending question instead of asking twice.
+from the role, the position, the inputs, and `steps`. A restarted role
+recomputes the same id and re-finds its pending question instead of asking
+twice. `complete_human_task` only writes over a `pending` row, so a second
+answer cannot overwrite the first.
+
+`steps` is the count of committed steps, and it is there because position alone
+is not enough:
+
+```python
+while ...:
+    ask_human(...)      # same statement, same inputs, two real questions
+```
 
 That is the one place a durable action record is genuinely necessary, and it is
-not generalised to model calls or effects, which do not outlive the process.
+deliberately not generalised to model calls or effects, which do not outlive
+the process.
+
+**Sending the notification is a separate, weaker thing.** Telling someone about
+the task over Telegram, email or Slack is an ordinary external effect with the
+same window as any other:
+
+```
+provider accepted the notification
+crash
+the notification row never committed
+```
+
+so on restart the notification can go out again. `human_task_notifications`
+records `(task, channel, target)` and an optional provider message id, which
+lets a reply be resolved back to the task and lets an adapter recognise what it
+already sent — but unless the provider offers idempotency, a duplicate
+notification is possible. The task itself is still asked once and answered
+once; only the announcement may repeat.
 
 ## 5. CPL and causal state
 
@@ -169,12 +205,25 @@ past — it needs the current summary of it.
 
 - The monitor's state, vector clock included, is a column on `role_state`. It
   commits with everything else, so it can never drift from the variables.
-- An outstanding message carries its causal stamp. When the receiver absorbs
-  it, the stamp is merged into the receiver's monitor state in the same
-  transaction, and then the message is gone.
+
+Both sides are atomic, which is what makes the picture local:
+
+```
+send:     sender's new state  +  the stamped outstanding message   (one commit)
+receive:  stamped message + receiver's state -> receiver's new state,
+          and the message is deleted                               (one commit)
+```
+
+A crash can never leave a stamped message whose sender did not record the
+event, nor a receiver that absorbed a stamp while the message survives. Both
+directions have a test.
 
 The model in one line: **the relevant past lives in the current causal state;
 the message table is communication not yet absorbed.**
+
+This is also a closer fit to the MSC semantics than the old design was. A
+channel is exactly its outstanding sends, and a lifeline is exactly its local
+state — which is what the chart says in the first place.
 
 ## 6. Workflow identity
 
@@ -188,11 +237,37 @@ Three cases, kept distinct:
 - **A fresh start** — `zg deploy reset`, new store, new claim.
 - **An incompatible edit** — refused with a clear error naming `zg deploy reset`.
 
-The fingerprint hashes the *shape* of each projected program and which
-statement sits at each position. It deliberately excludes guard closures: two
-programs differing only in what a condition computes have the same positions,
-so their control state stays valid. Hashing `repr` instead would also embed
-each closure's memory address, which differs between processes.
+### What the fingerprint covers, exactly
+
+It answers one question: **are the stored control positions still meaningful?**
+Positions are paths, so:
+
+| Change | Detected |
+|---|---|
+| a statement added, removed or moved | yes |
+| a different statement kind at a position | yes |
+| a different lifeline, sender, receiver or channel | yes |
+| a different action name at a position | yes |
+| a renamed variable or binding | yes |
+| a changed declared output **type** | yes |
+| a rewritten `@effect` or `@pure` **body** | **no** |
+| a rewritten LLM **prompt** | **no** |
+| a guard computing something different | **no** |
+
+The last three cannot move a path, so the stored control state stays valid.
+That is deliberate, and it is the right trade for a long-running service: fixing
+a typo in a prompt should not force a reset that throws away live state.
+
+Output types *are* included, because committed variables sit in `env` under
+those names, and a changed type would leave the wrong kind of value there.
+
+There is a test that pins both halves of this, so the guarantee is executable
+rather than a claim in prose.
+
+Hashing `repr(program)` instead would embed each guard closure's memory
+address, which is stable inside one process and different in the next. An
+earlier version did exactly that, which made every restart look like an
+incompatible edit.
 
 ## 7. Growth
 
