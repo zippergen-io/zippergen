@@ -251,12 +251,33 @@ def test_config_display_and_check_have_distinct_jobs(project, monkeypatch, capsy
     assert "Site" in display
     assert "Writer" in display
     assert "  draft_reply" in display
-    assert "Configuration checks" not in display
+    assert "Readiness" not in display
+    assert "│ Models" in display
+    assert "Models\n══════" not in display
+    assert "Configurations\n══════════════" in display
 
     assert main(["config", "check"]) == 1
     checked = capsys.readouterr().out
-    assert "Configuration checks" in checked
+    assert "Readiness" in checked
+    assert "Checks\n══════" in checked
     assert "OPENAI_API_KEY" in checked
+
+
+def test_empty_family_sections_omit_table_scaffolding(project, capsys):
+    assert main(["assistant"]) == 0
+    assistants = capsys.readouterr().out
+    assert "│ Assistants" in assistants
+    assert "No configurations." in assistants
+    assert "No assignments." in assistants
+    assert "No assistant actions." in assistants
+    assert "Name  Backend" not in assistants
+
+    assert main(["connector"]) == 0
+    connectors = capsys.readouterr().out
+    assert "│ Connectors" in connectors
+    assert "No configurations." in connectors
+    assert "No assignments or bindings." in connectors
+    assert "Name  Kind  Resource" not in connectors
 
 
 def test_validate_catches_a_stale_project_assignment(project):

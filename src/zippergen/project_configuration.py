@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import math
 import os
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 from types import ModuleType
@@ -666,6 +666,22 @@ def _nested_assignment_rows(
     return rows
 
 
+def _render_columns_or_empty(
+    renderer: TerminalRenderer,
+    title: str,
+    headers: tuple[str, ...],
+    rows: Sequence[tuple[object, ...]],
+    *,
+    empty: str,
+) -> None:
+    """Render a configuration subsection without an empty table shell."""
+
+    if rows:
+        renderer.columns(title, headers, list(rows))
+    else:
+        renderer.empty(title, empty)
+
+
 def render_configuration(
     report: dict[str, object],
     renderer: TerminalRenderer,
@@ -674,8 +690,9 @@ def render_configuration(
 ) -> None:
     project = report["project"]
     assert isinstance(project, dict)
+    renderer.framed_section("Project")
     renderer.table(
-        "Project configuration",
+        "Details",
         [
             ("Project", project.get("name"), None),
             ("Root", project.get("root"), None),
@@ -684,51 +701,59 @@ def render_configuration(
             ("Manifest", project.get("manifest"), None),
         ],
     )
-    renderer.section("Models")
+    renderer.framed_section("Models")
     models = report["models"]
     assert isinstance(models, dict)
     configurations = models.get("configurations") or []
-    renderer.columns(
+    model_configuration_rows = [
+        (
+            item.get("name"),
+            item.get("spec") or "-",
+            item.get("idle_timeout") or "-",
+            item.get("source"),
+        )
+        for item in configurations
+        if isinstance(item, dict)
+    ]
+    _render_columns_or_empty(
+        renderer,
         "Configurations",
         ("Name", "Spec", "Idle", "Source"),
-        [
-            (
-                item.get("name"),
-                item.get("spec") or "-",
-                item.get("idle_timeout") or "-",
-                item.get("source"),
-            )
-            for item in configurations
-            if isinstance(item, dict)
-        ],
+        model_configuration_rows,
+        empty="No configurations.",
     )
     assignments = models.get("assignments") or {}
     assert isinstance(assignments, dict)
-    renderer.columns(
+    _render_columns_or_empty(
+        renderer,
         "Assignments",
         ("Target", "Configuration", "Scope"),
         _nested_assignment_rows(assignments),
+        empty="No assignments.",
     )
-    renderer.section("Assistants")
+    renderer.framed_section("Assistants")
     _render_assistant_tables(report, renderer, compact_titles=True)
-    renderer.section("Connectors")
+    renderer.framed_section("Connectors")
     connectors = report["connectors"]
     assert isinstance(connectors, dict)
-    renderer.columns(
+    connector_configuration_rows = [
+        (
+            item.get("name"),
+            item.get("kind") or item.get("provider"),
+            item.get("chat_id")
+            or item.get("spreadsheet_id")
+            or item.get("query")
+            or "-",
+        )
+        for item in connectors.get("configurations") or []
+        if isinstance(item, dict)
+    ]
+    _render_columns_or_empty(
+        renderer,
         "Configurations",
         ("Name", "Kind", "Resource"),
-        [
-            (
-                item.get("name"),
-                item.get("kind") or item.get("provider"),
-                item.get("chat_id")
-                or item.get("spreadsheet_id")
-                or item.get("query")
-                or "-",
-            )
-            for item in connectors.get("configurations") or []
-            if isinstance(item, dict)
-        ],
+        connector_configuration_rows,
+        empty="No configurations.",
     )
     connector_rows: list[tuple[object, object, object]] = []
     for requirement, configuration in dict(connectors.get("bindings") or {}).items():
@@ -736,12 +761,14 @@ def render_configuration(
     connector_assignments = connectors.get("assignments") or {}
     if isinstance(connector_assignments, dict):
         connector_rows.extend(_nested_assignment_rows(connector_assignments))
-    renderer.columns(
+    _render_columns_or_empty(
+        renderer,
         "Assignments and bindings",
         ("Target", "Configuration", "Purpose"),
         connector_rows,
+        empty="No assignments or bindings.",
     )
-    renderer.section("Site")
+    renderer.framed_section("Site")
     renderer.table(
         "Private state",
         [
@@ -756,8 +783,10 @@ def render_configuration(
         return
     raw_checks = report.get("checks") or []
     checks = raw_checks if isinstance(raw_checks, list) else []
-    renderer.columns(
-        "Configuration checks",
+    renderer.framed_section("Readiness")
+    _render_columns_or_empty(
+        renderer,
+        "Checks",
         ("Status", "Check", "Detail"),
         [
             (
@@ -772,6 +801,7 @@ def render_configuration(
             for item in checks
             if isinstance(item, dict)
         ],
+        empty="No checks.",
     )
 
 
@@ -785,26 +815,32 @@ def render_model_configuration(
 
     models = report["models"]
     assert isinstance(models, dict)
-    renderer.columns(
-        "Model configurations",
+    renderer.framed_section("Models")
+    configuration_rows = [
+        (
+            item.get("name"),
+            item.get("spec") or "-",
+            item.get("idle_timeout") or "-",
+            item.get("source"),
+        )
+        for item in models.get("configurations") or []
+        if isinstance(item, dict)
+    ]
+    _render_columns_or_empty(
+        renderer,
+        "Configurations",
         ("Name", "Spec", "Idle", "Source"),
-        [
-            (
-                item.get("name"),
-                item.get("spec") or "-",
-                item.get("idle_timeout") or "-",
-                item.get("source"),
-            )
-            for item in models.get("configurations") or []
-            if isinstance(item, dict)
-        ],
+        configuration_rows,
+        empty="No configurations.",
     )
     assignments = models.get("assignments") or {}
     assert isinstance(assignments, dict)
-    renderer.columns(
-        "Model assignments",
+    _render_columns_or_empty(
+        renderer,
+        "Assignments",
         ("Target", "Configuration", "Scope"),
         _nested_assignment_rows(assignments),
+        empty="No assignments.",
     )
     if show_checks:
         _render_selected_checks(report, renderer, "model")
@@ -818,37 +854,45 @@ def _render_assistant_tables(
 ) -> None:
     assistants = report["assistants"]
     assert isinstance(assistants, dict)
-    renderer.columns(
+    configuration_rows = [
+        (item.get("name"), item.get("backend"))
+        for item in assistants.get("configurations") or []
+        if isinstance(item, dict)
+    ]
+    _render_columns_or_empty(
+        renderer,
         "Configurations" if compact_titles else "Assistant configurations",
         ("Name", "Backend"),
-        [
-            (item.get("name"), item.get("backend"))
-            for item in assistants.get("configurations") or []
-            if isinstance(item, dict)
-        ],
+        configuration_rows,
+        empty="No configurations.",
     )
     assignments = assistants.get("assignments") or {}
     assert isinstance(assignments, dict)
-    renderer.columns(
+    _render_columns_or_empty(
+        renderer,
         "Assignments" if compact_titles else "Assistant assignments",
         ("Target", "Configuration", "Scope"),
         _nested_assignment_rows(assignments),
+        empty="No assignments.",
     )
-    renderer.columns(
+    resolved_rows = [
+        (
+            item.get("target"),
+            item.get("backend") or "missing",
+            item.get("source"),
+            item.get("access"),
+            item.get("external_tools"),
+            item.get("shell"),
+        )
+        for item in assistants.get("resolved") or []
+        if isinstance(item, dict)
+    ]
+    _render_columns_or_empty(
+        renderer,
         "Effective routing" if compact_titles else "Effective assistant routing",
         ("Target", "Backend", "Source", "Access", "Tools", "Shell"),
-        [
-            (
-                item.get("target"),
-                item.get("backend") or "missing",
-                item.get("source"),
-                item.get("access"),
-                item.get("external_tools"),
-                item.get("shell"),
-            )
-            for item in assistants.get("resolved") or []
-            if isinstance(item, dict)
-        ],
+        resolved_rows,
+        empty="No assistant actions.",
     )
 
 
@@ -860,7 +904,8 @@ def render_assistant_configuration(
 ) -> None:
     """Render coding-assistant configurations and effective routing."""
 
-    _render_assistant_tables(report, renderer)
+    renderer.framed_section("Assistants")
+    _render_assistant_tables(report, renderer, compact_titles=True)
     if show_checks:
         _render_selected_checks(report, renderer, "assistant")
 
@@ -875,21 +920,25 @@ def render_connector_configuration(
 
     connectors = report["connectors"]
     assert isinstance(connectors, dict)
-    renderer.columns(
-        "Connector configurations",
+    renderer.framed_section("Connectors")
+    configuration_rows = [
+        (
+            item.get("name"),
+            item.get("kind") or item.get("provider"),
+            item.get("chat_id")
+            or item.get("spreadsheet_id")
+            or item.get("query")
+            or "-",
+        )
+        for item in connectors.get("configurations") or []
+        if isinstance(item, dict)
+    ]
+    _render_columns_or_empty(
+        renderer,
+        "Configurations",
         ("Name", "Kind", "Resource"),
-        [
-            (
-                item.get("name"),
-                item.get("kind") or item.get("provider"),
-                item.get("chat_id")
-                or item.get("spreadsheet_id")
-                or item.get("query")
-                or "-",
-            )
-            for item in connectors.get("configurations") or []
-            if isinstance(item, dict)
-        ],
+        configuration_rows,
+        empty="No configurations.",
     )
     rows: list[tuple[object, object, object]] = []
     for requirement, configuration in dict(connectors.get("bindings") or {}).items():
@@ -897,10 +946,12 @@ def render_connector_configuration(
     assignments = connectors.get("assignments") or {}
     if isinstance(assignments, dict):
         rows.extend(_nested_assignment_rows(assignments))
-    renderer.columns(
-        "Connector routing",
+    _render_columns_or_empty(
+        renderer,
+        "Assignments and bindings",
         ("Target", "Configuration", "Purpose"),
         rows,
+        empty="No assignments or bindings.",
     )
     if show_checks:
         _render_selected_checks(report, renderer, "connector")
@@ -932,8 +983,9 @@ def _render_selected_checks(
     scope: str,
 ) -> None:
     checks = _selected_checks(report, scope)
-    renderer.columns(
-        f"{scope.title()} checks",
+    _render_columns_or_empty(
+        renderer,
+        "Checks",
         ("Status", "Check", "Detail"),
         [
             (
@@ -947,6 +999,7 @@ def _render_selected_checks(
             )
             for item in checks
         ],
+        empty="No checks.",
     )
 
 

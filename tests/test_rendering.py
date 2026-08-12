@@ -60,6 +60,38 @@ def test_next_uses_double_section_rule_and_no_indent():
     assert output[:3] == ["Next", "════", "run"]
 
 
+def test_framed_section_distinguishes_a_major_domain():
+    output: list[str] = []
+    renderer = TerminalRenderer(
+        output.append,
+        color=False,
+        columns=lambda: 80,
+    )
+
+    renderer.framed_section("Models")
+
+    assert output == [
+        "╭" + "─" * 58 + "╮",
+        "│ Models" + " " * 50 + " │",
+        "╰" + "─" * 58 + "╯",
+    ]
+    assert all(renderer.visible_width(line) == 60 for line in output)
+
+
+def test_empty_subsection_names_what_is_missing_without_table_headers():
+    output: list[str] = []
+    renderer = TerminalRenderer(output.append, color=False)
+
+    renderer.empty("Assignments", "No assignments.")
+
+    assert output == [
+        "Assignments",
+        "═══════════",
+        "No assignments.",
+        "",
+    ]
+
+
 def test_column_renderer_keeps_short_marked_statuses_on_one_line():
     output: list[str] = []
     renderer = TerminalRenderer(

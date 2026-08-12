@@ -190,6 +190,25 @@ class TerminalRenderer:
         self.emit(title)
         self.emit(("═" if major else "─") * self.visible_width(title))
 
+    def framed_section(self, title: str) -> None:
+        """Give one major domain a stable visual boundary."""
+
+        width = max(
+            self.visible_width(title) + 4,
+            min(60, self.output_columns()),
+        )
+        inner = width - 2
+        self.emit(f"╭{'─' * inner}╮")
+        self.emit(f"│ {self.pad_cell(title, inner - 2)} │")
+        self.emit(f"╰{'─' * inner}╯")
+
+    def empty(self, title: str, message: str) -> None:
+        """Render an empty subsection without meaningless table headings."""
+
+        self.section(title)
+        self.emit(message)
+        self.emit()
+
     def pad_cell(
         self,
         value: object,
@@ -219,6 +238,7 @@ class TerminalRenderer:
         rows: list[tuple[object, ...]],
         *,
         right_aligned: frozenset[int] = frozenset(),
+        major: bool = True,
     ) -> None:
         if not headers:
             raise ValueError("A column table requires at least one heading.")
@@ -285,7 +305,7 @@ class TerminalRenderer:
                     ),
                 )
                 widths[selected] -= 1
-        self.section(title)
+        self.section(title, major=major)
         bounded_columns = {
             index
             for index, heading in enumerate(headers)
@@ -337,12 +357,13 @@ class TerminalRenderer:
         rows: list[tuple[str, object, StatusKind | None]],
         *,
         headings: bool = True,
+        major: bool = True,
     ) -> None:
         content = [row for row in rows if row[0].casefold() != "next"]
         next_values = [
             value for label, value, _kind in rows if label.casefold() == "next"
         ]
-        self.section(title)
+        self.section(title, major=major)
         label_width = max(
             len("Field") if headings else 0,
             max(
