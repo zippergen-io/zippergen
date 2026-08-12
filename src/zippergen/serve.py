@@ -517,6 +517,8 @@ def _doctor_command(args) -> int:
         print(json.dumps({"deployment": args.name, "checks": checks}, default=str, sort_keys=True))
     else:
         _print_doctor(args.name, checks)
+    if not getattr(args, "strict", False):
+        return 0
     return 1 if any(check.get("status") == "fail" for check in checks) else 0
 
 
@@ -1285,7 +1287,9 @@ def _check_command(args) -> int:
         print(json.dumps(report, indent=2, default=str))
     else:
         render_readiness(report, TerminalRenderer())
-    return 0 if report["valid"] else 1
+    # Reading a report is not an error, so the exit code says whether the check
+    # ran, not what it found. Scripts that want a gate ask for one.
+    return 1 if getattr(args, "strict", False) and not report["valid"] else 0
 
 
 def _guided_required_value(
@@ -3469,6 +3473,11 @@ def _parse_cli_args(
     )
     check.add_argument("--json", action="store_true", help="Print JSON.")
     check.add_argument("--project", help="Project root.")
+    check.add_argument(
+        "--strict",
+        action="store_true",
+        help="Exit non-zero when something is not ready, for scripts.",
+    )
 
     workflow_parser = sub.add_parser(
         "workflow",
@@ -3975,6 +3984,11 @@ def _parse_cli_args(
 
     deploy_check = deploy_sub.add_parser("check", help="check a deployment for common problems")
     deploy_check.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    deploy_check.add_argument(
+        "--strict",
+        action="store_true",
+        help="Exit non-zero when a check fails, for scripts.",
+    )
     deploy_check.add_argument(
         "--no-service-check",
         "--no-systemd",

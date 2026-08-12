@@ -1543,7 +1543,7 @@ def test_doctor_returns_failure_for_broken_profile(tmp_path, monkeypatch, capsys
         "python": str(tmp_path / "missing-python"),
     }))
 
-    rc = main(["deploy", "check", "--json", "--no-systemd"])
+    rc = main(["deploy", "check", "--strict", "--json", "--no-systemd"])
 
     captured = capsys.readouterr()
     payload = json.loads(captured.out)
@@ -1551,6 +1551,10 @@ def test_doctor_returns_failure_for_broken_profile(tmp_path, monkeypatch, capsys
     assert rc == 1
     assert any(check["name"] == "working directory" for check in failures)
     assert any(check["name"] == "run script" for check in failures)
+
+    # Without --strict the same broken profile still reports, but reporting is
+    # not itself a failure, so an interactive shell sees a clean exit.
+    assert main(["deploy", "check", "--json", "--no-systemd"]) == 0
 def test_status_command_reports_completed_run(tmp_path, monkeypatch, capsys):
     store_path = _prepared_deployment_store(tmp_path, monkeypatch, capsys)
     assert main([

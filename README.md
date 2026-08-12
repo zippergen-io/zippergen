@@ -391,6 +391,11 @@ small model request. `zg config --json` and `zg check --json` provide the same
 views for CI and coding agents. Family checks such as `zg model check` narrow
 the diagnosis; without a name they check every saved configuration.
 
+`zg check` exits zero once it has run, because a report is not a failure. Add
+`--strict` when a script should stop on anything that is not ready. `zg deploy
+check` works the same way. `zg validate` is the exception and exits non-zero on
+a broken workflow, because that is a real error rather than news.
+
 ## The CLI
 
 The whole public surface fits in one tree:

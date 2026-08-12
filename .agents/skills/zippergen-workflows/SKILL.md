@@ -122,7 +122,9 @@ global override and replaces all project assignments for that run.
 Use `zg config` to inspect the full effective configuration and missing local
 facts without contacting providers. `zg validate` is also offline. Use
 `zg check` for project-wide readiness; it contacts configured providers and
-may send a small model request.
+may send a small model request. `zg check` exits zero once it has run, so read
+its output rather than its exit code. Pass `--strict` to make anything that is
+not ready exit non-zero.
 
 For an `@assistant` action, choose Codex or Claude through a named project
 configuration. Do not hard-code the backend merely to route one project:

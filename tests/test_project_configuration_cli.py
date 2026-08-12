@@ -219,8 +219,32 @@ def test_config_check_reports_missing_site_credentials(project, capsys):
     main(["model", "assign", "Writer", "writer"])
     capsys.readouterr()
 
-    assert main(["check"]) == 1
+    assert main(["check"]) == 0
     assert "OPENAI_API_KEY" in capsys.readouterr().out
+
+
+def test_check_exit_code_says_whether_it_ran_not_what_it_found(project, capsys):
+    """A missing credential is news, not a command failure.
+
+    An interactive shell shows the last exit code, so a plain report must not
+    look like a crash. Scripts that want a gate ask for one with --strict.
+    """
+
+    main(["model", "configure", "writer", "openai:gpt-4o-mini"])
+    main(["model", "assign", "Writer", "writer"])
+    capsys.readouterr()
+
+    assert main(["check"]) == 0
+    assert "OPENAI_API_KEY" in capsys.readouterr().out
+
+    assert main(["check", "--strict"]) == 1
+    assert "OPENAI_API_KEY" in capsys.readouterr().out
+
+
+def test_strict_check_stays_zero_when_the_project_is_ready(project, capsys):
+    capsys.readouterr()
+
+    assert main(["check", "--strict"]) == 0
 
 
 def test_config_reports_an_unassigned_model_credential_without_contacting_it(
@@ -323,7 +347,7 @@ def test_config_display_and_check_have_distinct_jobs(project, monkeypatch, capsy
     assert "Models\n══════" not in display
     assert "Configurations\n══════════════" in display
 
-    assert main(["check"]) == 1
+    assert main(["check"]) == 0
     checked = capsys.readouterr().out
     assert "Project readiness" in checked
     assert "Credentials and local tools\n═══════════════════════════" in checked
