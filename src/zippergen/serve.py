@@ -78,9 +78,7 @@ from zippergen.deployment_checks import (
     _doctor_check,
     _doctor_checks,
     _launchd_active_check,
-    _model_provider,
     _path_parent_check,
-    _required_model_provider_secrets,
     _safe_json_loads,
     _store_status,
     _systemd_active_check,
@@ -1346,105 +1344,51 @@ def _project_choices(kind: str, project: str | None) -> tuple[str, ...]:
     return tuple(completion_candidates(kind, project))
 
 
-def _guided_model_spec(value: object, *, default: str | None = None) -> str:
-    """Collect a compact model spec through clear provider-specific prompts."""
+def _provider_credential_command(workspace, connection: object) -> int:
+    """Prompt for the private credential owned by one provider connection."""
 
-    entered = str(value or "").strip()
-    if entered:
-        return entered
-    if default and not sys.stdin.isatty():
-        return default
-    if default and sys.stdin.isatty():
-        try:
-            entered = input(f"Model specification [{default}]: ").strip()
-        except (EOFError, KeyboardInterrupt):
-            raise SystemExit("Cancelled. Nothing was saved.") from None
-        return entered or default
-    provider = _guided_required_value(
-        None,
-        label="Model provider",
-        command="zg model configure NAME PROVIDER:MODEL",
-        choices=("openai", "anthropic", "mistral", "local", "scripted"),
+    from zippergen.provider_connections import (
+        provider_credential_field,
+        provider_credential_label,
+        provider_standard_environment,
     )
-    if provider == "scripted":
-        path = _guided_required_value(
-            None,
-            label="Scripted response file",
-            command="zg model configure NAME scripted:PATH",
-        )
-        return f"scripted:{path}"
-    model = _guided_required_value(
-        None,
-        label="Model name",
-        command=f"zg model configure NAME {provider}:MODEL",
-    )
-    return f"{provider}:{model}"
-
-
-def _collect_model_credential(workspace, spec: str) -> None:
-    """Offer to save a model API key in private site storage."""
-
-    from zippergen.project_configuration import model_credential_name
-
-    credential = model_credential_name(spec)
-    if credential is None:
-        return
-    if workspace.development_credential(credential):
-        print(f"Using {credential} already saved on this computer.")
-        return
-    if os.environ.get(credential):
-        print(f"Found {credential} in the environment.")
-        return
-    if not sys.stdin.isatty():
-        print(
-            f"{credential} is not configured on this computer. Set it in the "
-            "environment or run this command interactively to save it privately."
-        )
-        return
-    try:
-        value = getpass.getpass(
-            f"{credential} (input hidden. Press Enter to configure later): "
-        ).strip()
-    except (EOFError, KeyboardInterrupt):
-        raise SystemExit(
-            "Cancelled. The model configuration was saved without a credential."
-        ) from None
-    if not value:
-        print(f"Skipped {credential}. Configure it before using this model.")
-        return
-    workspace.save_development_credential(credential, value)
-    print(f"Saved {credential} in {workspace.secrets_path} (owner-only file).")
-
-
-def _model_credential_command(workspace, name: object) -> int:
-    """Prompt for the credential required by one named model configuration."""
-
-    from zippergen.project_configuration import model_credential_name
     from zippergen.workspace import WorkspaceError
 
-    configurations = workspace.model_configurations()
+    connections = workspace.provider_connections()
     selected = _guided_required_value(
-        name,
-        label="Model configuration",
-        command="zg model credential NAME",
-        choices=tuple(sorted(configurations)),
+        connection,
+        label="Provider connection",
+        command="zg provider credential CONNECTION",
+        choices=tuple(sorted(connections)),
     )
-    configuration = configurations.get(selected)
-    if configuration is None:
-        raise WorkspaceError(f"Model configuration does not exist: {selected}.")
-    spec = str(configuration.get("spec") or "")
-    credential = model_credential_name(spec)
-    if credential is None:
-        print(f"Model configuration {selected} does not require an API key.")
+    profile = connections.get(selected)
+    if profile is None:
+        raise WorkspaceError(f"Provider connection does not exist: {selected}.")
+    kind = str(profile.get("kind") or "")
+    field = provider_credential_field(kind)
+    label = provider_credential_label(kind)
+    if field is None:
+        print(f"Provider connection {selected} does not require a credential.")
+        return 0
+    if kind == "google":
+        print("Google uses browser authorization rather than a pasted API key.")
+        print(f"Run: zg provider authorize {selected} --scopes SCOPE,...")
         return 0
     try:
-        value = getpass.getpass(f"{credential} (input hidden): ").strip()
+        value = getpass.getpass(f"{label} (input hidden): ").strip()
     except (EOFError, KeyboardInterrupt):
         raise SystemExit("Cancelled. Nothing was saved.") from None
     if not value:
         raise SystemExit("No credential entered. Nothing was saved.")
-    workspace.save_development_credential(credential, value)
-    print(f"Saved {credential} in {workspace.secrets_path} (owner-only file).")
+    workspace.save_provider_secret(selected, field, value)
+    environment = provider_standard_environment(kind)
+    print(f"Saved {label} for provider connection {selected!r}.")
+    print(f"Private location: {workspace.secrets_path} (owner-only file).")
+    if environment:
+        print(
+            f"When no private value is saved, this connection may instead "
+            f"read {environment} from the process environment."
+        )
     return 0
 
 
@@ -1466,32 +1410,37 @@ def _model_command(args) -> int:
             name = _guided_required_value(
                 args.name,
                 label="Model configuration name",
-                command="zg model configure NAME PROVIDER:MODEL",
+                command="zg model configure NAME CONNECTION MODEL",
             )
             existing = workspace.model_configurations().get(name) or {}
-            spec = _guided_model_spec(
-                args.spec,
-                default=str(existing.get("spec") or "") or None,
+            connection = _guided_required_value(
+                args.connection,
+                label="Provider connection",
+                command="zg model configure NAME CONNECTION MODEL",
+                choices=_project_choices("provider-connections-model", args.project),
+                default=str(existing.get("connection") or "") or None,
+            )
+            model = _guided_required_value(
+                args.model,
+                label="Model name or path",
+                command="zg model configure NAME CONNECTION MODEL",
+                default=str(existing.get("model") or "") or None,
             )
             idle_timeout = args.idle_timeout
-            if (
-                idle_timeout is None
-                and str(spec).partition(":")[0] in {"local", "ollama"}
-                and existing.get("idle_timeout") is not None
-            ):
+            if idle_timeout is None and existing.get("idle_timeout") is not None:
                 idle_timeout = float(str(existing["idle_timeout"]))
             value = configure_model(
                 workspace,
                 name,
-                spec,
+                connection,
+                model,
                 idle_timeout=idle_timeout,
-                base_url=args.base_url,
             )
-            print(f"Saved model configuration {name}: {value['spec']}")
-            _collect_model_credential(workspace, str(value["spec"]))
+            print(
+                f"Saved model configuration {name}: "
+                f"{value['connection']} / {value['model']}"
+            )
             return 0
-        if action == "credential":
-            return _model_credential_command(workspace, args.name)
         if action in {"assign", "unassign"}:
             target = _guided_required_value(
                 args.target,
@@ -1550,6 +1499,102 @@ def _model_command(args) -> int:
     return (
         1
         if action == "check" and not configuration_scope_valid(report, "model")
+        else 0
+    )
+
+
+def _provider_command(args) -> int:
+    """Show and manage named provider identities shared by configurations."""
+
+    from zippergen.project_configuration import (
+        configuration_report,
+        configuration_scope_valid,
+        render_provider_configuration,
+    )
+    from zippergen.provider_connections import PROVIDER_KINDS
+    from zippergen.rendering import TerminalRenderer
+    from zippergen.workspace import Workspace, WorkspaceError
+
+    workspace = Workspace(getattr(args, "project", None))
+    action = getattr(args, "provider_action", None)
+    try:
+        if action == "configure":
+            name = _guided_required_value(
+                args.name,
+                label="Provider connection name",
+                command="zg provider configure NAME KIND",
+            )
+            existing = workspace.provider_connections().get(name) or {}
+            kind = _guided_required_value(
+                args.kind,
+                label="Provider kind",
+                command="zg provider configure NAME KIND",
+                choices=PROVIDER_KINDS,
+                default=str(existing.get("kind") or "") or None,
+            )
+            base_url = args.base_url
+            if kind == "local":
+                base_url = _guided_required_value(
+                    base_url,
+                    label="OpenAI-compatible base URL",
+                    command="zg provider configure NAME local --base-url URL",
+                    default=str(existing.get("base_url") or "")
+                    or "http://127.0.0.1:11434/v1",
+                )
+            elif base_url:
+                raise WorkspaceError("--base-url is only valid for local providers.")
+            saved = workspace.save_provider_connection(
+                name,
+                {"kind": kind, **({"base_url": base_url} if base_url else {})},
+            )
+            print(f"Saved provider connection {name}: {saved['kind']}.")
+            from zippergen.provider_connections import provider_credential_field
+
+            if provider_credential_field(kind):
+                if kind == "google":
+                    print(
+                        f"Authorize it with: zg provider authorize {name} "
+                        "--scopes SCOPE,..."
+                    )
+                else:
+                    print(f"Add its credential with: zg provider credential {name}")
+            return 0
+        if action == "credential":
+            return _provider_credential_command(workspace, args.name)
+        if action == "remove":
+            name = _guided_required_value(
+                args.name,
+                label="Provider connection",
+                command="zg provider remove NAME",
+                choices=_project_choices("provider-connections", args.project),
+            )
+            workspace.remove_provider_connection(name)
+            print(f"Removed provider connection {name}.")
+            return 0
+        if action == "check" and args.name:
+            if args.name not in workspace.provider_connections():
+                raise WorkspaceError(
+                    f"Provider connection does not exist: {args.name}."
+                )
+        selected = str(getattr(args, "name", "") or "")
+        report = configuration_report(
+            workspace,
+            live=action == "check",
+            include_site_checks=True,
+            provider_names=(selected,)
+            if selected
+            else tuple(workspace.provider_connections()),
+        )
+    except WorkspaceError as exc:
+        raise SystemExit(str(exc)) from exc
+    render_provider_configuration(
+        report,
+        TerminalRenderer(),
+        show_checks=action == "check",
+    )
+    return (
+        1
+        if action == "check" and not configuration_scope_valid(report, "provider")
         else 0
     )
 
@@ -2030,37 +2075,6 @@ def _reset_deployment_command(args) -> int:
     return 0
 
 
-def _telegram_bot_token(workspace) -> None:
-    """Read the bot token once, without echo, and keep it off this machine's argv."""
-
-    import getpass
-
-    if workspace.connector_provider_secret("telegram", "bot_token"):
-        print("Using the Telegram bot token already saved on this computer.")
-        return
-    try:
-        token = getpass.getpass("Telegram bot token (input hidden): ").strip()
-    except (EOFError, KeyboardInterrupt):
-        raise SystemExit("Cancelled; nothing was saved.") from None
-    if not token:
-        raise SystemExit("A bot token is required.")
-    workspace.save_connector_provider_secret("telegram", "bot_token", token)
-    print(
-        f"Saved the Telegram bot token in {workspace.secrets_path} "
-        "(owner-only file)."
-    )
-
-
-def _telegram_chat_id(value: object) -> str:
-    """Collect the portable chat identifier in the user's terminal."""
-
-    return _guided_required_value(
-        value,
-        label="Telegram chat id",
-        command="zg connector configure NAME telegram --chat-id CHAT_ID",
-    )
-
-
 def _project_connector_runtime(
     args,
     deployed_workflow: str | None = None,
@@ -2095,10 +2109,10 @@ def _project_connector_runtime(
     return connector_runtime(workspace, canonical, workflow, module)
 
 
-def _connector_accept_google_command(args) -> int:
+def _provider_accept_google_command(args) -> int:
     """Save a Google authorization produced on a computer with a browser.
 
-    `connector authorize google` runs the browser flow and prints an encoded
+    `provider authorize CONNECTION` runs the browser flow and prints an encoded
     result. This is the other half: it stores the credential and the scopes
     Google actually granted, so a machine with no browser — a server — can be
     authorized from your laptop.
@@ -2131,12 +2145,17 @@ def _connector_accept_google_command(args) -> int:
 
     granted, client, expiry = google_authorization_summary(result)
     workspace = Workspace(getattr(args, "project", None))
-    workspace.save_connector_provider_secret(
-        "google", "authorized_user_json", result.authorized_user_json
+    connection = str(args.name)
+    profile = workspace.provider_connections().get(connection)
+    if profile is None or profile.get("kind") != "google":
+        raise SystemExit(
+            f"Provider connection {connection!r} does not exist or is not Google."
+        )
+    workspace.save_provider_secret(
+        connection, "authorized_user_json", result.authorized_user_json
     )
-    profile = workspace.connector_provider_profiles().get("google") or {}
-    workspace.save_connector_provider_profile(
-        "google",
+    workspace.save_provider_connection(
+        connection,
         {
             **profile,
             "kind": "google",
@@ -2192,9 +2211,8 @@ def _connector_assign_command(args) -> int:
 def _connector_configure_command(args) -> int:
     """Save one named connector configuration for this project.
 
-    Portable fields — which chat, which spreadsheet, which mailbox query — go
-    in `zippergen.toml` and are committed. Credentials never do: the Telegram
-    token is typed here, and Google uses `connector authorize`.
+    Portable fields — which chat, spreadsheet, or mailbox query — are separate
+    from the provider identity and credential shared by configurations.
     """
 
     from zippergen.workspace import Workspace, WorkspaceError
@@ -2203,25 +2221,37 @@ def _connector_configure_command(args) -> int:
     name = _guided_required_value(
         args.name,
         label="Connector configuration name",
-        command="zg connector configure NAME PROVIDER",
+        command="zg connector configure NAME CONNECTION KIND",
     )
     existing = workspace.connector_configurations().get(name) or {}
-    existing_kind = str(
-        existing.get("kind") or existing.get("provider") or ""
+    connection = _guided_required_value(
+        args.connection,
+        label="Provider connection",
+        command="zg connector configure NAME CONNECTION KIND",
+        choices=_project_choices("provider-connections-connector", args.project),
+        default=str(existing.get("connection") or "") or None,
     )
-    provider = _guided_required_value(
-        args.connector_provider,
-        label="Connector provider",
-        command="zg connector configure NAME PROVIDER",
-        choices=("telegram", "gmail", "google-sheets"),
-        default=(
-            existing_kind
-            if existing_kind in {"telegram", "gmail", "google-sheets"}
-            else None
-        ),
+    provider_profile = workspace.provider_connections().get(connection) or {}
+    provider = str(provider_profile.get("kind") or "")
+    supported = (
+        ("telegram",)
+        if provider == "telegram"
+        else (("gmail", "google-sheets") if provider == "google" else ())
+    )
+    if not supported:
+        raise WorkspaceError(
+            f"Provider connection {connection!r} ({provider or 'unknown'}) "
+            "cannot be used by a connector."
+        )
+    kind = _guided_required_value(
+        args.kind,
+        label="Connector kind",
+        command="zg connector configure NAME CONNECTION KIND",
+        choices=supported,
+        default=str(existing.get("kind") or "") or None,
     )
 
-    if provider == "telegram":
+    if kind == "telegram":
         if args.spreadsheet_id or args.tab or args.account or args.query:
             raise SystemExit(
                 "Telegram configuration uses --chat-id only."
@@ -2229,17 +2259,19 @@ def _connector_configure_command(args) -> int:
         chat_id = _guided_required_value(
             args.chat_id,
             label="Telegram chat id",
-            command="zg connector configure NAME telegram --chat-id CHAT_ID",
+            command=(
+                "zg connector configure NAME CONNECTION telegram "
+                "--chat-id CHAT_ID"
+            ),
             default=str(existing.get("chat_id") or "") or None,
         )
-        _telegram_bot_token(workspace)
         values = {
-            "provider": "telegram",
+            "connection": connection,
             "kind": "telegram",
             "chat_id": chat_id,
         }
         described = f"chat {chat_id}"
-    elif provider == "google-sheets":
+    elif kind == "google-sheets":
         if args.chat_id or args.account or args.query:
             raise SystemExit(
                 "Google Sheets configuration uses --spreadsheet-id and --tab."
@@ -2248,7 +2280,7 @@ def _connector_configure_command(args) -> int:
             args.spreadsheet_id,
             label="Google spreadsheet id",
             command=(
-                "zg connector configure NAME google-sheets "
+                "zg connector configure NAME CONNECTION google-sheets "
                 "--spreadsheet-id ID --tab TAB"
             ),
             default=str(existing.get("spreadsheet_id") or "") or None,
@@ -2257,26 +2289,26 @@ def _connector_configure_command(args) -> int:
             args.tab,
             label="Google Sheets tab",
             command=(
-                "zg connector configure NAME google-sheets "
+                "zg connector configure NAME CONNECTION google-sheets "
                 "--spreadsheet-id ID --tab TAB"
             ),
             default=str(existing.get("tab") or "") or None,
         )
         values = {
-            "provider": "google",
+            "connection": connection,
             "kind": "google-sheets",
             "spreadsheet_id": spreadsheet_id,
             "tab": tab,
         }
         described = f"tab {tab}"
-    elif provider == "gmail":
+    elif kind == "gmail":
         if args.chat_id or args.spreadsheet_id or args.tab:
             raise SystemExit(
                 "Gmail configuration does not use --chat-id, "
                 "--spreadsheet-id, or --tab."
             )
         values = {
-            "provider": "google",
+            "connection": connection,
             "kind": "gmail",
             "account": str(args.account or existing.get("account") or "me"),
             "query": str(
@@ -2285,7 +2317,7 @@ def _connector_configure_command(args) -> int:
         }
         described = f"query {values['query']!r}"
     else:  # pragma: no cover - argparse restricts the choices
-        raise SystemExit(f"Unsupported connector provider {provider!r}.")
+        raise SystemExit(f"Unsupported connector kind {kind!r}.")
 
     try:
         workspace.save_connector_configuration(name, values)
@@ -2293,12 +2325,19 @@ def _connector_configure_command(args) -> int:
         raise SystemExit(str(exc)) from exc
     print(f"Saved connector configuration {name} ({described}).")
 
-    if provider in {"google-sheets", "gmail"} and not workspace.connector_provider_secret(
-        "google", "authorized_user_json"
-    ):
+    from zippergen.provider_connections import provider_credential_field
+
+    credential_field = provider_credential_field(provider)
+    if credential_field and not workspace.provider_secret(connection, credential_field):
         print()
-        print("Google is not authorized on this computer yet. Run:")
-        print("    zippergen connector authorize google --scopes <scopes>")
+        print(f"Provider connection {connection!r} has no private credential here.")
+        if provider == "google":
+            print(
+                f"Authorize it with: zg provider authorize {connection} "
+                "--scopes SCOPE,..."
+            )
+        else:
+            print(f"Add it with: zg provider credential {connection}")
 
     return 0
 
@@ -3459,7 +3498,7 @@ def _add_owned_execution_commands(subparsers, *, owner: str) -> None:
     approve_parser.add_argument("--json", action="store_true", help="Print the completed task as JSON.")
 
 
-def _connector_authorize_google_command(args) -> int:
+def _provider_authorize_google_command(args) -> int:
     """Authorize Google on the computer that owns the browser."""
 
     from zippergen.google_auth import (
@@ -3515,7 +3554,8 @@ def _connector_authorize_google_command(args) -> int:
         print(f"OAuth client: {client}")
         print(f"Credential expiry: {expiry}")
         print(
-            "On the other computer, run 'zippergen connector accept google' "
+            f"In the project that will use it, run 'zippergen provider accept "
+            f"{args.name}' "
             "and paste the private result below. It contains a refresh token, "
             "so do not share it or save it in shell history."
         )
@@ -3578,11 +3618,67 @@ def _parse_cli_args(
         help="Project root.",
     )
 
+    provider = sub.add_parser(
+        "provider",
+        help="show and manage named provider connections and credentials",
+        description=(
+            "One pattern: configure NAME KIND, add its credential, then let "
+            "model and connector configurations reuse that connection."
+        ),
+    )
+    provider_sub = provider.add_subparsers(dest="provider_action")
+    provider_configure = provider_sub.add_parser(
+        "configure", help="save one named provider connection"
+    )
+    provider_configure.add_argument("name", nargs="?")
+    provider_configure.add_argument(
+        "kind",
+        nargs="?",
+        choices=(
+            "openai", "anthropic", "mistral", "local", "scripted",
+            "telegram", "google",
+        ),
+    )
+    provider_configure.add_argument(
+        "--base-url", help="OpenAI-compatible endpoint for a local connection."
+    )
+    provider_configure.add_argument("--project", help="Project root.")
+    provider_credential = provider_sub.add_parser(
+        "credential", help="save this connection's private API key or bot token"
+    )
+    provider_credential.add_argument("name", nargs="?")
+    provider_credential.add_argument("--project", help="Project root.")
+    provider_check = provider_sub.add_parser(
+        "check", help="check provider credentials and local readiness"
+    )
+    provider_check.add_argument("name", nargs="?")
+    provider_check.add_argument("--project", help="Project root.")
+    provider_remove = provider_sub.add_parser(
+        "remove", help="remove an unused provider connection"
+    )
+    provider_remove.add_argument("name", nargs="?")
+    provider_remove.add_argument("--project", help="Project root.")
+    provider_authorize = provider_sub.add_parser(
+        "authorize", help="create a private Google authorization handoff"
+    )
+    provider_authorize.add_argument("name", help="Google connection name.")
+    provider_authorize.add_argument("--client", help="OAuth Desktop app JSON.")
+    provider_authorize.add_argument(
+        "--scopes", required=True, help="Comma-separated Gmail/Sheets scopes."
+    )
+    provider_accept = provider_sub.add_parser(
+        "accept", help="save a Google authorization produced elsewhere"
+    )
+    provider_accept.add_argument("name", help="Google connection name.")
+    provider_accept.add_argument("result", nargs="?")
+    provider_accept.add_argument("--project", help="Project root.")
+
     model = sub.add_parser(
         "model",
         help="show and manage model configurations and assignments",
         description=(
-            "One pattern: configure NAME SPEC, then assign TARGET NAME. "
+            "One pattern: configure NAME CONNECTION MODEL, then assign "
+            "TARGET NAME. "
             "Run without an action to show everything. In a terminal, omit "
             "required values to be guided."
         ),
@@ -3593,15 +3689,8 @@ def _parse_cli_args(
         help="save one named model configuration",
     )
     model_configure.add_argument("name", nargs="?")
-    model_configure.add_argument(
-        "spec",
-        nargs="?",
-        help=(
-            "Compact model spec such as openai:gpt-4o-mini or "
-            "local:qwen2.5:14b. When omitted, ask for provider and model."
-        ),
-    )
-    model_configure.add_argument("--base-url", help="Local provider base URL.")
+    model_configure.add_argument("connection", nargs="?")
+    model_configure.add_argument("model", nargs="?")
     model_configure.add_argument(
         "--idle-timeout",
         type=float,
@@ -3627,12 +3716,6 @@ def _parse_cli_args(
     )
     model_check.add_argument("name", nargs="?")
     model_check.add_argument("--project", help="Project root.")
-    model_credential = model_sub.add_parser(
-        "credential",
-        help="save the API key required by one model configuration",
-    )
-    model_credential.add_argument("name", nargs="?")
-    model_credential.add_argument("--project", help="Project root.")
     model_remove = model_sub.add_parser("remove", help="remove an unused configuration")
     model_remove.add_argument("name", nargs="?")
     model_remove.add_argument("--project", help="Project root.")
@@ -3707,7 +3790,7 @@ def _parse_cli_args(
         "connector",
         help="show and manage connector configurations and assignments",
         description=(
-            "One pattern: configure NAME PROVIDER, then assign TARGET NAME "
+            "One pattern: configure NAME CONNECTION KIND, then assign TARGET NAME "
             "or bind REQUIREMENT NAME. Run without an action to show "
             "everything. In a terminal, omit required values to be guided."
         ),
@@ -3724,11 +3807,9 @@ def _parse_cli_args(
         nargs="?",
         help="Configuration name, such as approval-chat, inbox, or records.",
     )
+    connector_configure.add_argument("connection", nargs="?")
     connector_configure.add_argument(
-        "connector_provider",
-        nargs="?",
-        choices=("telegram", "gmail", "google-sheets"),
-        help="Connector provider or service kind.",
+        "kind", nargs="?", choices=("telegram", "gmail", "google-sheets")
     )
     connector_configure.add_argument(
         "--chat-id",
@@ -3757,25 +3838,6 @@ def _parse_cli_args(
         "--query",
         help="Gmail search that selects the messages to handle.",
     )
-
-    connector_accept = connector_sub.add_parser(
-        "accept",
-        help="save an authorization produced on another computer",
-    )
-    accept_sub = connector_accept.add_subparsers(
-        dest="connector_provider",
-        required=True,
-    )
-    accept_google = accept_sub.add_parser(
-        "google",
-        help="save the zg-google-v1... result printed by 'connector authorize'",
-    )
-    accept_google.add_argument(
-        "result",
-        nargs="?",
-        help="The encoded result. Omit to be prompted without echo.",
-    )
-    accept_google.add_argument("--project", help="Project root.")
 
     connector_assign = connector_sub.add_parser(
         "assign",
@@ -3828,31 +3890,6 @@ def _parse_cli_args(
     )
     connector_remove.add_argument("name", nargs="?")
     connector_remove.add_argument("--project", help="Project root.")
-
-    connector_authorize = connector_sub.add_parser(
-        "authorize",
-        help="create a private authorization handoff",
-    )
-    authorize_sub = connector_authorize.add_subparsers(
-        dest="connector_provider",
-        required=True,
-    )
-    authorize_google = authorize_sub.add_parser(
-        "google",
-        help="authorize Google with this computer's browser",
-    )
-    authorize_google.add_argument(
-        "--scopes",
-        required=True,
-        help=(
-            "Comma-separated scopes: gmail.readonly, gmail.modify, "
-            "spreadsheets.readonly, spreadsheets"
-        ),
-    )
-    authorize_google.add_argument(
-        "--client",
-        help="OAuth Desktop app JSON path; prompts when omitted.",
-    )
 
     rn = sub.add_parser(
         "run",
@@ -4167,6 +4204,7 @@ def main(argv=None) -> int:
         "config",
         "check",
         "workflow",
+        "provider",
         "model",
         "assistant",
         "run",
@@ -4177,11 +4215,10 @@ def main(argv=None) -> int:
         "prune",
     }:
         project_scoped = False
+    if args.cmd == "provider" and args.provider_action == "authorize":
+        project_scoped = False
     if args.cmd == "connector":
-        project_scoped = not (
-            args.connector_action == "authorize"
-            and args.connector_provider == "google"
-        )
+        project_scoped = True
     if args.cmd in {"show", "validate"} and not getattr(args, "workflow", None):
         project_scoped = True
     if project_scoped:
@@ -4192,6 +4229,12 @@ def main(argv=None) -> int:
         return _check_command(args)
     if args.cmd == "workflow":
         return _workflow_command(args)
+    if args.cmd == "provider" and args.provider_action == "authorize":
+        return _provider_authorize_google_command(args)
+    if args.cmd == "provider" and args.provider_action == "accept":
+        return _provider_accept_google_command(args)
+    if args.cmd == "provider":
+        return _provider_command(args)
     if args.cmd == "model":
         return _model_command(args)
     if args.cmd == "assistant":
@@ -4210,12 +4253,6 @@ def main(argv=None) -> int:
             )
         )
         return 0
-    if (
-        args.cmd == "connector"
-        and args.connector_action == "authorize"
-        and args.connector_provider == "google"
-    ):
-        return _connector_authorize_google_command(args)
     if args.cmd == "run":
         action = getattr(args, "run_action", None)
         if action == "status":
@@ -4250,12 +4287,6 @@ def main(argv=None) -> int:
         "remove",
     }:
         return _connector_management_command(args)
-    if (
-        args.cmd == "connector"
-        and args.connector_action == "accept"
-        and args.connector_provider == "google"
-    ):
-        return _connector_accept_google_command(args)
     if args.cmd == "init":
         return _init_command(args)
     if args.cmd == "skill":

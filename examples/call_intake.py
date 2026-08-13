@@ -9,10 +9,12 @@ the JSON email with corrected fields, preferably keeping the same call_id.
 
 Guided deployment:
 
-    zippergen connector authorize google --scopes gmail.readonly,spreadsheets
-    zippergen connector configure call-mailbox gmail
+    zippergen provider configure google-work google
+    zippergen provider authorize google-work --scopes gmail.readonly,spreadsheets
+    zippergen provider accept google-work
+    zippergen connector configure call-mailbox google-work gmail
     zippergen connector bind call-mailbox call-mailbox
-    zippergen connector configure call-records google-sheets \
+    zippergen connector configure call-records google-work google-sheets \
         --spreadsheet-id SHEET_ID --tab Calls
     zippergen connector bind call-records call-records
     zippergen workflow select examples/call_intake.py:call_intake

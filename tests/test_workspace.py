@@ -143,12 +143,12 @@ def test_workspace_configuration_edits_update_every_assignment(tmp_path):
     root = tmp_path / "project"
     root.mkdir()
     workspace = Workspace(root, home=tmp_path / "state")
+    workspace.save_provider_connection("openai-main", {"kind": "openai"})
     workspace.save_model_configuration(
         "writer",
         {
-            "provider": "openai",
+            "connection": "openai-main",
             "model": "gpt-4o-mini",
-            "spec": "openai:gpt-4o-mini",
         },
     )
     workspace.save_model_assignment_profile(
@@ -160,9 +160,8 @@ def test_workspace_configuration_edits_update_every_assignment(tmp_path):
     workspace.save_model_configuration(
         "writer",
         {
-            "provider": "openai",
+            "connection": "openai-main",
             "model": "gpt-4.1-mini",
-            "spec": "openai:gpt-4.1-mini",
         },
     )
 
@@ -170,7 +169,7 @@ def test_workspace_configuration_edits_update_every_assignment(tmp_path):
         "Writer": "writer"
     }
     assert workspace.model_configurations()["writer"]["spec"] == (
-        "openai:gpt-4.1-mini"
+        "openai@openai-main:gpt-4.1-mini"
     )
 
 
@@ -178,13 +177,16 @@ def test_workspace_validates_local_model_idle_release(tmp_path):
     root = tmp_path / "project"
     root.mkdir()
     workspace = Workspace(root, home=tmp_path / "state")
+    workspace.save_provider_connection(
+        "ollama-gpu", {"kind": "local", "base_url": "http://gpu/v1"}
+    )
+    workspace.save_provider_connection("openai-main", {"kind": "openai"})
 
     saved = workspace.save_model_configuration(
         "local-writer",
         {
-            "provider": "local",
+            "connection": "ollama-gpu",
             "model": "qwen2.5:7b",
-            "spec": "local:qwen2.5:7b",
             "idle_timeout": "300.0",
         },
     )
@@ -198,9 +200,8 @@ def test_workspace_validates_local_model_idle_release(tmp_path):
         workspace.save_model_configuration(
             "remote-writer",
             {
-                "provider": "openai",
+                "connection": "openai-main",
                 "model": "gpt-4o-mini",
-                "spec": "openai:gpt-4o-mini",
                 "idle_timeout": "300",
             },
         )
@@ -264,15 +265,16 @@ def test_a_manifest_without_a_project_id_keeps_its_workspace_after_a_write(
     root.mkdir()
     (root / "workflow.py").touch()
     (root / "zippergen.toml").write_text(
-        'schema_version = 1\nname = "demo"\n'
+        'schema_version = 2\nname = "demo"\n'
         'specification_file = "workflow.py"\n',
         encoding="utf-8",
     )
     before = Workspace(root, home=tmp_path / "state").directory
 
-    Workspace(root, home=tmp_path / "state").save_model_configuration(
-        "writer",
-        {"spec": "openai:gpt-4o-mini", "provider": "openai"},
+    workspace = Workspace(root, home=tmp_path / "state")
+    workspace.save_provider_connection("openai-main", {"kind": "openai"})
+    workspace.save_model_configuration(
+        "writer", {"connection": "openai-main", "model": "gpt-4o-mini"}
     )
 
     written = (root / "zippergen.toml").read_text(encoding="utf-8")
@@ -291,27 +293,64 @@ def test_workspace_provider_configuration_keeps_secrets_private(tmp_path):
     root = tmp_path / "project"
     root.mkdir()
     workspace = Workspace(root, home=tmp_path / "state")
-    workspace.update(
-        providers={
-            "openai": {"kind": "api", "key_env": "OPENAI_API_KEY"},
-            "local": {
-                "kind": "local",
-                "base_url": "http://localhost:11434/v1",
-            },
-        }
+    workspace.save_provider_connection("openai-main", {"kind": "openai"})
+    workspace.save_provider_secret("openai-main", "api_key", "private-key")
+    workspace.save_provider_connection(
+        "ollama-local",
+        {"kind": "local", "base_url": "http://localhost:11434/v1"},
     )
-    workspace.save_secrets({"OPENAI_API_KEY": "private-key"})
 
     environment = workspace.development_provider_environment(
-        ("openai:gpt-4o-mini", "ollama:qwen2.5:7b")
+        (
+            "openai@openai-main:gpt-4o-mini",
+            "local@ollama-local:qwen2.5:7b",
+        )
     )
 
     assert environment == {
-        "OPENAI_API_KEY": "private-key",
-        "OLLAMA_BASE_URL": "http://localhost:11434/v1",
+        "ZIPPERGEN_PROVIDER_OPENAI_DASH_MAIN_API_KEY": "private-key",
+        "ZIPPERGEN_PROVIDER_OLLAMA_DASH_LOCAL_BASE_URL": "http://localhost:11434/v1",
     }
     assert workspace.secrets_path.stat().st_mode & 0o077 == 0
-    assert not workspace.manifest_path.exists()
+    assert workspace.manifest_path.exists()
+
+
+def test_reconfiguring_provider_preserves_site_values_and_protects_references(
+    tmp_path,
+):
+    root = tmp_path / "project"
+    root.mkdir()
+    workspace = Workspace(root, home=tmp_path / "state")
+    workspace.save_provider_connection(
+        "ollama-local",
+        {"kind": "local", "base_url": "http://localhost:11434/v1"},
+    )
+
+    workspace.save_provider_connection("ollama-local", {"kind": "local"})
+
+    assert workspace.provider_connections()["ollama-local"]["base_url"] == (
+        "http://localhost:11434/v1"
+    )
+    workspace.save_model_configuration(
+        "writer", {"connection": "ollama-local", "model": "qwen2.5:7b"}
+    )
+    with pytest.raises(WorkspaceError, match="cannot change from local to openai"):
+        workspace.save_provider_connection("ollama-local", {"kind": "openai"})
+
+
+def test_changing_unused_provider_kind_clears_incompatible_private_state(tmp_path):
+    root = tmp_path / "project"
+    root.mkdir()
+    workspace = Workspace(root, home=tmp_path / "state")
+    workspace.save_provider_connection(
+        "service", {"kind": "local", "base_url": "http://localhost:11434/v1"}
+    )
+    workspace.save_provider_secret("service", "api_key", "obsolete")
+
+    workspace.save_provider_connection("service", {"kind": "telegram"})
+
+    assert workspace.provider_connections()["service"] == {"kind": "telegram"}
+    assert workspace.provider_secret("service", "api_key") is None
 
 
 def test_project_init_recognizes_and_ignores_nested_framework_checkout(tmp_path):
@@ -348,21 +387,25 @@ def test_project_configuration_survives_a_fresh_clone(
     original = Workspace(root, home=tmp_path / "original-state")
     original.initialize_project(name="Portable project")
     original.select_workflow("workflow.py:sample", cwd=root)
+    original.save_provider_connection("anthropic-main", {"kind": "anthropic"})
+    original.save_provider_connection(
+        "ollama-gpu", {"kind": "local", "base_url": "http://gpu:11434/v1"}
+    )
+    original.save_provider_connection("google-work", {"kind": "google"})
+    original.save_provider_connection("approval-bot", {"kind": "telegram"})
     original.save_model_configuration(
         "reviewer",
         {
-            "provider": "anthropic",
+            "connection": "anthropic-main",
             "model": "claude-opus-5",
-            "spec": "anthropic:claude-opus-5",
             "check_status": "available",
         },
     )
     original.save_model_configuration(
         "local-writer",
         {
-            "provider": "local",
+            "connection": "ollama-gpu",
             "model": "qwen2.5:14b",
-            "spec": "local:qwen2.5:14b",
             "idle_timeout": "300",
         },
     )
@@ -371,14 +414,10 @@ def test_project_configuration_survives_a_fresh_clone(
         default="reviewer",
         lifelines={"Writer": "local-writer"},
     )
-    original.save_connector_provider_profile("google", {"kind": "google"})
-    original.save_connector_provider_profile(
-        "telegram", {"kind": "telegram"}
-    )
     original.save_connector_configuration(
         "records",
         {
-            "provider": "google",
+            "connection": "google-work",
             "kind": "google-sheets",
             "spreadsheet_id": "sheet-123",
             "tab": "Calls",
@@ -387,7 +426,7 @@ def test_project_configuration_survives_a_fresh_clone(
     original.save_connector_configuration(
         "approvals",
         {
-            "provider": "telegram",
+            "connection": "approval-bot",
             "kind": "telegram",
             "chat_id": "42",
         },
@@ -397,19 +436,11 @@ def test_project_configuration_survives_a_fresh_clone(
         "workflow.py:sample",
         lifelines={"Human": "approvals"},
     )
-    original.update(
-        providers={
-            "local": {
-                "kind": "local",
-                "base_url": "http://gpu:11434/v1",
-            }
-        }
+    original.save_provider_secret("anthropic-main", "api_key", "private")
+    original.save_provider_secret(
+        "google-work", "authorized_user_json", "private"
     )
-    original.save_secrets({"ANTHROPIC_API_KEY": "private"})
-    original.save_connector_provider_secret(
-        "google", "authorized_user_json", "private"
-    )
-    original.save_connector_provider_secret("telegram", "bot_token", "private")
+    original.save_provider_secret("approval-bot", "bot_token", "private")
 
     clone = Workspace(root, home=tmp_path / "fresh-clone-state")
 
@@ -420,7 +451,7 @@ def test_project_configuration_survives_a_fresh_clone(
         "actions": {},
     }
     assert clone.model_configurations()["reviewer"]["spec"] == (
-        "anthropic:claude-opus-5"
+        "anthropic@anthropic-main:claude-opus-5"
     )
     assert "idle_timeout" not in clone.model_configurations()["local-writer"]
     assert clone.connector_binding_profile("workflow.py:sample") == {

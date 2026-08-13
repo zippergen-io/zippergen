@@ -40,10 +40,13 @@ def _wire(workspace):
 
 
 def _telegram(workspace, name="approvals", chat="4242"):
+    if "approval-bot" not in workspace.provider_connections():
+        workspace.save_provider_connection("approval-bot", {"kind": "telegram"})
     workspace.save_connector_configuration(
-        name, {"provider": "telegram", "kind": "telegram", "chat_id": chat}
+        name,
+        {"connection": "approval-bot", "kind": "telegram", "chat_id": chat},
     )
-    workspace.save_connector_provider_secret("telegram", "bot_token", TOKEN)
+    workspace.save_provider_secret("approval-bot", "bot_token", TOKEN)
 
 
 def test_a_project_with_no_connectors_wires_nothing(project):
@@ -60,6 +63,7 @@ def test_an_assigned_participant_is_routed_to_its_chat(project):
 
     route = snapshot["human:User"]
     assert route["kind"] == "telegram"
+    assert route["connection"] == "approval-bot"
     assert route["chat_id"] == "4242"
     assert route["participant"] == "User"
     assert environment[route["token_env"]] == TOKEN
@@ -105,30 +109,32 @@ def test_assigning_a_participant_with_no_human_action_is_refused(project):
 
 
 def test_a_missing_token_is_refused_before_deploying(project):
+    project.save_provider_connection("approval-bot", {"kind": "telegram"})
     project.save_connector_configuration(
         "approvals",
-        {"provider": "telegram", "kind": "telegram", "chat_id": "1"},
+        {"connection": "approval-bot", "kind": "telegram", "chat_id": "1"},
     )
     project.save_connector_assignment_profile(
         ENTRY, lifelines={"User": "approvals"}, actions={}
     )
 
-    with pytest.raises(ConnectorWiringError, match="bot token is missing"):
+    with pytest.raises(ConnectorWiringError, match="bot token.*is missing"):
         _wire(project)
 
 
 def test_a_non_human_connector_cannot_answer_a_human_action(project):
+    project.save_provider_connection("google-work", {"kind": "google"})
     project.save_connector_configuration(
         "records",
         {
-            "provider": "google",
+            "connection": "google-work",
             "kind": "google-sheets",
             "spreadsheet_id": "1",
             "tab": "T",
         },
     )
-    project.save_connector_provider_secret(
-        "google", "authorized_user_json", "{}"
+    project.save_provider_secret(
+        "google-work", "authorized_user_json", "{}"
     )
     project.save_connector_assignment_profile(
         ENTRY, lifelines={"User": "records"}, actions={}

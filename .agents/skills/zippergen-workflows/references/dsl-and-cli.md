@@ -56,15 +56,18 @@ configurations and their participant or action assignments in
 `zippergen.toml`:
 
 ```bash
-zg model configure writer openai:gpt-4o-mini
+zg provider configure openai-main openai
+zg model configure writer openai-main gpt-4o-mini
 zg model assign Writer writer
 ```
 
 ```toml
+[providers.connections."openai-main"]
+kind = "openai"
+
 [models.configurations."writer"]
-provider = "openai"
+connection = "openai-main"
 model = "gpt-4o-mini"
-spec = "openai:gpt-4o-mini"
 
 [models.assignments]
 default = "mock"
@@ -252,15 +255,16 @@ stable-key upsert to a blind append. This makes a retry after a crash safe.
 Never put a spreadsheet ID, OAuth token, or credentials path in workflow code.
 The spreadsheet ID belongs in a named project connector configuration. The
 OAuth token remains private site state.
-Use `zg connector configure NAME PROVIDER` to save the concrete resource, then
+Use `zg provider configure CONNECTION KIND` to name the provider identity,
+`zg connector configure NAME CONNECTION KIND` to save the concrete resource, then
 `zg connector bind REQUIREMENT NAME` to connect the logical requirement to it.
 
 In a human terminal, required values may be omitted and ZipperGen asks for
 them. This applies to model, assistant, and connector configuration,
 assignment, and binding. Scripts and coding agents should pass the values
-explicitly. Model setup asks a person for provider and model separately, while
-explicit commands use `PROVIDER:MODEL`. API keys and connector credentials are
-prompted without echo and saved only in private site storage.
+explicitly. Model setup asks for a provider connection and model separately.
+`zg provider credential CONNECTION` prompts without echo and saves API keys or
+bot tokens only in private site storage.
 
 Gmail follows the same pattern:
 
@@ -283,7 +287,7 @@ def read_mail() -> str:
 Keep the account, Gmail search query, and OAuth token outside workflow source.
 The account and query are project configuration. The token is private site
 state.
-`zg connector authorize google` can authorize Gmail and Google Sheets together
+`zg provider authorize CONNECTION` can authorize Gmail and Google Sheets together
 when the workflow requires both. Declare `access="read-only"` for readers. Use
 `read-write` only when an action modifies Gmail or Sheets. That declaration
 selects the narrowest supported Google OAuth scope, and deployment refuses to
@@ -580,13 +584,16 @@ be deleted without changing resumption.
 ## Connectors
 
 ```bash
-# Hand Telegram setup to the user's terminal. It prompts for chat id and token
-zg connector configure approval-chat telegram
+# Hand credentials to the user's terminal; destinations remain portable
+zg provider configure approval-bot telegram
+zg provider credential approval-bot
+zg connector configure approval-chat approval-bot telegram
 
 # Save external-service connectors and bind their declared requirements
-zg connector configure records google-sheets --spreadsheet-id SHEET_ID --tab Calls
+zg provider configure google-work google
+zg connector configure records google-work google-sheets --spreadsheet-id SHEET_ID --tab Calls
 zg connector bind review-log records
-zg connector configure inbox gmail --query 'is:unread in:inbox'
+zg connector configure inbox google-work gmail --query 'is:unread in:inbox'
 zg connector bind mailbox inbox
 
 # Route a participant's human actions to a saved connector
@@ -597,8 +604,8 @@ zg config
 zg check
 
 # Authorize Google on this computer, or accept an authorization made elsewhere
-zg connector authorize google --scopes gmail.readonly
-zg connector accept google
+zg provider authorize google-work --scopes gmail.readonly
+zg provider accept google-work
 ```
 
 `configure` creates or updates the named configuration. In an interactive

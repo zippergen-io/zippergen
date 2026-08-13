@@ -174,10 +174,14 @@ def _configure_model_for_test(
     workflow_spec = f"{workflow_path.name}:hello"
     workspace.select_workflow(workflow_spec, cwd=workflow_path.parent)
     provider, _separator, model = spec.partition(":")
-    values = {"provider": provider, "model": model, "spec": spec}
-    workspace.save_model_configuration(name, values)
-    if base_url:
-        workspace.save_provider_profile(provider, {"base_url": base_url})
+    connection = f"{provider}-test"
+    workspace.save_provider_connection(
+        connection,
+        {"kind": provider, **({"base_url": base_url} if base_url else {})},
+    )
+    workspace.save_model_configuration(
+        name, {"connection": connection, "model": model}
+    )
     workspace.save_model_assignment_profile(
         workflow_spec,
         default=name,
@@ -185,7 +189,7 @@ def _configure_model_for_test(
         actions={},
     )
     if credential:
-        workspace.save_development_credential(*credential)
+        workspace.save_provider_secret(connection, "api_key", credential[1])
     return workspace
 
 
@@ -473,7 +477,7 @@ def test_durable_run_records_a_resumable_run_with_an_owned_store(
     assert "Result: deploy!" in captured.out
 
 
-def test_connector_authorize_google_emits_checked_private_handoff(
+def test_provider_authorize_google_emits_checked_private_handoff(
     tmp_path,
     monkeypatch,
     capsys,
@@ -507,9 +511,9 @@ def test_connector_authorize_google_emits_checked_private_handoff(
     )
 
     rc = main([
-        "connector",
+        "provider",
         "authorize",
-        "google",
+        "google-work",
         "--scopes",
         "gmail.readonly",
     ])
@@ -1159,7 +1163,7 @@ def test_start_and_restart_refuse_a_deployment_that_fails_readiness(
     captured = capsys.readouterr()
     assert rc == 1
     assert "1 failure(s)" in captured.out
-    assert "model credential OPENAI_API_KEY" in captured.out
+    assert "provider credential openai-test" in captured.out
     assert f"was not {action}ed because readiness checks found failures" in (
         captured.out
     )
@@ -1215,7 +1219,9 @@ def test_guided_deploy_persists_an_implicit_model_provider_secret(
     secrets = json.loads(
         _the_deployment(zippergen_home, ".secrets.json").read_text()
     )
-    assert secrets == {"MISTRAL_API_KEY": "private-key"}
+    assert secrets == {
+        "ZIPPERGEN_PROVIDER_MISTRAL_DASH_TEST_API_KEY": "private-key"
+    }
 
 
 def test_guided_deploy_preserves_google_connector_credential_json(
@@ -1244,16 +1250,20 @@ def test_guided_deploy_preserves_google_connector_credential_json(
     workspace.initialize_project(name=tmp_path.name)
     workflow_spec = "workflow.py:google_sheet_records"
     workspace.select_workflow(workflow_spec, cwd=tmp_path)
-    workspace.save_connector_provider_profile(
-        "google", {"granted_scopes": json.dumps([GOOGLE_SHEETS_SCOPE])}
+    workspace.save_provider_connection(
+        "google-work",
+        {
+            "kind": "google",
+            "granted_scopes": json.dumps([GOOGLE_SHEETS_SCOPE]),
+        },
     )
-    workspace.save_connector_provider_secret(
-        "google", "authorized_user_json", credential
+    workspace.save_provider_secret(
+        "google-work", "authorized_user_json", credential
     )
     workspace.save_connector_configuration(
         "records",
         {
-            "provider": "google",
+            "connection": "google-work",
             "kind": "google-sheets",
             "spreadsheet_id": "sheet-1",
             "tab": "Calls",
@@ -1300,7 +1310,7 @@ def test_guided_deploy_persists_a_local_provider_endpoint(
         ).read_text()
     )
     assert profile["environment"] == {
-        "OLLAMA_BASE_URL": "http://127.0.0.1:11434/v1"
+        "ZIPPERGEN_PROVIDER_LOCAL_DASH_TEST_BASE_URL": "http://127.0.0.1:11434/v1"
     }
 
 
@@ -1337,7 +1347,7 @@ def test_guided_deploy_blocks_a_missing_selected_model_credential(
 
     captured = capsys.readouterr()
     assert rc == 1
-    assert "FAIL model credential MISTRAL_API_KEY" in captured.out
+    assert "FAIL provider credential mistral-test" in captured.out
     assert "configured but not started" in captured.out
 
 

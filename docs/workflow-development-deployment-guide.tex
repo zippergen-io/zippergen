@@ -201,15 +201,20 @@ supplies their own keys.
 \subsection{\texttt{zippergen.toml}}
 
 \begin{lstlisting}
-schema_version = 1
+schema_version = 2
 name = "email-approval"
 specification_file = "specification.md"
 workflow_entry = "workflow.py:email_approval"
 
+[providers.connections."openai-main"]
+kind = "openai"
+
+[providers.connections."approval-bot"]
+kind = "telegram"
+
 [models.configurations."openai-gpt-4o"]
-provider = "openai"
+connection = "openai-main"
 model = "gpt-4o"
-spec = "openai:gpt-4o"
 
 [models.assignments]
 default = "mock"
@@ -218,7 +223,7 @@ default = "mock"
 Writer = "openai-gpt-4o"
 
 [connectors.configurations."approval-chat"]
-provider = "telegram"
+connection = "approval-bot"
 kind = "telegram"
 chat_id = "12345678"
 
@@ -248,7 +253,7 @@ changes in one place. \texttt{configurations} says what a thing is, and
 \toprule
 API keys & environment variables, or \texttt{ZIPPERGEN\_HOME} \\
 Telegram bot token & typed once, never an argument \\
-Google credentials & \texttt{zg connector authorize} / \texttt{accept} \\
+Google credentials & \texttt{zg provider authorize} / \texttt{accept} \\
 Local model endpoints & site configuration \\
 Runs and deployments & \texttt{ZIPPERGEN\_HOME} \\
 \bottomrule
@@ -451,10 +456,12 @@ zg run --input message="Could we move our meeting to Thursday?" --yes
 
 \subsection{One configuration pattern}
 
-Models, coding assistants, and connectors use the same small grammar:
+Provider connections, models, coding assistants, and connectors use one small
+grammar:
 
 \begin{lstlisting}[style=shell]
-zg TYPE configure NAME PROVIDER_OR_SPEC
+zg provider configure NAME KIND
+zg TYPE configure NAME ...
 zg TYPE assign TARGET NAME
 zg TYPE check [NAME]
 zg TYPE remove NAME
@@ -462,37 +469,43 @@ zg TYPE remove NAME
 
 An external-service connector uses
 \texttt{connector bind REQUIREMENT NAME} instead of \texttt{assign}. The
-provider or backend is an attribute of the named configuration, not another
-object to manage. In the examples, \texttt{approval-chat} is a name chosen by
-the user and \texttt{telegram} is the provider. Bare \texttt{zg model},
-\texttt{zg assistant}, and \texttt{zg connector} show each family.
-\texttt{zg config} shows the complete effective result.
+provider connection is the named access path to an external provider: it owns
+the private credential and any machine-specific endpoint. A model selects a
+model through one connection; a connector selects a chat, mailbox, sheet, or
+other resource through one connection. In the examples,
+\texttt{approval-bot} is a Telegram provider connection and
+\texttt{approval-chat} is a connector configuration using it. Bare
+\texttt{zg provider}, \texttt{zg model}, \texttt{zg assistant}, and
+\texttt{zg connector} show each family. \texttt{zg config} shows the complete
+effective result.
 
 In an interactive terminal, required values may be left out. ZipperGen asks
 for them and shows known targets and configurations when useful. Thus
 \texttt{zg model configure}, \texttt{zg assistant configure}, and
 \texttt{zg connector configure} are guided commands. A script or coding agent
 must pass the required values explicitly, so it cannot wait for an unseen
-question. Guided model setup asks for provider and model separately. Explicit
-commands use the compact \texttt{PROVIDER:MODEL} form. The Python API is always
-explicit and never prompts.
+question. Guided model setup asks for a provider connection and model
+separately. The Python API is always explicit and never prompts.
 
 \subsection{Choosing a model}
 
 For a durable project choice, create a named configuration and assign it:
 
 \begin{lstlisting}[style=shell]
-zg model configure writer openai:gpt-4o-mini
+zg provider configure openai-main openai
+zg provider credential openai-main
+zg model configure writer openai-main gpt-4o-mini
 zg model assign Writer writer
 zg model
 \end{lstlisting}
 
-If the provider needs an API key and none is available, the configuration
-command offers a hidden prompt. The key is saved in the owner-only
+The credential command prompts without echo. The key is saved in the owner-only
 \path{ZIPPERGEN_HOME/workspaces/<project>/development.secrets.json} file on
 this computer. It is never written to \path{zippergen.toml}. One provider key may
 serve several named model configurations. You may instead set the normal
-environment variable before running the command.
+environment variable. Several model configurations can share the same
+provider connection, or use different connections when they need different
+keys.
 
 \begin{center}
 \begin{tabularx}{0.95\linewidth}{@{}lX@{}}
@@ -692,7 +705,9 @@ The terminal is right while developing and wrong for a deployment nobody is
 watching. Two commands, doing two different things:
 
 \begin{lstlisting}[style=shell]
-zg connector configure approval-chat telegram
+zg provider configure approval-bot telegram
+zg provider credential approval-bot
+zg connector configure approval-chat approval-bot telegram
 zg connector assign User approval-chat
 \end{lstlisting}
 
@@ -719,10 +734,11 @@ zippergen_connectors = (
 and the project says which one, binding it to that requirement by name:
 
 \begin{lstlisting}[style=shell]
-zg connector configure inbox gmail \
+zg provider configure google-work google
+zg connector configure inbox google-work gmail \
     --query "is:unread in:inbox"
 zg connector bind call-mailbox inbox
-zg connector configure records google-sheets \
+zg connector configure records google-work google-sheets \
     --spreadsheet-id 1AbC... --tab Calls
 zg connector bind call-records records
 \end{lstlisting}
@@ -730,14 +746,14 @@ zg connector bind call-records records
 \subsection{Authorizing Google}
 
 \begin{lstlisting}[style=shell]
-zg connector authorize google --scopes gmail.modify,spreadsheets
+zg provider authorize google-work --scopes gmail.modify,spreadsheets
 \end{lstlisting}
 
 This opens a browser, and prints an encoded result rather than saving it. On
 the machine that will run the workflow:
 
 \begin{lstlisting}[style=shell]
-zg connector accept google
+zg provider accept google-work
 \end{lstlisting}
 
 which asks for the result without echo and stores the credential together with
@@ -942,26 +958,38 @@ zg connector assign User approval-chat
 \multicolumn{2}{@{}l}{\textbf{Run}} \\
 \texttt{run} & execute, with \texttt{-{}-durable} and \texttt{-{}-resume} \\
 \texttt{run status/reset/inspect/trace/tasks/approve} & manage, observe, or answer a durable run \\
-\midrule
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\begin{center}
+\begin{tabularx}{0.97\linewidth}{@{}lX@{}}
+\toprule
 \multicolumn{2}{@{}l}{\textbf{Configure}} \\
 \texttt{config} / \texttt{check} & show offline configuration or check all live readiness \\
-\texttt{model configure NAME SPEC} & save one named model configuration \\
+\texttt{provider configure NAME KIND} & save one named provider identity \\
+\texttt{provider credential NAME} & save its key or bot token privately \\
+\texttt{provider authorize/accept NAME} & move Google authorization from a browser computer \\
+\texttt{model configure NAME CONNECTION MODEL} & save one named model configuration \\
 \texttt{model assign TARGET NAME} & route a participant or action \\
-\texttt{model credential NAME} & save the provider key in private site storage \\
 \texttt{model unassign TARGET} / \texttt{model remove NAME} & remove routing or an unused configuration \\
 \texttt{assistant configure NAME BACKEND} & save Codex or Claude under a project name \\
 \texttt{assistant assign TARGET NAME} & route an assistant participant or action \\
 \texttt{assistant check [NAME]} & verify the selected CLI and required safety options \\
 \texttt{assistant unassign TARGET} / \texttt{assistant remove NAME} & remove routing or an unused configuration \\
-\texttt{connector configure NAME PROVIDER} & save one named configuration \\
+\texttt{connector configure NAME CONNECTION KIND} & save one named destination/resource \\
 \texttt{connector assign TARGET NAME} & route human actions \\
 \texttt{connector bind REQUIREMENT NAME} & bind an external service \\
 \texttt{connector unassign TARGET} / \texttt{connector unbind REQUIREMENT} & remove connector routing \\
 \texttt{connector check [NAME]} / \texttt{connector remove NAME} & check or remove \\
-\texttt{connector authorize google} & browser flow, prints a result \\
-\texttt{connector accept google} & save that result here \\
 \texttt{completion zsh|bash|fish} & print dynamic shell completion \\
-\midrule
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\begin{center}
+\begin{tabularx}{0.97\linewidth}{@{}lX@{}}
+\toprule
 \multicolumn{2}{@{}l}{\textbf{Deploy}} \\
 \texttt{deploy [-{}-no-start]} & prepare, check, and normally start \\
 \texttt{deploy list/prune} & find deployments and archive orphans \\

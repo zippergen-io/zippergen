@@ -298,9 +298,14 @@ def test_connector_assignment_infers_the_only_workflow_without_manifest_entry(
     shutil.copy(EXAMPLE, root / "workflow.py")
     workspace = Workspace(root, home=tmp_path / "home")
     workspace.initialize_project(name="connector-beginner")
+    workspace.save_provider_connection("approval-bot", {"kind": "telegram"})
     workspace.save_connector_configuration(
         "approval-chat",
-        {"provider": "telegram", "kind": "telegram", "chat_id": "123"},
+        {
+            "connection": "approval-bot",
+            "kind": "telegram",
+            "chat_id": "123",
+        },
     )
     monkeypatch.chdir(root)
     monkeypatch.setenv("ZIPPERGEN_HOME", str(tmp_path / "home"))

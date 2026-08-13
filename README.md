@@ -214,28 +214,34 @@ This is what projection means, and it is what the Lean proof is about.
 
 ## One configuration pattern
 
-Models, coding assistants, and connectors use the same small grammar:
+Provider connections, models, coding assistants, and connectors use one small
+grammar:
 
 ```text
-zg TYPE configure NAME PROVIDER_OR_SPEC
+zg provider configure NAME KIND
+zg TYPE configure NAME ...
 zg TYPE assign TARGET NAME
 zg TYPE check [NAME]
 zg TYPE remove NAME
 ```
 
 A connector for an external service uses `bind REQUIREMENT NAME` instead of
-`assign`. The provider or backend is an attribute of the named configuration,
-not another object to manage. In the examples below, `approval-chat` is a name
-chosen by the user and `telegram` is the provider. `zg model`, `zg assistant`,
-`zg connector`, and `zg config` show the result.
+`assign`. A provider connection is the named access path to one external
+provider: it owns the private credential and any machine-specific endpoint.
+A model configuration then chooses a model through one connection; a connector
+configuration chooses a chat, mailbox, spreadsheet, or other destination
+through one connection. In the examples below, `approval-bot` is a Telegram
+provider connection and `approval-chat` is a connector configuration using it.
+`zg model`, `zg assistant`, `zg provider`, `zg connector`, and `zg config` show
+the result.
 
 When you work in a terminal, you may leave out required values. ZipperGen asks
 for them and shows available targets and saved configurations. For example,
 `zg model configure`, `zg assistant configure`, and `zg connector configure`
 are all guided. Reusing a name updates that configuration and presents its
-current values as defaults. The model command asks for the provider and model separately.
-Scripts and coding agents should pass the compact `PROVIDER:MODEL` value
-explicitly.
+current values as defaults. Provider connections, models, and connector
+destinations are asked for separately. Scripts and coding agents should pass
+those values explicitly.
 
 For an `@assistant` action, choose Codex or Claude with a named configuration:
 
@@ -256,17 +262,19 @@ their own login and credentials.
 Give the Writer a named model configuration, then assign it:
 
 ```bash
-zg model configure writer openai:gpt-4o-mini
+zg provider configure openai-main openai
+zg provider credential openai-main
+zg model configure writer openai-main gpt-4o-mini
 zg model assign Writer writer
 zg model
 ```
 
-If `OPENAI_API_KEY` is not already available, the first command offers a
-hidden prompt. The key is saved in the owner-only
+The credential command prompts without echo. The key is saved in the owner-only
 `$ZIPPERGEN_HOME/workspaces/<project>/development.secrets.json` file on this
 computer. It is not written to `zippergen.toml`. You may instead set the
-normal environment variable before running the command, or save it later with
-`zg model credential writer`.
+normal `OPENAI_API_KEY` environment variable. Several model configurations can
+reuse `openai-main`; define another OpenAI connection when they need a
+different key.
 
 For local Ollama configurations, `Idle release` means how long ZipperGen keeps
 the model loaded after the last active call. `0` unloads it after every call;
@@ -275,10 +283,12 @@ an unset value leaves the provider policy unchanged.
 The commands write the portable routing to `zippergen.toml`:
 
 ```toml
+[providers.connections."openai-main"]
+kind = "openai"
+
 [models.configurations."writer"]
-provider = "openai"
+connection = "openai-main"
 model = "gpt-4o-mini"
-spec = "openai:gpt-4o-mini"
 
 [models.assignments.lifelines]
 Writer = "writer"
@@ -383,14 +393,19 @@ Sheets. Which chat, which spreadsheet, which Gmail query: that is project
 configuration, and it goes in `zippergen.toml`. Credentials never go there:
 
 ```bash
-zg connector configure approval-chat telegram  # prompts for chat id and hidden token
-zg connector assign User approval-chat        # who gets asked, and where
-zg connector authorize google --scopes gmail.readonly,spreadsheets
-zg check                                # check all routing and live providers
+zg provider configure approval-bot telegram
+zg provider credential approval-bot           # hidden bot-token prompt
+zg connector configure approval-chat approval-bot telegram  # asks for chat id
+zg connector assign User approval-chat         # who gets asked, and where
+
+zg provider configure google-work google
+zg provider authorize google-work --scopes gmail.readonly,spreadsheets
+zg provider accept google-work                 # paste the private result
+zg check                                       # routing and live providers
 ```
 
-Use `zg config` at any time to see the effective model, assistant, and
-connector configurations, assignments, bindings, active private-state
+Use `zg config` at any time to see provider connections; effective model,
+assistant, and connector configurations; assignments and bindings; private-state
 location, and which local credentials or tools are available. It does not
 contact providers and never prints credential values. `zg validate` is also
 offline; `zg check` is the project-wide readiness operation and may send a

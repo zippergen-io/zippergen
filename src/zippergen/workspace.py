@@ -26,9 +26,9 @@ from pathlib import Path
 from typing import Any
 
 
-WORKSPACE_SCHEMA_VERSION = 1
+WORKSPACE_SCHEMA_VERSION = 2
 RUN_SCHEMA_VERSION = 1
-PROJECT_SCHEMA_VERSION = 1
+PROJECT_SCHEMA_VERSION = 2
 PROJECT_MANIFEST_NAME = "zippergen.toml"
 SPECIFICATION_FILE_NAME = "specification.md"
 _IGNORED_DISCOVERY_PARTS = {
@@ -47,13 +47,27 @@ _IGNORED_DISCOVERY_PARTS = {
     "venv",
 }
 
-_MODEL_PROJECT_FIELDS = frozenset({"provider", "model", "spec"})
+_MODEL_PROJECT_FIELDS = frozenset({"connection", "model"})
 # Checks are always live, so their results are never stored.  These are the
 # fields that describe one machine rather than the project.
 _MODEL_SITE_FIELDS = frozenset({"idle_timeout"})
 # Results of earlier versions' cached checks, stripped wherever they are read.
 _STALE_CHECK_FIELDS = frozenset({"check_status", "check_detail", "checked_at"})
 _PROVIDER_PROJECT_FIELDS = frozenset({"kind"})
+_PROVIDER_SITE_FIELDS = frozenset(
+    {"base_url", "granted_scopes", "client_id", "credential_expiry"}
+)
+_CONNECTOR_PROJECT_FIELDS = frozenset(
+    {
+        "connection",
+        "kind",
+        "chat_id",
+        "spreadsheet_id",
+        "tab",
+        "account",
+        "query",
+    }
+)
 
 
 class WorkspaceError(RuntimeError):
@@ -370,6 +384,7 @@ class Workspace:
                 "specification_file": SPECIFICATION_FILE_NAME,
                 "workflow_entry": None,
                 "framework_directory": None,
+                "providers": {"connections": {}},
                 "models": {
                     "configurations": {},
                     "assignments": {
@@ -387,7 +402,6 @@ class Workspace:
                     },
                 },
                 "connectors": {
-                    "providers": {},
                     "configurations": {},
                     "bindings": {},
                     "assignments": {"lifelines": {}, "actions": {}},
@@ -442,6 +456,13 @@ class Workspace:
                 framework,
                 field="framework_directory",
             )
+        raw_providers = manifest.get("providers") or {}
+        if not isinstance(raw_providers, dict):
+            raise WorkspaceError("Project providers must be a table.")
+        provider_connections = _named_string_tables(
+            raw_providers.get("connections") or {},
+            field="providers.connections",
+        )
         raw_models = manifest.get("models") or {}
         if not isinstance(raw_models, dict):
             raise WorkspaceError("Project models must be a table.")
@@ -489,10 +510,6 @@ class Workspace:
         raw_connectors = manifest.get("connectors") or {}
         if not isinstance(raw_connectors, dict):
             raise WorkspaceError("Project connectors must be a table.")
-        connector_providers = _named_string_tables(
-            raw_connectors.get("providers") or {},
-            field="connectors.providers",
-        )
         connector_configurations = _named_string_tables(
             raw_connectors.get("configurations") or {},
             field="connectors.configurations",
@@ -523,6 +540,7 @@ class Workspace:
             "specification_file": specification,
             "workflow_entry": workflow_entry,
             "framework_directory": framework,
+            "providers": {"connections": provider_connections},
             "models": {
                 "configurations": model_configurations,
                 "assignments": model_assignments,
@@ -532,7 +550,6 @@ class Workspace:
                 "assignments": assistant_assignments,
             },
             "connectors": {
-                "providers": connector_providers,
                 "configurations": connector_configurations,
                 "bindings": connector_bindings,
                 "assignments": connector_assignments,
@@ -543,6 +560,7 @@ class Workspace:
     def _write_project_configuration(
         self,
         *,
+        providers: dict[str, object] | None = None,
         models: dict[str, object] | None = None,
         assistants: dict[str, object] | None = None,
         connectors: dict[str, object] | None = None,
@@ -551,6 +569,10 @@ class Workspace:
 
         self.initialize_project()
         manifest = self.project_manifest()
+        provider_data = _object_table(
+            providers if providers is not None else manifest["providers"],
+            field="providers",
+        )
         model_data = _object_table(
             models if models is not None else manifest["models"],
             field="models",
@@ -585,6 +607,16 @@ class Workspace:
             lines.append(
                 f"framework_directory = "
                 f"{_toml_string(manifest['framework_directory'])}"
+            )
+
+        connections = provider_data.get("connections") or {}
+        assert isinstance(connections, dict)
+        for name, raw in sorted(connections.items()):
+            assert isinstance(raw, dict)
+            lines.extend(["", f"[providers.connections.{_toml_key(name)}]"])
+            lines.extend(
+                f"{_toml_key(key)} = {_toml_string(value)}"
+                for key, value in sorted(raw.items())
             )
 
         configurations = model_data.get("configurations") or {}
@@ -644,21 +676,12 @@ class Workspace:
                     for key, value in sorted(values.items())
                 )
 
-        providers = connector_data.get("providers") or {}
         connector_configurations = connector_data.get("configurations") or {}
         bindings = connector_data.get("bindings") or {}
         connector_assignments = connector_data.get("assignments") or {}
-        assert isinstance(providers, dict)
         assert isinstance(connector_configurations, dict)
         assert isinstance(bindings, dict)
         assert isinstance(connector_assignments, dict)
-        for name, raw in sorted(providers.items()):
-            assert isinstance(raw, dict)
-            lines.extend(["", f"[connectors.providers.{_toml_key(name)}]"])
-            lines.extend(
-                f"{_toml_key(key)} = {_toml_string(value)}"
-                for key, value in sorted(raw.items())
-            )
         for name, raw in sorted(connector_configurations.items()):
             assert isinstance(raw, dict)
             lines.extend(
@@ -837,8 +860,7 @@ class Workspace:
             "current_run": None,
             "model_configuration_overrides": {},
             "model_site_profiles": {},
-            "providers": {},
-            "connector_providers": {},
+            "provider_connection_overrides": {},
             "connector_configuration_overrides": {},
             "connector_site_bindings": {},
             "connector_site_assignments": {},
@@ -862,8 +884,7 @@ class Workspace:
         # identity, configurations, and assignments live in zippergen.toml.
         state.setdefault("model_configuration_overrides", {})
         state.setdefault("model_site_profiles", {})
-        state.setdefault("providers", {})
-        state.setdefault("connector_providers", {})
+        state.setdefault("provider_connection_overrides", {})
         state.setdefault("connector_configuration_overrides", {})
         state.setdefault("connector_site_bindings", {})
         state.setdefault("connector_site_assignments", {})
@@ -919,6 +940,7 @@ class Workspace:
         """Return project model configurations with one site override."""
 
         state = self.load()
+        connections = self.provider_connections()
         manifest_models = self.project_manifest().get("models") or {}
         assert isinstance(manifest_models, dict)
         raw_project = manifest_models.get("configurations") or {}
@@ -935,11 +957,27 @@ class Workspace:
                 raise WorkspaceError(
                     f"Model configuration {name!r} must be an object."
                 )
+            unexpected = set(raw_configuration) - _MODEL_PROJECT_FIELDS
+            if unexpected:
+                raise WorkspaceError(
+                    f"Model configuration {name!r} has unsupported field(s): "
+                    + ", ".join(sorted(str(item) for item in unexpected))
+                )
             configurations[str(name)] = {
                 str(key): str(value)
                 for key, value in raw_configuration.items()
                 if value is not None and str(key) not in _STALE_CHECK_FIELDS
             }
+            connection = configurations[str(name)].get("connection", "")
+            provider = connections.get(connection, {}).get("kind", "")
+            model = configurations[str(name)].get("model", "")
+            if provider and model:
+                from zippergen.provider_connections import connected_model_spec
+
+                configurations[str(name)].update(
+                    provider=provider,
+                    spec=connected_model_spec(connection, provider, model),
+                )
         raw_overrides = state.get("model_configuration_overrides") or {}
         if not isinstance(raw_overrides, dict):
             raise WorkspaceError(
@@ -977,12 +1015,27 @@ class Workspace:
                 "contain only letters, digits, '.', '_' or '-', and must not "
                 "replace the built-in name 'mock'."
             )
-        if not values.get("spec"):
-            raise WorkspaceError("A model configuration requires a model spec.")
+        connection = str(values.get("connection") or "").strip()
+        model = str(values.get("model") or "").strip()
+        if not connection or not model:
+            raise WorkspaceError(
+                "A model configuration requires a provider connection and model."
+            )
+        provider_profile = self.provider_connections().get(connection)
+        if provider_profile is None:
+            raise WorkspaceError(
+                f"Provider connection does not exist: {connection}."
+            )
+        from zippergen.provider_connections import provider_supports_models
+
+        provider = str(provider_profile.get("kind") or "")
+        if not provider_supports_models(provider):
+            raise WorkspaceError(
+                f"Provider connection {connection!r} ({provider}) cannot run models."
+            )
         idle_timeout = str(values.get("idle_timeout") or "").strip()
         if idle_timeout:
-            provider = str(values.get("provider") or "").casefold()
-            if provider not in {"local", "ollama"}:
+            if provider != "local":
                 raise WorkspaceError(
                     "Idle release is only available for local Ollama model "
                     "configurations."
@@ -1265,50 +1318,209 @@ class Workspace:
             }
         return result
 
-    def provider_profiles(self) -> dict[str, dict[str, str]]:
-        raw = self.load().get("providers") or {}
-        if not isinstance(raw, dict):
-            raise WorkspaceError("Workspace providers must be an object.")
-        profiles: dict[str, dict[str, str]] = {}
-        for name, raw_profile in raw.items():
-            if not isinstance(raw_profile, dict):
-                raise WorkspaceError(f"Provider profile {name!r} must be an object.")
-            profiles[str(name)] = {
-                str(key): str(value)
-                for key, value in raw_profile.items()
-                if value is not None
-            }
-        return profiles
+    def provider_connections(self) -> dict[str, dict[str, str]]:
+        """Return portable named providers with this machine's site values."""
 
-    def save_provider_profile(
+        raw_project = self.project_manifest().get("providers") or {}
+        if not isinstance(raw_project, dict):
+            raise WorkspaceError("Project providers must be a table.")
+        raw_connections = raw_project.get("connections") or {}
+        if not isinstance(raw_connections, dict):
+            raise WorkspaceError("Project providers.connections must be a table.")
+        connections: dict[str, dict[str, str]] = {}
+        for name, raw in raw_connections.items():
+            if not isinstance(raw, dict):
+                raise WorkspaceError(
+                    f"Provider connection {name!r} must be an object."
+                )
+            unexpected = set(raw) - _PROVIDER_PROJECT_FIELDS
+            if unexpected:
+                raise WorkspaceError(
+                    f"Provider connection {name!r} has unsupported project "
+                    "field(s): "
+                    + ", ".join(sorted(str(item) for item in unexpected))
+                )
+            from zippergen.provider_connections import canonical_provider_kind
+
+            try:
+                kind = canonical_provider_kind(raw.get("kind"))
+            except ValueError as exc:
+                raise WorkspaceError(
+                    f"Provider connection {name!r}: {exc}"
+                ) from exc
+            connections[str(name)] = {"kind": kind}
+        raw_site = self.load().get("provider_connection_overrides") or {}
+        if not isinstance(raw_site, dict):
+            raise WorkspaceError(
+                "Workspace provider_connection_overrides must be an object."
+            )
+        for name, raw in raw_site.items():
+            if not isinstance(raw, dict):
+                raise WorkspaceError(
+                    f"Provider connection override {name!r} must be an object."
+                )
+            if str(name) in connections:
+                connections[str(name)].update(
+                    {str(key): str(value) for key, value in raw.items()}
+                )
+        return connections
+
+    def save_provider_connection(
         self,
         name: str,
         values: dict[str, str],
     ) -> dict[str, str]:
-        """Save machine-specific model-provider connection settings."""
+        """Save one portable provider identity plus machine-specific access."""
 
-        normalized = name.strip().casefold()
-        if not re.fullmatch(r"[a-z][a-z0-9._-]{0,63}", normalized):
+        normalized = name.strip()
+        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", normalized):
             raise WorkspaceError(
-                "A model provider name must start with a letter and contain "
-                "only letters, digits, '.', '_' or '-'."
+                "A provider connection name must start with a letter or digit "
+                "and contain only letters, digits, '.', '_' or '-'."
             )
+        from zippergen.provider_connections import canonical_provider_kind
+
+        try:
+            kind = canonical_provider_kind(values.get("kind"))
+        except ValueError as exc:
+            raise WorkspaceError(str(exc)) from exc
+        manifest = self.project_manifest()
+        providers = _object_table(manifest["providers"], field="providers")
+        project = _object_table(
+            providers.get("connections") or {},
+            field="providers.connections",
+        )
+        conflicting = next(
+            (
+                str(existing)
+                for existing in project
+                if str(existing).casefold() == normalized.casefold()
+                and str(existing) != normalized
+            ),
+            None,
+        )
+        if conflicting:
+            raise WorkspaceError(
+                f"Provider connection {normalized!r} differs only by case "
+                f"from existing connection {conflicting!r}."
+            )
+        existing = project.get(normalized)
+        existing_kind = (
+            canonical_provider_kind(existing.get("kind"))
+            if isinstance(existing, dict) and existing.get("kind")
+            else None
+        )
+        if existing_kind is not None and existing_kind != kind:
+            model_refs = [
+                config
+                for config, configuration in self.model_configurations().items()
+                if configuration.get("connection") == normalized
+            ]
+            connector_refs = [
+                config
+                for config, configuration in self.connector_configurations().items()
+                if configuration.get("connection") == normalized
+            ]
+            references = [*model_refs, *connector_refs]
+            if references:
+                raise WorkspaceError(
+                    f"Provider connection {normalized!r} cannot change from "
+                    f"{existing_kind} to {kind} while it is used by: "
+                    + ", ".join(references)
+                    + ". Create another provider connection or remove those "
+                    "configurations first."
+                )
+        project[normalized] = {"kind": kind}
+        providers["connections"] = project
+        self._write_project_configuration(providers=providers)
+
         state = self.load()
-        raw = state.get("providers") or {}
-        if not isinstance(raw, dict):
-            raise WorkspaceError("Workspace providers must be an object.")
-        profiles = {
-            str(key): dict(value)
-            for key, value in raw.items()
-            if isinstance(value, dict)
+        raw_site = state.get("provider_connection_overrides") or {}
+        if not isinstance(raw_site, dict):
+            raise WorkspaceError(
+                "Workspace provider_connection_overrides must be an object."
+            )
+        site = dict(raw_site)
+        site_values = (
+            {}
+            if existing_kind is not None and existing_kind != kind
+            else dict(site.get(normalized) or {})
+        )
+        for key in _PROVIDER_SITE_FIELDS:
+            if key not in values:
+                continue
+            value = str(values[key]).strip()
+            if value:
+                site_values[key] = value
+            else:
+                site_values.pop(key, None)
+        if site_values:
+            site[normalized] = site_values
+        else:
+            site.pop(normalized, None)
+        self.update(provider_connection_overrides=site)
+        if existing_kind is not None and existing_kind != kind:
+            secrets = {
+                key: value
+                for key, value in self.load_secrets().items()
+                if not key.startswith(f"provider:{normalized}:")
+            }
+            self.save_secrets(secrets)
+        return self.provider_connections()[normalized]
+
+    @staticmethod
+    def provider_secret_name(connection: str, field: str) -> str:
+        return f"provider:{connection}:{field}"
+
+    def provider_secret(self, connection: str, field: str) -> str | None:
+        return self.load_secrets().get(self.provider_secret_name(connection, field))
+
+    def save_provider_secret(self, connection: str, field: str, value: str) -> None:
+        if connection not in self.provider_connections():
+            raise WorkspaceError(f"Provider connection does not exist: {connection}.")
+        secrets = self.load_secrets()
+        secrets[self.provider_secret_name(connection, field)] = value
+        self.save_secrets(secrets)
+
+    def remove_provider_connection(self, name: str) -> None:
+        normalized = name.strip()
+        if normalized not in self.provider_connections():
+            raise WorkspaceError(f"Provider connection does not exist: {normalized}.")
+        model_refs = [
+            config
+            for config, values in self.model_configurations().items()
+            if values.get("connection") == normalized
+        ]
+        connector_refs = [
+            config
+            for config, values in self.connector_configurations().items()
+            if values.get("connection") == normalized
+        ]
+        references = [*model_refs, *connector_refs]
+        if references:
+            raise WorkspaceError(
+                f"Provider connection {normalized!r} is still used by: "
+                + ", ".join(references)
+                + ". Remove those configurations first."
+            )
+        manifest = self.project_manifest()
+        providers = _object_table(manifest["providers"], field="providers")
+        connections = _object_table(
+            providers.get("connections") or {}, field="providers.connections"
+        )
+        connections.pop(normalized, None)
+        providers["connections"] = connections
+        self._write_project_configuration(providers=providers)
+        state = self.load()
+        overrides = dict(state.get("provider_connection_overrides") or {})
+        overrides.pop(normalized, None)
+        self.update(provider_connection_overrides=overrides)
+        secrets = {
+            key: value
+            for key, value in self.load_secrets().items()
+            if not key.startswith(f"provider:{normalized}:")
         }
-        profiles[normalized] = {
-            str(key): str(value)
-            for key, value in values.items()
-            if value is not None and str(value).strip()
-        }
-        self.update(providers=profiles)
-        return self.provider_profiles()[normalized]
+        self.save_secrets(secrets)
 
     def remove_model_configuration(self, name: str) -> None:
         """Remove one unused named model configuration."""
@@ -1569,36 +1781,40 @@ class Workspace:
         self,
         model_specs: tuple[str, ...],
     ) -> dict[str, str]:
-        """Resolve privately configured API keys and local endpoint settings."""
+        """Resolve each selected named connection into isolated runtime values."""
 
-        aliases = {
-            "claude": "anthropic",
-            "ollama": "local",
-        }
-        secret_names = {
-            "openai": "OPENAI_API_KEY",
-            "anthropic": "ANTHROPIC_API_KEY",
-            "mistral": "MISTRAL_API_KEY",
-        }
-        selected: set[str] = set()
-        for spec in model_specs:
-            raw_provider = spec.partition(":")[0].strip().lower()
-            selected.add(aliases.get(raw_provider, raw_provider))
-        secrets = self.load_secrets()
-        profiles = self.provider_profiles()
+        from zippergen.provider_connections import (
+            provider_credential_field,
+            provider_environment_name,
+            provider_standard_environment,
+            split_model_spec,
+        )
+
+        connections = self.provider_connections()
         environment: dict[str, str] = {}
-        for provider in selected:
-            secret_name = secret_names.get(provider)
-            if secret_name:
-                secret_value = secrets.get(secret_name) or os.environ.get(
-                    secret_name
+        for spec in model_specs:
+            try:
+                kind, connection, _model = split_model_spec(spec)
+            except ValueError:
+                continue
+            if connection is None:
+                continue
+            profile = connections.get(connection) or {}
+            field = provider_credential_field(kind)
+            if field:
+                standard = provider_standard_environment(kind)
+                value = self.provider_secret(connection, field) or (
+                    os.environ.get(standard) if standard else None
                 )
-                if secret_value:
-                    environment[secret_name] = secret_value
-            if provider == "local":
-                base_url = profiles.get("local", {}).get("base_url")
-                if base_url:
-                    environment["OLLAMA_BASE_URL"] = base_url
+                if value:
+                    environment[
+                        provider_environment_name(connection, field)
+                    ] = value
+            base_url = profile.get("base_url")
+            if base_url:
+                environment[
+                    provider_environment_name(connection, "base_url")
+                ] = base_url
         return environment
 
     def discover_workflows(self) -> list[str]:
@@ -1739,6 +1955,7 @@ class Workspace:
         """Return project connector configurations with site observations."""
 
         state = self.load()
+        connections = self.provider_connections()
         manifest_connectors = self.project_manifest().get("connectors") or {}
         assert isinstance(manifest_connectors, dict)
         raw_project = manifest_connectors.get("configurations") or {}
@@ -1749,11 +1966,21 @@ class Workspace:
                 raise WorkspaceError(
                     f"Connector configuration {name!r} must be an object."
                 )
+            unexpected = set(value) - _CONNECTOR_PROJECT_FIELDS
+            if unexpected:
+                raise WorkspaceError(
+                    f"Connector configuration {name!r} has unsupported field(s): "
+                    + ", ".join(sorted(str(item) for item in unexpected))
+                )
             configurations[str(name)] = {
                 str(key): str(item)
                 for key, item in value.items()
                 if item is not None and str(key) not in _STALE_CHECK_FIELDS
             }
+            connection = configurations[str(name)].get("connection", "")
+            provider = connections.get(connection, {}).get("kind", "")
+            if provider:
+                configurations[str(name)]["provider"] = provider
         raw_overrides = state.get("connector_configuration_overrides") or {}
         if not isinstance(raw_overrides, dict):
             raise WorkspaceError(
@@ -1765,110 +1992,6 @@ class Workspace:
                     {str(key): str(item) for key, item in value.items()}
                 )
         return configurations
-
-    def connector_provider_profiles(self) -> dict[str, dict[str, str]]:
-        """Return non-secret connector provider connection metadata."""
-
-        raw_site = self.load().get("connector_providers") or {}
-        if not isinstance(raw_site, dict):
-            raise WorkspaceError(
-                "Workspace connector_providers must be an object."
-            )
-        profiles: dict[str, dict[str, str]] = {}
-        manifest_connectors = self.project_manifest().get("connectors") or {}
-        assert isinstance(manifest_connectors, dict)
-        raw_project = manifest_connectors.get("providers") or {}
-        assert isinstance(raw_project, dict)
-        for name, value in raw_project.items():
-            if isinstance(value, dict):
-                profiles[str(name)] = {
-                    str(key): str(item) for key, item in value.items()
-                }
-        for name, value in raw_site.items():
-            if not isinstance(value, dict):
-                raise WorkspaceError(
-                    f"Connector provider {name!r} must be an object."
-                )
-            profiles.setdefault(str(name), {}).update({
-                str(key): str(item)
-                for key, item in value.items()
-                if item is not None
-                and str(key) not in _PROVIDER_PROJECT_FIELDS
-            })
-        return profiles
-
-    def save_connector_provider_profile(
-        self,
-        name: str,
-        values: dict[str, str],
-    ) -> dict[str, str]:
-        """Save portable provider kind and machine-specific observations."""
-
-        normalized = name.strip().casefold()
-        if not re.fullmatch(r"[a-z][a-z0-9._-]{0,63}", normalized):
-            raise WorkspaceError(
-                "A connector provider name must start with a letter and "
-                "contain only letters, digits, '.', '_' or '-'."
-            )
-        profile = {
-            str(key): str(value)
-            for key, value in values.items()
-            if value is not None
-        }
-        manifest = self.project_manifest()
-        connectors = _object_table(manifest["connectors"], field="connectors")
-        project_providers = _object_table(
-            connectors.get("providers") or {},
-            field="connectors.providers",
-        )
-        project_providers[normalized] = {
-            key: value
-            for key, value in profile.items()
-            if key in _PROVIDER_PROJECT_FIELDS
-        }
-        connectors["providers"] = project_providers
-        self._write_project_configuration(connectors=connectors)
-        state = self.load()
-        raw_site = state.get("connector_providers") or {}
-        if not isinstance(raw_site, dict):
-            raise WorkspaceError("Workspace connector_providers must be an object.")
-        site = dict(raw_site)
-        site_values = {
-            key: value
-            for key, value in profile.items()
-            if key not in _PROVIDER_PROJECT_FIELDS
-        }
-        if site_values:
-            site[normalized] = site_values
-        else:
-            site.pop(normalized, None)
-        self.update(connector_providers=site)
-        return self.connector_provider_profiles()[normalized]
-
-    @staticmethod
-    def connector_provider_secret_name(provider: str, field: str) -> str:
-        return f"connector-provider:{provider.casefold()}:{field}"
-
-    def connector_provider_secret(
-        self,
-        provider: str,
-        field: str,
-    ) -> str | None:
-        return self.load_secrets().get(
-            self.connector_provider_secret_name(provider, field)
-        )
-
-    def save_connector_provider_secret(
-        self,
-        provider: str,
-        field: str,
-        value: str,
-    ) -> None:
-        secrets = self.load_secrets()
-        secrets[self.connector_provider_secret_name(provider, field)] = value
-        self.save_secrets(secrets)
-
-
 
     def save_connector_configuration(
         self,
@@ -1884,8 +2007,24 @@ class Workspace:
                 "digit and contain only letters, digits, '.', '_' or '-'."
             )
         kind = str(values.get("kind") or "").strip()
-        if not kind:
-            raise WorkspaceError("A connector configuration requires a kind.")
+        connection = str(values.get("connection") or "").strip()
+        if not kind or not connection:
+            raise WorkspaceError(
+                "A connector configuration requires a provider connection and kind."
+            )
+        provider = self.provider_connections().get(connection)
+        if provider is None:
+            raise WorkspaceError(
+                f"Provider connection does not exist: {connection}."
+            )
+        from zippergen.provider_connections import provider_supports_connector
+
+        provider_kind = str(provider.get("kind") or "")
+        if not provider_supports_connector(provider_kind, kind):
+            raise WorkspaceError(
+                f"Provider connection {connection!r} ({provider_kind}) does not "
+                f"support connector kind {kind!r}."
+            )
         configurations = self.connector_configurations()
         conflicting = next(
             (
@@ -1915,7 +2054,7 @@ class Workspace:
         project_configurations[normalized] = {
             key: value
             for key, value in configuration.items()
-            if key not in _STALE_CHECK_FIELDS
+            if key not in _STALE_CHECK_FIELDS and key != "provider"
         }
         connectors["configurations"] = project_configurations
         self._write_project_configuration(connectors=connectors)
@@ -2186,21 +2325,6 @@ class Workspace:
         self._write_project_configuration(connectors=connectors)
         return profile
 
-    @staticmethod
-    def connector_secret_name(configuration: str, field: str) -> str:
-        """Return an internal private-store key; never an environment name."""
-
-        return f"connector:{configuration}:{field}"
-
-    def connector_secret(
-        self,
-        configuration: str,
-        field: str,
-    ) -> str | None:
-        return self.load_secrets().get(
-            self.connector_secret_name(configuration, field)
-        )
-
     def load_secrets(self) -> dict[str, str]:
         """Load private development secrets without copying them into state."""
 
@@ -2214,15 +2338,3 @@ class Workspace:
 
         _atomic_write_json(self.secrets_path, dict(values))
         self.secrets_path.chmod(0o600)
-
-    def development_credential(self, name: str) -> str | None:
-        """Read one private credential used by development commands."""
-
-        return self.load_secrets().get(name)
-
-    def save_development_credential(self, name: str, value: str) -> None:
-        """Save one development credential without changing project files."""
-
-        secrets = self.load_secrets()
-        secrets[name] = value
-        self.save_secrets(secrets)

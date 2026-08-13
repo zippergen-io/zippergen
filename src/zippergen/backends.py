@@ -654,14 +654,42 @@ def _env_optional_float(name: str) -> float | None:
 
 
 def _split_llm_spec(spec: str) -> tuple[str, str | None]:
-    provider, sep, model = spec.strip().partition(":")
-    provider = provider.strip().lower()
-    model = model.strip() if sep else None
-    if not provider:
-        raise RuntimeError("LLM spec is empty.")
-    if sep and not model:
-        raise RuntimeError(f"LLM spec {spec!r} is missing a model after ':'.")
-    return provider, model
+    from zippergen.provider_connections import split_model_spec
+
+    try:
+        provider, connection, model = split_model_spec(spec)
+    except ValueError as exc:
+        raise RuntimeError(str(exc)) from exc
+    return provider + (f"@{connection}" if connection else ""), model
+
+
+def _provider_parts(provider_token: str) -> tuple[str, str | None]:
+    provider, separator, connection = provider_token.partition("@")
+    return provider, connection if separator else None
+
+
+def _connection_environment(
+    connection: str | None,
+    field: str,
+    fallback: str,
+    default: str | None = None,
+) -> str | None:
+    if connection:
+        from zippergen.provider_connections import provider_environment_name
+
+        return os.environ.get(provider_environment_name(connection, field), default)
+    return os.environ.get(fallback, default)
+
+
+def _missing_credential(connection: str | None, environment: str) -> RuntimeError:
+    if connection:
+        return RuntimeError(
+            f"Provider connection {connection!r} has no credential in this "
+            f"process. Run 'zg provider credential {connection}' in the "
+            "project, or provide its standard environment variable before "
+            "ZipperGen resolves the connection."
+        )
+    return RuntimeError(f"{environment} is not set.")
 
 
 def _ollama_native_base_url(openai_base_url: str) -> str:
@@ -711,7 +739,8 @@ def backend_from_spec(
     the local Ollama endpoint.
     """
 
-    provider, model = _split_llm_spec(spec)
+    provider_token, model = _split_llm_spec(spec)
+    provider, connection = _provider_parts(provider_token)
     if provider == "scripted":
         if not model:
             raise RuntimeError(
@@ -727,10 +756,12 @@ def backend_from_spec(
             raise RuntimeError("LLM spec 'mock' requires a fallback backend.")
         return fallback, "mock LLM"
     if provider == "mistral":
-        api_key = os.environ.get("MISTRAL_API_KEY")
+        api_key = _connection_environment(
+            connection, "api_key", "MISTRAL_API_KEY"
+        )
         model = model or os.environ.get("MISTRAL_MODEL", "mistral-small-latest")
         if not api_key:
-            raise RuntimeError("MISTRAL_API_KEY is not set.")
+            raise _missing_credential(connection, "MISTRAL_API_KEY")
         return (
             make_mistral_backend(
                 api_key=api_key,
@@ -741,11 +772,19 @@ def backend_from_spec(
             f"Mistral ({model})",
         )
     if provider == "openai":
-        api_key = os.environ.get("OPENAI_API_KEY")
+        api_key = _connection_environment(
+            connection, "api_key", "OPENAI_API_KEY"
+        )
         model = model or os.environ.get("OPENAI_MODEL", "gpt-4o-mini")
-        base_url = os.environ.get("OPENAI_BASE_URL", "https://api.openai.com/v1")
+        base_url = _connection_environment(
+            connection,
+            "base_url",
+            "OPENAI_BASE_URL",
+            "https://api.openai.com/v1",
+        )
         if not api_key:
-            raise RuntimeError("OPENAI_API_KEY is not set.")
+            raise _missing_credential(connection, "OPENAI_API_KEY")
+        assert base_url is not None
         return (
             make_openai_backend(
                 api_key=api_key,
@@ -758,8 +797,17 @@ def backend_from_spec(
         )
     if provider in {"ollama", "local"}:
         model = model or os.environ.get("OLLAMA_MODEL", "qwen2.5:7b")
-        base_url = os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434/v1")
-        api_key = os.environ.get("OLLAMA_API_KEY", "ollama")
+        base_url = _connection_environment(
+            connection,
+            "base_url",
+            "OLLAMA_BASE_URL",
+            "http://127.0.0.1:11434/v1",
+        )
+        api_key = _connection_environment(
+            connection, "api_key", "OLLAMA_API_KEY", "ollama"
+        )
+        assert base_url is not None
+        assert api_key is not None
         max_tokens = _env_int("OLLAMA_MAX_TOKENS", 512)
         timeout = _env_float("OLLAMA_TIMEOUT", 120.0)
         if idle_timeout is None:
@@ -784,10 +832,12 @@ def backend_from_spec(
             f"Ollama ({model})",
         )
     if provider in {"anthropic", "claude"}:
-        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        api_key = _connection_environment(
+            connection, "api_key", "ANTHROPIC_API_KEY"
+        )
         model = model or os.environ.get("ANTHROPIC_MODEL", "claude-sonnet-4-6")
         if not api_key:
-            raise RuntimeError("ANTHROPIC_API_KEY is not set.")
+            raise _missing_credential(connection, "ANTHROPIC_API_KEY")
         return (
             make_anthropic_backend(
                 api_key=api_key,
@@ -823,10 +873,14 @@ def validate_local_idle_policies(
     for route, provider in routes.items():
         if callable(provider):
             continue
-        provider_name, model = _split_llm_spec(provider)
+        provider_token, model = _split_llm_spec(provider)
+        provider_name, connection = _provider_parts(provider_token)
         if provider_name not in {"local", "ollama"}:
             continue
-        physical_spec = f"local:{model}" if model is not None else "local"
+        identity = f"@{connection}" if connection else ""
+        physical_spec = (
+            f"local{identity}:{model}" if model is not None else f"local{identity}"
+        )
         selected = route_idle_timeouts.get(route, idle_timeout)
         policies.setdefault(physical_spec, []).append((route, selected))
 
@@ -882,10 +936,15 @@ def router_from_specs(
                 if lifeline_name in route_idle_timeouts
                 else idle_timeout
             )
-            provider_name, model = _split_llm_spec(provider)
+            provider_token, model = _split_llm_spec(provider)
+            provider_name, connection = _provider_parts(provider_token)
             managed_local = provider_name in {"local", "ollama"}
             physical_spec = (
-                f"local:{model}" if model is not None else "local"
+                f"local@{connection}:{model}"
+                if connection and model is not None
+                else (
+                    f"local:{model}" if model is not None else "local"
+                )
             ) if managed_local else provider
             cache_key = (
                 physical_spec,

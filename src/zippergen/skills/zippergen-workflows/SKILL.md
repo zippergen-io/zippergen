@@ -70,42 +70,45 @@ TYPE assign TARGET NAME
 ```
 
 Use `zg connector bind REQUIREMENT NAME` for a declared external-service
-requirement. Providers are attributes of named configurations, not separate
-objects to manage. For example, `approval-chat` is a user-chosen configuration
-name and `telegram` is its provider. Bare `zg model`, `zg assistant`, and
-`zg connector` show each family, while `zg config` shows the complete effective
-result.
+requirement. A named provider connection owns one provider identity, endpoint,
+and private credential. Model and connector configurations reuse it. For
+example, `approval-bot` can own one Telegram bot token while `approval-chat`
+and `operations-chat` select two different chat ids. Bare `zg provider`,
+`zg model`, `zg assistant`, and `zg connector` show each family; `zg config`
+shows the complete effective result.
 
 In a human terminal, omitted required values are prompted. The prompt shows
 known targets and saved configurations when useful. Scripts and coding agents
 must pass required values explicitly, so they fail clearly instead of waiting
-for input. Guided model setup asks for provider and model separately. Explicit
-commands keep the compact `PROVIDER:MODEL` form. The Python API never prompts.
+for input. Guided setup asks for connection and model or connector kind
+separately. The Python API never prompts.
 
 To assign a model, use the project commands. Do not hard-code the provider in
 the workflow or change a deployment field merely to route one participant:
 
 ```bash
-zg model configure writer openai:gpt-4o-mini
+zg provider configure openai-main openai
+zg provider credential openai-main  # user types the key without echo
+zg model configure writer openai-main gpt-4o-mini
 zg model assign Writer writer
 zg model
 ```
 
-The configuration command offers a hidden API-key prompt when the selected
-provider needs one and no key is available. Do not ask for that key in the
-agent conversation and do not enter it for the user. Run the explicit command
-to save the portable configuration. If it reports a missing credential, ask
-the user to run the same command in their own terminal or set the provider's
-normal environment variable. The key stays in private site storage and never
-enters `zippergen.toml`.
+Do not ask for a key in the agent conversation and do not enter it for the
+user. Ask the user to run `zg provider credential CONNECTION` in their own
+terminal, or set the provider's normal environment variable. One saved key may
+serve several model configurations that name the same connection. The key
+stays in private site storage and never enters `zippergen.toml`.
 
 These commands produce ordinary, reviewable manifest data:
 
 ```toml
+[providers.connections."openai-main"]
+kind = "openai"
+
 [models.configurations."writer"]
-provider = "openai"
+connection = "openai-main"
 model = "gpt-4o-mini"
-spec = "openai:gpt-4o-mini"
 
 [models.assignments]
 default = "mock"
@@ -347,10 +350,13 @@ Keep deployment declarations data-only and colocated with the workflow module.
 Declare required fields, secrets, packages, setup steps, and bundled files; do
 not embed credentials or copy secret values into ordinary profiles or tests.
 
-Connectors are configured once per machine and routed per workflow:
+Provider identities are configured once; portable destinations are routed per
+workflow:
 
 ```bash
-zg connector configure approval-chat telegram
+zg provider configure approval-bot telegram
+zg provider credential approval-bot
+zg connector configure approval-chat approval-bot telegram
 zg connector assign User approval-chat
 ```
 

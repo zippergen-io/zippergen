@@ -248,6 +248,32 @@ def test_backend_from_spec_accepts_inline_openai_model(monkeypatch):
     assert seen["payload"]["model"] == "gpt-4o"
 
 
+def test_named_connections_isolate_two_keys_for_the_same_provider(monkeypatch):
+    authorizations: list[str | None] = []
+
+    def fake_urlopen(req, *, timeout):
+        authorizations.append(req.get_header("Authorization"))
+        return _Response()
+
+    monkeypatch.setattr("zippergen.backends.request.urlopen", fake_urlopen)
+    monkeypatch.setenv("ZIPPERGEN_PROVIDER_OPENAI_DASH_A_API_KEY", "key-a")
+    monkeypatch.setenv("ZIPPERGEN_PROVIDER_OPENAI_DASH_B_API_KEY", "key-b")
+    action = SimpleNamespace(
+        name="say",
+        system_prompt="You are concise.",
+        user_prompt="Say hello.",
+        outputs=(("text", str),),
+        parse_format="text",
+    )
+
+    first, _ = backend_from_spec("openai@openai-a:gpt-4o-mini")
+    second, _ = backend_from_spec("openai@openai-b:gpt-4o-mini")
+    first(action, {})
+    second(action, {})
+
+    assert authorizations == ["Bearer key-a", "Bearer key-b"]
+
+
 def test_backend_from_spec_accepts_ollama_model_with_colon(monkeypatch):
     seen = {}
 

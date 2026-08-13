@@ -21,19 +21,11 @@ from typing import Any
 from zippergen.semantic import workflow_semantics
 from zippergen.syntax import Workflow, _ordered_workflow_lifelines
 from zippergen.workspace import Workspace
-from zippergen.deployment_platform import slug
+from zippergen.provider_connections import provider_environment_name
 
 
 class ConnectorWiringError(RuntimeError):
     """The project's connectors cannot be wired as configured."""
-
-
-def _environment_name(configuration: str, suffix: str) -> str:
-    return (
-        "ZIPPERGEN_CONNECTOR_"
-        + slug(configuration).replace("-", "_").upper()
-        + suffix
-    )
 
 
 def human_action_sites(
@@ -72,6 +64,7 @@ def _check_google_authorization(
     workspace: Workspace,
     requirements,
     bindings: dict[str, str],
+    configurations: dict[str, dict[str, str]],
 ) -> None:
     """Refuse before deploying if the granted scopes do not cover the workflow."""
 
@@ -81,46 +74,48 @@ def _check_google_authorization(
         google_scopes_for_access,
     )
 
-    pairs = [
-        (item.kind, item.access)
-        for item in requirements
-        if item.name in bindings and item.kind in {"gmail", "google-sheets"}
-    ]
-    if not pairs:
-        return
+    by_connection: dict[str, list[tuple[str, str]]] = {}
+    for item in requirements:
+        configuration = configurations.get(bindings.get(item.name, ""), {})
+        connection = str(configuration.get("connection") or "")
+        if connection and item.kind in {"gmail", "google-sheets"}:
+            by_connection.setdefault(connection, []).append((item.kind, item.access))
 
-    required = google_scopes_for_access(pairs)
-    profile = workspace.connector_provider_profiles().get("google")
-    raw = (profile or {}).get("granted_scopes")
-    granted: tuple[str, ...] = ()
-    if isinstance(raw, (list, tuple)):
-        granted = tuple(str(value) for value in raw)
-    elif isinstance(raw, str) and raw:
-        import json
+    profiles = workspace.provider_connections()
+    for connection, pairs in by_connection.items():
+        required = google_scopes_for_access(pairs)
+        raw = profiles.get(connection, {}).get("granted_scopes")
+        granted: tuple[str, ...] = ()
+        if isinstance(raw, str) and raw:
+            import json
 
-        try:
-            value = json.loads(raw)
-        except json.JSONDecodeError:
-            value = raw.split(",")
-        if isinstance(value, list):
-            granted = tuple(str(item) for item in value)
+            try:
+                value = json.loads(raw)
+            except json.JSONDecodeError:
+                value = raw.split(",")
+            if isinstance(value, list):
+                granted = tuple(str(item) for item in value)
 
-    if not granted:
-        raise ConnectorWiringError(
-            "Google is not authorized on this machine. Use "
-            "'zippergen connector authorize google --scopes ...'."
-        )
-    if not google_scopes_cover(granted, required):
-        missing = [
-            name
-            for scope, name in zip(required, google_scope_names(required), strict=True)
-            if not google_scopes_cover(granted, (scope,))
-        ]
-        raise ConnectorWiringError(
-            "Google authorization does not cover this workflow: "
-            + ", ".join(missing)
-            + ". Re-run 'zippergen connector authorize google' with those scopes."
-        )
+        if not granted:
+            raise ConnectorWiringError(
+                f"Google connection {connection!r} is not authorized on this "
+                f"machine. Use 'zippergen provider authorize {connection} "
+                "--scopes ...'."
+            )
+        if not google_scopes_cover(granted, required):
+            missing = [
+                name
+                for scope, name in zip(
+                    required, google_scope_names(required), strict=True
+                )
+                if not google_scopes_cover(granted, (scope,))
+            ]
+            raise ConnectorWiringError(
+                f"Google connection {connection!r} does not cover this workflow: "
+                + ", ".join(missing)
+                + f". Re-run 'zippergen provider authorize {connection}' with "
+                "those scopes."
+            )
 
 
 def connector_runtime(
@@ -158,42 +153,49 @@ def connector_runtime(
             + ", ".join(unbound)
             + ". Use 'zippergen connector bind REQUIREMENT CONFIGURATION'."
         )
-    _check_google_authorization(workspace, requirements, bindings)
+    _check_google_authorization(
+        workspace, requirements, bindings, configurations
+    )
 
     snapshot: dict[str, Any] = {}
     environment: dict[str, str] = {}
 
-    def resolved(name: str) -> tuple[dict[str, str], str, dict[str, str]]:
+    def resolved(
+        name: str,
+    ) -> tuple[dict[str, str], str, str, dict[str, str]]:
         configuration = configurations.get(name)
         if configuration is None:
             raise ConnectorWiringError(
                 f"Connector configuration {name!r} does not exist."
             )
-        provider = str(
-            configuration.get("provider") or configuration.get("kind") or ""
-        )
+        connection = str(configuration.get("connection") or "")
+        provider = str(configuration.get("provider") or "")
+        if not connection:
+            raise ConnectorWiringError(
+                f"Connector configuration {name!r} has no provider connection."
+            )
         secrets: dict[str, str] = {}
         if provider == "telegram":
-            token = workspace.connector_provider_secret(
-                "telegram", "bot_token"
-            ) or workspace.connector_secret(name, "bot_token")
+            token = workspace.provider_secret(connection, "bot_token")
             if not token:
                 raise ConnectorWiringError(
-                    "The Telegram bot token is missing on this machine. Use "
-                    "'zippergen connector configure NAME telegram'."
+                    f"The Telegram bot token for connection {connection!r} is "
+                    f"missing on this machine. Use 'zippergen provider "
+                    f"credential {connection}'."
                 )
             secrets["bot_token"] = token
         elif provider == "google":
-            credential = workspace.connector_provider_secret(
-                "google", "authorized_user_json"
+            credential = workspace.provider_secret(
+                connection, "authorized_user_json"
             )
             if not credential:
                 raise ConnectorWiringError(
-                    "Google is not authorized on this machine. Use "
-                    "'zippergen connector authorize google --scopes ...'."
+                    f"Google connection {connection!r} is not authorized on "
+                    f"this machine. Use 'zippergen provider authorize "
+                    f"{connection} --scopes ...'."
                 )
             secrets["authorized_user_json"] = credential
-        return configuration, provider, secrets
+        return configuration, connection, provider, secrets
 
     known_targets = _human_targets(workflow, module)
     for target, name in [*lifeline_assignments.items(), *action_assignments.items()]:
@@ -202,13 +204,13 @@ def connector_runtime(
                 f"{target} is assigned a connector but has no human action. "
                 "Remove the assignment, or check the participant name."
             )
-        configuration, provider, secrets = resolved(name)
+        configuration, connection, provider, secrets = resolved(name)
         if provider != "telegram":
             raise ConnectorWiringError(
                 f"{target} needs a connector that can ask a person, but "
                 f"{name} is {provider or 'unconfigured'}."
             )
-        token_env = _environment_name(provider, "_TOKEN")
+        token_env = provider_environment_name(connection, "bot_token")
         environment[token_env] = secrets["bot_token"]
         participant, _, action = target.partition(".")
         snapshot[f"human:{target}"] = {
@@ -218,6 +220,7 @@ def connector_runtime(
             "action": action or None,
             "kind": provider,
             "provider": provider,
+            "connection": connection,
             "configuration": name,
             "chat_id": configuration.get("chat_id"),
             "channel": configuration.get("channel") or f"telegram:{name}",
@@ -228,7 +231,7 @@ def connector_runtime(
         name = bindings.get(requirement.name)
         if name is None:
             continue
-        configuration, provider, secrets = resolved(name)
+        configuration, connection, provider, secrets = resolved(name)
         kind = str(configuration.get("kind") or "")
         if kind != requirement.kind:
             raise ConnectorWiringError(
@@ -238,17 +241,20 @@ def connector_runtime(
         record: dict[str, Any] = {
             **requirement.as_dict(),
             "provider": provider,
+            "connection": connection,
             "configuration": name,
             "channel": configuration.get("channel") or requirement.name,
         }
         if requirement.kind == "telegram":
-            token_env = _environment_name(name, "_TOKEN")
+            token_env = provider_environment_name(connection, "bot_token")
             record.update(
                 {"chat_id": configuration.get("chat_id"), "token_env": token_env}
             )
             environment[token_env] = secrets["bot_token"]
         elif requirement.kind in {"google-sheets", "gmail"}:
-            credential_env = _environment_name(name, "_GOOGLE_CREDENTIAL")
+            credential_env = provider_environment_name(
+                connection, "authorized_user_json"
+            )
             if requirement.kind == "google-sheets":
                 record.update(
                     {
@@ -279,27 +285,29 @@ def connector_environment_from_snapshot(
     """Resolve this machine's secrets for an already-recorded connector snapshot."""
 
     environment: dict[str, str] = {}
-    telegram_token = workspace.connector_provider_secret("telegram", "bot_token")
-    google_credential = workspace.connector_provider_secret(
-        "google", "authorized_user_json"
-    )
     for raw in snapshot.values():
         if not isinstance(raw, Mapping):
             continue
         token_env = str(raw.get("token_env") or "")
         if token_env:
+            connection = str(raw.get("connection") or "")
+            telegram_token = workspace.provider_secret(connection, "bot_token")
             if not telegram_token:
                 raise ConnectorWiringError(
-                    "The Telegram bot token is missing on this machine. Use "
-                    "'zippergen connector configure NAME telegram'."
+                    f"The Telegram bot token for connection {connection!r} is "
+                    f"missing. Use 'zippergen provider credential {connection}'."
                 )
             environment[token_env] = telegram_token
         credential_env = str(raw.get("credential_env") or "")
         if credential_env:
+            connection = str(raw.get("connection") or "")
+            google_credential = workspace.provider_secret(
+                connection, "authorized_user_json"
+            )
             if not google_credential:
                 raise ConnectorWiringError(
-                    "Google is not authorized on this machine. Use "
-                    "'zippergen connector authorize google --scopes ...'."
+                    f"Google connection {connection!r} is not authorized. Use "
+                    f"'zippergen provider authorize {connection} --scopes ...'."
                 )
             environment[credential_env] = google_credential
     return environment

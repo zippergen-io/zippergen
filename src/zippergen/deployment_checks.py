@@ -66,18 +66,6 @@ def _safe_json_loads(value):
         return value
 
 
-_MODEL_PROVIDER_SECRETS = {
-    "openai": "OPENAI_API_KEY",
-    "anthropic": "ANTHROPIC_API_KEY",
-    "mistral": "MISTRAL_API_KEY",
-}
-
-
-def _model_provider(value: object) -> str:
-    provider = str(value or "mock").partition(":")[0].strip().lower()
-    return {"claude": "anthropic", "ollama": "local"}.get(provider, provider)
-
-
 def _store_status(store_path: str) -> dict[str, object]:
     path = Path(store_path).expanduser()
     if not path.exists():
@@ -177,12 +165,28 @@ def _path_parent_check(label: str, path: Path) -> dict[str, object]:
     return _doctor_check("ok", label, f"parent directory is writable: {parent}")
 
 
-def _required_model_provider_secrets(profile: dict[str, object]) -> set[str]:
-    return {
-        secret
-        for model in selected_llm_specs(profile.get("llm"), profile.get("llms"))
-        if (secret := _MODEL_PROVIDER_SECRETS.get(_model_provider(model)))
-    }
+def _required_model_provider_secrets(profile: dict[str, object]) -> dict[str, str]:
+    from zippergen.provider_connections import (
+        provider_credential_field,
+        provider_environment_name,
+        provider_standard_environment,
+        split_model_spec,
+    )
+
+    required: dict[str, str] = {}
+    for spec in selected_llm_specs(profile.get("llm"), profile.get("llms")):
+        try:
+            kind, connection, _model = split_model_spec(spec)
+        except ValueError:
+            continue
+        field = provider_credential_field(kind)
+        if field is None:
+            continue
+        if connection:
+            required[provider_environment_name(connection, field)] = connection
+        elif standard := provider_standard_environment(kind):
+            required[standard] = standard
+    return required
 
 
 def _systemd_active_check(name: str) -> dict[str, object]:
@@ -743,13 +747,15 @@ def _doctor_checks(
     declared_secret_names = {
         field.target_name for field in deployment_spec.fields if field.secret
     }
-    for secret_name in sorted(_required_model_provider_secrets(profile)):
+    for secret_name, connection in sorted(
+        _required_model_provider_secrets(profile).items()
+    ):
         if environment.get(secret_name):
             if secret_name not in declared_secret_names:
                 checks.append(
                     _doctor_check(
                         "ok",
-                        f"model credential {secret_name}",
+                        f"provider credential {connection}",
                         "configured in private deployment storage",
                     )
                 )
@@ -757,7 +763,7 @@ def _doctor_checks(
             checks.append(
                 _doctor_check(
                     "fail",
-                    f"model credential {secret_name}",
+                    f"provider credential {connection}",
                     "required by a selected model but not configured",
                 )
             )

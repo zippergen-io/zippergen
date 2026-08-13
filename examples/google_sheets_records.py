@@ -3,8 +3,12 @@
 The workflow owns the table schema and the meaning of each operation. The
 project owns Google authorization and the concrete spreadsheet:
 
-    zippergen connector authorize google --scopes spreadsheets
-    zippergen connector configure google-sheets --bind records
+    zippergen provider configure google-work google
+    zippergen provider authorize google-work --scopes spreadsheets
+    zippergen provider accept google-work
+    zippergen connector configure project-sheet google-work google-sheets \
+        --spreadsheet-id SHEET_ID --tab Calls
+    zippergen connector bind records project-sheet
     zippergen run examples/google_sheets_records.py:google_sheet_records
 """
 

@@ -56,12 +56,12 @@ def _configured_project(tmp_path: Path, monkeypatch) -> tuple[Path, Path]:
     workspace = Workspace(root, home=home)
     workspace.initialize_project()
     workspace.select_workflow("workflow.py:answer")
+    workspace.save_provider_connection("scripted-tests", {"kind": "scripted"})
     workspace.save_model_configuration(
         "writer-model",
         {
-            "provider": "scripted",
+            "connection": "scripted-tests",
             "model": str(replies),
-            "spec": f"scripted:{replies}",
         },
     )
     workspace.save_model_assignment_profile(
@@ -96,7 +96,9 @@ def test_project_model_assignment_drives_plain_and_durable_runs(
     record = json.loads(records[0].read_text())
     assert record["result"] == "assigned model"
     assert record["llm"] == "mock"
-    assert record["llms"] == {"Writer": f"scripted:{root / 'replies.json'}"}
+    assert record["llms"] == {
+        "Writer": f"scripted@scripted-tests:{root / 'replies.json'}"
+    }
 
 
 def test_action_assignment_overrides_its_participant_assignment(
@@ -111,9 +113,8 @@ def test_action_assignment_overrides_its_participant_assignment(
     workspace.save_model_configuration(
         "draft-model",
         {
-            "provider": "scripted",
+            "connection": "scripted-tests",
             "model": str(action_replies),
-            "spec": f"scripted:{action_replies}",
         },
     )
     workspace.save_model_assignment_profile(
@@ -150,7 +151,7 @@ def test_deployment_snapshots_project_model_assignments(
     )
     assert profile["llm"] == "mock"
     assert profile["llms"] == {
-        "Writer": f"scripted:{root / 'replies.json'}"
+        "Writer": f"scripted@scripted-tests:{root / 'replies.json'}"
     }
 
 

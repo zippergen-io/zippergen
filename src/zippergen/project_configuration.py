@@ -19,6 +19,7 @@ from zippergen.assistant_configuration import (
 from zippergen.connector_wiring import human_action_sites
 from zippergen.connectors import connector_requirements_from_module
 from zippergen.models import project_model_routing, selected_llm_specs
+from zippergen.provider_connections import split_model_spec
 from zippergen.rendering import TerminalRenderer
 from zippergen.semantic import workflow_semantics
 from zippergen.syntax import LLMAction, Workflow
@@ -33,19 +34,13 @@ def _check(status: str, name: str, detail: str) -> Check:
 
 
 def _provider(spec: str) -> str:
-    value = spec.partition(":")[0].strip().casefold()
-    return {"claude": "anthropic", "ollama": "local"}.get(value, value)
+    from zippergen.provider_connections import split_model_spec
 
-
-def model_credential_name(spec: str) -> str | None:
-    """Return the private credential name used by one model specification."""
-
-    provider = _provider(spec)
-    return {
-        "openai": "OPENAI_API_KEY",
-        "mistral": "MISTRAL_API_KEY",
-        "anthropic": "ANTHROPIC_API_KEY",
-    }.get(provider)
+    try:
+        provider, _connection, _model = split_model_spec(spec)
+    except ValueError:
+        return spec.partition(":")[0].partition("@")[0].strip().casefold()
+    return provider
 
 
 def _project_model_source(
@@ -61,7 +56,7 @@ def _project_model_source(
     )
     raw = configurations.get(name) if isinstance(configurations, dict) else None
     project_keys = set(raw) if isinstance(raw, dict) else set()
-    site_keys = set(merged) - project_keys
+    site_keys = set(merged) - project_keys - {"provider", "spec"}
     if project_keys and site_keys:
         return "project + site"
     if project_keys:
@@ -235,6 +230,7 @@ def configuration_report(
     *,
     live: bool = False,
     include_site_checks: bool = True,
+    provider_names: tuple[str, ...] = (),
     model_names: tuple[str, ...] = (),
     assistant_names: tuple[str, ...] = (),
     connector_names: tuple[str, ...] = (),
@@ -252,10 +248,21 @@ def configuration_report(
         module = None
         workflow_error = f"{type(exc).__name__}: {exc}"
 
+    provider_connections = workspace.provider_connections()
+    provider_rows = [
+        {
+            "name": name,
+            "kind": values.get("kind", ""),
+            "base_url": values.get("base_url"),
+        }
+        for name, values in sorted(provider_connections.items())
+    ]
     model_configurations = workspace.model_configurations()
     model_rows = [
         {
             "name": name,
+            "connection": values.get("connection", ""),
+            "model": values.get("model", ""),
             "spec": values.get("spec", ""),
             "idle_timeout": values.get("idle_timeout"),
             "source": _project_model_source(manifest, name, values),
@@ -391,6 +398,12 @@ def configuration_report(
 
     site_facts: list[dict[str, object]] = []
     if include_site_checks:
+        from zippergen.provider_connections import (
+            provider_credential_field,
+            provider_credential_label,
+            provider_standard_environment,
+        )
+
         specs = selected_llm_specs(
             resolved_models["default"],
             resolved_models["overrides"],
@@ -404,27 +417,100 @@ def configuration_report(
             ),
         ]))
         environment = workspace.development_provider_environment(specs)
+        used_connections = set(provider_names)
         for spec in specs:
-            provider = _provider(spec)
-            secret = model_credential_name(spec)
-            if secret:
-                available = bool(environment.get(secret) or os.environ.get(secret))
-                site_facts.append(
-                    {
-                        "kind": "model credential",
-                        "name": secret,
-                        "available": available,
-                    }
-                )
+            try:
+                _kind, connection, _model = split_model_spec(spec)
+            except ValueError:
+                continue
+            if connection:
+                used_connections.add(connection)
+        used_connectors = _used_connector_names(
+            connector_assignments,
+            connector_bindings,
+        )
+        used_connectors.update(connector_names)
+        used_connections.update(
+            str(connector_configurations.get(name, {}).get("connection") or "")
+            for name in used_connectors
+        )
+        used_connections.discard("")
+        for connection in sorted(used_connections):
+            profile = provider_connections.get(connection)
+            if profile is None:
                 checks.append(
                     _check(
-                        "ok" if available else "fail",
-                        f"model credential {secret}",
-                        "available" if available else "missing on this computer",
+                        "fail",
+                        f"provider connection {connection}",
+                        "configuration does not exist",
                     )
                 )
+                continue
+            kind = str(profile.get("kind") or "")
+            field = provider_credential_field(kind)
+            if field is None:
+                continue
+            standard = provider_standard_environment(kind)
+            available = bool(
+                workspace.provider_secret(connection, field)
+                or (os.environ.get(standard) if standard else None)
+            )
+            label = provider_credential_label(kind) or field
+            site_facts.append(
+                {
+                    "kind": "provider credential",
+                    "name": connection,
+                    "detail": label,
+                    "available": available,
+                }
+            )
+            checks.append(
+                _check(
+                    "ok" if available else "fail",
+                    f"provider credential {connection}",
+                    f"{label} available"
+                    if available
+                    else f"{label} missing on this computer",
+                )
+            )
+        direct_kinds: set[str] = set()
+        for spec in specs:
+            try:
+                kind, connection, _model = split_model_spec(spec)
+            except ValueError:
+                continue
+            if connection is None and provider_standard_environment(kind):
+                direct_kinds.add(kind)
+        for kind in sorted(direct_kinds):
+            environment_name = provider_standard_environment(kind)
+            assert environment_name is not None
+            available = bool(os.environ.get(environment_name))
+            label = provider_credential_label(kind) or environment_name
+            site_facts.append(
+                {
+                    "kind": "provider credential",
+                    "name": environment_name,
+                    "detail": label,
+                    "available": available,
+                }
+            )
+            checks.append(
+                _check(
+                    "ok" if available else "fail",
+                    f"provider credential {environment_name}",
+                    f"{label} available"
+                    if available
+                    else f"{environment_name} missing from the environment",
+                )
+            )
+        for spec in specs:
+            provider = _provider(spec)
             if provider == "scripted":
-                path = Path(spec.partition(":")[2]).expanduser()
+                try:
+                    _kind, _connection, model = split_model_spec(spec)
+                except ValueError:
+                    model = None
+                path = Path(model or "").expanduser()
                 checks.append(
                     _check(
                         "ok" if path.is_file() else "fail",
@@ -432,33 +518,6 @@ def configuration_report(
                         "response file exists" if path.is_file() else "file is missing",
                     )
                 )
-        used_connectors = _used_connector_names(
-            connector_assignments,
-            connector_bindings,
-        )
-        used_connectors.update(connector_names)
-        used_providers = {
-            str(connector_configurations.get(name, {}).get("provider") or "")
-            for name in used_connectors
-        }
-        for provider, field, label in (
-            ("telegram", "bot_token", "Telegram bot token"),
-            ("google", "authorized_user_json", "Google authorization"),
-        ):
-            if provider not in used_providers:
-                continue
-            available = bool(workspace.connector_provider_secret(provider, field))
-            site_facts.append(
-                {"kind": "connector credential", "name": label, "available": available}
-            )
-            checks.append(
-                _check(
-                    "ok" if available else "fail",
-                    f"connector credential {label}",
-                    "available" if available else "missing on this computer",
-                )
-            )
-
         selected_assistant_backends = {
             str(item.get("backend"))
             for item in resolved_assistants
@@ -569,13 +628,30 @@ def configuration_report(
                     or model_profile.get("default")
                     or "workflow default"
                 )
-                credential = model_credential_name(selected)
-                available = credential is None or any(
-                    item.get("kind") == "model credential"
-                    and item.get("name") == credential
-                    and item.get("available")
-                    for item in site_facts
-                )
+                try:
+                    selected_kind, connection, _model = split_model_spec(selected)
+                except ValueError:
+                    selected_kind = ""
+                    connection = None
+                if connection is not None:
+                    available = any(
+                        item.get("kind") == "provider credential"
+                        and item.get("name") == connection
+                        and item.get("available")
+                        for item in site_facts
+                    )
+                else:
+                    from zippergen.provider_connections import (
+                        provider_standard_environment,
+                    )
+
+                    direct_environment = provider_standard_environment(selected_kind)
+                    available = direct_environment is None or any(
+                        item.get("kind") == "provider credential"
+                        and item.get("name") == direct_environment
+                        and item.get("available")
+                        for item in site_facts
+                    )
                 if live:
                     available = available and check_passes(f"live model {selected}")
                 effective_routing.append(
@@ -619,20 +695,22 @@ def configuration_report(
                         connector_configurations.get(configuration, {}).get("provider")
                         or ""
                     )
-                    credential_label = {
-                        "telegram": "Telegram bot token",
-                        "google": "Google authorization",
-                    }.get(provider)
-                    if credential_label:
+                    connection = str(
+                        connector_configurations.get(configuration, {}).get(
+                            "connection"
+                        )
+                        or ""
+                    )
+                    if connection:
                         available = any(
-                            fact.get("kind") == "connector credential"
-                            and fact.get("name") == credential_label
+                            fact.get("kind") == "provider credential"
+                            and fact.get("name") == connection
                             and fact.get("available")
                             for fact in site_facts
                         )
                     if live:
                         live_name = (
-                            "live connector Google"
+                            f"live provider {connection}"
                             if provider == "google"
                             else f"live connector {configuration}"
                         )
@@ -655,25 +733,22 @@ def configuration_report(
                     connector_configurations.get(configuration, {}).get("provider")
                     or ""
                 )
-                if provider in {"telegram", "google"}:
+                connection = str(
+                    connector_configurations.get(configuration, {}).get(
+                        "connection"
+                    )
+                    or ""
+                )
+                if connection:
                     available = any(
-                        fact.get("kind") == "connector credential"
-                        and (
-                            (
-                                provider == "telegram"
-                                and fact.get("name") == "Telegram bot token"
-                            )
-                            or (
-                                provider == "google"
-                                and fact.get("name") == "Google authorization"
-                            )
-                        )
+                        fact.get("kind") == "provider credential"
+                        and fact.get("name") == connection
                         and fact.get("available")
                         for fact in site_facts
                     )
                 if live:
                     live_name = (
-                        "live connector Google"
+                        f"live provider {connection}"
                         if provider == "google"
                         else f"live connector {configuration}"
                     )
@@ -698,6 +773,7 @@ def configuration_report(
             "workflow": workflow_spec,
             "specification": str(workspace.specification_path),
         },
+        "providers": {"connections": provider_rows},
         "models": {
             "configurations": model_rows,
             "assignments": model_profile,
@@ -745,10 +821,11 @@ def _append_live_connector_checks(
 ) -> None:
     used = _used_connector_names(assignments, bindings)
     used.update(extra_names)
-    telegram = workspace.connector_provider_secret("telegram", "bot_token")
     for name in sorted(used):
         configuration = configurations.get(name) or {}
         provider = configuration.get("provider")
+        connection = str(configuration.get("connection") or "")
+        telegram = workspace.provider_secret(connection, "bot_token")
         if provider == "telegram" and telegram:
             try:
                 from zippergen.telegram_notify import TelegramBotClient
@@ -765,20 +842,30 @@ def _append_live_connector_checks(
     if workflow is None or module is None:
         return
     requirements = connector_requirements_from_module(module)
-    google_pairs = [
-        (item.kind, item.access)
-        for item in requirements
-        if bindings.get(item.name) in used
-        and item.kind in {"gmail", "google-sheets"}
-    ]
+    google_pairs: dict[str, list[tuple[str, str]]] = {}
+    for item in requirements:
+        configuration = configurations.get(bindings.get(item.name, ""), {})
+        connection = str(configuration.get("connection") or "")
+        if (
+            bindings.get(item.name) in used
+            and item.kind in {"gmail", "google-sheets"}
+            and connection
+        ):
+            google_pairs.setdefault(connection, []).append(
+                (item.kind, item.access)
+            )
     for name in extra_names:
         configuration = configurations.get(name) or {}
         kind = configuration.get("kind")
+        connection = str(configuration.get("connection") or "")
         pair = (str(kind), "read-only")
-        if kind in {"gmail", "google-sheets"} and pair not in google_pairs:
-            google_pairs.append(pair)
-    credential = workspace.connector_provider_secret("google", "authorized_user_json")
-    if google_pairs and credential:
+        pairs = google_pairs.setdefault(connection, []) if connection else []
+        if kind in {"gmail", "google-sheets"} and pair not in pairs:
+            pairs.append(pair)
+    for connection, pairs in sorted(google_pairs.items()):
+        credential = workspace.provider_secret(connection, "authorized_user_json")
+        if not credential:
+            continue
         try:
             from zippergen.google_auth import (
                 check_google_authorization,
@@ -787,17 +874,27 @@ def _append_live_connector_checks(
 
             refreshed = check_google_authorization(
                 credential,
-                scopes=google_scopes_for_access(google_pairs),
+                scopes=google_scopes_for_access(pairs),
             )
-            workspace.save_connector_provider_secret(
-                "google", "authorized_user_json", refreshed
+            workspace.save_provider_secret(
+                connection, "authorized_user_json", refreshed
             )
         except Exception as exc:
             checks.append(
-                _check("fail", "live connector Google", f"{type(exc).__name__}: {exc}")
+                _check(
+                    "fail",
+                    f"live provider {connection}",
+                    f"{type(exc).__name__}: {exc}",
+                )
             )
         else:
-            checks.append(_check("ok", "live connector Google", "authorization refreshed"))
+            checks.append(
+                _check(
+                    "ok",
+                    f"live provider {connection}",
+                    "Google authorization refreshed",
+                )
+            )
 
 
 def _nested_assignment_rows(
@@ -863,8 +960,8 @@ def _render_columns_or_empty(
 
 def _idle_release_display(item: Mapping[str, object]) -> str:
     value = item.get("idle_timeout")
-    provider = str(item.get("spec") or "").partition(":")[0]
-    if provider not in {"local", "ollama"}:
+    provider = _provider(str(item.get("spec") or ""))
+    if provider != "local":
         return "not applicable"
     if value is None or str(value).strip() == "":
         return "not set"
@@ -891,6 +988,24 @@ def render_configuration(
             ("Manifest", project.get("manifest"), None),
         ],
     )
+    renderer.framed_section("Providers")
+    providers = report.get("providers") or {}
+    assert isinstance(providers, dict)
+    _render_columns_or_empty(
+        renderer,
+        "Connections",
+        ("Name", "Kind", "Site endpoint"),
+        [
+            (
+                item.get("name"),
+                item.get("kind"),
+                item.get("base_url") or "provider default",
+            )
+            for item in providers.get("connections") or []
+            if isinstance(item, dict)
+        ],
+        empty="No connections.",
+    )
     renderer.framed_section("Models")
     models = report["models"]
     assert isinstance(models, dict)
@@ -898,7 +1013,8 @@ def render_configuration(
     model_configuration_rows = [
         (
             item.get("name"),
-            item.get("spec") or "-",
+            item.get("connection") or "-",
+            item.get("model") or "-",
             _idle_release_display(item),
             item.get("source"),
         )
@@ -908,7 +1024,7 @@ def render_configuration(
     _render_columns_or_empty(
         renderer,
         "Configurations",
-        ("Name", "Spec", "Idle release", "Source"),
+        ("Name", "Connection", "Model", "Idle release", "Source"),
         model_configuration_rows,
         empty="No configurations.",
     )
@@ -930,6 +1046,7 @@ def render_configuration(
         (
             item.get("name"),
             item.get("kind") or item.get("provider"),
+            item.get("connection") or "-",
             item.get("chat_id")
             or item.get("spreadsheet_id")
             or item.get("query")
@@ -941,7 +1058,7 @@ def render_configuration(
     _render_columns_or_empty(
         renderer,
         "Configurations",
-        ("Name", "Kind", "Resource"),
+        ("Name", "Kind", "Connection", "Resource"),
         connector_configuration_rows,
         empty="No configurations.",
     )
@@ -1114,7 +1231,8 @@ def render_model_configuration(
     configuration_rows = [
         (
             item.get("name"),
-            item.get("spec") or "-",
+            item.get("connection") or "-",
+            item.get("model") or "-",
             _idle_release_display(item),
             item.get("source"),
         )
@@ -1124,7 +1242,7 @@ def render_model_configuration(
     _render_columns_or_empty(
         renderer,
         "Configurations",
-        ("Name", "Spec", "Idle release", "Source"),
+        ("Name", "Connection", "Model", "Idle release", "Source"),
         configuration_rows,
         empty="No configurations.",
     )
@@ -1220,6 +1338,7 @@ def render_connector_configuration(
         (
             item.get("name"),
             item.get("kind") or item.get("provider"),
+            item.get("connection") or "-",
             item.get("chat_id")
             or item.get("spreadsheet_id")
             or item.get("query")
@@ -1231,7 +1350,7 @@ def render_connector_configuration(
     _render_columns_or_empty(
         renderer,
         "Configurations",
-        ("Name", "Kind", "Resource"),
+        ("Name", "Kind", "Connection", "Resource"),
         configuration_rows,
         empty="No configurations.",
     )
@@ -1250,6 +1369,36 @@ def render_connector_configuration(
     )
     if show_checks:
         _render_selected_checks(report, renderer, "connector")
+
+
+def render_provider_configuration(
+    report: dict[str, object],
+    renderer: TerminalRenderer,
+    *,
+    show_checks: bool = True,
+) -> None:
+    """Render named provider connections and their local readiness."""
+
+    renderer.framed_section("Providers")
+    providers = report.get("providers") or {}
+    assert isinstance(providers, dict)
+    _render_columns_or_empty(
+        renderer,
+        "Connections",
+        ("Name", "Kind", "Site endpoint"),
+        [
+            (
+                item.get("name"),
+                item.get("kind"),
+                item.get("base_url") or "provider default",
+            )
+            for item in providers.get("connections") or []
+            if isinstance(item, dict)
+        ],
+        empty="No connections.",
+    )
+    if show_checks:
+        _render_selected_checks(report, renderer, "provider")
 
 
 def _selected_checks(report: dict[str, object], scope: str) -> list[dict[str, object]]:
@@ -1301,38 +1450,21 @@ def _render_selected_checks(
 def configure_model(
     workspace: Workspace,
     name: str,
-    spec: str,
+    connection: str,
+    model: str,
     *,
     idle_timeout: float | None = None,
-    base_url: str | None = None,
 ) -> dict[str, str]:
-    provider, separator, model = spec.strip().partition(":")
-    canonical_provider = {
-        "claude": "anthropic",
-        "ollama": "local",
-    }.get(provider.casefold(), provider.casefold())
-    supported = {"mock", "scripted", "openai", "mistral", "anthropic", "local"}
-    if canonical_provider not in supported:
-        raise WorkspaceError(
-            f"Unsupported model provider {provider!r}. Supported: "
-            + ", ".join(sorted(supported))
-        )
-    if canonical_provider == "mock":
-        raise WorkspaceError("Use the built-in configuration named 'mock'.")
-    canonical_spec = f"{canonical_provider}:{model}" if separator else canonical_provider
+    selected_connection = connection.strip()
+    selected_model = model.strip()
     values = {
-        "provider": canonical_provider,
-        "model": model,
-        "spec": canonical_spec,
+        "connection": selected_connection,
+        "model": selected_model,
     }
     if idle_timeout is not None:
         if not math.isfinite(idle_timeout) or idle_timeout < 0:
             raise WorkspaceError("Idle timeout must be a non-negative finite number.")
         values["idle_timeout"] = str(idle_timeout)
-    if base_url is not None:
-        if canonical_provider != "local":
-            raise WorkspaceError("--base-url is currently supported for local models only.")
-        workspace.save_provider_profile("local", {"base_url": base_url})
     return workspace.save_model_configuration(name, values)
 
 

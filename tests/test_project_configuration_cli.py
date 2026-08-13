@@ -24,6 +24,17 @@ def project(tmp_path, monkeypatch):
     home = tmp_path / "home"
     workspace = Workspace(root, home=home)
     workspace.initialize_project(name="configuration-test")
+    for name, kind in (
+        ("openai-main", "openai"),
+        ("local-main", "local"),
+        ("scripted-main", "scripted"),
+        ("approval-bot", "telegram"),
+        ("google-work", "google"),
+    ):
+        values = {"kind": kind}
+        if kind == "local":
+            values["base_url"] = "http://127.0.0.1:11434/v1"
+        workspace.save_provider_connection(name, values)
     monkeypatch.setenv("ZIPPERGEN_HOME", str(home))
     monkeypatch.chdir(root)
     return root, workspace
@@ -35,15 +46,16 @@ def test_model_configuration_and_assignment_are_ordinary_commands(
     root, workspace = project
 
     assert main([
-        "model", "configure", "writer", "openai:gpt-4o-mini"
+        "model", "configure", "writer", "openai-main", "gpt-4o-mini"
     ]) == 0
     assert main(["model", "assign", "Writer", "writer"]) == 0
     capsys.readouterr()
 
     manifest = tomllib.loads((root / "zippergen.toml").read_text())
-    assert manifest["models"]["configurations"]["writer"]["spec"] == (
-        "openai:gpt-4o-mini"
-    )
+    assert manifest["models"]["configurations"]["writer"] == {
+        "connection": "openai-main",
+        "model": "gpt-4o-mini",
+    }
     assert manifest["models"]["assignments"]["lifelines"] == {
         "Writer": "writer"
     }
@@ -54,15 +66,18 @@ def test_model_configuration_and_assignment_are_ordinary_commands(
 
 def test_model_and_connector_configuration_share_name_first_grammar():
     _parser, model = _parse_cli_args(
-        ["model", "configure", "writer", "openai:gpt-4o-mini"]
+        ["model", "configure", "writer", "openai-main", "gpt-4o-mini"]
     )
     _parser, connector = _parse_cli_args(
-        ["connector", "configure", "approval-chat", "telegram"]
+        ["connector", "configure", "approval-chat", "approval-bot", "telegram"]
     )
 
-    assert (model.name, model.spec) == ("writer", "openai:gpt-4o-mini")
-    assert (connector.name, connector.connector_provider) == (
+    assert (model.name, model.connection, model.model) == (
+        "writer", "openai-main", "gpt-4o-mini"
+    )
+    assert (connector.name, connector.connection, connector.kind) == (
         "approval-chat",
+        "approval-bot",
         "telegram",
     )
 
@@ -74,7 +89,7 @@ def test_model_configuration_is_fully_guided_in_a_terminal(
     answers = iter(
         [
             "writer",
-            "openai",
+            "openai-main",
             "gpt-4o-mini",
             "Writer",
             "writer",
@@ -83,56 +98,45 @@ def test_model_configuration_is_fully_guided_in_a_terminal(
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
     monkeypatch.setattr("zippergen.serve.sys.stdin.isatty", lambda: True)
     monkeypatch.setattr("builtins.input", lambda _prompt: next(answers))
-    monkeypatch.setattr("getpass.getpass", lambda _prompt: "private-key")
 
     assert main(["model", "configure"]) == 0
     assert main(["model", "assign"]) == 0
 
     assert workspace.model_configurations()["writer"]["spec"] == (
-        "openai:gpt-4o-mini"
+        "openai@openai-main:gpt-4o-mini"
     )
-    assert workspace.development_credential("OPENAI_API_KEY") == "private-key"
-    assert "private-key" not in (_root / "zippergen.toml").read_text()
-    assert workspace.secrets_path.stat().st_mode & 0o777 == 0o600
     assert workspace.model_assignment_profile(
         "workflow.py:email_approval"
     )["lifelines"] == {"Writer": "writer"}
     output = capsys.readouterr().out
     assert "Available model assignment targets" in output
-    assert "Saved OPENAI_API_KEY in" in output
-    assert "owner-only file" in output
 
 
 def test_guided_scripted_model_asks_for_a_response_file(project, monkeypatch):
     _root, workspace = project
-    answers = iter(["responses", "scripted", "answers.json"])
+    answers = iter(["responses", "scripted-main", "answers.json"])
     monkeypatch.setattr("zippergen.serve.sys.stdin.isatty", lambda: True)
     monkeypatch.setattr("builtins.input", lambda _prompt: next(answers))
 
     assert main(["model", "configure"]) == 0
 
     assert workspace.model_configurations()["responses"]["spec"] == (
-        "scripted:answers.json"
+        "scripted@scripted-main:answers.json"
     )
 
 
-def test_existing_model_environment_credential_is_not_copied(
+def test_a_connection_can_fall_back_to_the_provider_environment(
     project, monkeypatch, capsys
 ):
     _root, workspace = project
     monkeypatch.setenv("OPENAI_API_KEY", "environment-key")
-    monkeypatch.setattr("zippergen.serve.sys.stdin.isatty", lambda: True)
-    monkeypatch.setattr(
-        "getpass.getpass",
-        lambda _prompt: pytest.fail("an environment credential must be reused"),
-    )
-
     assert main(
-        ["model", "configure", "writer", "openai:gpt-4o-mini"]
+        ["model", "configure", "writer", "openai-main", "gpt-4o-mini"]
     ) == 0
 
-    assert workspace.development_credential("OPENAI_API_KEY") is None
-    assert "Found OPENAI_API_KEY in the environment" in capsys.readouterr().out
+    assert workspace.provider_secret("openai-main", "api_key") is None
+    assert main(["config"]) == 0
+    assert "openai-main" in capsys.readouterr().out
 
 
 def test_missing_required_values_do_not_prompt_outside_a_terminal(
@@ -146,7 +150,7 @@ def test_missing_required_values_do_not_prompt_outside_a_terminal(
 
     with pytest.raises(
         SystemExit,
-        match=r"zg model configure NAME PROVIDER:MODEL",
+        match=r"zg model configure NAME CONNECTION MODEL",
     ):
         main(["model", "configure"])
 
@@ -155,10 +159,11 @@ def test_connector_configuration_and_assignment_are_guided_the_same_way(
     project, monkeypatch
 ):
     _root, workspace = project
-    workspace.save_connector_provider_secret("telegram", "bot_token", "private")
+    workspace.save_provider_secret("approval-bot", "bot_token", "private")
     answers = iter(
         [
             "approval-chat",
+            "approval-bot",
             "telegram",
             "4242",
             "User",
@@ -180,7 +185,7 @@ def test_connector_configuration_and_assignment_are_guided_the_same_way(
 
 
 def test_model_assignment_rejects_a_target_that_cannot_call_an_llm(project):
-    main(["model", "configure", "writer", "openai:gpt-4o-mini"])
+    main(["model", "configure", "writer", "openai-main", "gpt-4o-mini"])
 
     with pytest.raises(SystemExit, match="Unknown model assignment target"):
         main(["model", "assign", "Nobody", "writer"])
@@ -188,7 +193,7 @@ def test_model_assignment_rejects_a_target_that_cannot_call_an_llm(project):
 
 def test_model_unassign_and_remove_leave_no_stale_reference(project):
     _root, workspace = project
-    main(["model", "configure", "writer", "openai:gpt-4o-mini"])
+    main(["model", "configure", "writer", "openai-main", "gpt-4o-mini"])
     main(["model", "assign", "Writer", "writer"])
 
     assert main(["model", "unassign", "Writer"]) == 0
@@ -200,7 +205,7 @@ def test_model_unassign_and_remove_leave_no_stale_reference(project):
 def test_config_json_resolves_assignments_without_exposing_secrets(
     project, monkeypatch, capsys
 ):
-    main(["model", "configure", "writer", "openai:gpt-4o-mini"])
+    main(["model", "configure", "writer", "openai-main", "gpt-4o-mini"])
     main(["model", "assign", "Writer", "writer"])
     capsys.readouterr()
     monkeypatch.setenv("OPENAI_API_KEY", "must-not-be-printed")
@@ -209,18 +214,18 @@ def test_config_json_resolves_assignments_without_exposing_secrets(
     report = json.loads(capsys.readouterr().out)
 
     assert report["models"]["resolved"]["overrides"] == {
-        "Writer": "openai:gpt-4o-mini"
+        "Writer": "openai@openai-main:gpt-4o-mini"
     }
     assert "must-not-be-printed" not in json.dumps(report)
 
 
 def test_config_check_reports_missing_site_credentials(project, capsys):
-    main(["model", "configure", "writer", "openai:gpt-4o-mini"])
+    main(["model", "configure", "writer", "openai-main", "gpt-4o-mini"])
     main(["model", "assign", "Writer", "writer"])
     capsys.readouterr()
 
     assert main(["check"]) == 0
-    assert "OPENAI_API_KEY" in capsys.readouterr().out
+    assert "openai-main" in capsys.readouterr().out
 
 
 def test_check_exit_code_says_whether_it_ran_not_what_it_found(project, capsys):
@@ -230,15 +235,15 @@ def test_check_exit_code_says_whether_it_ran_not_what_it_found(project, capsys):
     look like a crash. Scripts that want a gate ask for one with --strict.
     """
 
-    main(["model", "configure", "writer", "openai:gpt-4o-mini"])
+    main(["model", "configure", "writer", "openai-main", "gpt-4o-mini"])
     main(["model", "assign", "Writer", "writer"])
     capsys.readouterr()
 
     assert main(["check"]) == 0
-    assert "OPENAI_API_KEY" in capsys.readouterr().out
+    assert "openai-main" in capsys.readouterr().out
 
     assert main(["check", "--strict"]) == 1
-    assert "OPENAI_API_KEY" in capsys.readouterr().out
+    assert "openai-main" in capsys.readouterr().out
 
 
 def test_strict_check_stays_zero_when_the_project_is_ready(project, capsys):
@@ -250,7 +255,7 @@ def test_strict_check_stays_zero_when_the_project_is_ready(project, capsys):
 def test_config_reports_an_unassigned_model_credential_without_contacting_it(
     project, monkeypatch, capsys
 ):
-    main(["model", "configure", "unused", "openai:gpt-4o-mini"])
+    main(["model", "configure", "unused", "openai-main", "gpt-4o-mini"])
     capsys.readouterr()
     monkeypatch.setattr(
         "zippergen.project_configuration._live_model_check",
@@ -259,20 +264,18 @@ def test_config_reports_an_unassigned_model_credential_without_contacting_it(
 
     assert main(["config"]) == 0
     output = capsys.readouterr().out
-    assert "OPENAI_API_KEY" in output
+    assert "openai-main" in output
     assert "Local requirements" in output
 
 
-def test_model_credential_saves_to_the_named_projects_private_file(
+def test_provider_credential_saves_to_the_named_projects_private_file(
     project, monkeypatch, capsys
 ):
     _root, workspace = project
-    main(["model", "configure", "writer", "openai:gpt-4o-mini"])
-    capsys.readouterr()
     monkeypatch.setattr("getpass.getpass", lambda _prompt: "new-secret")
 
-    assert main(["model", "credential", "writer"]) == 0
-    assert workspace.development_credential("OPENAI_API_KEY") == "new-secret"
+    assert main(["provider", "credential", "openai-main"]) == 0
+    assert workspace.provider_secret("openai-main", "api_key") == "new-secret"
     assert str(workspace.secrets_path) in capsys.readouterr().out
 
 
@@ -281,7 +284,7 @@ def test_reconfiguring_interactively_keeps_existing_values_as_defaults(
 ):
     _root, workspace = project
     main([
-        "model", "configure", "writer", "local:qwen2.5:14b",
+        "model", "configure", "writer", "local-main", "qwen2.5:14b",
         "--idle-timeout", "300",
     ])
     monkeypatch.setattr("zippergen.serve.sys.stdin.isatty", lambda: True)
@@ -290,25 +293,9 @@ def test_reconfiguring_interactively_keeps_existing_values_as_defaults(
     assert main(["model", "configure", "writer"]) == 0
     assert workspace.model_configurations()["writer"] == {
         "provider": "local",
+        "connection": "local-main",
         "model": "qwen2.5:14b",
-        "spec": "local:qwen2.5:14b",
-        "idle_timeout": "300",
-    }
-
-
-def test_reconfiguring_interactively_keeps_existing_values_as_defaults(
-    project, monkeypatch
-):
-    _root, workspace = project
-    main(["model", "configure", "writer", "local:qwen2.5:14b", "--idle-timeout", "300"])
-    monkeypatch.setattr("zippergen.serve.sys.stdin.isatty", lambda: True)
-    monkeypatch.setattr("builtins.input", lambda _prompt: "")
-
-    assert main(["model", "configure", "writer"]) == 0
-    assert workspace.model_configurations()["writer"] == {
-        "provider": "local",
-        "model": "qwen2.5:14b",
-        "spec": "local:qwen2.5:14b",
+        "spec": "local@local-main:qwen2.5:14b",
         "idle_timeout": "300",
     }
 
@@ -318,9 +305,8 @@ def test_config_display_and_check_have_distinct_jobs(project, monkeypatch, capsy
     workspace.save_model_configuration(
         "writer",
         {
-            "provider": "openai",
+            "connection": "openai-main",
             "model": "gpt-4o-mini",
-            "spec": "openai:gpt-4o-mini",
         },
     )
     workspace.save_model_assignment_profile(
@@ -351,7 +337,7 @@ def test_config_display_and_check_have_distinct_jobs(project, monkeypatch, capsy
     checked = capsys.readouterr().out
     assert "Project readiness" in checked
     assert "Credentials and local tools\n═══════════════════════════" in checked
-    assert "OPENAI_API_KEY" in checked
+    assert "openai-main" in checked
 
 
 def test_empty_family_sections_omit_table_scaffolding(project, capsys):
@@ -386,9 +372,14 @@ def test_validate_catches_a_stale_project_assignment(project):
 
 def test_connector_unassign_and_remove_are_symmetric(project):
     _root, workspace = project
+    workspace.save_provider_secret("approval-bot", "bot_token", "secret")
     workspace.save_connector_configuration(
         "approval-chat",
-        {"provider": "telegram", "kind": "telegram", "chat_id": "42"},
+        {
+            "connection": "approval-bot",
+            "kind": "telegram",
+            "chat_id": "42",
+        },
     )
 
     assert main(["connector", "assign", "User", "approval-chat"]) == 0
@@ -403,7 +394,7 @@ def test_human_action_assignment_rejects_a_service_connector(project):
     workspace.save_connector_configuration(
         "inbox",
         {
-            "provider": "google",
+            "connection": "google-work",
             "kind": "gmail",
             "account": "me",
             "query": "is:unread",
@@ -419,9 +410,8 @@ def test_completion_uses_current_project_names(project, capsys):
     workspace.save_model_configuration(
         "writer",
         {
-            "provider": "openai",
+            "connection": "openai-main",
             "model": "gpt-4o-mini",
-            "spec": "openai:gpt-4o-mini",
         },
     )
 
@@ -431,7 +421,7 @@ def test_completion_uses_current_project_names(project, capsys):
     targets = capsys.readouterr().out.splitlines()
     assert "Writer" in targets
     assert "Writer.draft_reply" in targets
-    assert main(["__complete", "connector-providers"]) == 0
+    assert main(["__complete", "connector-kinds"]) == 0
     assert capsys.readouterr().out.splitlines() == [
         "telegram",
         "gmail",
@@ -448,5 +438,7 @@ def test_completion_scripts_are_available(shell, capsys):
 def test_completion_options_come_from_the_real_parser(capsys):
     assert main(["__complete", "options", "model", "configure"]) == 0
     options = capsys.readouterr().out.splitlines()
-    assert "--base-url" in options
+    assert "--base-url" not in options
     assert "--idle-timeout" in options
+    assert main(["__complete", "options", "provider", "configure"]) == 0
+    assert "--base-url" in capsys.readouterr().out.splitlines()
