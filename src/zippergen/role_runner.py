@@ -52,6 +52,7 @@ from zippergen.store import (
     load_human_task,
     load_role_state,
     record_history,
+    RoleStateConflict,
     set_role_status,
     write_role_state,
 )
@@ -229,6 +230,7 @@ class RoleRunner:
             steps=self.steps + 1,
             status=status,
             detail=detail,
+            expected_steps=self.steps,
         )
         self.conn.execute("COMMIT")
         self.steps += 1
@@ -250,7 +252,13 @@ class RoleRunner:
         signature = (status, tuple(sorted((detail or {}).items())))
         if signature == self._status_signature:
             return
-        set_role_status(self.conn, self.role, status, detail)
+        set_role_status(
+            self.conn,
+            self.role,
+            status,
+            detail,
+            expected_steps=self.steps,
+        )
         self._status_signature = signature
 
     def _status_for(self, residual, *, blocked: bool) -> tuple[str, dict]:
@@ -473,15 +481,27 @@ class RoleRunner:
         except BaseException as exc:
             if self.conn.in_transaction:
                 self._rollback()
+            if isinstance(exc, RoleStateConflict):
+                raise
             state = "cancelled" if "Workflow cancelled" in str(exc) else "failed"
             try:
                 set_role_status(
-                    self.conn, self.role, state, {"error": type(exc).__name__}
+                    self.conn,
+                    self.role,
+                    state,
+                    {"error": type(exc).__name__},
+                    expected_steps=self.steps,
                 )
-            except sqlite3.Error:
+            except (sqlite3.Error, RoleStateConflict):
                 pass
             raise
-        set_role_status(self.conn, self.role, "done", {})
+        set_role_status(
+            self.conn,
+            self.role,
+            "done",
+            {},
+            expected_steps=self.steps,
+        )
         return self.env
 
 

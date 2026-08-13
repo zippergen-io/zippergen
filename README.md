@@ -456,7 +456,7 @@ configurations, participants, actions, and connector requirements.
 | [`examples/call_intake.py`](examples/call_intake.py) | Gmail in, Sheets out, deployed as a service |
 | [Your first ZipperGen workflow](docs/first-workflow.pdf) | the tutorial |
 | [Development and deployment guide](docs/workflow-development-deployment-guide.pdf) | the long reference |
-| [Durable storage](docs/durable-storage.md) | what the SQLite store holds, how recovery works, how to compact it |
+| [Durable storage](docs/durable-storage.md) | current-state recovery, crash guarantees, identity, and history retention |
 | [Workflow authoring skill](.agents/skills/zippergen-workflows/SKILL.md) | what a coding agent follows, also printed by `zippergen skill` |
 
 ## Formal foundation

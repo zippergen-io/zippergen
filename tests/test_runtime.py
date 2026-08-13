@@ -782,7 +782,7 @@ def test_step_pure_act_inline_even_in_durable_mode():
 
 
 # ---------------------------------------------------------------------------
-# Durable mode: an owner decision is just evaluated, never journaled
+# Durable mode: an owner decision is evaluated as an ordinary local step
 # ---------------------------------------------------------------------------
 
 from zippergen.syntax import IfStmt, SkipStmt

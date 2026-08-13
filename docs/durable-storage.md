@@ -6,7 +6,7 @@ A ZipperGen deployment keeps its state in one SQLite file. That file holds the
 Recovery is: read the state, continue. There is no log to replay, no snapshot to
 validate, no compaction, and nothing whose correctness needs an argument.
 
-You should be able to understand the whole model from the schema below, seven
+You should be able to understand the whole model from the schema below, eight
 invariants, and the twenty-line loop in `role_runner.py`.
 
 ---
@@ -93,7 +93,8 @@ while there is work left:
         ROLLBACK, call out with no transaction open,
         then BEGIN and commit (result + next control state) together
     elif it progressed:
-        delete the messages it consumed, write the new role state, COMMIT
+        delete the messages it consumed,
+        compare-and-swap the new role state by committed step count, COMMIT
     else:
         ROLLBACK and wait
 ```
@@ -132,6 +133,13 @@ created `0600` before SQLite opens it.
 **I6. History is never read by recovery.** It is written inside whatever
 transaction is open and lost on rollback, and that is fine. There is a test
 that deletes all of it and then resumes.
+
+**I7. A stale runner cannot commit.** A runner loads a role position and its
+committed `steps` count together. Every later state write includes
+`WHERE steps = <loaded value>`. If another supervisor advanced that role, the
+update affects no row and the stale transaction rolls back, including any send
+or receive it attempted. This turns accidental concurrent execution into a
+loud ownership error instead of duplicated protocol work.
 
 ## 4. Crash guarantees
 
@@ -239,27 +247,27 @@ Three cases, kept distinct:
 
 ### What the fingerprint covers, exactly
 
-It answers one question: **are the stored control positions still meaningful?**
-Positions are paths, so:
+It answers one question: **does the stored durable state still mean the same
+thing to this program?** That includes both control paths and the names and
+types through which statements read and write the durable environment:
 
 | Change | Detected |
 |---|---|
 | a statement added, removed or moved | yes |
 | a different statement kind at a position | yes |
 | a different lifeline, sender, receiver or channel | yes |
-| a different action name at a position | yes |
-| a renamed variable or binding | yes |
-| a changed declared output **type** | yes |
+| a different action kind, name or declared interface | yes |
+| a renamed or retyped payload, input, output or binding | yes |
+| a changed literal used by a statement | yes |
 | a rewritten `@effect` or `@pure` **body** | **no** |
 | a rewritten LLM **prompt** | **no** |
 | a guard computing something different | **no** |
 
-The last three cannot move a path, so the stored control state stays valid.
-That is deliberate, and it is the right trade for a long-running service: fixing
-a typo in a prompt should not force a reset that throws away live state.
-
-Output types *are* included, because committed variables sit in `env` under
-those names, and a changed type would leave the wrong kind of value there.
+The last three change future computation but do not change how committed state
+is decoded. Excluding them is deliberate: fixing a typo in a prompt should not
+force a reset that throws away live state. Expressions are different. They are
+part of the choreography, and a renamed expression variable could otherwise
+read a default instead of the committed value under its old name.
 
 There is a test that pins both halves of this, so the guarantee is executable
 rather than a claim in prose.

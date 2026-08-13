@@ -160,7 +160,7 @@ def test_assistant_backend_must_return_declared_typed_output():
         )
 
 
-def test_assistant_action_is_journaled_and_not_repeated(tmp_path):
+def test_completed_assistant_run_returns_without_launching_again(tmp_path):
     store = str(tmp_path / "assistant.sqlite")
     calls = 0
 

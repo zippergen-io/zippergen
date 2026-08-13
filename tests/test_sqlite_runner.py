@@ -1,6 +1,7 @@
 from zippergen.runtime import run
 from zippergen.sqlite_runner import LocalSupervisor, run_sqlite
 from zippergen.store import (
+    claim_workflow_identity,
     complete_human_task,
     DurableChannel,
     ensure_human_task,
@@ -10,6 +11,8 @@ from zippergen.store import (
     record_history,
     load_workflow_result,
     open_store,
+    WorkflowIdentityError,
+    write_workflow_result,
 )
 from zippergen import Json, Lifeline, Var, workflow, branch, parallel
 from zippergen.actions import effect, human, llm, pure
@@ -274,7 +277,7 @@ def test_run_sqlite_loop_matches_inprocess():
     )
 
 
-def test_local_supervisor_replays_persistent_store_without_duplicates(tmp_path):
+def test_local_supervisor_returns_a_completed_persistent_result_without_more_steps(tmp_path):
     path = str(tmp_path / "run.sqlite")
     wf = _two_role_branch_workflow()
     initial = {"A": {"x": 7}}
@@ -308,8 +311,8 @@ def test_run_sqlite_persists_trace_events_without_live_trace(tmp_path):
     assert any(event.get("action") == "p_add" for event in events)
 
 
-def test_run_sqlite_replay_does_not_duplicate_trace_events(tmp_path):
-    path = str(tmp_path / "trace-replay.sqlite")
+def test_returning_a_completed_result_does_not_duplicate_history(tmp_path):
+    path = str(tmp_path / "trace-completed.sqlite")
     initial = {"PUser": {"a": 2}, "POwner": {"b": 5}}
     assert run_sqlite(
         sqlite_parallel_sum,
@@ -415,7 +418,7 @@ def test_workflow_call_can_opt_into_memory_execution():
     assert wf(x=7) is True
 
 
-def test_workflow_call_sqlite_persistent_store_replays_without_duplicates(tmp_path):
+def test_workflow_call_returns_its_completed_persistent_result(tmp_path):
     path = str(tmp_path / "run.sqlite")
     wf = _two_role_branch_workflow()
     wf.configure(execution="sqlite", store_path=path, timeout=10)
@@ -497,13 +500,33 @@ def test_run_sqlite_persists_final_result(tmp_path):
     assert load_workflow_result(conn, "sqlite_parallel_sum") == 7
 
 
+def test_a_completed_result_is_checked_against_workflow_identity(tmp_path):
+    path = str(tmp_path / "stale-result.sqlite")
+    conn = open_store(path)
+    try:
+        claim_workflow_identity(conn, "sqlite_parallel_sum", "incompatible")
+        write_workflow_result(conn, "sqlite_parallel_sum", 999)
+    finally:
+        conn.close()
+
+    initial = {"PUser": {"a": 2}, "POwner": {"b": 5}}
+    with pytest.raises(WorkflowIdentityError, match="workflow changed"):
+        run_sqlite(
+            sqlite_parallel_sum,
+            [PUser, POwner, PCompute],
+            initial,
+            store_path=path,
+            timeout=10,
+        )
+
+
 def test_workflow_call_sqlite_parallel():
     sqlite_parallel_sum.configure(execution="sqlite", timeout=10)
     assert sqlite_parallel_sum(a=2, b=5) == 7
     sqlite_parallel_sum.configure(execution="memory")
 
 
-def test_run_sqlite_external_act_replays_without_backend_call(tmp_path):
+def test_completed_external_run_returns_without_another_backend_call(tmp_path):
     path = str(tmp_path / "external.sqlite")
     calls = {"n": 0}
 
@@ -536,7 +559,7 @@ def test_run_sqlite_external_act_replays_without_backend_call(tmp_path):
     assert after == before
 
 
-def test_run_sqlite_effect_action_replays_without_python_call(tmp_path):
+def test_completed_effect_run_returns_without_another_python_call(tmp_path):
     path = str(tmp_path / "effect.sqlite")
     _effect_calls["n"] = 0
 
@@ -578,7 +601,7 @@ def test_run_sqlite_hidden_effect_does_not_emit_trace_card(tmp_path):
     assert not any(event.get("action") == "p_hidden_external_counter" for event in events)
 
 
-def test_run_sqlite_human_action_uses_backend_and_replays_result(tmp_path):
+def test_completed_human_run_returns_without_asking_again(tmp_path):
     path = str(tmp_path / "human.sqlite")
     calls = {"n": 0}
 
@@ -656,7 +679,7 @@ def test_run_sqlite_field_term_guard_matches_inprocess():
         )
 
 
-def test_run_sqlite_formula_replays_persistent_store_without_duplicates(tmp_path):
+def test_completed_formula_run_returns_without_more_steps(tmp_path):
     path = str(tmp_path / "formula.sqlite")
     first = run_sqlite(
         sqlite_formula_round,
@@ -681,7 +704,7 @@ def test_run_sqlite_formula_replays_persistent_store_without_duplicates(tmp_path
     assert conn.execute("SELECT COUNT(*) FROM workflow_results").fetchone()[0] == 1
 
 
-def test_run_sqlite_formula_loop_replays_from_monitor_snapshot(tmp_path):
+def test_completed_formula_loop_returns_from_durable_monitor_state(tmp_path):
     path = str(tmp_path / "formula-loop.sqlite")
     first = run_sqlite(
         sqlite_formula_loop,
@@ -692,7 +715,7 @@ def test_run_sqlite_formula_loop_replays_from_monitor_snapshot(tmp_path):
     )
     conn = open_store(path)
     before = conn.execute("SELECT COALESCE(SUM(steps),0) FROM role_state").fetchone()[0]
-    snapshots = conn.execute(
+    monitored_roles = conn.execute(
         "SELECT COUNT(*) FROM role_state WHERE monitor IS NOT NULL"
     ).fetchone()[0]
     second = run_sqlite(
@@ -705,7 +728,7 @@ def test_run_sqlite_formula_loop_replays_from_monitor_snapshot(tmp_path):
     after = conn.execute("SELECT COALESCE(SUM(steps),0) FROM role_state").fetchone()[0]
 
     assert first == 2 and second == 2
-    assert snapshots == 1
+    assert monitored_roles == 1
     snapshot = conn.execute(
         "SELECT monitor FROM role_state WHERE role=?",
         ("SQLiteFormulaLoopOwner",),

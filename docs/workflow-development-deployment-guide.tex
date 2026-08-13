@@ -783,7 +783,7 @@ zg deploy                     # redeploy the current source
 \texttt{zg deploy approve} & answer one \\
 \texttt{zg deploy check} & readiness checks, in detail \\
 \texttt{zg deploy stop} / \texttt{zg deploy restart} & move the service \\
-\texttt{zg deploy compact} & reclaim space, the service must be stopped \\
+\texttt{zg deploy compact} & prune optional history and rotate logs; stop first for lossless log rotation \\
 \texttt{zg deploy reset --yes} & archive durable state and start fresh \\
 \texttt{zg deploy remove} & delete it \\
 \bottomrule
@@ -963,7 +963,7 @@ zg connector assign User approval-chat
 \texttt{deploy start/stop/restart} & move the service \\
 \texttt{deploy status/logs/check} & operate and diagnose \\
 \texttt{deploy inspect/trace/tasks/approve} & observe or answer the deployment \\
-\texttt{deploy compact/reset/remove} & reclaim, reset, or delete \\
+\texttt{deploy compact/reset/remove} & prune history and logs, reset state, or delete \\
 \bottomrule
 \end{tabularx}
 \end{center}

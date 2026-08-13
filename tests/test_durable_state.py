@@ -31,6 +31,7 @@ from zippergen.role_runner import RoleRunner
 from zippergen.runtime import _build_formula_monitors
 from zippergen.sqlite_runner import run_sqlite
 from zippergen.store import (
+    RoleStateConflict,
     WorkflowIdentityError,
     claim_workflow_identity,
     list_outstanding_messages,
@@ -318,6 +319,28 @@ def test_a_sent_message_outlives_the_sender(tmp_path):
     assert outstanding[0]["sender"] == "A"
     assert outstanding[0]["receiver"] == "B"
     assert outstanding[0]["payload"] == [8]
+
+
+def test_a_stale_second_runner_cannot_duplicate_a_committed_send(tmp_path):
+    """The step counter is a compare-and-swap version, not just a metric."""
+
+    store = str(tmp_path / "run.sqlite")
+    assert _drive(store, two_role, A, {"n": 4}, budget=1) == "crashed"
+
+    first_conn, first = _runner(store, two_role, A, {})
+    second_conn, second = _runner(store, two_role, A, {})
+    try:
+        first.run()
+        with pytest.raises(RoleStateConflict, match="another runner"):
+            second.run()
+    finally:
+        first_conn.close()
+        second_conn.close()
+
+    outstanding = _messages(store)
+    assert len(outstanding) == 1
+    assert outstanding[0]["payload"] == [8]
+    assert _state(store, "A")["status"] == "done"
 
 
 def test_consuming_a_message_and_advancing_the_receiver_are_one_transaction(tmp_path):
@@ -825,9 +848,18 @@ def test_exactly_what_the_fingerprint_covers():
     an action's implementation or an LLM's prompt, which cannot move a path.
     """
 
-    from zippergen.syntax import ActStmt, LLMAction, PureAction, VarExpr
+    from zippergen.syntax import (
+        ActStmt,
+        HumanAction,
+        LLMAction,
+        PureAction,
+        RecvStmt,
+        SelfAssignStmt,
+        SendStmt,
+        VarExpr,
+    )
 
-    x, y = Var("x", int), Var("y", int)
+    x, y, z = Var("x", int), Var("y", int), Var("z", int)
 
     def fingerprint(action):
         return program_fingerprint({"A": ActStmt(A, action, (VarExpr(x),), (y,))})
@@ -850,6 +882,30 @@ def test_exactly_what_the_fingerprint_covers():
     # Covered: a changed output type, because the committed value has that type.
     retyped = PureAction("calc", (("x", int),), (("y", str),), lambda v: str(v))
     assert fingerprint(base) != fingerprint(retyped)
+
+    # Covered: every expression that reads or writes the durable environment.
+    assert program_fingerprint(
+        {"A": SendStmt(A, (VarExpr(x),), B)}
+    ) != program_fingerprint({"A": SendStmt(A, (VarExpr(z),), B)})
+    assert program_fingerprint(
+        {"A": ActStmt(A, base, (VarExpr(x),), (y,))}
+    ) != program_fingerprint({"A": ActStmt(A, base, (VarExpr(z),), (y,))})
+    assert program_fingerprint(
+        {"A": SelfAssignStmt(A, (VarExpr(x),), (VarExpr(y),))}
+    ) != program_fingerprint(
+        {"A": SelfAssignStmt(A, (VarExpr(z),), (VarExpr(y),))}
+    )
+
+    # Binding types and HumanAction's singular output declaration also matter.
+    text_y = Var("y", str)
+    assert program_fingerprint(
+        {"A": RecvStmt(A, (VarExpr(y),), B)}
+    ) != program_fingerprint({"A": RecvStmt(A, (VarExpr(text_y),), B)})
+    confirm = HumanAction("ask", (), "answer", bool, "confirm")
+    edit = HumanAction("ask", (), "answer", str, "edit")
+    assert program_fingerprint(
+        {"A": ActStmt(A, confirm, (), (y,))}
+    ) != program_fingerprint({"A": ActStmt(A, edit, (), (y,))})
 
 
 def test_changing_a_workflow_changes_its_fingerprint():

@@ -10,6 +10,7 @@ import json
 import tempfile
 import threading
 import time
+from collections.abc import Mapping
 from pathlib import Path
 from typing import cast
 
@@ -118,7 +119,7 @@ class LocalSupervisor:
             starting[lifeline.name] = env
         return starting
 
-    def _claim_identity(self, local_programs: dict[str, object]) -> None:
+    def _claim_identity(self, local_programs: Mapping[str, object]) -> None:
         """Refuse to resume durable state written by different code."""
 
         conn = open_store(self.store_path)
@@ -145,14 +146,14 @@ class LocalSupervisor:
             conn.close()
 
     def run(self) -> object:
-        existing = self._load_existing_result()
-        if existing is not _NO_RESULT:
-            return existing
-
         local_programs = {
             lifeline.name: project(self.wf, lifeline) for lifeline in self.lifelines
         }
         self._claim_identity(local_programs)
+        existing = self._load_existing_result()
+        if existing is not _NO_RESULT:
+            return existing
+
         starting_envs = self._starting_envs()
         monitors, formula_conditions = _build_formula_monitors(self.wf, self.lifelines)
         result_boxes: dict[str, object] = {}

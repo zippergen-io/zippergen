@@ -91,7 +91,7 @@ Choose an action by semantics, not convenience:
 - `@pure`: deterministic, local computation with no external I/O or durable
   side effects.
 - `@effect`: external I/O or mutation. Design retry-safe or idempotent behavior
-  because durable execution may replay around failures.
+  because a crash before the successor state commits may repeat the operation.
 - `@assistant`: repository-aware work performed by a local coding-assistant
   CLI. Keep instructions visible, declare dynamic inputs explicitly, and make
   the requested file changes safe to resume.
@@ -192,10 +192,11 @@ static instruction explicitly protect the workflow and prohibit deployment,
 service control, commits, pushes, and unrelated external mutations unless the
 reviewed protocol deliberately requires them.
 
-An assistant action is journaled like other external actions in durable mode:
-a recorded result is replayed without launching the assistant again. The
-requested repository operation should nevertheless be restart-safe because a
-process can fail after the CLI changes files but before its result is recorded.
+An assistant action runs outside the SQLite transaction in durable mode. Its
+result and successor control state commit together afterward. The requested
+repository operation must therefore be restart-safe: a process can fail after
+the CLI changes files but before that commit, causing the assistant to launch
+again.
 
 Human delivery needs no separate connector declaration. The participant is
 discovered from each `@human` action, and `zg connector assign` routes it to a
@@ -548,9 +549,10 @@ There is no workflow or deployment name to pass: the project identifies both.
 `inspect` shows each participant's current local program position. Its
 `--watch` mode refreshes that view in place, once per second by default. Use
 `--interval SECONDS` to change the rate. `trace` and
-`tasks` show recent events and pending human tasks. `compact` requires a
-stopped deployment and removes only events covered by durable recovery
-snapshots. Completed human tasks and connector notifications remain as audit
+`tasks` show recent events and pending human tasks. `compact` drops optional
+inspection history and rotates logs; stop the deployment first because
+lossless log rotation needs exclusive ownership. Recovery never reads that
+history. Completed human tasks and connector notifications remain as audit
 records. `remove` deletes a deployment but keeps its durable store unless you
 purge it. `reset` is the recoverable way to start over: it stops the service,
 archives the store and its SQLite sidecars under ZipperGen's trash directory,
@@ -559,9 +561,9 @@ creates an empty store, and restarts the service if it was running.
 Keep stores owner-private on a local filesystem with reliable SQLite locking
 and `fsync`. Never edit durable rows directly. External effects must be
 idempotent, because crash recovery or a restore from an older backup can repeat
-unjournaled remote work. The events table has an explicit integer primary key,
-and compaction preserves those identifiers because recovery floors refer to
-them.
+remote work whose successor state did not commit. Recovery reads only current
+role state, outstanding messages, and durable human tasks; optional history can
+be deleted without changing resumption.
 
 ## Connectors
 

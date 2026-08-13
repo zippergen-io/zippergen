@@ -279,9 +279,10 @@ def effect(
     Decorator for Python actions that are not deterministic/pure.
 
     In the in-memory runner, an effect action executes like ``@pure``. In the
-    SQLite runner, it is resolved outside the write transaction and its output
-    is journaled so replay returns the recorded result instead of performing the
-    external operation again.
+    SQLite runner, it is resolved outside the write transaction. Its result and
+    the successor control state then commit together. A crash after the outside
+    operation succeeds but before that commit can perform the operation again,
+    so effects should be retry-safe or idempotent where possible.
 
     ``connector`` names a logical :class:`ConnectorRequirement`. ``operation``
     describes the external operation, for example ``"upsert-json-row"``.

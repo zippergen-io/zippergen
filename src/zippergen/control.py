@@ -24,19 +24,26 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
+from typing import TypeAlias, cast
 
 from zippergen.locator import _children, resolve_path, statement_node_paths
 from zippergen.syntax import (
+    AnyStmt,
     EmptyStmt,
+    LitExpr,
+    LocalStmt,
     ParallelLocalStmt,
     ReceiveAnyStmt,
     SeqStmt,
+    VarExpr,
 )
 
 __all__ = [
     "ControlError",
     "PartialReceiveAny",
+    "Residual",
     "decode_control",
     "encode_control",
     "frontier_paths",
@@ -79,12 +86,18 @@ class PartialReceiveAny:
         return self.origin.channel
 
 
-def encode_control(root, residual) -> dict:
+# Projection produces ``LocalStmt``. The interpreter additionally creates a
+# partial coregion receive while it consumes that static node one sender at a
+# time. This is the complete residual language held in memory.
+Residual: TypeAlias = LocalStmt | PartialReceiveAny
+
+
+def encode_control(root: LocalStmt, residual: Residual) -> dict:
     """Represent a residual as plain JSON-safe data."""
 
     paths = statement_node_paths(root)
 
-    def encode(node) -> dict:
+    def encode(node: Residual) -> dict:
         if isinstance(node, EmptyStmt):
             return {"k": "done"}
         path = paths.get(id(node))
@@ -102,7 +115,11 @@ def encode_control(root, residual) -> dict:
                 "s": list(node.remaining),
             }
         if isinstance(node, SeqStmt):
-            return {"k": "seq", "a": encode(node.first), "b": encode(node.second)}
+            return {
+                "k": "seq",
+                "a": encode(cast(Residual, node.first)),
+                "b": encode(cast(Residual, node.second)),
+            }
         if isinstance(node, ParallelLocalStmt):
             labels = node.branch_indices or tuple(range(len(node.branches)))
             return {
@@ -117,10 +134,10 @@ def encode_control(root, residual) -> dict:
     return encode(residual)
 
 
-def decode_control(root, data: dict):
+def decode_control(root: LocalStmt, data: dict) -> Residual:
     """Rebuild a residual from encoded control state and a projected program."""
 
-    def decode(node: object):
+    def decode(node: object) -> Residual:
         if not isinstance(node, dict):
             raise ControlError(f"control state is not an object: {node!r}")
         kind = node.get("k")
@@ -147,19 +164,22 @@ def decode_control(root, data: dict):
                 )
             return PartialReceiveAny(origin, remaining)
         if kind == "seq":
-            return SeqStmt(decode(node.get("a")), decode(node.get("b")))
+            return SeqStmt(
+                cast(AnyStmt, decode(node.get("a"))),
+                cast(AnyStmt, decode(node.get("b"))),
+            )
         if kind == "par":
             branches = tuple(decode(branch) for branch in node.get("b") or ())
             if not branches:
                 raise ControlError("a parallel region needs at least one branch")
             labels = tuple(int(index) for index in node.get("i") or ())
-            return ParallelLocalStmt(branches, labels)
+            return ParallelLocalStmt(cast(tuple[LocalStmt, ...], branches), labels)
         raise ControlError(f"unknown control constructor {kind!r}")
 
     return decode(data)
 
 
-def frontier_paths(root, residual) -> list[list[int]]:
+def frontier_paths(root: LocalStmt, residual: Residual) -> list[list[int]]:
     """Paths of the leaves this residual would try to run next.
 
     Diagnostic only. Recovery uses the control state itself.
@@ -167,12 +187,12 @@ def frontier_paths(root, residual) -> list[list[int]]:
 
     paths = statement_node_paths(root)
 
-    def walk(node) -> list[list[int]]:
+    def walk(node: Residual) -> list[list[int]]:
         if isinstance(node, EmptyStmt):
             return []
         if isinstance(node, SeqStmt):
-            first = walk(node.first)
-            return first if first else walk(node.second)
+            first = walk(cast(Residual, node.first))
+            return first if first else walk(cast(Residual, node.second))
         if isinstance(node, ParallelLocalStmt):
             out: list[list[int]] = []
             for branch in node.branches:
@@ -185,6 +205,49 @@ def frontier_paths(root, residual) -> list[list[int]]:
         return [list(path)] if path is not None else []
 
     return walk(residual)
+
+
+def _type_name(kind: object) -> str:
+    return getattr(kind, "__name__", str(kind))
+
+
+def _variable_shape(var: object) -> list[str]:
+    return [
+        str(getattr(var, "name", "?")),
+        _type_name(getattr(var, "type", None)),
+    ]
+
+
+def _expression_shape(expr: object) -> list:
+    """Describe the part of an expression that gives durable state meaning."""
+
+    if isinstance(expr, VarExpr):
+        return ["var", *_variable_shape(expr.var)]
+    if isinstance(expr, LitExpr):
+        return ["lit", type(expr.value).__name__, _plain(expr.value)]
+    raise ControlError(f"cannot fingerprint expression {expr!r}")
+
+
+def _named_type_shape(items) -> list[list[str]]:
+    return [
+        [str(name), _type_name(kind)]
+        for name, kind in (items or ())
+    ]
+
+
+def _action_signature(action: object) -> dict[str, list[list[str]]]:
+    outputs = _named_type_shape(getattr(action, "outputs", ()))
+    if not outputs and hasattr(action, "output") and hasattr(action, "output_type"):
+        outputs = [
+            [
+                str(getattr(action, "output")),
+                _type_name(getattr(action, "output_type")),
+            ]
+        ]
+    return {
+        "inputs": _named_type_shape(getattr(action, "inputs", ())),
+        "outputs": outputs,
+    }
 
 
 def _shape(node) -> list:
@@ -215,48 +278,65 @@ def _shape(node) -> list:
             )
     action = getattr(node, "action", None)
     if action is not None:
-        # Name and declared output types. The implementation body and any prompt
-        # text are deliberately excluded: they do not move a position, so they
-        # do not invalidate stored control state. The types are included because
-        # committed variables are stored under these names, and a changed type
-        # would leave the wrong kind of value sitting in the environment.
-        fields.append(["action", getattr(action, "name", type(action).__name__)])
+        # The action kind, name and declared interface affect how the durable
+        # environment is interpreted. The implementation body and any prompt
+        # text remain deliberately excluded: changing those changes future work,
+        # but does not make already-committed state unreadable.
         fields.append(
             [
-                "signature",
-                [
-                    [str(name), getattr(kind, "__name__", str(kind))]
-                    for name, kind in (getattr(action, "outputs", ()) or ())
-                ],
+                "action",
+                type(action).__name__,
+                getattr(action, "name", type(action).__name__),
             ]
         )
-    for name in ("bindings", "outputs"):
+        fields.append(
+            ["signature", _action_signature(action)]
+        )
+    for name in ("payload", "inputs", "bindings"):
         value = getattr(node, name, None)
         if value:
-            fields.append([name, [getattr(item, "name", "?") for item in value]])
+            fields.append([name, [_expression_shape(item) for item in value]])
+    outputs = getattr(node, "outputs", None)
+    if outputs:
+        fields.append(["outputs", [_variable_shape(item) for item in outputs]])
     receives = getattr(node, "receives", None)
     if receives:
         fields.append(
-            ["receives", sorted(sender.name for sender, _bindings in receives)]
+            [
+                "receives",
+                sorted(
+                    [
+                        sender.name,
+                        [_expression_shape(binding) for binding in bindings],
+                    ]
+                    for sender, bindings in receives
+                ),
+            ]
         )
     return [kind, fields, [_shape(child) for child in _children(node)]]
 
 
 def _plain(value):
-    if isinstance(value, (str, int, float, bool)):
+    if value is None or isinstance(value, (str, int, float, bool)):
         return value
-    if isinstance(value, tuple):
+    if isinstance(value, (tuple, list)):
         return [_plain(item) for item in value]
+    if isinstance(value, dict):
+        return {
+            str(key): _plain(item)
+            for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
+        }
     return str(value)
 
 
-def program_fingerprint(local_programs: dict[str, object]) -> str:
-    """Identify the projected code a control state may be resumed against.
+def program_fingerprint(local_programs: Mapping[str, object]) -> str:
+    """Identify the projected code durable state may be resumed against.
 
-    Control state is child-index paths into these programs, so any edit that
-    moves, adds or removes a statement invalidates it. This hashes exactly that:
-    the shape of each projected program and which statement sits at each
-    position. It is stable across processes.
+    The stored environment and control paths must mean the same thing to the
+    new program. This therefore covers both statement positions and the names
+    and types of values read or written at those positions. Implementation
+    bodies, prompts and guard computations remain deliberately outside this
+    compatibility identity. The hash is stable across processes.
     """
 
     payload = json.dumps(

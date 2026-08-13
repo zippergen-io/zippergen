@@ -7,7 +7,7 @@ The documentation is deliberately split by reader and purpose:
   development and deployment manual;
 - `docs/durable-storage.md` — the reference of record for the SQLite store:
   what it holds, the write and recovery protocols as numbered invariants, why
-  the MSC formalism makes them sound, and how to compact a store that grew;
+  the MSC formalism makes them sound, and how optional history is retained;
 - `examples/tutorial_review.py` — complete fallback source imported by the
   manual.
 

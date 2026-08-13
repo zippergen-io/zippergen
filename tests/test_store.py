@@ -12,6 +12,7 @@ import pytest
 
 from zippergen.store import (
     DurableChannel,
+    RoleStateConflict,
     WorkflowIdentityError,
     claim_workflow_identity,
     complete_human_task,
@@ -106,6 +107,7 @@ def test_role_state_round_trips_and_keeps_only_the_latest(tmp_path):
             monitor=None,
             steps=2,
             status="done",
+            expected_steps=1,
         )
         conn.execute("COMMIT")
 
@@ -115,6 +117,42 @@ def test_role_state_round_trips_and_keeps_only_the_latest(tmp_path):
         assert state["monitor"] is None
         assert state["steps"] == 2
         assert len(list_role_states(conn)) == 1
+    finally:
+        conn.close()
+
+
+def test_role_state_compare_and_swap_rejects_a_stale_step(tmp_path):
+    conn = open_store(str(tmp_path / "s.sqlite"))
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        write_role_state(
+            conn,
+            "A",
+            env={"x": 1},
+            control={"k": "at", "p": [0]},
+            monitor=None,
+            steps=3,
+            status="running",
+        )
+        conn.execute("COMMIT")
+
+        conn.execute("BEGIN IMMEDIATE")
+        with pytest.raises(RoleStateConflict, match="another runner"):
+            write_role_state(
+                conn,
+                "A",
+                env={"x": 2},
+                control={"k": "done"},
+                monitor=None,
+                steps=4,
+                status="done",
+                expected_steps=2,
+            )
+        conn.execute("ROLLBACK")
+
+        state = load_role_state(conn, "A")
+        assert state["steps"] == 3
+        assert state["env"] == {"x": 1}
     finally:
         conn.close()
 
@@ -451,5 +489,3 @@ def test_workflow_result_lifecycle(tmp_path):
     assert results[0]["value"] == {"answer": 2}
     assert results[0]["created_at"] == created_at
     assert results[0]["updated_at"] >= created_at
-
-

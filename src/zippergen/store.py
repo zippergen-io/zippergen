@@ -41,6 +41,10 @@ class StoreSchemaError(Exception):
     """The store on disk does not match the durable model this code implements."""
 
 
+class RoleStateConflict(Exception):
+    """Another runner advanced a role from the state this runner loaded."""
+
+
 def _lastrowid(cur) -> int:
     rowid = cur.lastrowid
     if rowid is None:
@@ -302,37 +306,75 @@ def write_role_state(
     steps: int,
     status: str,
     detail: dict | None = None,
+    expected_steps: int | None = None,
 ) -> None:
-    """Write a role's whole durable position. Caller owns the transaction."""
+    """Write a role's whole durable position. Caller owns the transaction.
 
-    conn.execute(
-        "INSERT INTO role_state(role,env,control,monitor,steps,status,detail,updated_at) "
-        "VALUES(?,?,?,?,?,?,?,?) "
-        "ON CONFLICT(role) DO UPDATE SET env=excluded.env, control=excluded.control, "
-        "monitor=excluded.monitor, steps=excluded.steps, status=excluded.status, "
-        "detail=excluded.detail, updated_at=excluded.updated_at",
-        (
-            role,
-            json.dumps(env),
-            json.dumps(control),
-            None if monitor is None else json.dumps(monitor),
-            int(steps),
-            status,
-            json.dumps(_json_safe(detail or {})),
-            time.time(),
-        ),
+    With no ``expected_steps`` this creates the role's initial row and refuses
+    to overwrite an existing one. Later writes are compare-and-swap: a runner
+    keeps its residual in memory between commits, so the committed step count
+    must still equal the value it loaded. If another runner advanced the same
+    role, fail loudly; the caller rolls back every message change made by the
+    stale step in the same transaction.
+    """
+
+    values = (
+        json.dumps(env),
+        json.dumps(control),
+        None if monitor is None else json.dumps(monitor),
+        int(steps),
+        status,
+        json.dumps(_json_safe(detail or {})),
+        time.time(),
     )
+    if expected_steps is None:
+        conn.execute(
+            "INSERT INTO role_state(role,env,control,monitor,steps,status,detail,updated_at) "
+            "VALUES(?,?,?,?,?,?,?,?)",
+            (role, *values),
+        )
+        return
+
+    cursor = conn.execute(
+        "UPDATE role_state SET env=?, control=?, monitor=?, steps=?, status=?, "
+        "detail=?, updated_at=? WHERE role=? AND steps=?",
+        (*values, role, int(expected_steps)),
+    )
+    if cursor.rowcount != 1:
+        raise RoleStateConflict(
+            f"Role {role!r} was advanced by another runner. Only one durable "
+            "supervisor may execute a store at a time."
+        )
 
 
-def set_role_status(conn, role: str, status: str, detail: dict | None = None) -> None:
+def set_role_status(
+    conn,
+    role: str,
+    status: str,
+    detail: dict | None = None,
+    *,
+    expected_steps: int | None = None,
+) -> None:
     """Update only the diagnostic status. Short standalone transaction."""
 
     conn.execute("BEGIN IMMEDIATE")
     try:
-        conn.execute(
-            "UPDATE role_state SET status=?, detail=?, updated_at=? WHERE role=?",
-            (status, json.dumps(_json_safe(detail or {})), time.time(), role),
+        sql = "UPDATE role_state SET status=?, detail=?, updated_at=? WHERE role=?"
+        params: tuple = (
+            status,
+            json.dumps(_json_safe(detail or {})),
+            time.time(),
+            role,
         )
+        if expected_steps is not None:
+            sql += " AND steps=?"
+            params += (int(expected_steps),)
+        cursor = conn.execute(sql, params)
+        if expected_steps is not None and cursor.rowcount != 1:
+            raise RoleStateConflict(
+                f"Role {role!r} was advanced by another runner. Only one durable "
+                "supervisor may execute a store at a time."
+            )
         conn.execute("COMMIT")
     except BaseException:
         conn.execute("ROLLBACK")

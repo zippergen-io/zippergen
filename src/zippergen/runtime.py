@@ -31,7 +31,7 @@ from zippergen.syntax import (
     seq,
     validate_zvalue,
 )
-from zippergen.control import PartialReceiveAny
+from zippergen.control import PartialReceiveAny, Residual
 from zippergen.projection import project
 from zippergen.formula import Formula as _Formula, subformulas as _subformulas
 from zippergen.monitor import MonitorState
@@ -511,7 +511,7 @@ def _input_hash(named_inputs: dict) -> str | None:
 
 
 def _step(
-    stmt: LocalStmt,
+    stmt: Residual,
     env: Env,
     ch: InProcessChannel,
     ns: dict,
@@ -524,7 +524,7 @@ def _step(
     durable: bool = False,
     assistant_backend=None,
     resolved: dict | None = None,
-) -> tuple[LocalStmt | PendingExternal, bool]:
+) -> tuple[Residual | PendingExternal, bool]:
     """Execute at most one enabled local step.
 
     Returns ``(residual, progressed)``. Blocking receives return the original
@@ -647,8 +647,8 @@ def _step(
             return PartialReceiveAny(origin, remaining), True
 
         case SeqStmt(first=p1, second=p2):
-            first = cast(LocalStmt, p1)
-            second = cast(LocalStmt, p2)
+            first = cast(Residual, p1)
+            second = cast(Residual, p2)
             if isinstance(first, EmptyStmt):
                 return second, True
             new_first, progressed = _step(
@@ -660,7 +660,10 @@ def _step(
                 return new_first, False
             if not progressed:
                 return stmt, False
-            return cast(LocalStmt, seq(new_first, second)), True
+            return cast(
+                LocalStmt,
+                seq(cast(AnyStmt, new_first), cast(AnyStmt, second)),
+            ), True
 
         case IfStmt(condition=c, owner=B, branch_true=t, branch_false=f):
             cached_formula = formula_conditions.get(id(c))
@@ -786,7 +789,7 @@ def _step(
             return EmptyStmt(), True
 
         case ParallelLocalStmt(branches=branches, branch_indices=labels):
-            residuals = list(branches)
+            residuals: list[Residual] = list(branches)
             for i, branch in enumerate(residuals):
                 if isinstance(branch, EmptyStmt):
                     continue
@@ -800,7 +803,9 @@ def _step(
                 if progressed:
                     if all(isinstance(b, EmptyStmt) for b in residuals):
                         return EmptyStmt(), True
-                    return ParallelLocalStmt(tuple(residuals), labels), True
+                    return ParallelLocalStmt(
+                        cast(tuple[LocalStmt, ...], tuple(residuals)), labels
+                    ), True
             if all(isinstance(b, EmptyStmt) for b in residuals):
                 return EmptyStmt(), True
             return stmt, False
@@ -1031,7 +1036,7 @@ def _exec(
                     )
                     if isinstance(next_branch, PendingExternal):
                         raise RuntimeError("Unexpected pending external action in in-memory parallel execution.")
-                    residuals[i] = next_branch
+                    residuals[i] = cast(LocalStmt, next_branch)
                     if did_step:
                         progressed = True
                         break

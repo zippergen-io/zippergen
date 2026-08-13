@@ -428,8 +428,9 @@ class PureAction:
 class EffectAction:
     """Python action with external effects.
 
-    In memory mode it executes like ``PureAction``. In durable SQLite mode its
-    result is journaled and replayed like LLM/Human/Planner actions.
+    In memory mode it executes like ``PureAction``. In durable SQLite mode it
+    executes outside the database transaction; its result and successor state
+    then commit together. A crash in between may repeat the effect.
     """
     name: str
     inputs: tuple[tuple[str, ZType], ...]
@@ -452,7 +453,9 @@ class AssistantAction:
     The instruction text is part of the immutable action definition.  It may
     have been declared inline or loaded from a Markdown file by
     :func:`zippergen.actions.assistant`.  Execution is delegated to a runtime
-    assistant backend and is journaled as an external action in durable mode.
+    assistant backend. In durable mode it runs outside the database transaction;
+    its result and successor state then commit together, so a crash in between
+    may launch it again.
     """
 
     name: str
