@@ -62,6 +62,7 @@
   keywordstyle=\color{CodeKeyword}\bfseries,
   commentstyle=\color{CodeComment},
   stringstyle=\color{ZipperBlue},
+  literate={·}{{\textperiodcentered}}1 {✓}{{$\checkmark$}}1,
   numbers=none
 }
 
@@ -455,12 +456,14 @@ zg run --llm mock
 \end{lstlisting}
 
 \begin{lstlisting}
+REQUEST · User
+
 Proposed reply:
 
 [draft_reply:draft]
 
 Send this reply? [y/n]: y
-    sent: [draft_reply:draft]
+✓ User · reply sent
 \end{lstlisting}
 
 Then nothing happens, and that is correct: it is waiting for the next message.

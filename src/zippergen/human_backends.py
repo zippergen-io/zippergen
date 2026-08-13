@@ -9,15 +9,23 @@ from __future__ import annotations
 
 import queue
 import threading
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 
 __all__ = ["make_cli_human_backend", "make_sqlite_human_backend"]
+
+
+_terminal_request_participant: ContextVar[str | None] = ContextVar(
+    "terminal_request_participant",
+    default=None,
+)
 
 
 @dataclass
 class _HumanRequest:
     action: object
     inputs: dict
+    participant: str
     done: threading.Event = field(default_factory=threading.Event)
     result: dict | None = None
     error: BaseException | None = None
@@ -43,7 +51,11 @@ class _MainThreadHumanDispatcher:
     def _submit(self, action, inputs: dict) -> dict:
         if self.stop.is_set():
             raise RuntimeError("Workflow cancelled")
-        request = _HumanRequest(action=action, inputs=dict(inputs))
+        request = _HumanRequest(
+            action=action,
+            inputs=dict(inputs),
+            participant=threading.current_thread().name,
+        )
         self.requests.put(request)
         while not request.done.wait(0.05):
             if self.stop.is_set():
@@ -64,6 +76,7 @@ class _MainThreadHumanDispatcher:
             return True
         with self._lock:
             self._active = request
+        participant_token = _terminal_request_participant.set(request.participant)
         try:
             request.result = self.backend(request.action, request.inputs)
         except BaseException as exc:
@@ -77,6 +90,7 @@ class _MainThreadHumanDispatcher:
         else:
             request.done.set()
         finally:
+            _terminal_request_participant.reset(participant_token)
             with self._lock:
                 if self._active is request:
                     self._active = None
@@ -125,7 +139,9 @@ def make_cli_human_backend(*, input_func=None, output_func=None):
         instruction_text = action.instruction.format(**inputs) if action.instruction else None
         prefill_text = action.prefill.format(**inputs) if action.prefill else None
 
-        parts = []
+        participant = _terminal_request_participant.get() or action.name
+        heading = "NOTICE" if action.kind == "ack" else "REQUEST"
+        parts = [f"\n{heading} · {participant}"]
         if context_text:
             parts.append(context_text)
         if instruction_text:

@@ -394,6 +394,12 @@ def approve(draft: str) -> None: ...
 Do not replace a required human approval with an LLM judgment unless the user
 explicitly changes the authority model.
 
+Terminal human prompts are labelled `REQUEST · Participant` (`NOTICE` for an
+acknowledgement). If a local effect also prints a user-facing outcome, begin it
+on a fresh line and use a compact participant label such as
+`✓ Mailbox · reply sent`; concurrent output may interleave, so do not repeat a
+large generated value in that notification.
+
 ## Deployment declaration
 
 Add a data-only `zippergen_deployment` declaration when the workflow has

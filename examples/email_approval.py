@@ -103,7 +103,10 @@ def approve_reply(draft: str): ...
 def send_reply(draft: str, handled: int) -> int:
     """Send the approved reply. Printing it is this tutorial's 'send'."""
 
-    print(f"    sent: {draft}")
+    # Start on a fresh line because another parallel role may currently own
+    # the terminal prompt. Real connectors should use the same compact,
+    # participant-labelled convention for user-facing effect notifications.
+    print("\n✓ User · reply sent")
     return handled + 1
 
 

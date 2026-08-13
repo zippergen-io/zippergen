@@ -226,9 +226,10 @@ def _make_ack(name="ask"):
 def test_cli_backend_confirm_yes():
     backend = make_cli_human_backend()
     action = _make_confirm()
-    with patch("builtins.input", return_value="y"):
+    with patch("builtins.input", return_value="y") as input_mock:
         result = backend(action, {"plan": "do something"})
     assert result == {"result": True}
+    assert input_mock.call_args.args[0].startswith("\nREQUEST · ask\n\n")
 
 
 def test_cli_backend_confirm_no():
@@ -266,9 +267,10 @@ def test_cli_backend_select():
 def test_cli_backend_ack():
     backend = make_cli_human_backend()
     action = _make_ack()
-    with patch("builtins.input", return_value=""):
+    with patch("builtins.input", return_value="") as input_mock:
         result = backend(action, {"event": "Meeting at 10am"})
     assert result == {"result": True}
+    assert input_mock.call_args.args[0].startswith("\nNOTICE · ask\n\n")
 
 
 # Runtime integration tests
@@ -328,9 +330,15 @@ def test_runtime_cli_human_input_runs_only_on_main_thread():
     import threading
 
     input_threads = []
+    prompts = []
+
+    def answer(prompt: str) -> str:
+        input_threads.append(threading.current_thread())
+        prompts.append(prompt)
+        return "y"
+
     backend = make_cli_human_backend(
-        input_func=lambda prompt: input_threads.append(threading.current_thread())
-        or "y",
+        input_func=answer,
         output_func=lambda line: None,
     )
 
@@ -343,6 +351,7 @@ def test_runtime_cli_human_input_runs_only_on_main_thread():
 
     assert result is True
     assert input_threads == [threading.main_thread()]
+    assert prompts[0].startswith("\nREQUEST · Human\n\n")
 
 
 def test_runtime_human_trace_kind():

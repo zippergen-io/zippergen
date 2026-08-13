@@ -183,7 +183,10 @@ Otherwise choose the smallest reasonable workflow and state the assumption.
    to understand, review, or maintain.
 3. Keep external calls in `@effect`; keep deterministic transforms in `@pure`;
    use `@llm` only for model judgment or generation; use `@human` for explicit
-   human control points.
+   human control points. Terminal human prompts already identify themselves as
+   `REQUEST · Participant`. If a local tutorial effect prints a user-facing
+   outcome, start it on a fresh line and keep it compact, for example
+   `✓ Participant · reply sent`; do not repeat the full generated content.
 4. Send values explicitly when ownership crosses a lifeline. Place every guard
    at the lifeline that actually knows and owns the decision.
 5. Add focused tests that run with mock LLMs or fake services. Test protocol

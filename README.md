@@ -139,12 +139,14 @@ OK   workflow inputs: none, the run starts without setup questions
 ```
 
 ```
+REQUEST · User
+
 Proposed reply:
 
 [draft_reply:draft]
 
 Send this reply? [y/n]: y
-    sent: [draft_reply:draft]
+✓ User · reply sent
 ```
 
 The reply is a placeholder, because `mock` does not call a model. Use
