@@ -1344,7 +1344,7 @@ def _project_choices(kind: str, project: str | None) -> tuple[str, ...]:
     return tuple(completion_candidates(kind, project))
 
 
-def _provider_credential_command(workspace, connection: object) -> int:
+def _provider_set_credential_command(workspace, connection: object) -> int:
     """Prompt for the private credential owned by one provider connection."""
 
     from zippergen.provider_connections import (
@@ -1358,7 +1358,7 @@ def _provider_credential_command(workspace, connection: object) -> int:
     selected = _guided_required_value(
         connection,
         label="Provider connection",
-        command="zg provider credential CONNECTION",
+        command="zg provider set-credential CONNECTION",
         choices=tuple(sorted(connections)),
     )
     profile = connections.get(selected)
@@ -1557,10 +1557,13 @@ def _provider_command(args) -> int:
                         "--scopes SCOPE,..."
                     )
                 else:
-                    print(f"Add its credential with: zg provider credential {name}")
+                    print(
+                        f"Add its credential with: "
+                        f"zg provider set-credential {name}"
+                    )
             return 0
-        if action == "credential":
-            return _provider_credential_command(workspace, args.name)
+        if action == "set-credential":
+            return _provider_set_credential_command(workspace, args.name)
         if action == "remove":
             name = _guided_required_value(
                 args.name,
@@ -2221,13 +2224,13 @@ def _connector_configure_command(args) -> int:
     name = _guided_required_value(
         args.name,
         label="Connector configuration name",
-        command="zg connector configure NAME CONNECTION KIND",
+        command="zg connector configure NAME CONNECTION [KIND]",
     )
     existing = workspace.connector_configurations().get(name) or {}
     connection = _guided_required_value(
         args.connection,
         label="Provider connection",
-        command="zg connector configure NAME CONNECTION KIND",
+        command="zg connector configure NAME CONNECTION [KIND]",
         choices=_project_choices("provider-connections-connector", args.project),
         default=str(existing.get("connection") or "") or None,
     )
@@ -2243,12 +2246,16 @@ def _connector_configure_command(args) -> int:
             f"Provider connection {connection!r} ({provider or 'unknown'}) "
             "cannot be used by a connector."
         )
-    kind = _guided_required_value(
-        args.kind,
-        label="Connector kind",
-        command="zg connector configure NAME CONNECTION KIND",
-        choices=supported,
-        default=str(existing.get("kind") or "") or None,
+    kind = (
+        supported[0]
+        if len(supported) == 1 and args.kind is None
+        else _guided_required_value(
+            args.kind,
+            label="Connector kind",
+            command="zg connector configure NAME CONNECTION KIND",
+            choices=supported,
+            default=str(existing.get("kind") or "") or None,
+        )
     )
 
     if kind == "telegram":
@@ -2337,7 +2344,7 @@ def _connector_configure_command(args) -> int:
                 "--scopes SCOPE,..."
             )
         else:
-            print(f"Add it with: zg provider credential {connection}")
+            print(f"Add it with: zg provider set-credential {connection}")
 
     return 0
 
@@ -3643,11 +3650,12 @@ def _parse_cli_args(
         "--base-url", help="OpenAI-compatible endpoint for a local connection."
     )
     provider_configure.add_argument("--project", help="Project root.")
-    provider_credential = provider_sub.add_parser(
-        "credential", help="save this connection's private API key or bot token"
+    provider_set_credential = provider_sub.add_parser(
+        "set-credential",
+        help="save this connection's private API key or bot token",
     )
-    provider_credential.add_argument("name", nargs="?")
-    provider_credential.add_argument("--project", help="Project root.")
+    provider_set_credential.add_argument("name", nargs="?")
+    provider_set_credential.add_argument("--project", help="Project root.")
     provider_check = provider_sub.add_parser(
         "check", help="check provider credentials and local readiness"
     )
@@ -3790,9 +3798,11 @@ def _parse_cli_args(
         "connector",
         help="show and manage connector configurations and assignments",
         description=(
-            "One pattern: configure NAME CONNECTION KIND, then assign TARGET NAME "
-            "or bind REQUIREMENT NAME. Run without an action to show "
-            "everything. In a terminal, omit required values to be guided."
+            "One pattern: configure NAME CONNECTION [KIND], then assign "
+            "TARGET NAME or bind REQUIREMENT NAME. KIND is inferred when the "
+            "connection has only one connector kind. Run without an action "
+            "to show everything. In a terminal, omit required values to be "
+            "guided."
         ),
     )
     connector_sub = connector.add_subparsers(
@@ -3809,7 +3819,10 @@ def _parse_cli_args(
     )
     connector_configure.add_argument("connection", nargs="?")
     connector_configure.add_argument(
-        "kind", nargs="?", choices=("telegram", "gmail", "google-sheets")
+        "kind",
+        nargs="?",
+        choices=("telegram", "gmail", "google-sheets"),
+        help="Required only when the connection supports several connector kinds.",
     )
     connector_configure.add_argument(
         "--chat-id",

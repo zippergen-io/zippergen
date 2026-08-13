@@ -493,7 +493,7 @@ For a durable project choice, create a named configuration and assign it:
 
 \begin{lstlisting}[style=shell]
 zg provider configure openai-main openai
-zg provider credential openai-main
+zg provider set-credential openai-main
 zg model configure writer openai-main gpt-4o-mini
 zg model assign Writer writer
 zg model
@@ -706,8 +706,8 @@ watching. Two commands, doing two different things:
 
 \begin{lstlisting}[style=shell]
 zg provider configure approval-bot telegram
-zg provider credential approval-bot
-zg connector configure approval-chat approval-bot telegram
+zg provider set-credential approval-bot
+zg connector configure approval-chat approval-bot
 zg connector assign User approval-chat
 \end{lstlisting}
 
@@ -968,7 +968,7 @@ zg connector assign User approval-chat
 \multicolumn{2}{@{}l}{\textbf{Configure}} \\
 \texttt{config} / \texttt{check} & show offline configuration or check all live readiness \\
 \texttt{provider configure NAME KIND} & save one named provider identity \\
-\texttt{provider credential NAME} & save its key or bot token privately \\
+\texttt{provider set-credential NAME} & save its key or bot token privately \\
 \texttt{provider authorize/accept NAME} & move Google authorization from a browser computer \\
 \texttt{model configure NAME CONNECTION MODEL} & save one named model configuration \\
 \texttt{model assign TARGET NAME} & route a participant or action \\
@@ -977,7 +977,7 @@ zg connector assign User approval-chat
 \texttt{assistant assign TARGET NAME} & route an assistant participant or action \\
 \texttt{assistant check [NAME]} & verify the selected CLI and required safety options \\
 \texttt{assistant unassign TARGET} / \texttt{assistant remove NAME} & remove routing or an unused configuration \\
-\texttt{connector configure NAME CONNECTION KIND} & save one named destination/resource \\
+\texttt{connector configure NAME CONNECTION [KIND]} & save one named destination/resource; infer the kind when unique \\
 \texttt{connector assign TARGET NAME} & route human actions \\
 \texttt{connector bind REQUIREMENT NAME} & bind an external service \\
 \texttt{connector unassign TARGET} / \texttt{connector unbind REQUIREMENT} & remove connector routing \\

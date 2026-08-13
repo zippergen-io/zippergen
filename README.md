@@ -263,7 +263,7 @@ Give the Writer a named model configuration, then assign it:
 
 ```bash
 zg provider configure openai-main openai
-zg provider credential openai-main
+zg provider set-credential openai-main
 zg model configure writer openai-main gpt-4o-mini
 zg model assign Writer writer
 zg model
@@ -394,8 +394,8 @@ configuration, and it goes in `zippergen.toml`. Credentials never go there:
 
 ```bash
 zg provider configure approval-bot telegram
-zg provider credential approval-bot           # hidden bot-token prompt
-zg connector configure approval-chat approval-bot telegram  # asks for chat id
+zg provider set-credential approval-bot       # hidden bot-token prompt
+zg connector configure approval-chat approval-bot  # Telegram is inferred
 zg connector assign User approval-chat         # who gets asked, and where
 
 zg provider configure google-work google

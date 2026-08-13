@@ -51,8 +51,6 @@ _MODEL_PROJECT_FIELDS = frozenset({"connection", "model"})
 # Checks are always live, so their results are never stored.  These are the
 # fields that describe one machine rather than the project.
 _MODEL_SITE_FIELDS = frozenset({"idle_timeout"})
-# Results of earlier versions' cached checks, stripped wherever they are read.
-_STALE_CHECK_FIELDS = frozenset({"check_status", "check_detail", "checked_at"})
 _PROVIDER_PROJECT_FIELDS = frozenset({"kind"})
 _PROVIDER_SITE_FIELDS = frozenset(
     {"base_url", "granted_scopes", "client_id", "credential_expiry"}
@@ -966,7 +964,7 @@ class Workspace:
             configurations[str(name)] = {
                 str(key): str(value)
                 for key, value in raw_configuration.items()
-                if value is not None and str(key) not in _STALE_CHECK_FIELDS
+                if value is not None
             }
             connection = configurations[str(name)].get("connection", "")
             provider = connections.get(connection, {}).get("kind", "")
@@ -1975,7 +1973,7 @@ class Workspace:
             configurations[str(name)] = {
                 str(key): str(item)
                 for key, item in value.items()
-                if item is not None and str(key) not in _STALE_CHECK_FIELDS
+                if item is not None
             }
             connection = configurations[str(name)].get("connection", "")
             provider = connections.get(connection, {}).get("kind", "")
@@ -2054,7 +2052,7 @@ class Workspace:
         project_configurations[normalized] = {
             key: value
             for key, value in configuration.items()
-            if key not in _STALE_CHECK_FIELDS and key != "provider"
+            if key != "provider"
         }
         connectors["configurations"] = project_configurations
         self._write_project_configuration(connectors=connectors)

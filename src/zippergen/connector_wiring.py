@@ -295,7 +295,8 @@ def connector_environment_from_snapshot(
             if not telegram_token:
                 raise ConnectorWiringError(
                     f"The Telegram bot token for connection {connection!r} is "
-                    f"missing. Use 'zippergen provider credential {connection}'."
+                    f"missing. Use 'zippergen provider set-credential "
+                    f"{connection}'."
                 )
             environment[token_env] = telegram_token
         credential_env = str(raw.get("credential_env") or "")

@@ -164,7 +164,6 @@ def test_connector_configuration_and_assignment_are_guided_the_same_way(
         [
             "approval-chat",
             "approval-bot",
-            "telegram",
             "4242",
             "User",
             "approval-chat",
@@ -268,13 +267,13 @@ def test_config_reports_an_unassigned_model_credential_without_contacting_it(
     assert "Local requirements" in output
 
 
-def test_provider_credential_saves_to_the_named_projects_private_file(
+def test_provider_set_credential_saves_to_the_named_projects_private_file(
     project, monkeypatch, capsys
 ):
     _root, workspace = project
     monkeypatch.setattr("getpass.getpass", lambda _prompt: "new-secret")
 
-    assert main(["provider", "credential", "openai-main"]) == 0
+    assert main(["provider", "set-credential", "openai-main"]) == 0
     assert workspace.provider_secret("openai-main", "api_key") == "new-secret"
     assert str(workspace.secrets_path) in capsys.readouterr().out
 

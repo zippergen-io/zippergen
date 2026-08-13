@@ -189,7 +189,7 @@ _zg() {
   case "$cmd:$action:$CURRENT" in
     model:assign:4|model:unassign:4) kind=model-targets ;;
     provider:configure:5) kind=provider-kinds ;;
-    provider:credential:4|provider:check:4|provider:remove:4) kind=provider-connections ;;
+    provider:set-credential:4|provider:check:4|provider:remove:4) kind=provider-connections ;;
     model:configure:5) kind=provider-connections-model ;;
     model:assign:5|model:check:4|model:remove:4) kind=model-configurations ;;
     assistant:assign:4|assistant:unassign:4) kind=assistant-targets ;;
@@ -226,7 +226,7 @@ _zg_complete() {
   elif [[ $cmd == deploy && $COMP_CWORD -eq 2 ]]; then kind=deploy-actions
   elif [[ $cmd == model && $action =~ ^(assign|unassign)$ && $COMP_CWORD -eq 3 ]]; then kind=model-targets
   elif [[ $cmd == provider && $action == configure && $COMP_CWORD -eq 4 ]]; then kind=provider-kinds
-  elif [[ $cmd == provider && $action =~ ^(credential|check|remove)$ && $COMP_CWORD -eq 3 ]]; then kind=provider-connections
+  elif [[ $cmd == provider && $action =~ ^(set-credential|check|remove)$ && $COMP_CWORD -eq 3 ]]; then kind=provider-connections
   elif [[ $cmd == model && $action == configure && $COMP_CWORD -eq 4 ]]; then kind=provider-connections-model
   elif [[ $cmd == model && $action == assign && $COMP_CWORD -eq 4 ]] || [[ $cmd == model && $action =~ ^(check|remove)$ && $COMP_CWORD -eq 3 ]]; then kind=model-configurations
   elif [[ $cmd == assistant && $action =~ ^(assign|unassign)$ && $COMP_CWORD -eq 3 ]]; then kind=assistant-targets
@@ -248,7 +248,7 @@ _FISH = r'''# Install with: zg completion fish | source
 complete -c zg -c zippergen -f
 complete -c zg -c zippergen -n 'not __fish_seen_subcommand_from config check workflow provider model assistant completion connector run show validate init skill snapshot diff deploy' -a '(zg __complete commands 2>/dev/null)'
 complete -c zg -c zippergen -n '__fish_seen_subcommand_from workflow; and not __fish_seen_subcommand_from select' -a '(zg __complete workflow-actions 2>/dev/null)'
-complete -c zg -c zippergen -n '__fish_seen_subcommand_from provider; and not __fish_seen_subcommand_from configure credential check remove authorize accept' -a '(zg __complete provider-actions 2>/dev/null)'
+complete -c zg -c zippergen -n '__fish_seen_subcommand_from provider; and not __fish_seen_subcommand_from configure set-credential check remove authorize accept' -a '(zg __complete provider-actions 2>/dev/null)'
 complete -c zg -c zippergen -n '__fish_seen_subcommand_from model; and not __fish_seen_subcommand_from configure assign unassign check remove' -a '(zg __complete model-actions 2>/dev/null)'
 complete -c zg -c zippergen -n '__fish_seen_subcommand_from assistant; and not __fish_seen_subcommand_from configure assign unassign check remove' -a '(zg __complete assistant-actions 2>/dev/null)'
 complete -c zg -c zippergen -n '__fish_seen_subcommand_from connector; and not __fish_seen_subcommand_from configure assign unassign bind unbind check remove' -a '(zg __complete connector-actions 2>/dev/null)'
@@ -257,7 +257,7 @@ complete -c zg -c zippergen -n '__fish_seen_subcommand_from deploy; and not __fi
 complete -c zg -c zippergen -n '__fish_seen_subcommand_from model assign; and test (count (commandline -opc)) -eq 3' -a '(zg __complete model-targets 2>/dev/null)'
 complete -c zg -c zippergen -n '__fish_seen_subcommand_from model assign; and test (count (commandline -opc)) -eq 4' -a '(zg __complete model-configurations 2>/dev/null)'
 complete -c zg -c zippergen -n '__fish_seen_subcommand_from provider configure; and test (count (commandline -opc)) -eq 4' -a '(zg __complete provider-kinds 2>/dev/null)'
-complete -c zg -c zippergen -n '__fish_seen_subcommand_from provider credential check remove; and test (count (commandline -opc)) -eq 3' -a '(zg __complete provider-connections 2>/dev/null)'
+complete -c zg -c zippergen -n '__fish_seen_subcommand_from provider set-credential check remove; and test (count (commandline -opc)) -eq 3' -a '(zg __complete provider-connections 2>/dev/null)'
 complete -c zg -c zippergen -n '__fish_seen_subcommand_from model configure; and test (count (commandline -opc)) -eq 4' -a '(zg __complete provider-connections-model 2>/dev/null)'
 complete -c zg -c zippergen -n '__fish_seen_subcommand_from model check remove; and test (count (commandline -opc)) -eq 3' -a '(zg __complete model-configurations 2>/dev/null)'
 complete -c zg -c zippergen -n '__fish_seen_subcommand_from assistant assign unassign; and test (count (commandline -opc)) -eq 3' -a '(zg __complete assistant-targets 2>/dev/null)'

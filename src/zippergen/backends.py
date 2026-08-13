@@ -685,7 +685,7 @@ def _missing_credential(connection: str | None, environment: str) -> RuntimeErro
     if connection:
         return RuntimeError(
             f"Provider connection {connection!r} has no credential in this "
-            f"process. Run 'zg provider credential {connection}' in the "
+            f"process. Run 'zg provider set-credential {connection}' in the "
             "project, or provide its standard environment variable before "
             "ZipperGen resolves the connection."
         )

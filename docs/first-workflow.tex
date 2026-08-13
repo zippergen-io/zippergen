@@ -499,7 +499,7 @@ Create a named configuration and assign the Writer to it:
 
 \begin{lstlisting}[style=shell]
 zg provider configure openai-main openai
-zg provider credential openai-main
+zg provider set-credential openai-main
 zg model configure writer openai-main gpt-4o-mini
 zg model assign Writer writer
 zg model
@@ -541,8 +541,8 @@ One setup remains, and it belongs in your terminal. I should not ask you
 for the chat id or bot token in this conversation. Run:
 
     zg provider configure approval-bot telegram
-    zg provider credential approval-bot
-    zg connector configure approval-chat approval-bot telegram
+    zg provider set-credential approval-bot
+    zg connector configure approval-chat approval-bot
     zg connector assign User approval-chat
 
 Tell me when that is done and I will check the configuration.
@@ -754,15 +754,15 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install zippergen
 
 zg provider configure approval-bot telegram
-zg provider credential approval-bot
-zg connector configure approval-chat approval-bot telegram
+zg provider set-credential approval-bot
+zg connector configure approval-chat approval-bot
 zg connector assign User approval-chat
 
 zg deploy
 \end{lstlisting}
 
 The credentials did not arrive with the clone, because they were never in it.
-\texttt{provider credential} asks for the bot token, does not echo it, and stores it
+\texttt{provider set-credential} asks for the bot token, does not echo it, and stores it
 outside the project. That is why cloning gives the server the routing without
 giving it the secret.
 

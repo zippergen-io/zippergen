@@ -11,6 +11,8 @@ from __future__ import annotations
 import re
 
 
+# ``mock`` is a runtime backend, not a configurable external connection, so it
+# is accepted by the model-spec parser but deliberately absent from this list.
 PROVIDER_KINDS = (
     "openai",
     "anthropic",

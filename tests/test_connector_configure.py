@@ -54,7 +54,7 @@ def _provider(root: Path, name: str, kind: str, credential: str | None = None):
         saved = _run(
             root,
             "provider",
-            "credential",
+            "set-credential",
             name,
             input_text=credential + "\n",
         )
@@ -65,7 +65,15 @@ def test_it_saves_a_configuration_the_project_can_commit(tmp_path):
     root = _project(tmp_path)
     _provider(root, "approval-bot", "telegram")
 
-    result = _run(root, "connector", "configure", "approval-chat", "approval-bot", "telegram", "--chat-id", "4242")
+    result = _run(
+        root,
+        "connector",
+        "configure",
+        "approval-chat",
+        "approval-bot",
+        "--chat-id",
+        "4242",
+    )
 
     assert result.returncode == 0, result.stderr
     manifest = tomllib.loads((root / "zippergen.toml").read_text())
@@ -124,7 +132,9 @@ def test_the_token_is_not_passed_as_an_argument(tmp_path):
     root = _project(tmp_path)
     _provider(root, "approval-bot", "telegram")
 
-    result = _run(root, "provider", "credential", "approval-bot", input_text="tok\n")
+    result = _run(
+        root, "provider", "set-credential", "approval-bot", input_text="tok\n"
+    )
 
     assert "--token" not in result.stderr
     assert "hidden" in result.stdout or "hidden" in result.stderr

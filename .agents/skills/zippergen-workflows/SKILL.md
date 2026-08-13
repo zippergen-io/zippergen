@@ -88,14 +88,14 @@ the workflow or change a deployment field merely to route one participant:
 
 ```bash
 zg provider configure openai-main openai
-zg provider credential openai-main  # user types the key without echo
+zg provider set-credential openai-main  # user types the key without echo
 zg model configure writer openai-main gpt-4o-mini
 zg model assign Writer writer
 zg model
 ```
 
 Do not ask for a key in the agent conversation and do not enter it for the
-user. Ask the user to run `zg provider credential CONNECTION` in their own
+user. Ask the user to run `zg provider set-credential CONNECTION` in their own
 terminal, or set the provider's normal environment variable. One saved key may
 serve several model configurations that name the same connection. The key
 stays in private site storage and never enters `zippergen.toml`.
@@ -355,8 +355,8 @@ workflow:
 
 ```bash
 zg provider configure approval-bot telegram
-zg provider credential approval-bot
-zg connector configure approval-chat approval-bot telegram
+zg provider set-credential approval-bot
+zg connector configure approval-chat approval-bot
 zg connector assign User approval-chat
 ```
 

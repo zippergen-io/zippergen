@@ -256,14 +256,15 @@ Never put a spreadsheet ID, OAuth token, or credentials path in workflow code.
 The spreadsheet ID belongs in a named project connector configuration. The
 OAuth token remains private site state.
 Use `zg provider configure CONNECTION KIND` to name the provider identity,
-`zg connector configure NAME CONNECTION KIND` to save the concrete resource, then
+`zg connector configure NAME CONNECTION [KIND]` to save the concrete resource,
+then
 `zg connector bind REQUIREMENT NAME` to connect the logical requirement to it.
 
 In a human terminal, required values may be omitted and ZipperGen asks for
 them. This applies to model, assistant, and connector configuration,
 assignment, and binding. Scripts and coding agents should pass the values
 explicitly. Model setup asks for a provider connection and model separately.
-`zg provider credential CONNECTION` prompts without echo and saves API keys or
+`zg provider set-credential CONNECTION` prompts without echo and saves API keys or
 bot tokens only in private site storage.
 
 Gmail follows the same pattern:
@@ -586,8 +587,8 @@ be deleted without changing resumption.
 ```bash
 # Hand credentials to the user's terminal; destinations remain portable
 zg provider configure approval-bot telegram
-zg provider credential approval-bot
-zg connector configure approval-chat approval-bot telegram
+zg provider set-credential approval-bot
+zg connector configure approval-chat approval-bot
 
 # Save external-service connectors and bind their declared requirements
 zg provider configure google-work google
