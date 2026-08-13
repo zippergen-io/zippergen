@@ -1933,27 +1933,26 @@ def _deployment_prune_command(args) -> int:
 
 
 def _compact_command(args) -> int:
-    """Drop optional history and rotate logs.
+    """Prune optional history and rotate logs while the service is stopped.
 
     Durable state is the current state of the computation, so there is nothing
-    to compact in it. Only history accumulates, and recovery never reads it, so
-    this does not touch the running deployment.
+    to compact in it. History is not read by recovery, but pruning it still
+    changes the store; the stopped-service precondition also makes log rotation
+    lossless and prevents the command from failing after deleting history.
     """
 
+    from zippergen.deployment_platform import deployment_service_status
     from zippergen.deployments import DeploymentRemovalError, compact_deployment_logs
     from zippergen.storage_maintenance import prune_store_history
 
     profile = _load_deployment_profile(args.name)
-    store = profile.get("store")
-    if store:
-        outcome = prune_store_history(str(store), keep=args.keep_history)
-        print(f"Store {store}")
-        print(f"  removed history rows: {outcome.removed_rows}")
-        print(
-            "  reclaimed bytes: "
-            f"{max(0, outcome.before_bytes - outcome.after_bytes)}"
+    service = deployment_service_status(args.name)
+    if service["state"] not in {"not-loaded", "completed"}:
+        raise SystemExit(
+            f"Stop deployment {args.name} before compacting it. "
+            f"Current service state: {service['detail']}"
         )
-
+    store = profile.get("store")
     try:
         logs = compact_deployment_logs(
             args.name,
@@ -1967,6 +1966,14 @@ def _compact_command(args) -> int:
         print(
             f"  removed archives: {logs.removed_archives} "
             f"({logs.removed_archive_bytes} bytes)"
+        )
+    if store:
+        outcome = prune_store_history(str(store), keep=args.keep_history)
+        print(f"Store {store}")
+        print(f"  removed history rows: {outcome.removed_rows}")
+        print(
+            "  reclaimed bytes: "
+            f"{max(0, outcome.before_bytes - outcome.after_bytes)}"
         )
     return 0
 
@@ -2917,6 +2924,52 @@ def _run_status_command(args) -> int:
     return 0
 
 
+def _run_reset_command(args) -> int:
+    """Archive and clear the selected durable run's computation state."""
+
+    from zippergen.durable_runs import RunResetError, reset_current_run
+    from zippergen.workspace import Workspace
+
+    workspace = Workspace(getattr(args, "project", None))
+    record = workspace.current_run()
+    if record is None:
+        raise SystemExit("There is no current durable run to reset.")
+    status = str(record.get("status") or "")
+    if status in {"running", "waiting"} and not args.force:
+        raise SystemExit(
+            f"Run {record['run_id']} is recorded as {status}. Stop its "
+            "foreground process with Ctrl-C first. If that process is "
+            "already gone, re-run with --force."
+        )
+    if not args.yes:
+        if not sys.stdin.isatty():
+            raise SystemExit(
+                "Resetting a durable run requires confirmation. Re-run with --yes."
+            )
+        answer = input(
+            "Archive and clear the current durable run? [y/N]: "
+        ).strip().casefold()
+        if answer not in {"y", "yes"}:
+            print("Nothing was changed.")
+            return 1
+    try:
+        reset, archive, archived_store_files = reset_current_run(
+            workspace,
+            force=args.force,
+        )
+    except RunResetError as exc:
+        raise SystemExit(str(exc)) from exc
+
+    print(f"Reset durable run: {reset['run_id']}")
+    print(
+        "Archived its run record and "
+        f"{archived_store_files} SQLite file(s): {archive}"
+    )
+    print("Current durable run: none")
+    print("Start a new one with: zippergen run --durable")
+    return 0
+
+
 def _execution_age(updated_at: float | None) -> str:
     if updated_at is None:
         return "-"
@@ -3013,7 +3066,13 @@ def _render_inspection(
     renderer.emit()
     renderer.columns(
         "Participants",
-        ("Focus", "Participant", "State", "Current position", "Elapsed"),
+        (
+            "Focus",
+            "Participant",
+            "State",
+            "Last committed position",
+            "Elapsed",
+        ),
         [
             (
                 "▶" if position.participant == focus else "",
@@ -3335,7 +3394,7 @@ def _add_owned_execution_commands(subparsers, *, owner: str) -> None:
 
     inspect_parser = subparsers.add_parser(
         "inspect",
-        help="show the current durable program position",
+        help="show the last committed durable program position",
     )
     inspect_parser.set_defaults(execution_owner=owner)
     inspect_parser.add_argument("--project", help="Project root.")
@@ -3850,6 +3909,24 @@ def _parse_cli_args(
     run_status.set_defaults(execution_owner="run")
     run_status.add_argument("--project", help="Project root.")
     run_status.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    run_reset = run_sub.add_parser(
+        "reset",
+        help="archive and clear the selected durable run",
+    )
+    run_reset.add_argument("--project", help="Project root.")
+    run_reset.add_argument(
+        "--yes",
+        action="store_true",
+        help="Reset without an interactive confirmation.",
+    )
+    run_reset.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            "Reset stale running metadata after confirming the owning process "
+            "has stopped."
+        ),
+    )
     _add_owned_execution_commands(run_sub, owner="run")
 
     show = sub.add_parser("show", help="render a workflow as a code-first semantic view")
@@ -4128,6 +4205,8 @@ def main(argv=None) -> int:
         action = getattr(args, "run_action", None)
         if action == "status":
             return _run_status_command(args)
+        if action == "reset":
+            return _run_reset_command(args)
         if action == "inspect":
             return _inspect_command(args)
         if action == "trace":

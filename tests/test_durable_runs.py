@@ -5,7 +5,12 @@ from pathlib import Path
 import pytest
 
 from zippergen import Json
-from zippergen.durable_runs import _coerce_input, _parse_guided_value, run_durable
+from zippergen.durable_runs import (
+    _coerce_input,
+    _parse_guided_value,
+    reset_current_run,
+    run_durable,
+)
 from zippergen.rendering import TerminalRenderer
 from zippergen.store import open_store
 from zippergen.workspace import Workspace
@@ -278,6 +283,45 @@ def test_durable_resume_claims_the_existing_pending_terminal_task(tmp_path):
     assert conn.execute(
         "SELECT COUNT(*) FROM human_tasks WHERE status='done'"
     ).fetchone()[0] == 1
+
+
+def test_reset_run_clears_resume_and_a_new_run_gets_a_new_identity(tmp_path):
+    workspace = Workspace(_repository_root(), home=tmp_path / "home")
+    completed = run_durable(
+        workspace,
+        workflow_spec=TUTORIAL_SPEC,
+        provided_inputs={"request": "Start again", "max_retries": 1},
+        input_func=lambda _prompt: "y",
+        output_func=lambda _line: None,
+    )
+    assert completed["status"] == "done"
+
+    reset, archive, archived_files = reset_current_run(workspace)
+
+    assert reset["run_id"] == completed["run_id"]
+    assert archived_files >= 1
+    assert archive.is_dir()
+    assert workspace.current_run() is None
+    assert not Path(str(reset["store"])).exists()
+
+    with pytest.raises(SystemExit, match="no current durable run"):
+        run_durable(
+            workspace,
+            resume=True,
+            input_func=lambda _prompt: "y",
+            output_func=lambda _line: None,
+        )
+
+    new_run = run_durable(
+        workspace,
+        workflow_spec=TUTORIAL_SPEC,
+        provided_inputs={"request": "Start again", "max_retries": 1},
+        input_func=lambda _prompt: "y",
+        output_func=lambda _line: None,
+    )
+    assert new_run["run_id"] != completed["run_id"]
+    assert new_run["status"] == "done"
+    assert new_run["result"] == completed["result"]
 
 
 def test_durable_ctrl_c_keeps_terminal_input_on_main_thread_and_resumes(tmp_path):

@@ -649,8 +649,15 @@ zg run inspect --agent Writer
 zg run --resume
 \end{lstlisting}
 
-The model call that already happened is not repeated. The run resumes at the
-point it stopped, because every step was recorded before it was taken.
+The model result and control position committed before the interruption are
+preserved, so this run resumes at the approval rather than drafting again. A
+crash during an external call can still repeat that call if its result had not
+yet committed.
+
+To abandon the selected run, stop it with Ctrl-C and use \texttt{zg run
+reset}. Its record and SQLite state are archived and no run remains current.
+This does not start another run; use \texttt{zg run -{}-durable} when one is
+wanted.
 
 While a durable run is active in one terminal, another terminal can keep its
 program position open and refresh it once per second:
@@ -663,8 +670,9 @@ Pressing Ctrl-C in this view closes only the view. It does not interrupt the
 run.
 
 This matters more for a workflow that never ends than for one that finishes in
-a second. Stopping is the normal way this one exits. You press Ctrl-C, the
-machine reboots, the service restarts, and each time it picks up where it was rather than re-reading a mailbox it has already answered.
+a second. A foreground durable run continues with \texttt{zg run -{}-resume};
+a deployment is restarted by its service manager. In both cases committed
+state prevents it from starting the workflow over after an ordinary stop.
 
 \section{Deploy it}
 

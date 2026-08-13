@@ -5,9 +5,12 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import threading
+import time
 from collections.abc import Callable
 from contextlib import contextmanager
+from pathlib import Path
 from types import ModuleType
 from typing import Any
 
@@ -36,6 +39,107 @@ from zippergen.workflow_io import RunConfig, _call_setup_hook, load_workflow_spe
 
 InputFunc = Callable[[str], str]
 OutputFunc = Callable[[str], object]
+
+
+class RunResetError(RuntimeError):
+    """A durable run could not be reset without risking its state."""
+
+
+def _sqlite_family(path: Path) -> tuple[Path, ...]:
+    return (
+        path,
+        Path(str(path) + "-wal"),
+        Path(str(path) + "-shm"),
+        Path(str(path) + "-journal"),
+    )
+
+
+def reset_current_run(
+    workspace: Workspace,
+    *,
+    force: bool = False,
+) -> tuple[dict[str, Any], Path, int]:
+    """Archive and clear the selected durable run.
+
+    No run remains selected afterwards. ``force`` is only for stale metadata
+    after the owning process is known to have stopped; moving a live SQLite
+    family is unsafe.
+    """
+
+    record = workspace.current_run()
+    if record is None:
+        raise RunResetError("There is no current durable run to reset.")
+    status = str(record.get("status") or "")
+    if status in {"running", "waiting"} and not force:
+        raise RunResetError(
+            f"Run {record['run_id']} is recorded as {status}. Stop its "
+            "foreground process with Ctrl-C first. If that process is "
+            "already gone, re-run with --force."
+        )
+
+    store = Path(str(record["store"])).expanduser()
+    store_files = tuple(
+        path
+        for path in _sqlite_family(store)
+        if path.exists() or path.is_symlink()
+    )
+    if any(path.is_dir() or path.is_symlink() for path in store_files):
+        raise RunResetError(
+            f"Expected regular SQLite files for run {record['run_id']}: {store}"
+        )
+    record_path = workspace.run_path(str(record["run_id"]))
+    if not record_path.is_file() or record_path.is_symlink():
+        raise RunResetError(f"Expected a regular run record: {record_path}")
+
+    root = workspace.home / "trash" / "runs"
+    root.mkdir(parents=True, exist_ok=True)
+    root.chmod(0o700)
+    timestamp = time.strftime("%Y%m%d-%H%M%S")
+    base = f"{record['run_id']}-{timestamp}"
+    archive = root / base
+    suffix = 2
+    while archive.exists():
+        archive = root / f"{base}-{suffix}"
+        suffix += 1
+    archive.mkdir(mode=0o700)
+
+    moved: list[tuple[Path, Path]] = []
+    try:
+        for source in (record_path, *store_files):
+            target = archive / source.name
+            shutil.move(str(source), str(target))
+            target.chmod(0o600)
+            moved.append((source, target))
+        metadata = archive / "reset.json"
+        metadata.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "run": record["run_id"],
+                    "previous_status": status,
+                    "store": str(store),
+                    "reset_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                    "files": [target.name for _source, target in moved],
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        metadata.chmod(0o600)
+        workspace.update(current_run=None)
+    except Exception as exc:
+        for source, target in reversed(moved):
+            if target.exists() and not source.exists():
+                source.parent.mkdir(parents=True, exist_ok=True)
+                shutil.move(str(target), str(source))
+        shutil.rmtree(archive, ignore_errors=True)
+        raise RunResetError(
+            f"Could not reset run {record['run_id']} safely: {exc}"
+        ) from exc
+
+    return record, archive, len(store_files)
 
 
 def semantic_fingerprint(workflow: Workflow, module: ModuleType) -> str:

@@ -338,8 +338,11 @@ effect succeeds but before its result is recorded can repeat that effect, so
 irreversible connectors should use idempotency keys.
 
 `zg run status` shows the currently selected durable run. Starting another
-`zg run --durable` selects a new, fresh run, so runs do not need a reset
-operation. If the project's deployment is already running, a foreground run
+`zg run --durable` selects a new run. To abandon the selected run, stop its
+foreground process with Ctrl-C and use `zg run reset`; ZipperGen archives its
+record and SQLite state and clears the selection. Afterwards `zg run status`
+reports no current run, and the next execution begins explicitly with `zg run
+--durable`. If the project's deployment is already running, a foreground run
 warns before it can compete for Telegram updates, mailbox files, or other
 external resources.
 
@@ -414,7 +417,7 @@ zg
 │   └── configure · assign · unassign · bind · unbind · check · remove
 │       · authorize google · accept google
 ├── run
-│   └── status · inspect · trace · tasks · approve
+│   └── status · reset · inspect · trace · tasks · approve
 ├── deploy
 │   └── list · prune · start · stop · restart · status · logs · check
 │       · inspect · trace · tasks · approve · compact · reset · remove
@@ -431,6 +434,9 @@ discard a deployment's durable history,
 `zg deploy reset --yes` stops it, archives its SQLite files under
 `$ZIPPERGEN_HOME/trash/deployment-stores/`, creates an empty store, and starts
 the service again if it was running. The archive is never silently deleted.
+`zg deploy compact` prunes optional inspection history and rotates logs; stop
+the deployment first, because the combined command refuses before changing
+either resource while its service is running.
 `zg deploy list` also works outside a project and shows every deployment on
 the computer. If a project directory was deleted or reinitialized, use
 `zg deploy prune`; it unregisters orphaned services and archives their durable

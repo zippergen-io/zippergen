@@ -506,8 +506,11 @@ project's model, assistant, and connector routing. ZipperGen owns the store;
 ordinary commands never need its path.
 
 `zg run status` reports the currently selected durable run. Starting a new
-`zg run --durable` creates and selects fresh state; there is no run-reset
-ritual. Do not start a foreground run while the project's deployment is
+`zg run --durable` creates and selects fresh state. `zg run reset` archives
+the selected run record and SQLite state, then clears the selection. It does
+not start another run; use `zg run --durable` when one is wanted. Stop the
+foreground run with Ctrl-C before resetting it. Do not start a foreground run
+while the project's deployment is
 running unless the user explicitly intends both to compete for external
 resources. ZipperGen warns about that overlap.
 
@@ -550,10 +553,11 @@ There is no workflow or deployment name to pass: the project identifies both.
 `--watch` mode refreshes that view in place, once per second by default. Use
 `--interval SECONDS` to change the rate. `trace` and
 `tasks` show recent events and pending human tasks. `compact` drops optional
-inspection history and rotates logs; stop the deployment first because
-lossless log rotation needs exclusive ownership. Recovery never reads that
-history. Completed human tasks and connector notifications remain as audit
-records. `remove` deletes a deployment but keeps its durable store unless you
+inspection history and rotates logs; it refuses while the deployment is
+running, before changing either resource. Recovery never reads that history,
+but the stopped-service precondition also makes log rotation lossless.
+Completed human tasks and connector notifications remain as audit records.
+`remove` deletes a deployment but keeps its durable store unless you
 purge it. `reset` is the recoverable way to start over: it stops the service,
 archives the store and its SQLite sidecars under ZipperGen's trash directory,
 creates an empty store, and restarts the service if it was running.

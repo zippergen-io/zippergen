@@ -601,10 +601,13 @@ zg run inspect --agent Writer
 zg run --resume
 \end{lstlisting}
 
-Starting another \texttt{zg run -{}-durable} creates and selects a fresh run;
-there is no run-reset operation. If this project's deployment is already
-running, a foreground run warns before it can compete for Telegram updates,
-mailbox files, or another external resource.
+Starting another \texttt{zg run -{}-durable} creates and selects a fresh run.
+To abandon the selected run, stop its foreground process with Ctrl-C and use
+\texttt{zg run reset}. ZipperGen archives its record and SQLite state and
+clears the current-run selection. Reset does not start another run; use
+\texttt{zg run -{}-durable} when one is wanted. If this project's deployment is
+already running, a foreground run warns before it can compete for Telegram
+updates, mailbox files, or another external resource.
 
 To watch a live durable run from another terminal, use:
 
@@ -783,7 +786,7 @@ zg deploy                     # redeploy the current source
 \texttt{zg deploy approve} & answer one \\
 \texttt{zg deploy check} & readiness checks, in detail \\
 \texttt{zg deploy stop} / \texttt{zg deploy restart} & move the service \\
-\texttt{zg deploy compact} & prune optional history and rotate logs; stop first for lossless log rotation \\
+\texttt{zg deploy compact} & prune optional history and rotate logs; refuses while running \\
 \texttt{zg deploy reset --yes} & archive durable state and start fresh \\
 \texttt{zg deploy remove} & delete it \\
 \bottomrule
@@ -936,7 +939,7 @@ zg connector assign User approval-chat
 \midrule
 \multicolumn{2}{@{}l}{\textbf{Run}} \\
 \texttt{run} & execute, with \texttt{-{}-durable} and \texttt{-{}-resume} \\
-\texttt{run status/inspect/trace/tasks/approve} & observe or answer a durable run \\
+\texttt{run status/reset/inspect/trace/tasks/approve} & manage, observe, or answer a durable run \\
 \midrule
 \multicolumn{2}{@{}l}{\textbf{Configure}} \\
 \texttt{config} / \texttt{check} & show offline configuration or check all live readiness \\

@@ -640,7 +640,11 @@ def render_local_projection_with_pointers(
     ).render_annotated(local, 1)
     lines = [
         f"# Live local projection for {lifeline.name}; read-only observation.",
-        "# ▶ marks the current durable program position.",
+        (
+            "# ▶ marks a last committed durable program position."
+            if active
+            else "# No durable program position is currently marked."
+        ),
         "",
         f"  @role({lifeline.name!r})",
         f"  {_workflow_signature(workflow, agent=lifeline.name)}",

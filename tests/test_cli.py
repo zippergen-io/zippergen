@@ -229,20 +229,32 @@ def test_compact_drops_history_and_rotates_logs(tmp_path, monkeypatch, capsys):
             "project_id": Workspace().project_manifest().get("project_id"),
         },
     )
+    changed: list[str] = []
+
+    def prune(_path, *, keep):
+        changed.append("history")
+        return SimpleNamespace(
+            removed_rows=12,
+            before_bytes=4096,
+            after_bytes=1024,
+        )
+
+    def rotate(_name, _profile, *, keep_archives):
+        changed.append("logs")
+        return SimpleNamespace(
+            removed_archives=2,
+            removed_archive_bytes=768,
+        )
+
     monkeypatch.setattr(
         storage_maintenance,
         "prune_store_history",
-        lambda _path, *, keep: SimpleNamespace(
-            removed_rows=12, before_bytes=4096, after_bytes=1024
-        ),
+        prune,
     )
     monkeypatch.setattr(
         deployments,
         "compact_deployment_logs",
-        lambda _name, _profile, *, keep_archives: SimpleNamespace(
-            removed_archives=2,
-            removed_archive_bytes=768,
-        ),
+        rotate,
     )
 
     assert main(["deploy", "compact", "--keep-archives", "1"]) == 0
@@ -251,16 +263,20 @@ def test_compact_drops_history_and_rotates_logs(tmp_path, monkeypatch, capsys):
     assert "removed history rows: 12" in output
     assert "reclaimed bytes: 3072" in output
     assert "removed archives: 2 (768 bytes)" in output
+    assert changed == ["logs", "history"]
 
 
-def test_compact_never_touches_the_running_service(tmp_path, monkeypatch, capsys):
-    """Durable state has nothing to compact, so nothing has to stop.
+def test_compact_refuses_before_changing_a_running_deployment(
+    tmp_path, monkeypatch
+):
+    """The combined maintenance command must not half-complete."""
 
-    History is not read by recovery, so pruning it is safe at any moment. This
-    pins that the stop/restart dance the old compaction needed is really gone.
-    """
-
-    from zippergen import deployments, serve, storage_maintenance
+    from zippergen import (
+        deployment_platform,
+        deployments,
+        serve,
+        storage_maintenance,
+    )
 
     store = tmp_path / "run.sqlite"
     home = tmp_path / "zg-home"
@@ -281,30 +297,30 @@ def test_compact_never_touches_the_running_service(tmp_path, monkeypatch, capsys
             "project_id": Workspace().project_manifest().get("project_id"),
         },
     )
+    changed: list[str] = []
+    monkeypatch.setattr(
+        deployment_platform,
+        "deployment_service_status",
+        lambda _name: {
+            "state": "running",
+            "detail": "service is running",
+        },
+    )
     monkeypatch.setattr(
         storage_maintenance,
         "prune_store_history",
-        lambda _path, *, keep: SimpleNamespace(
-            removed_rows=0, before_bytes=0, after_bytes=0
-        ),
+        lambda _path, *, keep: changed.append("history"),
     )
     monkeypatch.setattr(
         deployments,
         "compact_deployment_logs",
-        lambda _name, _profile, *, keep_archives: SimpleNamespace(
-            removed_archives=0, removed_archive_bytes=0
-        ),
-    )
-    lifecycle: list[str] = []
-    monkeypatch.setattr(
-        serve,
-        "_deployment_lifecycle_command",
-        lambda _args, action: lifecycle.append(action) or 0,
+        lambda _name, _profile, *, keep_archives: changed.append("logs"),
     )
 
-    assert main(["deploy", "compact"]) == 0
+    with pytest.raises(SystemExit, match="Stop deployment .* before compacting"):
+        main(["deploy", "compact"])
 
-    assert lifecycle == [], "compaction must not stop or start the deployment"
+    assert changed == []
 
 
 def test_deploy_reset_archives_and_recreates_its_owned_store(

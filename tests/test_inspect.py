@@ -62,6 +62,7 @@ def _observed_run(tmp_path, monkeypatch):
     )
     connection.execute("COMMIT")
     connection.close()
+    workspace.update_run(record["run_id"], status="interrupted")
     monkeypatch.chdir(root)
     monkeypatch.setenv("ZIPPERGEN_HOME", str(home))
     return record
@@ -81,6 +82,57 @@ def test_inspect_shows_the_current_local_program_pointer(
     assert "▶" in output
     assert "draft_reply" in output
     assert "request" not in output
+
+
+def test_run_reset_archives_state_and_clears_the_current_run(
+    tmp_path, monkeypatch, capsys
+):
+    record = _observed_run(tmp_path, monkeypatch)
+    store = Path(str(record["store"]))
+    assert store.is_file()
+
+    assert main(["run", "reset", "--yes"]) == 0
+
+    output = capsys.readouterr().out
+    assert f"Reset durable run: {record['run_id']}" in output
+    assert "Current durable run: none" in output
+    assert not store.exists()
+    workspace = Workspace()
+    assert workspace.current_run() is None
+    archives = list(
+        (workspace.home / "trash" / "runs").glob(
+            f"{record['run_id']}-*"
+        )
+    )
+    assert len(archives) == 1
+    assert (archives[0] / store.name).is_file()
+    assert (archives[0] / f"{record['run_id']}.json").is_file()
+    archived = open_store(str(archives[0] / store.name))
+    assert archived.execute("SELECT COUNT(*) FROM role_state").fetchone() == (1,)
+    archived.close()
+
+    with pytest.raises(SystemExit, match="There is no current durable run"):
+        main(["run", "inspect", "--agent", "Writer"])
+
+
+def test_run_reset_requires_an_active_foreground_run_to_stop_first(
+    tmp_path, monkeypatch
+):
+    record = _observed_run(tmp_path, monkeypatch)
+    workspace = Workspace()
+    workspace.update_run(record["run_id"], status="running")
+
+    with pytest.raises(
+        SystemExit,
+        match="Stop its foreground process with Ctrl-C",
+    ):
+        main(["run", "reset", "--yes"])
+
+    assert Path(str(record["store"])).is_file()
+
+    assert main(["run", "reset", "--yes", "--force"]) == 0
+    assert not Path(str(record["store"])).exists()
+    assert Workspace().current_run() is None
 
 
 def test_inspect_has_a_machine_readable_view(tmp_path, monkeypatch, capsys):

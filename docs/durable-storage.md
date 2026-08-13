@@ -283,14 +283,17 @@ incompatible edit.
 has not been absorbed. Neither grows with how long the workflow has run.
 
 `history` accumulates and is pruned online, keeping the newest 10,000 rows.
-To drop it entirely and reclaim the space:
+That automatic pruning is recovery-independent. The combined maintenance
+command also rotates deployment logs, so it requires the deployment to be
+stopped and refuses before changing either resource:
 
 ```bash
+zg deploy stop
 zg deploy compact
 ```
 
-That is a retention choice, not a correctness operation. It does not stop the
-deployment, because recovery does not read history.
+Dropping history is a retention choice, not a recovery operation. The explicit
+stop makes the combined command predictable and its log rotation lossless.
 
 ## 8. What this replaced
 

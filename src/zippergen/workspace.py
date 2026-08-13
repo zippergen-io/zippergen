@@ -1692,7 +1692,7 @@ class Workspace:
             "assistants": dict(assistants or {}),
             "options": dict(options or {}),
             "connectors": dict(connectors or {}),
-            "status": "created",
+            "status": "running",
             "result": None,
             "error": None,
             "created_at": _timestamp(),
