@@ -300,7 +300,7 @@ def test_reset_run_clears_resume_and_a_new_run_gets_a_new_identity(tmp_path):
 
     assert reset["run_id"] == completed["run_id"]
     assert archived_files >= 1
-    assert archive.is_dir()
+    assert archive is None
     assert workspace.current_run() is None
     assert not Path(str(reset["store"])).exists()
 
@@ -322,6 +322,60 @@ def test_reset_run_clears_resume_and_a_new_run_gets_a_new_identity(tmp_path):
     assert new_run["run_id"] != completed["run_id"]
     assert new_run["status"] == "done"
     assert new_run["result"] == completed["result"]
+
+
+def test_starting_a_new_durable_run_discards_the_previous_one(tmp_path):
+    workspace = Workspace(_repository_root(), home=tmp_path / "home")
+    first = run_durable(
+        workspace,
+        workflow_spec=TUTORIAL_SPEC,
+        provided_inputs={"request": "First", "max_retries": 1},
+        input_func=lambda _prompt: "y",
+        output_func=lambda _line: None,
+    )
+    first_record = workspace.run_path(str(first["run_id"]))
+    first_store = Path(str(first["store"]))
+
+    second = run_durable(
+        workspace,
+        workflow_spec=TUTORIAL_SPEC,
+        provided_inputs={"request": "Second", "max_retries": 1},
+        input_func=lambda _prompt: "y",
+        output_func=lambda _line: None,
+    )
+
+    assert second["run_id"] != first["run_id"]
+    assert workspace.current_run_id == second["run_id"]
+    assert not first_record.exists()
+    assert not first_store.exists()
+    assert list((workspace.home / "trash" / "runs").iterdir()) == []
+
+
+def test_starting_a_new_durable_run_never_discards_an_active_one(tmp_path):
+    workspace = Workspace(_repository_root(), home=tmp_path / "home")
+    active = workspace.new_run(
+        workflow_spec=TUTORIAL_SPEC,
+        workflow_name="tutorial_review",
+        fingerprint="active",
+        inputs={"request": "Still running", "max_retries": 1},
+        llm="mock",
+    )
+    active_record = workspace.run_path(str(active["run_id"]))
+
+    with pytest.raises(
+        SystemExit,
+        match="Stop its foreground process with Ctrl-C",
+    ):
+        run_durable(
+            workspace,
+            workflow_spec=TUTORIAL_SPEC,
+            provided_inputs={"request": "Replacement", "max_retries": 1},
+            input_func=lambda _prompt: "y",
+            output_func=lambda _line: None,
+        )
+
+    assert workspace.current_run_id == active["run_id"]
+    assert active_record.is_file()
 
 
 def test_durable_ctrl_c_keeps_terminal_input_on_main_thread_and_resumes(tmp_path):

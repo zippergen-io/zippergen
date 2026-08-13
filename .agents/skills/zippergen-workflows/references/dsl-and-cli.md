@@ -506,10 +506,12 @@ project's model, assistant, and connector routing. ZipperGen owns the store;
 ordinary commands never need its path.
 
 `zg run status` reports the currently selected durable run. Starting a new
-`zg run --durable` creates and selects fresh state. `zg run reset` archives
-the selected run record and SQLite state, then clears the selection. It does
-not start another run; use `zg run --durable` when one is wanted. Stop the
-foreground run with Ctrl-C before resetting it. Do not start a foreground run
+`zg run --durable` creates fresh state and discards any older selected
+development run. `zg run reset` permanently discards the selected run record
+and SQLite state, then clears the selection; add `--archive` only when a
+recoverable private copy is wanted. It does not start another run; use `zg run
+--durable` when one is wanted. Stop the foreground run with Ctrl-C before
+resetting it. Do not start a foreground run
 while the project's deployment is
 running unless the user explicitly intends both to compete for external
 resources. ZipperGen warns about that overlap.

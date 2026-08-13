@@ -84,7 +84,7 @@ def test_inspect_shows_the_current_local_program_pointer(
     assert "request" not in output
 
 
-def test_run_reset_archives_state_and_clears_the_current_run(
+def test_run_reset_discards_state_and_clears_the_current_run(
     tmp_path, monkeypatch, capsys
 ):
     record = _observed_run(tmp_path, monkeypatch)
@@ -95,10 +95,30 @@ def test_run_reset_archives_state_and_clears_the_current_run(
 
     output = capsys.readouterr().out
     assert f"Reset durable run: {record['run_id']}" in output
+    assert "Permanently discarded" in output
     assert "Current durable run: none" in output
     assert not store.exists()
     workspace = Workspace()
     assert workspace.current_run() is None
+    trash = workspace.home / "trash" / "runs"
+    assert trash.is_dir()
+    assert list(trash.iterdir()) == []
+
+    with pytest.raises(SystemExit, match="There is no current durable run"):
+        main(["run", "inspect", "--agent", "Writer"])
+
+
+def test_run_reset_can_archive_when_explicitly_requested(
+    tmp_path, monkeypatch, capsys
+):
+    record = _observed_run(tmp_path, monkeypatch)
+    store = Path(str(record["store"]))
+
+    assert main(["run", "reset", "--archive", "--yes"]) == 0
+
+    output = capsys.readouterr().out
+    assert "Archived its run record" in output
+    workspace = Workspace()
     archives = list(
         (workspace.home / "trash" / "runs").glob(
             f"{record['run_id']}-*"
@@ -110,9 +130,6 @@ def test_run_reset_archives_state_and_clears_the_current_run(
     archived = open_store(str(archives[0] / store.name))
     assert archived.execute("SELECT COUNT(*) FROM role_state").fetchone() == (1,)
     archived.close()
-
-    with pytest.raises(SystemExit, match="There is no current durable run"):
-        main(["run", "inspect", "--agent", "Writer"])
 
 
 def test_run_reset_requires_an_active_foreground_run_to_stop_first(

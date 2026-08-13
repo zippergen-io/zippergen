@@ -2925,7 +2925,7 @@ def _run_status_command(args) -> int:
 
 
 def _run_reset_command(args) -> int:
-    """Archive and clear the selected durable run's computation state."""
+    """Discard the selected durable run, optionally retaining an archive."""
 
     from zippergen.durable_runs import RunResetError, reset_current_run
     from zippergen.workspace import Workspace
@@ -2946,25 +2946,35 @@ def _run_reset_command(args) -> int:
             raise SystemExit(
                 "Resetting a durable run requires confirmation. Re-run with --yes."
             )
-        answer = input(
+        question = (
             "Archive and clear the current durable run? [y/N]: "
-        ).strip().casefold()
+            if args.archive
+            else "Permanently discard the current durable run? [y/N]: "
+        )
+        answer = input(question).strip().casefold()
         if answer not in {"y", "yes"}:
             print("Nothing was changed.")
             return 1
     try:
-        reset, archive, archived_store_files = reset_current_run(
+        reset, archive, store_file_count = reset_current_run(
             workspace,
+            archive=args.archive,
             force=args.force,
         )
     except RunResetError as exc:
         raise SystemExit(str(exc)) from exc
 
     print(f"Reset durable run: {reset['run_id']}")
-    print(
-        "Archived its run record and "
-        f"{archived_store_files} SQLite file(s): {archive}"
-    )
+    if archive is None:
+        print(
+            "Permanently discarded its run record and "
+            f"{store_file_count} SQLite file(s)."
+        )
+    else:
+        print(
+            "Archived its run record and "
+            f"{store_file_count} SQLite file(s): {archive}"
+        )
     print("Current durable run: none")
     print("Start a new one with: zippergen run --durable")
     return 0
@@ -3911,13 +3921,18 @@ def _parse_cli_args(
     run_status.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     run_reset = run_sub.add_parser(
         "reset",
-        help="archive and clear the selected durable run",
+        help="discard the selected durable run",
     )
     run_reset.add_argument("--project", help="Project root.")
     run_reset.add_argument(
         "--yes",
         action="store_true",
         help="Reset without an interactive confirmation.",
+    )
+    run_reset.add_argument(
+        "--archive",
+        action="store_true",
+        help="Retain the discarded run record and SQLite state in private trash.",
     )
     run_reset.add_argument(
         "--force",

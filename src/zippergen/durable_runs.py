@@ -57,9 +57,10 @@ def _sqlite_family(path: Path) -> tuple[Path, ...]:
 def reset_current_run(
     workspace: Workspace,
     *,
+    archive: bool = False,
     force: bool = False,
-) -> tuple[dict[str, Any], Path, int]:
-    """Archive and clear the selected durable run.
+) -> tuple[dict[str, Any], Path | None, int]:
+    """Discard the selected durable run, optionally retaining an archive.
 
     No run remains selected afterwards. ``force`` is only for stale metadata
     after the owning process is known to have stopped; moving a live SQLite
@@ -95,51 +96,55 @@ def reset_current_run(
     root.mkdir(parents=True, exist_ok=True)
     root.chmod(0o700)
     timestamp = time.strftime("%Y%m%d-%H%M%S")
-    base = f"{record['run_id']}-{timestamp}"
-    archive = root / base
+    prefix = "" if archive else ".discarding-"
+    base = f"{prefix}{record['run_id']}-{timestamp}"
+    destination = root / base
     suffix = 2
-    while archive.exists():
-        archive = root / f"{base}-{suffix}"
+    while destination.exists():
+        destination = root / f"{base}-{suffix}"
         suffix += 1
-    archive.mkdir(mode=0o700)
+    destination.mkdir(mode=0o700)
 
     moved: list[tuple[Path, Path]] = []
     try:
         for source in (record_path, *store_files):
-            target = archive / source.name
+            target = destination / source.name
             shutil.move(str(source), str(target))
             target.chmod(0o600)
             moved.append((source, target))
-        metadata = archive / "reset.json"
-        metadata.write_text(
-            json.dumps(
-                {
-                    "schema_version": 1,
-                    "run": record["run_id"],
-                    "previous_status": status,
-                    "store": str(store),
-                    "reset_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
-                    "files": [target.name for _source, target in moved],
-                },
-                indent=2,
-                sort_keys=True,
+        if archive:
+            metadata = destination / "reset.json"
+            metadata.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "run": record["run_id"],
+                        "previous_status": status,
+                        "store": str(store),
+                        "reset_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                        "files": [target.name for _source, target in moved],
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+                + "\n",
+                encoding="utf-8",
             )
-            + "\n",
-            encoding="utf-8",
-        )
-        metadata.chmod(0o600)
+            metadata.chmod(0o600)
         workspace.update(current_run=None)
     except Exception as exc:
         for source, target in reversed(moved):
             if target.exists() and not source.exists():
                 source.parent.mkdir(parents=True, exist_ok=True)
                 shutil.move(str(target), str(source))
-        shutil.rmtree(archive, ignore_errors=True)
+        shutil.rmtree(destination, ignore_errors=True)
         raise RunResetError(
             f"Could not reset run {record['run_id']} safely: {exc}"
         ) from exc
 
-    return record, archive, len(store_files)
+    if not archive:
+        shutil.rmtree(destination)
+    return record, destination if archive else None, len(store_files)
 
 
 def semantic_fingerprint(workflow: Workflow, module: ModuleType) -> str:
@@ -623,6 +628,17 @@ def run_durable(
         selected_assistants = assistant_routing.overrides
         effective_llm_routes(workflow, selected_llm, selected_llms)
         run_options = dict(options or {})
+        previous = workspace.current_run()
+        if previous is not None:
+            try:
+                reset_current_run(workspace)
+            except RunResetError as exc:
+                raise SystemExit(str(exc)) from exc
+            message = f"Discarded previous durable run {previous['run_id']}."
+            if renderer is None:
+                output_func(message)
+            else:
+                renderer.status("info", message)
         record = workspace.new_run(
             workflow_spec=stored_spec,
             workflow_name=workflow.name,

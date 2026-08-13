@@ -338,11 +338,13 @@ effect succeeds but before its result is recorded can repeat that effect, so
 irreversible connectors should use idempotency keys.
 
 `zg run status` shows the currently selected durable run. Starting another
-`zg run --durable` selects a new run. To abandon the selected run, stop its
-foreground process with Ctrl-C and use `zg run reset`; ZipperGen archives its
-record and SQLite state and clears the selection. Afterwards `zg run status`
-reports no current run, and the next execution begins explicitly with `zg run
---durable`. If the project's deployment is already running, a foreground run
+`zg run --durable` selects a new run and discards any older selected
+development run. To abandon the selected run explicitly, stop its foreground
+process with Ctrl-C and use `zg run reset`; ZipperGen deletes its record and
+SQLite state and clears the selection. Add `--archive` only when a recoverable
+private copy is wanted. Afterwards `zg run status` reports no current run, and
+the next execution begins explicitly with `zg run --durable`. If the project's
+deployment is already running, a foreground run
 warns before it can compete for Telegram updates, mailbox files, or other
 external resources.
 

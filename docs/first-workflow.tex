@@ -655,9 +655,11 @@ crash during an external call can still repeat that call if its result had not
 yet committed.
 
 To abandon the selected run, stop it with Ctrl-C and use \texttt{zg run
-reset}. Its record and SQLite state are archived and no run remains current.
-This does not start another run; use \texttt{zg run -{}-durable} when one is
-wanted.
+reset}. Its record and SQLite state are permanently discarded and no run
+remains current; add \texttt{-{}-archive} only when a recoverable private copy
+is wanted. This does not start another run; use \texttt{zg run -{}-durable}
+when one is wanted. Starting a new durable run also discards an older selected
+development run.
 
 While a durable run is active in one terminal, another terminal can keep its
 program position open and refresh it once per second:

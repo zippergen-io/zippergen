@@ -601,11 +601,13 @@ zg run inspect --agent Writer
 zg run --resume
 \end{lstlisting}
 
-Starting another \texttt{zg run -{}-durable} creates and selects a fresh run.
-To abandon the selected run, stop its foreground process with Ctrl-C and use
-\texttt{zg run reset}. ZipperGen archives its record and SQLite state and
-clears the current-run selection. Reset does not start another run; use
-\texttt{zg run -{}-durable} when one is wanted. If this project's deployment is
+Starting another \texttt{zg run -{}-durable} discards the older selected
+development run and creates fresh state. To abandon the selected run, stop its
+foreground process with Ctrl-C and use \texttt{zg run reset}. ZipperGen
+permanently deletes its record and SQLite state and clears the current-run
+selection; add \texttt{-{}-archive} only when a recoverable private copy is
+wanted. Reset does not start another run; use \texttt{zg run -{}-durable} when
+one is wanted. If this project's deployment is
 already running, a foreground run warns before it can compete for Telegram
 updates, mailbox files, or another external resource.
 
