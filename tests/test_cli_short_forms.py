@@ -395,6 +395,20 @@ def test_completion_uses_the_registered_command_tree():
     assert completion_candidates("run-actions") == list(run.choices)
     assert completion_candidates("deploy-actions") == list(deploy.choices)
     assert "run" not in completion_candidates("deploy-actions")
+    for family in (
+        "workflow",
+        "provider",
+        "model",
+        "assistant",
+        "connector",
+        "run",
+        "deploy",
+    ):
+        actions = completion_candidates(f"{family}-actions")
+        # Fish has to spell out the actions in its predicates; zsh and bash
+        # obtain them dynamically from ``${cmd}-actions``.
+        fish_script = render_completion("fish")
+        assert all(action in fish_script for action in actions)
     for shell in ("zsh", "bash", "fish"):
         script = render_completion(shell)
         assert "deploy-actions" in script or "${cmd}-actions" in script
@@ -404,6 +418,10 @@ def test_completion_uses_the_registered_command_tree():
         "__fish_seen_subcommand_from status reset inspect trace tasks approve"
         in fish
     )
+    assert "provider set-credential check remove accept" in fish
+    assert "__zg_complete_options" in fish
+    assert "provider:accept:4" in render_completion("zsh")
+    assert "set-credential|check|remove|accept" in render_completion("bash")
 
 
 def test_a_projection_that_promises_a_result_shows_where_it_comes_from(

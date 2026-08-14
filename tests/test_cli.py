@@ -576,6 +576,64 @@ def test_run_defaults_to_no_deadline():
     assert args.timeout == 0.0
 
 
+@pytest.mark.parametrize("action", ["status", "reset", "inspect", "trace", "tasks"])
+def test_run_subcommands_inherit_project_before_the_action(action):
+    _parser, args = _parse_cli_args(["run", "--project", "/tmp/example", action])
+
+    assert args.project == "/tmp/example"
+
+
+def test_google_authorization_result_is_never_accepted_on_argv():
+    with pytest.raises(SystemExit) as exc:
+        _parse_cli_args(
+            ["provider", "accept", "google-work", "zg-google-v1.secret"]
+        )
+
+    assert exc.value.code == 2
+
+
+@pytest.mark.parametrize("durable", [False, True])
+def test_project_run_anchors_relative_effects_to_project_root(
+    tmp_path, monkeypatch, capsys, durable
+):
+    root = tmp_path / "project"
+    caller = tmp_path / "caller"
+    root.mkdir()
+    caller.mkdir()
+    (root / "value.txt").write_text("from-project", encoding="utf-8")
+    (root / "workflow.py").write_text(
+        """
+from pathlib import Path
+from zippergen import Lifeline, effect, workflow
+
+Worker = Lifeline("Worker")
+
+@effect
+def read_value() -> str:
+    return Path("value.txt").read_text(encoding="utf-8")
+
+@workflow
+def relative_paths() -> str:
+    Worker: value = read_value()
+    return value @ Worker
+""",
+        encoding="utf-8",
+    )
+    home = tmp_path / "home"
+    workspace = Workspace(root, home=home)
+    workspace.initialize_project(name="relative-paths")
+    workspace.select_workflow("workflow.py:relative_paths", cwd=root)
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(home))
+    monkeypatch.chdir(caller)
+    arguments = ["run", "--project", str(root), "--llm", "mock"]
+    if durable:
+        arguments.extend(["--durable", "--yes"])
+
+    assert main(arguments) == 0
+    assert "from-project" in capsys.readouterr().out
+    assert not (caller / "value.txt").exists()
+
+
 def test_plain_run_applies_project_connector_routing(
     tmp_path, monkeypatch, capsys
 ):
@@ -1356,6 +1414,7 @@ def test_guided_deploy_persists_config_and_private_secrets(tmp_path, monkeypatch
     workflow_path.write_text(GUIDED_WORKFLOW_SOURCE)
     zippergen_home = tmp_path / "zg-home"
     monkeypatch.setenv("ZIPPERGEN_HOME", str(zippergen_home))
+    monkeypatch.setenv("DEMO_TOKEN", "top-secret")
     workspace = Workspace(tmp_path, home=zippergen_home)
     workspace.initialize_project(name=tmp_path.name)
     workspace.select_workflow("guided_workflow.py:guided", cwd=tmp_path)
@@ -1367,8 +1426,6 @@ def test_guided_deploy_persists_config_and_private_secrets(tmp_path, monkeypatch
         "topic=deploy",
         "--set",
         "prefix=hello",
-        "--set",
-        "demo_token=top-secret",
         "--yes",
         "--no-install",
         "--no-setup",
@@ -1477,6 +1534,7 @@ def test_configure_keeps_existing_secret_when_updating_public_field(tmp_path, mo
     workflow_path.write_text(GUIDED_WORKFLOW_SOURCE)
     zippergen_home = tmp_path / "zg-home"
     monkeypatch.setenv("ZIPPERGEN_HOME", str(zippergen_home))
+    monkeypatch.setenv("DEMO_TOKEN", "top-secret")
     workspace = Workspace(tmp_path, home=zippergen_home)
     workspace.initialize_project(name=tmp_path.name)
     workspace.select_workflow("guided_workflow.py:guided", cwd=tmp_path)
@@ -1485,8 +1543,6 @@ def test_configure_keeps_existing_secret_when_updating_public_field(tmp_path, mo
         "deploy",
         "--set",
         "topic=deploy",
-        "--set",
-        "demo_token=top-secret",
         "--yes",
         "--no-install",
         "--no-setup",

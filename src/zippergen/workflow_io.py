@@ -5,12 +5,26 @@ from __future__ import annotations
 import hashlib
 import importlib
 import importlib.util
+import os
 import sys
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from types import ModuleType
 
 from zippergen.syntax import Lifeline, Workflow
+
+
+@contextmanager
+def project_directory(path: str | Path):
+    """Run project-relative loading and effects from one explicit root."""
+
+    previous = Path.cwd()
+    os.chdir(Path(path).expanduser().resolve())
+    try:
+        yield
+    finally:
+        os.chdir(previous)
 
 
 @dataclass(frozen=True)

@@ -18,7 +18,6 @@ class _ModelWorkspace(Protocol):
         workflow_spec: str,
         *,
         default: str = "mock",
-        include_site: bool = True,
     ) -> dict[str, object]: ...
 
     def model_configurations(self) -> dict[str, dict[str, str]]: ...

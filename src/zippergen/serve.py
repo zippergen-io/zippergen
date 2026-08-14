@@ -893,6 +893,21 @@ def _guard_foreground_run(args) -> None:
 
 
 def _run_workflow_command(args) -> int:
+    from zippergen.workflow_io import project_directory
+    from zippergen.workspace import Workspace
+
+    workspace = (
+        Workspace(Path.cwd())
+        if getattr(args, "store", None)
+        else Workspace(getattr(args, "project", None))
+    )
+    with project_directory(workspace.root):
+        return _run_workflow_from_project(args, workspace)
+
+
+def _run_workflow_from_project(args, workspace) -> int:
+    """Execute a plain run with project-relative paths anchored to its root."""
+
     # The hidden service entry point owns the deployment being reported as
     # running. Only a public foreground run can compete with that service.
     if not getattr(args, "store", None):
@@ -900,9 +915,6 @@ def _run_workflow_command(args) -> int:
     args.workflow = _resolved_workflow_spec(args)
     wf, module = load_workflow_spec(args.workflow)
     from zippergen.durable_runs import default_llm_spec
-    from zippergen.workspace import Workspace
-
-    workspace = Workspace(getattr(args, "project", None))
     inputs = _parse_input_json(args.input_json)
     inputs.update(_parse_inputs(args.input))
     # Apply declared defaults in every mode. Ask for a truly missing value only
@@ -1023,7 +1035,7 @@ def _run_workflow_command(args) -> int:
         "llm_idle_timeouts": llm_idle_timeouts,
         "execution": execution,
         "store_path": store_path,
-        "assistant_root": str(Path.cwd()),
+        "assistant_root": str(workspace.root),
     }
     if connector_factory is not None:
         from zippergen.human_backends import make_sqlite_human_backend
@@ -1034,13 +1046,13 @@ def _run_workflow_command(args) -> int:
     configure_kwargs["assistant_backend"] = (
         make_cli_assistant_backend(
             assistant_routing.default_backend,
-            project_root=Path.cwd(),
+            project_root=workspace.root,
             routes=assistant_routing.overrides,
         )
         if assistant_routing.overrides
         else make_cli_assistant_backend(
             assistant_routing.default_backend,
-            project_root=Path.cwd(),
+            project_root=workspace.root,
         )
     )
     try:
@@ -1080,6 +1092,17 @@ def _durable_run_command(args) -> int:
     for.
     """
 
+    from zippergen.workflow_io import project_directory
+    from zippergen.workspace import Workspace
+
+    workspace = Workspace(getattr(args, "project", None))
+    with project_directory(workspace.root):
+        return _durable_run_from_project(args, workspace)
+
+
+def _durable_run_from_project(args, workspace) -> int:
+    """Execute a durable run with project-relative paths anchored to its root."""
+
     _guard_foreground_run(args)
 
     from zippergen.connector_wiring import (
@@ -1089,9 +1112,7 @@ def _durable_run_command(args) -> int:
         human_connector_factory,
     )
     from zippergen.durable_runs import run_durable
-    from zippergen.workspace import Workspace, WorkspaceError
-
-    workspace = Workspace(getattr(args, "project", None))
+    from zippergen.workspace import WorkspaceError
     inputs = _parse_input_json(args.input_json)
     inputs.update(_parse_inputs(args.input))
     try:
@@ -1192,15 +1213,25 @@ def _validate_command(args) -> int:
         project_workflow = None
     validated_workflow = workspace.canonical_spec(args.workflow, cwd=Path.cwd())
     if project_workflow == validated_workflow:
-        report = configuration_report(workspace, include_site_checks=False)
-        raw_configuration_checks = report["checks"]
-        assert isinstance(raw_configuration_checks, list)
-        configuration_checks = [
-            item
-            for item in raw_configuration_checks
-            if isinstance(item, dict)
-            and str(item.get("name") or "") != "workflow"
-        ]
+        try:
+            report = configuration_report(workspace, include_site_checks=False)
+        except WorkspaceError as exc:
+            configuration_checks = [
+                {
+                    "status": "fail",
+                    "name": "project configuration",
+                    "detail": str(exc),
+                }
+            ]
+        else:
+            raw_configuration_checks = report["checks"]
+            assert isinstance(raw_configuration_checks, list)
+            configuration_checks = [
+                item
+                for item in raw_configuration_checks
+                if isinstance(item, dict)
+                and str(item.get("name") or "") != "workflow"
+            ]
         checks = result["checks"]
         assert isinstance(checks, list)
         checks.extend(configuration_checks)
@@ -2164,14 +2195,12 @@ def _provider_accept_google_command(args) -> int:
     )
     from zippergen.workspace import Workspace
 
-    encoded = args.result
-    if not encoded:
-        try:
-            encoded = getpass.getpass(
-                "Paste the zg-google-v1... result (input hidden): "
-            ).strip()
-        except (EOFError, KeyboardInterrupt):
-            raise SystemExit("Cancelled; nothing was saved.") from None
+    try:
+        encoded = getpass.getpass(
+            "Paste the zg-google-v1... result (input hidden): "
+        ).strip()
+    except (EOFError, KeyboardInterrupt):
+        raise SystemExit("Cancelled; nothing was saved.") from None
     if not encoded:
         raise SystemExit("An encoded authorization result is required.")
 
@@ -2565,6 +2594,12 @@ def _collect_deployment_fields(
     secrets: dict[str, str] = dict(existing_secrets)
 
     for field in spec.fields:
+        if field.secret and field.name in overrides:
+            raise SystemExit(
+                f"Deployment field {field.name!r} is secret and cannot be "
+                "passed with --set. Run interactively or provide "
+                f"{field.target_name} in the deployment environment."
+            )
         current = _profile_field_value(profile, field, existing_secrets)
         if current is None and field.target == "env":
             current = os.environ.get(field.target_name)
@@ -2594,6 +2629,12 @@ def _collect_deployment_fields(
             values[field.name] = _parse_guided_value(entered, current)
         value = values.get(field.name)
         if field.required and (value is None or str(value).strip() == ""):
+            if field.secret:
+                raise SystemExit(
+                    f"Deployment field {field.name!r} is required. Run "
+                    f"interactively or provide {field.target_name} in the "
+                    "deployment environment."
+                )
             raise SystemExit(
                 f"Deployment field {field.name!r} is required. "
                 f"Use --set {field.name}=VALUE or run interactively."
@@ -3475,7 +3516,9 @@ def _add_owned_execution_commands(subparsers, *, owner: str) -> None:
         help="show the last committed durable program position",
     )
     inspect_parser.set_defaults(execution_owner=owner)
-    inspect_parser.add_argument("--project", help="Project root.")
+    inspect_parser.add_argument(
+        "--project", default=argparse.SUPPRESS, help="Project root."
+    )
     inspect_parser.add_argument("--agent", help="Participant whose local projection to show.")
     inspect_parser.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     inspect_parser.add_argument(
@@ -3494,7 +3537,9 @@ def _add_owned_execution_commands(subparsers, *, owner: str) -> None:
         help="show recent events from this execution",
     )
     trace_parser.set_defaults(execution_owner=owner)
-    trace_parser.add_argument("--project", help="Project root.")
+    trace_parser.add_argument(
+        "--project", default=argparse.SUPPRESS, help="Project root."
+    )
     trace_parser.add_argument("--tail", type=int, default=50, help="Maximum number of trace events to show.")
     trace_parser.add_argument("--after", type=int, default=0, help="Only show trace events after this event rowid.")
     trace_parser.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
@@ -3504,7 +3549,9 @@ def _add_owned_execution_commands(subparsers, *, owner: str) -> None:
         help="list human tasks in this execution",
     )
     tasks_parser.set_defaults(execution_owner=owner)
-    tasks_parser.add_argument("--project", help="Project root.")
+    tasks_parser.add_argument(
+        "--project", default=argparse.SUPPRESS, help="Project root."
+    )
     tasks_parser.add_argument("--all", action="store_true", help="Include completed tasks.")
     tasks_parser.add_argument("--limit", type=int, help="Maximum number of tasks to show.")
     tasks_parser.add_argument("--tokens", action="store_true", help="Generate/show durable approval tokens.")
@@ -3516,7 +3563,9 @@ def _add_owned_execution_commands(subparsers, *, owner: str) -> None:
         help="complete a pending human task in this execution",
     )
     approve_parser.set_defaults(execution_owner=owner)
-    approve_parser.add_argument("--project", help="Project root.")
+    approve_parser.add_argument(
+        "--project", default=argparse.SUPPRESS, help="Project root."
+    )
     target = approve_parser.add_mutually_exclusive_group(required=True)
     target.add_argument("--task", help="Human task id.")
     target.add_argument("--token", help="Durable approval token.")
@@ -3700,7 +3749,6 @@ def _parse_cli_args(
         "accept", help="save a Google authorization produced elsewhere"
     )
     provider_accept.add_argument("name", help="Google connection name.")
-    provider_accept.add_argument("result", nargs="?")
     provider_accept.add_argument("--project", help="Project root.")
 
     model = sub.add_parser(
@@ -3989,13 +4037,17 @@ def _parse_cli_args(
         help="show the selected durable run and its state",
     )
     run_status.set_defaults(execution_owner="run")
-    run_status.add_argument("--project", help="Project root.")
+    run_status.add_argument(
+        "--project", default=argparse.SUPPRESS, help="Project root."
+    )
     run_status.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     run_reset = run_sub.add_parser(
         "reset",
         help="discard the selected durable run",
     )
-    run_reset.add_argument("--project", help="Project root.")
+    run_reset.add_argument(
+        "--project", default=argparse.SUPPRESS, help="Project root."
+    )
     run_reset.add_argument(
         "--yes",
         action="store_true",

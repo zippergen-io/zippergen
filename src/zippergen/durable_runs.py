@@ -35,7 +35,12 @@ from zippergen.rendering import StatusKind, TerminalRenderer
 from zippergen.semantic import semantic_snapshot, workflow_semantics
 from zippergen.syntax import Json, Workflow, validate_zvalue
 from zippergen.workspace import Workspace, WorkspaceError
-from zippergen.workflow_io import RunConfig, _call_setup_hook, load_workflow_spec
+from zippergen.workflow_io import (
+    RunConfig,
+    _call_setup_hook,
+    load_workflow_spec,
+    project_directory,
+)
 
 InputFunc = Callable[[str], str]
 OutputFunc = Callable[[str], object]
@@ -508,6 +513,56 @@ def run_durable(
     connector_snapshot: dict[str, object] | None = None,
 ) -> dict[str, Any]:
     """Create or resume one recorded durable run."""
+
+    with project_directory(workspace.root):
+        return _run_durable_in_project(
+            workspace,
+            workflow_spec=workflow_spec,
+            resume=resume,
+            provided_inputs=provided_inputs,
+            llm=llm,
+            llms=llms,
+            llm_idle_timeout=llm_idle_timeout,
+            llm_idle_timeouts=llm_idle_timeouts,
+            assistant=assistant,
+            assistants=assistants,
+            options=options,
+            timeout=timeout,
+            interactive=interactive,
+            input_func=input_func,
+            secret_input_func=secret_input_func,
+            output_func=output_func,
+            renderer=renderer,
+            human_connector_factory=human_connector_factory,
+            connector_environment=connector_environment,
+            connector_snapshot=connector_snapshot,
+        )
+
+
+def _run_durable_in_project(
+    workspace: Workspace,
+    *,
+    workflow_spec: str | None,
+    resume: bool,
+    provided_inputs: dict[str, object] | None,
+    llm: str | None,
+    llms: dict[str, str] | None,
+    llm_idle_timeout: float | None,
+    llm_idle_timeouts: dict[str, float] | None,
+    assistant: str | None,
+    assistants: dict[str, str] | None,
+    options: dict[str, object] | None,
+    timeout: float,
+    interactive: bool,
+    input_func: InputFunc,
+    secret_input_func: InputFunc | None,
+    output_func: OutputFunc,
+    renderer: TerminalRenderer | None,
+    human_connector_factory: Callable[[str], object] | None,
+    connector_environment: dict[str, str] | None,
+    connector_snapshot: dict[str, object] | None,
+) -> dict[str, Any]:
+    """Implementation of :func:`run_durable` inside the project directory."""
 
     if resume and workflow_spec is not None:
         raise SystemExit("Do not pass a workflow when using --resume.")

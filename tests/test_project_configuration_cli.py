@@ -139,6 +139,91 @@ def test_a_connection_can_fall_back_to_the_provider_environment(
     assert "openai-main" in capsys.readouterr().out
 
 
+@pytest.mark.parametrize(
+    ("connection", "kind", "values", "missing"),
+    [
+        ("approval-bot", "telegram", {"chat_id": "42"}, "Telegram bot token"),
+        (
+            "google-work",
+            "google-sheets",
+            {"spreadsheet_id": "sheet-1", "tab": "Calls"},
+            "Google authorization",
+        ),
+    ],
+)
+def test_connector_check_includes_its_provider_credential(
+    project, capsys, connection, kind, values, missing
+):
+    _root, workspace = project
+    workspace.save_connector_configuration(
+        "selected",
+        {"connection": connection, "kind": kind, **values},
+    )
+
+    assert main(["connector", "check", "selected"]) == 1
+    output = capsys.readouterr().out
+    assert missing in output
+    assert "missing on this computer" in output
+
+
+@pytest.mark.parametrize(
+    ("connection", "model"),
+    [("local-main", "qwen2.5:14b"), ("scripted-main", "answers.json")],
+)
+def test_credential_free_model_routes_are_available(
+    project, capsys, connection, model
+):
+    root, workspace = project
+    if connection == "scripted-main":
+        (root / model).write_text("{}", encoding="utf-8")
+    workspace.save_model_configuration(
+        "writer", {"connection": connection, "model": model}
+    )
+    workspace.save_model_assignment_profile(
+        "workflow.py:email_approval",
+        default="mock",
+        lifelines={"Writer": "writer"},
+    )
+
+    assert main(["config", "--json"]) == 0
+    report = json.loads(capsys.readouterr().out)
+    writer = next(
+        item
+        for item in report["effective_routing"]
+        if item["participant"] == "Writer" and item["kind"] == "model"
+    )
+    assert writer["available"] is True
+
+
+def test_hand_edited_model_configuration_fails_cleanly(project):
+    root, _workspace = project
+    manifest = root / "zippergen.toml"
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8")
+        + '\n[models.configurations.broken]\nconnection = "missing"\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SystemExit, match="requires connection and model"):
+        main(["model", "check", "broken"])
+    assert main(["validate"]) == 1
+
+
+def test_hand_edited_connector_configuration_fails_cleanly(project):
+    root, _workspace = project
+    manifest = root / "zippergen.toml"
+    manifest.write_text(
+        manifest.read_text(encoding="utf-8")
+        + '\n[connectors.configurations.broken]\n'
+        + 'connection = "approval-bot"\nkind = "telegram"\n',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SystemExit, match="missing required field.*chat_id"):
+        main(["connector", "check", "broken"])
+    assert main(["validate"]) == 1
+
+
 def test_missing_required_values_do_not_prompt_outside_a_terminal(
     project, monkeypatch
 ):

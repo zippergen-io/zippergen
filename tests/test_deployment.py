@@ -70,7 +70,7 @@ def test_field_default_can_reference_an_earlier_field():
     assert values["query"] == "to:calls@example.com"
 
 
-def test_conditional_secret_is_enabled_by_a_per_lifeline_model():
+def test_conditional_secret_is_enabled_by_a_per_lifeline_model(monkeypatch):
     spec = DeploymentSpec(fields=(
         DeploymentField(
             "openai_api_key",
@@ -84,15 +84,37 @@ def test_conditional_secret_is_enabled_by_a_per_lifeline_model():
         ),
     ))
 
+    monkeypatch.setenv("OPENAI_API_KEY", "deployment-secret")
     values, secrets = _collect_deployment_fields(
         spec,
         {
             "llm": "mock",
             "llms": {"Writer": "openai:gpt-4o-mini"},
         },
-        overrides={"openai_api_key": "deployment-secret"},
+        overrides={},
         interactive=False,
     )
 
     assert values["openai_api_key"] == "deployment-secret"
     assert secrets == {"OPENAI_API_KEY": "deployment-secret"}
+
+
+def test_secret_deployment_field_rejects_command_line_override():
+    spec = DeploymentSpec(fields=(
+        DeploymentField(
+            "api_key",
+            "API key",
+            target="env",
+            env="DEMO_API_KEY",
+            secret=True,
+            required=True,
+        ),
+    ))
+
+    with pytest.raises(SystemExit, match="cannot be passed with --set"):
+        _collect_deployment_fields(
+            spec,
+            {},
+            overrides={"api_key": "visible-secret"},
+            interactive=False,
+        )

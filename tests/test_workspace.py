@@ -398,7 +398,6 @@ def test_project_configuration_survives_a_fresh_clone(
         {
             "connection": "anthropic-main",
             "model": "claude-opus-5",
-            "check_status": "available",
         },
     )
     original.save_model_configuration(

@@ -19,7 +19,12 @@ from zippergen.assistant_configuration import (
 from zippergen.connector_wiring import human_action_sites
 from zippergen.connectors import connector_requirements_from_module
 from zippergen.models import project_model_routing, selected_llm_specs
-from zippergen.provider_connections import split_model_spec
+from zippergen.provider_connections import (
+    provider_credential_field,
+    provider_credential_label,
+    provider_standard_environment,
+    split_model_spec,
+)
 from zippergen.rendering import TerminalRenderer
 from zippergen.semantic import workflow_semantics
 from zippergen.syntax import LLMAction, Workflow
@@ -29,8 +34,21 @@ from zippergen.workspace import Workspace, WorkspaceError
 Check = dict[str, object]
 
 
-def _check(status: str, name: str, detail: str) -> Check:
-    return {"status": status, "name": name, "detail": detail}
+def _check(
+    status: str,
+    name: str,
+    detail: str,
+    *,
+    scopes: Sequence[str] = (),
+) -> Check:
+    """Describe one check and the configuration domains that depend on it."""
+
+    return {
+        "status": status,
+        "name": name,
+        "detail": detail,
+        "scopes": tuple(scopes),
+    }
 
 
 def _provider(spec: str) -> str:
@@ -116,6 +134,7 @@ def _static_connector_checks(
                         "fail",
                         f"connector assignment {target}",
                         "target has no human action",
+                        scopes=("connector",),
                     )
                 )
             elif configuration not in configurations:
@@ -124,6 +143,7 @@ def _static_connector_checks(
                         "fail",
                         f"connector assignment {target}",
                         f"configuration {configuration!r} does not exist",
+                        scopes=("connector",),
                     )
                 )
             elif configurations[configuration].get("provider") != "telegram":
@@ -132,6 +152,7 @@ def _static_connector_checks(
                         "fail",
                         f"connector assignment {target}",
                         f"{configuration!r} cannot deliver a human action",
+                        scopes=("connector",),
                     )
                 )
             else:
@@ -140,6 +161,7 @@ def _static_connector_checks(
                         "ok",
                         f"connector assignment {target}",
                         configuration,
+                        scopes=("connector",),
                     )
                 )
 
@@ -153,6 +175,7 @@ def _static_connector_checks(
                     "required binding is missing"
                     if requirement.required
                     else "optional binding is missing",
+                    scopes=("connector",),
                 )
             )
             continue
@@ -163,6 +186,7 @@ def _static_connector_checks(
                     "fail",
                     f"connector binding {requirement.name}",
                     f"configuration {configuration!r} does not exist",
+                    scopes=("connector",),
                 )
             )
         elif selected.get("kind") != requirement.kind:
@@ -172,6 +196,7 @@ def _static_connector_checks(
                     f"connector binding {requirement.name}",
                     f"requires {requirement.kind}; {configuration!r} is "
                     f"{selected.get('kind') or 'untyped'}",
+                    scopes=("connector",),
                 )
             )
         else:
@@ -180,6 +205,7 @@ def _static_connector_checks(
                     "ok",
                     f"connector binding {requirement.name}",
                     configuration,
+                    scopes=("connector",),
                 )
             )
     return checks
@@ -199,7 +225,12 @@ def _temporary_environment(values: dict[str, str]):
                 os.environ[name] = value
 
 
-def _live_model_check(spec: str, environment: dict[str, str]) -> None:
+def _live_model_check(
+    spec: str,
+    environment: dict[str, str],
+    *,
+    project_root: Path,
+) -> None:
     from zippergen.backends import backend_from_spec, load_scripted_script
 
     provider = _provider(spec)
@@ -207,7 +238,10 @@ def _live_model_check(spec: str, environment: dict[str, str]) -> None:
         return
     if provider == "scripted":
         path = spec.partition(":")[2]
-        load_scripted_script(path)
+        selected = Path(path).expanduser()
+        if not selected.is_absolute():
+            selected = project_root / selected
+        load_scripted_script(selected)
         return
     action = LLMAction(
         name="zippergen_readiness",
@@ -281,7 +315,9 @@ def configuration_report(
     }
     checks: list[Check] = []
     if workflow_error:
-        checks.append(_check("fail", "workflow", workflow_error))
+        checks.append(
+            _check("fail", "workflow", workflow_error, scopes=("all",))
+        )
     elif workflow_spec is not None and workflow is not None and module is not None:
         try:
             has_model_profile = workspace.has_model_assignment_profile(workflow_spec)
@@ -296,7 +332,14 @@ def configuration_report(
                 fallback_default=default_llm_spec(module),
             )
         except (WorkspaceError, SystemExit, ValueError) as exc:
-            checks.append(_check("fail", "model assignments", str(exc)))
+            checks.append(
+                _check(
+                    "fail",
+                    "model assignments",
+                    str(exc),
+                    scopes=("model",),
+                )
+            )
         else:
             if not has_model_profile:
                 model_profile = {
@@ -314,6 +357,7 @@ def configuration_report(
                     "ok",
                     "model assignments",
                     f"{len(routing.overrides)} explicit assignment(s)",
+                    scopes=("model",),
                 )
             )
 
@@ -342,7 +386,14 @@ def configuration_report(
                 assignments=assistant_profile,
             )
         except (WorkspaceError, SystemExit, ValueError) as exc:
-            checks.append(_check("fail", "assistant assignments", str(exc)))
+            checks.append(
+                _check(
+                    "fail",
+                    "assistant assignments",
+                    str(exc),
+                    scopes=("assistant",),
+                )
+            )
         else:
             resolved_assistants = [
                 {
@@ -363,6 +414,7 @@ def configuration_report(
                         "fail",
                         "assistant assignments",
                         "no backend selected for: " + ", ".join(missing),
+                        scopes=("assistant",),
                     )
                 )
             else:
@@ -371,6 +423,7 @@ def configuration_report(
                         "ok",
                         "assistant assignments",
                         f"{len(effective)} assistant action(s) resolved",
+                        scopes=("assistant",),
                     )
                 )
 
@@ -398,12 +451,6 @@ def configuration_report(
 
     site_facts: list[dict[str, object]] = []
     if include_site_checks:
-        from zippergen.provider_connections import (
-            provider_credential_field,
-            provider_credential_label,
-            provider_standard_environment,
-        )
-
         specs = selected_llm_specs(
             resolved_models["default"],
             resolved_models["overrides"],
@@ -417,25 +464,35 @@ def configuration_report(
             ),
         ]))
         environment = workspace.development_provider_environment(specs)
-        used_connections = set(provider_names)
+        model_connections: set[str] = set()
         for spec in specs:
             try:
                 _kind, connection, _model = split_model_spec(spec)
             except ValueError:
                 continue
             if connection:
-                used_connections.add(connection)
+                model_connections.add(connection)
         used_connectors = _used_connector_names(
             connector_assignments,
             connector_bindings,
         )
         used_connectors.update(connector_names)
-        used_connections.update(
+        connector_connections = {
             str(connector_configurations.get(name, {}).get("connection") or "")
             for name in used_connectors
-        )
+        }
+        used_connections = {
+            *provider_names,
+            *model_connections,
+            *connector_connections,
+        }
         used_connections.discard("")
         for connection in sorted(used_connections):
+            connection_scopes = ["provider"]
+            if connection in model_connections:
+                connection_scopes.append("model")
+            if connection in connector_connections:
+                connection_scopes.append("connector")
             profile = provider_connections.get(connection)
             if profile is None:
                 checks.append(
@@ -443,12 +500,21 @@ def configuration_report(
                         "fail",
                         f"provider connection {connection}",
                         "configuration does not exist",
+                        scopes=connection_scopes,
                     )
                 )
                 continue
             kind = str(profile.get("kind") or "")
             field = provider_credential_field(kind)
             if field is None:
+                checks.append(
+                    _check(
+                        "ok",
+                        f"provider connection {connection}",
+                        "no credential required",
+                        scopes=connection_scopes,
+                    )
+                )
                 continue
             standard = provider_standard_environment(kind)
             available = bool(
@@ -471,6 +537,7 @@ def configuration_report(
                     f"{label} available"
                     if available
                     else f"{label} missing on this computer",
+                    scopes=connection_scopes,
                 )
             )
         direct_kinds: set[str] = set()
@@ -501,6 +568,7 @@ def configuration_report(
                     f"{label} available"
                     if available
                     else f"{environment_name} missing from the environment",
+                    scopes=("model",),
                 )
             )
         for spec in specs:
@@ -511,11 +579,14 @@ def configuration_report(
                 except ValueError:
                     model = None
                 path = Path(model or "").expanduser()
+                if not path.is_absolute():
+                    path = workspace.root / path
                 checks.append(
                     _check(
                         "ok" if path.is_file() else "fail",
                         f"scripted model {path}",
                         "response file exists" if path.is_file() else "file is missing",
+                        scopes=("model",),
                     )
                 )
         selected_assistant_backends = {
@@ -545,6 +616,7 @@ def configuration_report(
                         "ok" if result.supported else "fail",
                         f"assistant CLI {backend}",
                         result.detail,
+                        scopes=("assistant",),
                     )
                 )
 
@@ -552,13 +624,29 @@ def configuration_report(
             unique_specs = dict.fromkeys(specs)
             for spec in unique_specs:
                 try:
-                    _live_model_check(spec, environment)
+                    _live_model_check(
+                        spec,
+                        environment,
+                        project_root=workspace.root,
+                    )
                 except Exception as exc:
                     checks.append(
-                        _check("fail", f"live model {spec}", f"{type(exc).__name__}: {exc}")
+                        _check(
+                            "fail",
+                            f"live model {spec}",
+                            f"{type(exc).__name__}: {exc}",
+                            scopes=("model",),
+                        )
                     )
                 else:
-                    checks.append(_check("ok", f"live model {spec}", "reachable"))
+                    checks.append(
+                        _check(
+                            "ok",
+                            f"live model {spec}",
+                            "reachable",
+                            scopes=("model",),
+                        )
+                    )
             _append_live_connector_checks(
                 checks,
                 workspace,
@@ -575,6 +663,19 @@ def configuration_report(
         def check_passes(name: str) -> bool:
             matching = [item for item in checks if item.get("name") == name]
             return not matching or all(item.get("status") == "ok" for item in matching)
+
+        def connection_available(connection: str, provider: str) -> bool:
+            """Return whether a named route has every required site credential."""
+
+            field = provider_credential_field(provider)
+            if field is None:
+                return True
+            return any(
+                item.get("kind") == "provider credential"
+                and item.get("name") == connection
+                and item.get("available")
+                for item in site_facts
+            )
 
         semantics = workflow_semantics(workflow, module=module)
         sites = semantics.get("action_sites") or []
@@ -634,23 +735,25 @@ def configuration_report(
                     selected_kind = ""
                     connection = None
                 if connection is not None:
-                    available = any(
-                        item.get("kind") == "provider credential"
-                        and item.get("name") == connection
-                        and item.get("available")
-                        for item in site_facts
-                    )
+                    available = connection_available(connection, selected_kind)
                 else:
-                    from zippergen.provider_connections import (
-                        provider_standard_environment,
-                    )
-
                     direct_environment = provider_standard_environment(selected_kind)
                     available = direct_environment is None or any(
                         item.get("kind") == "provider credential"
                         and item.get("name") == direct_environment
                         and item.get("available")
                         for item in site_facts
+                    )
+                if selected_kind == "scripted":
+                    try:
+                        _kind, _connection, model = split_model_spec(selected)
+                    except ValueError:
+                        model = None
+                    path = Path(model or "").expanduser()
+                    if not path.is_absolute():
+                        path = workspace.root / path
+                    available = available and check_passes(
+                        f"scripted model {path}"
                     )
                 if live:
                     available = available and check_passes(f"live model {selected}")
@@ -702,12 +805,7 @@ def configuration_report(
                         or ""
                     )
                     if connection:
-                        available = any(
-                            fact.get("kind") == "provider credential"
-                            and fact.get("name") == connection
-                            and fact.get("available")
-                            for fact in site_facts
-                        )
+                        available = connection_available(connection, provider)
                     if live:
                         live_name = (
                             f"live provider {connection}"
@@ -740,12 +838,7 @@ def configuration_report(
                     or ""
                 )
                 if connection:
-                    available = any(
-                        fact.get("kind") == "provider credential"
-                        and fact.get("name") == connection
-                        and fact.get("available")
-                        for fact in site_facts
-                    )
+                    available = connection_available(connection, provider)
                 if live:
                     live_name = (
                         f"live provider {connection}"
@@ -803,9 +896,10 @@ def configuration_report(
 
 
 def _load_project_workflow(workspace: Workspace, workflow_spec: str):
-    from zippergen.workflow_io import load_workflow_spec
+    from zippergen.workflow_io import load_workflow_spec, project_directory
 
-    return load_workflow_spec(workspace.absolute_spec(workflow_spec))
+    with project_directory(workspace.root):
+        return load_workflow_spec(workspace.absolute_spec(workflow_spec))
 
 
 def _append_live_connector_checks(
@@ -835,10 +929,22 @@ def _append_live_connector_checks(
                 client.request("getChat", chat_id=configuration.get("chat_id"))
             except Exception as exc:
                 checks.append(
-                    _check("fail", f"live connector {name}", f"{type(exc).__name__}: {exc}")
+                    _check(
+                        "fail",
+                        f"live connector {name}",
+                        f"{type(exc).__name__}: {exc}",
+                        scopes=("connector",),
+                    )
                 )
             else:
-                checks.append(_check("ok", f"live connector {name}", "reachable"))
+                checks.append(
+                    _check(
+                        "ok",
+                        f"live connector {name}",
+                        "reachable",
+                        scopes=("connector",),
+                    )
+                )
     if workflow is None or module is None:
         return
     requirements = connector_requirements_from_module(module)
@@ -885,6 +991,7 @@ def _append_live_connector_checks(
                     "fail",
                     f"live provider {connection}",
                     f"{type(exc).__name__}: {exc}",
+                    scopes=("connector", "provider"),
                 )
             )
         else:
@@ -893,6 +1000,7 @@ def _append_live_connector_checks(
                     "ok",
                     f"live provider {connection}",
                     "Google authorization refreshed",
+                    scopes=("connector", "provider"),
                 )
             )
 
@@ -1407,8 +1515,10 @@ def _selected_checks(report: dict[str, object], scope: str) -> list[dict[str, ob
     for item in raw_checks if isinstance(raw_checks, list) else []:
         if not isinstance(item, dict):
             continue
-        name = str(item.get("name") or "").casefold()
-        if name == "workflow" or scope in name:
+        raw_scopes = item.get("scopes") or ()
+        values = raw_scopes if isinstance(raw_scopes, (list, tuple, set)) else ()
+        scopes = {str(value) for value in values}
+        if "all" in scopes or scope in scopes:
             selected.append(item)
     return selected
 
@@ -1485,7 +1595,7 @@ def assign_model(
         raise WorkspaceError(
             f"Model configuration does not exist: {configuration}."
         )
-    profile = workspace.model_assignment_profile(workflow, include_site=False)
+    profile = workspace.model_assignment_profile(workflow)
     default = str(profile.get("default") or "mock")
     raw_lifelines = profile.get("lifelines") or {}
     raw_actions = profile.get("actions") or {}
@@ -1505,19 +1615,12 @@ def assign_model(
             selected.pop(target, None)
         else:
             selected[target] = configuration
-    saved = workspace.save_model_assignment_profile(
+    return workspace.save_model_assignment_profile(
         workflow,
         default=default,
         lifelines=lifelines,
         actions=actions,
     )
-    _clear_site_assignment(
-        workspace,
-        state_key="model_site_profiles",
-        workflow=workflow,
-        target=target,
-    )
-    return saved
 
 
 def configure_assistant(
@@ -1627,18 +1730,11 @@ def assign_connector(
         selected.pop(target, None)
     else:
         selected[target] = configuration
-    saved = workspace.save_connector_assignment_profile(
+    return workspace.save_connector_assignment_profile(
         workflow,
         lifelines=lifelines,
         actions=actions,
     )
-    _clear_site_assignment(
-        workspace,
-        state_key="connector_site_assignments",
-        workflow=workflow,
-        target=target,
-    )
-    return saved
 
 
 def bind_connector(
@@ -1673,39 +1769,6 @@ def bind_connector(
             f"{configuration!r} is {configured_kind or 'untyped'}."
         )
     return workspace.bind_connector(workflow, requirement, configuration)
-
-
-def _clear_site_assignment(
-    workspace: Workspace,
-    *,
-    state_key: str,
-    workflow: str,
-    target: str,
-) -> None:
-    """Make an explicit project assignment replace an older site override."""
-
-    state = workspace.load()
-    raw_profiles = state.get(state_key) or {}
-    if not isinstance(raw_profiles, dict):
-        return
-    canonical = workspace.canonical_spec(workflow, cwd=workspace.root)
-    profiles = dict(raw_profiles)
-    raw_profile = profiles.get(canonical)
-    if not isinstance(raw_profile, dict):
-        return
-    profile = dict(raw_profile)
-    if target == "default":
-        profile.pop("default", None)
-    else:
-        group = "actions" if "." in target else "lifelines"
-        values = dict(profile.get(group) or {})
-        values.pop(target, None)
-        profile[group] = values
-    if profile.get("default") or profile.get("lifelines") or profile.get("actions"):
-        profiles[canonical] = profile
-    else:
-        profiles.pop(canonical, None)
-    workspace.update(**{state_key: profiles})
 
 
 def unbind_connector(workspace: Workspace, requirement: str) -> dict[str, str]:
