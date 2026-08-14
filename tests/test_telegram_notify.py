@@ -77,6 +77,7 @@ def test_notifier_identifies_store_errors_as_store_errors(
     notifier = TelegramDeploymentNotifier(
         str(tmp_path / "deployment.sqlite"),
         FakeTelegramClient(),
+        connection="telegram-main",
         routes={},
         assignments={},
     )
@@ -93,6 +94,46 @@ def test_notifier_identifies_store_errors_as_store_errors(
     assert "Durable store unavailable for Telegram delivery" in error
     assert "disk I/O error" in error
     assert "Telegram API retrying" not in error
+
+
+def test_deployment_notifiers_keep_independent_offsets_per_connection(tmp_path):
+    store_path = str(tmp_path / "deployment.sqlite")
+
+    class PollClient(FakeTelegramClient):
+        def __init__(self, updates):
+            super().__init__(updates)
+            self.offsets = []
+
+        def get_updates(self, *, offset=None, timeout=0, allowed_updates=None):
+            self.offsets.append(offset)
+            return super().get_updates(
+                offset=offset,
+                timeout=timeout,
+                allowed_updates=allowed_updates,
+            )
+
+    first_client = PollClient([{"update_id": 100}])
+    second_client = PollClient([])
+    first = TelegramDeploymentNotifier(
+        store_path,
+        first_client,
+        connection="first-bot",
+        routes={},
+        assignments={},
+    )
+    second = TelegramDeploymentNotifier(
+        store_path,
+        second_client,
+        connection="second-bot",
+        routes={},
+        assignments={},
+    )
+
+    first.poll_updates_once()
+    second.poll_updates_once()
+
+    assert first_client.offsets == [None]
+    assert second_client.offsets == [None]
 
 
 def _create_task(
@@ -334,6 +375,7 @@ def test_deployment_notifier_shares_one_configuration_across_participants(
     notifier = TelegramDeploymentNotifier(
         str(store_path),
         client,
+        connection="telegram-main",
         routes={
             "team-chat": {
                 "chat_id": "123",
@@ -366,6 +408,7 @@ def test_deployment_notifier_action_route_overrides_participant_route(
     notifier = TelegramDeploymentNotifier(
         str(store_path),
         client,
+        connection="telegram-main",
         routes={
             "general": {
                 "chat_id": "111",

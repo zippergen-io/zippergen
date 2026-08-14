@@ -97,6 +97,10 @@ from zippergen.assistant_configuration import (
     project_assistant_routing,
 )
 from zippergen.view import DETAILS, ViewOptions, workflow_view_data
+from zippergen.human_tasks import (
+    human_task_result_from_value,
+    validate_human_task_result,
+)
 from zippergen.workflow_io import (
     RunConfig,
     _call_setup_hook,
@@ -690,7 +694,7 @@ def _print_tasks(tasks: list[dict], *, heading: str) -> None:
             print(f"  prefill: {_short_text(prefill)}")
 
 
-def _notify_stdout_task(task: dict, *, store_path: str) -> None:
+def _notify_stdout_task(task: dict) -> None:
     spec = task.get("spec") or {}
     rendered = spec.get("rendered") or {}
     token = task.get("token")
@@ -712,13 +716,17 @@ def _notify_stdout_task(task: dict, *, store_path: str) -> None:
         print("\nPrefill:")
         print(prefill)
     if token:
-        print("\nApprove:")
-        print(f"  zippergen deploy approve --token {token}")
-        if spec.get("output_type") == "bool":
+        kind = spec.get("kind")
+        if kind == "confirm":
+            print("\nApprove:")
+            print(f"  zippergen deploy approve --token {token}")
             print("Decline:")
             print(f"  zippergen deploy approve --token {token} --no")
+        elif kind == "ack":
+            print("\nAcknowledge:")
+            print(f"  zippergen deploy approve --token {token}")
         else:
-            print("Respond:")
+            print("\nRespond:")
             print(
                 "  zippergen deploy approve "
                 f"--token {token} --value '<value>'"
@@ -3306,55 +3314,37 @@ def _tasks_command(args) -> int:
     return 0
 
 
-def _parse_bool_value(raw: object) -> bool:
-    if isinstance(raw, bool):
-        return raw
-    text = str(raw).strip().lower()
-    if text in {"true", "yes", "1", "y", "approve", "approved", "ack"}:
-        return True
-    if text in {"false", "no", "0", "n", "decline", "declined", "reject", "rejected"}:
-        return False
-    raise SystemExit(f"Cannot parse boolean human response: {raw!r}")
-
-
 def _approve_result_from_args(task: dict, args) -> dict:
     spec = task.get("spec") or {}
-    output = spec.get("output")
-    if not output:
-        raise SystemExit(f"Task {task['task_id']} has no output field in its spec.")
-    output_type = spec.get("output_type", "str")
 
-    if args.result_json is not None:
-        try:
+    try:
+        if args.result_json is not None:
             result = json.loads(args.result_json)
-        except json.JSONDecodeError as exc:
-            raise SystemExit(f"--result-json must be valid JSON: {exc.msg}") from exc
-        if not isinstance(result, dict):
-            raise SystemExit("--result-json must be a JSON object.")
-        if output not in result:
-            raise SystemExit(f"--result-json must include output key {output!r}.")
-        result[output] = _parse_bool_value(result[output]) if output_type == "bool" else str(result[output])
-        return result
+            return validate_human_task_result(
+                spec, result, context="--result-json"
+            )
 
-    if args.yes and args.no:
-        raise SystemExit("Use only one of --yes or --no.")
-    if args.value is not None and (args.yes or args.no):
-        raise SystemExit("Use either --value or --yes/--no, not both.")
+        if args.yes and args.no:
+            raise ValueError("Use only one of --yes or --no.")
+        if args.value is not None and (args.yes or args.no):
+            raise ValueError("Use either --value or --yes/--no, not both.")
 
-    if output_type == "bool":
         if args.no:
-            value = False
-        elif args.value is not None:
-            value = _parse_bool_value(args.value)
-        else:
-            value = True
-    else:
-        if args.yes or args.no:
-            raise SystemExit("--yes/--no can only be used for boolean human tasks.")
-        if args.value is None:
-            raise SystemExit(f"Task {task['task_id']} requires --value for output {output!r}.")
-        value = args.value
-    return {output: value}
+            return human_task_result_from_value(spec, False)
+        if args.yes:
+            return human_task_result_from_value(spec, True)
+        if args.value is not None:
+            return human_task_result_from_value(spec, args.value)
+        if spec.get("output_type") == "str":
+            raise ValueError(
+                f"Task {task['task_id']} requires --value for output "
+                f"{spec.get('output')!r}."
+            )
+        return human_task_result_from_value(spec)
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"--result-json must be valid JSON: {exc.msg}") from exc
+    except (TypeError, ValueError) as exc:
+        raise SystemExit(str(exc)) from exc
 
 
 def _approve_command(args) -> int:
@@ -3413,7 +3403,7 @@ def _notify_stdout_command(args) -> int:
             token = task.get("token") or task["task_id"]
             if token in seen:
                 continue
-            _notify_stdout_task(task, store_path=store_path)
+            _notify_stdout_task(task)
             seen.add(token)
             emitted += 1
         if not args.watch:

@@ -17,6 +17,7 @@ import time
 import textwrap
 
 from zippergen.planner import _exec_planner, _validate_planner_spec
+from zippergen.human_tasks import validate_human_action_result
 
 from zippergen.syntax import (
     EmptyStmt, SendStmt, RecvStmt, ReceiveAnyStmt, SelfAssignStmt, ActStmt, SkipStmt,
@@ -479,17 +480,10 @@ def external_out_map(
         if not action.visible:
             default = True if action.output_type is bool else ""
             return {outs[0].name: default}
-        named_outputs = human_backend(action, named_inputs)
-        return {
-            outs[0].name: validate_zvalue(
-                named_outputs[action.output],
-                action.output_type,
-                context=(
-                    f"Human backend for '{action.name}' output "
-                    f"{action.output!r}"
-                ),
-            )
-        }
+        named_outputs = validate_human_action_result(
+            action, named_inputs, human_backend(action, named_inputs)
+        )
+        return {outs[0].name: named_outputs[action.output]}
     named_outputs = llm_backend(action, named_inputs)   # LLMAction
     result = {
         var.name: named_outputs.get(aname)
@@ -958,7 +952,9 @@ def _exec(
                     )
                     out_map = {outs[0].name: default}
                 else:
-                    named_outputs = human_backend(action, named_inputs)
+                    named_outputs = validate_human_action_result(
+                        action, named_inputs, human_backend(action, named_inputs)
+                    )
                     out_map = {outs[0].name: named_outputs[action.output]}
             elif isinstance(action, AssistantAction):
                 named_outputs = assistant_backend(action, named_inputs)
@@ -970,14 +966,15 @@ def _exec(
                     for (aname, _), var in zip(action.outputs, outs)
                 }
             if isinstance(action, HumanAction):
-                out_map[outs[0].name] = validate_zvalue(
-                    out_map[outs[0].name],
-                    action.output_type,
-                    context=(
-                        f"Human backend for '{action.name}' output "
-                        f"{action.output!r}"
-                    ),
-                )
+                if not action.visible:
+                    out_map[outs[0].name] = validate_zvalue(
+                        out_map[outs[0].name],
+                        action.output_type,
+                        context=(
+                            f"Human backend for '{action.name}' output "
+                            f"{action.output!r}"
+                        ),
+                    )
             else:
                 out_map = _validate_action_out_map(
                     action,

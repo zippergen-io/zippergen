@@ -399,6 +399,11 @@ def test_completion_uses_the_registered_command_tree():
         script = render_completion(shell)
         assert "deploy-actions" in script or "${cmd}-actions" in script
         assert "kind=deployments" not in script
+    fish = render_completion("fish")
+    assert (
+        "__fish_seen_subcommand_from status reset inspect trace tasks approve"
+        in fish
+    )
 
 
 def test_a_projection_that_promises_a_result_shows_where_it_comes_from(

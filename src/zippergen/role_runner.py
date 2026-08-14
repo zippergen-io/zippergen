@@ -37,6 +37,10 @@ from zippergen.control import (
     frontier_paths,
 )
 from zippergen.locator import resolve_path, statement_node_paths
+from zippergen.human_tasks import (
+    build_human_task_spec,
+    validate_human_task_result,
+)
 from zippergen.runtime import (
     PendingExternal,
     _input_hash,
@@ -68,7 +72,6 @@ from zippergen.syntax import (
     ReceiveAnyStmt,
     RecvStmt,
     WhileRecvStmt,
-    validate_zvalue,
 )
 
 __all__ = ["RoleRunner", "run_role"]
@@ -92,29 +95,6 @@ def _begin_immediate(conn, stop: threading.Event | None = None) -> None:
             if stop is not None and stop.is_set():
                 raise RuntimeError("Workflow cancelled") from exc
             time.sleep(0.05)
-
-
-def _render_template(template: str | None, inputs: dict) -> str | None:
-    return template.format(**inputs) if template else None
-
-
-def _human_task_spec(action: HumanAction, inputs: dict) -> dict:
-    return {
-        "name": action.name,
-        "kind": action.kind,
-        "output": action.output,
-        "output_type": action.output_type.__name__,
-        "context": action.context,
-        "instruction": action.instruction,
-        "prefill": action.prefill,
-        "submit_label": action.submit_label,
-        "cancel_label": action.cancel_label,
-        "rendered": {
-            "context": _render_template(action.context, inputs),
-            "instruction": _render_template(action.instruction, inputs),
-            "prefill": _render_template(action.prefill, inputs),
-        },
-    }
 
 
 class RoleRunner:
@@ -331,7 +311,7 @@ class RoleRunner:
         path = self.node_paths.get(id(node)) or []
         input_hash = _input_hash(pending.inputs)
         task_id = human_task_id(self.role, path, input_hash, self._human_task_nonce())
-        spec = _human_task_spec(action, pending.inputs)
+        spec = build_human_task_spec(action, pending.inputs)
 
         _begin_immediate(self.conn, self.stop)
         try:
@@ -366,15 +346,12 @@ class RoleRunner:
                 raise
 
         task = task if task["status"] == "done" else self._wait_for_human_task(task_id)
-        answer = task["result"] or {}
-        value = validate_zvalue(
-            answer[action.output],
-            action.output_type,
-            context=(
-                f"Human task '{action.name}' output {action.output!r}"
-            ),
+        answer = validate_human_task_result(
+            task["spec"],
+            task["result"] or {},
+            context=f"Human task {task_id!r} result",
         )
-        return {node.outputs[0].name: value}
+        return {node.outputs[0].name: answer[action.output]}
 
     def _human_task_nonce(self) -> int:
         """Distinguish repeat visits to the same human action across a loop.

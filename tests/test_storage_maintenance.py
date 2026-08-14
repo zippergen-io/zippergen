@@ -49,7 +49,11 @@ def _populated_store(path: str, *, history_rows: int = 5) -> None:
             action="approve",
             input_hash=None,
             inputs={},
-            spec={},
+            spec={
+                "kind": "confirm",
+                "output": "approved",
+                "output_type": "bool",
+            },
         )
         ensure_human_task_token(conn, "task-1")
         record_human_task_notification(

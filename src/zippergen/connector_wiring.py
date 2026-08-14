@@ -181,7 +181,7 @@ def connector_runtime(
                 raise ConnectorWiringError(
                     f"The Telegram bot token for connection {connection!r} is "
                     f"missing on this machine. Use 'zippergen provider "
-                    f"credential {connection}'."
+                    f"set-credential {connection}'."
                 )
             secrets["bot_token"] = token
         elif provider == "google":
@@ -330,9 +330,9 @@ def human_connector_factory(
 
     grouped: dict[str, list[dict[str, object]]] = {}
     for route in human_routes:
-        token_env = str(route.get("token_env") or "")
-        if token_env:
-            grouped.setdefault(token_env, []).append(route)
+        connection = str(route.get("connection") or "")
+        if connection:
+            grouped.setdefault(connection, []).append(route)
 
     def build(store_path: str):
         from zippergen.telegram_notify import (
@@ -342,7 +342,8 @@ def human_connector_factory(
         )
 
         notifiers = []
-        for token_env, records in sorted(grouped.items()):
+        for connection, records in sorted(grouped.items()):
+            token_env = str(records[0].get("token_env") or "")
             token = str(environment.get(token_env) or "")
             if not token:
                 raise ConnectorWiringError(
@@ -361,6 +362,7 @@ def human_connector_factory(
                     TelegramDeploymentNotifier(
                         store_path=store_path,
                         client=TelegramBotClient(token),
+                        connection=connection,
                         routes=routes,
                         assignments=assignments,
                     )

@@ -13,7 +13,11 @@ from pathlib import Path
 
 import pytest
 
-from zippergen.connector_wiring import ConnectorWiringError, connector_runtime
+from zippergen.connector_wiring import (
+    ConnectorWiringError,
+    connector_runtime,
+    human_connector_factory,
+)
 from zippergen.serve import load_workflow_spec
 from zippergen.workspace import Workspace
 
@@ -120,6 +124,38 @@ def test_a_missing_token_is_refused_before_deploying(project):
 
     with pytest.raises(ConnectorWiringError, match="bot token.*is missing"):
         _wire(project)
+
+
+def test_distinct_telegram_connections_build_distinct_pollers(tmp_path):
+    snapshot = {
+        "human:User.approve": {
+            "type": "human",
+            "target": "User.approve",
+            "configuration": "approvals",
+            "connection": "approval-bot",
+            "chat_id": "1",
+            "token_env": "TOKEN_A",
+        },
+        "human:User.notify": {
+            "type": "human",
+            "target": "User.notify",
+            "configuration": "notifications",
+            "connection": "notification-bot",
+            "chat_id": "2",
+            "token_env": "TOKEN_B",
+        },
+    }
+    factory = human_connector_factory(
+        snapshot, {"TOKEN_A": "secret-a", "TOKEN_B": "secret-b"}
+    )
+    assert factory is not None
+
+    group = factory(str(tmp_path / "store.sqlite"))
+
+    assert [notifier.connection for notifier in group.notifiers] == [
+        "approval-bot",
+        "notification-bot",
+    ]
 
 
 def test_a_non_human_connector_cannot_answer_a_human_action(project):

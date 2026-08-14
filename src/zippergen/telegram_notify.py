@@ -14,6 +14,11 @@ from dataclasses import dataclass
 from collections.abc import Mapping
 from typing import Any
 
+from zippergen.human_tasks import (
+    human_task_options,
+    human_task_result_from_value,
+    validate_human_task_spec,
+)
 from zippergen.store import (
     complete_human_task,
     ensure_human_task_token,
@@ -132,51 +137,6 @@ def load_telegram_chat_id(explicit: str | None = None) -> str:
     return explicit or os.environ.get("ZIPPERGEN_TELEGRAM_CHAT_ID", "")
 
 
-def parse_bool_value(raw: object) -> bool:
-    if isinstance(raw, bool):
-        return raw
-    text = str(raw).strip().lower()
-    if text in {"true", "yes", "1", "y", "approve", "approved", "ack"}:
-        return True
-    if text in {"false", "no", "0", "n", "decline", "declined", "reject", "rejected"}:
-        return False
-    raise ValueError(f"Cannot parse boolean human response: {raw!r}")
-
-
-def _task_options(task: dict) -> list[str]:
-    spec = task.get("spec") or {}
-    if spec.get("kind") != "select":
-        return []
-    rendered = spec.get("rendered") or {}
-    return [
-        line.strip()
-        for line in str(rendered.get("prefill") or "").splitlines()
-        if line.strip()
-    ]
-
-
-def result_from_human_value(task: dict, value: object = None) -> dict:
-    spec = task.get("spec") or {}
-    output = spec.get("output")
-    if not output:
-        raise ValueError(f"Task {task['task_id']} has no output field in its spec.")
-    output_type = spec.get("output_type", "str")
-    if output_type == "bool":
-        return {output: True if value is None else parse_bool_value(value)}
-    if value is None:
-        raise ValueError(f"Task {task['task_id']} requires a text value for {output!r}.")
-    options = _task_options(task)
-    if options:
-        raw = str(value).strip()
-        if raw.isdigit() and 1 <= int(raw) <= len(options):
-            value = options[int(raw) - 1]
-        elif raw not in options:
-            raise ValueError(
-                f"Choose a number between 1 and {len(options)}."
-            )
-    return {output: str(value)}
-
-
 def complete_task_with_token(
     conn,
     token: str,
@@ -194,7 +154,7 @@ def complete_task_with_token(
         raise ValueError(f"Human task not found: {token_record['task_id']}")
     if task["status"] != "pending":
         raise ValueError(f"Human task {task['task_id']} is already {task['status']}.")
-    result = result_from_human_value(task, value)
+    result = human_task_result_from_value(task["spec"], value)
     task = complete_human_task(conn, task["task_id"], result)
     mark_human_task_token_used(conn, token)
     return task
@@ -230,7 +190,7 @@ def _short_text(value: object, *, limit: int = 1200) -> str:
 
 
 def format_task_message(task: dict, token: str) -> str:
-    spec = task.get("spec") or {}
+    spec = validate_human_task_spec(task.get("spec") or {})
     rendered = spec.get("rendered") or {}
     lines = [
         "ZipperGen human task",
@@ -253,7 +213,7 @@ def format_task_message(task: dict, token: str) -> str:
         if spec.get("kind") != "ack":
             lines.append(f"/zg {token} no")
     else:
-        options = _task_options(task)
+        options = human_task_options(spec)
         if options:
             lines.append("Choose an option:")
             lines.extend(
@@ -269,9 +229,9 @@ def format_task_message(task: dict, token: str) -> str:
 
 
 def build_reply_markup(task: dict, token: str) -> dict | None:
-    spec = task.get("spec") or {}
+    spec = validate_human_task_spec(task.get("spec") or {})
     if spec.get("output_type") != "bool":
-        options = _task_options(task)
+        options = human_task_options(spec)
         if not options:
             return None
         return {
@@ -501,13 +461,14 @@ class TelegramDeploymentNotifier:
 
     store_path: str
     client: TelegramBotClient
+    connection: str
     routes: Mapping[str, Mapping[str, object]]
     assignments: Mapping[str, str]
     limit: int | None = None
 
     @property
     def _offset_key(self) -> str:
-        return "telegram:deployment:offset"
+        return f"telegram:deployment:{self.connection}:offset"
 
     def _configuration_for_task(self, task: dict) -> str | None:
         action_target = f"{task['role']}.{task['action']}"

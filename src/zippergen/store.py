@@ -22,6 +22,7 @@ The crash rule, stated once and relied on everywhere:
 """
 from __future__ import annotations
 
+from collections.abc import Mapping
 import json
 import os
 import secrets
@@ -29,6 +30,11 @@ import sqlite3
 import threading
 import time
 from pathlib import Path
+
+from zippergen.human_tasks import (
+    validate_human_task_result,
+    validate_human_task_spec,
+)
 
 
 SCHEMA_VERSION = 2
@@ -519,9 +525,12 @@ def ensure_human_task(
     action: str,
     input_hash: str | None,
     inputs: dict,
-    spec: dict,
+    spec: Mapping[str, object],
 ) -> tuple[dict, bool]:
     """Create a pending human task if absent; return (task, created)."""
+    canonical_spec = validate_human_task_spec(
+        spec, context=f"Human task {task_id!r} specification"
+    )
     now = time.time()
     cur = conn.execute(
         "INSERT OR IGNORE INTO human_tasks("
@@ -534,7 +543,7 @@ def ensure_human_task(
             action,
             input_hash,
             json.dumps(inputs),
-            json.dumps(spec),
+            json.dumps(canonical_spec),
             "pending",
             None,
             now,
@@ -548,11 +557,21 @@ def ensure_human_task(
 
 def complete_human_task(conn, task_id: str, result: dict) -> dict:
     """Mark a pending task done without overwriting an already-completed answer."""
+    existing = load_human_task(conn, task_id)
+    if existing is None:
+        raise KeyError(f"human task {task_id!r} not found")
+    if existing["status"] != "pending":
+        return existing
+    canonical_result = validate_human_task_result(
+        existing["spec"],
+        result,
+        context=f"Human task {task_id!r} result",
+    )
     now = time.time()
     conn.execute(
         "UPDATE human_tasks SET status='done', result=?, updated_at=? "
         "WHERE task_id=? AND status='pending'",
-        (json.dumps(result), now, task_id),
+        (json.dumps(canonical_result), now, task_id),
     )
     task = load_human_task(conn, task_id)
     if task is None:
@@ -730,6 +749,14 @@ def load_human_task(conn, task_id: str) -> dict | None:
     ).fetchone()
     if row is None:
         return None
+    spec = validate_human_task_spec(
+        json.loads(row[6]), context=f"Human task {row[0]!r} specification"
+    )
+    result = json.loads(row[8]) if row[8] is not None else None
+    if result is not None:
+        result = validate_human_task_result(
+            spec, result, context=f"Human task {row[0]!r} result"
+        )
     return {
         "task_id": row[0],
         "role": row[1],
@@ -737,9 +764,9 @@ def load_human_task(conn, task_id: str) -> dict | None:
         "action": row[3],
         "input_hash": row[4],
         "inputs": json.loads(row[5]),
-        "spec": json.loads(row[6]),
+        "spec": spec,
         "status": row[7],
-        "result": json.loads(row[8]) if row[8] is not None else None,
+        "result": result,
         "created_at": row[9],
         "updated_at": row[10],
     }

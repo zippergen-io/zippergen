@@ -754,7 +754,7 @@ def test_role_runner_waits_for_existing_pending_human_task(tmp_path):
         action="p_review",
         input_hash=input_hash,
         inputs={"prompt": "plan"},
-        spec={"kind": "confirm", "output": "p_approved"},
+        spec={"kind": "confirm", "output": "p_approved", "output_type": "bool"},
     )
     conn.execute("COMMIT")
 
@@ -897,7 +897,7 @@ def test_role_runner_terminal_backend_claims_existing_pending_human_task(tmp_pat
         action="p_review",
         input_hash=input_hash,
         inputs={"prompt": "plan"},
-        spec={"kind": "confirm", "output": "p_approved"},
+        spec={"kind": "confirm", "output": "p_approved", "output_type": "bool"},
     )
     conn.execute("COMMIT")
 

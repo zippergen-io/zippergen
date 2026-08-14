@@ -1677,7 +1677,7 @@ def test_status_command_reports_pending_human_task(tmp_path, monkeypatch, capsys
         action="approve",
         input_hash=None,
         inputs={"prompt": "Approve?"},
-        spec={"kind": "confirm"},
+        spec={"kind": "confirm", "output": "approved", "output_type": "bool"},
     )
     conn.close()
 
@@ -1824,6 +1824,55 @@ def test_approve_command_completes_boolean_task(tmp_path, monkeypatch, capsys):
         assert load_human_task(conn, "task-1")["result"] == {"approved": False}
     finally:
         conn.close()
+
+
+def test_approve_command_rejects_declining_acknowledgement(
+    tmp_path, monkeypatch, capsys
+):
+    store_path = _prepared_deployment_store(tmp_path, monkeypatch, capsys)
+    conn = open_store(str(store_path))
+    ensure_human_task(
+        conn,
+        task_id="task-1",
+        role="User",
+        locator=[0],
+        action="acknowledge",
+        input_hash=None,
+        inputs={},
+        spec={"kind": "ack", "output": "seen", "output_type": "bool"},
+    )
+    conn.close()
+
+    with pytest.raises(SystemExit, match="only be completed affirmatively"):
+        main(["deploy", "approve", "--task", "task-1", "--no"])
+
+
+def test_approve_command_rejects_value_outside_select_options(
+    tmp_path, monkeypatch, capsys
+):
+    store_path = _prepared_deployment_store(tmp_path, monkeypatch, capsys)
+    conn = open_store(str(store_path))
+    ensure_human_task(
+        conn,
+        task_id="task-1",
+        role="User",
+        locator=[0],
+        action="choose",
+        input_hash=None,
+        inputs={},
+        spec={
+            "kind": "select",
+            "output": "choice",
+            "output_type": "str",
+            "rendered": {"prefill": "A\nB"},
+        },
+    )
+    conn.close()
+
+    with pytest.raises(SystemExit, match="Choose a number between 1 and 2"):
+        main([
+            "deploy", "approve", "--task", "task-1", "--value", "C"
+        ])
 
 
 def test_approve_command_completes_string_task(tmp_path, monkeypatch, capsys):
@@ -1994,6 +2043,37 @@ def test_notify_stdout_reports_no_pending_tasks(tmp_path, capsys):
     assert "No pending human tasks." in captured.out
 
 
+@pytest.mark.parametrize(
+    ("kind", "output", "output_type", "expected", "absent"),
+    [
+        ("ack", "seen", "bool", "Acknowledge:", "Decline:"),
+        ("input", "answer", "str", "--value '<value>'", "Approve:"),
+    ],
+)
+def test_notify_stdout_commands_match_the_human_task_kind(
+    tmp_path, capsys, kind, output, output_type, expected, absent
+):
+    store_path = tmp_path / f"notify-{kind}.sqlite"
+    conn = open_store(str(store_path))
+    ensure_human_task(
+        conn,
+        task_id="task-1",
+        role="User",
+        locator=[0],
+        action=kind,
+        input_hash=None,
+        inputs={},
+        spec={"kind": kind, "output": output, "output_type": output_type},
+    )
+    conn.close()
+
+    assert main(["notify", "stdout", "--store", str(store_path)]) == 0
+
+    output_text = capsys.readouterr().out
+    assert expected in output_text
+    assert absent not in output_text
+
+
 def test_deployment_starts_one_telegram_bridge_for_shared_routes(
     tmp_path,
     monkeypatch,
@@ -2016,6 +2096,7 @@ def test_deployment_starts_one_telegram_bridge_for_shared_routes(
                 "configuration": "team-chat",
                 "chat_id": "123",
                 "channel": "telegram:team-chat",
+                "connection": "telegram-main",
                 "token_env": "ZIPPERGEN_CONNECTOR_TELEGRAM_TOKEN",
             },
             "human:Reviewer": {
@@ -2025,6 +2106,7 @@ def test_deployment_starts_one_telegram_bridge_for_shared_routes(
                 "configuration": "team-chat",
                 "chat_id": "123",
                 "channel": "telegram:team-chat",
+                "connection": "telegram-main",
                 "token_env": "ZIPPERGEN_CONNECTOR_TELEGRAM_TOKEN",
             },
         },

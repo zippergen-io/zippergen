@@ -355,7 +355,7 @@ def test_human_task_lifecycle(tmp_path):
         action="review",
         input_hash="abc",
         inputs={"prompt": "plan"},
-        spec={"kind": "confirm", "output": "approved"},
+        spec={"kind": "confirm", "output": "approved", "output_type": "bool"},
     )
     conn.execute("COMMIT")
     assert created is True
@@ -371,7 +371,7 @@ def test_human_task_lifecycle(tmp_path):
         action="review",
         input_hash="abc",
         inputs={"prompt": "changed"},
-        spec={"kind": "confirm", "output": "approved"},
+        spec={"kind": "confirm", "output": "approved", "output_type": "bool"},
     )
     conn.execute("COMMIT")
     assert created_again is False
@@ -389,6 +389,30 @@ def test_human_task_lifecycle(tmp_path):
     assert still_done["result"] == {"approved": True}
 
 
+def test_human_task_store_rejects_an_invalid_response(tmp_path):
+    conn = open_store(str(tmp_path / "s.sqlite"))
+    ensure_human_task(
+        conn,
+        task_id="choice-task",
+        role="A",
+        locator=[0],
+        action="choose",
+        input_hash=None,
+        inputs={},
+        spec={
+            "kind": "select",
+            "output": "choice",
+            "output_type": "str",
+            "rendered": {"prefill": "A\nB"},
+        },
+    )
+
+    with pytest.raises(ValueError, match="must be one of: A, B"):
+        complete_human_task(conn, "choice-task", {"choice": "C"})
+
+    assert load_human_task(conn, "choice-task")["status"] == "pending"
+
+
 def test_human_task_token_lifecycle(tmp_path):
     conn = open_store(str(tmp_path / "s.sqlite"))
     task_id = human_task_id("A", [0], "abc", 0)
@@ -400,7 +424,7 @@ def test_human_task_token_lifecycle(tmp_path):
         action="review",
         input_hash="abc",
         inputs={"prompt": "plan"},
-        spec={"kind": "confirm", "output": "approved"},
+        spec={"kind": "confirm", "output": "approved", "output_type": "bool"},
     )
 
     first = ensure_human_task_token(conn, task_id, channel="email")
@@ -428,7 +452,7 @@ def test_human_task_notification_lifecycle(tmp_path):
         action="review",
         input_hash="abc",
         inputs={"prompt": "plan"},
-        spec={"kind": "confirm", "output": "approved"},
+        spec={"kind": "confirm", "output": "approved", "output_type": "bool"},
     )
 
     first = record_human_task_notification(

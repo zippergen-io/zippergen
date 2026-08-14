@@ -428,13 +428,14 @@ zg
 ├── config
 ├── workflow
 │   └── select
+├── provider
+│   └── configure · set-credential · check · remove · authorize · accept
 ├── model
-│   └── configure · assign · unassign · credential · check · remove
+│   └── configure · assign · unassign · check · remove
 ├── assistant
 │   └── configure · assign · unassign · check · remove
 ├── connector
 │   └── configure · assign · unassign · bind · unbind · check · remove
-│       · authorize google · accept google
 ├── run
 │   └── status · reset · inspect · trace · tasks · approve
 ├── deploy
