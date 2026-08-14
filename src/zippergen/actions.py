@@ -495,7 +495,7 @@ def human(
     prefill : str, optional
         For ``edit``: a ``{var_name}`` template whose resolved value
         pre-populates the textarea.
-        For ``options``: either a ``{var_name}`` template or a literal
+        For ``select``: either a ``{var_name}`` template or a literal
         newline-separated string of choices (e.g. ``"Send\\nSave as draft"``).
     submit_label : str, optional
         Label for the primary (approve/submit) button.

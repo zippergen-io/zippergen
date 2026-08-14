@@ -509,7 +509,7 @@ class HumanAction:
     inputs: tuple[tuple[str, ZType], ...]   # (param_name, type) pairs
     output: str                             # single output variable name
     output_type: ZType                      # bool or str
-    kind: str                               # confirm | edit | options
+    kind: str                               # confirm | ack | edit | select | input
     context: str | None = None             # template for left-column content; {var} = variable
     instruction: str | None = None         # right-column instruction text; supports {var}
     prefill: str | None = None             # template or literal for textarea; {var} = variable

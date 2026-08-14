@@ -68,6 +68,7 @@ from zippergen.syntax import (
     ReceiveAnyStmt,
     RecvStmt,
     WhileRecvStmt,
+    validate_zvalue,
 )
 
 __all__ = ["RoleRunner", "run_role"]
@@ -102,6 +103,7 @@ def _human_task_spec(action: HumanAction, inputs: dict) -> dict:
         "name": action.name,
         "kind": action.kind,
         "output": action.output,
+        "output_type": action.output_type.__name__,
         "context": action.context,
         "instruction": action.instruction,
         "prefill": action.prefill,
@@ -365,7 +367,14 @@ class RoleRunner:
 
         task = task if task["status"] == "done" else self._wait_for_human_task(task_id)
         answer = task["result"] or {}
-        return {node.outputs[0].name: answer[action.output]}
+        value = validate_zvalue(
+            answer[action.output],
+            action.output_type,
+            context=(
+                f"Human task '{action.name}' output {action.output!r}"
+            ),
+        )
+        return {node.outputs[0].name: value}
 
     def _human_task_nonce(self) -> int:
         """Distinguish repeat visits to the same human action across a loop.

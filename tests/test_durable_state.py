@@ -653,7 +653,7 @@ def test_a_pending_human_task_survives_a_restart(tmp_path):
     assert tasks[0][2] == "approve"
 
 
-def test_an_answered_human_task_is_picked_up_after_a_restart(tmp_path):
+def test_a_telegram_answered_human_task_keeps_its_type_after_a_restart(tmp_path):
     store = str(tmp_path / "run.sqlite")
 
     class _Sqlite:
@@ -679,19 +679,41 @@ def test_an_answered_human_task_is_picked_up_after_a_restart(tmp_path):
         stop=stop,
     )
 
-    from zippergen.store import complete_human_task
+    from zippergen.store import ensure_human_task_token, load_human_task
+    from zippergen.telegram_notify import (
+        build_reply_markup,
+        complete_task_with_token,
+    )
 
     conn = open_store(store)
     try:
         task_id = conn.execute("SELECT task_id FROM human_tasks").fetchone()[0]
-        conn.execute("BEGIN IMMEDIATE")
-        complete_human_task(conn, task_id, {"ok": True})
-        conn.execute("COMMIT")
+        task = load_human_task(conn, task_id)
+        assert task is not None
+        assert task["spec"]["output_type"] == "bool"
+
+        token = ensure_human_task_token(
+            conn,
+            task_id,
+            channel="telegram",
+        )["token"]
+        markup = build_reply_markup(task, token)
+        assert markup is not None
+        assert [
+            button["callback_data"].split(":", 2)[1]
+            for button in markup["inline_keyboard"][0]
+        ] == ["yes", "no"]
+        complete_task_with_token(
+            conn,
+            token,
+            False,
+            channel="telegram",
+        )
     finally:
         conn.close()
 
     assert _drive(store, human_workflow, A, {"n": 2}, human_backend=_Sqlite()) == "done"
-    assert _state(store, "A")["env"]["ok"] is True
+    assert _state(store, "A")["env"]["ok"] is False
 
 
 # ---------------------------------------------------------------------------
