@@ -1344,6 +1344,26 @@ def _project_choices(kind: str, project: str | None) -> tuple[str, ...]:
     return tuple(completion_candidates(kind, project))
 
 
+def _required_provider_connections(
+    kind: str,
+    project: str | None,
+    *,
+    purpose: str,
+    example: str,
+) -> tuple[str, ...]:
+    """Return compatible connections or explain the prerequisite precisely."""
+
+    choices = _project_choices(kind, project)
+    if choices:
+        return choices
+    raise SystemExit(
+        f"No {purpose}-capable provider connection is configured.\n\n"
+        "Create one first, for example:\n\n"
+        f"  {example}\n\n"
+        "Then run this command again."
+    )
+
+
 def _provider_set_credential_command(workspace, connection: object) -> int:
     """Prompt for the private credential owned by one provider connection."""
 
@@ -1407,6 +1427,12 @@ def _model_command(args) -> int:
     action = getattr(args, "model_action", None)
     try:
         if action == "configure":
+            connections = _required_provider_connections(
+                "provider-connections-model",
+                args.project,
+                purpose="model",
+                example="zg provider configure openai-main openai",
+            )
             name = _guided_required_value(
                 args.name,
                 label="Model configuration name",
@@ -1417,7 +1443,7 @@ def _model_command(args) -> int:
                 args.connection,
                 label="Provider connection",
                 command="zg model configure NAME CONNECTION MODEL",
-                choices=_project_choices("provider-connections-model", args.project),
+                choices=connections,
                 default=str(existing.get("connection") or "") or None,
             )
             model = _guided_required_value(
@@ -2221,6 +2247,12 @@ def _connector_configure_command(args) -> int:
     from zippergen.workspace import Workspace, WorkspaceError
 
     workspace = Workspace(args.project)
+    connections = _required_provider_connections(
+        "provider-connections-connector",
+        args.project,
+        purpose="connector",
+        example="zg provider configure approval-bot telegram",
+    )
     name = _guided_required_value(
         args.name,
         label="Connector configuration name",
@@ -2231,7 +2263,7 @@ def _connector_configure_command(args) -> int:
         args.connection,
         label="Provider connection",
         command="zg connector configure NAME CONNECTION [KIND]",
-        choices=_project_choices("provider-connections-connector", args.project),
+        choices=connections,
         default=str(existing.get("connection") or "") or None,
     )
     provider_profile = workspace.provider_connections().get(connection) or {}

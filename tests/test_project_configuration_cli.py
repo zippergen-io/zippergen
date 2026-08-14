@@ -155,6 +155,36 @@ def test_missing_required_values_do_not_prompt_outside_a_terminal(
         main(["model", "configure"])
 
 
+def test_configuration_explains_missing_provider_before_prompting(
+    tmp_path, monkeypatch
+):
+    root = tmp_path / "project"
+    root.mkdir()
+    home = tmp_path / "home"
+    Workspace(root, home=home).initialize_project(name="empty")
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(home))
+    monkeypatch.chdir(root)
+    monkeypatch.setattr("zippergen.serve.sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr(
+        "builtins.input",
+        lambda _prompt: pytest.fail("there is no valid answer to prompt for"),
+    )
+
+    with pytest.raises(SystemExit) as model_error:
+        main(["model", "configure"])
+    assert "No model-capable provider connection" in str(model_error.value)
+    assert "zg provider configure openai-main openai" in str(model_error.value)
+
+    with pytest.raises(SystemExit) as connector_error:
+        main(["connector", "configure", "approval-chat"])
+    assert "No connector-capable provider connection" in str(
+        connector_error.value
+    )
+    assert "zg provider configure approval-bot telegram" in str(
+        connector_error.value
+    )
+
+
 def test_connector_configuration_and_assignment_are_guided_the_same_way(
     project, monkeypatch
 ):
