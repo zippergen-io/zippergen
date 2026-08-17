@@ -180,6 +180,54 @@ def remove_update(conn: sqlite3.Connection, update_id: int) -> None:
     conn.execute("DELETE FROM inbox WHERE update_id=?", (int(update_id),))
 
 
+def fetch_once(client, fingerprint: str, *, timeout: float = 0) -> int:
+    """Read this bot on everyone's behalf, if nobody else is reading it.
+
+    Every ``getUpdates`` in ZipperGen goes through here. That is the whole
+    invariant: one reader per bot, one cursor, and no code path that can quietly
+    become a second consumer of a single-consumer queue.
+    """
+
+    with poll_lock(fingerprint) as acquired:
+        if not acquired:
+            return 0
+        conn = open_inbox(fingerprint)
+        try:
+            offset = read_offset(conn)
+            updates = client.get_updates(
+                offset=offset + 1 if offset else None,
+                timeout=timeout,
+                allowed_updates=["message", "callback_query"],
+            )
+            if not updates:
+                return 0
+            highest = max(int(item.get("update_id", 0)) for item in updates)
+            return record_updates(conn, updates, offset=max(offset, highest))
+        finally:
+            conn.close()
+
+
+def consume_once(fingerprint: str, process_update) -> int:
+    """Take the updates ``process_update`` recognises, and leave the rest.
+
+    An update this caller cannot resolve belongs to another deployment sharing
+    the bot, so it stays. Age, not this pass, removes one that belongs to
+    nobody.
+    """
+
+    conn = open_inbox(fingerprint)
+    try:
+        processed = 0
+        for update_id, update in list_updates(conn):
+            if not process_update(update):
+                continue
+            remove_update(conn, update_id)
+            processed += 1
+        return processed
+    finally:
+        conn.close()
+
+
 def count_stale_updates(conn: sqlite3.Connection, *, older_than_days: float) -> int:
     cutoff = time.time() - older_than_days * 86400.0
     return int(

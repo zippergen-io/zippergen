@@ -19,19 +19,10 @@ from zippergen.human_tasks import (
     human_task_result_from_value,
     validate_human_task_spec,
 )
-from zippergen.telegram_inbox import (
-    bot_fingerprint,
-    list_updates,
-    open_inbox,
-    poll_lock,
-    read_offset,
-    record_updates,
-    remove_update,
-)
+from zippergen.telegram_inbox import bot_fingerprint, consume_once, fetch_once
 from zippergen.store import (
     complete_human_task,
     ensure_human_task_token,
-    load_adapter_state,
     load_human_task,
     load_human_task_notification,
     load_human_task_notification_by_external,
@@ -40,7 +31,6 @@ from zippergen.store import (
     mark_human_task_token_used,
     open_store,
     record_human_task_notification,
-    write_adapter_state,
 )
 
 
@@ -277,14 +267,17 @@ class TelegramNotifier:
     chat_id: str
     channel: str = "telegram"
     limit: int | None = None
+    #: Which bot this reads. Every reader of a bot shares one cursor, so this
+    #: command is not an exception to that rule just because it is run by hand.
+    fingerprint: str = ""
 
     @property
     def _target(self) -> str:
         return str(self.chat_id)
 
     @property
-    def _offset_key(self) -> str:
-        return f"telegram:{self.channel}:{self._target}:offset"
+    def _bot(self) -> str:
+        return self.fingerprint or bot_fingerprint(self.client.token)
 
     def send_pending_once(self, *, resend: bool = False) -> int:
         conn = open_store(self.store_path)
@@ -343,31 +336,8 @@ class TelegramNotifier:
         return False
 
     def poll_updates_once(self, *, timeout: float = 0) -> int:
-        conn = open_store(self.store_path)
-        try:
-            offset = int(load_adapter_state(conn, self._offset_key, 0) or 0)
-        finally:
-            conn.close()
-
-        updates = self.client.get_updates(
-            offset=offset + 1 if offset else None,
-            timeout=timeout,
-            allowed_updates=["message", "callback_query"],
-        )
-        processed = 0
-        max_update_id = offset
-        for update in updates:
-            max_update_id = max(max_update_id, int(update.get("update_id", 0)))
-            if self.process_update(update):
-                processed += 1
-
-        if max_update_id > offset:
-            conn = open_store(self.store_path)
-            try:
-                write_adapter_state(conn, self._offset_key, max_update_id)
-            finally:
-                conn.close()
-        return processed
+        fetch_once(self.client, self._bot, timeout=timeout)
+        return consume_once(self._bot, self.process_update)
 
     def _chat_matches(self, chat_id: object) -> bool:
         return str(chat_id) == self._target
@@ -715,48 +685,8 @@ class TelegramDeploymentNotifier:
         a token this deployment issued, or by a message it sent.
         """
 
-        self._fetch_shared(timeout=timeout)
-        return self._consume_shared()
-
-    def _fetch_shared(self, *, timeout: float) -> None:
-        fingerprint = self._bot
-        with poll_lock(fingerprint) as acquired:
-            if not acquired:
-                return  # Someone else is fetching for us.
-            conn = open_inbox(fingerprint)
-            try:
-                offset = read_offset(conn)
-                updates = self.client.get_updates(
-                    offset=offset + 1 if offset else None,
-                    timeout=timeout,
-                    allowed_updates=["message", "callback_query"],
-                )
-                if not updates:
-                    return
-                highest = max(int(item.get("update_id", 0)) for item in updates)
-                record_updates(conn, updates, offset=max(offset, highest))
-            finally:
-                conn.close()
-
-    def _consume_shared(self) -> int:
-        """Take the updates this deployment owns, and leave the rest alone.
-
-        An update we cannot resolve belongs to another deployment sharing this
-        bot, so it stays. Age, not this pass, is what eventually removes one
-        that belongs to nobody.
-        """
-
-        conn = open_inbox(self._bot)
-        try:
-            processed = 0
-            for update_id, update in list_updates(conn):
-                if not self.process_update(update):
-                    continue
-                remove_update(conn, update_id)
-                processed += 1
-            return processed
-        finally:
-            conn.close()
+        fetch_once(self.client, self._bot, timeout=timeout)
+        return consume_once(self._bot, self.process_update)
 
     def run_forever(
         self,

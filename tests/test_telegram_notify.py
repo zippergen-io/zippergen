@@ -997,3 +997,33 @@ def test_the_lock_file_is_never_removed(tmp_path):
     with poll_lock("fingerprint-keeps-lock") as acquired:
         assert acquired
     assert path.stat().st_ino == inode
+
+
+def test_every_bot_read_goes_through_the_shared_cursor():
+    """The invariant, checked structurally rather than remembered.
+
+    Telegram's queue is single-consumer. One exceptional code path calling
+    getUpdates on its own would silently reintroduce the bug this whole design
+    exists to prevent, so there must be exactly one caller.
+    """
+
+    import ast
+    import pathlib
+
+    source_root = pathlib.Path(__file__).resolve().parents[1] / "src" / "zippergen"
+    callers: list[str] = []
+    for path in sorted(source_root.glob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == "get_updates"
+            ):
+                callers.append(f"{path.name}:{node.lineno}")
+
+    assert len(callers) == 1, (
+        "every getUpdates must go through telegram_inbox.fetch_once, "
+        f"but found {callers}"
+    )
+    assert callers[0].startswith("telegram_inbox.py"), callers
