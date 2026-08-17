@@ -391,21 +391,10 @@ def test_completion_uses_the_registered_command_tree():
         if isinstance(action, argparse._SubParsersAction)
     )
 
-    def advertised(subparsers):
-        """What argparse offers: a parser added without `help=` is hidden."""
-
-        listed = {action.dest for action in subparsers._choices_actions}
-        return [name for name in subparsers.choices if name in listed]
-
     assert completion_candidates("commands") == expected_commands
-    assert completion_candidates("run-actions") == advertised(run)
-    assert completion_candidates("deploy-actions") == advertised(deploy)
+    assert completion_candidates("run-actions") == list(run.choices)
+    assert completion_candidates("deploy-actions") == list(deploy.choices)
     assert "run" not in completion_candidates("deploy-actions")
-
-    # `restart` still parses, so an old habit gets a real answer, but it is
-    # retired: neither help nor completion may offer it again.
-    assert "restart" in deploy.choices
-    assert "restart" not in completion_candidates("deploy-actions")
     for family in (
         "workflow",
         "provider",

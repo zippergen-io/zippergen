@@ -527,22 +527,6 @@ def test_start_does_nothing_when_the_deployment_is_already_running(
     assert "is already running" in capsys.readouterr().out
 
 
-def test_restart_is_retired_and_says_what_to_use(tmp_path, monkeypatch, capsys):
-    """It was exactly stop then start, and it never applied changes."""
-
-    _prepared_deployment_store(tmp_path, monkeypatch, capsys)
-    capsys.readouterr()
-
-    with pytest.raises(SystemExit) as error:
-        main(["deploy", "restart"])
-
-    message = str(error.value)
-    assert "is gone" in message
-    assert "zg deploy stop" in message and "zg deploy start" in message
-    # The thing most people typing it actually wanted.
-    assert "use 'zg deploy'" in message
-
-
 def test_reset_never_starts_the_service(tmp_path, monkeypatch, capsys):
     """Reset is a state operation, so it leaves the running axis alone.
 

@@ -612,9 +612,8 @@ zg deploy remove
 ```
 
 Stop a running deployment before invoking bare `zg deploy` to update its code
-or configuration. There is no `restart`: it was exactly `stop` then `start`,
-and it never applied source changes. `start` on a deployment that is already
-running does nothing.
+or configuration. `start` on a deployment that is already running does
+nothing, so it is safe to repeat.
 
 `zg deploy inspect --watch` shows that deployment's live position.
 

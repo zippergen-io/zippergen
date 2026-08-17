@@ -4466,13 +4466,6 @@ def _parse_cli_args(
     deploy_stop = deploy_sub.add_parser("stop", help="stop a supervised deployment")
     deploy_stop.add_argument("--dry-run", action="store_true", help="Print the service-manager command without running it.")
 
-    # Registered but hidden, so an old habit gets an answer instead of
-    # "invalid choice". It was exactly stop then start, and its most tempting
-    # reading -- "apply my changes" -- was the one thing it never did.
-    # No `help=`, so argparse does not list it at all: passing SUPPRESS would
-    # print the sentinel string instead of hiding the row.
-    deploy_restart = deploy_sub.add_parser("restart")
-    deploy_restart.add_argument("--dry-run", action="store_true", help=argparse.SUPPRESS)
 
     deploy_remove = deploy_sub.add_parser(
         "remove",
@@ -4521,13 +4514,6 @@ def _parse_cli_args(
         help="Reset without asking for confirmation.",
     )
     _add_owned_execution_commands(deploy_sub, owner="deploy")
-    # `restart` is still parsed so an old habit gets a useful answer, but it is
-    # not offered. argparse lists every choice in the metavar regardless of
-    # help=SUPPRESS, so the list has to be stated.
-    deploy_sub.metavar = "{" + ",".join(
-        name for name in deploy_sub.choices if name != "restart"
-    ) + "}"
-
     internal_run = sub.add_parser("__run-deployment")
     internal_run.add_argument("--profile", required=True)
 
@@ -4690,12 +4676,6 @@ def main(argv=None) -> int:
         # `status` reads `deployment`; it no longer takes one as an
         # argument, so the attribute has to be created, not updated.
         args.deployment = resolved
-        if action == "restart":
-            raise SystemExit(
-                "'zg deploy restart' is gone. It was exactly 'zg deploy stop' "
-                "then 'zg deploy start'.\n"
-                "To apply code or configuration changes, use 'zg deploy'."
-            )
         if action in {"start", "stop"}:
             return _deployment_lifecycle_command(args, action)
         if action == "remove":

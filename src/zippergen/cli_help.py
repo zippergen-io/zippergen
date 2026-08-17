@@ -17,26 +17,6 @@ def _subparsers(parser: argparse.ArgumentParser):
     )
 
 
-def _advertised(subparsers) -> list:
-    """Return the subcommands argparse itself offers, in registration order.
-
-    A parser added without ``help=`` gets no pseudo-action, which is how
-    argparse hides a subcommand that still parses. The tree follows the same
-    signal, so a hidden verb cannot reappear here.
-    """
-
-    listed = {
-        action.dest for action in getattr(subparsers, "_choices_actions", [])
-    }
-    if not listed:
-        return list(subparsers.choices.items())
-    return [
-        (name, parser)
-        for name, parser in subparsers.choices.items()
-        if name in listed
-    ]
-
-
 def render_command_tree(
     parser: argparse.ArgumentParser,
     *,
@@ -61,7 +41,7 @@ def render_command_tree(
         if nested is None:
             continue
         prefix = "    " if last else "│   "
-        children = _advertised(nested)
+        children = list(nested.choices.items())
         for child_index, (action, action_parser) in enumerate(children):
             action_last = child_index == len(children) - 1
             action_branch = "└──" if action_last else "├──"

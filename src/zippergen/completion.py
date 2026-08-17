@@ -41,17 +41,7 @@ def _parser_choices(path: tuple[str, ...] = ()) -> list[str]:
     if subparsers is None:
         return []
     hidden = HIDDEN_COMMANDS if not path else frozenset()
-    # A subcommand registered without ``help=`` is one argparse does not offer,
-    # so completion must not offer it either. That is how a retired verb stays
-    # parseable, to answer an old habit, without coming back into the surface.
-    listed = {
-        action.dest for action in getattr(subparsers, "_choices_actions", [])
-    }
-    return [
-        name
-        for name in subparsers.choices
-        if name not in hidden and (not listed or name in listed)
-    ]
+    return [name for name in subparsers.choices if name not in hidden]
 
 
 def completion_candidates(

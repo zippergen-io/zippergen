@@ -818,13 +818,12 @@ run, and does it keep the durable state? Nothing else separates them.
 \end{tabularx}
 \end{center}
 
-There is no \texttt{restart}: it was exactly \texttt{stop} then
-\texttt{start}, and its most tempting reading -- apply my changes -- was the
-one thing it never did. Use \texttt{stop} then \texttt{deploy} to pick up an
-edit; ZipperGen refuses \texttt{zg deploy} while the service runs so that this
-choice is explicit rather than silent.
+\texttt{start} on a deployment that is already running does nothing, so it is
+safe to repeat. To pick up an edit, use \texttt{stop} then \texttt{deploy};
+ZipperGen refuses \texttt{zg deploy} while the service runs so that this choice
+is explicit rather than silent.
 
-One pair is still worth reading twice:
+One pair is worth reading twice:
 
 \begin{itemize}
   \item \texttt{reset} is the destructive one, despite sounding milder than
