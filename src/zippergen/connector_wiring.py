@@ -341,7 +341,11 @@ def human_connector_factory(
             TelegramNotifierGroup,
         )
 
-        notifiers = []
+        from zippergen.telegram_inbox import bot_fingerprint
+
+        # Group by bot, not by the name we gave it. Two provider connections
+        # holding one token are one bot, and one bot may have only one reader.
+        by_bot: dict[str, list[tuple[str, list[dict[str, object]]]]] = {}
         for connection, records in sorted(grouped.items()):
             token_env = str(records[0].get("token_env") or "")
             token = str(environment.get(token_env) or "")
@@ -349,6 +353,16 @@ def human_connector_factory(
                 raise ConnectorWiringError(
                     f"Telegram connector credential is missing: {token_env}."
                 )
+            by_bot.setdefault(bot_fingerprint(token), []).append(
+                (connection, records)
+            )
+
+        notifiers = []
+        for fingerprint, groups in sorted(by_bot.items()):
+            connection = groups[0][0]
+            records = [record for _name, group in groups for record in group]
+            token_env = str(records[0].get("token_env") or "")
+            token = str(environment.get(token_env) or "")
             routes: dict[str, dict[str, object]] = {}
             assignments: dict[str, str] = {}
             for route in records:
@@ -365,6 +379,7 @@ def human_connector_factory(
                         connection=connection,
                         routes=routes,
                         assignments=assignments,
+                        fingerprint=fingerprint,
                     )
                 )
         return TelegramNotifierGroup(tuple(notifiers))

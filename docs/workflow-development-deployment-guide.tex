@@ -921,6 +921,48 @@ Pruning is decided by age, never by size, because the archive exists so that a
 mistaken \texttt{remove} can be undone. Today's archive is exactly the one
 somebody may still need, so it is never the one deleted.
 
+\subsection{Several deployments, one bot}
+
+Sharing one Telegram bot across projects is expected and supported. It needs
+one thing you cannot see, so it is worth knowing why.
+
+Telegram's inbound queue is \emph{one queue per bot with one cursor}, and
+reading it destroys: an update is confirmed, and forgotten, as soon as a later
+read supplies a higher offset. Two deployments reading independently would
+therefore confirm each other's approvals out of existence. Sending has no such
+problem; it is an ordinary request.
+
+So the cursor belongs to the bot, not to a deployment:
+
+\begin{center}
+\begin{tabularx}{0.95\linewidth}{@{}lX@{}}
+\toprule
+\path{ZIPPERGEN_HOME/connectors/telegram-<id>.sqlite} & the shared cursor, and
+updates not yet absorbed \\
+\path{ZIPPERGEN_HOME/connectors/telegram-<id>.lock} & ensures exactly one
+reader at a time \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+Whichever deployment takes the lock reads Telegram on everyone's behalf and
+writes what it finds into the shared inbox. Every deployment, lock-holder or
+not, then takes the updates its own tasks issued. Losing the race costs you
+nothing: you still receive your own approvals, you simply did not do the
+fetching.
+
+Two consequences follow. Deployments sharing a bot must run on the same
+machine, because the lock is a local file. And an update addressed to a
+deployment that is currently stopped waits rather than being discarded, so
+\texttt{zg deploy prune} clears only ones older than the retention window.
+
+\begin{notebox}{Why the lock file is never deleted}
+The lock lives on the inode, not the path. Removing the file while another
+process holds it would let the next process lock a fresh inode and believe it
+had exclusive access, which is precisely the guarantee this rests on. The file
+is empty and permanent; nothing needs to clean it up.
+\end{notebox}
+
 \subsection{Moving a project to a server}
 
 \begin{enumerate}

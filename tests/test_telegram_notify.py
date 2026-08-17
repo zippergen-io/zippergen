@@ -6,8 +6,16 @@ import urllib.request
 
 import pytest
 
+
+@pytest.fixture(autouse=True)
+def _isolated_home(tmp_path, monkeypatch):
+    """The shared bot inbox lives in ZIPPERGEN_HOME, so give every test its own."""
+
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(tmp_path / "zg-home"))
+
 from zippergen.store import (
     ensure_human_task,
+    ensure_human_task_token,
     load_adapter_state,
     load_human_task,
     load_human_task_notification,
@@ -32,6 +40,7 @@ class FakeTelegramClient:
         self.answers = []
         self.edits = []
         self._updates = list(updates or [])
+        self.fetches = []
 
     def send_message(self, chat_id, text, reply_markup=None):
         self.sent.append({
@@ -42,6 +51,7 @@ class FakeTelegramClient:
         return {"result": {"message_id": len(self.sent)}}
 
     def get_updates(self, *, offset=None, timeout=0, allowed_updates=None):
+        self.fetches.append(offset)
         return list(self._updates)
 
     def answer_callback_query(self, callback_query_id, text=None):
@@ -108,6 +118,7 @@ def test_notifier_identifies_store_errors_as_store_errors(
         connection="telegram-main",
         routes={},
         assignments={},
+        fingerprint="fingerprint-test",
     )
 
     def fail_from_store():
@@ -124,7 +135,14 @@ def test_notifier_identifies_store_errors_as_store_errors(
     assert "Telegram API retrying" not in error
 
 
-def test_deployment_notifiers_keep_independent_offsets_per_connection(tmp_path):
+def test_one_bot_is_read_once_however_many_connections_name_it(tmp_path):
+    """The identity that decides coordination is the token, not the name.
+
+    Two provider connections holding the same token are the same bot, so they
+    share one cursor. Reading Telegram's queue confirms and destroys, so a
+    second independent reader would consume the first one's updates.
+    """
+
     store_path = str(tmp_path / "deployment.sqlite")
 
     class PollClient(FakeTelegramClient):
@@ -140,28 +158,52 @@ def test_deployment_notifiers_keep_independent_offsets_per_connection(tmp_path):
                 allowed_updates=allowed_updates,
             )
 
+    same_bot = "fingerprint-shared"
     first_client = PollClient([{"update_id": 100}])
-    second_client = PollClient([])
+    second_client = PollClient([{"update_id": 101}])
     first = TelegramDeploymentNotifier(
-        store_path,
-        first_client,
-        connection="first-bot",
-        routes={},
-        assignments={},
+        store_path, first_client, connection="ops-bot",
+        routes={}, assignments={}, fingerprint=same_bot,
     )
     second = TelegramDeploymentNotifier(
-        store_path,
-        second_client,
-        connection="second-bot",
-        routes={},
-        assignments={},
+        store_path, second_client, connection="review-bot",
+        routes={}, assignments={}, fingerprint=same_bot,
     )
 
     first.poll_updates_once()
     second.poll_updates_once()
 
-    assert first_client.offsets == [None]
-    assert second_client.offsets == [None]
+    assert first_client.offsets == [None], "the first reader starts from scratch"
+    assert second_client.offsets == [101], (
+        "the second reader continues the shared cursor rather than restarting"
+    )
+
+    other_bot = PollClient([])
+    third = TelegramDeploymentNotifier(
+        store_path, other_bot, connection="other-bot",
+        routes={}, assignments={}, fingerprint="fingerprint-other",
+    )
+    third.poll_updates_once()
+    assert other_bot.offsets == [None], "a different bot keeps its own cursor"
+
+
+def test_a_second_process_does_not_fetch_while_one_is_fetching(tmp_path):
+    """Fetching is done on everyone's behalf, so only one process may do it."""
+
+    from zippergen.telegram_inbox import poll_lock
+
+    store_path = str(tmp_path / "deployment.sqlite")
+    client = FakeTelegramClient([{"update_id": 100}])
+    notifier = TelegramDeploymentNotifier(
+        store_path, client, connection="bot",
+        routes={}, assignments={}, fingerprint="fingerprint-busy",
+    )
+
+    with poll_lock("fingerprint-busy") as acquired:
+        assert acquired
+        notifier.poll_updates_once()
+
+    assert client.fetches == [], "it must not fetch while another holds the lock"
 
 
 def _create_task(
@@ -276,6 +318,7 @@ def test_expired_callback_ack_does_not_undo_answer_or_block_offset(tmp_path):
             }
         },
         assignments={"User": "approval-chat"},
+        fingerprint="fingerprint-test",
     )
     assert notifier.send_pending_once() == 1
     token = client.sent[0]["reply_markup"]["inline_keyboard"][0][0][
@@ -300,11 +343,16 @@ def test_expired_callback_ack_does_not_undo_answer_or_block_offset(tmp_path):
         assert load_human_task(conn, "task-1")["result"] == {
             "approved": False
         }
-        assert load_adapter_state(
-            conn, "telegram:deployment:approval-bot:offset"
-        ) == 41
     finally:
         conn.close()
+
+    from zippergen.telegram_inbox import open_inbox, read_offset
+
+    inbox = open_inbox("fingerprint-test")
+    try:
+        assert read_offset(inbox) == 41
+    finally:
+        inbox.close()
     assert client.offsets == [None, 42]
 
 
@@ -333,18 +381,20 @@ def test_invalid_expired_callback_is_consumed_once(tmp_path):
             }
         },
         assignments={"User": "approval-chat"},
+        fingerprint="fingerprint-test",
     )
 
     assert notifier.poll_updates_once() == 0
     assert notifier.poll_updates_once() == 0
 
-    conn = open_store(str(store_path))
+    # The cursor belongs to the bot now, not to this deployment's store.
+    from zippergen.telegram_inbox import open_inbox, read_offset
+
+    inbox = open_inbox("fingerprint-test")
     try:
-        assert load_adapter_state(
-            conn, "telegram:deployment:approval-bot:offset"
-        ) == 57
+        assert read_offset(inbox) == 57
     finally:
-        conn.close()
+        inbox.close()
     assert client.offsets == [None, 58]
 
 
@@ -501,6 +551,7 @@ def test_deployment_notifier_shares_one_configuration_across_participants(
             "Writer": "team-chat",
             "Reviewer": "team-chat",
         },
+        fingerprint="fingerprint-test",
     )
 
     assert notifier.send_pending_once() == 2
@@ -538,6 +589,7 @@ def test_deployment_notifier_action_route_overrides_participant_route(
             "Human": "general",
             "Human.approve_contract": "legal",
         },
+        fingerprint="fingerprint-test",
     )
 
     assert notifier.send_pending_once() == 1
@@ -588,6 +640,7 @@ def test_the_poller_survives_an_outage_and_backs_off(tmp_path, monkeypatch, caps
         connection="telegram-main",
         routes={},
         assignments={},
+        fingerprint="fingerprint-test",
     )
     attempts = {"n": 0}
 
@@ -617,6 +670,7 @@ def test_backoff_is_capped_and_resets_after_a_success(tmp_path, monkeypatch):
         connection="telegram-main",
         routes={},
         assignments={},
+        fingerprint="fingerprint-test",
     )
 
     delay = 1.0
@@ -653,6 +707,7 @@ def test_a_defect_in_our_own_code_still_crashes_the_poller(tmp_path, monkeypatch
         connection="telegram-main",
         routes={},
         assignments={},
+        fingerprint="fingerprint-test",
     )
 
     def programming_error():
@@ -678,6 +733,7 @@ def test_health_is_published_so_status_can_say_so(tmp_path, monkeypatch):
         connection="approval-bot",
         routes={},
         assignments={},
+        fingerprint="fingerprint-test",
     )
     monkeypatch.setattr(stop, "wait", lambda _delay: None)
 
@@ -730,3 +786,214 @@ def test_health_is_written_only_when_it_changes(tmp_path):
         assert written_at() != first, "a change must be recorded"
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Several deployments, one bot
+# ---------------------------------------------------------------------------
+
+
+def test_two_deployments_sharing_a_bot_each_get_their_own_approval(tmp_path):
+    """The failure this whole design exists to prevent.
+
+    Telegram's queue is single-consumer and reading it destroys. Two
+    deployments polling independently would confirm each other's updates out of
+    existence, and a human's answer would vanish. Here the bot is read once and
+    each deployment takes what its own token identifies.
+    """
+
+    class QueueClient(FakeTelegramClient):
+        """Behaves like Telegram: an offset confirms, and confirmed is gone."""
+
+        def __init__(self, queue):
+            super().__init__([])
+            self.queue = queue
+
+        def get_updates(self, *, offset=None, timeout=0, allowed_updates=None):
+            self.fetches.append(offset)
+            if offset is not None:
+                self.queue[:] = [
+                    item for item in self.queue if item["update_id"] >= offset
+                ]
+            return list(self.queue)
+
+    bot = "fingerprint-shared-bot"
+    stores = {}
+    notifiers = {}
+    tokens = {}
+    for name in ("alpha", "beta"):
+        store = tmp_path / f"{name}.sqlite"
+        stores[name] = store
+        _create_task(store, task_id=f"task-{name}")
+        conn = open_store(str(store))
+        try:
+            tokens[name] = ensure_human_task_token(
+                conn, f"task-{name}", channel="telegram:approval-chat"
+            )["token"]
+        finally:
+            conn.close()
+
+    # One update per deployment, interleaved, in one shared bot queue.
+    updates = [
+        {
+            "update_id": 500,
+            "callback_query": {
+                "id": "c1",
+                "data": f"zg:yes:{tokens['alpha']}",
+                "message": {"chat": {"id": 4242}, "message_id": 1},
+            },
+        },
+        {
+            "update_id": 501,
+            "callback_query": {
+                "id": "c2",
+                "data": f"zg:no:{tokens['beta']}",
+                "message": {"chat": {"id": 4242}, "message_id": 2},
+            },
+        },
+    ]
+
+    # One queue, as Telegram has one queue per bot.
+    shared_queue = list(updates)
+    for name in ("alpha", "beta"):
+        notifiers[name] = TelegramDeploymentNotifier(
+            str(stores[name]),
+            QueueClient(shared_queue),
+            connection="approval-bot",
+            routes={
+                "approval-chat": {
+                    "chat_id": "4242",
+                    "channel": "telegram:approval-chat",
+                }
+            },
+            assignments={"User": "approval-chat"},
+            fingerprint=bot,
+        )
+
+    # The interleaving is the point. alpha polls twice before beta polls at
+    # all, so its second fetch confirms both updates to Telegram and they are
+    # gone from the queue. Under a per-deployment cursor beta would find
+    # nothing and lose an answer a person had already given.
+    assert notifiers["alpha"].poll_updates_once() == 1
+    notifiers["alpha"].poll_updates_once()
+    assert shared_queue == [], "Telegram has forgotten both updates by now"
+
+    assert notifiers["beta"].poll_updates_once() == 1
+
+    for name, expected in (("alpha", True), ("beta", False)):
+        conn = open_store(str(stores[name]))
+        try:
+            task = load_human_task(conn, f"task-{name}")
+            assert task["status"] == "done", f"{name} lost its approval"
+            assert task["result"]["approved"] is expected
+        finally:
+            conn.close()
+
+    from zippergen.telegram_inbox import list_updates, open_inbox
+
+    inbox = open_inbox(bot)
+    try:
+        assert list_updates(inbox) == [], "both updates were absorbed"
+    finally:
+        inbox.close()
+
+
+def test_an_update_for_another_deployment_is_left_alone(tmp_path):
+    """A poller must never discard what it cannot resolve.
+
+    It is holding the queue on everyone's behalf, so an unrecognised update
+    belongs to a deployment that has not read yet, not to nobody.
+    """
+
+    from zippergen.telegram_inbox import list_updates, open_inbox
+
+    bot = "fingerprint-foreign"
+    store = tmp_path / "mine.sqlite"
+    _create_task(store, task_id="task-mine")
+    client = FakeTelegramClient([
+        {
+            "update_id": 700,
+            "callback_query": {
+                "id": "c9",
+                "data": "zg:yes:zg_belongs_to_someone_else",
+                "message": {"chat": {"id": 4242}, "message_id": 1},
+            },
+        }
+    ])
+    notifier = TelegramDeploymentNotifier(
+        str(store),
+        client,
+        connection="approval-bot",
+        routes={
+            "approval-chat": {
+                "chat_id": "4242",
+                "channel": "telegram:approval-chat",
+            }
+        },
+        assignments={"User": "approval-chat"},
+        fingerprint=bot,
+    )
+
+    assert notifier.poll_updates_once() == 0
+
+    inbox = open_inbox(bot)
+    try:
+        assert [item[0] for item in list_updates(inbox)] == [700]
+    finally:
+        inbox.close()
+
+
+def test_unclaimed_updates_age_out_but_recent_ones_wait(tmp_path, monkeypatch):
+    """An update waits for a stopped deployment; only age says it is orphaned."""
+
+    import time as _time
+
+    from zippergen.telegram_inbox import (
+        count_stale_updates,
+        list_updates,
+        open_inbox,
+        prune_updates,
+        record_updates,
+    )
+
+    conn = open_inbox("fingerprint-aging")
+    try:
+        record_updates(conn, [{"update_id": 1}, {"update_id": 2}], offset=2)
+        conn.execute(
+            "UPDATE inbox SET received_at=? WHERE update_id=1",
+            (_time.time() - 60 * 86400,),
+        )
+
+        assert count_stale_updates(conn, older_than_days=30) == 1
+        conn.execute("BEGIN IMMEDIATE")
+        removed = prune_updates(conn, older_than_days=30)
+        conn.execute("COMMIT")
+
+        assert removed == 1
+        assert [item[0] for item in list_updates(conn)] == [2], (
+            "a recent update must keep waiting for its deployment"
+        )
+    finally:
+        conn.close()
+
+
+def test_the_lock_file_is_never_removed(tmp_path):
+    """flock lives on the inode, not the path.
+
+    Unlinking the lock file while a process holds it would let the next process
+    lock a fresh inode and believe it had exclusive access, which is exactly
+    the mutual exclusion this design depends on.
+    """
+
+    from zippergen.telegram_inbox import lock_path, poll_lock
+
+    with poll_lock("fingerprint-keeps-lock") as acquired:
+        assert acquired
+    path = lock_path("fingerprint-keeps-lock")
+    assert path.exists(), "the lock file outlives the lock, on purpose"
+
+    # And it is reusable rather than recreated.
+    inode = path.stat().st_ino
+    with poll_lock("fingerprint-keeps-lock") as acquired:
+        assert acquired
+    assert path.stat().st_ino == inode

@@ -635,6 +635,16 @@ creates an empty store, and leaves the service stopped. Start it again with
 `zg deploy start` once you have looked: a reset clears connector progress too,
 so the next start may re-read a mailbox that was already handled.
 
+Several deployments may share one Telegram bot; this is expected. Telegram's
+inbound queue is one queue per bot with one cursor, and reading it confirms and
+destroys, so exactly one process may read it at a time. ZipperGen coordinates
+that with a shared per-bot store and lock file under
+`ZIPPERGEN_HOME/connectors/`: whichever deployment takes the lock reads on
+everyone's behalf, and each deployment then absorbs the updates its own task
+tokens identify. Deployments sharing a bot must run on the same machine. Never
+delete the lock file; an advisory lock lives on the inode, so unlinking the
+path would break mutual exclusion.
+
 Keep stores owner-private on a local filesystem with reliable SQLite locking
 and `fsync`. Never edit durable rows directly. External effects must be
 idempotent, because crash recovery or a restore from an older backup can repeat

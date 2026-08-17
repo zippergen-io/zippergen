@@ -19,6 +19,15 @@ from zippergen.human_tasks import (
     human_task_result_from_value,
     validate_human_task_spec,
 )
+from zippergen.telegram_inbox import (
+    bot_fingerprint,
+    list_updates,
+    open_inbox,
+    poll_lock,
+    read_offset,
+    record_updates,
+    remove_update,
+)
 from zippergen.store import (
     complete_human_task,
     ensure_human_task_token,
@@ -498,10 +507,25 @@ class TelegramDeploymentNotifier:
     routes: Mapping[str, Mapping[str, object]]
     assignments: Mapping[str, str]
     limit: int | None = None
+    #: Which bot this polls, as a hash of its token. Two provider connections
+    #: holding the same token are the same bot and must share one reader, so
+    #: this, not the connection name, is the identity that decides coordination.
+    fingerprint: str = ""
 
     #: An outage lasts minutes, not seconds. Backing off to a minute keeps a
     #: long one from becoming a request flood, and still recovers promptly.
     MAX_RETRY_DELAY = 60.0
+
+    @property
+    def _bot(self) -> str:
+        """The shared identity this poller coordinates on."""
+
+        if not self.fingerprint:
+            raise ValueError(
+                "TelegramDeploymentNotifier needs the bot fingerprint: two "
+                "connections holding one token must share a reader."
+            )
+        return self.fingerprint
 
     def _backoff(self, delay: float) -> float:
         return min(delay * 2, self.MAX_RETRY_DELAY)
@@ -533,10 +557,6 @@ class TelegramDeploymentNotifier:
         except sqlite3.DatabaseError:
             # Reporting health must never be the thing that stops delivery.
             return
-
-    @property
-    def _offset_key(self) -> str:
-        return f"telegram:deployment:{self.connection}:offset"
 
     def _configuration_for_task(self, task: dict) -> str | None:
         action_target = f"{task['role']}.{task['action']}"
@@ -687,33 +707,56 @@ class TelegramDeploymentNotifier:
         return notifier.process_update(update) if notifier is not None else False
 
     def poll_updates_once(self, *, timeout: float = 0) -> int:
-        conn = open_store(self.store_path)
-        try:
-            offset = int(load_adapter_state(conn, self._offset_key, 0) or 0)
-        finally:
-            conn.close()
-        updates = self.client.get_updates(
-            offset=offset + 1 if offset else None,
-            timeout=timeout,
-            allowed_updates=["message", "callback_query"],
-        )
-        processed = 0
-        max_update_id = offset
-        for update in updates:
-            max_update_id = max(
-                max_update_id, int(update.get("update_id", 0))
-            )
-            if self.process_update(update):
-                processed += 1
-        if max_update_id > offset:
-            conn = open_store(self.store_path)
+        """Fetch on everyone's behalf if allowed, then take what is ours.
+
+        Several deployments may share this bot. Only one of them may read
+        Telegram's queue, because reading it confirms and destroys. Consuming
+        the shared inbox needs no such coordination: an update is identified by
+        a token this deployment issued, or by a message it sent.
+        """
+
+        self._fetch_shared(timeout=timeout)
+        return self._consume_shared()
+
+    def _fetch_shared(self, *, timeout: float) -> None:
+        fingerprint = self._bot
+        with poll_lock(fingerprint) as acquired:
+            if not acquired:
+                return  # Someone else is fetching for us.
+            conn = open_inbox(fingerprint)
             try:
-                write_adapter_state(
-                    conn, self._offset_key, max_update_id
+                offset = read_offset(conn)
+                updates = self.client.get_updates(
+                    offset=offset + 1 if offset else None,
+                    timeout=timeout,
+                    allowed_updates=["message", "callback_query"],
                 )
+                if not updates:
+                    return
+                highest = max(int(item.get("update_id", 0)) for item in updates)
+                record_updates(conn, updates, offset=max(offset, highest))
             finally:
                 conn.close()
-        return processed
+
+    def _consume_shared(self) -> int:
+        """Take the updates this deployment owns, and leave the rest alone.
+
+        An update we cannot resolve belongs to another deployment sharing this
+        bot, so it stays. Age, not this pass, is what eventually removes one
+        that belongs to nobody.
+        """
+
+        conn = open_inbox(self._bot)
+        try:
+            processed = 0
+            for update_id, update in list_updates(conn):
+                if not self.process_update(update):
+                    continue
+                remove_update(conn, update_id)
+                processed += 1
+            return processed
+        finally:
+            conn.close()
 
     def run_forever(
         self,

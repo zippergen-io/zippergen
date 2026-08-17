@@ -18,6 +18,7 @@ import os
 import plistlib
 import shlex
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -2171,6 +2172,43 @@ def _deployment_list_command(args) -> int:
     return 0
 
 
+def _prune_shared_connector_inboxes(*, keep_days: float, preview: bool = False) -> int:
+    """Drop inbound updates nobody claimed.
+
+    An update waits in a shared bot inbox until the deployment it belongs to
+    absorbs it, because that deployment may simply be stopped. What is left
+    after long enough belongs to a task that no longer exists, and only age can
+    say so. The lock files beside these stores are never removed: an advisory
+    lock lives on the inode, so unlinking the path while a process holds it
+    would let the next one lock a fresh inode and believe it was alone.
+    """
+
+    from zippergen.telegram_inbox import count_stale_updates, prune_updates
+
+    directory = _zippergen_home() / "connectors"
+    if not directory.is_dir():
+        return 0
+    total = 0
+    for path in sorted(directory.glob("telegram-*.sqlite")):
+        conn = sqlite3.connect(str(path), isolation_level=None, timeout=5.0)
+        try:
+            if preview:
+                total += count_stale_updates(conn, older_than_days=keep_days)
+                continue
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                total += prune_updates(conn, older_than_days=keep_days)
+                conn.execute("COMMIT")
+            except BaseException:
+                conn.execute("ROLLBACK")
+                raise
+        except sqlite3.DatabaseError:
+            continue
+        finally:
+            conn.close()
+    return total
+
+
 def _deployment_prune_command(args) -> int:
     """Clear what nobody owns: orphaned deployments and stale trash.
 
@@ -2184,6 +2222,9 @@ def _deployment_prune_command(args) -> int:
     names = [str(row["name"]) for row in orphaned]
     entries = list_trash_entries()
     stale = [entry for entry in entries if entry.age_days >= args.keep_days]
+    unclaimed = _prune_shared_connector_inboxes(
+        keep_days=args.keep_days, preview=True
+    )
 
     if names:
         print("Orphaned deployments: " + ", ".join(names))
@@ -2196,7 +2237,12 @@ def _deployment_prune_command(args) -> int:
         )
     else:
         print("Trash: empty.")
-    if not names and not stale:
+    if unclaimed:
+        print(
+            f"Connector inboxes: {unclaimed} unclaimed update(s) older than "
+            f"{args.keep_days:g} day(s)."
+        )
+    if not names and not stale and not unclaimed:
         return 0
 
     if not args.yes:
@@ -2212,6 +2258,12 @@ def _deployment_prune_command(args) -> int:
 
     for name in names:
         _remove_command(argparse.Namespace(name=name, purge=False, yes=True))
+    dropped = _prune_shared_connector_inboxes(keep_days=args.keep_days)
+    if dropped:
+        print(
+            f"Dropped {dropped} unclaimed connector update(s) older than "
+            f"{args.keep_days:g} day(s)."
+        )
     if stale:
         outcome = prune_trash(keep_days=args.keep_days)
         print(
