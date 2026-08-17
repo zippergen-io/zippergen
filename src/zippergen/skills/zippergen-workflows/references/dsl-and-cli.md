@@ -612,6 +612,10 @@ zg deploy reset --yes
 zg deploy remove
 ```
 
+Stop a running deployment before invoking bare `zg deploy` to update its code
+or configuration. `zg deploy restart` only restarts the bundle already
+prepared; it does not apply source changes.
+
 `zg deploy inspect --watch` shows that deployment's live position.
 
 There is no workflow or deployment name to pass: the project identifies both.

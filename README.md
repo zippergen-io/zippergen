@@ -386,9 +386,15 @@ zg deploy reset --yes         # archive durable state and start fresh
 
 Use `zg deploy --no-start` only when you deliberately want to prepare and
 review a stopped deployment before a later `zg deploy start`. It is not a
-required preliminary step. After a code change, run `zg deploy` again;
-`restart` reuses the existing bundle, while `reset` discards durable execution
-state and `remove` uninstalls the service.
+required preliminary step. After a code change, stop a running deployment
+before running `zg deploy` again, so its bundle and managed environment are
+not replaced underneath it. `restart` reuses the existing bundle, while
+`reset` discards durable execution state and `remove` uninstalls the service:
+
+```bash
+zg deploy stop
+zg deploy       # rebuild and start the updated deployment
+```
 
 A workflow can ask a person on Telegram, read Gmail, or write to Google
 Sheets. Which chat, which spreadsheet, which Gmail query: that is project

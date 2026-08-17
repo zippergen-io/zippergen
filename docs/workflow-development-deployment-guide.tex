@@ -788,11 +788,16 @@ service. A failure stops it before starting. Use \texttt{-{}-no-start} only
 when you deliberately want preparation and review to stop before a later
 \texttt{zg deploy start}; it is not a required preliminary step.
 
-After the first time, the same command redeploys the current source:
+To redeploy current source, stop the running service before replacing its
+bundle and managed environment:
 
 \begin{lstlisting}[style=shell]
-zg deploy                     # redeploy the current source
+zg deploy stop
+zg deploy                     # rebuild and start the updated deployment
 \end{lstlisting}
+
+\texttt{zg deploy restart} restarts the already prepared bundle; it does not
+apply source or project-configuration changes.
 
 \subsection{Operating one}
 

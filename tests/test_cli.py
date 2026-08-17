@@ -1062,6 +1062,29 @@ def test_deployment_start_refuses_to_compete_with_foreground_run(
             main(["deploy", "start"])
 
 
+def test_redeploy_requires_the_existing_deployment_to_be_stopped(
+    tmp_path, monkeypatch, capsys
+):
+    from zippergen.execution_lock import execution_lock, execution_lock_path
+
+    workflow_path = tmp_path / "workflow.py"
+    workflow_path.write_text(WORKFLOW_SOURCE)
+    home = tmp_path / "zg-home"
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(home))
+    monkeypatch.chdir(tmp_path)
+    assert _deploy_for_test([f"{workflow_path}:hello"]) == 0
+    capsys.readouterr()
+    profile = json.loads(_the_deployment(home).read_text())
+
+    lock_path = execution_lock_path(home, str(profile["name"]))
+    with execution_lock(lock_path, owner="project deployment"):
+        with pytest.raises(
+            SystemExit,
+            match="already running.*zg deploy stop.*before updating",
+        ):
+            main(["deploy", "--yes"])
+
+
 def test_two_projects_with_the_same_workflow_get_independent_deployments(
     tmp_path, monkeypatch, capsys
 ):

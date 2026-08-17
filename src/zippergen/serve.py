@@ -969,6 +969,32 @@ def _require_deployment_execution_slot(
         )
 
 
+def _require_deployment_update_slot(project_key: str) -> None:
+    """Require an idle project before replacing deployment artifacts."""
+
+    active = active_execution(
+        execution_lock_path(_zippergen_home(), project_key)
+    )
+    if active is None:
+        return
+    if active.owner == "project deployment":
+        detail = (
+            f" (PID {active.pid})" if active.pid is not None else ""
+        )
+        raise SystemExit(
+            f"The project deployment is already running{detail}. Stop it "
+            "with 'zg deploy stop' before updating it with 'zg deploy'. Use "
+            "'zg deploy restart' only when the prepared code and "
+            "configuration have not changed."
+        )
+    raise SystemExit(
+        _execution_conflict_message(
+            active,
+            requested="a deployment update",
+        )
+    )
+
+
 def _run_workflow_command(args) -> int:
     from zippergen.workflow_io import project_directory
     from zippergen.workspace import Workspace
@@ -2956,6 +2982,7 @@ def _deploy_command(args) -> int:
         deployment_workspace.project_manifest().get("project_id") or ""
     )
     deployment_name = deployment_workspace.directory.name
+    _require_deployment_update_slot(deployment_name)
     if _deployment_profile_path(deployment_name).exists():
         existing = _resolved_deployment_name(args)
         # Redeploying: keep the deployment this project already has.
