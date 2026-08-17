@@ -388,8 +388,9 @@ Use `zg deploy --no-start` only when you deliberately want to prepare and
 review a stopped deployment before a later `zg deploy start`. It is not a
 required preliminary step. After a code change, stop a running deployment
 before running `zg deploy` again, so its bundle and managed environment are
-not replaced underneath it. `restart` reuses the existing bundle, while
-`reset` discards durable execution state and `remove` uninstalls the service:
+not replaced underneath it. `start` and `stop` move the service without
+touching it, while `reset` discards durable execution state and `remove`
+uninstalls the service:
 
 ```bash
 zg deploy stop
@@ -447,7 +448,7 @@ zg
 ├── run
 │   └── status · reset · inspect · trace · tasks · approve
 ├── deploy
-│   └── list · prune · start · stop · restart · status · logs · check
+│   └── list · prune · start · stop · status · logs · check
 │       · inspect · trace · tasks · approve · compact · reset · remove
 └── completion
 ```

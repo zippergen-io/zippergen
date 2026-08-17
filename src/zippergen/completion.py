@@ -41,7 +41,17 @@ def _parser_choices(path: tuple[str, ...] = ()) -> list[str]:
     if subparsers is None:
         return []
     hidden = HIDDEN_COMMANDS if not path else frozenset()
-    return [name for name in subparsers.choices if name not in hidden]
+    # A subcommand registered without ``help=`` is one argparse does not offer,
+    # so completion must not offer it either. That is how a retired verb stays
+    # parseable, to answer an old habit, without coming back into the surface.
+    listed = {
+        action.dest for action in getattr(subparsers, "_choices_actions", [])
+    }
+    return [
+        name
+        for name in subparsers.choices
+        if name not in hidden and (not listed or name in listed)
+    ]
 
 
 def completion_candidates(
@@ -258,7 +268,7 @@ complete -c zg -c zippergen -n '__fish_seen_subcommand_from model; and not __fis
 complete -c zg -c zippergen -n '__fish_seen_subcommand_from assistant; and not __fish_seen_subcommand_from configure assign unassign check remove' -a '(zg __complete assistant-actions 2>/dev/null)'
 complete -c zg -c zippergen -n '__fish_seen_subcommand_from connector; and not __fish_seen_subcommand_from configure assign unassign bind unbind check remove' -a '(zg __complete connector-actions 2>/dev/null)'
 complete -c zg -c zippergen -n '__fish_seen_subcommand_from run; and not __fish_seen_subcommand_from status reset inspect trace tasks approve' -a '(zg __complete run-actions 2>/dev/null)'
-complete -c zg -c zippergen -n '__fish_seen_subcommand_from deploy; and not __fish_seen_subcommand_from list prune start stop restart remove compact logs check status reset inspect trace tasks approve' -a '(zg __complete deploy-actions 2>/dev/null)'
+complete -c zg -c zippergen -n '__fish_seen_subcommand_from deploy; and not __fish_seen_subcommand_from list prune start stop remove compact logs check status reset inspect trace tasks approve' -a '(zg __complete deploy-actions 2>/dev/null)'
 complete -c zg -c zippergen -n '__fish_seen_subcommand_from model assign; and test (count (commandline -opc)) -eq 3' -a '(zg __complete model-targets 2>/dev/null)'
 complete -c zg -c zippergen -n '__fish_seen_subcommand_from model assign; and test (count (commandline -opc)) -eq 4' -a '(zg __complete model-configurations 2>/dev/null)'
 complete -c zg -c zippergen -n '__fish_seen_subcommand_from provider configure; and test (count (commandline -opc)) -eq 4' -a '(zg __complete provider-kinds 2>/dev/null)'

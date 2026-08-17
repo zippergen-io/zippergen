@@ -605,7 +605,6 @@ zg deploy
 zg deploy status
 zg deploy logs
 zg deploy check
-zg deploy restart
 zg deploy stop
 zg deploy compact
 zg deploy reset --yes
@@ -613,8 +612,9 @@ zg deploy remove
 ```
 
 Stop a running deployment before invoking bare `zg deploy` to update its code
-or configuration. `zg deploy restart` only restarts the bundle already
-prepared; it does not apply source changes.
+or configuration. There is no `restart`: it was exactly `stop` then `start`,
+and it never applied source changes. `start` on a deployment that is already
+running does nothing.
 
 `zg deploy inspect --watch` shows that deployment's live position.
 
@@ -632,7 +632,9 @@ Completed human tasks and connector notifications remain as audit records.
 `remove` deletes a deployment but keeps its durable store unless you
 purge it. `reset` is the recoverable way to start over: it stops the service,
 archives the store and its SQLite sidecars under ZipperGen's trash directory,
-creates an empty store, and restarts the service if it was running.
+creates an empty store, and leaves the service stopped. Start it again with
+`zg deploy start` once you have looked: a reset clears connector progress too,
+so the next start may re-read a mailbox that was already handled.
 
 Keep stores owner-private on a local filesystem with reliable SQLite locking
 and `fsync`. Never edit durable rows directly. External effects must be

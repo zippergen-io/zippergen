@@ -493,6 +493,56 @@ def test_prune_keeps_everything_when_the_window_is_wide(tmp_path, monkeypatch, c
     assert "0 older than 365 day(s)" in capsys.readouterr().out
 
 
+def test_start_does_nothing_when_the_deployment_is_already_running(
+    tmp_path, monkeypatch, capsys
+):
+    """"start" means make sure it is running, not bounce it.
+
+    On launchd the old code ran bootout then bootstrap for start as well as
+    restart, so starting a healthy deployment tore it down and back up. That
+    interrupts the step in flight, and an interrupted model call or effect can
+    run a second time.
+    """
+
+    _prepared_deployment_store(tmp_path, monkeypatch, capsys)
+    monkeypatch.setattr(
+        "zippergen.deployment_platform.deployment_service_status",
+        lambda _name: {
+            "state": "running",
+            "healthy": True,
+            "detail": "service is running",
+        },
+    )
+    monkeypatch.setattr(
+        "zippergen.serve._run_launchctl",
+        lambda *a, **k: pytest.fail("start must not touch a running service"),
+    )
+    monkeypatch.setattr(
+        "zippergen.serve._run_systemctl",
+        lambda *a, **k: pytest.fail("start must not touch a running service"),
+    )
+    capsys.readouterr()
+
+    assert main(["deploy", "start"]) == 0
+    assert "is already running" in capsys.readouterr().out
+
+
+def test_restart_is_retired_and_says_what_to_use(tmp_path, monkeypatch, capsys):
+    """It was exactly stop then start, and it never applied changes."""
+
+    _prepared_deployment_store(tmp_path, monkeypatch, capsys)
+    capsys.readouterr()
+
+    with pytest.raises(SystemExit) as error:
+        main(["deploy", "restart"])
+
+    message = str(error.value)
+    assert "is gone" in message
+    assert "zg deploy stop" in message and "zg deploy start" in message
+    # The thing most people typing it actually wanted.
+    assert "use 'zg deploy'" in message
+
+
 def test_reset_never_starts_the_service(tmp_path, monkeypatch, capsys):
     """Reset is a state operation, so it leaves the running axis alone.
 
@@ -1479,9 +1529,7 @@ def test_start_deployment_dry_run_prints_launchd_commands(tmp_path, monkeypatch,
     assert launchd["KeepAlive"] == {"SuccessfulExit": False}
 
 
-@pytest.mark.parametrize("action", ["start", "restart"])
-def test_start_and_restart_refuse_a_deployment_that_fails_readiness(
-    action,
+def test_start_refuses_a_deployment_that_fails_readiness(
     tmp_path,
     monkeypatch,
     capsys,
@@ -1511,13 +1559,13 @@ def test_start_and_restart_refuse_a_deployment_that_fails_readiness(
         ),
     )
 
-    rc = main(["deploy", action])
+    rc = main(["deploy", "start"])
 
     captured = capsys.readouterr()
     assert rc == 1
     assert "1 failure(s)" in captured.out
     assert "provider credential openai-test" in captured.out
-    assert f"was not {action}ed because readiness checks found failures" in (
+    assert "was not started because readiness checks found failures" in (
         captured.out
     )
 

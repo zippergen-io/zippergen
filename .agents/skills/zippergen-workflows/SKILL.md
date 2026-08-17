@@ -394,9 +394,10 @@ zg deploy
 ```
 
 Everything else acts on that same deployment, so you do not name it:
-`zg deploy status`, `logs`, `check`, `restart`, `stop`, `compact`, `remove`,
-and `configure --restart`. A project has one deployment; two of them means two
-project directories.
+`zg deploy status`, `logs`, `check`, `start`, `stop`, `compact`, `reset`, and
+`remove`. A project has one deployment; two of them means two project
+directories. To apply a code or configuration change, stop it and run bare
+`zg deploy` again.
 
 Never assume permission to send live messages, modify production data,
 complete OAuth, or restart a live service merely because the user requested

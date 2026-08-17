@@ -388,14 +388,31 @@ def _install_launchd_agent(profile: dict[str, object], *, dry_run: bool = False)
 
 
 def _deployment_lifecycle_command(args, action: str) -> int:
+    from zippergen.deployment_platform import deployment_service_status
+
     profile = _load_deployment_profile(args.name)
     name = str(profile["name"])
-    if action in {"start", "restart"} and not args.dry_run:
+    if action == "start" and not args.dry_run:
+        # "start" means make sure it is running, so a running service is
+        # already the answer. Bringing it down and up again would interrupt
+        # whatever step is in flight, and an interrupted model call or effect
+        # can run a second time.
+        status = deployment_service_status(name)
+        if status.get("state") in {"running", "restarting"}:
+            print(
+                f"Deployment {name} is already running ({status.get('detail')})."
+            )
+            if getattr(args, "enable", False):
+                print(
+                    "  Autostart was left unchanged. Run 'zippergen deploy stop' "
+                    "then 'zippergen deploy start --enable' to set it."
+                )
+            return 0
+    if action == "start" and not args.dry_run:
         _require_deployment_execution_slot(profile)
-    if action in {"start", "restart"} and not args.dry_run:
         _initialize_deployment_store(profile)
     if (
-        action in {"start", "restart"}
+        action == "start"
         and not args.dry_run
         and not getattr(args, "skip_readiness", False)
     ):
@@ -413,12 +430,12 @@ def _deployment_lifecycle_command(args, action: str) -> int:
     manager = _service_manager()
     if manager == "systemd":
         unit = _systemd_unit_name(name)
-        if action in {"start", "restart"}:
+        if action == "start":
             target = _install_systemd_unit(profile, dry_run=args.dry_run)
             if not args.dry_run:
                 print(f"Installed systemd unit: {target}")
             _run_systemctl(_systemctl_command("daemon-reload"), dry_run=args.dry_run)
-            if action == "start" and args.enable:
+            if args.enable:
                 _run_systemctl(_systemctl_command("enable", unit), dry_run=args.dry_run)
         _run_systemctl(_systemctl_command(action, unit), dry_run=args.dry_run)
         service = unit
@@ -426,12 +443,12 @@ def _deployment_lifecycle_command(args, action: str) -> int:
         label = _launchd_label(name)
         domain = _launchctl_domain()
         service = f"{domain}/{label}"
-        if action in {"start", "restart"}:
+        if action == "start":
             target = _install_launchd_agent(profile, dry_run=args.dry_run)
             if not args.dry_run:
                 print(f"Installed launchd agent: {target}")
-            # bootout makes both start and restart idempotent when the agent was
-            # already loaded.  A missing prior agent is expected.
+            # A stale agent may still be loaded after a crash, so clear it
+            # before bootstrapping. A missing prior agent is expected.
             _run_launchctl(
                 _launchctl_command("bootout", service),
                 dry_run=args.dry_run,
@@ -445,7 +462,7 @@ def _deployment_lifecycle_command(args, action: str) -> int:
             _run_launchctl(_launchctl_command("bootout", service), dry_run=args.dry_run)
     if args.dry_run:
         return 0
-    done = {"start": "Started", "stop": "Stopped", "restart": "Restarted"}[action]
+    done = {"start": "Started", "stop": "Stopped"}[action]
     print(f"{done} deployment {name} ({service}).")
     return 0
 
@@ -983,9 +1000,7 @@ def _require_deployment_update_slot(project_key: str) -> None:
         )
         raise SystemExit(
             f"The project deployment is already running{detail}. Stop it "
-            "with 'zg deploy stop' before updating it with 'zg deploy'. Use "
-            "'zg deploy restart' only when the prepared code and "
-            "configuration have not changed."
+            "with 'zg deploy stop' before updating it with 'zg deploy'."
         )
     raise SystemExit(
         _execution_conflict_message(
@@ -3102,7 +3117,7 @@ def _finalize_guided_deployment(
     if not getattr(args, "concise", False):
         print("Status: zippergen deploy status")
         print("Logs: zippergen deploy logs --follow")
-        print("Restart: zippergen deploy restart")
+        print("Stop: zippergen deploy stop")
     return 0
 
 
@@ -4451,8 +4466,13 @@ def _parse_cli_args(
     deploy_stop = deploy_sub.add_parser("stop", help="stop a supervised deployment")
     deploy_stop.add_argument("--dry-run", action="store_true", help="Print the service-manager command without running it.")
 
-    deploy_restart = deploy_sub.add_parser("restart", help="restart a supervised deployment")
-    deploy_restart.add_argument("--dry-run", action="store_true", help="Print service-manager commands without running them.")
+    # Registered but hidden, so an old habit gets an answer instead of
+    # "invalid choice". It was exactly stop then start, and its most tempting
+    # reading -- "apply my changes" -- was the one thing it never did.
+    # No `help=`, so argparse does not list it at all: passing SUPPRESS would
+    # print the sentinel string instead of hiding the row.
+    deploy_restart = deploy_sub.add_parser("restart")
+    deploy_restart.add_argument("--dry-run", action="store_true", help=argparse.SUPPRESS)
 
     deploy_remove = deploy_sub.add_parser(
         "remove",
@@ -4501,6 +4521,12 @@ def _parse_cli_args(
         help="Reset without asking for confirmation.",
     )
     _add_owned_execution_commands(deploy_sub, owner="deploy")
+    # `restart` is still parsed so an old habit gets a useful answer, but it is
+    # not offered. argparse lists every choice in the metavar regardless of
+    # help=SUPPRESS, so the list has to be stated.
+    deploy_sub.metavar = "{" + ",".join(
+        name for name in deploy_sub.choices if name != "restart"
+    ) + "}"
 
     internal_run = sub.add_parser("__run-deployment")
     internal_run.add_argument("--profile", required=True)
@@ -4664,7 +4690,13 @@ def main(argv=None) -> int:
         # `status` reads `deployment`; it no longer takes one as an
         # argument, so the attribute has to be created, not updated.
         args.deployment = resolved
-        if action in {"start", "stop", "restart"}:
+        if action == "restart":
+            raise SystemExit(
+                "'zg deploy restart' is gone. It was exactly 'zg deploy stop' "
+                "then 'zg deploy start'.\n"
+                "To apply code or configuration changes, use 'zg deploy'."
+            )
+        if action in {"start", "stop"}:
             return _deployment_lifecycle_command(args, action)
         if action == "remove":
             return _remove_command(args)

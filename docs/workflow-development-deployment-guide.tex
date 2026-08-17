@@ -796,9 +796,6 @@ zg deploy stop
 zg deploy                     # rebuild and start the updated deployment
 \end{lstlisting}
 
-\texttt{zg deploy restart} restarts the already prepared bundle; it does not
-apply source or project-configuration changes.
-
 \subsection{The six lifecycle commands}
 
 A project has exactly one deployment. Its identity comes from the project path
@@ -815,22 +812,21 @@ run, and does it keep the durable state? Nothing else separates them.
 \texttt{zg deploy} & \textbf{yes} & kept & prepare or re-prepare, then start; requires a stopped service \\
 \texttt{zg deploy start} & no & kept & start what is already prepared \\
 \texttt{zg deploy stop} & no & kept & stop the service; \texttt{start} resumes where it was \\
-\texttt{zg deploy restart} & no & kept & stop and start in one step \\
 \texttt{zg deploy reset} & no & \textbf{emptied} & archive the state and leave the service stopped \\
 \texttt{zg deploy remove} & --- & archived & unregister the service and take the deployment away \\
 \bottomrule
 \end{tabularx}
 \end{center}
 
-Read that table twice for the two commands people confuse:
+There is no \texttt{restart}: it was exactly \texttt{stop} then
+\texttt{start}, and its most tempting reading -- apply my changes -- was the
+one thing it never did. Use \texttt{stop} then \texttt{deploy} to pick up an
+edit; ZipperGen refuses \texttt{zg deploy} while the service runs so that this
+choice is explicit rather than silent.
+
+One pair is still worth reading twice:
 
 \begin{itemize}
-  \item \texttt{restart} is the only way to get running again without
-        rebuilding. It will happily restart yesterday's bundle, so after
-        editing the workflow or \path{zippergen.toml} you want \texttt{stop}
-        then \texttt{deploy}, not \texttt{restart}. ZipperGen now refuses
-        \texttt{zg deploy} while the service runs, precisely so that this
-        choice is explicit rather than silent.
   \item \texttt{reset} is the destructive one, despite sounding milder than
         \texttt{remove}. It keeps the deployment and throws the durable state
         away. \texttt{remove} keeps that state, archived under
@@ -886,7 +882,7 @@ only work \texttt{stop} can cost you.
 \texttt{zg deploy tasks} & decisions waiting for a person \\
 \texttt{zg deploy approve} & answer one \\
 \texttt{zg deploy check} & readiness checks, in detail \\
-\texttt{zg deploy stop} / \texttt{zg deploy restart} & move the service \\
+\texttt{zg deploy start} / \texttt{zg deploy stop} & move the service \\
 \texttt{zg deploy compact} & prune optional history and rotate logs; refuses while running \\
 \texttt{zg deploy reset --yes} & archive durable state; start again yourself \\
 \texttt{zg deploy remove} & delete it \\
@@ -1092,7 +1088,7 @@ zg connector assign Mailbox approval-chat
 \multicolumn{2}{@{}l}{\textbf{Deploy}} \\
 \texttt{deploy [-{}-no-start]} & prepare, check, and normally start \\
 \texttt{deploy list/prune} & find deployments and archive orphans \\
-\texttt{deploy start/stop/restart} & move the service \\
+\texttt{deploy start/stop} & move the service \\
 \texttt{deploy status/logs/check} & operate and diagnose \\
 \texttt{deploy inspect/trace/tasks/approve} & observe or answer the deployment \\
 \texttt{deploy compact/reset/remove} & prune history and logs, reset state, or delete \\
