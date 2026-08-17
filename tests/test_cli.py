@@ -406,6 +406,92 @@ def test_reset_lists_every_category_even_at_zero(tmp_path):
     assert "0 waiting, 0 answered" in output
 
 
+def test_prune_deletes_stale_archives_but_keeps_the_undo_window(
+    tmp_path, monkeypatch, capsys
+):
+    """Removal archives exist so a mistake can be undone.
+
+    So pruning is decided by age, never by size: today's archive is exactly the
+    one somebody may still need.
+    """
+
+    import os
+    import time
+
+    from zippergen.deployments import list_trash_entries, prune_trash
+
+    home = tmp_path / "zg-home"
+    (home / "deployments").mkdir(parents=True)
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(home))
+
+    old = time.time() - 60 * 86400
+    for area in ("deployments", "deployment-stores"):
+        stale = home / "trash" / area / "demo-20260101-000000"
+        stale.mkdir(parents=True)
+        (stale / "store.sqlite").write_bytes(b"x" * 5000)
+        os.utime(stale, (old, old))
+    fresh = home / "trash" / "deployments" / "demo-fresh"
+    fresh.mkdir(parents=True)
+    (fresh / "store.sqlite").write_bytes(b"y" * 1000)
+    log = home / "trash" / "deployment-logs"
+    log.mkdir(parents=True)
+    rotated = log / "demo-20260101-000000.log"
+    rotated.write_bytes(b"z" * 2000)
+    os.utime(rotated, (old, old))
+
+    assert len(list_trash_entries()) == 4
+
+    outcome = prune_trash(keep_days=30)
+
+    assert len(outcome.removed) == 3
+    assert outcome.removed_bytes == 12_000
+    assert [entry.path.name for entry in outcome.kept] == ["demo-fresh"]
+    assert fresh.exists(), "an archive inside the undo window must survive"
+    assert not rotated.exists()
+
+
+def test_prune_reports_the_trash_and_is_idempotent(tmp_path, monkeypatch, capsys):
+    import os
+    import time
+
+    home = tmp_path / "zg-home"
+    (home / "deployments").mkdir(parents=True)
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(home))
+    stale = home / "trash" / "deployments" / "demo-20260101-000000"
+    stale.mkdir(parents=True)
+    (stale / "store.sqlite").write_bytes(b"x" * 4096)
+    old = time.time() - 60 * 86400
+    os.utime(stale, (old, old))
+
+    assert main(["deploy", "prune", "--yes"]) == 0
+    first = capsys.readouterr().out
+    assert "Trash: 1 archive(s)" in first
+    assert "Deleted 1 archive(s)" in first
+
+    assert main(["deploy", "prune", "--yes"]) == 0
+    second = capsys.readouterr().out
+    assert "Trash: empty." in second
+    assert "Deleted" not in second
+
+
+def test_prune_keeps_everything_when_the_window_is_wide(tmp_path, monkeypatch, capsys):
+    import os
+    import time
+
+    home = tmp_path / "zg-home"
+    (home / "deployments").mkdir(parents=True)
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(home))
+    archive = home / "trash" / "deployments" / "demo-20260101-000000"
+    archive.mkdir(parents=True)
+    (archive / "store.sqlite").write_bytes(b"x" * 100)
+    os.utime(archive, (time.time() - 60 * 86400, time.time() - 60 * 86400))
+
+    assert main(["deploy", "prune", "--yes", "--keep-days", "365"]) == 0
+
+    assert archive.exists()
+    assert "0 older than 365 day(s)" in capsys.readouterr().out
+
+
 def test_remove_names_the_credentials_it_destroys(tmp_path):
     """Listing only what survives hides the irreversible loss.
 

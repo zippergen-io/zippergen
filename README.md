@@ -468,7 +468,9 @@ either resource while its service is running.
 `zg deploy list` also works outside a project and shows every deployment on
 the computer. If a project directory was deleted or reinitialized, use
 `zg deploy prune`; it unregisters orphaned services and archives their durable
-stores and logs rather than deleting them.
+stores and logs rather than deleting them. The same command clears archives
+older than 30 days, so removals stay undoable for a month and the trash does
+not grow forever. Use `--keep-days` for a different window.
 
 Enable completion in the current shell with one command:
 

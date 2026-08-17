@@ -383,6 +383,105 @@ def _unique_log_archive(name: str) -> Path:
     return destination
 
 
+TRASH_AREAS = ("deployments", "deployment-stores", "deployment-logs")
+
+
+@dataclass(frozen=True)
+class TrashEntry:
+    area: str
+    path: Path
+    age_days: float
+    bytes: int
+
+
+@dataclass(frozen=True)
+class TrashPruneResult:
+    removed: tuple[TrashEntry, ...]
+    kept: tuple[TrashEntry, ...]
+
+    @property
+    def removed_bytes(self) -> int:
+        return sum(entry.bytes for entry in self.removed)
+
+    @property
+    def kept_bytes(self) -> int:
+        return sum(entry.bytes for entry in self.kept)
+
+
+def _entry_bytes(path: Path) -> int:
+    try:
+        if path.is_file():
+            return path.stat().st_size
+        return sum(
+            item.stat().st_size for item in path.rglob("*") if item.is_file()
+        )
+    except OSError:
+        return 0
+
+
+def list_trash_entries(*, now: float | None = None) -> tuple[TrashEntry, ...]:
+    """Describe everything sitting in this machine's deployment trash.
+
+    Removal archives, reset archives and rotated logs all land here and nothing
+    has ever cleaned them up. Their age is what decides whether they are still
+    serving as an undo, so report that rather than only their size.
+    """
+
+    moment = time.time() if now is None else now
+    entries: list[TrashEntry] = []
+    for area in TRASH_AREAS:
+        root = _zippergen_home() / "trash" / area
+        if not root.is_dir():
+            continue
+        for path in sorted(root.iterdir()):
+            try:
+                modified = path.stat().st_mtime
+            except OSError:
+                continue
+            entries.append(
+                TrashEntry(
+                    area=area,
+                    path=path,
+                    age_days=max(0.0, (moment - modified) / 86400.0),
+                    bytes=_entry_bytes(path),
+                )
+            )
+    return tuple(entries)
+
+
+def prune_trash(
+    *,
+    keep_days: float,
+    now: float | None = None,
+) -> TrashPruneResult:
+    """Delete trash older than ``keep_days``, keeping the recent undo window.
+
+    Removing a deployment archives its durable store precisely so a mistake can
+    be undone, so pruning must never take today's archive. Age, not size, is
+    the criterion.
+    """
+
+    if keep_days < 0:
+        raise ValueError("keep_days must be zero or greater")
+    removed: list[TrashEntry] = []
+    kept: list[TrashEntry] = []
+    for entry in list_trash_entries(now=now):
+        if entry.age_days < keep_days:
+            kept.append(entry)
+            continue
+        try:
+            if entry.path.is_dir():
+                shutil.rmtree(entry.path)
+            else:
+                entry.path.unlink()
+        except OSError as exc:
+            raise DeploymentRemovalError(
+                f"Could not delete {entry.path}: {exc}"
+            ) from exc
+        removed.append(entry)
+    return TrashPruneResult(removed=tuple(removed), kept=tuple(kept))
+
+
 def _unique_store_archive(name: str) -> Path:
     root = _zippergen_home() / "trash" / "deployment-stores"
     root.mkdir(parents=True, exist_ok=True)

@@ -838,6 +838,22 @@ Read that table twice for the two commands people confuse:
         \texttt{remove -{}-purge} leaves nothing.
 \end{itemize}
 
+\begin{notebox}{Why \texttt{run} has no \texttt{remove}}
+\texttt{reset} is about the state. \texttt{remove} is about the deployment.
+
+A durable run is only a store file, so it has state and nothing else, and
+\texttt{zg run reset} is its whole vocabulary. A deployment is that store plus
+a registered service, a profile, credentials, a managed environment and a
+source bundle, so it needs the second verb as well. \texttt{zg run reset} and
+\texttt{zg deploy reset} mean exactly the same thing.
+
+Neither substitutes for the other. \texttt{remove} deletes credentials, so
+removing and deploying again costs you a token re-entry rather than being a
+heavier reset; and without \texttt{remove} there is no way to unregister the
+service, so deleting a project directory would leave the supervisor pointing at
+a bundle that no longer exists.
+\end{notebox}
+
 \begin{notebox}{Stopping is not losing}
 Durable state is the current state of the computation, committed after every
 step. \texttt{stop} therefore keeps everything that finished: variables,
@@ -867,6 +883,8 @@ only work \texttt{stop} can cost you.
 \texttt{zg deploy compact} & prune optional history and rotate logs; refuses while running \\
 \texttt{zg deploy reset --yes} & archive durable state and start fresh \\
 \texttt{zg deploy remove} & delete it \\
+\texttt{zg deploy list} & every deployment on this computer, orphans included \\
+\texttt{zg deploy prune} & clear orphans and stale archives \\
 \bottomrule
 \end{tabularx}
 \end{center}
@@ -885,9 +903,21 @@ service files & deleted & regenerated \\
 \end{tabularx}
 \end{center}
 
-\texttt{-{}-purge} keeps nothing, including the store. What survives lands in
-\path{ZIPPERGEN_HOME/trash/deployments/}, readable only by you. Nothing prunes
-it, so look occasionally.
+\texttt{-{}-purge} keeps nothing, including the store. Both commands name what
+they are about to destroy before asking, so read the list rather than the verb.
+
+What survives lands under \path{ZIPPERGEN_HOME/trash/}, readable only by you,
+in three places: \path{deployments/} for removals, \path{deployment-stores/}
+for resets, and \path{deployment-logs/} for rotated logs.
+
+\begin{lstlisting}[style=shell]
+zg deploy prune                       # orphaned deployments, and archives over 30 days old
+zg deploy prune --keep-days 7         # a shorter undo window
+\end{lstlisting}
+
+Pruning is decided by age, never by size, because the archive exists so that a
+mistaken \texttt{remove} can be undone. Today's archive is exactly the one
+somebody may still need, so it is never the one deleted.
 
 \subsection{Moving a project to a server}
 
@@ -895,9 +925,11 @@ it, so look occasionally.
   \item Clone the repository. The workflow, specification and
         \path{zippergen.toml} come with it.
   \item \texttt{zg validate} confirms the module loads in that environment.
-  \item Supply what the machine needs: model keys in the environment, the
-        Telegram token via \texttt{connector configure}, Google via
-        \texttt{authorize} on your laptop and \texttt{accept} there.
+  \item Supply what the machine needs. Credentials belong to the provider
+        connection, not to the model or connector that uses it: model keys in
+        the environment or via \texttt{zg provider set-credential}, the Telegram
+        token the same way, and Google with \texttt{zg provider authorize} on
+        your laptop and \texttt{zg provider accept} there.
   \item \texttt{zg deploy} prepares, checks and starts the service.
 \end{enumerate}
 

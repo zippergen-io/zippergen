@@ -2033,6 +2033,14 @@ def _remove_command(args) -> int:
     return 0
 
 
+def _format_bytes(total: float) -> str:
+    for unit in ("B", "KB", "MB", "GB"):
+        if total < 1024 or unit == "GB":
+            return f"{total:.0f} {unit}" if unit == "B" else f"{total:.1f} {unit}"
+        total /= 1024
+    return f"{total:.1f} GB"
+
+
 def _directory_size(path: Path) -> str:
     total = 0
     try:
@@ -2041,11 +2049,7 @@ def _directory_size(path: Path) -> str:
                 total += item.stat().st_size
     except OSError:
         return "size unavailable"
-    for unit in ("B", "KB", "MB", "GB"):
-        if total < 1024 or unit == "GB":
-            return f"{total:.0f} {unit}" if unit == "B" else f"{total:.1f} {unit}"
-        total /= 1024
-    return f"{total:.1f} GB"
+    return _format_bytes(total)
 
 
 def _deployment_inventory() -> list[dict[str, object]]:
@@ -2139,23 +2143,57 @@ def _deployment_list_command(args) -> int:
 
 
 def _deployment_prune_command(args) -> int:
+    """Clear what nobody owns: orphaned deployments and stale trash.
+
+    Both are host-wide leftovers. Archives exist so a mistaken removal can be
+    undone, so only ones older than the retention window are deleted.
+    """
+
+    from zippergen.deployments import list_trash_entries, prune_trash
+
     orphaned = [row for row in _deployment_inventory() if row["orphaned"]]
-    if not orphaned:
-        print("No orphaned deployments.")
-        return 0
     names = [str(row["name"]) for row in orphaned]
-    print("Orphaned deployments: " + ", ".join(names))
+    entries = list_trash_entries()
+    stale = [entry for entry in entries if entry.age_days >= args.keep_days]
+
+    if names:
+        print("Orphaned deployments: " + ", ".join(names))
+    else:
+        print("No orphaned deployments.")
+    if entries:
+        print(
+            f"Trash: {len(entries)} archive(s), {_format_bytes(sum(entry.bytes for entry in entries))}"
+            f" total; {len(stale)} older than {args.keep_days:g} day(s)."
+        )
+    else:
+        print("Trash: empty.")
+    if not names and not stale:
+        return 0
+
     if not args.yes:
         if not sys.stdin.isatty():
-            raise SystemExit("Re-run with --yes to archive and remove them.")
+            raise SystemExit("Re-run with --yes to remove them.")
         answer = input(
-            "Archive their durable stores and logs, then remove them? [y/N]: "
+            "Remove the orphaned deployments and delete the stale archives? "
+            "[y/N]: "
         ).strip().casefold()
         if answer not in {"y", "yes"}:
             print("Nothing was changed.")
             return 1
+
     for name in names:
         _remove_command(argparse.Namespace(name=name, purge=False, yes=True))
+    if stale:
+        outcome = prune_trash(keep_days=args.keep_days)
+        print(
+            f"Deleted {len(outcome.removed)} archive(s), reclaiming "
+            f"{_format_bytes(outcome.removed_bytes)}."
+        )
+        if outcome.kept:
+            print(
+                f"  Kept {len(outcome.kept)} archive(s) newer than "
+                f"{args.keep_days:g} day(s), {_format_bytes(outcome.kept_bytes)}."
+            )
     return 0
 
 
@@ -4382,10 +4420,22 @@ def _parse_cli_args(
 
     deploy_prune = deploy_sub.add_parser(
         "prune",
-        help="archive and remove deployments whose owning project is gone",
+        help=(
+            "remove deployments whose owning project is gone, and delete "
+            "stale archives"
+        ),
     )
     deploy_prune.add_argument(
         "--yes", action="store_true", help="Do not ask for confirmation."
+    )
+    deploy_prune.add_argument(
+        "--keep-days",
+        type=float,
+        default=30.0,
+        help=(
+            "Keep archives newer than this many days, so a mistaken removal "
+            "can still be undone. Default 30."
+        ),
     )
 
     deploy_start = deploy_sub.add_parser("start", help="start a deployment as a supervised user service")
