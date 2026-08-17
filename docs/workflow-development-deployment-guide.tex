@@ -799,6 +799,57 @@ zg deploy                     # rebuild and start the updated deployment
 \texttt{zg deploy restart} restarts the already prepared bundle; it does not
 apply source or project-configuration changes.
 
+\subsection{The six lifecycle commands}
+
+A project has exactly one deployment. Its identity comes from the project path
+and project id, which is why none of these commands takes a name.
+
+Two independent questions decide which one you want: does it rebuild what will
+run, and does it keep the durable state? Nothing else separates them.
+
+\begin{center}
+\begin{tabularx}{0.98\linewidth}{@{}l c c X@{}}
+\toprule
+ & rebuilds & durable state & \\
+\midrule
+\texttt{zg deploy} & \textbf{yes} & kept & prepare or re-prepare, then start; requires a stopped service \\
+\texttt{zg deploy start} & no & kept & start what is already prepared \\
+\texttt{zg deploy stop} & no & kept & stop the service; \texttt{start} resumes where it was \\
+\texttt{zg deploy restart} & no & kept & stop and start in one step \\
+\texttt{zg deploy reset} & no & \textbf{emptied} & archive the state, start the workflow over \\
+\texttt{zg deploy remove} & --- & archived & unregister the service and take the deployment away \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+Read that table twice for the two commands people confuse:
+
+\begin{itemize}
+  \item \texttt{restart} is the only way to get running again without
+        rebuilding. It will happily restart yesterday's bundle, so after
+        editing the workflow or \path{zippergen.toml} you want \texttt{stop}
+        then \texttt{deploy}, not \texttt{restart}. ZipperGen now refuses
+        \texttt{zg deploy} while the service runs, precisely so that this
+        choice is explicit rather than silent.
+  \item \texttt{reset} is the destructive one, despite sounding milder than
+        \texttt{remove}. It keeps the deployment and throws the durable state
+        away. \texttt{remove} keeps that state, archived under
+        \path{ZIPPERGEN_HOME/trash/deployments/}, and only
+        \texttt{remove -{}-purge} leaves nothing.
+\end{itemize}
+
+\begin{notebox}{Stopping is not losing}
+Durable state is the current state of the computation, committed after every
+step. \texttt{stop} therefore keeps everything that finished: variables,
+control position, outstanding messages, and any human task still waiting for an
+answer. \texttt{start} carries on from there.
+
+The one step in flight is interrupted. If a model call or an \texttt{@effect}
+had not recorded its result, it runs again on the next start, side effect
+included. That is the same at-least-once boundary a crash has, and it is the
+only work \texttt{stop} can cost you.
+\end{notebox}
+
 \subsection{Operating one}
 
 \begin{center}
