@@ -2006,12 +2006,7 @@ def _remove_command(args) -> int:
     except DeploymentRemovalError as exc:
         raise SystemExit(str(exc)) from exc
 
-    kept = [item.label for item in artifacts if item.retain and not args.purge]
-    print(f"Deployment {args.name}: {len(artifacts)} artifact(s) to remove.")
-    if args.purge:
-        print("  --purge: nothing is kept, including the durable store.")
-    elif kept:
-        print(f"  Kept in the archive: {', '.join(kept)}.")
+    _print_remove_consequences(args.name, artifacts, purge=args.purge)
 
     if not args.yes:
         if not sys.stdin.isatty():
@@ -2213,43 +2208,79 @@ def _compact_command(args) -> int:
 def _print_reset_consequences(name: str, profile: Mapping[str, object]) -> None:
     """Say what a reset throws away, in the units a person cares about.
 
-    "Start fresh" does not tell anyone whether they are about to lose an
-    approval somebody already typed. The counts do.
+    Reset moves the whole SQLite file family aside and starts an empty store,
+    so everything in it goes, not only the obvious parts. Every category is
+    listed even at zero: an omitted line cannot be told apart from a category
+    nobody checked, and this is a prompt people answer 'y' to.
     """
 
     from zippergen.storage_maintenance import inspect_store_storage
 
-    def count(value: int, singular: str, plural: str) -> str:
-        return f"{value} {singular if value == 1 else plural}"
-
     print(f"Reset deployment {name}")
     store = profile.get("store")
-    losses: list[str] = []
-    if store:
-        report = inspect_store_storage(str(store))
-        if report.roles:
-            losses.append(count(report.roles, "participant position", "participant positions"))
-        if report.outstanding_messages:
-            losses.append(
-                count(report.outstanding_messages, "unread message", "unread messages")
-            )
-        if report.pending_tasks:
-            losses.append(
-                count(
-                    report.pending_tasks,
-                    "unanswered human task",
-                    "unanswered human tasks",
-                )
-            )
-    if losses:
-        print(f"  Discarded, after archiving: {', '.join(losses)}.")
-    else:
-        print("  Nothing has run yet, so there is no state to discard.")
+    if not store:
+        print("  This deployment has no durable store configured.")
+        return
+    report = inspect_store_storage(str(store))
+    rows = [
+        ("participant positions", str(report.roles)),
+        ("messages in flight", str(report.outstanding_messages)),
+        (
+            "human tasks",
+            f"{report.pending_tasks} waiting, {report.completed_tasks} answered",
+        ),
+        ("workflow results", str(report.workflow_results)),
+        ("connector progress", str(report.connector_entries)),
+    ]
+    print("  Archived, then cleared from the live deployment:")
+    width = max(len(label) for label, _value in rows)
+    for label, value in rows:
+        print(f"    {label.ljust(width)}  {value}")
+    if report.connector_entries:
+        # A mail cursor or chat offset lives here. Losing it is not abstract:
+        # the workflow can re-read mail it already handled.
+        print(
+            "    (connector progress is where a mailbox cursor lives, so the "
+            "workflow may re-read messages it already handled)"
+        )
     print(
         "  Kept: the deployment itself, its configuration, secrets, bundle "
         "and logs."
     )
     print("  The workflow then starts again from the beginning.")
+
+
+def _print_remove_consequences(
+    name: str,
+    artifacts,
+    *,
+    purge: bool,
+) -> None:
+    """Name what removal destroys, not only what it keeps.
+
+    Credentials are the expensive, irreversible loss: they are deleted rather
+    than archived, so removing means re-entering a token and redoing any
+    authorization. Listing only what survives hides exactly that.
+    """
+
+    kept = [item.label for item in artifacts if item.retain and not purge]
+    lost = [item.label for item in artifacts if not (item.retain and not purge)]
+    print(f"Deployment {name}: {len(artifacts)} artifact(s) to remove.")
+    if lost:
+        print(f"  Deleted for good: {', '.join(lost)}.")
+    if any("secret" in item.label.casefold() for item in artifacts):
+        print(
+            "    Credentials go with them. You will re-enter tokens and redo "
+            "any provider authorization."
+        )
+    if purge:
+        print("  --purge: nothing is kept, including the durable store.")
+    elif kept:
+        print(
+            f"  Archived under {_zippergen_home() / 'trash' / 'deployments'}: "
+            f"{', '.join(kept)}."
+        )
+    print("  The service is unregistered, so nothing runs it again.")
 
 
 def _reset_deployment_command(args) -> int:

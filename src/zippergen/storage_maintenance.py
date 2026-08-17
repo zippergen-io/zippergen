@@ -31,6 +31,8 @@ class StorageReport:
     pending_tasks: int
     task_tokens: int
     task_notifications: int
+    workflow_results: int
+    connector_entries: int
     integrity_ok: bool | None
     integrity_detail: str
 
@@ -116,6 +118,8 @@ def inspect_store_storage(path: str | Path) -> StorageReport:
         pending_tasks=0,
         task_tokens=0,
         task_notifications=0,
+        workflow_results=0,
+        connector_entries=0,
         integrity_ok=None,
         integrity_detail="store does not exist",
     )
@@ -158,6 +162,8 @@ def inspect_store_storage(path: str | Path) -> StorageReport:
             pending_tasks=task_counts.get("pending", 0),
             task_tokens=_count(conn, "human_task_tokens"),
             task_notifications=_count(conn, "human_task_notifications"),
+            workflow_results=_count(conn, "workflow_results"),
+            connector_entries=_count(conn, "adapter_state"),
             integrity_ok=True,
             integrity_detail=integrity.detail,
         )

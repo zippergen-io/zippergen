@@ -376,15 +376,17 @@ def test_reset_names_what_it_discards_before_asking(tmp_path):
         serve._print_reset_consequences("demo", {"store": str(store)})
     output = buffer.getvalue()
 
-    assert "1 participant position" in output
-    assert "1 unread message" in output
-    assert "1 unanswered human task" in output
+    assert "participant positions  1" in output
+    assert "1 waiting" in output
     assert "Kept:" in output
-    # Singular counts must not read as "1 message(s)".
-    assert "(s)" not in output
+    # Every category is listed even at zero, so an absent line cannot be
+    # mistaken for a category nobody checked.
+    assert "messages in flight" in output
+    assert "workflow results" in output
+    assert "connector progress" in output
 
 
-def test_reset_says_plainly_when_there_is_nothing_to_discard(tmp_path):
+def test_reset_lists_every_category_even_at_zero(tmp_path):
     from zippergen import serve
     from zippergen.store import open_store
 
@@ -398,7 +400,57 @@ def test_reset_says_plainly_when_there_is_nothing_to_discard(tmp_path):
     with redirect_stdout(buffer):
         serve._print_reset_consequences("demo", {"store": str(store)})
 
-    assert "Nothing has run yet" in buffer.getvalue()
+    output = buffer.getvalue()
+    assert "participant positions  0" in output
+    assert "messages in flight     0" in output
+    assert "0 waiting, 0 answered" in output
+
+
+def test_remove_names_the_credentials_it_destroys(tmp_path):
+    """Listing only what survives hides the irreversible loss.
+
+    Secrets are deleted rather than archived, so removing costs a token
+    re-entry and any provider authorization again. That must be on screen
+    before the name prompt.
+    """
+
+    from dataclasses import dataclass
+
+    from zippergen import serve
+
+    @dataclass
+    class Artifact:
+        label: str
+        retain: bool = False
+
+    artifacts = [
+        Artifact("Profile", True),
+        Artifact("Private secrets"),
+        Artifact("Managed environment"),
+        Artifact("Durable store", True),
+    ]
+
+    import io
+    from contextlib import redirect_stdout
+
+    buffer = io.StringIO()
+    with redirect_stdout(buffer):
+        serve._print_remove_consequences("demo", artifacts, purge=False)
+    output = buffer.getvalue()
+
+    assert "Deleted for good:" in output
+    assert "Private secrets" in output
+    assert "re-enter tokens" in output
+    assert "Archived under" in output
+    assert "Durable store" in output
+
+    buffer = io.StringIO()
+    with redirect_stdout(buffer):
+        serve._print_remove_consequences("demo", artifacts, purge=True)
+    purged = buffer.getvalue()
+
+    assert "nothing is kept" in purged
+    assert "Archived under" not in purged
 
 
 def test_deploy_reset_archives_and_recreates_its_owned_store(
