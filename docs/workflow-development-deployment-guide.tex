@@ -816,7 +816,7 @@ run, and does it keep the durable state? Nothing else separates them.
 \texttt{zg deploy start} & no & kept & start what is already prepared \\
 \texttt{zg deploy stop} & no & kept & stop the service; \texttt{start} resumes where it was \\
 \texttt{zg deploy restart} & no & kept & stop and start in one step \\
-\texttt{zg deploy reset} & no & \textbf{emptied} & archive the state, start the workflow over \\
+\texttt{zg deploy reset} & no & \textbf{emptied} & archive the state and leave the service stopped \\
 \texttt{zg deploy remove} & --- & archived & unregister the service and take the deployment away \\
 \bottomrule
 \end{tabularx}
@@ -837,6 +837,13 @@ Read that table twice for the two commands people confuse:
         \path{ZIPPERGEN_HOME/trash/deployments/}, and only
         \texttt{remove -{}-purge} leaves nothing.
 \end{itemize}
+
+\texttt{reset} always leaves the service stopped, whether or not it was running
+before. It is a state operation, and it has to stop the service to replace the
+store, so it does not decide on your behalf that the service should come back.
+The pause matters: a reset clears the connector progress too, so the next start
+may re-read a mailbox that was already handled. Start it again with
+\texttt{zg deploy start} once you have looked.
 
 \begin{notebox}{Why \texttt{run} has no \texttt{remove}}
 \texttt{reset} is about the state. \texttt{remove} is about the deployment.
@@ -881,7 +888,7 @@ only work \texttt{stop} can cost you.
 \texttt{zg deploy check} & readiness checks, in detail \\
 \texttt{zg deploy stop} / \texttt{zg deploy restart} & move the service \\
 \texttt{zg deploy compact} & prune optional history and rotate logs; refuses while running \\
-\texttt{zg deploy reset --yes} & archive durable state and start fresh \\
+\texttt{zg deploy reset --yes} & archive durable state; start again yourself \\
 \texttt{zg deploy remove} & delete it \\
 \texttt{zg deploy list} & every deployment on this computer, orphans included \\
 \texttt{zg deploy prune} & clear orphans and stale archives \\

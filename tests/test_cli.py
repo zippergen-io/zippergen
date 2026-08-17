@@ -404,6 +404,7 @@ def test_reset_lists_every_category_even_at_zero(tmp_path):
     assert "participant positions  0" in output
     assert "messages in flight     0" in output
     assert "0 waiting, 0 answered" in output
+    assert "left stopped" in output
 
 
 def test_prune_deletes_stale_archives_but_keeps_the_undo_window(
@@ -490,6 +491,47 @@ def test_prune_keeps_everything_when_the_window_is_wide(tmp_path, monkeypatch, c
 
     assert archive.exists()
     assert "0 older than 365 day(s)" in capsys.readouterr().out
+
+
+def test_reset_never_starts_the_service(tmp_path, monkeypatch, capsys):
+    """Reset is a state operation, so it leaves the running axis alone.
+
+    It has to stop the service to replace the store, and it must not decide on
+    your behalf that the service should come back: after a reset the connector
+    cursor is gone too, so the next start may re-read a whole mailbox.
+    """
+
+    from zippergen import serve
+
+    store = _prepared_deployment_store(tmp_path, monkeypatch, capsys)
+    running = {
+        "state": "running",
+        "healthy": True,
+        "detail": "service is running",
+    }
+    monkeypatch.setattr(
+        "zippergen.deployment_platform.deployment_service_status",
+        lambda _name: running,
+    )
+    stopped = {"state": "not-loaded", "healthy": False, "detail": "not loaded"}
+    monkeypatch.setattr(
+        "zippergen.deployments._deployment_service_status",
+        lambda _name: stopped,
+    )
+    lifecycle: list[str] = []
+    monkeypatch.setattr(
+        serve,
+        "_deployment_lifecycle_command",
+        lambda _args, action: lifecycle.append(action) or 0,
+    )
+    capsys.readouterr()
+
+    assert main(["deploy", "reset", "--yes"]) == 0
+
+    assert lifecycle == ["stop"], "reset must stop, and must not start again"
+    output = capsys.readouterr().out
+    assert "was running and is now stopped" in output
+    assert "zippergen deploy start" in output
 
 
 def test_remove_names_the_credentials_it_destroys(tmp_path):

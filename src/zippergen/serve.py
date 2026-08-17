@@ -2285,7 +2285,10 @@ def _print_reset_consequences(name: str, profile: Mapping[str, object]) -> None:
         "  Kept: the deployment itself, its configuration, secrets, bundle "
         "and logs."
     )
-    print("  The workflow then starts again from the beginning.")
+    print(
+        "  The service is left stopped. The workflow runs from the beginning "
+        "the next time you start it."
+    )
 
 
 def _print_remove_consequences(
@@ -2338,15 +2341,13 @@ def _reset_deployment_command(args) -> int:
                 "Resetting deployment state requires confirmation. "
                 "Re-run with --yes."
             )
-        answer = input(
-            "Discard this state and run the workflow from the start? [y/N]: "
-        ).strip().casefold()
+        answer = input("Discard this state? [y/N]: ").strip().casefold()
         if answer not in {"y", "yes"}:
             print("Nothing was changed.")
             return 1
 
     service = deployment_service_status(args.name)
-    restart_after = service.get("state") in {"running", "restarting"}
+    was_running = service.get("state") in {"running", "restarting"}
     needs_stop = service.get("state") not in {"not-loaded", "completed"}
     lifecycle = argparse.Namespace(
         name=args.name,
@@ -2369,8 +2370,13 @@ def _reset_deployment_command(args) -> int:
         )
     else:
         print("There was no previous durable state to archive.")
-    if restart_after:
-        return _deployment_lifecycle_command(lifecycle, "start")
+    # Reset never starts the service. It is a state operation, and the service
+    # has to be stopped for it, so leaving it stopped is the honest outcome.
+    # It also gives you a beat before a from-scratch run: the connector cursor
+    # is gone too, so starting may re-read a mailbox you already handled.
+    if was_running:
+        print("The service was running and is now stopped.")
+    print("Start it again when you are ready: zippergen deploy start")
     return 0
 
 

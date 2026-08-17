@@ -381,7 +381,7 @@ zg deploy
 zg deploy status
 zg deploy logs
 zg deploy remove              # the durable store is kept
-zg deploy reset --yes         # archive durable state and start fresh
+zg deploy reset --yes         # archive durable state; stays stopped afterwards
 ```
 
 Use `zg deploy --no-start` only when you deliberately want to prepare and
