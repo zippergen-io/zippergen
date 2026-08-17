@@ -3,12 +3,14 @@ import threading
 
 from zippergen.store import (
     ensure_human_task,
+    load_adapter_state,
     load_human_task,
     load_human_task_notification,
     load_human_task_token,
     open_store,
 )
 from zippergen.telegram_notify import (
+    TelegramAPIError,
     TelegramBotClient,
     TelegramDeploymentNotifier,
     TelegramNotifier,
@@ -46,6 +48,27 @@ class FakeTelegramClient:
             "message_id": message_id,
             "reply_markup": reply_markup,
         })
+
+
+class ExpiredCallbackClient(FakeTelegramClient):
+    """Telegram client whose short-lived callback acknowledgement expired."""
+
+    def __init__(self, updates=None):
+        super().__init__(updates)
+        self.offsets = []
+
+    def get_updates(self, *, offset=None, timeout=0, allowed_updates=None):
+        self.offsets.append(offset)
+        return [
+            update
+            for update in self._updates
+            if offset is None or int(update["update_id"]) >= offset
+        ]
+
+    def answer_callback_query(self, callback_query_id, text=None):
+        raise TelegramAPIError(
+            "Telegram answerCallbackQuery failed: HTTP 400 query is too old"
+        )
 
 
 def test_long_poll_http_timeout_has_margin_beyond_telegram_timeout(monkeypatch):
@@ -231,6 +254,93 @@ def test_telegram_callback_completes_boolean_task(tmp_path):
         conn.close()
     assert client.answers == [{"callback_query_id": "cb-1", "text": "Recorded."}]
     assert client.edits == [{"chat_id": "123", "message_id": 99, "reply_markup": None}]
+
+
+def test_expired_callback_ack_does_not_undo_answer_or_block_offset(tmp_path):
+    store_path = tmp_path / "expired-callback.sqlite"
+    _create_task(store_path)
+    client = ExpiredCallbackClient()
+    notifier = TelegramDeploymentNotifier(
+        str(store_path),
+        client,
+        connection="approval-bot",
+        routes={
+            "approval-chat": {
+                "chat_id": "123",
+                "channel": "telegram:approval-chat",
+            }
+        },
+        assignments={"User": "approval-chat"},
+    )
+    assert notifier.send_pending_once() == 1
+    token = client.sent[0]["reply_markup"]["inline_keyboard"][0][0][
+        "callback_data"
+    ].split(":", 2)[2]
+    client._updates = [
+        {
+            "update_id": 41,
+            "callback_query": {
+                "id": "expired-callback",
+                "data": f"zg:no:{token}",
+                "message": {"message_id": 99, "chat": {"id": 123}},
+            },
+        }
+    ]
+
+    assert notifier.poll_updates_once() == 1
+    assert notifier.poll_updates_once() == 0
+
+    conn = open_store(str(store_path))
+    try:
+        assert load_human_task(conn, "task-1")["result"] == {
+            "approved": False
+        }
+        assert load_adapter_state(
+            conn, "telegram:deployment:approval-bot:offset"
+        ) == 41
+    finally:
+        conn.close()
+    assert client.offsets == [None, 42]
+
+
+def test_invalid_expired_callback_is_consumed_once(tmp_path):
+    store_path = tmp_path / "invalid-callback.sqlite"
+    client = ExpiredCallbackClient(
+        [
+            {
+                "update_id": 57,
+                "callback_query": {
+                    "id": "invalid-callback",
+                    "data": "zg:yes:no-such-token",
+                    "message": {"message_id": 100, "chat": {"id": 123}},
+                },
+            }
+        ]
+    )
+    notifier = TelegramDeploymentNotifier(
+        str(store_path),
+        client,
+        connection="approval-bot",
+        routes={
+            "approval-chat": {
+                "chat_id": "123",
+                "channel": "telegram:approval-chat",
+            }
+        },
+        assignments={"User": "approval-chat"},
+    )
+
+    assert notifier.poll_updates_once() == 0
+    assert notifier.poll_updates_once() == 0
+
+    conn = open_store(str(store_path))
+    try:
+        assert load_adapter_state(
+            conn, "telegram:deployment:approval-bot:offset"
+        ) == 57
+    finally:
+        conn.close()
+    assert client.offsets == [None, 58]
 
 
 def test_telegram_text_command_completes_string_task(tmp_path):

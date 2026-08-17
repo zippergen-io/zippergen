@@ -190,10 +190,19 @@ Otherwise choose the smallest reasonable workflow and state the assumption.
    `REQUEST · Participant`. If a local tutorial effect prints a user-facing
    outcome, start it on a fresh line and keep it compact, for example
    `✓ Participant · reply sent`; do not repeat the full generated content.
+   Never carry per-run progress between actions in a module global. A durable
+   resume imports the module in a fresh process; only workflow variables and
+   external durable state survive. Return every later-needed item ID, claim
+   token, cursor, or path string into the workflow, and pass it to the next
+   action.
+   Keep globals for immutable configuration or disposable caches only.
 4. Send values explicitly when ownership crosses a lifeline. Place every guard
    at the lifeline that actually knows and owns the decision.
 5. Add focused tests that run with mock LLMs or fake services. Test protocol
    structure and safety behavior separately from live integrations.
+   For a durable claim/finalize sequence, test a fresh-process resume after
+   claiming and test each effect again after it has already succeeded. Neither
+   path may depend on process-local memory or select a different item.
    Treat paths, file layouts, sample contents, and commands in the request as
    executable acceptance criteria. Test the exact examples before reporting
    success. Do not silently add a directory level, require metadata the sample

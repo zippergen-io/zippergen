@@ -127,6 +127,61 @@ def send_reply(address: str, body: str) -> str:
 Use `@effect(visible=False)` only for intentionally hidden operational work,
 not to conceal meaningful protocol behavior.
 
+### Durable state between actions
+
+A durable run persists workflow variables and control state, not Python module
+globals. Never use a mutable global to remember the item an earlier action
+claimed, the path it renamed, or the cursor a later action needs. Resume starts
+in a fresh process, so that memory is gone even though the workflow continues
+at the next statement.
+
+Return a stable identity and payload from the claiming effect, derive ordinary
+workflow variables from that result, and pass the identity to later effects:
+
+```python
+from zippergen import Json, effect, pure, workflow
+
+
+@effect
+def claim_next() -> Json:
+    existing = find_existing_claim()
+    if existing is not None:
+        return existing
+    return create_claim()
+
+
+@pure
+def claim_id(claim: Json) -> str:
+    return str(claim["id"])
+
+
+@pure
+def claim_payload(claim: Json) -> str:
+    return str(claim["payload"])
+
+
+@effect
+def finalize(item_id: str, payload: str) -> str:
+    # Return the same success if this item was already finalized.
+    return finalize_idempotently(item_id, payload)
+
+
+@workflow
+def process_next() -> str:
+    Mailbox: claim = claim_next()
+    Mailbox: item_id = claim_id(claim)
+    Mailbox: payload = claim_payload(claim)
+    Mailbox: status = finalize(item_id, payload)
+    return status @ Mailbox
+```
+
+Make both external boundaries retry-safe. If claiming succeeded but its return
+did not commit, another call to `claim_next` must recover the same claim rather
+than select another item. If finalization succeeded but its successor state did
+not commit, another call to `finalize` must recognize the completed item and
+return the same outcome. Test both cases using a fresh process; an in-process
+test cannot reveal reliance on a module global.
+
 Coding-assistant work is a distinct, inspectable external action:
 
 ```python
@@ -633,6 +688,8 @@ Before handoff, verify:
 - Every cross-participant value transfer is an explicit message.
 - Every guard has one correct owner that possesses its data.
 - Effects are retry-safe and testable with fake services.
+- No mutable module global carries per-run state between actions.
+- Claim/finalize effects survive fresh-process resume and repeated execution.
 - LLM output parsing and types match downstream use.
 - Human authority remains explicit.
 - Parallel branches are independent and their results join before use.

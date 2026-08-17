@@ -360,6 +360,38 @@ class TelegramNotifier:
     def _chat_matches(self, chat_id: object) -> bool:
         return str(chat_id) == self._target
 
+    def _answer_callback_best_effort(
+        self, callback: Mapping[str, object], text: str
+    ) -> None:
+        """Acknowledge Telegram UI state without affecting task delivery.
+
+        Callback queries expire quickly.  Recording the durable human answer
+        must therefore never depend on Telegram still accepting this
+        short-lived acknowledgement.
+        """
+        callback_id = callback.get("id")
+        if callback_id is None:
+            return
+        try:
+            self.client.answer_callback_query(str(callback_id), text)
+        except Exception:
+            pass
+
+    def _clear_callback_buttons_best_effort(
+        self, message: Mapping[str, object]
+    ) -> None:
+        """Remove stale buttons when possible; they are not durable state."""
+        message_id = message.get("message_id")
+        if message_id is None:
+            return
+        try:
+            self.client.edit_message_reply_markup(
+                chat_id=self._target,
+                message_id=int(str(message_id)),
+            )
+        except Exception:
+            pass
+
     def _process_callback(self, callback: dict) -> bool:
         parsed = parse_callback_data(str(callback.get("data") or ""))
         if parsed is None:
@@ -367,7 +399,9 @@ class TelegramNotifier:
         message = callback.get("message") or {}
         chat = message.get("chat") or {}
         if not self._chat_matches(chat.get("id")):
-            self.client.answer_callback_query(callback["id"], "This task belongs to another chat.")
+            self._answer_callback_best_effort(
+                callback, "This task belongs to another chat."
+            )
             return False
 
         token, value = parsed
@@ -385,17 +419,13 @@ class TelegramNotifier:
                     raise
             finally:
                 conn.close()
-            self.client.answer_callback_query(callback["id"], "Recorded.")
-            message_id = message.get("message_id")
-            if message_id is not None:
-                try:
-                    self.client.edit_message_reply_markup(chat_id=self._target, message_id=int(message_id))
-                except TelegramAPIError:
-                    pass
-            return True
-        except Exception as exc:
-            self.client.answer_callback_query(callback["id"], str(exc))
+        except ValueError as exc:
+            self._answer_callback_best_effort(callback, str(exc))
             return False
+
+        self._answer_callback_best_effort(callback, "Recorded.")
+        self._clear_callback_buttons_best_effort(message)
+        return True
 
     def _process_message(self, message: dict) -> bool:
         chat = message.get("chat") or {}
