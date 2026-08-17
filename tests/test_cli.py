@@ -476,6 +476,12 @@ def test_durable_run_records_a_resumable_run_with_an_owned_store(
     assert record["status"] == "done"
     assert "Result: deploy!" in captured.out
 
+    assert main(["run", "trace"]) == 0
+    trace_output = capsys.readouterr().out
+    assert f"Subject: durable run {record['run_id']}" in trace_output
+    assert "Status: done" in trace_output
+    assert f"Store: {record['store']}" in trace_output
+
 
 def test_provider_authorize_google_emits_checked_private_handoff(
     tmp_path,
@@ -1008,10 +1014,6 @@ def test_internal_deployment_run_does_not_conflict_with_its_own_service(
     monkeypatch.chdir(tmp_path)
     assert _deploy_for_test([f"{workflow_path}:hello"]) == 0
     capsys.readouterr()
-    monkeypatch.setattr(
-        "zippergen.deployment_platform.deployment_service_status",
-        lambda _name: {"state": "running"},
-    )
 
     assert _run_prepared_deployment(home) == 0
     assert json.loads(capsys.readouterr().out) == {"result": "deploy!"}
@@ -1020,28 +1022,44 @@ def test_internal_deployment_run_does_not_conflict_with_its_own_service(
 def test_foreground_run_refuses_to_compete_with_running_deployment(
     tmp_path, monkeypatch,
 ):
-    from zippergen import serve
+    from zippergen.execution_lock import execution_lock, execution_lock_path
 
     home = tmp_path / "home"
     workspace = Workspace(tmp_path, home=home)
     workspace.initialize_project()
-    deployments = home / "deployments"
-    deployments.mkdir(parents=True)
-    (deployments / "project-id.json").write_text(json.dumps({
-        "name": "project-id",
-        "source_cwd": str(tmp_path),
-        "project_id": workspace.project_manifest()["project_id"],
-    }))
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("ZIPPERGEN_HOME", str(home))
-    monkeypatch.setattr(
-        "zippergen.deployment_platform.deployment_service_status",
-        lambda _name: {"state": "running"},
-    )
-    monkeypatch.setattr(serve.sys.stdin, "isatty", lambda: False)
 
-    with pytest.raises(SystemExit, match="deployment associated.*already running"):
-        serve._guard_foreground_run(SimpleNamespace(yes=False))
+    lock_path = execution_lock_path(home, workspace.directory.name)
+    with execution_lock(lock_path, owner="project deployment"):
+        with pytest.raises(
+            SystemExit,
+            match="active project deployment.*Only one run or deployment",
+        ):
+            main(["run", "--yes"])
+
+
+def test_deployment_start_refuses_to_compete_with_foreground_run(
+    tmp_path, monkeypatch, capsys
+):
+    from zippergen.execution_lock import execution_lock, execution_lock_path
+
+    workflow_path = tmp_path / "workflow.py"
+    workflow_path.write_text(WORKFLOW_SOURCE)
+    home = tmp_path / "zg-home"
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(home))
+    monkeypatch.chdir(tmp_path)
+    assert _deploy_for_test([f"{workflow_path}:hello"]) == 0
+    capsys.readouterr()
+    profile = json.loads(_the_deployment(home).read_text())
+
+    lock_path = execution_lock_path(home, str(profile["name"]))
+    with execution_lock(lock_path, owner="foreground run"):
+        with pytest.raises(
+            SystemExit,
+            match="active foreground run.*Only one run or deployment",
+        ):
+            main(["deploy", "start"])
 
 
 def test_two_projects_with_the_same_workflow_get_independent_deployments(
@@ -1787,6 +1805,8 @@ def test_trace_command_reports_recent_trace_events(tmp_path, monkeypatch, capsys
 
     captured = capsys.readouterr()
     assert rc == 0
+    assert "Subject: project deployment" in captured.out
+    assert f"Store: {store_path}" in captured.out
     assert "Trace events: 1" in captured.out
     assert f"#{second} User recv Writer->User main" in captured.out
     assert "draft" in captured.out
@@ -1850,6 +1870,8 @@ def test_tasks_command_lists_pending_tasks(tmp_path, monkeypatch, capsys):
 
     captured = capsys.readouterr()
     assert rc == 0
+    assert "Subject: project deployment" in captured.out
+    assert f"Store: {store_path}" in captured.out
     assert "Pending human tasks: 1" in captured.out
     assert "task-1 User.approve confirm -> approved: bool" in captured.out
     assert "instruction: Approve this?" in captured.out

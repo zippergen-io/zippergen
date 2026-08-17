@@ -577,10 +577,10 @@ development run. `zg run reset` permanently discards the selected run record
 and SQLite state, then clears the selection; add `--archive` only when a
 recoverable private copy is wanted. It does not start another run; use `zg run
 --durable` when one is wanted. Stop the foreground run with Ctrl-C before
-resetting it. Do not start a foreground run
-while the project's deployment is
-running unless the user explicitly intends both to compete for external
-resources. ZipperGen warns about that overlap.
+resetting it. One project has one active execution: a disposable or durable
+foreground run, or its deployment. Stop the current execution before starting
+another. Observation commands such as `status`, `inspect`, `trace`, and `tasks`
+remain available while it runs.
 
 While a durable run is active in one terminal, another terminal can follow its
 program position with `zg run inspect --watch`. Add `--agent NAME` to keep one

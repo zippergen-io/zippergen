@@ -60,6 +60,13 @@ from zippergen.deployment_environment import (
     bundle_deployment as _bundle_deployment,
     prepare_deployment_environment as _prepare_deployment_environment,
 )
+from zippergen.execution_lock import (
+    ActiveExecution,
+    ExecutionLockError,
+    active_execution,
+    execution_lock,
+    execution_lock_path,
+)
 from zippergen.deployment_profiles import (
     _default_deployment_log_path,
     _default_deployment_store_path,
@@ -384,6 +391,8 @@ def _deployment_lifecycle_command(args, action: str) -> int:
     profile = _load_deployment_profile(args.name)
     name = str(profile["name"])
     if action in {"start", "restart"} and not args.dry_run:
+        _require_deployment_execution_slot(profile)
+    if action in {"start", "restart"} and not args.dry_run:
         _initialize_deployment_store(profile)
     if (
         action in {"start", "restart"}
@@ -524,14 +533,32 @@ def _doctor_command(args) -> int:
     return 1 if any(check.get("status") == "fail" for check in checks) else 0
 
 
-def _resolve_store_arg(args) -> str:
-    """Resolve durable state through its owning run or deployment."""
+@dataclass(frozen=True)
+class _ExecutionReference:
+    """One durable execution selected by its owning CLI family."""
+
+    store: str
+    subject: str
+    status: str | None = None
+    updated_at: str | None = None
+
+
+def _resolve_execution_reference(args) -> _ExecutionReference:
+    """Resolve durable state and retain enough context to identify it."""
 
     from zippergen.workspace import Workspace
 
     if getattr(args, "execution_owner", "run") == "deploy":
         profile = _load_deployment_profile(_resolved_deployment_name(args))
-        return str(profile["store"])
+        return _ExecutionReference(
+            store=str(profile["store"]),
+            subject="project deployment",
+            updated_at=(
+                str(profile["updated_at"])
+                if profile.get("updated_at")
+                else None
+            ),
+        )
     workspace = Workspace(getattr(args, "project", None))
     record = workspace.current_run()
     if record is None:
@@ -539,7 +566,36 @@ def _resolve_store_arg(args) -> str:
             "There is no current durable run. Start one with "
             "'zippergen run --durable'."
         )
-    return str(record["store"])
+    return _ExecutionReference(
+        store=str(record["store"]),
+        subject=f"durable run {record['run_id']}",
+        status=str(record.get("status") or "unknown"),
+        updated_at=(
+            str(record["updated_at"])
+            if record.get("updated_at")
+            else None
+        ),
+    )
+
+
+def _resolve_store_arg(args) -> str:
+    """Resolve durable state through its owning run or deployment."""
+
+    return _resolve_execution_reference(args).store
+
+
+def _print_execution_reference(reference: _ExecutionReference) -> None:
+    from zippergen.rendering import TerminalRenderer
+
+    renderer = TerminalRenderer()
+    renderer.section("Execution")
+    renderer.emit(f"Subject: {reference.subject}")
+    if reference.status is not None:
+        renderer.emit(f"Status: {reference.status}")
+    if reference.updated_at is not None:
+        renderer.emit(f"Updated: {reference.updated_at}")
+    renderer.emit(f"Store: {reference.store}")
+    renderer.emit()
 
 
 
@@ -850,46 +906,67 @@ def _require_project(args):
     return workspace
 
 
-def _guard_foreground_run(args) -> None:
-    """Make a concurrently running deployment visible before external work."""
-
-    from zippergen.deployment_platform import deployment_service_status
-
-    workspace = _require_project(args)
-    competing: list[str] = []
-    for path in sorted(_deployments_dir().glob("*.json")):
-        if path.name.endswith(".secrets.json"):
-            continue
-        try:
-            profile = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            continue
-        if not isinstance(profile, dict):
-            continue
-        source = profile.get("source_cwd")
-        if not source or Path(str(source)).resolve() != workspace.root:
-            continue
-        name = str(profile.get("name") or path.stem)
-        service = deployment_service_status(name)
-        if service.get("state") in {"running", "restarting"}:
-            competing.append(name)
-    if not competing:
-        return
-    warning = (
-        "A deployment associated with this project path is already running "
-        f"({', '.join(competing)}). A foreground run may "
-        "compete with it for Telegram updates, mailbox files, or other "
-        "external resources. Use 'zg deploy list' to inspect it; stop the "
-        "current deployment or prune an orphan before running."
+def _execution_conflict_message(
+    active: ActiveExecution,
+    *,
+    requested: str,
+) -> str:
+    detail = active.owner
+    if active.pid is not None:
+        detail += f" (PID {active.pid})"
+    return (
+        f"This project already has an active {detail}. Stop it before "
+        f"starting {requested}. Only one run or deployment may execute per "
+        "project; observation commands remain available."
     )
-    if getattr(args, "yes", False):
-        print(f"WARNING: {warning}", file=sys.stderr)
-        return
-    if not sys.stdin.isatty():
-        raise SystemExit(warning + " Re-run with --yes only if this is intentional.")
-    answer = input(f"{warning}\nContinue anyway? [y/N]: ").strip().casefold()
-    if answer not in {"y", "yes"}:
-        raise SystemExit("Run cancelled; the deployment was not changed.")
+
+
+@contextmanager
+def _hold_project_execution(workspace, *, owner: str):
+    """Hold the execution slot shared by a project and its deployment."""
+
+    path = execution_lock_path(workspace.home, workspace.directory.name)
+    try:
+        with execution_lock(path, owner=owner):
+            yield
+    except ExecutionLockError as exc:
+        raise SystemExit(
+            _execution_conflict_message(exc.active, requested=owner)
+        ) from None
+
+
+@contextmanager
+def _hold_deployment_execution(profile: Mapping[str, object]):
+    """Hold the source project's slot for one supervised deployment process."""
+
+    path = execution_lock_path(_zippergen_home(), str(profile["name"]))
+    try:
+        with execution_lock(path, owner="project deployment"):
+            yield
+    except ExecutionLockError as exc:
+        raise SystemExit(
+            _execution_conflict_message(
+                exc.active,
+                requested="the project deployment",
+            )
+        ) from None
+
+
+def _require_deployment_execution_slot(
+    profile: Mapping[str, object],
+) -> None:
+    """Reject a public start when a foreground run owns the project."""
+
+    active = active_execution(
+        execution_lock_path(_zippergen_home(), str(profile["name"]))
+    )
+    if active is not None and active.owner != "project deployment":
+        raise SystemExit(
+            _execution_conflict_message(
+                active,
+                requested="the project deployment",
+            )
+        )
 
 
 def _run_workflow_command(args) -> int:
@@ -902,16 +979,15 @@ def _run_workflow_command(args) -> int:
         else Workspace(getattr(args, "project", None))
     )
     with project_directory(workspace.root):
-        return _run_workflow_from_project(args, workspace)
+        if getattr(args, "store", None):
+            return _run_workflow_from_project(args, workspace)
+        with _hold_project_execution(workspace, owner="foreground run"):
+            return _run_workflow_from_project(args, workspace)
 
 
 def _run_workflow_from_project(args, workspace) -> int:
     """Execute a plain run with project-relative paths anchored to its root."""
 
-    # The hidden service entry point owns the deployment being reported as
-    # running. Only a public foreground run can compete with that service.
-    if not getattr(args, "store", None):
-        _guard_foreground_run(args)
     args.workflow = _resolved_workflow_spec(args)
     wf, module = load_workflow_spec(args.workflow)
     from zippergen.durable_runs import default_llm_spec
@@ -1097,13 +1173,12 @@ def _durable_run_command(args) -> int:
 
     workspace = Workspace(getattr(args, "project", None))
     with project_directory(workspace.root):
-        return _durable_run_from_project(args, workspace)
+        with _hold_project_execution(workspace, owner="durable run"):
+            return _durable_run_from_project(args, workspace)
 
 
 def _durable_run_from_project(args, workspace) -> int:
     """Execute a durable run with project-relative paths anchored to its root."""
-
-    _guard_foreground_run(args)
 
     from zippergen.connector_wiring import (
         ConnectorWiringError,
@@ -2970,9 +3045,12 @@ def _run_deployment_command(args) -> int:
     old_cwd = Path.cwd()
     try:
         os.chdir(cwd)
-        with _profile_environment(profile):
-            _start_deployment_connector_workers(profile)
-            return _run_workflow_command(_run_args_from_deployment(profile))
+        with _hold_deployment_execution(profile):
+            with _profile_environment(profile):
+                _start_deployment_connector_workers(profile)
+                return _run_workflow_command(
+                    _run_args_from_deployment(profile)
+                )
     finally:
         os.chdir(old_cwd)
 
@@ -3328,16 +3406,23 @@ def _inspect_command(args) -> int:
 
 
 def _trace_command(args) -> int:
-    events = _load_trace_events(_resolve_store_arg(args), after_rowid=args.after, limit=args.tail)
+    execution = _resolve_execution_reference(args)
+    events = _load_trace_events(
+        execution.store,
+        after_rowid=args.after,
+        limit=args.tail,
+    )
     if args.json:
         print(json.dumps(events, default=str))
     else:
+        _print_execution_reference(execution)
         _print_trace_events(events)
     return 0
 
 
 def _tasks_command(args) -> int:
-    store = _resolve_store_arg(args)
+    execution = _resolve_execution_reference(args)
+    store = execution.store
     if not Path(store).expanduser().exists():
         raise SystemExit(f"Durable store does not exist yet: {store}")
     status = None if args.all else "pending"
@@ -3351,6 +3436,7 @@ def _tasks_command(args) -> int:
     if args.json:
         print(json.dumps(tasks, default=str))
     else:
+        _print_execution_reference(execution)
         _print_tasks(tasks, heading="Human tasks" if args.all else "Pending human tasks")
     return 0
 

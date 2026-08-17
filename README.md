@@ -357,9 +357,10 @@ process with Ctrl-C and use `zg run reset`; ZipperGen deletes its record and
 SQLite state and clears the selection. Add `--archive` only when a recoverable
 private copy is wanted. Afterwards `zg run status` reports no current run, and
 the next execution begins explicitly with `zg run --durable`. If the project's
-deployment is already running, a foreground run
-warns before it can compete for Telegram updates, mailbox files, or other
-external resources.
+deployment is already running, stop it before starting a foreground run.
+ZipperGen permits one active execution per project: one disposable or durable
+foreground run, or the deployment. Inspection, trace, status and task commands
+remain available while that execution runs.
 
 For a live view, keep the run open in one terminal and use another terminal:
 
