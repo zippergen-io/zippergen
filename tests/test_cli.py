@@ -327,6 +327,80 @@ def test_compact_refuses_before_changing_a_running_deployment(
     assert changed == []
 
 
+def test_reset_names_what_it_discards_before_asking(tmp_path):
+    """"Start fresh" hides the only thing worth confirming.
+
+    A reset that is about to throw away an approval somebody already typed must
+    say so, in units a person recognises, before the prompt.
+    """
+
+    from zippergen import serve
+    from zippergen.store import ensure_human_task, open_store, write_role_state
+
+    store = tmp_path / "run.sqlite"
+    connection = open_store(str(store))
+    try:
+        connection.execute("BEGIN IMMEDIATE")
+        write_role_state(
+            connection,
+            "User",
+            env={},
+            control={"k": "done"},
+            monitor=None,
+            steps=1,
+            status="waiting_human",
+        )
+        connection.execute(
+            "INSERT INTO outstanding_messages(sender,receiver,channel,payload)"
+            " VALUES('User','Writer','main','[1]')"
+        )
+        ensure_human_task(
+            connection,
+            task_id="task-1",
+            role="User",
+            locator=[0],
+            action="approve",
+            input_hash=None,
+            inputs={},
+            spec={"kind": "confirm", "output": "ok", "output_type": "bool"},
+        )
+        connection.execute("COMMIT")
+    finally:
+        connection.close()
+
+    import io
+    from contextlib import redirect_stdout
+
+    buffer = io.StringIO()
+    with redirect_stdout(buffer):
+        serve._print_reset_consequences("demo", {"store": str(store)})
+    output = buffer.getvalue()
+
+    assert "1 participant position" in output
+    assert "1 unread message" in output
+    assert "1 unanswered human task" in output
+    assert "Kept:" in output
+    # Singular counts must not read as "1 message(s)".
+    assert "(s)" not in output
+
+
+def test_reset_says_plainly_when_there_is_nothing_to_discard(tmp_path):
+    from zippergen import serve
+    from zippergen.store import open_store
+
+    store = tmp_path / "run.sqlite"
+    open_store(str(store)).close()
+
+    import io
+    from contextlib import redirect_stdout
+
+    buffer = io.StringIO()
+    with redirect_stdout(buffer):
+        serve._print_reset_consequences("demo", {"store": str(store)})
+
+    assert "Nothing has run yet" in buffer.getvalue()
+
+
 def test_deploy_reset_archives_and_recreates_its_owned_store(
     tmp_path, monkeypatch, capsys
 ):

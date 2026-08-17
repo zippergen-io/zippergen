@@ -2031,8 +2031,26 @@ def _remove_command(args) -> int:
 
     print(f"Removed {result.name}: {result.artifact_count} artifact(s). {service}")
     if result.archive is not None:
-        print(f"  Archive: {result.archive}")
+        # The archive is the only thing this command keeps. Say where it is and
+        # how large, so kept state does not become invisible state.
+        print(f"  Archive: {result.archive} ({_directory_size(result.archive)})")
+        print("  Delete it yourself, or re-run with --purge to keep nothing.")
     return 0
+
+
+def _directory_size(path: Path) -> str:
+    total = 0
+    try:
+        for item in Path(path).rglob("*"):
+            if item.is_file():
+                total += item.stat().st_size
+    except OSError:
+        return "size unavailable"
+    for unit in ("B", "KB", "MB", "GB"):
+        if total < 1024 or unit == "GB":
+            return f"{total:.0f} {unit}" if unit == "B" else f"{total:.1f} {unit}"
+        total /= 1024
+    return f"{total:.1f} GB"
 
 
 def _deployment_inventory() -> list[dict[str, object]]:
@@ -2192,6 +2210,48 @@ def _compact_command(args) -> int:
     return 0
 
 
+def _print_reset_consequences(name: str, profile: Mapping[str, object]) -> None:
+    """Say what a reset throws away, in the units a person cares about.
+
+    "Start fresh" does not tell anyone whether they are about to lose an
+    approval somebody already typed. The counts do.
+    """
+
+    from zippergen.storage_maintenance import inspect_store_storage
+
+    def count(value: int, singular: str, plural: str) -> str:
+        return f"{value} {singular if value == 1 else plural}"
+
+    print(f"Reset deployment {name}")
+    store = profile.get("store")
+    losses: list[str] = []
+    if store:
+        report = inspect_store_storage(str(store))
+        if report.roles:
+            losses.append(count(report.roles, "participant position", "participant positions"))
+        if report.outstanding_messages:
+            losses.append(
+                count(report.outstanding_messages, "unread message", "unread messages")
+            )
+        if report.pending_tasks:
+            losses.append(
+                count(
+                    report.pending_tasks,
+                    "unanswered human task",
+                    "unanswered human tasks",
+                )
+            )
+    if losses:
+        print(f"  Discarded, after archiving: {', '.join(losses)}.")
+    else:
+        print("  Nothing has run yet, so there is no state to discard.")
+    print(
+        "  Kept: the deployment itself, its configuration, secrets, bundle "
+        "and logs."
+    )
+    print("  The workflow then starts again from the beginning.")
+
+
 def _reset_deployment_command(args) -> int:
     """Replace deployment state with an empty store, keeping an archive."""
 
@@ -2202,6 +2262,7 @@ def _reset_deployment_command(args) -> int:
     )
 
     profile = _load_deployment_profile(args.name)
+    _print_reset_consequences(args.name, profile)
     if not args.yes:
         if not sys.stdin.isatty():
             raise SystemExit(
@@ -2209,7 +2270,7 @@ def _reset_deployment_command(args) -> int:
                 "Re-run with --yes."
             )
         answer = input(
-            "Archive the current deployment state and start fresh? [y/N]: "
+            "Discard this state and run the workflow from the start? [y/N]: "
         ).strip().casefold()
         if answer not in {"y", "yes"}:
             print("Nothing was changed.")
