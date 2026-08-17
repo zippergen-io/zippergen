@@ -727,6 +727,48 @@ def load_human_task_notification(
     return _notification_row(row) if row is not None else None
 
 
+_CONNECTOR_HEALTH_PREFIX = "connector-health:"
+
+
+def record_connector_health(
+    conn,
+    connector: str,
+    *,
+    healthy: bool,
+    detail: str = "",
+) -> None:
+    """Remember whether a connector is reaching its provider.
+
+    Written only when the answer changes, so a poller running every two
+    seconds does not write every two seconds. ``since`` therefore reads as
+    "failing since", which is the question an operator actually has.
+    """
+
+    key = f"{_CONNECTOR_HEALTH_PREFIX}{connector}"
+    previous = load_adapter_state(conn, key) or {}
+    if isinstance(previous, dict) and previous.get("healthy") is healthy:
+        return
+    write_adapter_state(
+        conn,
+        key,
+        {"healthy": healthy, "since": time.time(), "detail": detail},
+    )
+
+
+def list_connector_health(conn) -> list[dict]:
+    rows = conn.execute(
+        "SELECT key, value FROM adapter_state WHERE key LIKE ? ORDER BY key",
+        (f"{_CONNECTOR_HEALTH_PREFIX}%",),
+    ).fetchall()
+    return [
+        {
+            "connector": str(row[0]).removeprefix(_CONNECTOR_HEALTH_PREFIX),
+            **json.loads(row[1]),
+        }
+        for row in rows
+    ]
+
+
 def load_adapter_state(conn, key: str, default=None):
     row = conn.execute("SELECT value FROM adapter_state WHERE key=?", (key,)).fetchone()
     return default if row is None else json.loads(row[0])

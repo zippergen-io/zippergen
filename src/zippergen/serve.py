@@ -823,6 +823,18 @@ def _print_status(status: dict[str, object]) -> None:
                 f"after {role['steps']} step(s)"
             )
 
+    connectors = status.get("connectors")
+    if isinstance(connectors, list) and connectors:
+        for connector in connectors:
+            if connector.get("healthy"):
+                print(f"Connector {connector['connector']}: reaching its provider")
+            else:
+                print(
+                    f"Connector {connector['connector']}: FAILING since "
+                    f"{_fmt_time(connector.get('since'))} "
+                    f"- {connector.get('detail')}"
+                )
+
     outstanding = status.get("outstanding_messages")
     if isinstance(outstanding, list):
         print(f"Outstanding messages: {len(outstanding)}")
@@ -3764,7 +3776,9 @@ def _notify_stdout_command(args) -> int:
 
 def _notify_telegram_command(args) -> int:
     from zippergen.telegram_notify import (
+        TelegramAPIError,
         TelegramBotClient,
+        TelegramDeploymentNotifier,
         TelegramNotifier,
         load_telegram_chat_id,
         load_telegram_token,
@@ -3795,12 +3809,22 @@ def _notify_telegram_command(args) -> int:
 
     if not args.quiet:
         print(f"Watching Telegram chat {chat_id} for store {store_path}.")
+    delay = args.interval
     while True:
-        sent = notifier.send_pending_once(resend=args.resend)
-        processed = notifier.poll_updates_once(timeout=args.poll_timeout)
+        # Same rule as the deployment poller: an outage is expected input, a
+        # defect in our own code is not.
+        try:
+            sent = notifier.send_pending_once(resend=args.resend)
+            processed = notifier.poll_updates_once(timeout=args.poll_timeout)
+        except TelegramAPIError as exc:
+            delay = min(delay * 2, TelegramDeploymentNotifier.MAX_RETRY_DELAY)
+            print(f"Telegram retrying in {delay:g}s: {exc}", file=sys.stderr, flush=True)
+            time.sleep(delay)
+            continue
+        delay = args.interval
         if not args.quiet and (sent or processed):
             print(f"Telegram: sent {sent} task notification(s), processed {processed} update(s).")
-        time.sleep(args.interval)
+        time.sleep(delay)
 
 
 def _add_guided_deployment_arguments(

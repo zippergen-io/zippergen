@@ -27,6 +27,7 @@ from zippergen.models import selected_llm_specs
 from zippergen.workflow_io import load_workflow_spec
 from zippergen.syntax import Workflow
 from zippergen.store import (
+    list_connector_health,
     list_outstanding_messages,
     list_role_states,
     list_workflow_results,
@@ -97,6 +98,7 @@ def _store_status(store_path: str) -> dict[str, object]:
         ]
         done_task_count = sum(1 for row in human_rows if row[3] == "done")
         results = list_workflow_results(conn)
+        connectors = list_connector_health(conn)
     finally:
         conn.close()
 
@@ -128,6 +130,7 @@ def _store_status(store_path: str) -> dict[str, object]:
             for row in roles
         ],
         "outstanding_messages": outstanding,
+        "connectors": connectors,
         "pending_human_tasks": pending_tasks,
         "done_human_task_count": done_task_count,
         "workflow_results": results,

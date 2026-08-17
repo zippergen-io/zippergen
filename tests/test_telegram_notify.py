@@ -1,5 +1,10 @@
+import io
 import sqlite3
 import threading
+import urllib.error
+import urllib.request
+
+import pytest
 
 from zippergen.store import (
     ensure_human_task,
@@ -537,3 +542,191 @@ def test_deployment_notifier_action_route_overrides_participant_route(
 
     assert notifier.send_pending_once() == 1
     assert client.sent[0]["chat_id"] == "222"
+
+
+# ---------------------------------------------------------------------------
+# The outside world fails; the connector does not
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        urllib.error.URLError("name resolution failed"),
+        urllib.error.HTTPError("u", 502, "Bad Gateway", {}, io.BytesIO(b"upstream")),
+        TimeoutError("timed out"),
+        ConnectionResetError("reset by peer"),
+        ValueError("Expecting value: line 1 column 1"),
+    ],
+    ids=["dns", "http-502", "timeout", "reset", "malformed-json"],
+)
+def test_every_transport_failure_becomes_one_named_error(failure, monkeypatch):
+    """Callers must not carry a list of ways HTTP can fail.
+
+    The client owns the HTTP, so it owns naming the failure. Anything else
+    means every loop grows its own tuple, and those tuples drift.
+    """
+
+    client = TelegramBotClient("token")
+
+    def explode(*_args, **_kwargs):
+        raise failure
+
+    monkeypatch.setattr(urllib.request, "urlopen", explode)
+
+    with pytest.raises(TelegramAPIError):
+        client.request("getUpdates")
+
+
+def test_the_poller_survives_an_outage_and_backs_off(tmp_path, monkeypatch, capsys):
+    """A Telegram outage is expected input, not a reason to stop delivering."""
+
+    stop = threading.Event()
+    notifier = TelegramDeploymentNotifier(
+        str(tmp_path / "deployment.sqlite"),
+        FakeTelegramClient(),
+        connection="telegram-main",
+        routes={},
+        assignments={},
+    )
+    attempts = {"n": 0}
+
+    def fail_then_stop():
+        attempts["n"] += 1
+        if attempts["n"] >= 3:
+            stop.set()
+        raise TelegramAPIError("Telegram getUpdates failed: name resolution failed")
+
+    monkeypatch.setattr(notifier, "send_pending_once", fail_then_stop)
+    waits: list[float] = []
+    monkeypatch.setattr(stop, "wait", lambda delay: waits.append(delay))
+
+    notifier.run_forever(interval=1.0, poll_timeout=0, stop_event=stop)
+
+    assert attempts["n"] == 3, "the poller kept going through the outage"
+    assert waits == [2.0, 4.0, 8.0], "and waited longer each time"
+    assert "Telegram connector retrying in 2s" in capsys.readouterr().err
+
+
+def test_backoff_is_capped_and_resets_after_a_success(tmp_path, monkeypatch):
+    """A long outage must not become an unbounded wait, nor a request flood."""
+
+    notifier = TelegramDeploymentNotifier(
+        str(tmp_path / "deployment.sqlite"),
+        FakeTelegramClient(),
+        connection="telegram-main",
+        routes={},
+        assignments={},
+    )
+
+    delay = 1.0
+    for _ in range(20):
+        delay = notifier._backoff(delay)
+    assert delay == notifier.MAX_RETRY_DELAY
+
+    stop = threading.Event()
+    outcomes = iter([TelegramAPIError("down"), TelegramAPIError("down"), None])
+    waits: list[float] = []
+
+    def maybe_fail():
+        outcome = next(outcomes, None)
+        if outcome is not None:
+            raise outcome
+        stop.set()
+
+    monkeypatch.setattr(notifier, "send_pending_once", maybe_fail)
+    monkeypatch.setattr(notifier, "poll_updates_once", lambda **_kwargs: 0)
+    monkeypatch.setattr(stop, "wait", lambda delay: waits.append(delay))
+
+    notifier.run_forever(interval=1.0, poll_timeout=0, stop_event=stop)
+
+    assert waits == [2.0, 4.0, 1.0], "a success returns to the normal interval"
+
+
+def test_a_defect_in_our_own_code_still_crashes_the_poller(tmp_path, monkeypatch):
+    """Retrying a bug every two seconds would hide it and fix nothing."""
+
+    stop = threading.Event()
+    notifier = TelegramDeploymentNotifier(
+        str(tmp_path / "deployment.sqlite"),
+        FakeTelegramClient(),
+        connection="telegram-main",
+        routes={},
+        assignments={},
+    )
+
+    def programming_error():
+        raise TypeError("unsupported operand type(s)")
+
+    monkeypatch.setattr(notifier, "send_pending_once", programming_error)
+
+    with pytest.raises(TypeError):
+        notifier.run_forever(interval=0, poll_timeout=0, stop_event=stop)
+
+
+def test_health_is_published_so_status_can_say_so(tmp_path, monkeypatch):
+    """A revoked token and a five-minute outage look the same in the log."""
+
+    from zippergen.store import list_connector_health, open_store
+
+    store = tmp_path / "deployment.sqlite"
+    open_store(str(store)).close()
+    stop = threading.Event()
+    notifier = TelegramDeploymentNotifier(
+        str(store),
+        FakeTelegramClient(),
+        connection="approval-bot",
+        routes={},
+        assignments={},
+    )
+    monkeypatch.setattr(stop, "wait", lambda _delay: None)
+
+    def fail_once():
+        stop.set()
+        raise TelegramAPIError("Telegram getUpdates failed: HTTP 401 Unauthorized")
+
+    monkeypatch.setattr(notifier, "send_pending_once", fail_once)
+    notifier.run_forever(interval=0, poll_timeout=0, stop_event=stop)
+
+    conn = open_store(str(store))
+    try:
+        health = list_connector_health(conn)
+    finally:
+        conn.close()
+    assert len(health) == 1
+    assert health[0]["connector"] == "telegram:approval-bot"
+    assert health[0]["healthy"] is False
+    assert "401" in health[0]["detail"]
+
+
+def test_health_is_written_only_when_it_changes(tmp_path):
+    """A poller runs every two seconds; it must not write every two seconds."""
+
+    from zippergen.store import open_store, record_connector_health
+
+    store = tmp_path / "deployment.sqlite"
+    conn = open_store(str(store))
+    try:
+        def record(healthy, detail=""):
+            conn.execute("BEGIN IMMEDIATE")
+            record_connector_health(
+                conn, "telegram:bot", healthy=healthy, detail=detail
+            )
+            conn.execute("COMMIT")
+
+        def written_at():
+            return conn.execute(
+                "SELECT updated_at FROM adapter_state "
+                "WHERE key='connector-health:telegram:bot'"
+            ).fetchone()[0]
+
+        record(False, "down")
+        first = written_at()
+        record(False, "still down")
+        record(False, "still down")
+        assert written_at() == first, "an unchanged state must not rewrite the row"
+
+        record(True)
+        assert written_at() != first, "a change must be recorded"
+    finally:
+        conn.close()

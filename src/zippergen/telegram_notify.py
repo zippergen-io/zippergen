@@ -27,6 +27,7 @@ from zippergen.store import (
     load_human_task_notification,
     load_human_task_notification_by_external,
     load_human_task_token,
+    record_connector_health,
     mark_human_task_token_used,
     open_store,
     record_human_task_notification,
@@ -70,7 +71,15 @@ class TelegramBotClient:
                 payload = json.loads(resp.read())
         except urllib.error.HTTPError as exc:
             detail = exc.read().decode(errors="replace")
-            raise TelegramAPIError(f"Telegram {method} failed: HTTP {exc.code} {detail}") from exc
+            raise TelegramAPIError(
+                f"Telegram {method} failed: HTTP {exc.code} {detail}"
+            ) from exc
+        except (OSError, ValueError) as exc:
+            # A refused connection, a DNS failure, a socket timeout and a
+            # malformed body are all one thing to every caller: this call did
+            # not work. Naming them here, where the HTTP lives, keeps every
+            # caller free of a list that would drift as the failures do.
+            raise TelegramAPIError(f"Telegram {method} failed: {exc}") from exc
         if not payload.get("ok", False):
             raise TelegramAPIError(f"Telegram {method} failed: {payload}")
         return payload
@@ -351,12 +360,6 @@ class TelegramNotifier:
                 conn.close()
         return processed
 
-    def run_forever(self, *, interval: float = 2.0, poll_timeout: float = 20.0, resend: bool = False) -> None:
-        while True:
-            self.send_pending_once(resend=resend)
-            self.poll_updates_once(timeout=poll_timeout)
-            time.sleep(interval)
-
     def _chat_matches(self, chat_id: object) -> bool:
         return str(chat_id) == self._target
 
@@ -495,6 +498,41 @@ class TelegramDeploymentNotifier:
     routes: Mapping[str, Mapping[str, object]]
     assignments: Mapping[str, str]
     limit: int | None = None
+
+    #: An outage lasts minutes, not seconds. Backing off to a minute keeps a
+    #: long one from becoming a request flood, and still recovers promptly.
+    MAX_RETRY_DELAY = 60.0
+
+    def _backoff(self, delay: float) -> float:
+        return min(delay * 2, self.MAX_RETRY_DELAY)
+
+    def _record_health(self, *, healthy: bool, detail: str = "") -> None:
+        """Publish whether the bot is reachable, so status can say so.
+
+        A revoked token and a five-minute outage look the same in the log.
+        They look different here, because one of them never clears.
+        """
+
+        try:
+            conn = open_store(self.store_path)
+            try:
+                conn.execute("BEGIN IMMEDIATE")
+                try:
+                    record_connector_health(
+                        conn,
+                        f"telegram:{self.connection}",
+                        healthy=healthy,
+                        detail=detail,
+                    )
+                    conn.execute("COMMIT")
+                except BaseException:
+                    conn.execute("ROLLBACK")
+                    raise
+            finally:
+                conn.close()
+        except sqlite3.DatabaseError:
+            # Reporting health must never be the thing that stops delivery.
+            return
 
     @property
     def _offset_key(self) -> str:
@@ -684,27 +722,39 @@ class TelegramDeploymentNotifier:
         poll_timeout: float = 20.0,
         stop_event: threading.Event | None = None,
     ) -> None:
+        delay = interval
         while stop_event is None or not stop_event.is_set():
+            # Only the two ways the outside world fails are caught. A defect in
+            # our own code must still crash the poller loudly: retrying it every
+            # two seconds forever would hide the bug and fix nothing.
             try:
                 self.send_pending_once()
                 self.poll_updates_once(timeout=poll_timeout)
             except sqlite3.DatabaseError as exc:
+                # The store is the one place health could be recorded, so a
+                # store failure can only be reported to the log.
+                delay = self._backoff(delay)
                 print(
                     f"Durable store unavailable for Telegram delivery "
-                    f"({self.store_path}): {exc}",
+                    f"({self.store_path}), retrying in {delay:g}s: {exc}",
                     file=sys.stderr,
                     flush=True,
                 )
-            except Exception as exc:
+            except TelegramAPIError as exc:
+                delay = self._backoff(delay)
+                self._record_health(healthy=False, detail=str(exc))
                 print(
-                    f"Telegram API retrying after error: {exc}",
+                    f"Telegram connector retrying in {delay:g}s: {exc}",
                     file=sys.stderr,
                     flush=True,
                 )
-            if stop_event is None:
-                time.sleep(interval)
             else:
-                stop_event.wait(interval)
+                delay = interval
+                self._record_health(healthy=True)
+            if stop_event is None:
+                time.sleep(delay)
+            else:
+                stop_event.wait(delay)
 
 
 @dataclass
