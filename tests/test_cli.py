@@ -2068,9 +2068,63 @@ def test_status_command_reports_pending_human_task(tmp_path, monkeypatch, capsys
 
     captured = capsys.readouterr()
     assert rc == 0
-    assert "State: waiting (waiting for 1 human task(s))" in captured.out
+    assert "Durable state: waiting (waiting for 1 human task(s))" in captured.out
     assert "Pending human tasks: 1" in captured.out
     assert "task-1 User.approve" in captured.out
+
+
+def test_status_says_whether_the_deployment_is_running(
+    tmp_path, monkeypatch, capsys
+):
+    """"Is it running?" is the first thing status is asked.
+
+    It used to report only the durable store, so the obvious question had to be
+    answered by 'deploy check' or 'deploy list' instead.
+    """
+
+    _prepared_deployment_store(tmp_path, monkeypatch, capsys)
+    monkeypatch.setattr(
+        "zippergen.deployment_platform.deployment_service_status",
+        lambda _name: {
+            "state": "running",
+            "healthy": True,
+            "detail": "io.zippergen.demo is running",
+        },
+    )
+    capsys.readouterr()
+
+    assert main(["deploy", "status"]) == 0
+
+    output = capsys.readouterr().out
+    assert "Service: running" in output
+    assert "Deployment:" in output
+    # Two lines both called "State" would be the confusion, not the fix.
+    assert "Durable state:" in output
+    assert "\nState:" not in output
+
+
+def test_status_speaks_plainly_about_a_stopped_service(
+    tmp_path, monkeypatch, capsys
+):
+    """launchd says "not-loaded" and systemd says other things; users say stopped."""
+
+    _prepared_deployment_store(tmp_path, monkeypatch, capsys)
+    monkeypatch.setattr(
+        "zippergen.deployment_platform.deployment_service_status",
+        lambda _name: {
+            "state": "not-loaded",
+            "healthy": False,
+            "detail": "not loaded",
+        },
+    )
+    capsys.readouterr()
+
+    assert main(["deploy", "status"]) == 0
+
+    output = capsys.readouterr().out
+    assert "Service: stopped" in output
+    # A detail that only restates the state is noise.
+    assert "not-loaded" not in output
 
 
 def test_status_command_reports_missing_store(tmp_path, monkeypatch, capsys):
@@ -2080,13 +2134,15 @@ def test_status_command_reports_missing_store(tmp_path, monkeypatch, capsys):
     rc = main(["deploy", "status", "--json"])
 
     captured = capsys.readouterr()
+    payload = json.loads(captured.out)
     assert rc == 0
-    assert json.loads(captured.out) == {
-        "store": str(store_path),
-        "exists": False,
-        "state": "missing",
-        "summary": "store does not exist",
-    }
+    assert payload["store"] == str(store_path)
+    assert payload["exists"] is False
+    assert payload["state"] == "missing"
+    assert payload["summary"] == "store does not exist"
+    # Status answers "is it running?" too, so the service is always reported.
+    assert payload["service"]["state"]
+    assert payload["deployment"]
 
 
 def test_trace_command_reports_recent_trace_events(tmp_path, monkeypatch, capsys):

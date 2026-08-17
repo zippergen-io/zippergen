@@ -808,7 +808,9 @@ def _notify_stdout_task(task: dict) -> None:
 
 def _print_status(status: dict[str, object]) -> None:
     print(f"Store: {status['store']}")
-    print(f"State: {status['state']} ({status['summary']})")
+    # "Durable state", not "State": a deployment also has a service state, and
+    # two lines both called State is exactly the confusion to avoid.
+    print(f"Durable state: {status['state']} ({status['summary']})")
     if not status.get("exists"):
         return
 
@@ -3266,13 +3268,55 @@ def _start_deployment_connector_workers(
     return (thread,)
 
 
+# launchd and systemd each have their own words for the same few situations.
+# Someone asking "is it running?" should not have to learn either vocabulary.
+_SERVICE_WORDS = {
+    "running": "running",
+    "restarting": "restarting",
+    "not-loaded": "stopped",
+    "loaded": "stopped",
+    "completed": "finished",
+    "unknown": "unknown",
+}
+
+
+def _service_summary(service: Mapping[str, object]) -> str:
+    """Render the service state in plain words, keeping any real detail."""
+
+    raw = str(service.get("state") or "unknown")
+    word = _SERVICE_WORDS.get(raw, raw)
+    detail = str(service.get("detail") or "").strip()
+    # Drop a detail that only restates the state, such as "not loaded".
+    restates = detail.casefold().replace("-", " ") == raw.casefold().replace("-", " ")
+    if not detail or restates:
+        return word
+    return f"{word} ({detail})"
+
+
 def _status_command(args) -> int:
+    """Answer the two questions "deploy status" is asked.
+
+    Is this deployment running, and what state does it hold? Only the second
+    used to be reported, which left the obvious question to 'deploy check' or
+    'deploy list'.
+    """
+
+    from zippergen.deployment_platform import deployment_service_status
+
     profile = _load_deployment_profile(args.name)
+    service = deployment_service_status(args.name)
     status = _store_status(str(profile["store"]))
+    status["deployment"] = args.name
+    status["service"] = service
     if args.json:
         print(json.dumps(status, default=str))
-    else:
-        _print_status(status)
+        return 0
+    print(f"Deployment: {args.name}")
+    print(f"Service: {_service_summary(service)}")
+    workflow = profile.get("workflow")
+    if workflow:
+        print(f"Workflow: {workflow}")
+    _print_status(status)
     return 0
 
 
