@@ -1644,8 +1644,17 @@ def assign_assistant(
     loaded, module = _load_project_workflow(workspace, workflow)
     known = set(assistant_targets(loaded, module))
     if target not in known:
+        explanation = (
+            " Assistant assignments can target 'default', a lifeline that "
+            "runs an @assistant action, or an exact Participant.action for "
+            "an @assistant action."
+        )
+        if known == {"default"}:
+            explanation += " This workflow defines no @assistant actions."
         raise WorkspaceError(
-            f"Unknown assistant assignment target {target!r}. Available: "
+            f"Unknown assistant assignment target {target!r}."
+            + explanation
+            + " Available: "
             + (", ".join(sorted(known)) or "none")
         )
     if (

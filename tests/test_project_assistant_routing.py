@@ -53,6 +53,21 @@ zippergen_deployment = DeploymentSpec(fields=(
 ))
 '''
 
+NO_ASSISTANT_WORKFLOW = '''
+from zippergen import Lifeline, pure, workflow
+
+Mailbox = Lifeline("Mailbox")
+
+@pure
+def count() -> int:
+    return 0
+
+@workflow
+def mailbox() -> int:
+    Mailbox: result = count()
+    return result @ Mailbox
+'''
+
 
 def _project(tmp_path: Path, monkeypatch) -> tuple[Path, Path, Workspace]:
     root = tmp_path / "project"
@@ -169,6 +184,32 @@ def test_assistant_configuration_and_assignment_are_guided_in_a_terminal(
     assert workspace.assistant_assignment_profile(
         "workflow.py:maintenance"
     )["lifelines"] == {"Developer": "coding-agent"}
+
+
+def test_assignment_explains_that_targets_need_assistant_actions(
+    tmp_path, monkeypatch
+):
+    root = tmp_path / "without-assistant-actions"
+    root.mkdir()
+    (root / "workflow.py").write_text(
+        NO_ASSISTANT_WORKFLOW,
+        encoding="utf-8",
+    )
+    home = tmp_path / "home"
+    workspace = Workspace(root, home=home)
+    workspace.initialize_project(name="without-assistant-actions")
+    workspace.select_workflow("workflow.py:mailbox")
+    workspace.save_assistant_configuration("assistant", "codex")
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(home))
+    monkeypatch.chdir(root)
+
+    with pytest.raises(SystemExit) as error:
+        main(["assistant", "assign", "Mailbox", "assistant"])
+
+    message = str(error.value)
+    assert "a lifeline that runs an @assistant action" in message
+    assert "This workflow defines no @assistant actions." in message
+    assert "Available: default" in message
 
 
 def test_assistant_completion_uses_project_names_and_action_targets(
