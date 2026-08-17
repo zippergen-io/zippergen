@@ -25,7 +25,7 @@ from zippergen import DeploymentField, DeploymentSpec, Lifeline, Var, workflow
 from zippergen.actions import effect, human, llm, pure
 
 Writer = Lifeline("Writer")
-User = Lifeline("User")
+Mailbox = Lifeline("Mailbox")
 
 message = Var("message", str)
 draft = Var("draft", str)
@@ -106,7 +106,7 @@ def send_reply(draft: str, handled: int) -> int:
     # Start on a fresh line because another parallel role may currently own
     # the terminal prompt. Real connectors should use the same compact,
     # participant-labelled convention for user-facing effect notifications.
-    print("\n✓ User · reply sent")
+    print("\n✓ Mailbox · reply sent")
     return handled + 1
 
 
@@ -117,18 +117,18 @@ def discard(handled: int) -> int:
 
 @workflow
 def email_approval() -> int:
-    User: message = next_unread_message()
-    while message @ User:
-        User(message) >> Writer(message)
+    Mailbox: message = next_unread_message()
+    while message @ Mailbox:
+        Mailbox(message) >> Writer(message)
         Writer: draft = draft_reply(message)
-        Writer(draft) >> User(draft)
-        User: approved = approve_reply(draft)
-        if approved @ User:
-            User: handled = send_reply(draft, handled)
+        Writer(draft) >> Mailbox(draft)
+        Mailbox: approved = approve_reply(draft)
+        if approved @ Mailbox:
+            Mailbox: handled = send_reply(draft, handled)
         else:
-            User: handled = discard(handled)
-        User: message = next_unread_message()
-    return handled @ User
+            Mailbox: handled = discard(handled)
+        Mailbox: message = next_unread_message()
+    return handled @ Mailbox
 
 
 # A foreground run defaults to ./mailbox. A deployment runs from an immutable

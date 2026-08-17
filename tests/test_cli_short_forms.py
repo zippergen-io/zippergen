@@ -75,7 +75,7 @@ def test_show_infers_the_project_workflow(project, capsys):
 
     rendered = capsys.readouterr().out
     assert "email_approval__Writer" in rendered
-    # The Writer takes no part in the User's decision, so it has no branch.
+    # The Writer takes no part in Mailbox's decision, so it has no branch.
     assert "if " not in rendered
 
 
@@ -221,15 +221,15 @@ def test_diff_compares_a_baseline_against_the_project_workflow(
     workflow = project / "workflow.py"
     workflow.write_text(
         workflow.read_text().replace(
-            "Writer(draft) >> User(draft)",
-            "Writer(draft) >> User(draft)\n        User(draft) >> Writer(draft)",
+            "Writer(draft) >> Mailbox(draft)",
+            "Writer(draft) >> Mailbox(draft)\n        Mailbox(draft) >> Writer(draft)",
             1,
         )
     )
 
     assert serve.main(["diff", str(baseline)]) == 0
 
-    assert "User(draft) >> Writer(draft)" in capsys.readouterr().out
+    assert "Mailbox(draft) >> Writer(draft)" in capsys.readouterr().out
 
 
 def test_a_single_workflow_is_inferred_without_a_manifest_entry(
@@ -310,14 +310,14 @@ def test_connector_assignment_infers_the_only_workflow_without_manifest_entry(
     monkeypatch.chdir(root)
     monkeypatch.setenv("ZIPPERGEN_HOME", str(tmp_path / "home"))
 
-    assert serve.main(["connector", "assign", "User", "approval-chat"]) == 0
+    assert serve.main(["connector", "assign", "Mailbox", "approval-chat"]) == 0
 
     assert workspace.connector_assignment_profile(
         "workflow.py:email_approval"
-    )["lifelines"] == {"User": "approval-chat"}
+    )["lifelines"] == {"Mailbox": "approval-chat"}
     manifest = workspace.manifest_path.read_text(encoding="utf-8")
     assert "[connectors.assignments.lifelines]" in manifest
-    assert '"User" = "approval-chat"' in manifest
+    assert '"Mailbox" = "approval-chat"' in manifest
     assert "workflow_entry" not in manifest
     assert "asked through approval-chat" in capsys.readouterr().out
 
@@ -429,16 +429,16 @@ def test_a_projection_that_promises_a_result_shows_where_it_comes_from(
 ):
     """The signature and the body have to agree.
 
-    The local view typed `User` as `-> int` while rendering a function that
+    The local view typed `Mailbox` as `-> int` while rendering a function that
     never returned. A reader who knows Python notices that before they notice
     anything else.
     """
 
-    assert serve.main(["show", "--agent", "User"]) == 0
-    user = capsys.readouterr().out
+    assert serve.main(["show", "--agent", "Mailbox"]) == 0
+    mailbox = capsys.readouterr().out
 
-    assert "-> int" in user
-    assert "return handled" in user
+    assert "-> int" in mailbox
+    assert "return handled" in mailbox
 
     # The Writer owns no output, so it must keep promising nothing.
     assert serve.main(["show", "--agent", "Writer"]) == 0

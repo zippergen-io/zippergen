@@ -280,7 +280,7 @@ def test_connector_configuration_and_assignment_are_guided_the_same_way(
             "approval-chat",
             "approval-bot",
             "4242",
-            "User",
+            "Mailbox",
             "approval-chat",
         ]
     )
@@ -295,7 +295,7 @@ def test_connector_configuration_and_assignment_are_guided_the_same_way(
     )
     assert workspace.connector_assignment_profile(
         "workflow.py:email_approval"
-    )["lifelines"] == {"User": "approval-chat"}
+    )["lifelines"] == {"Mailbox": "approval-chat"}
 
 
 def test_model_assignment_rejects_a_target_that_cannot_call_an_llm(project):
@@ -496,8 +496,8 @@ def test_connector_unassign_and_remove_are_symmetric(project):
         },
     )
 
-    assert main(["connector", "assign", "User", "approval-chat"]) == 0
-    assert main(["connector", "unassign", "User"]) == 0
+    assert main(["connector", "assign", "Mailbox", "approval-chat"]) == 0
+    assert main(["connector", "unassign", "Mailbox"]) == 0
     assert main(["connector", "remove", "approval-chat"]) == 0
 
     assert "approval-chat" not in workspace.connector_configurations()
@@ -516,7 +516,7 @@ def test_human_action_assignment_rejects_a_service_connector(project):
     )
 
     with pytest.raises(SystemExit, match="need a Telegram configuration"):
-        main(["connector", "assign", "User", "inbox"])
+        main(["connector", "assign", "Mailbox", "inbox"])
 
 
 def test_completion_uses_current_project_names(project, capsys):

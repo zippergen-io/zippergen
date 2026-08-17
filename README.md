@@ -107,18 +107,18 @@ handled = Var("handled", int, default=0)
 
 @workflow
 def email_approval() -> int:
-    User: message = next_unread_message()
-    while message @ User:
-        User(message) >> Writer(message)
+    Mailbox: message = next_unread_message()
+    while message @ Mailbox:
+        Mailbox(message) >> Writer(message)
         Writer: draft = draft_reply(message)
-        Writer(draft) >> User(draft)
-        User: approved = approve_reply(draft)
-        if approved @ User:
-            User: handled = send_reply(draft, handled)
+        Writer(draft) >> Mailbox(draft)
+        Mailbox: approved = approve_reply(draft)
+        if approved @ Mailbox:
+            Mailbox: handled = send_reply(draft, handled)
         else:
-            User: handled = discard(handled)
-        User: message = next_unread_message()
-    return handled @ User
+            Mailbox: handled = discard(handled)
+        Mailbox: message = next_unread_message()
+    return handled @ Mailbox
 ```
 
 Check it and run it:
@@ -139,14 +139,14 @@ OK   workflow inputs: none, the run starts without setup questions
 ```
 
 ```
-REQUEST · User
+REQUEST · Mailbox
 
 Proposed reply:
 
 [draft_reply:draft]
 
 Send this reply? [y/n]: y
-✓ User · reply sent
+✓ Mailbox · reply sent
 ```
 
 The reply is a placeholder, because `mock` does not call a model. Use
@@ -163,16 +163,17 @@ phone and a real deployment:
 
 ## What you get from writing one protocol
 
-The workflow above has one decision, and the `User` makes it. You can ask
-ZipperGen what each participant really runs:
+The workflow above has one decision, and `Mailbox` owns it. Its `@human`
+action pauses that local program and asks a person. You can ask ZipperGen what
+each participant really runs:
 
 ```bash
-zg show --agent User
+zg show --agent Mailbox
 ```
 
 ```python
-@role('User')
-def email_approval__User() -> int:
+@role('Mailbox')
+def email_approval__Mailbox() -> int:
     message = next_unread_message()
     while message:
         send_decision('Writer', True)
@@ -196,19 +197,19 @@ zg show --agent Writer
 ```python
 @role('Writer')
 def email_approval__Writer() -> None:
-    while recv_decision('User'):
-        message = recv('User')
+    while recv_decision('Mailbox'):
+        message = recv('Mailbox')
         draft = draft_reply(message)
-        send('User', draft)
+        send('Mailbox', draft)
 ```
 
 **The Writer has no approval branch.** Nobody wrote those two programs by
 hand.
 
 The Writer is told in every round whether to go on, because it has work to do
-inside the loop. It is never told what the User approved, because it does
-nothing either way. So that decision is simply not in its program. It cannot
-wait for it, and it cannot block on it.
+inside the loop. It is never told whether approval was granted at Mailbox,
+because it does nothing either way. So that decision is simply not in its
+program. It cannot wait for it, and it cannot block on it.
 
 This is what projection means, and it is what the Lean proof is about.
 
@@ -396,7 +397,7 @@ configuration, and it goes in `zippergen.toml`. Credentials never go there:
 zg provider configure approval-bot telegram
 zg provider set-credential approval-bot       # hidden bot-token prompt
 zg connector configure approval-chat approval-bot  # Telegram is inferred
-zg connector assign User approval-chat         # who gets asked, and where
+zg connector assign Mailbox approval-chat      # whose human action is routed
 
 zg provider configure google-work google
 zg provider authorize google-work --scopes gmail.readonly,spreadsheets

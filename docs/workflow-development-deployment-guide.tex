@@ -228,7 +228,7 @@ kind = "telegram"
 chat_id = "12345678"
 
 [connectors.assignments.lifelines]
-User = "approval-chat"
+Mailbox = "approval-chat"
 \end{lstlisting}
 
 It is an ordinary file. Edit it in an editor, or let a coding agent edit it.
@@ -270,10 +270,10 @@ written.
 \subsection{Participants and messages}
 
 \begin{lstlisting}[language=Python]
-User = Lifeline("User")
+Mailbox = Lifeline("Mailbox")
 Writer = Lifeline("Writer")
 
-User(message) >> Writer(message)
+Mailbox(message) >> Writer(message)
 \end{lstlisting}
 
 The left side sends, the right receives. The names in brackets say which
@@ -320,13 +320,13 @@ with LLM1:
 \subsection{Decisions}
 
 \begin{lstlisting}[language=Python]
-if approved @ User:
-    User: result = sent(draft)
+if approved @ Mailbox:
+    Mailbox: result = sent(draft)
 else:
-    User: result = discarded()
+    Mailbox: result = discarded()
 \end{lstlisting}
 
-The \texttt{@ User} names the participant who evaluates the condition. It is
+The \texttt{@ Mailbox} names the participant who evaluates the condition. It is
 required, and it is the most important annotation in the language: it decides
 who broadcasts the outcome and who merely receives it.
 
@@ -371,7 +371,7 @@ with coregion:
 \begin{lstlisting}[language=Python]
 def email_approval() -> int:
     ...
-    return handled @ User
+    return handled @ Mailbox
 \end{lstlisting}
 
 An input belongs to the participant that supplies it. The return says who holds
@@ -414,15 +414,15 @@ runs after projection, which is not what you wrote:
 \begin{lstlisting}[language=Python]
 @role('Writer')
 def email_approval__Writer() -> None:
-    while recv_decision('User'):
-        message = recv('User')
+    while recv_decision('Mailbox'):
+        message = recv('Mailbox')
         draft = draft_reply(message)
-        send('User', draft)
+        send('Mailbox', draft)
 \end{lstlisting}
 
 The \texttt{Writer} is told each round whether to continue, because it has work
 inside the loop. It has no \texttt{if}, because it takes no part in the
-\texttt{User}'s decision. A participant's local program mentions only what
+\texttt{Mailbox}'s decision. A participant's local program mentions only what
 concerns it, which is why it cannot wait for a message the decider chose not
 to send.
 
@@ -702,17 +702,20 @@ a Telegram connector, assigned & a message with buttons \\
 \end{center}
 
 The terminal is right while developing and wrong for a deployment nobody is
-watching. Two commands, doing two different things:
+watching. Provider setup, destination configuration, and assignment do three
+different things:
 
 \begin{lstlisting}[style=shell]
 zg provider configure approval-bot telegram
 zg provider set-credential approval-bot
 zg connector configure approval-chat approval-bot
-zg connector assign User approval-chat
+zg connector assign Mailbox approval-chat
 \end{lstlisting}
 
-The first says \emph{which} chat. The second says \emph{who} is asked there:
-a participant, or one action with \texttt{User.approve\_reply}.
+The provider commands name a bot and save its token. The connector
+configuration says \emph{which} chat. The assignment says \emph{whose action}
+is routed there: a participant, or one action with
+\texttt{Mailbox.approve\_reply}.
 
 The bot token is typed without echo and stays on this machine. The chat id goes
 in \path{zippergen.toml} and is committed: a colleague gets the chat, and
@@ -938,7 +941,7 @@ Configuring says which chat. Assigning says who is asked there. Both are
 needed:
 
 \begin{lstlisting}[style=shell]
-zg connector assign User approval-chat
+zg connector assign Mailbox approval-chat
 \end{lstlisting}
 
 \section{Command reference}

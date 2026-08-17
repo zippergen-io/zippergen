@@ -144,7 +144,7 @@ need a person.
 \begin{tikzpicture}[node distance=7mm]
   \node[zgstage] (msg)   {next unread\\message};
   \node[zgstage, right=of msg] (draft) {\textbf{Writer}\\drafts a reply};
-  \node[zgstage, right=of draft] (ask) {\textbf{User}\\approves?};
+  \node[zgstage, right=of draft] (ask) {\textbf{Mailbox}\\asks approval};
   \node[zgstage, above right=3mm and 7mm of ask] (send) {send};
   \node[zgstage, below right=3mm and 7mm of ask] (drop) {discard};
   \draw[zgflow] (msg) -- (draft);
@@ -173,9 +173,9 @@ Thursday afternoon works for me. How about 3pm?
 \texttt{[ Send ] [ Reject ]}
 \end{notebox}
 
-Two participants exchange messages, one of them is a person, and what happens
-next depends on what that person says. That is a coordination problem, and it
-is the kind of thing ZipperGen exists to make readable.
+Two participants exchange messages, and one local action asks a person. What
+happens next depends on that person's answer. That is a coordination problem,
+and it is the kind of thing ZipperGen exists to make readable.
 
 \begin{notebox}{What you need}
 \begin{itemize}
@@ -256,7 +256,7 @@ I created specification.md and workflow.py.
   $ zg validate
   Workflow email_approval: valid
 
-Two participants, User and Writer, and one decision that the User owns:
+Two participants, Mailbox and Writer, and one decision that Mailbox owns:
 whether to send the draft. Ask me to change anything.
 \end{lstlisting}
 
@@ -281,24 +281,24 @@ Visible, readable Python. This is the whole coordination:
 \begin{lstlisting}[language=Python]
 @workflow
 def email_approval() -> int:
-    User: message = next_unread_message()
-    while message @ User:
-        User(message) >> Writer(message)
+    Mailbox: message = next_unread_message()
+    while message @ Mailbox:
+        Mailbox(message) >> Writer(message)
         Writer: draft = draft_reply(message)
-        Writer(draft) >> User(draft)
-        User: approved = approve_reply(draft)
-        if approved @ User:
-            User: handled = send_reply(draft, handled)
+        Writer(draft) >> Mailbox(draft)
+        Mailbox: approved = approve_reply(draft)
+        if approved @ Mailbox:
+            Mailbox: handled = send_reply(draft, handled)
         else:
-            User: handled = discard(handled)
-        User: message = next_unread_message()
-    return handled @ User
+            Mailbox: handled = discard(handled)
+        Mailbox: message = next_unread_message()
+    return handled @ Mailbox
 \end{lstlisting}
 
 Read it top to bottom and you have the entire message order. Five things are
 worth noticing.
 
-\texttt{User(message) >> Writer(message)} is a message. The left side sends,
+\texttt{Mailbox(message) >> Writer(message)} is a message. The left side sends,
 the right side receives, and the names in brackets say which variables carry
 the value.
 
@@ -306,14 +306,14 @@ the value.
 participant. \texttt{draft\_reply} is an \texttt{@llm} action, which is a model
 call with a prompt and a declared output.
 
-\texttt{User: approved = approve\_reply(draft)} is a \texttt{@human} action. It
+\texttt{Mailbox: approved = approve\_reply(draft)} is a \texttt{@human} action. It
 stops and waits for a person.
 
-\texttt{if approved @ User} is a decision, and the \texttt{@ User} says who
+\texttt{if approved @ Mailbox} is a decision, and the \texttt{@ Mailbox} says who
 makes it. That annotation is the important one, and the next section shows why.
 
-\texttt{while message @ User} is a loop, owned the same way. The
-\texttt{User} decides each round whether there is another message to handle.
+\texttt{while message @ Mailbox} is a loop, owned the same way. The
+\texttt{Mailbox} decides each round whether there is another message to handle.
 \texttt{next\_unread\_message} waits until there is one, so in practice that
 decision is always yes and the workflow never finishes. That is the point.
 
@@ -337,10 +337,10 @@ zg validate
 
 \begin{lstlisting}
 Workflow email_approval: valid
-OK   lifelines: 2 unique lifeline(s): Writer, User
+OK   lifelines: 2 unique lifeline(s): Writer, Mailbox
 OK   projection Writer: WhileRecvStmt
-OK   projection User: SeqStmt
-OK   deployment declaration: 0 field(s), 0 package(s), 0 setup step(s)
+OK   projection Mailbox: SeqStmt
+OK   deployment declaration: 1 field(s), 0 package(s), 0 setup step(s)
 OK   workflow inputs: none, the run starts without setup questions
 OK   canonical rendering: global and local code views rendered successfully
 \end{lstlisting}
@@ -356,7 +356,7 @@ than to type, and running commands directly when they are short.
 
 \section{The moment that matters}
 
-The workflow has one decision and the \texttt{User} makes it. Rather than
+The workflow has one decision and \texttt{Mailbox} owns it. Rather than
 reading the code again, ask:
 
 \begin{lstlisting}[style=agent]
@@ -368,26 +368,26 @@ reading the code again, ask:
 
   @role('Writer')
   def email_approval__Writer() -> None:
-      while recv_decision('User'):
-          message = recv('User')
+      while recv_decision('Mailbox'):
+          message = recv('Mailbox')
           draft = draft_reply(message)
-          send('User', draft)
+          send('Mailbox', draft)
 
 The Writer is told each round whether to keep going, then drafts one
-reply. It is never told whether the reply was sent: the User owns the
+reply. It is never told whether the reply was sent: Mailbox owns the
 approval decision, and the Writer takes no part in it.
 \end{lstlisting}
 
 Run it yourself and you get the same four lines. Now compare the
-\texttt{User}, who owns both the loop and the decision:
+\texttt{Mailbox}, which owns both the loop and the decision:
 
 \begin{lstlisting}[style=shell]
-zg show --agent User
+zg show --agent Mailbox
 \end{lstlisting}
 
 \begin{lstlisting}[language=Python]
-@role('User')
-def email_approval__User() -> int:
+@role('Mailbox')
+def email_approval__Mailbox() -> int:
     message = next_unread_message()
     while message:
         send_decision('Writer', True)
@@ -406,11 +406,11 @@ def email_approval__User() -> int:
 
 \begin{notebox}{The Writer has no approval branch}
 Nobody wrote either of those lines. Put the two programs side by side and the
-\texttt{User} does something for each of its two control structures, while the
+\texttt{Mailbox} does something for each of its two control structures, while the
 \texttt{Writer} does something for only one of them.
 
 The loop, the \texttt{Writer} must know about: it has work inside it, so the
-\texttt{User} tells it every round whether to continue, and tells it once more,
+\texttt{Mailbox} tells it every round whether to continue, and tells it once more,
 at the end, not to. That is the \texttt{send\_decision} in the
 \texttt{else}.
 
@@ -456,14 +456,14 @@ zg run --llm mock
 \end{lstlisting}
 
 \begin{lstlisting}
-REQUEST · User
+REQUEST · Mailbox
 
 Proposed reply:
 
 [draft_reply:draft]
 
 Send this reply? [y/n]: y
-✓ User · reply sent
+✓ Mailbox · reply sent
 \end{lstlisting}
 
 Then nothing happens, and that is correct: it is waiting for the next message.
@@ -531,7 +531,7 @@ Ask for the change:
 
 \begin{lstlisting}[style=agent]
 Done, as far as I can take it. The workflow itself does not change --- the
-User's @human action is already the approval; what changes is where the
+Mailbox's @human action is already the approval; what changes is where the
 question is delivered, which is project configuration.
 
 I have updated specification.md to say approvals go to Telegram, and
@@ -543,7 +543,7 @@ for the chat id or bot token in this conversation. Run:
     zg provider configure approval-bot telegram
     zg provider set-credential approval-bot
     zg connector configure approval-chat approval-bot
-    zg connector assign User approval-chat
+    zg connector assign Mailbox approval-chat
 
 Tell me when that is done and I will check the configuration.
 \end{lstlisting}
@@ -578,36 +578,45 @@ zg validate passes.
 
 Telegram setup needs your terminal:
 
+    zg provider configure
+      approval-bot telegram
+    zg provider set-credential
+      approval-bot
     zg connector configure
-      approval-chat telegram
-    zg connector assign User
+      approval-chat approval-bot
+    zg connector assign Mailbox
       approval-chat
 \end{lstlisting}
 \end{minipage}\hfill
 \begin{minipage}[t]{0.485\linewidth}
 \textbf{\footnotesize Your terminal}\par\vspace{2pt}
 \begin{lstlisting}[style=pane]
-$ zg connector configure
-    approval-chat telegram
+$ zg provider configure
+    approval-bot telegram
+$ zg provider set-credential
+    approval-bot
 
-Telegram chat id: 12345678
 Telegram bot token (hidden):
 Saved the token for this computer.
+
+$ zg connector configure
+    approval-chat approval-bot
+
+Telegram chat id: 12345678
 Saved configuration approval-chat.
 
-$ zg connector assign User
+$ zg connector assign Mailbox
     approval-chat
-User will be asked through
-  approval-chat.
+Mailbox will be asked through approval-chat.
 \end{lstlisting}
 \end{minipage}
 \par\smallskip
 
 Here \texttt{approval-chat} is a name you choose, not a ZipperGen keyword.
-The first command creates that named configuration using the
-\texttt{telegram} provider and says \emph{which} chat. The second says
-\emph{who} is asked there: the \texttt{User}, whose \texttt{@human} action is
-the approval.
+The provider commands name one Telegram bot and save its token on this
+computer. The connector configuration says \emph{which} chat. The assignment
+says \emph{whose action} is routed there: \texttt{Mailbox}, whose
+\texttt{@human} action is the approval.
 
 And two things went to two different places, on purpose:
 
@@ -756,7 +765,7 @@ pip install zippergen
 zg provider configure approval-bot telegram
 zg provider set-credential approval-bot
 zg connector configure approval-chat approval-bot
-zg connector assign User approval-chat
+zg connector assign Mailbox approval-chat
 
 zg deploy
 \end{lstlisting}

@@ -598,7 +598,7 @@ zg connector configure inbox google-work gmail --query 'is:unread in:inbox'
 zg connector bind mailbox inbox
 
 # Route a participant's human actions to a saved connector
-zg connector assign User approval-chat
+zg connector assign Mailbox approval-chat
 
 # Inspect and check all model, assistant, and connector routing
 zg config

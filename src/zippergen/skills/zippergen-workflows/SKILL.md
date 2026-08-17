@@ -357,7 +357,7 @@ workflow:
 zg provider configure approval-bot telegram
 zg provider set-credential approval-bot
 zg connector configure approval-chat approval-bot
-zg connector assign User approval-chat
+zg connector assign Mailbox approval-chat
 ```
 
 Telegram setup is a human-terminal handoff. Do not ask the user for the chat

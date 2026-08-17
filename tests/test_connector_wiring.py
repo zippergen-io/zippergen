@@ -60,16 +60,16 @@ def test_a_project_with_no_connectors_wires_nothing(project):
 def test_an_assigned_participant_is_routed_to_its_chat(project):
     _telegram(project)
     project.save_connector_assignment_profile(
-        ENTRY, lifelines={"User": "approvals"}, actions={}
+        ENTRY, lifelines={"Mailbox": "approvals"}, actions={}
     )
 
     snapshot, environment = _wire(project)
 
-    route = snapshot["human:User"]
+    route = snapshot["human:Mailbox"]
     assert route["kind"] == "telegram"
     assert route["connection"] == "approval-bot"
     assert route["chat_id"] == "4242"
-    assert route["participant"] == "User"
+    assert route["participant"] == "Mailbox"
     assert environment[route["token_env"]] == TOKEN
 
 
@@ -78,7 +78,7 @@ def test_the_token_is_never_in_the_snapshot(project):
 
     _telegram(project)
     project.save_connector_assignment_profile(
-        ENTRY, lifelines={"User": "approvals"}, actions={}
+        ENTRY, lifelines={"Mailbox": "approvals"}, actions={}
     )
 
     snapshot, environment = _wire(project)
@@ -90,13 +90,13 @@ def test_the_token_is_never_in_the_snapshot(project):
 def test_a_single_action_can_be_routed_on_its_own(project):
     _telegram(project)
     project.save_connector_assignment_profile(
-        ENTRY, lifelines={}, actions={"User.approve_reply": "approvals"}
+        ENTRY, lifelines={}, actions={"Mailbox.approve_reply": "approvals"}
     )
 
     snapshot, _environment = _wire(project)
 
-    route = snapshot["human:User.approve_reply"]
-    assert route["participant"] == "User"
+    route = snapshot["human:Mailbox.approve_reply"]
+    assert route["participant"] == "Mailbox"
     assert route["action"] == "approve_reply"
 
 
@@ -119,7 +119,7 @@ def test_a_missing_token_is_refused_before_deploying(project):
         {"connection": "approval-bot", "kind": "telegram", "chat_id": "1"},
     )
     project.save_connector_assignment_profile(
-        ENTRY, lifelines={"User": "approvals"}, actions={}
+        ENTRY, lifelines={"Mailbox": "approvals"}, actions={}
     )
 
     with pytest.raises(ConnectorWiringError, match="bot token.*is missing"):
@@ -173,7 +173,7 @@ def test_a_non_human_connector_cannot_answer_a_human_action(project):
         "google-work", "authorized_user_json", "{}"
     )
     project.save_connector_assignment_profile(
-        ENTRY, lifelines={"User": "records"}, actions={}
+        ENTRY, lifelines={"Mailbox": "records"}, actions={}
     )
 
     with pytest.raises(ConnectorWiringError, match="ask a person"):
@@ -194,7 +194,7 @@ def test_reconfiguring_a_deployment_ignores_the_surrounding_project(
 
     _telegram(project)
     project.save_connector_assignment_profile(
-        ENTRY, lifelines={"User": "approvals"}, actions={}
+        ENTRY, lifelines={"Mailbox": "approvals"}, actions={}
     )
 
     other = tmp_path / "unrelated"
@@ -217,4 +217,4 @@ def test_reconfiguring_a_deployment_ignores_the_surrounding_project(
         deployed_project=str(project.root),
     )
 
-    assert "human:User" in snapshot
+    assert "human:Mailbox" in snapshot
