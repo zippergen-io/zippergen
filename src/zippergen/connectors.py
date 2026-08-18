@@ -12,6 +12,11 @@ __all__ = [
 ]
 
 
+#: The deployment hands each connector its routing through the environment, so
+#: a workflow never carries an endpoint or a credential in its source.
+CONNECTORS_ENV = "ZIPPERGEN_CONNECTORS_JSON"
+
+
 _NAME = re.compile(r"[A-Za-z][A-Za-z0-9._-]{0,63}")
 _KINDS = {
     "telegram",
@@ -96,3 +101,46 @@ def connector_requirements_from_module(
         seen.add(key)
         requirements.append(value)
     return tuple(requirements)
+
+
+def requirement_binding(
+    requirement: str,
+    *,
+    kind: str,
+    error: type[Exception],
+) -> dict[str, object]:
+    """Return the runtime binding recorded for one declared requirement.
+
+    Every connector module needs the same four answers: is any routing active,
+    is it well formed, is this requirement bound, and is it bound to the kind
+    the caller can actually speak. Each module raises its own error type, which
+    is the only thing that ever differed between the copies of this.
+    """
+
+    import json
+    import os
+
+    raw = os.environ.get(CONNECTORS_ENV, "")
+    if not raw:
+        raise error(
+            "No connector runtime configuration is active. Configure it with "
+            f"'zippergen connector configure NAME CONNECTION {kind}', bind it "
+            "with 'zippergen connector bind REQUIREMENT NAME', then deploy."
+        )
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise error("The connector runtime configuration is malformed.") from exc
+    if not isinstance(value, dict):
+        raise error("The connector runtime configuration must be an object.")
+
+    record = value.get(f"requirement:{requirement}") or value.get(requirement)
+    if not isinstance(record, dict):
+        raise error(f"Connector requirement is not bound: {requirement}.")
+    bound = str(record.get("kind") or "")
+    if bound != kind:
+        raise error(
+            f"Connector requirement {requirement!r} is bound to "
+            f"{bound or 'an unknown connector'}, not {kind}."
+        )
+    return dict(record)

@@ -7,7 +7,6 @@ account, search query, and private OAuth credential at run or deployment time.
 from __future__ import annotations
 
 import base64
-import json
 import os
 from dataclasses import dataclass
 from email.message import EmailMessage
@@ -16,6 +15,7 @@ from html import unescape
 from typing import Any
 from urllib.parse import quote
 
+from zippergen.connectors import requirement_binding
 from zippergen.google_auth import (
     GoogleConnectorError,
     credentials_from_json,
@@ -24,7 +24,6 @@ from zippergen.google_auth import (
 )
 
 
-_CONNECTORS_ENV = "ZIPPERGEN_CONNECTORS_JSON"
 _GMAIL_API = "https://gmail.googleapis.com/gmail/v1/users"
 
 
@@ -32,39 +31,8 @@ class GmailError(GoogleConnectorError):
     """A clear Gmail connector error suitable for command output."""
 
 
-def _binding_records() -> dict[str, dict[str, object]]:
-    raw = os.environ.get(_CONNECTORS_ENV, "")
-    if not raw:
-        raise GmailError(
-            "No connector runtime configuration is active. Configure it with "
-            "'zippergen connector configure NAME CONNECTION gmail', bind it with "
-            "'zippergen connector bind REQUIREMENT NAME', then deploy."
-        )
-    try:
-        value = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise GmailError("The connector runtime configuration is malformed.") from exc
-    if not isinstance(value, dict):
-        raise GmailError("The connector runtime configuration must be an object.")
-    return {
-        str(name): dict(record)
-        for name, record in value.items()
-        if isinstance(record, dict)
-    }
-
-
 def _requirement_binding(requirement: str) -> dict[str, object]:
-    records = _binding_records()
-    value = records.get(f"requirement:{requirement}") or records.get(requirement)
-    if value is None:
-        raise GmailError(f"Gmail connector requirement is not bound: {requirement}.")
-    kind = str(value.get("kind") or "")
-    if kind != "gmail":
-        raise GmailError(
-            f"Connector requirement {requirement!r} is bound to "
-            f"{kind or 'an unknown connector'}, not gmail."
-        )
-    return value
+    return requirement_binding(requirement, kind='gmail', error=GmailError)
 
 
 def _decode_body(data: str) -> str:

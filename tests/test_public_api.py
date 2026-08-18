@@ -17,6 +17,7 @@ from zippergen import (
     semantic,
     sqlite_runner,
     syntax,
+    telegram_chat,
     view,
 )
 
@@ -36,6 +37,7 @@ PUBLIC_MODULES = (
     connectors,
     google_sheets,
     google_gmail,
+    telegram_chat,
     view,
     semantic,
 )

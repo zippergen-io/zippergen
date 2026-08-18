@@ -16,6 +16,7 @@ from typing import Any
 from urllib.parse import quote
 
 
+from zippergen.connectors import requirement_binding
 from zippergen.google_auth import (
     GOOGLE_SHEETS_SCOPE,
     GoogleConnectorError,
@@ -27,7 +28,6 @@ from zippergen.google_auth import (
 )
 
 
-_CONNECTORS_ENV = "ZIPPERGEN_CONNECTORS_JSON"
 _SHEETS_API = "https://sheets.googleapis.com/v4/spreadsheets"
 
 
@@ -58,49 +58,8 @@ def check_google_authorization(value: str) -> str:
     )
 
 
-def _binding_records() -> dict[str, dict[str, object]]:
-    raw = os.environ.get(_CONNECTORS_ENV, "")
-    if not raw:
-        raise GoogleSheetsError(
-            "No connector runtime configuration is active. Configure it with "
-            "'zippergen connector configure NAME CONNECTION google-sheets', "
-            "bind it with "
-            "'zippergen connector bind REQUIREMENT NAME', then deploy."
-        )
-    try:
-        value = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        raise GoogleSheetsError(
-            "The connector runtime configuration is malformed."
-        ) from exc
-    if not isinstance(value, dict):
-        raise GoogleSheetsError(
-            "The connector runtime configuration must be an object."
-        )
-    return {
-        str(name): dict(record)
-        for name, record in value.items()
-        if isinstance(record, dict)
-    }
-
-
 def _requirement_binding(requirement: str) -> dict[str, object]:
-    records = _binding_records()
-    value = records.get(f"requirement:{requirement}") or records.get(
-        requirement
-    )
-    if value is None:
-        raise GoogleSheetsError(
-            f"Google Sheets connector requirement is not bound: {requirement}."
-        )
-    kind = str(value.get("kind") or "")
-    if kind != "google-sheets":
-        actual = kind or "an unknown connector"
-        raise GoogleSheetsError(
-            f"Connector requirement {requirement!r} is bound to {actual}, "
-            "not google-sheets."
-        )
-    return value
+    return requirement_binding(requirement, kind='google-sheets', error=GoogleSheetsError)
 
 
 def _column_letter(index: int) -> str:
