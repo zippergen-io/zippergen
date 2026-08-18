@@ -95,6 +95,21 @@ def _configuration_name(
     return normalized
 
 
+def is_configuration_name(value: object, *, reserved: set[str] | None = None) -> bool:
+    """Whether this name would be accepted, without raising.
+
+    The guided prompts derive a default name from the field the user has just
+    answered, and must not offer one that the save would then reject. Asking
+    the rule itself, rather than restating it, keeps the two from drifting.
+    """
+
+    try:
+        _configuration_name(value, subject="configuration", reserved=reserved)
+    except WorkspaceError:
+        return False
+    return True
+
+
 def _idle_timeout(value: object, *, provider: str, subject: str) -> str:
     raw = str(value or "").strip()
     if not raw:

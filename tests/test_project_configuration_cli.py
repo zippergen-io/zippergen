@@ -88,9 +88,9 @@ def test_model_configuration_is_fully_guided_in_a_terminal(
     _root, workspace = project
     answers = iter(
         [
-            "writer",
             "openai-main",
             "gpt-4o-mini",
+            "writer",
             "Writer",
             "writer",
         ]
@@ -114,7 +114,7 @@ def test_model_configuration_is_fully_guided_in_a_terminal(
 
 def test_guided_scripted_model_asks_for_a_response_file(project, monkeypatch):
     _root, workspace = project
-    answers = iter(["responses", "scripted-main", "answers.json"])
+    answers = iter(["scripted-main", "answers.json", "responses"])
     monkeypatch.setattr("zippergen.serve.sys.stdin.isatty", lambda: True)
     monkeypatch.setattr("builtins.input", lambda _prompt: next(answers))
 

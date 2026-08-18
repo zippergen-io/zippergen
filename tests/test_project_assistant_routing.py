@@ -171,7 +171,7 @@ def test_assistant_configuration_and_assignment_are_guided_in_a_terminal(
     tmp_path, monkeypatch
 ):
     _root, _home, workspace = _project(tmp_path, monkeypatch)
-    answers = iter(["coding-agent", "codex", "Developer", "coding-agent"])
+    answers = iter(["codex", "coding-agent", "Developer", "coding-agent"])
     monkeypatch.setattr("zippergen.serve.sys.stdin.isatty", lambda: True)
     monkeypatch.setattr("builtins.input", lambda _prompt: next(answers))
 

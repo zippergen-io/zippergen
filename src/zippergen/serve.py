@@ -1468,14 +1468,26 @@ def _check_command(args) -> int:
     return 1 if getattr(args, "strict", False) and not report["valid"] else 0
 
 
-def _suggested_connection_name(kind: str, existing: Mapping[str, object]) -> str | None:
-    """Offer a name once the kind is known, so the invented value has a default.
+def _suggested_configuration_name(
+    basis: str,
+    existing: Mapping[str, object],
+    *,
+    reserved: set[str] | None = None,
+) -> str | None:
+    """Offer a name once the deciding field is known.
 
-    Only when it is free: suggesting a name that already exists would invite
-    reconfiguring something by accident.
+    Every one of these dialogues ends by asking for a name, which is the only
+    value the user has to invent rather than choose. Once the deciding answer
+    is on the screen there is usually an obvious name, so offer it -- but only
+    when it is legal and free. Suggesting a name that already exists would
+    invite reconfiguring something by accident.
     """
 
-    candidate = f"{kind}-main"
+    from zippergen.workspace import is_configuration_name
+
+    candidate = basis.strip()
+    if not is_configuration_name(candidate, reserved=reserved):
+        return None
     return None if candidate in existing else candidate
 
 
@@ -1614,12 +1626,12 @@ def _model_command(args) -> int:
                 purpose="model",
                 example="zg provider configure openai-main openai",
             )
-            name = _guided_required_value(
-                args.name,
-                label="Model configuration name",
-                command="zg model configure NAME CONNECTION MODEL",
-            )
-            existing = workspace.model_configurations().get(name) or {}
+            # Which connection, then which model on it, then what to call the
+            # pair. The first two are answers about the world; the name is the
+            # one thing the user invents, so it is asked once the model it
+            # names is on the screen and can supply the default.
+            configurations = workspace.model_configurations()
+            existing = configurations.get(str(args.name or "")) or {}
             connection = _guided_required_value(
                 args.connection,
                 label="Provider connection",
@@ -1633,6 +1645,15 @@ def _model_command(args) -> int:
                 command="zg model configure NAME CONNECTION MODEL",
                 default=str(existing.get("model") or "") or None,
             )
+            name = _guided_required_value(
+                args.name,
+                label="Model configuration name",
+                command="zg model configure NAME CONNECTION MODEL",
+                default=_suggested_configuration_name(
+                    model, configurations, reserved={"mock"}
+                ),
+            )
+            existing = configurations.get(name) or existing
             idle_timeout = args.idle_timeout
             if idle_timeout is None and existing.get("idle_timeout") is not None:
                 idle_timeout = float(str(existing["idle_timeout"]))
@@ -1744,7 +1765,7 @@ def _provider_command(args) -> int:
                 args.name,
                 label="Provider connection name",
                 command="zg provider configure NAME KIND",
-                default=_suggested_connection_name(kind, connections),
+                default=_suggested_configuration_name(f"{kind}-main", connections),
             )
             existing = connections.get(name) or existing
             base_url = args.base_url
@@ -1834,18 +1855,23 @@ def _assistant_command(args) -> int:
     action = getattr(args, "assistant_action", None)
     try:
         if action == "configure":
-            name = _guided_required_value(
-                args.name,
-                label="Assistant configuration name",
-                command="zg assistant configure NAME BACKEND",
-            )
-            existing = workspace.assistant_configurations().get(name) or {}
+            # The backend is the choice; the name only labels it.
+            configurations = workspace.assistant_configurations()
+            existing = configurations.get(str(args.name or "")) or {}
             backend = _guided_required_value(
                 args.backend,
                 label="Assistant backend",
                 command="zg assistant configure NAME BACKEND",
                 choices=("codex", "claude"),
                 default=str(existing.get("backend") or "") or None,
+            )
+            name = _guided_required_value(
+                args.name,
+                label="Assistant configuration name",
+                command="zg assistant configure NAME BACKEND",
+                default=_suggested_configuration_name(
+                    f"{backend}-main", configurations
+                ),
             )
             value = configure_assistant(workspace, name, backend)
             print(
