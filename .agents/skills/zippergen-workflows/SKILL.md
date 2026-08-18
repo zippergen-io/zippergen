@@ -94,6 +94,22 @@ zg model assign Writer writer
 zg model
 ```
 
+A model that runs on the user's own machine is a connection of kind `local`
+(`ollama` names the same kind). It has an endpoint instead of a credential, so
+there is no `set-credential` step and nothing secret to ask for:
+
+```bash
+zg provider configure my-ollama local --base-url http://127.0.0.1:11434/v1
+zg model configure extractor my-ollama qwen2.5:7b
+zg model assign Extractor extractor
+```
+
+The base URL is site configuration, so `zippergen.toml` records only that the
+connection is local; each machine points it at its own server. Any
+OpenAI-compatible server works. Add `--idle-timeout SECONDS` to
+`zg model configure` to unload the model between calls; it is valid only for a
+local connection.
+
 Do not ask for a key in the agent conversation and do not enter it for the
 user. Ask the user to run `zg provider set-credential CONNECTION` in their own
 terminal, or set the provider's normal environment variable. One saved key may

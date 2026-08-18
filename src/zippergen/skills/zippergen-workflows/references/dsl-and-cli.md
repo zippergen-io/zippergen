@@ -59,6 +59,11 @@ configurations and their participant or action assignments in
 zg provider configure openai-main openai
 zg model configure writer openai-main gpt-4o-mini
 zg model assign Writer writer
+
+# A model on this machine: kind `local` (or `ollama`), an endpoint instead of
+# a credential, so no set-credential step.
+zg provider configure my-ollama local --base-url http://127.0.0.1:11434/v1
+zg model configure extractor my-ollama qwen2.5:7b --idle-timeout 300
 ```
 
 ```toml

@@ -677,16 +677,56 @@ To fix the choice in the project rather than the command line, put it in
 can also collect the key privately:
 
 \begin{lstlisting}[style=shell]
+zg provider configure
+Provider connection name: openai-main
+Available provider kinds: openai, anthropic, mistral, local, scripted, telegram, google
+Provider kind: openai
+
+zg provider set-credential openai-main
+OpenAI API key (input hidden):
+
 zg model configure
 Model configuration name: writer
-Available model providers: openai, anthropic, mistral, local, scripted
-Model provider: openai
-Model name: gpt-4o-mini
-OPENAI_API_KEY (input hidden. Press Enter to configure later):
+Available provider connections: openai-main
+Provider connection: openai-main
+Model name or path: gpt-4o-mini
 \end{lstlisting}
 
-The name and model are project configuration. The key is a site credential.
-They are deliberately stored in different places.
+The connection name and the model are project configuration. The key is a site
+credential. They are deliberately stored in different places, which is also why
+several model configurations may name one connection and share its key.
+
+\subsubsection{A model running on your own machine}
+
+A local model is a provider connection of kind \texttt{local}, and
+\texttt{ollama} is accepted as a name for the same thing. It has an endpoint
+instead of a credential, so there is no \texttt{set-credential} step:
+
+\begin{lstlisting}[style=shell]
+zg provider configure my-ollama local --base-url http://127.0.0.1:11434/v1
+zg model configure extractor my-ollama qwen2.5:7b
+zg model assign Extractor extractor
+\end{lstlisting}
+
+Guided, it fills the usual endpoint in for you:
+
+\begin{lstlisting}[style=shell]
+zg provider configure
+Provider connection name: my-ollama
+Provider kind: local
+OpenAI-compatible base URL [http://127.0.0.1:11434/v1]:
+\end{lstlisting}
+
+The endpoint is site configuration, not project configuration, so
+\path{zippergen.toml} records only that \texttt{my-ollama} is a local
+connection. Each machine points it at its own server, and a colleague who
+clones the repository supplies their own. Any OpenAI-compatible server works;
+Ollama is simply the common one.
+
+A model configuration that names a local connection also accepts
+\texttt{zg model configure ... -{}-idle-timeout SECONDS}, which unloads the
+model after that long without a call. It is rejected for any other kind of
+connection, because only a local server has memory of yours to release.
 
 \subsection{Asking a person}
 
