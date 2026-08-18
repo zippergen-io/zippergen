@@ -112,6 +112,91 @@ def test_model_configuration_is_fully_guided_in_a_terminal(
     assert "Available model assignment targets" in output
 
 
+REJECTED_NAME = "not a name"
+
+
+def _run_guided(monkeypatch, command, answers):
+    """Run one guided dialogue, recording every question it asks."""
+
+    prompts: list[str] = []
+    remaining = iter(answers)
+
+    def ask(prompt: str) -> str:
+        prompts.append(prompt)
+        return next(remaining)
+
+    monkeypatch.setattr("zippergen.serve.sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", ask)
+    assert main(command) == 0
+    return prompts
+
+
+@pytest.mark.parametrize(
+    ("command", "deciding", "name_label", "answers", "family", "saved"),
+    [
+        (
+            ["provider", "configure"],
+            "Provider kind",
+            "Provider connection name",
+            ["openai", REJECTED_NAME, "openai-spare"],
+            "provider_connections",
+            "openai-spare",
+        ),
+        (
+            ["model", "configure"],
+            "Provider connection",
+            "Model configuration name",
+            ["openai-main", "gpt-4o-mini", REJECTED_NAME, "writer"],
+            "model_configurations",
+            "writer",
+        ),
+        (
+            ["connector", "configure"],
+            "Provider connection",
+            "Connector configuration name",
+            ["approval-bot", REJECTED_NAME, "approval-chat", "4242"],
+            "connector_configurations",
+            "approval-chat",
+        ),
+        (
+            ["assistant", "configure"],
+            "Assistant backend",
+            "Assistant configuration name",
+            ["codex", REJECTED_NAME, "coding-agent"],
+            "assistant_configurations",
+            "coding-agent",
+        ),
+    ],
+    ids=["provider", "model", "connector", "assistant"],
+)
+def test_every_guided_configure_dialogue_follows_the_same_grammar(
+    project, monkeypatch, capsys, command, deciding, name_label, answers,
+    family, saved,
+):
+    """The four setup dialogues are written out separately. They must still
+    behave as one.
+
+    Two rules bind them, and both were broken in a single family before this
+    test existed: ask the deciding field before the invented name, and treat a
+    rejected answer as a typo to correct rather than a reason to stop.
+    """
+
+    _root, workspace = project
+    workspace.save_provider_secret("approval-bot", "bot_token", "private")
+
+    prompts = _run_guided(monkeypatch, command, answers)
+
+    assert prompts[0].startswith(deciding)
+    named = [
+        index for index, prompt in enumerate(prompts)
+        if prompt.startswith(name_label)
+    ]
+    assert named and named[0] > 0, "the name must never be the first question"
+    assert len(named) == 2, "a rejected name must be asked again"
+    assert "must start with a letter or digit" in capsys.readouterr().out
+    assert saved in getattr(workspace, family)()
+
+
 def test_a_guided_prompt_asks_again_after_a_rejected_answer(
     project, monkeypatch, capsys
 ):
