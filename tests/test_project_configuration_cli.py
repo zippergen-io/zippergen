@@ -112,6 +112,36 @@ def test_model_configuration_is_fully_guided_in_a_terminal(
     assert "Available model assignment targets" in output
 
 
+def test_a_guided_prompt_asks_again_after_a_rejected_answer(
+    project, monkeypatch, capsys
+):
+    """A typo at a prompt must not end the dialogue: the person is still there."""
+
+    _root, workspace = project
+    answers = iter(
+        [
+            "local-min",           # a connection that does not exist
+            "local-main",
+            "qwen3:14b",
+            "local-qwen3:14b",     # a colon is not allowed in a name
+            "mock",                # reserved by ZipperGen
+            "local-qwen3",
+        ]
+    )
+    monkeypatch.setattr("zippergen.serve.sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr("builtins.input", lambda _prompt: next(answers))
+
+    assert main(["model", "configure"]) == 0
+
+    assert workspace.model_configurations()["local-qwen3"]["spec"] == (
+        "local@local-main:qwen3:14b"
+    )
+    output = capsys.readouterr().out
+    assert "Unknown provider connection 'local-min'" in output
+    assert "must start with a letter or digit" in output
+    assert "'mock' is reserved" in output
+
+
 def test_guided_scripted_model_asks_for_a_response_file(project, monkeypatch):
     _root, workspace = project
     answers = iter(["scripted-main", "answers.json", "responses"])

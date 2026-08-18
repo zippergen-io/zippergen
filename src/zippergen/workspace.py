@@ -79,35 +79,40 @@ def _configuration_name(
     reserved: set[str] | None = None,
 ) -> str:
     normalized = str(value).strip()
-    if (
-        normalized.casefold() in (reserved or set())
-        or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", normalized)
-    ):
-        suffix = (
-            f", and must not replace {', '.join(sorted(reserved or set()))}"
-            if reserved
-            else ""
-        )
+    # Two separate rules, so the person who broke one is told which one.
+    if normalized.casefold() in (reserved or set()):
         raise WorkspaceError(
-            f"A {subject} name must start with a letter or digit, "
-            "contain only letters, digits, '.', '_' or '-'" + suffix + "."
+            f"The {subject} name {normalized!r} is reserved by ZipperGen. "
+            "Choose another name."
+        )
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", normalized):
+        raise WorkspaceError(
+            f"A {subject} name must start with a letter or digit and "
+            "contain only letters, digits, '.', '_' or '-'."
         )
     return normalized
 
 
-def is_configuration_name(value: object, *, reserved: set[str] | None = None) -> bool:
-    """Whether this name would be accepted, without raising.
+def configuration_name_problem(
+    value: object,
+    *,
+    subject: str,
+    reserved: set[str] | None = None,
+) -> str | None:
+    """Say what is wrong with this name, or nothing if it is fine.
 
-    The guided prompts derive a default name from the field the user has just
-    answered, and must not offer one that the save would then reject. Asking
-    the rule itself, rather than restating it, keeps the two from drifting.
+    The guided prompts need the rule twice before a save is attempted: to
+    avoid offering a default the save would reject, and to tell someone who
+    mistyped a name what to fix, while they are still standing at the prompt.
+    Asking the rule itself, rather than restating it, keeps the copies from
+    drifting.
     """
 
     try:
-        _configuration_name(value, subject="configuration", reserved=reserved)
-    except WorkspaceError:
-        return False
-    return True
+        _configuration_name(value, subject=subject, reserved=reserved)
+    except WorkspaceError as exc:
+        return str(exc)
+    return None
 
 
 def _idle_timeout(value: object, *, provider: str, subject: str) -> str:
@@ -1620,12 +1625,9 @@ class Workspace:
     ) -> dict[str, str]:
         """Save one portable coding-assistant backend selection."""
 
-        normalized = name.strip()
-        if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", normalized):
-            raise WorkspaceError(
-                "An assistant configuration name must start with a letter or "
-                "digit and contain only letters, digits, '.', '_' or '-'."
-            )
+        normalized = _configuration_name(
+            name, subject="assistant configuration"
+        )
         selected = backend.strip().casefold()
         if selected not in {"codex", "claude"}:
             raise WorkspaceError(

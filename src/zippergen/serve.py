@@ -24,7 +24,7 @@ import sys
 import tempfile
 import threading
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -1472,7 +1472,7 @@ def _suggested_configuration_name(
     basis: str,
     existing: Mapping[str, object],
     *,
-    reserved: set[str] | None = None,
+    check: Callable[[str], str | None],
 ) -> str | None:
     """Offer a name once the deciding field is known.
 
@@ -1483,12 +1483,23 @@ def _suggested_configuration_name(
     invite reconfiguring something by accident.
     """
 
-    from zippergen.workspace import is_configuration_name
-
     candidate = basis.strip()
-    if not is_configuration_name(candidate, reserved=reserved):
+    if check(candidate) is not None or candidate in existing:
         return None
-    return None if candidate in existing else candidate
+    return candidate
+
+
+def _name_check(
+    subject: str,
+    reserved: set[str] | None = None,
+) -> Callable[[str], str | None]:
+    """Ask the workspace whether a name is acceptable, before saving anything."""
+
+    from zippergen.workspace import configuration_name_problem
+
+    return lambda text: configuration_name_problem(
+        text, subject=subject, reserved=reserved
+    )
 
 
 def _guided_required_value(
@@ -1498,8 +1509,16 @@ def _guided_required_value(
     command: str,
     choices: tuple[str, ...] = (),
     default: str | None = None,
+    check: Callable[[str], str | None] | None = None,
 ) -> str:
-    """Return a required CLI value, prompting only in a human terminal."""
+    """Return a required CLI value, prompting only in a human terminal.
+
+    A value passed on the command line is returned as it stands, because the
+    save validates it and there is nobody at a prompt to correct it. A value
+    typed at a prompt is different: the person is still sitting there, so a
+    wrong answer is explained and asked again instead of ending the dialogue
+    over a typo. An empty answer, or Ctrl-C, still leaves without saving.
+    """
 
     entered = str(value or "").strip()
     if entered:
@@ -1512,21 +1531,26 @@ def _guided_required_value(
         )
     if choices:
         print(f"Available {label.casefold()}s: {', '.join(choices)}")
-    try:
-        suffix = f" [{default}]" if default else ""
-        entered = input(f"{label}{suffix}: ").strip()
-    except (EOFError, KeyboardInterrupt):
-        raise SystemExit("Cancelled. Nothing was saved.") from None
-    if not entered and default:
-        entered = default
-    if not entered:
-        raise SystemExit(f"{label} is required. Nothing was saved.")
-    if choices and entered not in choices:
-        raise SystemExit(
-            f"Unknown {label.casefold()} {entered!r}. Available: "
-            + ", ".join(choices)
-        )
-    return entered
+    suffix = f" [{default}]" if default else ""
+    while True:
+        try:
+            entered = input(f"{label}{suffix}: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            raise SystemExit("Cancelled. Nothing was saved.") from None
+        if not entered and default:
+            entered = default
+        if not entered:
+            raise SystemExit(f"{label} is required. Nothing was saved.")
+        if choices and entered not in choices:
+            problem = (
+                f"Unknown {label.casefold()} {entered!r}. Available: "
+                + ", ".join(choices)
+            )
+        else:
+            problem = check(entered) if check is not None else None
+        if problem is None:
+            return entered
+        print(problem)
 
 
 def _project_choices(kind: str, project: str | None) -> tuple[str, ...]:
@@ -1645,13 +1669,15 @@ def _model_command(args) -> int:
                 command="zg model configure NAME CONNECTION MODEL",
                 default=str(existing.get("model") or "") or None,
             )
+            check = _name_check("model configuration", {"mock"})
             name = _guided_required_value(
                 args.name,
                 label="Model configuration name",
                 command="zg model configure NAME CONNECTION MODEL",
                 default=_suggested_configuration_name(
-                    model, configurations, reserved={"mock"}
+                    model, configurations, check=check
                 ),
+                check=check,
             )
             existing = configurations.get(name) or existing
             idle_timeout = args.idle_timeout
@@ -1761,11 +1787,15 @@ def _provider_command(args) -> int:
                 choices=PROVIDER_KINDS,
                 default=str(existing.get("kind") or "") or None,
             )
+            check = _name_check("provider connection")
             name = _guided_required_value(
                 args.name,
                 label="Provider connection name",
                 command="zg provider configure NAME KIND",
-                default=_suggested_configuration_name(f"{kind}-main", connections),
+                default=_suggested_configuration_name(
+                    f"{kind}-main", connections, check=check
+                ),
+                check=check,
             )
             existing = connections.get(name) or existing
             base_url = args.base_url
@@ -1865,13 +1895,15 @@ def _assistant_command(args) -> int:
                 choices=("codex", "claude"),
                 default=str(existing.get("backend") or "") or None,
             )
+            check = _name_check("assistant configuration")
             name = _guided_required_value(
                 args.name,
                 label="Assistant configuration name",
                 command="zg assistant configure NAME BACKEND",
                 default=_suggested_configuration_name(
-                    f"{backend}-main", configurations
+                    f"{backend}-main", configurations, check=check
                 ),
+                check=check,
             )
             value = configure_assistant(workspace, name, backend)
             print(
@@ -2694,6 +2726,7 @@ def _connector_configure_command(args) -> int:
         args.name,
         label="Connector configuration name",
         command="zg connector configure NAME CONNECTION [KIND]",
+        check=_name_check("connector configuration"),
     )
     existing = configurations.get(name) or existing
 
