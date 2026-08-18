@@ -1468,6 +1468,17 @@ def _check_command(args) -> int:
     return 1 if getattr(args, "strict", False) and not report["valid"] else 0
 
 
+def _suggested_connection_name(kind: str, existing: Mapping[str, object]) -> str | None:
+    """Offer a name once the kind is known, so the invented value has a default.
+
+    Only when it is free: suggesting a name that already exists would invite
+    reconfiguring something by accident.
+    """
+
+    candidate = f"{kind}-main"
+    return None if candidate in existing else candidate
+
+
 def _guided_required_value(
     value: object,
     *,
@@ -1715,12 +1726,13 @@ def _provider_command(args) -> int:
     action = getattr(args, "provider_action", None)
     try:
         if action == "configure":
-            name = _guided_required_value(
-                args.name,
-                label="Provider connection name",
-                command="zg provider configure NAME KIND",
-            )
-            existing = workspace.provider_connections().get(name) or {}
+            # Ask the kind first: it decides whether an endpoint is wanted, and
+            # it is the question with a menu. The name is the only invented
+            # value here, so it is asked last, once there is something to name
+            # and a sensible default to offer.
+            connections = workspace.provider_connections()
+            named = str(args.name or "")
+            existing = connections.get(named) or {}
             kind = _guided_required_value(
                 args.kind,
                 label="Provider kind",
@@ -1728,6 +1740,13 @@ def _provider_command(args) -> int:
                 choices=PROVIDER_KINDS,
                 default=str(existing.get("kind") or "") or None,
             )
+            name = _guided_required_value(
+                args.name,
+                label="Provider connection name",
+                command="zg provider configure NAME KIND",
+                default=_suggested_connection_name(kind, connections),
+            )
+            existing = connections.get(name) or existing
             base_url = args.base_url
             if kind == "local":
                 base_url = _guided_required_value(
@@ -2608,12 +2627,11 @@ def _connector_configure_command(args) -> int:
         purpose="connector",
         example="zg provider configure approval-bot telegram",
     )
-    name = _guided_required_value(
-        args.name,
-        label="Connector configuration name",
-        command="zg connector configure NAME CONNECTION [KIND]",
-    )
-    existing = workspace.connector_configurations().get(name) or {}
+    # The connection is asked first: it decides the kind, and whether the rest
+    # of this dialogue is about a chat, a mailbox or a spreadsheet. The name is
+    # the only invented value, so it comes once there is something to name.
+    configurations = workspace.connector_configurations()
+    existing = configurations.get(str(args.name or "")) or {}
     connection = _guided_required_value(
         args.connection,
         label="Provider connection",
@@ -2644,6 +2662,14 @@ def _connector_configure_command(args) -> int:
             default=str(existing.get("kind") or "") or None,
         )
     )
+    # Last, because a connector is named after its purpose, and its purpose is
+    # only visible once the connection and the kind are on the screen.
+    name = _guided_required_value(
+        args.name,
+        label="Connector configuration name",
+        command="zg connector configure NAME CONNECTION [KIND]",
+    )
+    existing = configurations.get(name) or existing
 
     if kind == "telegram":
         if args.spreadsheet_id or args.tab or args.account or args.query:

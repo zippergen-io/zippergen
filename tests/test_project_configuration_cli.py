@@ -277,8 +277,8 @@ def test_connector_configuration_and_assignment_are_guided_the_same_way(
     workspace.save_provider_secret("approval-bot", "bot_token", "private")
     answers = iter(
         [
-            "approval-chat",
             "approval-bot",
+            "approval-chat",
             "4242",
             "Mailbox",
             "approval-chat",
