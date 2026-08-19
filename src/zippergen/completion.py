@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from zippergen.connector_wiring import human_action_sites
-from zippergen.connectors import connector_requirements_from_module
-from zippergen.project_configuration import _model_targets
+from zippergen.project_configuration import (
+    _model_targets,
+    connector_target_kinds,
+)
 from zippergen.workspace import Workspace, WorkspaceError
 from zippergen.workflow_io import load_workflow_spec
 
@@ -109,19 +110,7 @@ def completion_candidates(
 
         return assistant_targets(workflow, module)
     if kind == "connector-targets":
-        sites = human_action_sites(workflow, module)
-        return sorted(
-            {
-                *sites,
-                *(
-                    f"{participant}.{action}"
-                    for participant, actions in sites.items()
-                    for action in actions
-                ),
-            }
-        )
-    if kind == "connector-requirements":
-        return sorted(item.name for item in connector_requirements_from_module(module))
+        return sorted(connector_target_kinds(workflow, module))
     return []
 
 
@@ -199,8 +188,6 @@ _zg() {
     connector:assign:5|connector:check:4|connector:remove:4) kind=connector-configurations ;;
     connector:configure:5) kind=provider-connections-connector ;;
     connector:configure:6) kind=connector-kinds ;;
-    connector:bind:4|connector:unbind:4) kind=connector-requirements ;;
-    connector:bind:5) kind=connector-configurations ;;
   esac
   [[ -n $kind ]] && compadd -- ${(f)"$(zg __complete $kind 2>/dev/null)"}
 }
@@ -236,8 +223,6 @@ _zg_complete() {
   elif [[ $cmd == connector && $action == assign && $COMP_CWORD -eq 4 ]] || [[ $cmd == connector && $action =~ ^(check|remove)$ && $COMP_CWORD -eq 3 ]]; then kind=connector-configurations
   elif [[ $cmd == connector && $action == configure && $COMP_CWORD -eq 4 ]]; then kind=provider-connections-connector
   elif [[ $cmd == connector && $action == configure && $COMP_CWORD -eq 5 ]]; then kind=connector-kinds
-  elif [[ $cmd == connector && $action =~ ^(bind|unbind)$ && $COMP_CWORD -eq 3 ]]; then kind=connector-requirements
-  elif [[ $cmd == connector && $action == bind && $COMP_CWORD -eq 4 ]]; then kind=connector-configurations
   fi
   [[ -n $kind ]] && COMPREPLY=( $(compgen -W "$(zg __complete "$kind" 2>/dev/null)" -- "$cur") )
 }
@@ -256,7 +241,7 @@ complete -c zg -c zippergen -n '__fish_seen_subcommand_from workflow; and not __
 complete -c zg -c zippergen -n '__fish_seen_subcommand_from provider; and not __fish_seen_subcommand_from configure set-credential check remove authorize accept' -a '(zg __complete provider-actions 2>/dev/null)'
 complete -c zg -c zippergen -n '__fish_seen_subcommand_from model; and not __fish_seen_subcommand_from configure assign unassign check remove' -a '(zg __complete model-actions 2>/dev/null)'
 complete -c zg -c zippergen -n '__fish_seen_subcommand_from assistant; and not __fish_seen_subcommand_from configure assign unassign check remove' -a '(zg __complete assistant-actions 2>/dev/null)'
-complete -c zg -c zippergen -n '__fish_seen_subcommand_from connector; and not __fish_seen_subcommand_from configure assign unassign bind unbind check remove' -a '(zg __complete connector-actions 2>/dev/null)'
+complete -c zg -c zippergen -n '__fish_seen_subcommand_from connector; and not __fish_seen_subcommand_from configure assign unassign check remove' -a '(zg __complete connector-actions 2>/dev/null)'
 complete -c zg -c zippergen -n '__fish_seen_subcommand_from run; and not __fish_seen_subcommand_from status reset inspect trace tasks approve' -a '(zg __complete run-actions 2>/dev/null)'
 complete -c zg -c zippergen -n '__fish_seen_subcommand_from deploy; and not __fish_seen_subcommand_from list prune start stop remove compact logs check status reset inspect trace tasks approve' -a '(zg __complete deploy-actions 2>/dev/null)'
 complete -c zg -c zippergen -n '__fish_seen_subcommand_from model assign; and test (count (commandline -opc)) -eq 3' -a '(zg __complete model-targets 2>/dev/null)'
@@ -274,6 +259,4 @@ complete -c zg -c zippergen -n '__fish_seen_subcommand_from connector assign; an
 complete -c zg -c zippergen -n '__fish_seen_subcommand_from connector configure; and test (count (commandline -opc)) -eq 4' -a '(zg __complete provider-connections-connector 2>/dev/null)'
 complete -c zg -c zippergen -n '__fish_seen_subcommand_from connector configure; and test (count (commandline -opc)) -eq 5' -a '(zg __complete connector-kinds 2>/dev/null)'
 complete -c zg -c zippergen -n '__fish_seen_subcommand_from connector check remove; and test (count (commandline -opc)) -eq 3' -a '(zg __complete connector-configurations 2>/dev/null)'
-complete -c zg -c zippergen -n '__fish_seen_subcommand_from connector bind unbind; and test (count (commandline -opc)) -eq 3' -a '(zg __complete connector-requirements 2>/dev/null)'
-complete -c zg -c zippergen -n '__fish_seen_subcommand_from connector bind; and test (count (commandline -opc)) -eq 4' -a '(zg __complete connector-configurations 2>/dev/null)'
 '''

@@ -69,7 +69,7 @@ TYPE configure NAME PROVIDER_OR_SPEC
 TYPE assign TARGET NAME
 ```
 
-Use `zg connector bind REQUIREMENT NAME` for a declared external-service
+Use `zg connector assign REQUIREMENT NAME` for a declared external-service
 requirement. A named provider connection owns one provider identity, endpoint,
 and private credential. Model and connector configurations reuse it. For
 example, `approval-bot` can own one Telegram bot token while `approval-chat`

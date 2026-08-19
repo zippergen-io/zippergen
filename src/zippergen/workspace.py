@@ -2055,7 +2055,7 @@ class Workspace:
             raise WorkspaceError(
                 f"Connector configuration {normalized!r} is still used by: "
                 + ", ".join(references)
-                + ". Unassign or unbind it first."
+                + ". Unassign it first."
             )
         manifest = self.project_manifest()
         connectors = _object_table(manifest["connectors"], field="connectors")

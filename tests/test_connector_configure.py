@@ -171,7 +171,7 @@ def test_binding_without_a_workflow_says_so(tmp_path):
     result = _run(
         root,
         "connector",
-        "bind",
+        "assign",
         "human-approval",
         "approval-chat",
     )
@@ -246,12 +246,12 @@ def test_binding_works_against_a_real_workflow_requirement(tmp_path):
 
     first = _run(root, "connector", "configure", "inbox", "google-work", "gmail")
     first_binding = _run(
-        root, "connector", "bind", "call-mailbox", "inbox"
+        root, "connector", "assign", "call-mailbox", "inbox"
     )
     second = _run(root, "connector", "configure", "records", "google-work", "google-sheets",
                   "--spreadsheet-id", "1", "--tab", "Calls")
     second_binding = _run(
-        root, "connector", "bind", "call-records", "records"
+        root, "connector", "assign", "call-records", "records"
     )
 
     assert first.returncode == 0, first.stderr
@@ -282,8 +282,86 @@ def test_binding_rejects_the_wrong_connector_kind(tmp_path):
         "1",
     )
 
-    result = _run(root, "connector", "bind", "call-mailbox", "approval-chat")
+    result = _run(root, "connector", "assign", "call-mailbox", "approval-chat")
 
     assert configured.returncode == 0, configured.stderr
     assert result.returncode != 0
     assert "needs gmail" in result.stderr
+
+
+BOTH_KINDS_OF_TARGET = '''
+
+from zippergen.connectors import ConnectorRequirement
+
+zippergen_connectors = (
+    ConnectorRequirement(
+        name="mail-archive",
+        kind="google-sheets",
+        participant="Mailbox",
+        capabilities=("upsert-row",),
+        access="write",
+        description="Where handled mail is logged.",
+    ),
+)
+'''
+
+
+def test_one_verb_fills_both_kinds_of_connector_slot(tmp_path):
+    """`assign` reaches a declared requirement and a human action alike.
+
+    They are stored differently and validated differently, but that is the
+    tool's business, not the user's. The workflow already knows which kind a
+    name is, so the CLI does not ask.
+    """
+
+    root = _project(tmp_path)
+    example = Path(__file__).resolve().parents[1] / "examples" / "email_approval.py"
+    (root / "workflow.py").write_text(example.read_text() + BOTH_KINDS_OF_TARGET)
+    Workspace(root, home=root.parent / "home").initialize_project()
+    _provider(root, "google-work", "google")
+    _provider(root, "approval-bot", "telegram")
+    assert _run(
+        root, "connector", "configure", "records", "google-work",
+        "google-sheets", "--spreadsheet-id", "1", "--tab", "Handled",
+    ).returncode == 0
+    assert _run(
+        root, "connector", "configure", "approval-chat", "approval-bot",
+        "telegram", "--chat-id", "7",
+    ).returncode == 0
+
+    requirement = _run(root, "connector", "assign", "mail-archive", "records")
+    human = _run(root, "connector", "assign", "Mailbox", "approval-chat")
+
+    assert requirement.returncode == 0, requirement.stderr
+    assert human.returncode == 0, human.stderr
+    manifest = tomllib.loads((root / "zippergen.toml").read_text())
+    assert manifest["connectors"]["bindings"] == {"mail-archive": "records"}
+    assert manifest["connectors"]["assignments"]["lifelines"] == {
+        "Mailbox": "approval-chat"
+    }
+
+    undo = _run(root, "connector", "unassign", "mail-archive")
+
+    assert undo.returncode == 0, undo.stderr
+    manifest = tomllib.loads((root / "zippergen.toml").read_text())
+    assert not manifest["connectors"].get("bindings")
+
+
+def test_a_name_meaning_two_things_is_refused_rather_than_guessed(tmp_path):
+    """One verb needs unambiguous names, so a clash must be reported."""
+
+    root = _project(tmp_path)
+    example = Path(__file__).resolve().parents[1] / "examples" / "email_approval.py"
+    clash = BOTH_KINDS_OF_TARGET.replace('name="mail-archive"', 'name="Mailbox"')
+    (root / "workflow.py").write_text(example.read_text() + clash)
+    Workspace(root, home=root.parent / "home").initialize_project()
+    _provider(root, "approval-bot", "telegram")
+    assert _run(
+        root, "connector", "configure", "approval-chat", "approval-bot",
+        "telegram", "--chat-id", "7",
+    ).returncode == 0
+
+    result = _run(root, "connector", "assign", "Mailbox", "approval-chat")
+
+    assert result.returncode != 0
+    assert "both a declared connector requirement" in result.stderr

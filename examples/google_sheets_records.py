@@ -8,7 +8,7 @@ project owns Google authorization and the concrete spreadsheet:
     zippergen provider accept google-work
     zippergen connector configure project-sheet google-work google-sheets \
         --spreadsheet-id SHEET_ID --tab Calls
-    zippergen connector bind records project-sheet
+    zippergen connector assign records project-sheet
     zippergen run examples/google_sheets_records.py:google_sheet_records
 """
 

@@ -492,8 +492,8 @@ def _doctor_checks(
     if not isinstance(connector_bindings, dict):
         checks.append(_doctor_check(
             "fail",
-            "connector bindings",
-            "deployment connector bindings must be an object",
+            "connector assignments",
+            "deployment connector assignments must be an object",
         ))
         connector_bindings = {}
     if module is not None:
@@ -514,16 +514,16 @@ def _doctor_checks(
                 checks.append(_doctor_check(
                     "fail" if requirement.required else "warn",
                     f"connector {requirement.name}",
-                    "required binding is missing"
+                    "required, not assigned yet"
                     if requirement.required
-                    else "optional binding is not configured",
+                    else "optional, not assigned",
                 ))
                 continue
             if not isinstance(raw_binding, dict):
                 checks.append(_doctor_check(
                     "fail",
                     f"connector {requirement.name}",
-                    "binding must be an object",
+                    "assignment must be an object",
                 ))
                 continue
             kind = str(raw_binding.get("kind") or "")

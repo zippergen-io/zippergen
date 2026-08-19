@@ -149,9 +149,9 @@ def connector_runtime(
     ]
     if unbound:
         raise ConnectorWiringError(
-            "These connector requirements are not bound to a configuration: "
+            "These connector requirements have no configuration assigned: "
             + ", ".join(unbound)
-            + ". Use 'zippergen connector bind REQUIREMENT CONFIGURATION'."
+            + ". Use 'zippergen connector assign TARGET CONFIGURATION'."
         )
     _check_google_authorization(
         workspace, requirements, bindings, configurations

@@ -2003,11 +2003,9 @@ def _assistant_command(args) -> int:
 def _connector_management_command(args) -> int:
     from zippergen.project_configuration import (
         assign_connector,
-        bind_connector,
         configuration_report,
         configuration_scope_valid,
         render_connector_configuration,
-        unbind_connector,
     )
     from zippergen.rendering import TerminalRenderer
     from zippergen.workspace import Workspace, WorkspaceError
@@ -2015,50 +2013,15 @@ def _connector_management_command(args) -> int:
     workspace = Workspace(getattr(args, "project", None))
     action = getattr(args, "connector_action", None)
     try:
-        if action == "bind":
-            requirement = _guided_required_value(
-                args.requirement,
-                label="Connector requirement",
-                command="zg connector bind REQUIREMENT CONFIGURATION",
-                choices=_project_choices(
-                    "connector-requirements", args.project
-                ),
-            )
-            configuration = _guided_required_value(
-                args.configuration,
-                label="Connector configuration",
-                command="zg connector bind REQUIREMENT CONFIGURATION",
-                choices=_project_choices(
-                    "connector-configurations", args.project
-                ),
-            )
-            bind_connector(workspace, requirement, configuration)
-            print(
-                f"Bound connector requirement {requirement} to "
-                f"configuration {configuration}."
-            )
-            return 0
         if action == "unassign":
             target = _guided_required_value(
                 args.target,
-                label="Human-action target",
+                label="Connector target",
                 command="zg connector unassign TARGET",
                 choices=_project_choices("connector-targets", args.project),
             )
-            assign_connector(workspace, target, None)
-            print(f"Removed connector assignment for {target}.")
-            return 0
-        if action == "unbind":
-            requirement = _guided_required_value(
-                args.requirement,
-                label="Connector requirement",
-                command="zg connector unbind REQUIREMENT",
-                choices=_project_choices(
-                    "connector-requirements", args.project
-                ),
-            )
-            unbind_connector(workspace, requirement)
-            print(f"Removed connector binding for {requirement}.")
+            kind = assign_connector(workspace, target, None)
+            print(f"Removed the {kind} assignment for {target}.")
             return 0
         if action == "remove":
             name = _guided_required_value(
@@ -2646,22 +2609,30 @@ def _provider_accept_google_command(args) -> int:
 
 
 def _connector_assign_command(args) -> int:
-    """Route a participant's human actions to a saved connector.
+    """Fill one of the workflow's connector slots with a saved configuration.
 
-    A `@human` action asks a person something. This says where that question
-    is delivered. Without it the question appears in whichever terminal is
-    running the workflow, which is right for development and wrong for a
-    deployment nobody is watching.
+    A workflow has two kinds of slot, and this fills either. A declared
+    service requirement names something the workflow needs, such as a mailbox
+    to read. A `@human` action asks a person something, and the participant
+    naming it says where that question is delivered; without it the question
+    appears in whichever terminal is running the workflow, which is right for
+    development and wrong for a deployment nobody is watching.
+
+    Which kind a name refers to is something the workflow already knows, so
+    there is one verb rather than two, and no flag to say which you meant.
     """
 
-    from zippergen.project_configuration import assign_connector
+    from zippergen.project_configuration import (
+        CONNECTOR_REQUIREMENT,
+        assign_connector,
+    )
     from zippergen.workspace import Workspace, WorkspaceError
 
     workspace = Workspace(getattr(args, "project", None))
     try:
         target = _guided_required_value(
             args.target,
-            label="Human-action target",
+            label="Connector target",
             command="zg connector assign TARGET CONFIGURATION",
             choices=_project_choices("connector-targets", args.project),
         )
@@ -2673,10 +2644,13 @@ def _connector_assign_command(args) -> int:
                 "connector-configurations", args.project
             ),
         )
-        assign_connector(workspace, target, configuration)
+        kind = assign_connector(workspace, target, configuration)
     except WorkspaceError as exc:
         raise SystemExit(str(exc)) from exc
-    print(f"{target} will be asked through {configuration}.")
+    if kind == CONNECTOR_REQUIREMENT:
+        print(f"{target} will use {configuration}.")
+    else:
+        print(f"{target} will be asked through {configuration}.")
     return 0
 
 
@@ -4364,10 +4338,11 @@ def _parse_cli_args(
         help="show and manage connector configurations and assignments",
         description=(
             "One pattern: configure NAME CONNECTION [KIND], then assign "
-            "TARGET NAME or bind REQUIREMENT NAME. KIND is inferred when the "
-            "connection has only one connector kind. Run without an action "
-            "to show everything. In a terminal, omit required values to be "
-            "guided."
+            "TARGET NAME. A target is either a service requirement the "
+            "workflow declares or a participant whose actions ask a human; "
+            "the workflow says which. KIND is inferred when the connection "
+            "has only one connector kind. Run without an action to show "
+            "everything. In a terminal, omit required values to be guided."
         ),
     )
     connector_sub = connector.add_subparsers(
@@ -4440,20 +4415,6 @@ def _parse_cli_args(
     connector_unassign.add_argument("target", nargs="?")
     connector_unassign.add_argument("--project", help="Project root.")
 
-    connector_bind = connector_sub.add_parser(
-        "bind",
-        help="bind a workflow service requirement to a named configuration",
-    )
-    connector_bind.add_argument("requirement", nargs="?")
-    connector_bind.add_argument("configuration", nargs="?")
-    connector_bind.add_argument("--project", help="Project root.")
-
-    connector_unbind = connector_sub.add_parser(
-        "unbind",
-        help="remove one workflow requirement binding",
-    )
-    connector_unbind.add_argument("requirement", nargs="?")
-    connector_unbind.add_argument("--project", help="Project root.")
 
     connector_check = connector_sub.add_parser(
         "check",
@@ -4876,9 +4837,7 @@ def main(argv=None) -> int:
         return _connector_assign_command(args)
     if args.cmd == "connector" and args.connector_action in {
         None,
-        "bind",
         "unassign",
-        "unbind",
         "check",
         "remove",
     }:

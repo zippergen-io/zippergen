@@ -125,7 +125,7 @@ def requirement_binding(
         raise error(
             "No connector runtime configuration is active. Configure it with "
             f"'zippergen connector configure NAME CONNECTION {kind}', bind it "
-            "with 'zippergen connector bind REQUIREMENT NAME', then deploy."
+            "with 'zippergen connector assign TARGET NAME', then deploy."
         )
     try:
         value = json.loads(raw)

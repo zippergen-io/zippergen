@@ -318,7 +318,7 @@ OAuth token remains private site state.
 Use `zg provider configure CONNECTION KIND` to name the provider identity,
 `zg connector configure NAME CONNECTION [KIND]` to save the concrete resource,
 then
-`zg connector bind REQUIREMENT NAME` to connect the logical requirement to it.
+`zg connector assign REQUIREMENT NAME` to connect the logical requirement to it.
 
 In a human terminal, required values may be omitted and ZipperGen asks for
 them. This applies to model, assistant, and connector configuration,
@@ -668,9 +668,9 @@ zg connector configure approval-chat approval-bot
 # Save external-service connectors and bind their declared requirements
 zg provider configure google-work google
 zg connector configure records google-work google-sheets --spreadsheet-id SHEET_ID --tab Calls
-zg connector bind review-log records
+zg connector assign review-log records
 zg connector configure inbox google-work gmail --query 'is:unread in:inbox'
-zg connector bind mailbox inbox
+zg connector assign mailbox inbox
 
 # Route a participant's human actions to a saved connector
 zg connector assign Mailbox approval-chat

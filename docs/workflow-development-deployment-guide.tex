@@ -467,8 +467,9 @@ zg TYPE check [NAME]
 zg TYPE remove NAME
 \end{lstlisting}
 
-An external-service connector uses
-\texttt{connector bind REQUIREMENT NAME} instead of \texttt{assign}. The
+A connector target is either a service requirement the workflow declares by
+name or a participant whose actions ask a human; the workflow says which, so
+\texttt{assign} covers both and there is nothing to choose. The
 provider connection is the named access path to an external provider: it owns
 the private credential and any machine-specific endpoint. A model selects a
 model through one connection; a connector selects a chat, mailbox, sheet, or
@@ -775,16 +776,16 @@ zippergen_connectors = (
 )
 \end{lstlisting}
 
-and the project says which one, binding it to that requirement by name:
+and the project says which one, assigning it to that requirement by name:
 
 \begin{lstlisting}[style=shell]
 zg provider configure google-work google
 zg connector configure inbox google-work gmail \
     --query "is:unread in:inbox"
-zg connector bind call-mailbox inbox
+zg connector assign call-mailbox inbox
 zg connector configure records google-work google-sheets \
     --spreadsheet-id 1AbC... --tab Calls
-zg connector bind call-records records
+zg connector assign call-records records
 \end{lstlisting}
 
 \subsection{Authorizing Google}
@@ -1154,9 +1155,8 @@ zg connector assign Mailbox approval-chat
 \texttt{assistant check [NAME]} & verify the selected CLI and required safety options \\
 \texttt{assistant unassign TARGET} / \texttt{assistant remove NAME} & remove routing or an unused configuration \\
 \texttt{connector configure NAME CONNECTION [KIND]} & save one named destination/resource; infer the kind when unique \\
-\texttt{connector assign TARGET NAME} & route human actions \\
-\texttt{connector bind REQUIREMENT NAME} & bind an external service \\
-\texttt{connector unassign TARGET} / \texttt{connector unbind REQUIREMENT} & remove connector routing \\
+\texttt{connector assign TARGET NAME} & fill a declared requirement, or route human actions \\
+\texttt{connector unassign TARGET} & remove connector routing \\
 \texttt{connector check [NAME]} / \texttt{connector remove NAME} & check or remove \\
 \texttt{completion zsh|bash|fish} & print dynamic shell completion \\
 \bottomrule

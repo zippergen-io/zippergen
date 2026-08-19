@@ -171,10 +171,10 @@ def _static_connector_checks(
             checks.append(
                 _check(
                     "fail" if requirement.required else "warn",
-                    f"connector binding {requirement.name}",
-                    "required binding is missing"
+                    f"connector requirement {requirement.name}",
+                    "required, not assigned yet"
                     if requirement.required
-                    else "optional binding is missing",
+                    else "optional, not assigned",
                     scopes=("connector",),
                 )
             )
@@ -184,7 +184,7 @@ def _static_connector_checks(
             checks.append(
                 _check(
                     "fail",
-                    f"connector binding {requirement.name}",
+                    f"connector requirement {requirement.name}",
                     f"configuration {configuration!r} does not exist",
                     scopes=("connector",),
                 )
@@ -193,7 +193,7 @@ def _static_connector_checks(
             checks.append(
                 _check(
                     "fail",
-                    f"connector binding {requirement.name}",
+                    f"connector requirement {requirement.name}",
                     f"requires {requirement.kind}; {configuration!r} is "
                     f"{selected.get('kind') or 'untyped'}",
                     scopes=("connector",),
@@ -203,7 +203,7 @@ def _static_connector_checks(
             checks.append(
                 _check(
                     "ok",
-                    f"connector binding {requirement.name}",
+                    f"connector requirement {requirement.name}",
                     configuration,
                     scopes=("connector",),
                 )
@@ -1694,27 +1694,84 @@ def assign_assistant(
     )
 
 
+CONNECTOR_REQUIREMENT = "connector requirement"
+HUMAN_ACTION = "human action"
+AMBIGUOUS_TARGET = "ambiguous"
+
+
+def connector_target_kinds(workflow, module) -> dict[str, str]:
+    """Every name ``zg connector assign`` accepts, and what each one means.
+
+    A workflow offers two kinds of slot. It declares service requirements by
+    name, and it has participants -- or single actions of theirs -- that ask a
+    human something. Both are filled with a named connector configuration, so
+    there is one verb for both and the name itself says which is meant.
+
+    A name that means both is reported as ambiguous rather than resolved by a
+    tie-break nobody could predict. That is a fault in the workflow, and only
+    the workflow can fix it.
+    """
+
+    sites = human_action_sites(workflow, module)
+    targets = {
+        name: HUMAN_ACTION
+        for name in (
+            *sites,
+            *(
+                f"{participant}.{action}"
+                for participant, actions in sites.items()
+                for action in actions
+            ),
+        )
+    }
+    for requirement in connector_requirements_from_module(module):
+        targets[requirement.name] = (
+            AMBIGUOUS_TARGET
+            if requirement.name in targets
+            else CONNECTOR_REQUIREMENT
+        )
+    return targets
+
+
 def assign_connector(
     workspace: Workspace,
     target: str,
     configuration: str | None,
-) -> dict[str, dict[str, str]]:
+) -> str:
+    """Attach a configuration to whatever ``target`` names, and say which kind.
+
+    One verb covers both kinds of slot. Which one is being filled follows from
+    the name, so the caller never has to say it.
+    """
+
     workflow = workspace.resolve_workflow()
     loaded, module = _load_project_workflow(workspace, workflow)
-    sites = human_action_sites(loaded, module)
-    known = {
-        *sites,
-        *(
-            f"{participant}.{action}"
-            for participant, actions in sites.items()
-            for action in actions
-        ),
-    }
-    if target not in known:
+    targets = connector_target_kinds(loaded, module)
+    kind = targets.get(target)
+    if kind is None:
         raise WorkspaceError(
-            f"Unknown human-action target {target!r}. Available: "
-            + (", ".join(sorted(known)) or "none")
+            f"Unknown connector target {target!r}. Available: "
+            + (", ".join(sorted(targets)) or "none")
         )
+    if kind == AMBIGUOUS_TARGET:
+        raise WorkspaceError(
+            f"{target!r} is both a declared connector requirement and a "
+            "human-action target, so there is no way to tell which one you "
+            "mean. Rename the requirement in the workflow."
+        )
+    if kind == CONNECTOR_REQUIREMENT:
+        _assign_requirement(workspace, workflow, module, target, configuration)
+    else:
+        _assign_human_action(workspace, workflow, target, configuration)
+    return kind
+
+
+def _assign_human_action(
+    workspace: Workspace,
+    workflow: str,
+    target: str,
+    configuration: str | None,
+) -> dict[str, dict[str, str]]:
     configurations = workspace.connector_configurations()
     if configuration is not None:
         selected_configuration = configurations.get(configuration)
@@ -1746,24 +1803,19 @@ def assign_connector(
     )
 
 
-def bind_connector(
+def _assign_requirement(
     workspace: Workspace,
+    workflow: str,
+    module,
     requirement: str,
-    configuration: str,
+    configuration: str | None,
 ) -> dict[str, str]:
-    """Bind one declared service requirement to a named configuration."""
-
-    workflow = workspace.resolve_workflow()
-    _loaded, module = _load_project_workflow(workspace, workflow)
+    if configuration is None:
+        return workspace.unbind_connector(workflow, requirement)
     requirements = {
         item.name: item for item in connector_requirements_from_module(module)
     }
-    selected_requirement = requirements.get(requirement)
-    if selected_requirement is None:
-        raise WorkspaceError(
-            f"Unknown connector requirement {requirement!r}. Available: "
-            + (", ".join(sorted(requirements)) or "none")
-        )
+    selected_requirement = requirements[requirement]
     configurations = workspace.connector_configurations()
     selected_configuration = configurations.get(configuration)
     if selected_configuration is None:
@@ -1778,8 +1830,3 @@ def bind_connector(
             f"{configuration!r} is {configured_kind or 'untyped'}."
         )
     return workspace.bind_connector(workflow, requirement, configuration)
-
-
-def unbind_connector(workspace: Workspace, requirement: str) -> dict[str, str]:
-    workflow = workspace.resolve_workflow()
-    return workspace.unbind_connector(workflow, requirement)
