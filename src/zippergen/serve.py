@@ -1469,6 +1469,72 @@ def _check_command(args) -> int:
     return _check_exit_code(args, ready=bool(report["valid"]))
 
 
+#: Each family renames the same way: pick an existing name, give a free one.
+#: The differences are only which list to offer and which method to call.
+_RENAMEABLE = {
+    "provider": (
+        "provider connection",
+        "provider-connections",
+        "rename_provider_connection",
+        None,
+    ),
+    "model": (
+        "model configuration",
+        "model-configurations",
+        "rename_model_configuration",
+        {"mock"},
+    ),
+    "connector": (
+        "connector configuration",
+        "connector-configurations",
+        "rename_connector_configuration",
+        None,
+    ),
+    "assistant": (
+        "assistant configuration",
+        "assistant-configurations",
+        "rename_assistant_configuration",
+        None,
+    ),
+}
+
+
+def _rename_command(args, family: str) -> int:
+    """Rename one saved configuration, and everything that referred to it.
+
+    The point of the command is that it is one step. Doing it by hand means
+    creating the new name, re-pointing every reference, then removing the old
+    one, with the project inconsistent in between -- and for a provider
+    connection it also strands the credential, which is keyed by that name.
+    """
+
+    from zippergen.workspace import Workspace, WorkspaceError
+
+    subject, completion_kind, method, reserved = _RENAMEABLE[family]
+    workspace = Workspace(getattr(args, "project", None))
+    choices = _project_choices(completion_kind, args.project)
+    try:
+        old = _guided_required_value(
+            args.name,
+            label=subject.capitalize(),
+            command=f"zg {family} rename OLD NEW",
+            choices=choices,
+        )
+        new = _guided_required_value(
+            args.new_name,
+            label="New name",
+            command=f"zg {family} rename OLD NEW",
+            check=_name_check(subject, reserved),
+        )
+        saved = getattr(workspace, method)(old, new)
+    except WorkspaceError as exc:
+        raise SystemExit(str(exc)) from exc
+    print(f"Renamed {subject} {old} to {saved}.")
+    if family == "provider":
+        print("Its credential and endpoint moved with it.")
+    return 0
+
+
 def _check_exit_code(args, *, ready: bool) -> int:
     """Every ``check`` command ends here, so they cannot drift apart.
 
@@ -4268,6 +4334,12 @@ def _parse_cli_args(
         action="store_true",
         help="Exit non-zero when something is not ready, for scripts.",
     )
+    provider_rename = provider_sub.add_parser(
+        "rename", help="rename a connection and everything that names it"
+    )
+    provider_rename.add_argument("name", nargs="?")
+    provider_rename.add_argument("new_name", nargs="?")
+    provider_rename.add_argument("--project", help="Project root.")
     provider_remove = provider_sub.add_parser(
         "remove", help="remove an unused provider connection"
     )
@@ -4348,6 +4420,12 @@ def _parse_cli_args(
         action="store_true",
         help="Exit non-zero when something is not ready, for scripts.",
     )
+    model_rename = model_sub.add_parser(
+        "rename", help="rename a configuration and every assignment naming it"
+    )
+    model_rename.add_argument("name", nargs="?")
+    model_rename.add_argument("new_name", nargs="?")
+    model_rename.add_argument("--project", help="Project root.")
     model_remove = model_sub.add_parser("remove", help="remove an unused configuration")
     model_remove.add_argument("name", nargs="?")
     model_remove.add_argument("--project", help="Project root.")
@@ -4406,6 +4484,12 @@ def _parse_cli_args(
         action="store_true",
         help="Exit non-zero when something is not ready, for scripts.",
     )
+    assistant_rename = assistant_sub.add_parser(
+        "rename", help="rename a configuration and every assignment naming it"
+    )
+    assistant_rename.add_argument("name", nargs="?")
+    assistant_rename.add_argument("new_name", nargs="?")
+    assistant_rename.add_argument("--project", help="Project root.")
     assistant_remove = assistant_sub.add_parser(
         "remove",
         help="remove an unused assistant configuration",
@@ -4518,6 +4602,12 @@ def _parse_cli_args(
         help="Exit non-zero when something is not ready, for scripts.",
     )
 
+    connector_rename = connector_sub.add_parser(
+        "rename", help="rename a configuration and everything that names it"
+    )
+    connector_rename.add_argument("name", nargs="?")
+    connector_rename.add_argument("new_name", nargs="?")
+    connector_rename.add_argument("--project", help="Project root.")
     connector_remove = connector_sub.add_parser(
         "remove",
         help="remove an unused connector configuration",
@@ -4878,6 +4968,9 @@ def main(argv=None) -> int:
         return _workflow_command(args)
     if args.cmd == "provider" and args.provider_action == "authorize":
         return _provider_authorize_google_command(args)
+    for family in _RENAMEABLE:
+        if args.cmd == family and getattr(args, f"{family}_action", None) == "rename":
+            return _rename_command(args, family)
     if args.cmd == "provider" and args.provider_action == "accept":
         return _provider_accept_google_command(args)
     if args.cmd == "provider":

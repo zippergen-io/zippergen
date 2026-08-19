@@ -72,6 +72,37 @@ class WorkspaceError(RuntimeError):
     """Workspace state is missing or malformed."""
 
 
+def _renamed_key(values: object, old: str, new: str) -> dict[str, object]:
+    """Return the mapping with one key renamed, leaving the rest untouched."""
+
+    table = dict(values) if isinstance(values, dict) else {}
+    if old in table:
+        table[new] = table.pop(old)
+    return table
+
+
+def _repointed(values: object, old: str, new: str) -> dict[str, object]:
+    """Return the mapping with every reference to ``old`` now naming ``new``."""
+
+    table = dict(values) if isinstance(values, dict) else {}
+    return {
+        key: (new if value == old else value) for key, value in table.items()
+    }
+
+
+def _repointed_assignments(values: object, old: str, new: str) -> dict[str, object]:
+    """Re-point all three assignment levels at once."""
+
+    table = dict(values) if isinstance(values, dict) else {}
+    result = dict(table)
+    if str(table.get("default") or "") == old:
+        result["default"] = new
+    for level in ("lifelines", "actions"):
+        if level in table:
+            result[level] = _repointed(table.get(level), old, new)
+    return result
+
+
 def _configuration_name(
     value: object,
     *,
@@ -2211,6 +2242,150 @@ class Workspace:
         connectors["assignments"] = profile
         self._write_project_configuration(connectors=connectors)
         return profile
+
+    def _rename_guard(
+        self,
+        old: str,
+        new: str,
+        existing: dict,
+        subject: str,
+        reserved: set[str] | None = None,
+    ) -> str:
+        """Check a rename can happen at all, and return the validated new name."""
+
+        normalized = _configuration_name(new, subject=subject, reserved=reserved)
+        if old not in existing:
+            raise WorkspaceError(f"{subject.capitalize()} does not exist: {old}.")
+        if normalized == old:
+            raise WorkspaceError(f"{old!r} is already its own name.")
+        if normalized in existing:
+            raise WorkspaceError(
+                f"{subject.capitalize()} already exists: {normalized}. "
+                "Remove it first, or choose another name."
+            )
+        return normalized
+
+    def rename_provider_connection(self, old: str, new: str) -> str:
+        """Rename one connection, and take everything that named it with it.
+
+        The credential is keyed by the connection name, so a rename that only
+        touched the manifest would strand it and quietly send you back through
+        a browser. Site state moves with the visible configuration.
+        """
+
+        normalized = self._rename_guard(
+            old, new, self.provider_connections(), "provider connection"
+        )
+        manifest = self.project_manifest()
+        providers = _object_table(manifest["providers"], field="providers")
+        providers["connections"] = _renamed_key(
+            providers.get("connections"), old, normalized
+        )
+        models = _object_table(manifest["models"], field="models")
+        models["configurations"] = {
+            name: (
+                {**values, "connection": normalized}
+                if isinstance(values, dict) and values.get("connection") == old
+                else values
+            )
+            for name, values in (models.get("configurations") or {}).items()
+        }
+        connectors = _object_table(manifest["connectors"], field="connectors")
+        connectors["configurations"] = {
+            name: (
+                {**values, "connection": normalized}
+                if isinstance(values, dict) and values.get("connection") == old
+                else values
+            )
+            for name, values in (connectors.get("configurations") or {}).items()
+        }
+        self._write_project_configuration(
+            providers=providers, models=models, connectors=connectors
+        )
+        state = self.load()
+        self.update(
+            provider_connection_overrides=_renamed_key(
+                state.get("provider_connection_overrides"), old, normalized
+            )
+        )
+        prefix = f"provider:{old}:"
+        secrets = self.load_secrets()
+        self.save_secrets({
+            (
+                f"provider:{normalized}:{key[len(prefix):]}"
+                if key.startswith(prefix)
+                else key
+            ): value
+            for key, value in secrets.items()
+        })
+        return normalized
+
+    def rename_model_configuration(self, old: str, new: str) -> str:
+        """Rename one model configuration and every assignment naming it."""
+
+        normalized = self._rename_guard(
+            old,
+            new,
+            {k: v for k, v in self.model_configurations().items() if k != "mock"},
+            "model configuration",
+            reserved={"mock"},
+        )
+        manifest = self.project_manifest()
+        models = _object_table(manifest["models"], field="models")
+        models["configurations"] = _renamed_key(
+            models.get("configurations"), old, normalized
+        )
+        models["assignments"] = _repointed_assignments(
+            models.get("assignments"), old, normalized
+        )
+        self._write_project_configuration(models=models)
+        state = self.load()
+        self.update(
+            model_configuration_overrides=_renamed_key(
+                state.get("model_configuration_overrides"), old, normalized
+            )
+        )
+        return normalized
+
+    def rename_connector_configuration(self, old: str, new: str) -> str:
+        """Rename one connector configuration, its bindings and assignments."""
+
+        normalized = self._rename_guard(
+            old, new, self.connector_configurations(), "connector configuration"
+        )
+        manifest = self.project_manifest()
+        connectors = _object_table(manifest["connectors"], field="connectors")
+        connectors["configurations"] = _renamed_key(
+            connectors.get("configurations"), old, normalized
+        )
+        connectors["bindings"] = _repointed(
+            connectors.get("bindings"), old, normalized
+        )
+        connectors["assignments"] = _repointed_assignments(
+            connectors.get("assignments"), old, normalized
+        )
+        self._write_project_configuration(connectors=connectors)
+        return normalized
+
+    def rename_assistant_configuration(self, old: str, new: str) -> str:
+        """Rename one assistant configuration and every assignment naming it."""
+
+        normalized = self._rename_guard(
+            old,
+            new,
+            self.assistant_configurations(),
+            "assistant configuration",
+        )
+        manifest = self.project_manifest()
+        assistants = _object_table(manifest["assistants"], field="assistants")
+        assistants["configurations"] = _renamed_key(
+            assistants.get("configurations"), old, normalized
+        )
+        assistants["assignments"] = _repointed_assignments(
+            assistants.get("assignments"), old, normalized
+        )
+        self._write_project_configuration(assistants=assistants)
+        return normalized
 
     def load_secrets(self) -> dict[str, str]:
         """Load private development secrets without copying them into state."""

@@ -877,3 +877,82 @@ def test_handoff_still_prints_for_another_computer(
     output = capsys.readouterr().out
     assert "provider accept" in output
     assert workspace.provider_secret("google-work", "authorized_user_json") is None
+
+
+def test_renaming_a_provider_connection_takes_its_credential_with_it(
+    project, capsys
+):
+    """The credential is keyed by the connection name.
+
+    A rename that only edited the manifest would strand it, and quietly send
+    somebody back through a Google browser flow to get it again.
+    """
+
+    root, workspace = project
+    workspace.save_provider_secret("approval-bot", "bot_token", "private")
+    workspace.save_connector_configuration(
+        "approval-chat",
+        {"connection": "approval-bot", "kind": "telegram", "chat_id": "42"},
+    )
+    workspace.save_model_configuration(
+        "writer", {"connection": "openai-main", "model": "gpt-4o-mini"}
+    )
+
+    assert main(["provider", "rename", "approval-bot", "alerts-bot"]) == 0
+    capsys.readouterr()
+
+    assert workspace.provider_secret("alerts-bot", "bot_token") == "private"
+    assert workspace.provider_secret("approval-bot", "bot_token") is None
+    assert "alerts-bot" in workspace.provider_connections()
+    assert "approval-bot" not in workspace.provider_connections()
+    assert workspace.connector_configurations()["approval-chat"][
+        "connection"
+    ] == "alerts-bot"
+    manifest = tomllib.loads((root / "zippergen.toml").read_text())
+    assert "alerts-bot" in manifest["providers"]["connections"]
+
+
+def test_renaming_a_local_connection_keeps_its_endpoint(project):
+    """The endpoint is site state, keyed the same way, so it moves too."""
+
+    _root, workspace = project
+
+    assert main(["provider", "rename", "local-main", "gpu-box"]) == 0
+
+    assert workspace.provider_connections()["gpu-box"]["base_url"] == (
+        "http://127.0.0.1:11434/v1"
+    )
+
+
+@pytest.mark.parametrize(
+    ("family", "configure", "assign", "lookup"),
+    [
+        ("model", ("model", "configure", "old", "openai-main", "gpt-4o-mini"),
+         ("model", "assign", "Writer", "old"), "model_assignment_profile"),
+        ("connector", None, None, "connector_assignment_profile"),
+    ],
+    ids=["model", "connector"],
+)
+def test_a_rename_repoints_every_assignment(
+    project, capsys, family, configure, assign, lookup
+):
+    """A rename must leave nothing pointing at the old name."""
+
+    _root, workspace = project
+    if family == "model":
+        assert main(list(configure)) == 0
+        assert main(list(assign)) == 0
+    else:
+        workspace.save_provider_secret("approval-bot", "bot_token", "private")
+        workspace.save_connector_configuration(
+            "old",
+            {"connection": "approval-bot", "kind": "telegram", "chat_id": "42"},
+        )
+        assert main(["connector", "assign", "Mailbox", "old"]) == 0
+    capsys.readouterr()
+
+    assert main([family, "rename", "old", "new"]) == 0
+
+    profile = getattr(workspace, lookup)("workflow.py:email_approval")
+    assert "old" not in profile["lifelines"].values()
+    assert "new" in profile["lifelines"].values()

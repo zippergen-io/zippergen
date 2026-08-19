@@ -692,6 +692,11 @@ zg provider authorize google-work --handoff  # or hand it to another computer
 zg provider accept google-work
 ```
 
+`rename OLD NEW` exists for every family. It moves the name and everything
+that referred to it in one write: assignments, requirement bindings, and for a
+provider connection its credential and site endpoint, which are keyed by that
+name. Doing it by hand leaves the project inconsistent in between.
+
 `configure` creates or updates the named configuration. In an interactive
 terminal, an existing configuration's current values become the defaults.
 

@@ -185,7 +185,7 @@ _zg() {
     assistant:assign:5|assistant:check:4|assistant:remove:4) kind=assistant-configurations ;;
     assistant:configure:5) kind=assistant-backends ;;
     connector:assign:4|connector:unassign:4) kind=connector-targets ;;
-    connector:assign:5|connector:check:4|connector:remove:4) kind=connector-configurations ;;
+    connector:assign:5|connector:check:4|connector:remove:4|connector:rename:4) kind=connector-configurations ;;
     connector:configure:5) kind=provider-connections-connector ;;
     connector:configure:6) kind=connector-kinds ;;
   esac
@@ -238,10 +238,10 @@ complete -c zg -c zippergen -f
 complete -c zg -c zippergen -n 'string match -q -- "-*" (commandline -ct)' -a '(__zg_complete_options)'
 complete -c zg -c zippergen -n 'not __fish_seen_subcommand_from config check workflow provider model assistant completion connector run show validate init skill snapshot diff deploy' -a '(zg __complete commands 2>/dev/null)'
 complete -c zg -c zippergen -n '__fish_seen_subcommand_from workflow; and not __fish_seen_subcommand_from select' -a '(zg __complete workflow-actions 2>/dev/null)'
-complete -c zg -c zippergen -n '__fish_seen_subcommand_from provider; and not __fish_seen_subcommand_from configure set-credential check remove authorize accept' -a '(zg __complete provider-actions 2>/dev/null)'
-complete -c zg -c zippergen -n '__fish_seen_subcommand_from model; and not __fish_seen_subcommand_from configure assign unassign check remove' -a '(zg __complete model-actions 2>/dev/null)'
-complete -c zg -c zippergen -n '__fish_seen_subcommand_from assistant; and not __fish_seen_subcommand_from configure assign unassign check remove' -a '(zg __complete assistant-actions 2>/dev/null)'
-complete -c zg -c zippergen -n '__fish_seen_subcommand_from connector; and not __fish_seen_subcommand_from configure assign unassign check remove' -a '(zg __complete connector-actions 2>/dev/null)'
+complete -c zg -c zippergen -n '__fish_seen_subcommand_from provider; and not __fish_seen_subcommand_from configure set-credential check rename remove authorize accept' -a '(zg __complete provider-actions 2>/dev/null)'
+complete -c zg -c zippergen -n '__fish_seen_subcommand_from model; and not __fish_seen_subcommand_from configure assign unassign check rename remove' -a '(zg __complete model-actions 2>/dev/null)'
+complete -c zg -c zippergen -n '__fish_seen_subcommand_from assistant; and not __fish_seen_subcommand_from configure assign unassign check rename remove' -a '(zg __complete assistant-actions 2>/dev/null)'
+complete -c zg -c zippergen -n '__fish_seen_subcommand_from connector; and not __fish_seen_subcommand_from configure assign unassign check rename remove' -a '(zg __complete connector-actions 2>/dev/null)'
 complete -c zg -c zippergen -n '__fish_seen_subcommand_from run; and not __fish_seen_subcommand_from status reset inspect trace tasks approve' -a '(zg __complete run-actions 2>/dev/null)'
 complete -c zg -c zippergen -n '__fish_seen_subcommand_from deploy; and not __fish_seen_subcommand_from list prune start stop remove compact logs check status reset inspect trace tasks approve' -a '(zg __complete deploy-actions 2>/dev/null)'
 complete -c zg -c zippergen -n '__fish_seen_subcommand_from model assign; and test (count (commandline -opc)) -eq 3' -a '(zg __complete model-targets 2>/dev/null)'
