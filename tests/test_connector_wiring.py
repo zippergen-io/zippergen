@@ -218,3 +218,37 @@ def test_reconfiguring_a_deployment_ignores_the_surrounding_project(
     )
 
     assert "human:Mailbox" in snapshot
+
+
+def test_a_default_routes_every_participant_that_asks_a_human(project):
+    """One chat for everything is the common case, so it must be sayable once."""
+
+    _telegram(project)
+    project.save_connector_assignment_profile(
+        ENTRY, default="approvals", lifelines={}, actions={}
+    )
+
+    snapshot, environment = _wire(project)
+
+    route = snapshot["human:Mailbox"]
+    assert route["configuration"] == "approvals"
+    assert route["chat_id"] == "4242"
+    assert environment[route["token_env"]] == TOKEN
+
+
+def test_a_named_participant_beats_the_default(project):
+    """The default catches what nothing more specific claimed."""
+
+    _telegram(project)
+    _telegram(project, name="escalations", chat="99")
+    project.save_connector_assignment_profile(
+        ENTRY,
+        default="approvals",
+        lifelines={"Mailbox": "escalations"},
+        actions={},
+    )
+
+    snapshot, _environment = _wire(project)
+
+    assert snapshot["human:Mailbox"]["configuration"] == "escalations"
+    assert snapshot["human:Mailbox"]["chat_id"] == "99"

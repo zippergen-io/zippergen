@@ -109,6 +109,43 @@ def _used_connector_names(
     }
 
 
+def _default_connector_check(
+    default: str,
+    configurations: dict[str, dict[str, str]],
+    human_sites: dict[str, list[str]],
+) -> Check:
+    """Check the one configuration that catches everything not named."""
+
+    selected = configurations.get(default)
+    if selected is None:
+        return _check(
+            "fail",
+            "connector assignment default",
+            f"configuration {default!r} does not exist",
+            scopes=("connector",),
+        )
+    if selected.get("provider") != "telegram":
+        return _check(
+            "fail",
+            "connector assignment default",
+            f"{default!r} cannot deliver a human action",
+            scopes=("connector",),
+        )
+    if not human_sites:
+        return _check(
+            "warn",
+            "connector assignment default",
+            "no participant asks a human, so nothing uses it",
+            scopes=("connector",),
+        )
+    return _check(
+        "ok",
+        "connector assignment default",
+        f"{default} for {len(human_sites)} participant(s)",
+        scopes=("connector",),
+    )
+
+
 def _static_connector_checks(
     workflow: Workflow,
     module: ModuleType,
@@ -126,6 +163,9 @@ def _static_connector_checks(
             for action in actions
         ),
     }
+    default = str(assignments.get("default") or "")
+    if default:
+        checks.append(_default_connector_check(default, configurations, human_sites))
     for group in ("lifelines", "actions"):
         for target, configuration in assignments[group].items():
             if target not in human_targets:
@@ -431,7 +471,7 @@ def configuration_report(
     connector_assignments = (
         workspace.connector_assignment_profile(workflow_spec)
         if workflow_spec is not None
-        else {"lifelines": {}, "actions": {}}
+        else {"default": "", "lifelines": {}, "actions": {}}
     )
     connector_bindings = (
         workspace.connector_binding_profile(workflow_spec)
@@ -1633,6 +1673,33 @@ def configure_assistant(
     return workspace.save_assistant_configuration(name, backend)
 
 
+def assistant_target_problem(workspace: Workspace, target: str) -> str | None:
+    """Say why this is not an assistant target, or nothing if it is one.
+
+    The CLI asks before it prompts for anything else, and the assignment asks
+    again before it writes. One rule, so the two cannot disagree.
+    """
+
+    workflow = workspace.resolve_workflow()
+    loaded, module = _load_project_workflow(workspace, workflow)
+    known = set(assistant_targets(loaded, module))
+    if target in known:
+        return None
+    explanation = (
+        " Assistant assignments can target 'default', a lifeline that "
+        "runs an @assistant action, or an exact Participant.action for "
+        "an @assistant action."
+    )
+    if known == {"default"}:
+        explanation += " This workflow defines no @assistant actions."
+    return (
+        f"Unknown assistant assignment target {target!r}."
+        + explanation
+        + " Available: "
+        + (", ".join(sorted(known)) or "none")
+    )
+
+
 def assign_assistant(
     workspace: Workspace,
     target: str,
@@ -1641,22 +1708,9 @@ def assign_assistant(
     """Assign a named coding-assistant configuration to one target."""
 
     workflow = workspace.resolve_workflow()
-    loaded, module = _load_project_workflow(workspace, workflow)
-    known = set(assistant_targets(loaded, module))
-    if target not in known:
-        explanation = (
-            " Assistant assignments can target 'default', a lifeline that "
-            "runs an @assistant action, or an exact Participant.action for "
-            "an @assistant action."
-        )
-        if known == {"default"}:
-            explanation += " This workflow defines no @assistant actions."
-        raise WorkspaceError(
-            f"Unknown assistant assignment target {target!r}."
-            + explanation
-            + " Available: "
-            + (", ".join(sorted(known)) or "none")
-        )
+    problem = assistant_target_problem(workspace, target)
+    if problem is not None:
+        raise WorkspaceError(problem)
     if (
         configuration is not None
         and configuration not in workspace.assistant_configurations()
@@ -1716,6 +1770,7 @@ def connector_target_kinds(workflow, module) -> dict[str, str]:
     targets = {
         name: HUMAN_ACTION
         for name in (
+            *(("default",) if sites else ()),
             *sites,
             *(
                 f"{participant}.{action}"
@@ -1789,15 +1844,20 @@ def _assign_human_action(
     assert isinstance(manifest_connectors, dict)
     profile = manifest_connectors.get("assignments") or {}
     assert isinstance(profile, dict)
+    default = str(profile.get("default") or "")
     lifelines = dict(profile.get("lifelines") or {})
     actions = dict(profile.get("actions") or {})
-    selected = actions if "." in target else lifelines
-    if configuration is None:
-        selected.pop(target, None)
+    if target == "default":
+        default = configuration or ""
     else:
-        selected[target] = configuration
+        selected = actions if "." in target else lifelines
+        if configuration is None:
+            selected.pop(target, None)
+        else:
+            selected[target] = configuration
     return workspace.save_connector_assignment_profile(
         workflow,
+        default=default,
         lifelines=lifelines,
         actions=actions,
     )

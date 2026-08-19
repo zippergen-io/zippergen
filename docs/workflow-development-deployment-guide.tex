@@ -1156,6 +1156,7 @@ zg connector assign Mailbox approval-chat
 \texttt{assistant unassign TARGET} / \texttt{assistant remove NAME} & remove routing or an unused configuration \\
 \texttt{connector configure NAME CONNECTION [KIND]} & save one named destination/resource; infer the kind when unique \\
 \texttt{connector assign TARGET NAME} & fill a declared requirement, or route human actions \\
+\texttt{TARGET} $\in$ \{\texttt{default}, participant, \texttt{Participant.action}\} & three levels, most specific wins; same for models and assistants \\
 \texttt{connector unassign TARGET} & remove connector routing \\
 \texttt{connector check [NAME]} / \texttt{connector remove NAME} & check or remove \\
 \texttt{completion zsh|bash|fish} & print dynamic shell completion \\

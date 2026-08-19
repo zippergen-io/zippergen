@@ -1535,6 +1535,17 @@ def _guided_required_value(
 
     entered = str(value or "").strip()
     if entered:
+        # Reject a bad value now, not after two more questions. The list is
+        # empty when the workflow could not be loaded, and an empty list is
+        # ignorance rather than a verdict, so it never rejects anything.
+        problem = check(entered) if check is not None else None
+        if problem is None and choices and entered not in choices:
+            problem = (
+                f"Unknown {label.casefold()} {entered!r}. Available: "
+                + ", ".join(choices)
+            )
+        if problem is not None:
+            raise SystemExit(problem)
         return entered
     if not sys.stdin.isatty():
         if default:
@@ -1886,6 +1897,7 @@ def _assistant_command(args) -> int:
 
     from zippergen.project_configuration import (
         assign_assistant,
+        assistant_target_problem,
         configuration_report,
         configuration_scope_valid,
         configure_assistant,
@@ -1939,6 +1951,9 @@ def _assistant_command(args) -> int:
                 command=f"zg assistant {action} TARGET"
                 + (" CONFIGURATION" if action == "assign" else ""),
                 choices=_project_choices("assistant-targets", args.project),
+                check=lambda entered: assistant_target_problem(
+                    workspace, entered
+                ),
             )
             configuration = None
             if action == "assign":

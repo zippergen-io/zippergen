@@ -712,3 +712,62 @@ def test_completion_options_come_from_the_real_parser(capsys):
     assert "--idle-timeout" in options
     assert main(["__complete", "options", "provider", "configure"]) == 0
     assert "--base-url" in capsys.readouterr().out.splitlines()
+
+
+def test_every_assignable_family_offers_the_same_three_levels(project):
+    """Models, assistants and connectors must agree on what can be assigned.
+
+    Each family is written separately, so the shared grammar -- one default
+    for the whole workflow, one per participant, one per exact action -- is
+    only real if something asserts it. Connectors lacked the default level
+    until this test existed.
+    """
+
+    from zippergen.completion import completion_candidates
+
+    levels = {}
+    for kind in ("model-targets", "connector-targets", "assistant-targets"):
+        names = completion_candidates(kind)
+        levels[kind] = {
+            "default": "default" in names,
+            "participant": any(
+                "." not in name and name != "default" for name in names
+            ),
+            "action": any("." in name for name in names),
+        }
+
+    assert levels["model-targets"] == {
+        "default": True, "participant": True, "action": True
+    }
+    assert levels["connector-targets"] == {
+        "default": True, "participant": True, "action": True
+    }
+    # This workflow has no @assistant action, so only the default exists here.
+    assert levels["assistant-targets"]["default"] is True
+
+
+def test_a_value_given_on_the_command_line_is_checked_before_more_questions(
+    project, monkeypatch
+):
+    """A wrong argument must not cost you an unrelated prompt first.
+
+    `zg connector assign Gatekeeper` used to ask which configuration to use
+    and only then say the target was unknown.
+    """
+
+    _root, workspace = project
+    workspace.save_provider_secret("approval-bot", "bot_token", "private")
+    workspace.save_connector_configuration(
+        "approval-chat",
+        {"connection": "approval-bot", "kind": "telegram", "chat_id": "42"},
+    )
+    monkeypatch.setattr("zippergen.serve.sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr(
+        "builtins.input",
+        lambda _prompt: pytest.fail("a known-bad argument must not prompt"),
+    )
+
+    with pytest.raises(SystemExit) as error:
+        main(["connector", "assign", "Nobody"])
+
+    assert "Unknown connector target 'Nobody'" in str(error.value)

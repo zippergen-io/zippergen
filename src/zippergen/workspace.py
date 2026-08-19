@@ -689,6 +689,7 @@ class Workspace:
                 "Project connectors.assignments must be a table."
             )
         connector_assignments = {
+            "default": str(raw_connector_assignments.get("default") or ""),
             "lifelines": _string_values(
                 raw_connector_assignments.get("lifelines") or {},
                 field="connectors.assignments.lifelines",
@@ -866,6 +867,10 @@ class Workspace:
                 f"{_toml_key(key)} = {_toml_string(value)}"
                 for key, value in sorted(bindings.items())
             )
+        connector_default = str(connector_assignments.get("default") or "")
+        if connector_default:
+            lines.extend(["", "[connectors.assignments]"])
+            lines.append(f"default = {_toml_string(connector_default)}")
         for label in ("lifelines", "actions"):
             values = connector_assignments.get(label) or {}
             if values:
@@ -2145,6 +2150,7 @@ class Workspace:
         project = manifest_connectors.get("assignments") or {}
         assert isinstance(project, dict)
         result = {
+            "default": str(project.get("default") or ""),
             "lifelines": {
                 str(name): str(configuration)
                 for name, configuration in dict(
@@ -2164,15 +2170,22 @@ class Workspace:
         self,
         workflow_spec: str,
         *,
+        default: str = "",
         lifelines: dict[str, str],
         actions: dict[str, str] | None = None,
-    ) -> dict[str, dict[str, str]]:
-        """Persist reusable configuration routes for human actions."""
+    ) -> dict[str, object]:
+        """Persist reusable configuration routes for human actions.
+
+        Three levels, the same as models and assistants: one default for the
+        whole workflow, one per participant, one per exact action. The most
+        specific level that names a configuration wins.
+        """
 
         action_assignments = dict(actions or {})
         configurations = self.connector_configurations()
         missing = sorted(
             {
+                *([default] if default else []),
                 *lifelines.values(),
                 *action_assignments.values(),
             }
@@ -2182,7 +2195,8 @@ class Workspace:
             raise WorkspaceError(
                 "Unknown connector configuration(s): " + ", ".join(missing)
             )
-        profile = {
+        profile: dict[str, object] = {
+            "default": str(default or ""),
             "lifelines": {
                 str(name): str(configuration)
                 for name, configuration in sorted(lifelines.items())

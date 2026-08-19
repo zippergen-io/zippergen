@@ -263,8 +263,10 @@ again.
 
 Human delivery needs no separate connector declaration. The participant is
 discovered from each `@human` action, and `zg connector assign` routes it to a
-saved configuration. Assign a participant to cover all of its human actions,
-or `Participant.action` to override a single one.
+saved configuration. Three levels, most specific first: `Participant.action`
+for one action, `Participant` for all of that participant's human actions, and
+`default` for every participant the other two do not name. Models and
+assistants use the same three levels.
 
 Non-human services remain explicit, credential-free requirements:
 

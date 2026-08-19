@@ -457,6 +457,7 @@ def test_project_configuration_survives_a_fresh_clone(
         "call-records": "records"
     }
     assert clone.connector_assignment_profile("workflow.py:sample") == {
+        "default": "",
         "lifelines": {"Human": "approvals"},
         "actions": {},
     }

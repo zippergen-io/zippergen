@@ -134,9 +134,15 @@ def connector_runtime(
 
     requirements = connector_requirements_from_module(module)
     assignments = workspace.connector_assignment_profile(workflow_spec)
+    default_assignment = str(assignments.get("default") or "")
     lifeline_assignments = dict(assignments.get("lifelines") or {})
     action_assignments = dict(assignments.get("actions") or {})
-    if not requirements and not lifeline_assignments and not action_assignments:
+    if (
+        not requirements
+        and not default_assignment
+        and not lifeline_assignments
+        and not action_assignments
+    ):
         return {}, {}
 
     bindings = workspace.connector_binding_profile(workflow_spec)
@@ -198,6 +204,12 @@ def connector_runtime(
         return configuration, connection, provider, secrets
 
     known_targets = _human_targets(workflow, module)
+    if default_assignment:
+        # Spell the default out, one participant at a time. The deployment
+        # profile is meant to be read, and a reader should see where every
+        # question goes without holding a precedence rule in their head.
+        for participant in sorted(human_action_sites(workflow, module)):
+            lifeline_assignments.setdefault(participant, default_assignment)
     for target, name in [*lifeline_assignments.items(), *action_assignments.items()]:
         if target not in known_targets:
             raise ConnectorWiringError(
