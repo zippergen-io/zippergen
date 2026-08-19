@@ -109,6 +109,65 @@ def _used_connector_names(
     }
 
 
+def _connector_slots(
+    workflow: Workflow | None,
+    module: ModuleType | None,
+    assignments: dict[str, object],
+    bindings: dict[str, str],
+) -> list[dict[str, str]]:
+    """List every connector slot with the exact name you would type for it.
+
+    A workflow offers two kinds, and they are keyed differently: a declared
+    requirement by its own name, a human action by the participant who runs
+    it. That is learnable, but only if something shows it, so this is what
+    ``zg connector`` prints instead of leaving people to infer it from an
+    error message.
+    """
+
+    if workflow is None or module is None:
+        return []
+    slots: list[dict[str, str]] = []
+    for requirement in connector_requirements_from_module(module):
+        slots.append({
+            "target": requirement.name,
+            "meaning": f"{requirement.kind} for {requirement.participant}",
+            "configuration": bindings.get(requirement.name) or "not assigned",
+        })
+    sites = human_action_sites(workflow, module)
+    default = str(assignments.get("default") or "")
+    raw_lifelines = assignments.get("lifelines")
+    lifelines = dict(raw_lifelines) if isinstance(raw_lifelines, Mapping) else {}
+    raw_actions = assignments.get("actions")
+    actions = dict(raw_actions) if isinstance(raw_actions, Mapping) else {}
+    if sites:
+        slots.append({
+            "target": "default",
+            "meaning": "every human action not named below",
+            "configuration": default or "not assigned",
+        })
+    for participant, participant_actions in sites.items():
+        slots.append({
+            "target": participant,
+            "meaning": "this participant's human actions",
+            "configuration": str(
+                lifelines.get(participant) or default or "not assigned"
+            ),
+        })
+        for action in participant_actions:
+            target = f"{participant}.{action}"
+            slots.append({
+                "target": target,
+                "meaning": "this one human action",
+                "configuration": str(
+                    actions.get(target)
+                    or lifelines.get(participant)
+                    or default
+                    or "not assigned"
+                ),
+            })
+    return slots
+
+
 def _default_connector_check(
     default: str,
     configurations: dict[str, dict[str, str]],
@@ -927,6 +986,11 @@ def configuration_report(
             ],
             "bindings": connector_bindings,
             "assignments": connector_assignments,
+            # Every slot the workflow offers, filled or not. The two kinds of
+            # slot are keyed differently, and nothing else on screen says so.
+            "slots": _connector_slots(
+                workflow, module, connector_assignments, connector_bindings
+            ),
         },
         "site_facts": site_facts,
         "effective_routing": effective_routing,
@@ -1210,18 +1274,16 @@ def render_configuration(
         connector_configuration_rows,
         empty="No configurations.",
     )
-    connector_rows: list[tuple[object, object, object]] = []
-    for requirement, configuration in dict(connectors.get("bindings") or {}).items():
-        connector_rows.append((requirement, configuration, "requirement"))
-    connector_assignments = connectors.get("assignments") or {}
-    if isinstance(connector_assignments, dict):
-        connector_rows.extend(_nested_assignment_rows(connector_assignments))
     _render_columns_or_empty(
         renderer,
-        "Assignments and bindings",
-        ("Target", "Configuration", "Purpose"),
-        connector_rows,
-        empty="No assignments or bindings.",
+        "Slots",
+        ("Target", "What it is", "Configuration"),
+        [
+            (item["target"], item["meaning"], item["configuration"])
+            for item in (connectors.get("slots") or [])
+            if isinstance(item, dict)
+        ],
+        empty="This workflow has no connector slots.",
     )
     renderer.framed_section("Site")
     renderer.table(
@@ -1502,18 +1564,16 @@ def render_connector_configuration(
         configuration_rows,
         empty="No configurations.",
     )
-    rows: list[tuple[object, object, object]] = []
-    for requirement, configuration in dict(connectors.get("bindings") or {}).items():
-        rows.append((requirement, configuration, "requirement"))
-    assignments = connectors.get("assignments") or {}
-    if isinstance(assignments, dict):
-        rows.extend(_nested_assignment_rows(assignments))
     _render_columns_or_empty(
         renderer,
-        "Assignments and bindings",
-        ("Target", "Configuration", "Purpose"),
-        rows,
-        empty="No assignments or bindings.",
+        "Slots",
+        ("Target", "What it is", "Configuration"),
+        [
+            (item["target"], item["meaning"], item["configuration"])
+            for item in (connectors.get("slots") or [])
+            if isinstance(item, dict)
+        ],
+        empty="This workflow has no connector slots.",
     )
     if show_checks:
         _render_selected_checks(report, renderer, "connector")
@@ -1788,6 +1848,72 @@ def connector_target_kinds(workflow, module) -> dict[str, str]:
     return targets
 
 
+def connector_target_problem(workspace: Workspace, target: str) -> str | None:
+    """Say why this is not a connector target, or nothing if it is one.
+
+    The CLI asks before it prompts for anything else, and the assignment asks
+    again before it writes. One rule, so the two cannot disagree.
+    """
+
+    workflow = workspace.resolve_workflow()
+    loaded, module = _load_project_workflow(workspace, workflow)
+    return _connector_target_problem(
+        target, connector_target_kinds(loaded, module), module
+    )
+
+
+def _connector_target_problem(
+    target: str,
+    targets: dict[str, str],
+    module,
+) -> str | None:
+    kind = targets.get(target)
+    if kind == AMBIGUOUS_TARGET:
+        return (
+            f"{target!r} is both a declared connector requirement and a "
+            "human-action target, so there is no way to tell which one you "
+            "mean. Rename the requirement in the workflow."
+        )
+    if kind is not None:
+        return None
+    return _unknown_connector_target(target, targets, module)
+
+
+def _unknown_connector_target(
+    target: str,
+    targets: dict[str, str],
+    module,
+) -> str:
+    """Explain a rejected target, and point at the one that was probably meant.
+
+    The two kinds of slot are keyed differently -- a requirement by its own
+    name, a human action by the participant running it -- so naming a
+    participant that owns a requirement is the natural first guess and
+    deserves an answer rather than a list.
+    """
+
+    owned = [
+        requirement.name
+        for requirement in connector_requirements_from_module(module)
+        if requirement.participant == target
+    ]
+    if owned:
+        return (
+            f"{target!r} has no human action, so there is nothing to route to "
+            f"a person. It owns the connector requirement"
+            + (
+                f" {owned[0]!r}. Assign that instead."
+                if len(owned) == 1
+                else "s " + ", ".join(repr(name) for name in owned)
+                + ". Assign one of those instead."
+            )
+        )
+    return (
+        f"Unknown connector target {target!r}. Available: "
+        + (", ".join(sorted(targets)) or "none")
+    )
+
+
 def assign_connector(
     workspace: Workspace,
     target: str,
@@ -1802,18 +1928,10 @@ def assign_connector(
     workflow = workspace.resolve_workflow()
     loaded, module = _load_project_workflow(workspace, workflow)
     targets = connector_target_kinds(loaded, module)
-    kind = targets.get(target)
-    if kind is None:
-        raise WorkspaceError(
-            f"Unknown connector target {target!r}. Available: "
-            + (", ".join(sorted(targets)) or "none")
-        )
-    if kind == AMBIGUOUS_TARGET:
-        raise WorkspaceError(
-            f"{target!r} is both a declared connector requirement and a "
-            "human-action target, so there is no way to tell which one you "
-            "mean. Rename the requirement in the workflow."
-        )
+    problem = _connector_target_problem(target, targets, module)
+    if problem is not None:
+        raise WorkspaceError(problem)
+    kind = targets[target]
     if kind == CONNECTOR_REQUIREMENT:
         _assign_requirement(workspace, workflow, module, target, configuration)
     else:

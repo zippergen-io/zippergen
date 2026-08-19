@@ -2019,6 +2019,7 @@ def _connector_management_command(args) -> int:
     from zippergen.project_configuration import (
         assign_connector,
         configuration_report,
+        connector_target_problem,
         configuration_scope_valid,
         render_connector_configuration,
     )
@@ -2034,6 +2035,9 @@ def _connector_management_command(args) -> int:
                 label="Connector target",
                 command="zg connector unassign TARGET",
                 choices=_project_choices("connector-targets", args.project),
+                check=lambda entered: connector_target_problem(
+                    workspace, entered
+                ),
             )
             kind = assign_connector(workspace, target, None)
             print(f"Removed the {kind} assignment for {target}.")
@@ -2640,6 +2644,7 @@ def _connector_assign_command(args) -> int:
     from zippergen.project_configuration import (
         CONNECTOR_REQUIREMENT,
         assign_connector,
+        connector_target_problem,
     )
     from zippergen.workspace import Workspace, WorkspaceError
 
@@ -2650,6 +2655,7 @@ def _connector_assign_command(args) -> int:
             label="Connector target",
             command="zg connector assign TARGET CONFIGURATION",
             choices=_project_choices("connector-targets", args.project),
+            check=lambda entered: connector_target_problem(workspace, entered),
         )
         configuration = _guided_required_value(
             args.configuration,

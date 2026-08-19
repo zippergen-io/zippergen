@@ -365,3 +365,45 @@ def test_a_name_meaning_two_things_is_refused_rather_than_guessed(tmp_path):
 
     assert result.returncode != 0
     assert "both a declared connector requirement" in result.stderr
+
+
+def test_naming_a_participant_points_at_the_requirement_it_owns(tmp_path):
+    """The two kinds of slot are keyed differently, so guessing wrong is normal.
+
+    A participant that owns a requirement is the natural first guess, and it
+    deserves an answer rather than a list to search.
+    """
+
+    root = _project(tmp_path)
+    example = Path(__file__).resolve().parents[1] / "examples" / "call_intake.py"
+    (root / "workflow.py").write_text(example.read_text())
+    Workspace(root, home=root.parent / "home").initialize_project()
+    _provider(root, "approval-bot", "telegram")
+    assert _run(
+        root, "connector", "configure", "approval-chat", "approval-bot",
+        "telegram", "--chat-id", "7",
+    ).returncode == 0
+
+    result = _run(root, "connector", "assign", "Mailbox", "approval-chat")
+
+    assert result.returncode != 0
+    assert "has no human action" in result.stderr
+    assert "'call-mailbox'" in result.stderr
+
+
+def test_the_slot_table_lists_both_kinds_of_target_with_the_name_to_type(
+    tmp_path,
+):
+    """One table, so nobody has to infer the keying from an error message."""
+
+    root = _project(tmp_path)
+    example = Path(__file__).resolve().parents[1] / "examples" / "call_intake.py"
+    (root / "workflow.py").write_text(example.read_text())
+    Workspace(root, home=root.parent / "home").initialize_project()
+
+    shown = _run(root, "connector").stdout
+
+    assert "Slots" in shown
+    assert "call-mailbox" in shown
+    assert "gmail for Mailbox" in shown
+    assert "not assigned" in shown

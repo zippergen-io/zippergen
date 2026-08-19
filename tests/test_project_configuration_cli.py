@@ -623,8 +623,12 @@ def test_empty_family_sections_omit_table_scaffolding(project, capsys):
     connectors = capsys.readouterr().out
     assert "│ Connectors" in connectors
     assert "No configurations." in connectors
-    assert "No assignments or bindings." in connectors
     assert "Name  Kind  Resource" not in connectors
+    # Slots are what the workflow offers, not what has been filled in, so the
+    # table stays useful before anything is assigned: it is the list of names
+    # you may type.
+    assert "Mailbox.approve_reply" in connectors
+    assert "not assigned" in connectors
 
 
 def test_validate_catches_a_stale_project_assignment(project):
