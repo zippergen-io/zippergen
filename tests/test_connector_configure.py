@@ -436,14 +436,35 @@ def test_google_scopes_are_read_off_the_workflow(tmp_path):
     assert "spreadsheets" in result.stdout
 
 
-def test_scopes_that_cannot_be_derived_are_asked_for_plainly(tmp_path):
-    """Nothing assigned means nothing to infer, and guessing would be wrong."""
+def test_scopes_are_known_before_anything_is_assigned(tmp_path):
+    """Authorizing comes first, so it must not wait for the wiring.
+
+    With one Google connection in the project, every Google requirement the
+    workflow declares must end up on it. Nothing is ambiguous, so nothing
+    needs to be assigned first.
+    """
 
     root = _project(tmp_path)
     example = Path(__file__).resolve().parents[1] / "examples" / "call_intake.py"
     (root / "workflow.py").write_text(example.read_text())
     Workspace(root, home=root.parent / "home").initialize_project()
     _provider(root, "google-main", "google")
+
+    result = _run(root, "provider", "authorize", "google-main", input_text="\n")
+
+    assert "gmail.modify" in result.stdout
+    assert "spreadsheets" in result.stdout
+
+
+def test_two_google_connections_cannot_be_guessed_between(tmp_path):
+    """Two candidates and no wiring is genuinely ambiguous, so it asks."""
+
+    root = _project(tmp_path)
+    example = Path(__file__).resolve().parents[1] / "examples" / "call_intake.py"
+    (root / "workflow.py").write_text(example.read_text())
+    Workspace(root, home=root.parent / "home").initialize_project()
+    _provider(root, "google-main", "google")
+    _provider(root, "google-spare", "google")
 
     result = _run(root, "provider", "authorize", "google-main", input_text="\n")
 

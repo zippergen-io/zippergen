@@ -1861,14 +1861,33 @@ def project_google_scopes(workspace: Workspace, connection: str) -> tuple[str, .
 
     workflow = workspace.resolve_workflow()
     _loaded, module = _load_project_workflow(workspace, workflow)
+    requirements = connector_requirements_from_module(module)
     bindings = workspace.connector_binding_profile(workflow)
     configurations = workspace.connector_configurations()
-    pairs: list[tuple[str, str]] = []
-    for requirement in connector_requirements_from_module(module):
-        selected = configurations.get(bindings.get(requirement.name) or "")
-        if selected and selected.get("connection") == connection:
-            pairs.append((requirement.kind, requirement.access))
-    return google_scopes_for_access(pairs)
+    assigned = [
+        (requirement.kind, requirement.access)
+        for requirement in requirements
+        if (
+            configurations.get(bindings.get(requirement.name) or "") or {}
+        ).get("connection") == connection
+    ]
+    if assigned:
+        return google_scopes_for_access(assigned)
+    # Nothing is assigned yet, which is the normal state: authorizing is one
+    # of the first things anybody does. When the project has a single Google
+    # connection, every Google requirement in the workflow must end up on it,
+    # so the answer is known even before anything is wired.
+    google_connections = [
+        name
+        for name, profile in workspace.provider_connections().items()
+        if str(profile.get("kind") or "") == "google"
+    ]
+    if google_connections == [connection]:
+        return google_scopes_for_access(
+            (requirement.kind, requirement.access)
+            for requirement in requirements
+        )
+    return ()
 
 
 def connector_target_problem(workspace: Workspace, target: str) -> str | None:
