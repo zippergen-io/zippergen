@@ -1958,6 +1958,45 @@ def test_logs_command_shows_only_the_current_log_generation(
     assert captured.out.splitlines() == ["current start", "current ready"]
 
 
+def test_deploy_does_not_warn_about_what_it_is_about_to_do(
+    tmp_path, monkeypatch, capsys
+):
+    """`zg deploy` installs the unit and starts the service.
+
+    Warning that neither exists, one second before creating both, reports a
+    problem the same command is fixing. `zg deploy check` is different: there
+    nothing is about to happen, so the same facts are real news.
+    """
+
+    from zippergen.deployment_checks import _doctor_checks
+
+    workflow_path = tmp_path / "deploy_workflow.py"
+    workflow_path.write_text(WORKFLOW_SOURCE)
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(tmp_path / "zg-home"))
+    monkeypatch.chdir(tmp_path)
+    _deploy_for_test([f"{workflow_path}:hello"])
+    capsys.readouterr()
+    main(["deploy", "check", "--json", "--no-systemd"])
+    name = json.loads(capsys.readouterr().out)["deployment"]
+
+    standalone = {
+        check["name"]: check
+        for check in _doctor_checks(name, include_systemd=False)
+    }
+    during_deploy = {
+        check["name"]: check
+        for check in _doctor_checks(
+            name, include_systemd=False, before_start=True
+        )
+    }
+
+    assert standalone["log file"]["status"] == "warn"
+    assert "log file" not in during_deploy
+    installed = [key for key in standalone if key.endswith(" installed")]
+    assert installed, "the standalone check must still report the unit"
+    assert not [key for key in during_deploy if key.endswith(" installed")]
+
+
 def test_doctor_reports_deployment_checks(tmp_path, monkeypatch, capsys):
     workflow_path = tmp_path / "deploy_workflow.py"
     workflow_path.write_text(WORKFLOW_SOURCE)

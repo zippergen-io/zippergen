@@ -273,7 +273,17 @@ def _doctor_checks(
     include_systemd: bool = True,
     live_connectors: bool = True,
     check_store_integrity: bool = False,
+    before_start: bool = False,
 ) -> list[dict[str, object]]:
+    """Report on one deployment.
+
+    ``before_start`` is set by the commands that are themselves about to
+    install and start the service. Two checks -- the log file and the
+    installed unit -- describe state that only exists afterwards, so warning
+    about them there would be reporting a problem the same command fixes a
+    second later.
+    """
+
     profile_path = _deployment_profile_path(name)
     checks: list[dict[str, object]] = []
     profile = _load_deployment_profile(name)
@@ -322,7 +332,7 @@ def _doctor_checks(
 
     if log_path.exists():
         checks.append(_doctor_check("ok", "log file", str(log_path)))
-    else:
+    elif not before_start:
         checks.append(_doctor_check("warn", "log file", f"log does not exist yet: {log_path}"))
 
     script_path = _deployment_script_path(profile_name)
@@ -360,7 +370,7 @@ def _doctor_checks(
     )
     if installed_path.exists():
         checks.append(_doctor_check("ok", f"{manager or 'service'} installed", str(installed_path)))
-    else:
+    elif not before_start:
         checks.append(_doctor_check(
             "warn",
             f"{manager or 'service'} installed",

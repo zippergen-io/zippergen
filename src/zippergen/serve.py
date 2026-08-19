@@ -417,7 +417,7 @@ def _deployment_lifecycle_command(args, action: str) -> int:
         and not args.dry_run
         and not getattr(args, "skip_readiness", False)
     ):
-        checks = _doctor_checks(name, include_systemd=False)
+        checks = _doctor_checks(name, include_systemd=False, before_start=True)
         failures = [
             check for check in checks if check.get("status") == "fail"
         ]
@@ -3356,7 +3356,7 @@ def _finalize_guided_deployment(
     _write_deployment_artifacts(profile)
 
     if not args.no_doctor:
-        checks = _doctor_checks(name, include_systemd=False)
+        checks = _doctor_checks(name, include_systemd=False, before_start=True)
         if getattr(args, "concise", False):
             _print_doctor_summary(name, checks)
         else:
