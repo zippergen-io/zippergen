@@ -398,7 +398,25 @@ def _deployment_lifecycle_command(args, action: str) -> int:
         # already the answer. Bringing it down and up again would interrupt
         # whatever step is in flight, and an interrupted model call or effect
         # can run a second time.
+        #
+        # `deploy` is the exception: it has just rewritten the profile, so the
+        # running process is executing a configuration that no longer exists.
+        # Leaving it alone would mean the deploy silently did nothing.
         status = deployment_service_status(name)
+        if status.get("state") in {"running", "restarting"} and getattr(
+            args, "adopt_new_profile", False
+        ):
+            print(f"Restarting {name} to pick up the new configuration.")
+            _deployment_lifecycle_command(
+                argparse.Namespace(
+                    name=name,
+                    dry_run=False,
+                    enable=False,
+                    skip_readiness=False,
+                ),
+                "stop",
+            )
+            status = deployment_service_status(name)
         if status.get("state") in {"running", "restarting"}:
             print(
                 f"Deployment {name} is already running ({status.get('detail')})."
@@ -3371,6 +3389,7 @@ def _finalize_guided_deployment(
             enable=True,
             dry_run=False,
             skip_readiness=True,
+            adopt_new_profile=True,
         )
         _deployment_lifecycle_command(lifecycle_args, "start")
 

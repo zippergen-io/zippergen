@@ -1958,6 +1958,61 @@ def test_logs_command_shows_only_the_current_log_generation(
     assert captured.out.splitlines() == ["current start", "current ready"]
 
 
+@pytest.mark.parametrize("adopt", [True, False], ids=["deploy", "plain-start"])
+def test_a_running_service_is_restarted_only_when_the_profile_changed(
+    tmp_path, monkeypatch, capsys, adopt
+):
+    """`deploy` rewrites the profile, so the old process must not survive it.
+
+    A bare `deploy start` is different: it means "make sure it runs", and
+    bouncing a healthy service would interrupt whatever step is in flight.
+    """
+
+    import argparse
+
+    from zippergen import deployment_platform
+    from zippergen.serve import _deployment_lifecycle_command
+
+    workflow_path = tmp_path / "deploy_workflow.py"
+    workflow_path.write_text(WORKFLOW_SOURCE)
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(tmp_path / "zg-home"))
+    monkeypatch.chdir(tmp_path)
+    _deploy_for_test([f"{workflow_path}:hello"])
+    capsys.readouterr()
+    main(["deploy", "check", "--json", "--no-systemd"])
+    name = json.loads(capsys.readouterr().out)["deployment"]
+
+    monkeypatch.setattr(
+        deployment_platform,
+        "deployment_service_status",
+        lambda _name: {"state": "running", "detail": "service is running"},
+    )
+    stopped: list[str] = []
+    monkeypatch.setattr(
+        "zippergen.serve._run_systemctl",
+        lambda *a, **k: stopped.append(" ".join(str(x) for x in a[0])),
+    )
+    monkeypatch.setattr("zippergen.serve._run_launchctl", lambda *a, **k: None)
+
+    _deployment_lifecycle_command(
+        argparse.Namespace(
+            name=name,
+            dry_run=False,
+            enable=False,
+            skip_readiness=True,
+            adopt_new_profile=adopt,
+        ),
+        "start",
+    )
+
+    output = capsys.readouterr().out
+    if adopt:
+        assert "Restarting" in output, "deploy must not leave the old process"
+    else:
+        assert "already running" in output
+        assert "Restarting" not in output
+
+
 def test_deploy_does_not_warn_about_what_it_is_about_to_do(
     tmp_path, monkeypatch, capsys
 ):
