@@ -681,8 +681,10 @@ zg connector assign Mailbox approval-chat
 zg config
 zg check
 
-# Authorize Google on this computer, or accept an authorization made elsewhere
-zg provider authorize google-work --scopes gmail.readonly
+# Authorize Google on this computer, or accept an authorization made elsewhere.
+# Scopes come from what the workflow's requirements declare; pass --scopes only
+# outside a project.
+zg provider authorize google-work
 zg provider accept google-work
 ```
 

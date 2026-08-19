@@ -407,3 +407,45 @@ def test_the_slot_table_lists_both_kinds_of_target_with_the_name_to_type(
     assert "call-mailbox" in shown
     assert "gmail for Mailbox" in shown
     assert "not assigned" in shown
+
+
+def test_google_scopes_are_read_off_the_workflow(tmp_path):
+    """The workflow already says what access it wants, so nobody retypes it.
+
+    Asking a person to name OAuth scopes by hand is asking them to grant too
+    much, because the narrow answer is harder to remember than the broad one.
+    """
+
+    root = _project(tmp_path)
+    example = Path(__file__).resolve().parents[1] / "examples" / "call_intake.py"
+    (root / "workflow.py").write_text(example.read_text())
+    Workspace(root, home=root.parent / "home").initialize_project()
+    _provider(root, "google-main", "google")
+    for arguments in (
+        ("inbox", "google-main", "gmail", "--query", "is:unread"),
+        ("records", "google-main", "google-sheets",
+         "--spreadsheet-id", "1", "--tab", "Calls"),
+    ):
+        assert _run(root, "connector", "configure", *arguments).returncode == 0
+    assert _run(root, "connector", "assign", "call-mailbox", "inbox").returncode == 0
+    assert _run(root, "connector", "assign", "call-records", "records").returncode == 0
+
+    result = _run(root, "provider", "authorize", "google-main", input_text="\n")
+
+    assert "gmail.modify" in result.stdout
+    assert "spreadsheets" in result.stdout
+
+
+def test_scopes_that_cannot_be_derived_are_asked_for_plainly(tmp_path):
+    """Nothing assigned means nothing to infer, and guessing would be wrong."""
+
+    root = _project(tmp_path)
+    example = Path(__file__).resolve().parents[1] / "examples" / "call_intake.py"
+    (root / "workflow.py").write_text(example.read_text())
+    Workspace(root, home=root.parent / "home").initialize_project()
+    _provider(root, "google-main", "google")
+
+    result = _run(root, "provider", "authorize", "google-main", input_text="\n")
+
+    assert result.returncode != 0
+    assert "--scopes" in result.stderr

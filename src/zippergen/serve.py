@@ -4051,6 +4051,31 @@ def _add_owned_execution_commands(subparsers, *, owner: str) -> None:
     approve_parser.add_argument("--json", action="store_true", help="Print the completed task as JSON.")
 
 
+def _project_google_scopes(connection: str) -> tuple[str, ...]:
+    """Read the scopes off the workflow, or say plainly that it could not."""
+
+    from zippergen.google_auth import GoogleConnectorError, google_scope_names
+    from zippergen.project_configuration import project_google_scopes
+    from zippergen.workspace import Workspace, WorkspaceError
+
+    advice = (
+        "Could not work out which Google scopes to request. Run this inside a "
+        "project whose workflow declares Google connectors assigned to "
+        f"{connection!r}, or pass them yourself with --scopes."
+    )
+    try:
+        scopes = project_google_scopes(Workspace(None), connection)
+    except (WorkspaceError, GoogleConnectorError, OSError, SystemExit, ValueError):
+        raise SystemExit(advice) from None
+    if not scopes:
+        raise SystemExit(advice)
+    print(
+        "Scopes this workflow asks for: "
+        + ", ".join(google_scope_names(scopes))
+    )
+    return scopes
+
+
 def _provider_authorize_google_command(args) -> int:
     """Authorize Google on the computer that owns the browser."""
 
@@ -4066,7 +4091,11 @@ def _provider_authorize_google_command(args) -> int:
     )
 
     try:
-        scopes = parse_google_scopes(args.scopes)
+        scopes = (
+            parse_google_scopes(args.scopes)
+            if args.scopes
+            else _project_google_scopes(args.name)
+        )
         entered = str(args.client or "").strip()
         if not entered:
             entered = input("Google OAuth Desktop app JSON path: ").strip()
@@ -4223,7 +4252,11 @@ def _parse_cli_args(
     provider_authorize.add_argument("name", help="Google connection name.")
     provider_authorize.add_argument("--client", help="OAuth Desktop app JSON.")
     provider_authorize.add_argument(
-        "--scopes", required=True, help="Comma-separated Gmail/Sheets scopes."
+        "--scopes",
+        help=(
+            "Comma-separated Gmail/Sheets scopes. Omit inside a project to "
+            "use the scopes its workflow actually asks for."
+        ),
     )
     provider_accept = provider_sub.add_parser(
         "accept", help="save a Google authorization produced elsewhere"

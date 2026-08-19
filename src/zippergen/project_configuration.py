@@ -1848,6 +1848,29 @@ def connector_target_kinds(workflow, module) -> dict[str, str]:
     return targets
 
 
+def project_google_scopes(workspace: Workspace, connection: str) -> tuple[str, ...]:
+    """Work out which Google scopes this project actually needs.
+
+    The workflow already states it: every requirement declares its kind and
+    how much access it wants, and the configuration assigned to it names the
+    connection. So the answer is derivable, and asking a person to retype it
+    only invites granting too much.
+    """
+
+    from zippergen.google_auth import google_scopes_for_access
+
+    workflow = workspace.resolve_workflow()
+    _loaded, module = _load_project_workflow(workspace, workflow)
+    bindings = workspace.connector_binding_profile(workflow)
+    configurations = workspace.connector_configurations()
+    pairs: list[tuple[str, str]] = []
+    for requirement in connector_requirements_from_module(module):
+        selected = configurations.get(bindings.get(requirement.name) or "")
+        if selected and selected.get("connection") == connection:
+            pairs.append((requirement.kind, requirement.access))
+    return google_scopes_for_access(pairs)
+
+
 def connector_target_problem(workspace: Workspace, target: str) -> str | None:
     """Say why this is not a connector target, or nothing if it is one.
 

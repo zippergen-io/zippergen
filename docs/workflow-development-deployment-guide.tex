@@ -765,18 +765,50 @@ supplies their own token.
 
 \subsection{Reading and writing external services}
 
-A workflow declares what it needs:
+A workflow declares what it needs, without saying which one:
 
 \begin{lstlisting}[language=Python]
 zippergen_connectors = (
     ConnectorRequirement(
         name="call-mailbox", kind="gmail",
         participant="Mailbox", access="read-write",
+        capabilities=("read-messages", "mark-processed"),
     ),
 )
 \end{lstlisting}
 
-and the project says which one, assigning it to that requirement by name:
+This is a \emph{requirement}: a labelled hole. It says a Gmail mailbox is
+needed, that \texttt{Mailbox} is the participant that uses it, and what will
+be done with it. It names no account, no address and no credential, so it
+stays true on every machine. Workflow code plugs into it by name, with
+\texttt{@effect(connector="call-mailbox", ...)}, and never mentions a mailbox
+address.
+
+Three separate things are involved, and keeping them apart is what makes a
+workflow portable:
+
+\begin{center}
+\begin{tabular}{lll}
+\toprule
+& says & lives in \\
+\midrule
+requirement & what kind of thing is needed & \path{workflow.py}, committed \\
+configuration & which actual mailbox or chat & \path{zippergen.toml}, committed \\
+credential & the token & this machine only, never committed \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Human actions need no requirement, because the workflow already gives it away:
+a \texttt{@human} action means a person must answer, and the participant
+running it says who. An external service is different --- nothing in the code
+says it needs Gmail with permission to mark mail read, unless it is written
+down. Writing it down is what lets \texttt{zg connector check} report an
+empty hole before a deployment starts, and what tells you exactly which
+Google permission to grant.
+
+The project then says which one, assigning a configuration to that
+requirement by name:
 
 \begin{lstlisting}[style=shell]
 zg provider configure google-work google
@@ -791,8 +823,19 @@ zg connector assign call-records records
 \subsection{Authorizing Google}
 
 \begin{lstlisting}[style=shell]
-zg provider authorize google-work --scopes gmail.modify,spreadsheets
+zg provider authorize google-work
 \end{lstlisting}
+
+The scopes are not typed. Each requirement declares its kind and its access,
+so the narrowest set that covers them is already known, and it is printed
+before the browser opens:
+
+\begin{lstlisting}[style=shell]
+Scopes this workflow asks for: gmail.modify, spreadsheets
+\end{lstlisting}
+
+Pass \texttt{--scopes} only to authorize outside a project, or to grant
+something the workflow does not ask for.
 
 This opens a browser, and prints an encoded result rather than saving it. On
 the machine that will run the workflow:
