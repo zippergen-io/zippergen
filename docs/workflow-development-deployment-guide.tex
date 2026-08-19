@@ -1055,11 +1055,15 @@ is empty and permanent; nothing needs to clean it up.
   \item Clone the repository. The workflow, specification and
         \path{zippergen.toml} come with it.
   \item \texttt{zg validate} confirms the module loads in that environment.
+  \item Install what the workflow needs. Google connectors require the
+        optional extra, \texttt{zippergen[google]}, in the environment that
+        runs \texttt{zg}; \texttt{zg provider check} reports it as
+        \emph{google support installed}.
   \item Supply what the machine needs. Credentials belong to the provider
         connection, not to the model or connector that uses it: model keys in
         the environment or via \texttt{zg provider set-credential}, the Telegram
-        token the same way, and Google with \texttt{zg provider authorize} on
-        your laptop and \texttt{zg provider accept} there.
+        token the same way, and Google with \texttt{zg provider authorize
+        --handoff} on your laptop and \texttt{zg provider accept} there.
   \item \texttt{zg deploy} prepares, checks and starts the service.
 \end{enumerate}
 

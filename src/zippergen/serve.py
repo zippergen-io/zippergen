@@ -2567,10 +2567,10 @@ def _project_connector_runtime(
 def _provider_accept_google_command(args) -> int:
     """Save a Google authorization produced on a computer with a browser.
 
-    `provider authorize CONNECTION` runs the browser flow and prints an encoded
-    result. This is the other half: it stores the credential and the scopes
-    Google actually granted, so a machine with no browser — a server — can be
-    authorized from your laptop.
+    `provider authorize CONNECTION --handoff` runs the browser flow and prints
+    an encoded result instead of saving it. This is the other half: it stores
+    the credential and the scopes Google actually granted, so a machine with no
+    browser — a server — can be authorized from your laptop.
     """
 
     import getpass
@@ -4274,7 +4274,8 @@ def _parse_cli_args(
     provider_remove.add_argument("name", nargs="?")
     provider_remove.add_argument("--project", help="Project root.")
     provider_authorize = provider_sub.add_parser(
-        "authorize", help="create a private Google authorization handoff"
+        "authorize",
+        help="authorize Google here, or with --handoff for another computer",
     )
     provider_authorize.add_argument("name", help="Google connection name.")
     provider_authorize.add_argument("--client", help="OAuth Desktop app JSON.")
