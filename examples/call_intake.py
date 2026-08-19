@@ -441,7 +441,7 @@ def zippergen_setup(config) -> None:
     if intake_recipients is None:
         intake_recipients = config.option("recipients", None)
     configure_call_intake(
-        services=config.option("services", "fake"),
+        services=config.option("services", "live"),
         certified_senders=config.option("certified", None),
         table_path=config.option("table", None),
         response_log_path=config.option("response_log", None),
@@ -457,7 +457,7 @@ def zippergen_doctor(config) -> list[dict[str, object]]:
     """Workflow-specific readiness checks used by ``zippergen deploy check``."""
 
     checks: list[dict[str, object]] = []
-    services = str(config.option("services", "fake"))
+    services = str(config.option("services", "live"))
     certified = _split_senders(config.option("certified", None))
     recipients = _split_senders(
         config.option("recipient", config.option("recipients", None))

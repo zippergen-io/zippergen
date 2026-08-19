@@ -53,6 +53,26 @@ def normalize_llm_overrides(values: object) -> dict[str, str]:
     return normalized
 
 
+def fake_model_notice(routes: Mapping[str, str]) -> str | None:
+    """Describe which participants are not talking to a real model.
+
+    A fresh project answers with the mock so it runs before anybody owns an
+    API key, which is right. Staying quiet about it is not: a mostly-fake run
+    looks exactly like a real one, and its output is plausible either way.
+
+    Returns the sentence to show, or None when every participant is real.
+    """
+
+    mocked = sorted(name for name, spec in routes.items() if spec == "mock")
+    if not mocked:
+        return None
+    return (
+        "No real model is in use: every participant answers with the mock."
+        if len(mocked) == len(routes)
+        else "Mock model (not a real one) for: " + ", ".join(mocked) + "."
+    ) + " Assign one with 'zg model assign TARGET NAME'."
+
+
 def effective_llm_routes(
     workflow: Workflow,
     default_spec: str,

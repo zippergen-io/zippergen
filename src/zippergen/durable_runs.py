@@ -28,6 +28,7 @@ from zippergen.models import (
     apply_model_overrides,
     effective_llm_routes,
     normalize_llm_overrides,
+    fake_model_notice,
     project_model_routing,
     selected_llm_specs,
 )
@@ -681,7 +682,14 @@ def _run_durable_in_project(
         )
         selected_assistant = assistant_routing.default_backend
         selected_assistants = assistant_routing.overrides
-        effective_llm_routes(workflow, selected_llm, selected_llms)
+        notice = fake_model_notice(
+            effective_llm_routes(workflow, selected_llm, selected_llms)
+        )
+        if notice:
+            if renderer is None:
+                output_func(notice)
+            else:
+                renderer.status("warning", notice)
         run_options = dict(options or {})
         previous = workspace.current_run()
         if previous is not None:

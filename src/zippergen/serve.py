@@ -1080,6 +1080,13 @@ def _run_workflow_from_project(args, workspace) -> int:
     selected_llm = routing.default_spec
     llms = routing.overrides
     llm_idle_timeouts = routing.idle_timeouts
+    from zippergen.models import effective_llm_routes, fake_model_notice
+
+    notice = fake_model_notice(effective_llm_routes(wf, selected_llm, llms))
+    if notice:
+        # Standard output carries the run's result, and a caller may pipe it
+        # into a parser. A warning is for the person, so it goes beside it.
+        print(notice, file=sys.stderr)
     assistant_routing = project_assistant_routing(
         workspace,
         workspace.canonical_spec(args.workflow, cwd=workspace.root),
