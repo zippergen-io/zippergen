@@ -546,9 +546,10 @@ def _doctor_command(args) -> int:
         print(json.dumps({"deployment": args.name, "checks": checks}, default=str, sort_keys=True))
     else:
         _print_doctor(args.name, checks)
-    if not getattr(args, "strict", False):
-        return 0
-    return 1 if any(check.get("status") == "fail" for check in checks) else 0
+    return _check_exit_code(
+        args,
+        ready=not any(check.get("status") == "fail" for check in checks),
+    )
 
 
 @dataclass(frozen=True)
@@ -1465,7 +1466,19 @@ def _check_command(args) -> int:
         render_readiness(report, TerminalRenderer())
     # Reading a report is not an error, so the exit code says whether the check
     # ran, not what it found. Scripts that want a gate ask for one.
-    return 1 if getattr(args, "strict", False) and not report["valid"] else 0
+    return _check_exit_code(args, ready=bool(report["valid"]))
+
+
+def _check_exit_code(args, *, ready: bool) -> int:
+    """Every ``check`` command ends here, so they cannot drift apart.
+
+    A check reports; it does not gate. Running one by hand and having the
+    shell mark it as failed is misleading: nothing went wrong, the command
+    did exactly what was asked and printed what it found. A script that wants
+    a gate says so with --strict.
+    """
+
+    return 1 if getattr(args, "strict", False) and not ready else 0
 
 
 def _suggested_configuration_name(
@@ -1750,10 +1763,10 @@ def _model_command(args) -> int:
         TerminalRenderer(),
         show_checks=action == "check",
     )
-    return (
-        1
-        if action == "check" and not configuration_scope_valid(report, "model")
-        else 0
+    if action != "check":
+        return 0
+    return _check_exit_code(
+        args, ready=configuration_scope_valid(report, "model")
     )
 
 
@@ -1861,10 +1874,10 @@ def _provider_command(args) -> int:
         TerminalRenderer(),
         show_checks=action == "check",
     )
-    return (
-        1
-        if action == "check" and not configuration_scope_valid(report, "provider")
-        else 0
+    if action != "check":
+        return 0
+    return _check_exit_code(
+        args, ready=configuration_scope_valid(report, "provider")
     )
 
 
@@ -1980,11 +1993,10 @@ def _assistant_command(args) -> int:
         TerminalRenderer(),
         show_checks=action == "check",
     )
-    return (
-        1
-        if action == "check"
-        and not configuration_scope_valid(report, "assistant")
-        else 0
+    if action != "check":
+        return 0
+    return _check_exit_code(
+        args, ready=configuration_scope_valid(report, "assistant")
     )
 
 
@@ -2081,11 +2093,10 @@ def _connector_management_command(args) -> int:
         TerminalRenderer(),
         show_checks=action == "check",
     )
-    return (
-        1
-        if action == "check"
-        and not configuration_scope_valid(report, "connector")
-        else 0
+    if action != "check":
+        return 0
+    return _check_exit_code(
+        args, ready=configuration_scope_valid(report, "connector")
     )
 
 
@@ -4201,6 +4212,11 @@ def _parse_cli_args(
     )
     provider_check.add_argument("name", nargs="?")
     provider_check.add_argument("--project", help="Project root.")
+    provider_check.add_argument(
+        "--strict",
+        action="store_true",
+        help="Exit non-zero when something is not ready, for scripts.",
+    )
     provider_remove = provider_sub.add_parser(
         "remove", help="remove an unused provider connection"
     )
@@ -4263,6 +4279,11 @@ def _parse_cli_args(
     )
     model_check.add_argument("name", nargs="?")
     model_check.add_argument("--project", help="Project root.")
+    model_check.add_argument(
+        "--strict",
+        action="store_true",
+        help="Exit non-zero when something is not ready, for scripts.",
+    )
     model_remove = model_sub.add_parser("remove", help="remove an unused configuration")
     model_remove.add_argument("name", nargs="?")
     model_remove.add_argument("--project", help="Project root.")
@@ -4316,6 +4337,11 @@ def _parse_cli_args(
     )
     assistant_check.add_argument("name", nargs="?")
     assistant_check.add_argument("--project", help="Project root.")
+    assistant_check.add_argument(
+        "--strict",
+        action="store_true",
+        help="Exit non-zero when something is not ready, for scripts.",
+    )
     assistant_remove = assistant_sub.add_parser(
         "remove",
         help="remove an unused assistant configuration",
@@ -4435,6 +4461,11 @@ def _parse_cli_args(
     )
     connector_check.add_argument("name", nargs="?")
     connector_check.add_argument("--project", help="Project root.")
+    connector_check.add_argument(
+        "--strict",
+        action="store_true",
+        help="Exit non-zero when something is not ready, for scripts.",
+    )
 
     connector_remove = connector_sub.add_parser(
         "remove",

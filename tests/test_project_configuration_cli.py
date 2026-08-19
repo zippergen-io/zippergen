@@ -112,6 +112,47 @@ def test_model_configuration_is_fully_guided_in_a_terminal(
     assert "Available model assignment targets" in output
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        ["check"],
+        ["provider", "check"],
+        ["model", "check"],
+        ["connector", "check"],
+        ["assistant", "check"],
+    ],
+    ids=["project", "provider", "model", "connector", "assistant"],
+)
+def test_a_check_reports_by_default_and_only_gates_with_strict(
+    project, monkeypatch, capsys, command
+):
+    """A check tells you what it found. It does not fail the shell for it.
+
+    Nothing went wrong when a check reports a missing credential: the command
+    was asked to look, and it looked. Only a script asking for a gate, with
+    --strict, gets a non-zero exit. Each family decides its own readiness, so
+    the rule is asserted for all of them at once.
+    """
+
+    _root, workspace = project
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.setattr(
+        "zippergen.assistant_backends.shutil.which", lambda _name: None
+    )
+    workspace.save_model_configuration(
+        "writer", {"connection": "openai-main", "model": "gpt-4o-mini"}
+    )
+    workspace.save_connector_configuration(
+        "approval-chat",
+        {"connection": "approval-bot", "kind": "telegram", "chat_id": "42"},
+    )
+    workspace.save_assistant_configuration("coding-agent", "codex")
+
+    assert main(command) == 0, "a check must not fail the shell on its own"
+    capsys.readouterr()
+    assert main([*command, "--strict"]) == 1, "--strict is the gate"
+
+
 REJECTED_NAME = "not a name"
 
 
@@ -275,7 +316,7 @@ def test_connector_check_includes_its_provider_credential(
         {"connection": connection, "kind": kind, **values},
     )
 
-    assert main(["connector", "check", "selected"]) == 1
+    assert main(["connector", "check", "selected", "--strict"]) == 1
     output = capsys.readouterr().out
     assert missing in output
     assert "missing on this computer" in output
