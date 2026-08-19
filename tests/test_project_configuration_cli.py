@@ -956,3 +956,59 @@ def test_a_rename_repoints_every_assignment(
     profile = getattr(workspace, lookup)("workflow.py:email_approval")
     assert "old" not in profile["lifelines"].values()
     assert "new" in profile["lifelines"].values()
+
+
+@pytest.mark.parametrize(
+    ("command", "label"),
+    [
+        (["provider", "authorize"], "Google connection"),
+        (["provider", "accept"], "Google connection"),
+        (["workflow", "select"], "Workflow"),
+        (["completion"], "Shell"),
+    ],
+    ids=["authorize", "accept", "select", "completion"],
+)
+def test_no_user_facing_command_dies_on_a_missing_argument(
+    project, monkeypatch, command, label
+):
+    """Every command a person types should ask, not print a usage line.
+
+    argparse's own error stops with `the following arguments are required`.
+    These commands each know the answers they accept, so they offer them.
+    """
+
+    prompts: list[str] = []
+    monkeypatch.setattr("zippergen.serve.sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr(
+        "builtins.input", lambda prompt: (prompts.append(prompt), "")[1]
+    )
+    monkeypatch.setattr(
+        "getpass.getpass", lambda prompt: (prompts.append(prompt), "")[1]
+    )
+
+    try:
+        main(command)
+    except SystemExit as exit_code:
+        assert "required: " not in str(exit_code), "argparse refused instead"
+
+    assert any(label.casefold() in prompt.casefold() for prompt in prompts)
+
+
+def test_a_single_candidate_is_offered_as_the_default(project, monkeypatch):
+    """One candidate is its own suggestion, so it is shown in brackets."""
+
+    prompts: list[str] = []
+    monkeypatch.setattr("zippergen.serve.sys.stdin.isatty", lambda: True)
+    monkeypatch.setattr(
+        "builtins.input", lambda prompt: (prompts.append(prompt), "")[1]
+    )
+    monkeypatch.setattr(
+        "getpass.getpass", lambda prompt: (prompts.append(prompt), "")[1]
+    )
+
+    try:
+        main(["provider", "accept"])
+    except SystemExit:
+        pass
+
+    assert any("[google-work]" in prompt for prompt in prompts)

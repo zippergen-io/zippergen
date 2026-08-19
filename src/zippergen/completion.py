@@ -93,6 +93,16 @@ def completion_candidates(
                 for name, values in workspace.provider_connections().items()
                 if values.get("kind") in {"telegram", "google"}
             )
+        if kind == "provider-connections-google":
+            return sorted(
+                name
+                for name, values in workspace.provider_connections().items()
+                if values.get("kind") == "google"
+            )
+        if kind == "workflow-specs":
+            from zippergen.workspace import discover_workflow_specs
+
+            return sorted(discover_workflow_specs(workspace.root))
         if kind == "model-configurations":
             return sorted(workspace.model_configurations())
         if kind == "assistant-configurations":

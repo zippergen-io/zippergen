@@ -1400,7 +1400,13 @@ def _workflow_command(args) -> int:
         return 0
 
     try:
-        selected = workspace.select_workflow(str(args.spec), replace=True)
+        spec = _guided_required_value(
+            args.spec,
+            label="Workflow",
+            command="zg workflow select SPEC",
+            choices=_project_choices("workflow-specs", getattr(args, "project", None)),
+        )
+        selected = workspace.select_workflow(spec, replace=True)
     except WorkspaceError as exc:
         raise SystemExit(str(exc)) from exc
     print(f"Project workflow: {selected}")
@@ -1589,6 +1595,7 @@ def _guided_required_value(
     choices: tuple[str, ...] = (),
     default: str | None = None,
     check: Callable[[str], str | None] | None = None,
+    enforce_choices: bool = True,
 ) -> str:
     """Return a required CLI value, prompting only in a human terminal.
 
@@ -1605,7 +1612,7 @@ def _guided_required_value(
         # empty when the workflow could not be loaded, and an empty list is
         # ignorance rather than a verdict, so it never rejects anything.
         problem = check(entered) if check is not None else None
-        if problem is None and choices and entered not in choices:
+        if problem is None and enforce_choices and choices and entered not in choices:
             problem = (
                 f"Unknown {label.casefold()} {entered!r}. Available: "
                 + ", ".join(choices)
@@ -1621,6 +1628,10 @@ def _guided_required_value(
         )
     if choices:
         print(f"Available {label.casefold()}s: {', '.join(choices)}")
+        # One candidate is its own suggestion. It is offered, not taken: the
+        # value still only applies if the person presses Enter on it.
+        if default is None and len(choices) == 1:
+            default = choices[0]
     suffix = f" [{default}]" if default else ""
     while True:
         try:
@@ -1631,7 +1642,7 @@ def _guided_required_value(
             entered = default
         if not entered:
             raise SystemExit(f"{label} is required. Nothing was saved.")
-        if choices and entered not in choices:
+        if enforce_choices and choices and entered not in choices:
             problem = (
                 f"Unknown {label.casefold()} {entered!r}. Available: "
                 + ", ".join(choices)
@@ -2648,6 +2659,14 @@ def _provider_accept_google_command(args) -> int:
     )
     from zippergen.workspace import Workspace
 
+    args.name = _guided_required_value(
+        args.name,
+        label="Google connection",
+        command="zg provider accept CONNECTION",
+        choices=_project_choices(
+            "provider-connections-google", getattr(args, "project", None)
+        ),
+    )
     try:
         encoded = getpass.getpass(
             "Paste the zg-google-v1... result (input hidden): "
@@ -4169,6 +4188,18 @@ def _provider_authorize_google_command(args) -> int:
     )
 
     try:
+        args.name = _guided_required_value(
+            args.name,
+            label="Google connection",
+            command="zg provider authorize CONNECTION",
+            choices=_project_choices(
+                "provider-connections-google", getattr(args, "project", None)
+            ),
+            # The list is a suggestion, not the whole world: authorizing for a
+            # server names a connection that exists there, not necessarily on
+            # the computer holding the browser.
+            enforce_choices=False,
+        )
         scopes = (
             parse_google_scopes(args.scopes)
             if args.scopes
@@ -4286,7 +4317,9 @@ def _parse_cli_args(
         "select",
         help="select the project's workflow entry",
     )
-    workflow_select.add_argument("spec", help="Workflow to select, as path.py:name.")
+    workflow_select.add_argument(
+        "spec", nargs="?", help="Workflow to select, as path.py:name."
+    )
     workflow_select.add_argument(
         "--project",
         default=argparse.SUPPRESS,
@@ -4349,7 +4382,7 @@ def _parse_cli_args(
         "authorize",
         help="authorize Google here, or with --handoff for another computer",
     )
-    provider_authorize.add_argument("name", help="Google connection name.")
+    provider_authorize.add_argument("name", nargs="?", help="Google connection name.")
     provider_authorize.add_argument("--client", help="OAuth Desktop app JSON.")
     provider_authorize.add_argument(
         "--handoff",
@@ -4369,7 +4402,7 @@ def _parse_cli_args(
     provider_accept = provider_sub.add_parser(
         "accept", help="save a Google authorization produced elsewhere"
     )
-    provider_accept.add_argument("name", help="Google connection name.")
+    provider_accept.add_argument("name", nargs="?", help="Google connection name.")
     provider_accept.add_argument("--project", help="Project root.")
 
     model = sub.add_parser(
@@ -4501,7 +4534,9 @@ def _parse_cli_args(
         "completion",
         help="print shell completion for zsh, bash, or fish",
     )
-    completion.add_argument("shell", choices=("zsh", "bash", "fish"))
+    completion.add_argument(
+        "shell", nargs="?", choices=("zsh", "bash", "fish")
+    )
     internal_completion = sub.add_parser("__complete")
     internal_completion.add_argument("kind")
     internal_completion.add_argument("path", nargs="*")
@@ -4982,7 +5017,12 @@ def main(argv=None) -> int:
     if args.cmd == "completion":
         from zippergen.completion import render_completion
 
-        print(render_completion(args.shell))
+        print(render_completion(_guided_required_value(
+            args.shell,
+            label="Shell",
+            command="zg completion SHELL",
+            choices=("zsh", "bash", "fish"),
+        )))
         return 0
     if args.cmd == "__complete":
         from zippergen.completion import completion_candidates
