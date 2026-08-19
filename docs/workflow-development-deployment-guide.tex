@@ -954,6 +954,43 @@ included. That is the same at-least-once boundary a crash has, and it is the
 only work \texttt{stop} can cost you.
 \end{notebox}
 
+\begin{notebox}{Which edits a running deployment can resume through}
+Durable state records \emph{positions in the projected program} --- role
+\texttt{Extractor} is at this node, holding these values. If the program
+changes shape, a stored position means something else, so ZipperGen checks
+once at startup and refuses rather than resuming into the wrong place:
+
+\begin{lstlisting}[style=shell]
+The workflow changed since this durable state was written, so the stored
+control positions no longer mean the same thing. Reset the deployment with
+'zg deploy reset' to start fresh, or restore the previous version of the
+workflow to resume it.
+\end{lstlisting}
+
+The split is simple: what a step \emph{does} may change freely; where the
+steps \emph{are} may not.
+
+\begin{center}
+\begin{tabularx}{0.95\linewidth}{@{}Xc@{}}
+\toprule
+edit & resumes \\
+\midrule
+an action's Python body & yes \\
+an LLM prompt & yes \\
+what a guard computes & yes \\
+the model, connector, chat or spreadsheet & yes \\
+a message added, removed or moved & no \\
+a participant added or removed & no \\
+a renamed or retyped value a step reads or writes & no \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+So fixing a prompt and redeploying keeps everything in flight; restructuring
+the protocol asks you to choose. \path{docs/durable-storage.md} states the
+rule exactly.
+\end{notebox}
+
 \subsection{Operating one}
 
 \begin{center}
