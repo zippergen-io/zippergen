@@ -45,6 +45,20 @@ class GoogleAuthorization:
     expiry: str | None = None
 
 
+def google_support_installed() -> bool:
+    """Whether the optional Google libraries are importable here.
+
+    The same question ``google_imports`` answers by raising, asked without
+    raising, so a check can report it long before anybody authorizes.
+    """
+
+    try:
+        google_imports()
+    except GoogleConnectorError:
+        return False
+    return True
+
+
 def google_imports():
     try:
         from google.auth.transport.requests import AuthorizedSession, Request
@@ -468,6 +482,7 @@ __all__ = [
     "google_authorization_summary",
     "google_imports",
     "google_scope_for_access",
+    "google_support_installed",
     "google_scope_names",
     "google_scopes_cover",
     "google_scopes_for_access",

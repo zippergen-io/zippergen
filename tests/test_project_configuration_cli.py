@@ -775,3 +775,38 @@ def test_a_value_given_on_the_command_line_is_checked_before_more_questions(
         main(["connector", "assign", "Nobody"])
 
     assert "Unknown connector target 'Nobody'" in str(error.value)
+
+
+def test_a_missing_google_library_is_reported_before_authorizing(
+    project, monkeypatch, capsys
+):
+    """The optional extra is part of readiness, not a surprise at the browser.
+
+    Credentials and code are two different ways of being unready, and only one
+    of them used to be checked.
+    """
+
+    _root, workspace = project
+    monkeypatch.setattr(
+        "zippergen.project_configuration.google_support_installed",
+        lambda: False,
+    )
+
+    assert main(["provider", "check", "--strict"]) == 1
+
+    output = capsys.readouterr().out
+    assert "google support installed" in output
+    assert "not installed here" in output
+
+
+def test_google_support_is_only_mentioned_when_google_is_configured(
+    project, capsys
+):
+    """A project with no Google connection must not be told about the extra."""
+
+    _root, workspace = project
+    workspace.remove_provider_connection("google-work")
+
+    assert main(["provider", "check"]) == 0
+
+    assert "google support" not in capsys.readouterr().out

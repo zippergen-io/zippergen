@@ -17,6 +17,7 @@ from zippergen.assistant_configuration import (
     resolved_assistant_actions,
 )
 from zippergen.connector_wiring import human_action_sites
+from zippergen.google_auth import google_support_installed
 from zippergen.connectors import connector_requirements_from_module
 from zippergen.models import project_model_routing, selected_llm_specs
 from zippergen.provider_connections import (
@@ -549,6 +550,7 @@ def configuration_report(
         )
 
     site_facts: list[dict[str, object]] = []
+    google_support_reported = False
     if include_site_checks:
         specs = selected_llm_specs(
             resolved_models["default"],
@@ -639,6 +641,30 @@ def configuration_report(
                     scopes=connection_scopes,
                 )
             )
+            if kind == "google" and not google_support_reported:
+                # Google is the one provider needing a library that the core
+                # install leaves out. Without this the gap only shows up at
+                # the moment somebody authorizes, which is the worst time.
+                google_support_reported = True
+                supported = google_support_installed()
+                site_facts.append(
+                    {
+                        "kind": "python package",
+                        "name": "zippergen[google]",
+                        "available": supported,
+                    }
+                )
+                checks.append(
+                    _check(
+                        "ok" if supported else "fail",
+                        "google support installed",
+                        "google-auth is importable"
+                        if supported
+                        else "not installed here; add the 'google' extra to "
+                        "the environment running zippergen",
+                        scopes=connection_scopes,
+                    )
+                )
         direct_kinds: set[str] = set()
         for spec in specs:
             try:
