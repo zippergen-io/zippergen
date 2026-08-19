@@ -810,3 +810,70 @@ def test_google_support_is_only_mentioned_when_google_is_configured(
     assert main(["provider", "check"]) == 0
 
     assert "google support" not in capsys.readouterr().out
+
+
+def _fake_google_browser(monkeypatch, tmp_path):
+    """Stand in for the browser flow, returning a credential to be stored."""
+
+    from zippergen.google_auth import GoogleAuthorization
+
+    client = tmp_path / "google-client.json"
+    client.write_text(json.dumps({"installed": {
+        "client_id": "example.apps.googleusercontent.com",
+        "client_secret": "private-client-secret",
+        "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+        "token_uri": "https://oauth2.googleapis.com/token",
+    }}))
+    monkeypatch.setattr("builtins.input", lambda _prompt: str(client))
+    monkeypatch.setattr(
+        "zippergen.google_auth.authorize_google_client_result",
+        lambda value, *, scopes: GoogleAuthorization(
+            authorized_user_json=json.dumps({
+                "client_id": "example.apps.googleusercontent.com",
+                "refresh_token": "private-refresh-token",
+            }),
+            granted_scopes=tuple(scopes),
+            client_id="example.apps.googleusercontent.com",
+        ),
+    )
+
+
+def test_authorizing_inside_a_project_saves_without_a_copy_paste(
+    project, monkeypatch, capsys, tmp_path
+):
+    """The machine you authorize on is usually the one that needs it.
+
+    Printing a live refresh token for somebody to paste back into the same
+    computer puts a credential through the screen and the shell history for
+    no reason.
+    """
+
+    _root, workspace = project
+    _fake_google_browser(monkeypatch, tmp_path)
+
+    assert main([
+        "provider", "authorize", "google-work", "--scopes", "gmail.readonly"
+    ]) == 0
+
+    output = capsys.readouterr().out
+    assert workspace.provider_secret("google-work", "authorized_user_json")
+    assert "private-refresh-token" not in output
+    assert "provider accept" not in output
+
+
+def test_handoff_still_prints_for_another_computer(
+    project, monkeypatch, capsys, tmp_path
+):
+    """A server has no browser, so the laptop must still be able to hand over."""
+
+    _root, workspace = project
+    _fake_google_browser(monkeypatch, tmp_path)
+
+    assert main([
+        "provider", "authorize", "google-work",
+        "--scopes", "gmail.readonly", "--handoff",
+    ]) == 0
+
+    output = capsys.readouterr().out
+    assert "provider accept" in output
+    assert workspace.provider_secret("google-work", "authorized_user_json") is None

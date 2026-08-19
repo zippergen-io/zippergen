@@ -1633,7 +1633,7 @@ def _provider_set_credential_command(workspace, connection: object) -> int:
         return 0
     if kind == "google":
         print("Google uses browser authorization rather than a pasted API key.")
-        print(f"Run: zg provider authorize {selected} --scopes SCOPE,...")
+        print(f"Run: zg provider authorize {selected}")
         return 0
     try:
         value = getpass.getpass(f"{label} (input hidden): ").strip()
@@ -1843,8 +1843,7 @@ def _provider_command(args) -> int:
             if provider_credential_field(kind):
                 if kind == "google":
                     print(
-                        f"Authorize it with: zg provider authorize {name} "
-                        "--scopes SCOPE,..."
+                        f"Authorize it with: zg provider authorize {name}"
                     )
                 else:
                     print(
@@ -2597,14 +2596,28 @@ def _provider_accept_google_command(args) -> int:
     except (GoogleConnectorError, ValueError) as exc:
         raise SystemExit(f"That is not a valid authorization result: {exc}") from exc
 
-    granted, client, expiry = google_authorization_summary(result)
     workspace = Workspace(getattr(args, "project", None))
     connection = str(args.name)
-    profile = workspace.provider_connections().get(connection)
-    if profile is None or profile.get("kind") != "google":
+    if not _save_google_authorization(workspace, connection, result):
         raise SystemExit(
             f"Provider connection {connection!r} does not exist or is not Google."
         )
+    return 0
+
+
+def _save_google_authorization(workspace, connection: str, result) -> bool:
+    """Store one finished authorization, or say the connection is not Google.
+
+    Both halves of the handoff end here, and so does authorizing on the
+    machine that will use it, so a credential is written exactly one way.
+    """
+
+    from zippergen.google_auth import google_authorization_summary
+
+    granted, client, expiry = google_authorization_summary(result)
+    profile = workspace.provider_connections().get(connection)
+    if profile is None or profile.get("kind") != "google":
+        return False
     workspace.save_provider_secret(
         connection, "authorized_user_json", result.authorized_user_json
     )
@@ -2624,7 +2637,7 @@ def _provider_accept_google_command(args) -> int:
     )
     print(f"  Granted: {granted}")
     print(f"  Expiry:  {expiry}")
-    return 0
+    return True
 
 
 def _connector_assign_command(args) -> int:
@@ -2818,8 +2831,7 @@ def _connector_configure_command(args) -> int:
         print(f"Provider connection {connection!r} has no private credential here.")
         if provider == "google":
             print(
-                f"Authorize it with: zg provider authorize {connection} "
-                "--scopes SCOPE,..."
+                f"Authorize it with: zg provider authorize {connection}"
             )
         else:
             print(f"Add it with: zg provider set-credential {connection}")
@@ -4135,6 +4147,21 @@ def _provider_authorize_google_command(args) -> int:
         print(f"Granted scopes: {granted}")
         print(f"OAuth client: {client}")
         print(f"Credential expiry: {expiry}")
+        # Authorizing for the machine you are standing on is the ordinary
+        # case, and it has somewhere to put the result. Printing a refresh
+        # token for a person to copy back into the same computer puts a live
+        # credential through the screen and the shell history for no reason.
+        if not args.handoff:
+            from zippergen.workspace import Workspace, WorkspaceError
+
+            try:
+                workspace = Workspace(None)
+            except (WorkspaceError, SystemExit):
+                workspace = None
+            if workspace is not None and _save_google_authorization(
+                workspace, args.name, result
+            ):
+                return 0
         print(
             f"In the project that will use it, run 'zippergen provider accept "
             f"{args.name}' "
@@ -4251,6 +4278,14 @@ def _parse_cli_args(
     )
     provider_authorize.add_argument("name", help="Google connection name.")
     provider_authorize.add_argument("--client", help="OAuth Desktop app JSON.")
+    provider_authorize.add_argument(
+        "--handoff",
+        action="store_true",
+        help=(
+            "Print the result for another computer instead of saving it here. "
+            "Use this to authorize a server from your laptop."
+        ),
+    )
     provider_authorize.add_argument(
         "--scopes",
         help=(

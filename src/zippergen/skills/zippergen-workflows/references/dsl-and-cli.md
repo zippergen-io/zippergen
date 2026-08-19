@@ -684,7 +684,8 @@ zg check
 # Authorize Google on this computer, or accept an authorization made elsewhere.
 # Scopes come from what the workflow's requirements declare; pass --scopes only
 # outside a project.
-zg provider authorize google-work
+zg provider authorize google-work            # saves here
+zg provider authorize google-work --handoff  # or hand it to another computer
 zg provider accept google-work
 ```
 

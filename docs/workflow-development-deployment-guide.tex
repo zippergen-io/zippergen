@@ -837,19 +837,21 @@ Scopes this workflow asks for: gmail.modify, spreadsheets
 Pass \texttt{--scopes} only to authorize outside a project, or to grant
 something the workflow does not ask for.
 
-This opens a browser, and prints an encoded result rather than saving it. On
-the machine that will run the workflow:
+This opens a browser and saves the credential here, together with the scopes
+Google actually granted. Run inside the project and there is nothing further
+to do.
+
+A server usually has no browser, so it is authorized from a computer that has
+one:
 
 \begin{lstlisting}[style=shell]
-zg provider accept google-work
+zg provider authorize google-work --handoff   # on your laptop
+zg provider accept google-work                # on the server
 \end{lstlisting}
 
-which asks for the result without echo and stores the credential together with
-the scopes Google actually granted.
-
-The two halves exist because a server usually has no browser. Authorize on your
-own computer, then accept on the server. The credential never appears in a command
-line, so it does not reach shell history.
+\texttt{--handoff} prints an encoded result instead of saving it, and
+\texttt{accept} asks for that result without echo. The credential never
+appears in a command line, so it does not reach shell history.
 
 \begin{warningbox}{Scopes are checked before deployment}
 Deploying refuses when the granted scopes do not cover what the workflow needs
