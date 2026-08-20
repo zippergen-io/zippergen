@@ -29,9 +29,9 @@ jobs:
         run: python -m pytest tests/ -v
 
   types:
-    # A separate job, because the test matrix installs only Python and pytest.
-    # This is the only place type errors are caught: the suite does not run
-    # pyright, so without this job nothing would notice them returning.
+    # A separate job with every importable integration installed. Pyright is
+    # configured to inspect the project .venv, so create that exact locked
+    # environment rather than relying on runner-global packages.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -43,7 +43,7 @@ jobs:
       - uses: astral-sh/setup-uv@v5
 
       - name: Install
-        run: pip install -e .
+        run: uv sync --locked --extra google
 
       - name: Type-check
         run: uvx pyright
