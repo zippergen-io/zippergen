@@ -30,8 +30,9 @@ jobs:
 
   types:
     # A separate job with every importable integration installed. Pyright is
-    # configured to inspect the project .venv, so create that exact locked
-    # environment rather than relying on runner-global packages.
+    # configured to inspect the project .venv, so create that environment
+    # rather than relying on runner-global packages. This library deliberately
+    # does not commit uv.lock; CI resolves the bounded project dependencies.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -43,7 +44,7 @@ jobs:
       - uses: astral-sh/setup-uv@v5
 
       - name: Install
-        run: uv sync --locked --extra google
+        run: uv sync --extra google
 
       - name: Type-check
         run: uvx pyright
