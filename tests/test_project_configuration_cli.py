@@ -1012,3 +1012,59 @@ def test_a_single_candidate_is_offered_as_the_default(project, monkeypatch):
         pass
 
     assert any("[google-work]" in prompt for prompt in prompts)
+
+
+def test_effective_routing_says_what_runs_and_where_to_change_it(
+    project, capsys
+):
+    """The tables answer a different question from the checks.
+
+    `zg check` answers "can this run at all". These answer "what exactly will
+    it use, and which level do I edit" -- which previously had to be
+    reconstructed by reading three tables and knowing the precedence rule.
+    """
+
+    _root, workspace = project
+    workspace.save_model_configuration(
+        "writer", {"connection": "openai-main", "model": "gpt-4o-mini"}
+    )
+    assert main(["model", "assign", "Writer", "writer"]) == 0
+    capsys.readouterr()
+
+    assert main(["model"]) == 0
+
+    routing = capsys.readouterr().out.split("Effective routing")[1]
+    assert "Writer" in routing
+    assert "draft_reply" in routing
+    assert "writer" in routing
+    assert "participant" in routing, "the level to edit must be visible"
+
+
+def test_a_participant_falling_back_to_mock_is_visible_without_running(
+    project, capsys
+):
+    """The silent-fake case is the one worth seeing before execution."""
+
+    _root, _workspace = project
+
+    assert main(["model"]) == 0
+
+    routing = capsys.readouterr().out.split("Effective routing")[1]
+    assert "mock" in routing
+    assert "default" in routing, "it must say the value came from the default"
+
+
+def test_routing_separates_configured_from_actually_reached(project, capsys):
+    """Offline and live are different claims, so they get different marks."""
+
+    from zippergen.project_configuration import _routing_status
+    from zippergen.rendering import TerminalRenderer
+
+    renderer = TerminalRenderer(lambda _text: None, color=False)
+
+    reached = _routing_status(renderer, {"available": True, "verified": True})
+    configured = _routing_status(renderer, {"available": True, "verified": False})
+    broken = _routing_status(renderer, {"available": False, "verified": True})
+
+    assert reached != configured, "a live check must not look like an offline one"
+    assert broken not in {reached, configured}

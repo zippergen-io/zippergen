@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import math
 import os
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 from types import ModuleType
@@ -167,6 +167,61 @@ def _connector_slots(
                 ),
             })
     return slots
+
+
+def _routing_status(renderer: TerminalRenderer, item: Mapping[str, object]) -> str:
+    """Three states, because "configured" and "reached" are different news.
+
+    A command that never contacts a provider cannot honestly claim a route
+    works; it can only say nothing contradicts it. `zg config` is offline and
+    `zg check` is live, so the depth of the answer belongs on the row rather
+    than in the reader's memory of which command they typed.
+    """
+
+    if not item.get("available"):
+        return renderer.status_mark("error")
+    return renderer.status_mark("success" if item.get("verified") else "info")
+
+
+def _render_effective_routing(
+    renderer: TerminalRenderer,
+    report: Mapping[str, object],
+    kinds: tuple[str, ...],
+    *,
+    subject: str,
+    resolved_header: str,
+    resolved: Callable[[Mapping[str, object]], object],
+    empty: str,
+) -> None:
+    """Answer "what will this use, and where do I change it?" for one family.
+
+    The participant is printed once per group rather than on every row, so the
+    shape of the answer is visible before any of it is read.
+    """
+
+    routes = report.get("effective_routing") or []
+    rows: list[tuple[object, ...]] = []
+    previous = None
+    for item in routes if isinstance(routes, list) else []:
+        if not isinstance(item, dict) or item.get("kind") not in kinds:
+            continue
+        participant = item.get("participant")
+        rows.append((
+            _routing_status(renderer, item),
+            "" if participant == previous else participant,
+            item.get("action"),
+            item.get("configuration"),
+            resolved(item),
+            item.get("source"),
+        ))
+        previous = participant
+    _render_columns_or_empty(
+        renderer,
+        "Effective routing",
+        ("", "Participant", subject, "Configuration", resolved_header, "From"),
+        rows,
+        empty=empty,
+    )
 
 
 def _default_connector_check(
@@ -854,6 +909,16 @@ def configuration_report(
                     or model_profile.get("default")
                     or "workflow default"
                 )
+                # Which level won is the answer to "where do I change this?",
+                # and every value below names the target you would type after
+                # `assign`.
+                source = (
+                    "action"
+                    if target in model_actions
+                    else "participant"
+                    if participant in model_lifelines
+                    else "default"
+                )
                 try:
                     selected_kind, connection, _model = split_model_spec(selected)
                 except ValueError:
@@ -890,6 +955,8 @@ def configuration_report(
                         "configuration": configuration,
                         "effective": selected,
                         "available": available,
+                        "source": source,
+                        "verified": bool(live),
                     }
                 )
             elif kind == "assistant":
@@ -909,13 +976,25 @@ def configuration_report(
                         "configuration": item.get("configuration") or "missing",
                         "effective": backend or "missing",
                         "available": available,
+                        "source": str(item.get("scope") or "default"),
+                        "verified": True,
                     }
                 )
             else:
                 configuration = str(
                     connector_actions.get(target)
                     or connector_lifelines.get(participant)
+                    or connector_assignments.get("default")
                     or "terminal"
+                )
+                source = (
+                    "action"
+                    if target in connector_actions
+                    else "participant"
+                    if participant in connector_lifelines
+                    else "default"
+                    if connector_assignments.get("default")
+                    else "terminal"
                 )
                 available = True
                 if configuration != "terminal":
@@ -946,6 +1025,8 @@ def configuration_report(
                         "configuration": configuration,
                         "effective": configuration,
                         "available": available,
+                        "source": source,
+                        "verified": bool(live),
                     }
                 )
         for requirement in connector_requirements_from_module(module):
@@ -979,6 +1060,8 @@ def configuration_report(
                     "configuration": configuration or "missing",
                     "effective": configuration or "missing",
                     "available": available,
+                    "source": "requirement",
+                    "verified": bool(live),
                 }
             )
 
@@ -1491,6 +1574,15 @@ def render_model_configuration(
         _nested_assignment_rows(assignments),
         empty="No assignments.",
     )
+    _render_effective_routing(
+        renderer,
+        report,
+        ("model",),
+        subject="Action",
+        resolved_header="Resolves to",
+        resolved=lambda item: item.get("effective"),
+        empty="No participant calls a model.",
+    )
     if show_checks:
         _render_selected_checks(report, renderer, "model")
 
@@ -1600,6 +1692,38 @@ def render_connector_configuration(
             if isinstance(item, dict)
         ],
         empty="This workflow has no connector slots.",
+    )
+    def _short(value: object) -> str:
+        """Keep a long resource from squeezing out the columns beside it.
+
+        The full value is in the Configurations table directly above, so this
+        one only has to be recognisable.
+        """
+
+        text = str(value)
+        return text if len(text) <= 22 else text[:21] + "\u2026"
+
+    resources = {
+        str(item.get("name")): (
+            item.get("chat_id")
+            or item.get("spreadsheet_id")
+            or item.get("query")
+            or item.get("account")
+            or "-"
+        )
+        for item in connectors.get("configurations") or []
+        if isinstance(item, dict)
+    }
+    _render_effective_routing(
+        renderer,
+        report,
+        ("human", "telegram", "gmail", "google-sheets", "google-calendar"),
+        subject="Slot",
+        resolved_header="Resource",
+        resolved=lambda item: _short(
+            resources.get(str(item.get("configuration")), "-")
+        ),
+        empty="Nothing reaches outside this workflow.",
     )
     if show_checks:
         _render_selected_checks(report, renderer, "connector")
