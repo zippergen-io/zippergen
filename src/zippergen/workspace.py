@@ -1085,6 +1085,7 @@ class Workspace:
         # identity, configurations, and assignments live in zippergen.toml.
         state.setdefault("model_configuration_overrides", {})
         state.setdefault("provider_connection_overrides", {})
+        state.setdefault(Workspace._RENAME_MARKER, None)
         return state
 
     def update(self, **changes: object) -> dict[str, Any]:
@@ -2265,32 +2266,54 @@ class Workspace:
             )
         return normalized
 
-    def _provider_copy_completed(self, old: str, new: str) -> bool:
-        """Whether the private state under ``old`` was already copied to ``new``.
+    #: Written before a rename copies anything and removed after it cleans up.
+    #: Only this authorises the cleanup half to run on its own. Comparing
+    #: values instead was ambiguous: one API key shared by two connections
+    #: looks exactly like a half-finished rename, and the cleanup would then
+    #: delete an unrelated credential.
+    _RENAME_MARKER = "rename_in_progress"
 
-        This is the evidence that an interrupted rename, and not some unrelated
-        leftover, put both names in the store. Copy-then-switch guarantees the
-        property: every value under the old name exists identically under the
-        new one. Requiring only that *some* state exists under the old name
-        would let an unrelated orphan be deleted by a mistyped rename.
-        """
+    def _begin_rename(self, kind: str, old: str, new: str) -> None:
+        desired = {"kind": kind, "old": old, "new": new}
+        marker = self.load().get(self._RENAME_MARKER)
+        if marker is None:
+            self.update(**{self._RENAME_MARKER: desired})
+            return
+        if marker == desired:
+            # The same operation may be resuming before or after the manifest
+            # switch.  Its marker is already the evidence it needs.
+            return
+        if isinstance(marker, dict):
+            unfinished_kind = str(marker.get("kind") or "configuration")
+            unfinished_old = str(marker.get("old") or "?")
+            unfinished_new = str(marker.get("new") or "?")
+            command = (
+                f"zg {unfinished_kind} rename "
+                f"{unfinished_old} {unfinished_new}"
+            )
+            raise WorkspaceError(
+                "Another configuration rename is unfinished. "
+                f"Finish it first by running `{command}` again."
+            )
+        raise WorkspaceError(
+            "The private rename marker is malformed. Refusing to start "
+            "another rename because that could strand private configuration."
+        )
 
-        prefix_old = f"provider:{old}:"
-        secrets = self.load_secrets()
-        old_secrets = {
-            key[len(prefix_old):]: value
-            for key, value in secrets.items()
-            if key.startswith(prefix_old)
-        }
-        overrides = self.load().get("provider_connection_overrides") or {}
-        if not old_secrets and old not in overrides:
+    def _end_rename(self) -> None:
+        self.update(**{self._RENAME_MARKER: None})
+
+    def _rename_in_progress(self, kind: str, old: str, new: str) -> bool:
+        """Whether this exact rename was started and not finished."""
+
+        marker = self.load().get(self._RENAME_MARKER)
+        if not isinstance(marker, dict):
             return False
-        for field, value in old_secrets.items():
-            if secrets.get(f"provider:{new}:{field}") != value:
-                return False
-        if old in overrides and overrides.get(new) != overrides[old]:
-            return False
-        return True
+        return (
+            marker.get("kind") == kind
+            and marker.get("old") == old
+            and marker.get("new") == new
+        )
 
     def _finish_provider_rename(self, old: str, new: str) -> None:
         """Run only the cleanup half, for a rename interrupted after the switch."""
@@ -2324,8 +2347,9 @@ class Workspace:
             # got past the switch and stopped during cleanup. Finishing it is
             # what "run the same rename again" has to mean; refusing would
             # leave a duplicate credential nobody has a command to remove.
-            if self._provider_copy_completed(previous, candidate):
+            if self._rename_in_progress("provider", previous, candidate):
                 self._finish_provider_rename(previous, candidate)
+                self._end_rename()
                 return candidate
         normalized = self._rename_guard(
             previous, candidate, connections, "provider connection"
@@ -2333,13 +2357,13 @@ class Workspace:
         manifest = self.project_manifest()
         providers = _object_table(manifest["providers"], field="providers")
         providers["connections"] = _renamed_key(
-            providers.get("connections"), old, normalized
+            providers.get("connections"), previous, normalized
         )
         models = _object_table(manifest["models"], field="models")
         models["configurations"] = {
             name: (
                 {**values, "connection": normalized}
-                if isinstance(values, dict) and values.get("connection") == old
+                if isinstance(values, dict) and values.get("connection") == previous
                 else values
             )
             for name, values in _object_table(
@@ -2350,7 +2374,7 @@ class Workspace:
         connectors["configurations"] = {
             name: (
                 {**values, "connection": normalized}
-                if isinstance(values, dict) and values.get("connection") == old
+                if isinstance(values, dict) and values.get("connection") == previous
                 else values
             )
             for name, values in _object_table(
@@ -2364,12 +2388,13 @@ class Workspace:
         # at any point leaves a project that still works -- under the old name
         # before the switch, under the new one after it. Only the duplicate is
         # left behind, and rerunning the rename removes it.
+        self._begin_rename("provider", previous, normalized)
         state = self.load()
         overrides = dict(state.get("provider_connection_overrides") or {})
-        if old in overrides:
-            overrides[normalized] = overrides[old]
+        if previous in overrides:
+            overrides[normalized] = overrides[previous]
             self.update(provider_connection_overrides=overrides)
-        prefix = f"provider:{old}:"
+        prefix = f"provider:{previous}:"
         secrets = self.load_secrets()
         copied = dict(secrets)
         for key, value in secrets.items():
@@ -2384,13 +2409,14 @@ class Workspace:
 
         # From here the new name is the live one. What remains is cleanup, and
         # an interruption during it costs only a stale duplicate.
-        overrides.pop(old, None)
+        overrides.pop(previous, None)
         self.update(provider_connection_overrides=overrides)
         self.save_secrets({
             key: value
             for key, value in copied.items()
             if not key.startswith(prefix)
         })
+        self._end_rename()
         return normalized
 
     def rename_model_configuration(self, old: str, new: str) -> str:
@@ -2403,16 +2429,15 @@ class Workspace:
             new, subject="model configuration", reserved={"mock"}
         )
         previous = str(old).strip()
-        overrides = dict(self.load().get("model_configuration_overrides") or {})
         if (
             previous not in configurations
             and candidate in configurations
-            and previous in overrides
-            # The same proof as for a connection: the copy already happened.
-            and overrides.get(candidate) == overrides[previous]
+            and self._rename_in_progress("model", previous, candidate)
         ):
+            overrides = dict(self.load().get("model_configuration_overrides") or {})
             overrides.pop(previous, None)
             self.update(model_configuration_overrides=overrides)
+            self._end_rename()
             return candidate
         normalized = self._rename_guard(
             previous,
@@ -2424,21 +2449,23 @@ class Workspace:
         manifest = self.project_manifest()
         models = _object_table(manifest["models"], field="models")
         models["configurations"] = _renamed_key(
-            models.get("configurations"), old, normalized
+            models.get("configurations"), previous, normalized
         )
         models["assignments"] = _repointed_assignments(
-            models.get("assignments"), old, normalized
+            models.get("assignments"), previous, normalized
         )
         # Copy, switch, clean up: see `rename_provider_connection` for why the
         # order is the guarantee.
+        self._begin_rename("model", previous, normalized)
         state = self.load()
         overrides = dict(state.get("model_configuration_overrides") or {})
-        if old in overrides:
-            overrides[normalized] = overrides[old]
+        if previous in overrides:
+            overrides[normalized] = overrides[previous]
             self.update(model_configuration_overrides=overrides)
         self._write_project_configuration(models=models)
-        if overrides.pop(old, None) is not None:
+        if overrides.pop(previous, None) is not None:
             self.update(model_configuration_overrides=overrides)
+        self._end_rename()
         return normalized
 
     def rename_connector_configuration(self, old: str, new: str) -> str:

@@ -24,6 +24,7 @@ swallows ``Exception`` turns a typo into an infinite wait.
 
 from __future__ import annotations
 
+import sys
 import threading
 from dataclasses import dataclass
 from typing import Callable
@@ -42,6 +43,7 @@ __all__ = [
     "RetryCancelled",
     "attempt_llm_action",
     "checked_llm_outputs",
+    "retry_reporter",
     "retry_delays",
 ]
 
@@ -93,15 +95,38 @@ class LLMPermanentError(LLMError):
 class RetryCancelled(WorkflowCancelled):
     """The run or deployment was stopped while waiting to try again.
 
-    The message begins with the phrase the runners use to tell a stop apart
-    from a fault, so a cancelled wait is not recorded as a failure and cannot
-    be chosen as the root cause ahead of the error that set the stop event.
+    Subclasses ``WorkflowCancelled``, which is how the runners tell a stop
+    apart from a fault, so a cancelled wait is not recorded as a failure and
+    cannot be chosen as the root cause ahead of the error that set the stop
+    event.
     """
 
     def __init__(
         self, detail: str = "stopped while waiting to retry an LLM call"
     ) -> None:
         super().__init__(f"Workflow cancelled: {detail}")
+
+
+def retry_reporter(trace, action) -> Callable[[str], None]:
+    """Report retries through the normal trace, or plainly on stderr.
+
+    Keeping this beside the retry loop gives ordinary ``@llm`` calls and the
+    LLM calls made internally by ``@planner`` exactly the same observable
+    contract.  Trace consumers expect ``type`` on every event.
+    """
+
+    def report(message: str) -> None:
+        if trace is not None:
+            trace({
+                "type": "llm_retry",
+                "action": action.name,
+                "action_kind": "llm",
+                "detail": message,
+            })
+        else:
+            print(f"[zippergen] {message}", file=sys.stderr)
+
+    return report
 
 
 def retry_delays(retry_after: float | None, attempt: int) -> float:

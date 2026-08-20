@@ -1258,7 +1258,13 @@ def _validate_planner_spec(
             or check_inputs_used())
 
 
-def _planner_llm_call(llm_backend, action: LLMAction) -> dict:
+def _planner_llm_call(
+    llm_backend,
+    action: LLMAction,
+    *,
+    stop=None,
+    trace=None,
+) -> dict:
     """Generate one candidate through the shared LLM policy.
 
     Two budgets meet here and must not be confused. This one covers the call
@@ -1269,11 +1275,17 @@ def _planner_llm_call(llm_backend, action: LLMAction) -> dict:
     candidate on one would be wrong.
     """
 
-    from zippergen.llm_policy import attempt_llm_action, checked_llm_outputs
+    from zippergen.llm_policy import (
+        attempt_llm_action,
+        checked_llm_outputs,
+        retry_reporter,
+    )
 
     return attempt_llm_action(
         action,
         lambda: checked_llm_outputs(action, llm_backend(action, {})),
+        stop=stop,
+        report=retry_reporter(trace, action),
         check=lambda values: checked_llm_outputs(action, values),
     )
 
@@ -1299,7 +1311,15 @@ _planner_path: threading.local = threading.local()
 # Main planner executor
 # ---------------------------------------------------------------------------
 
-def _exec_planner(action: PlannerAction, named_inputs: dict, llm_backend, trace=None, parent_seq: int = 0) -> object:
+def _exec_planner(
+    action: PlannerAction,
+    named_inputs: dict,
+    llm_backend,
+    *,
+    trace=None,
+    parent_seq: int = 0,
+    stop=None,
+) -> object:
     """Execute a PlannerAction: generate a workflow spec via LLM, then run it."""
     import ast as _ast
     import importlib.util as _ilu
@@ -1392,6 +1412,8 @@ def _exec_planner(action: PlannerAction, named_inputs: dict, llm_backend, trace=
         llm_backend,
         LLMAction(name="_generate_spec", inputs=(), outputs=(("workflow_spec", str),),
                   system_prompt=system, user_prompt=user_content_safe, parse_format="text"),
+        stop=stop,
+        trace=trace,
     )
     spec = _strip_fences(str(spec_result.get("workflow_spec", "")))
 
@@ -1459,6 +1481,8 @@ Current (broken) workflow:
                 user_prompt=correction.replace("{", "{{").replace("}", "}}"),
                 parse_format="text",
             ),
+            stop=stop,
+            trace=trace,
         )
         spec = _strip_fences(str(spec_result.get("workflow_spec", "")))
 

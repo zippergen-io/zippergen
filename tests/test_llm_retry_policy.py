@@ -625,10 +625,11 @@ def test_the_fallback_is_checked_like_any_other_answer():
 def test_a_retry_event_matches_the_trace_contract():
     """Every event is keyed by "type"; console_trace reads it directly."""
 
-    from zippergen.runtime import _retry_reporter, console_trace
+    from zippergen.llm_policy import retry_reporter
+    from zippergen.runtime import console_trace
 
     events: list[dict] = []
-    _retry_reporter(events.append, _action())("draft_reply: retrying in 2s")
+    retry_reporter(events.append, _action())("draft_reply: retrying in 2s")
 
     assert events[0]["type"] == "llm_retry", "not 'kind'"
     console_trace({**events[0], "lifeline": "Writer"})  # must not raise
@@ -710,6 +711,42 @@ def test_planner_generation_retries_a_transient_failure():
     assert calls["n"] == 2, "a network blip must not cost a candidate"
 
 
+def test_planner_generation_reports_retries_through_the_trace():
+    """Planner's internal model calls obey the ordinary LLM trace contract."""
+
+    from zippergen.planner import _planner_llm_call
+    from zippergen.syntax import LLMAction
+
+    action = LLMAction(
+        name="_generate_spec",
+        inputs=(),
+        outputs=(("workflow_spec", str),),
+        system_prompt="s",
+        user_prompt="u",
+        parse_format="text",
+    )
+    events: list[dict] = []
+    calls = {"n": 0}
+
+    def backend(node, inputs):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise LLMTransientError("connection refused", retry_after=0)
+        return {"workflow_spec": "generated"}
+
+    assert _planner_llm_call(
+        backend, action, trace=events.append
+    ) == {"workflow_spec": "generated"}
+    assert events == [{
+        "type": "llm_retry",
+        "action": "_generate_spec",
+        "action_kind": "llm",
+        "detail": (
+            "_generate_spec: connection refused — retrying in 0s (3 left)."
+        ),
+    }]
+
+
 def test_generated_fallback_types_follow_declared_output_order():
     """A set's hash order must never pair output names with the wrong types."""
 
@@ -729,3 +766,38 @@ def assess(m: str): ...
 '''
 
     assert _planner_llm_definition_error(ast.parse(source).body[0]) is None
+
+
+def test_planner_generation_can_be_cancelled_mid_wait():
+    """A long Retry-After during @planner must end when the run is stopped."""
+
+    from zippergen.planner import _planner_llm_call
+    from zippergen.syntax import LLMAction
+
+    action = LLMAction(
+        name="_generate_spec",
+        inputs=(),
+        outputs=(("workflow_spec", str),),
+        system_prompt="s",
+        user_prompt="u",
+        parse_format="text",
+    )
+    stop = threading.Event()
+
+    def backend(node, inputs):
+        stop.set()
+        raise LLMTransientError("rate limited", retry_after=600.0)
+
+    started = time.monotonic()
+    with pytest.raises(RetryCancelled):
+        _planner_llm_call(backend, action, stop=stop)
+
+    assert time.monotonic() - started < 5.0, "the wait was not interrupted"
+
+
+def test_a_cancelled_retry_is_a_workflow_cancellation():
+    """The runners classify by type now, so the type has to be right."""
+
+    from zippergen.errors import WorkflowCancelled
+
+    assert issubclass(RetryCancelled, WorkflowCancelled)

@@ -9,7 +9,6 @@ import copy
 import hashlib
 import json
 import math
-import sys
 import threading
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -24,6 +23,7 @@ from zippergen.errors import WorkflowCancelled
 from zippergen.llm_policy import (
     attempt_llm_action,
     checked_llm_outputs,
+    retry_reporter,
 )
 from zippergen.syntax import (
     EmptyStmt, SendStmt, RecvStmt, ReceiveAnyStmt, SelfAssignStmt, ActStmt, SkipStmt,
@@ -478,32 +478,13 @@ def llm_out_map(
         action,
         attempt,
         stop=stop,
-        report=_retry_reporter(trace, action),
+        report=retry_reporter(trace, action),
         check=lambda values: checked_llm_outputs(action, values),
     )
     result = {
         var.name: outputs[aname] for (aname, _), var in zip(action.outputs, outs)
     }
     return _validate_action_out_map(action, result, outs, source="LLM backend")
-
-
-def _retry_reporter(trace, action):
-    """Say what is being waited for, once per attempt, without a traceback."""
-
-    def report(message: str) -> None:
-        if trace is not None:
-            # Every trace event is keyed by "type"; console_trace reads it
-            # directly, so "kind" made the first retry raise KeyError.
-            trace({
-                "type": "llm_retry",
-                "action": action.name,
-                "action_kind": "llm",
-                "detail": message,
-            })
-        else:
-            print(f"[zippergen] {message}", file=sys.stderr)
-
-    return report
 
 
 def external_out_map(
@@ -531,8 +512,9 @@ def external_out_map(
                 action,
                 named_inputs,
                 llm_backend,
-                None,
-                _next_act_seq(),
+                trace=trace,
+                parent_seq=_next_act_seq(),
+                stop=stop,
             )
         }
         return _validate_action_out_map(
@@ -1004,7 +986,16 @@ def _exec(
             if isinstance(action, (PureAction, EffectAction)):
                 out_map = _python_action_out_map(action, in_vals, outs)
             elif isinstance(action, PlannerAction):
-                out_map = {outs[0].name: _exec_planner(action, named_inputs, llm_backend, trace, seq)}
+                out_map = {
+                    outs[0].name: _exec_planner(
+                        action,
+                        named_inputs,
+                        llm_backend,
+                        trace=trace,
+                        parent_seq=seq,
+                        stop=stop,
+                    )
+                }
             elif isinstance(action, HumanAction):
                 if not action.visible:
                     default: object = (

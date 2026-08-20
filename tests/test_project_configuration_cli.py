@@ -1266,36 +1266,83 @@ def test_recovery_does_not_excuse_a_genuine_typo(project):
         workspace.rename_provider_connection("never-existed", "approval-bot")
 
 
-def test_an_unrelated_orphan_credential_is_never_silently_deleted(project):
-    """"Some state exists under the old name" is not proof of a rename.
+@pytest.mark.parametrize(
+    ("orphan_value", "existing_value"),
+    [("unrelated", "different"), ("shared", "shared")],
+    ids=["different-values", "the-same-key-in-both"],
+)
+def test_an_unrelated_orphan_credential_is_never_silently_deleted(
+    project, orphan_value, existing_value
+):
+    """Only a recorded rename authorises the cleanup, not matching values.
 
-    Copy-then-switch leaves every old value duplicated under the new name.
-    Requiring only that the old name has *something* let an unrelated leftover
-    be deleted by a mistyped rename.
+    One API key shared by two connections looks exactly like a half-finished
+    rename if the evidence is value equality. It is common enough to share a
+    key that equality cannot establish provenance, so a marker written before
+    the copy is what says a rename was under way.
     """
 
     _root, workspace = project
     secrets = workspace.load_secrets()
-    secrets["provider:orphan:bot_token"] = "unrelated"
+    secrets["provider:orphan:api_key"] = orphan_value
+    secrets["provider:approval-bot:api_key"] = existing_value
     workspace.save_secrets(secrets)
 
     with pytest.raises(WorkspaceError, match="does not exist"):
         workspace.rename_provider_connection("orphan", "approval-bot")
 
-    assert workspace.load_secrets()["provider:orphan:bot_token"] == "unrelated"
+    assert workspace.load_secrets()["provider:orphan:api_key"] == orphan_value
 
 
-def test_a_partial_copy_is_not_treated_as_a_finished_one(project):
-    """Every old value must have an identical counterpart, not just one."""
+def test_a_rename_with_stray_whitespace_actually_renames(project):
+    """The guard normalised the old name; the mutation did not, and silently
+    reported success while changing nothing."""
 
     _root, workspace = project
-    secrets = workspace.load_secrets()
-    secrets["provider:orphan:bot_token"] = "one"
-    secrets["provider:orphan:other"] = "two"
-    secrets["provider:approval-bot:bot_token"] = "one"
-    workspace.save_secrets(secrets)
+    workspace.save_provider_secret("approval-bot", "bot_token", "private")
 
-    with pytest.raises(WorkspaceError, match="does not exist"):
-        workspace.rename_provider_connection("orphan", "approval-bot")
+    assert workspace.rename_provider_connection(
+        " approval-bot ", "alerts-bot"
+    ) == "alerts-bot"
 
-    assert workspace.load_secrets()["provider:orphan:other"] == "two"
+    assert "approval-bot" not in workspace.provider_connections()
+    assert "alerts-bot" in workspace.provider_connections()
+    assert workspace.provider_secret("alerts-bot", "bot_token") == "private"
+    assert workspace.provider_secret("approval-bot", "bot_token") is None
+
+
+def test_the_rename_marker_is_cleared_when_the_rename_finishes(project):
+    """A marker left behind would authorise a later, unrelated cleanup."""
+
+    _root, workspace = project
+    workspace.save_provider_secret("approval-bot", "bot_token", "private")
+
+    workspace.rename_provider_connection("approval-bot", "alerts-bot")
+
+    assert workspace.load().get("rename_in_progress") is None
+
+
+def test_an_unfinished_rename_cannot_be_overwritten(
+    project, monkeypatch
+):
+    """A second rename must not erase the recovery proof for the first."""
+
+    _root, workspace = project
+    workspace.save_provider_secret("approval-bot", "bot_token", "private")
+    _interrupt_after_the_switch(
+        workspace,
+        monkeypatch,
+        lambda: workspace.rename_provider_connection(
+            "approval-bot", "alerts-bot"
+        ),
+    )
+    marker = workspace.load()["rename_in_progress"]
+
+    with pytest.raises(WorkspaceError, match="rename is unfinished"):
+        workspace.rename_provider_connection("openai-main", "openai-backup")
+
+    assert workspace.load()["rename_in_progress"] == marker
+    assert workspace.rename_provider_connection(
+        "approval-bot", "alerts-bot"
+    ) == "alerts-bot"
+    assert workspace.load().get("rename_in_progress") is None

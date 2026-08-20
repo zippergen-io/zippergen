@@ -793,10 +793,11 @@ name before the switch, the new one after it. If it stopped during the final
 cleanup, a duplicate credential is left behind under the old name; running the
 same rename again finishes the cleanup and removes it.
 
-That rerun is recognised only by the evidence copy-then-switch actually leaves:
-every private value under the old name exists identically under the new one. An
-unrelated leftover under some other name is not that, and is refused rather
-than deleted.
+That rerun is recognised by a private marker recording the rename, written
+before anything is copied and removed after the cleanup. Nothing else
+authorises it: matching values would be ambiguous, because one API key shared
+by two connections looks exactly like a half-finished rename. An unrelated
+leftover is refused rather than deleted.
 
 `configure` creates or updates the named configuration. In an interactive
 terminal, an existing configuration's current values become the defaults.
