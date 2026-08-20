@@ -2274,6 +2274,14 @@ class Workspace:
     _RENAME_MARKER = "rename_in_progress"
 
     def _begin_rename(self, kind: str, old: str, new: str) -> None:
+        """Record the one rename whose private-state cleanup may be pending.
+
+        Configuration mutation, like the rest of workspace mutation, assumes
+        one CLI writer per project.  The marker prevents sequential commands
+        from overwriting unfinished recovery state; it is not an interprocess
+        lock for simultaneous rename commands.
+        """
+
         desired = {"kind": kind, "old": old, "new": new}
         marker = self.load().get(self._RENAME_MARKER)
         if marker is None:
@@ -2297,7 +2305,11 @@ class Workspace:
             )
         raise WorkspaceError(
             "The private rename marker is malformed. Refusing to start "
-            "another rename because that could strand private configuration."
+            "another rename because that could strand private configuration. "
+            f"Inspect {self.state_path} and remove only the "
+            f"{self._RENAME_MARKER!r} key to abandon the unfinished cleanup, "
+            "then retry the rename. Removing the marker does not delete "
+            "credentials, although an old duplicate may remain."
         )
 
     def _end_rename(self) -> None:

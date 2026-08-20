@@ -1346,3 +1346,21 @@ def test_an_unfinished_rename_cannot_be_overwritten(
         "approval-bot", "alerts-bot"
     ) == "alerts-bot"
     assert workspace.load().get("rename_in_progress") is None
+
+
+def test_a_malformed_rename_marker_has_an_explicit_recovery_path(project):
+    """Private-state corruption must refuse safely without stranding the user."""
+
+    _root, workspace = project
+    workspace.update(rename_in_progress="not-a-rename")
+
+    with pytest.raises(WorkspaceError) as raised:
+        workspace.rename_provider_connection("approval-bot", "alerts-bot")
+
+    message = str(raised.value)
+    assert str(workspace.state_path) in message
+    assert "'rename_in_progress' key" in message
+    assert "remove only" in message
+    assert workspace.load()["rename_in_progress"] == "not-a-rename"
+    assert "approval-bot" in workspace.provider_connections()
+    assert "alerts-bot" not in workspace.provider_connections()
