@@ -35,7 +35,7 @@ def _run(path, role, local, seed):
     return run_role(open_store(path), role, local, dict(seed), one_round.ns,
                     llm_backend=counting_backend)
 
-def test_external_act_memoized_across_restart(tmp_path):
+def test_completed_external_action_is_not_repeated_after_restart(tmp_path):
     path = str(tmp_path / "s.sqlite")
     la, lb = project(one_round, A), project(one_round, B)
     envs = {}
@@ -45,14 +45,7 @@ def test_external_act_memoized_across_restart(tmp_path):
     tb.join(timeout=15)
     first_calls = CALLS["n"]
     assert first_calls == 1 and envs["A"]["got"] == 10
-    # Re-run B from the committed log: the classify LLM must NOT be called again.
+    # B's committed control state is done, so another supervisor returns it.
     env_b2 = _run(path, "B", lb, {})
-    assert CALLS["n"] == first_calls               # memoized, no re-invocation
+    assert CALLS["n"] == first_calls
     assert env_b2["label"] == 10
-
-
-def test_default_seed_inputs_overlay():
-    from zippergen.serve import _seed_inputs
-    merged = _seed_inputs(one_round, {"n": 3})
-    assert merged["n"] == 3          # caller input wins
-    assert merged["m"] == 0          # Var default carried through when not supplied

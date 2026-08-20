@@ -36,10 +36,10 @@ from zippergen.human_tasks import (
     validate_human_task_spec,
 )
 from zippergen.errors import WorkflowCancelled
-from zippergen.value_codec import dumps_value, loads_value
+from zippergen.value_codec import decode_value, dumps_value, encode_value, loads_value
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 HISTORY_RETENTION_KEEP = 10_000
 HISTORY_RETENTION_BATCH = 1_000
@@ -68,7 +68,7 @@ CREATE TABLE IF NOT EXISTS store_meta (
 
 CREATE TABLE IF NOT EXISTS role_state (
   role       TEXT PRIMARY KEY,
-  env        TEXT NOT NULL,       -- json object of variable values
+  env        TEXT NOT NULL,       -- typed json dictionary of variable values
   control    TEXT NOT NULL,       -- json control state (see control.py)
   monitor    TEXT,                -- json CPL monitor state incl. vector clock
   steps      INTEGER NOT NULL,    -- committed steps; distinguishes loop visits
@@ -186,7 +186,18 @@ def open_store(path: str) -> sqlite3.Connection:
     # State the durability contract rather than inheriting a compile-time default.
     conn.execute("PRAGMA synchronous=FULL")
 
-    _reject_replay_era_store(conn)
+    # Schema claiming is serialized. Without this short transaction, a second
+    # role opening a brand-new store can observe ``store_meta`` after its table
+    # is created but before the version row is written and misdiagnose a
+    # half-initialized current store as incompatible.
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        _reject_replay_era_store(conn)
+        _check_store_schema(conn)
+        conn.execute("COMMIT")
+    except BaseException:
+        conn.execute("ROLLBACK")
+        raise
     conn.executescript(SCHEMA)
     conn.execute(
         "INSERT INTO store_meta(key,value) VALUES('schema_version',?) "
@@ -222,6 +233,42 @@ def _reject_replay_era_store(conn: sqlite3.Connection) -> None:
             "by replaying an event log. Its state cannot be carried over. Reset "
             "the deployment with 'zg deploy reset', or delete the run store and "
             "start again."
+        )
+
+
+def _check_store_schema(conn: sqlite3.Connection) -> None:
+    """Accept an empty database or this exact current-state schema."""
+
+    tables = {
+        str(row[0])
+        for row in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
+    }
+    if not tables:
+        conn.execute(
+            "CREATE TABLE store_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO store_meta(key,value) VALUES('schema_version',?)",
+            (str(SCHEMA_VERSION),),
+        )
+        return
+    if "store_meta" not in tables:
+        raise StoreSchemaError(
+            "This SQLite file is not a current ZipperGen durable store. "
+            "Reset the run or deployment and start again."
+        )
+    row = conn.execute(
+        "SELECT value FROM store_meta WHERE key='schema_version'"
+    ).fetchone()
+    actual = None if row is None else str(row[0])
+    if actual != str(SCHEMA_VERSION):
+        raise StoreSchemaError(
+            f"This durable store uses schema {actual or 'unknown'}, but this "
+            f"ZipperGen requires schema {SCHEMA_VERSION}. Durable state is not "
+            "migrated across incompatible recovery models. Reset the run with "
+            "'zg run reset' or the deployment with 'zg deploy reset'."
         )
 
 
@@ -825,20 +872,22 @@ Item = tuple[int, tuple, "dict | None", "dict | None", "dict | None"]
 
 
 def _decode_message_values(payload: str) -> tuple:
-    """Decode the sent value sequence, including legacy untagged arrays."""
+    """Decode the sent value sequence."""
 
     decoded = loads_value(payload)
     if type(decoded) is tuple:
         return decoded
-    if type(decoded) is list:
-        return tuple(decoded)
     raise StoreSchemaError("A durable message payload is not a value sequence.")
 
 
 def _encode_causal_stamp(vc, view, field_view) -> str | None:
     if vc is None and view is None and field_view is None:
         return None
-    return json.dumps({"vc": vc, "view": view, "field_view": field_view})
+    return json.dumps({
+        "vc": vc,
+        "view": view,
+        "field_view": encode_value(field_view),
+    })
 
 
 def _decode_view(view: dict | None) -> dict | None:
@@ -854,7 +903,10 @@ def _decode_causal_stamp(stamp) -> tuple[dict | None, dict | None, dict | None]:
     if stamp is None:
         return None, None, None
     data = json.loads(stamp)
-    return data.get("vc"), _decode_view(data.get("view")), data.get("field_view")
+    field_view = decode_value(data.get("field_view"))
+    if not isinstance(field_view, dict):
+        raise StoreSchemaError("A durable causal field view is not an object.")
+    return data.get("vc"), _decode_view(data.get("view")), field_view
 
 
 class DurableChannel:

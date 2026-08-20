@@ -25,9 +25,11 @@ import uuid
 from pathlib import Path
 from typing import Any
 
+from zippergen.value_codec import decode_value, encode_value
+
 
 WORKSPACE_SCHEMA_VERSION = 2
-RUN_SCHEMA_VERSION = 1
+RUN_SCHEMA_VERSION = 2
 PROJECT_SCHEMA_VERSION = 2
 PROJECT_MANIFEST_NAME = "zippergen.toml"
 SPECIFICATION_FILE_NAME = "specification.md"
@@ -448,15 +450,6 @@ def _safe_project_file(root: Path, value: object, *, field: str) -> Path:
     if not resolved.is_relative_to(root):
         raise WorkspaceError(f"{field} escapes the project root: {raw!r}.")
     return resolved
-
-
-def _without_specification_guide(content: str) -> str:
-    stripped = content.strip()
-    if stripped.startswith("<!-- zippergen:specification-guide"):
-        _guide, separator, remainder = stripped.partition("-->")
-        if separator:
-            return remainder.strip()
-    return stripped
 
 
 def _decorator_name(node: ast.expr) -> str | None:
@@ -1984,6 +1977,17 @@ class Workspace:
                 f"Unsupported run schema in {self.run_path(run_id)}: "
                 f"{record.get('schema_version')!r}"
             )
+        try:
+            inputs = decode_value(record.get("inputs"))
+        except (TypeError, ValueError) as exc:
+            raise WorkspaceError(
+                f"Run inputs in {self.run_path(run_id)} are malformed."
+            ) from exc
+        if not isinstance(inputs, dict):
+            raise WorkspaceError(
+                f"Run inputs in {self.run_path(run_id)} are not an object."
+            )
+        record["inputs"] = inputs
         return record
 
     def current_run(self) -> dict[str, Any] | None:
@@ -1995,6 +1999,7 @@ class Workspace:
         if not run_id or _slug(run_id) != run_id:
             raise WorkspaceError(f"Invalid run id: {run_id!r}")
         value = dict(record)
+        value["inputs"] = encode_value(value.get("inputs") or {})
         value["updated_at"] = _timestamp()
         _atomic_write_json(self.run_path(run_id), value)
 

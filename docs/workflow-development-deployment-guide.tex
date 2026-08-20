@@ -309,6 +309,29 @@ def draft_reply(message: str): ...
 Writer: draft = draft_reply(message)
 \end{lstlisting}
 
+Model failures are part of the action declaration, not provider-specific
+runtime configuration. A finite integer counts retries after the first call;
+\texttt{"forever"} waits until success or cancellation. An optional fallback
+is validated against the declared outputs when the action is defined:
+
+\begin{lstlisting}[language=Python]
+@llm(
+    system="Classify the request.",
+    user="{message}",
+    parse="bool",
+    outputs=[("urgent", bool)],
+    retries=3,
+    fallback=False,
+)
+def classify(message: str): ...
+\end{lstlisting}
+
+Connection failures, timeouts, rate limits, server failures, and invalid model
+answers use this one retry budget. Authentication failures and bad model names
+fail immediately (or take the fallback). \texttt{Retry-After} is respected;
+otherwise the delay is 2, 4, 8, \ldots{} seconds, capped at 30. Stopping the
+run interrupts the wait and never takes the fallback.
+
 Several actions by one participant can be grouped:
 
 \begin{lstlisting}[language=Python]

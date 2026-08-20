@@ -448,6 +448,20 @@ else:
 Keep guards free of external effects. The `else` of a `while` represents the
 exit protocol, not an error handler.
 
+For Causal Past Logic guards, prefer structural field terms such as
+`At[Sensor].version == Here.version`; these receive a durable identity
+automatically. Python cannot reliably infer whether a lower-level predicate's
+helpers, globals, or external dependencies still mean the same thing, so an
+`atom()` used durably must declare its semantic identity explicitly:
+
+```python
+ready = atom(is_ready, src="ready", version="policy-v2")
+```
+
+`src` is only a display label. `version` is part of durable semantics, and must
+change whenever the predicate's meaning changes. A live run refuses monitor
+state written under a different version.
+
 ## Reusable protocol fragments
 
 Use `@fragment` for a reusable or conceptually coherent coordination
@@ -693,7 +707,9 @@ There is no workflow or deployment name to pass: the project identifies both.
 inspection history and rotates logs; it refuses while the deployment is
 running, before changing either resource. Recovery never reads that history,
 but the stopped-service precondition also makes log rotation lossless.
-Completed human tasks and connector notifications remain as audit records.
+Completed human tasks, answer tokens, and connector notifications remain as
+audit records. They are not needed for recovery, currently have no automatic
+retention policy, and therefore grow with the number of human interactions.
 `remove` deletes a deployment but keeps its durable store unless you
 purge it. `reset` is the recoverable way to start over: it stops the service,
 archives the store and its SQLite sidecars under ZipperGen's trash directory,
@@ -712,7 +728,11 @@ delete the lock file; an advisory lock lives on the inode, so unlinking the
 path would break mutual exclusion.
 
 Keep stores owner-private on a local filesystem with reliable SQLite locking
-and `fsync`. Never edit durable rows directly. External effects must be
+and `fsync`; do not place a live store on NFS or in a cloud-synchronised
+directory. Managed execution currently targets macOS and Linux, not Windows.
+Never edit durable rows directly. The store and its backups may contain
+workflow inputs, model outputs, human-task context, and approval tokens, so
+protect backups like the live `0600` file. External effects must be
 idempotent, because crash recovery or a restore from an older backup can repeat
 remote work whose successor state did not commit. Recovery reads only current
 role state, outstanding messages, and durable human tasks; optional history can

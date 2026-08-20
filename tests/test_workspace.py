@@ -122,6 +122,25 @@ def test_workspace_creates_unique_managed_runs(tmp_path):
     assert workspace.current_run_id == second["run_id"]
 
 
+def test_run_record_preserves_typed_inputs_without_private_memory(tmp_path):
+    root = tmp_path / "project"
+    root.mkdir()
+    workspace = Workspace(root, home=tmp_path / "state")
+    run = workspace.new_run(
+        workflow_spec="review.py:review",
+        workflow_name="review",
+        fingerprint="abc",
+        inputs={"coordinates": (1, [2, 3])},
+        llm="mock",
+    )
+
+    raw = json.loads(workspace.run_path(run["run_id"]).read_text())
+    assert "__zippergen_typed_value_v1__" in raw["inputs"]
+    restored = Workspace(root, home=tmp_path / "state").load_run(run["run_id"])
+    assert restored["inputs"]["coordinates"] == (1, [2, 3])
+    assert type(restored["inputs"]["coordinates"]) is tuple
+
+
 def test_workspace_updates_run(tmp_path):
     root = tmp_path / "project"
     root.mkdir()

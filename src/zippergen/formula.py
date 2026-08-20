@@ -27,6 +27,8 @@ from __future__ import annotations
 
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+import hashlib
+import json
 import operator
 from typing import Any, TypeAlias
 
@@ -38,7 +40,8 @@ __all__ = [
     "AndFormula", "OrFormula", "NotFormula",
     "FieldTerm",
     "AnyFormula",
-    "atom", "At", "Here", "Y", "Prev", "on", "since", "P", "true", "false", "subformulas",
+    "atom", "At", "Here", "Y", "Prev", "on", "since", "P", "true", "false",
+    "subformulas",
 ]
 
 
@@ -151,7 +154,7 @@ class FieldTerm:
                 return False
             return op(left, right)
 
-        return atom(predicate, src=src)
+        return atom(predicate, src=src, version=f"field:{src}")
 
     def __eq__(self, other: object) -> AtomicFormula:  # type: ignore[override]
         return self._compare(other, "==", operator.eq)
@@ -201,6 +204,7 @@ class AtomicFormula(Formula):
     """
     fn: Callable[..., bool]
     src: str = ""
+    version: str = ""
 
     # Use object identity so that two separately-created atom() calls are
     # distinct subformulas even when wrapping the same function.
@@ -300,14 +304,25 @@ AnyFormula: TypeAlias = Formula
 # User-facing API
 # ---------------------------------------------------------------------------
 
-def atom(fn: Callable[..., bool], src: str = "") -> AtomicFormula:
+def atom(
+    fn: Callable[..., bool],
+    src: str = "",
+    *,
+    version: str = "",
+) -> AtomicFormula:
     """Wrap a Python callable as an atomic CPL predicate.
 
     fn  : dict -> bool, or (dict, EventContext) -> bool.
     src : optional display string for trace and diagnostic output; defaults to
           fn.__name__.
+    version : stable semantic identity required when a CPL monitor is stored
+              durably. Change it whenever the predicate's meaning changes.
     """
-    return AtomicFormula(fn=fn, src=src or getattr(fn, "__name__", ""))
+    return AtomicFormula(
+        fn=fn,
+        src=src or getattr(fn, "__name__", ""),
+        version=str(version),
+    )
 
 
 def on(lifeline: object) -> OnFormula:
@@ -430,3 +445,58 @@ def subformulas(formula: AnyFormula) -> list[AnyFormula]:
 
     visit(formula)
     return result
+
+
+# ---------------------------------------------------------------------------
+# Durable semantic identity
+# ---------------------------------------------------------------------------
+
+def _formula_shape(formula: AnyFormula) -> object:
+    match formula:
+        case ConstFormula(value=value):
+            return ["const", value]
+        case AtomicFormula(version=version):
+            if not version:
+                raise ValueError(
+                    "A durable CPL atom needs a semantic version. Declare "
+                    "atom(predicate, version='descriptive-v1') and change the "
+                    "version whenever the predicate's meaning changes."
+                )
+            return ["atom", version]
+        case OnFormula(lifeline_name=name):
+            return ["on", name]
+        case YFormula(subformula=child):
+            return ["y", _formula_shape(child)]
+        case AtFormula(lifeline_name=name, subformula=child):
+            return ["at", name, _formula_shape(child)]
+        case SinceFormula(left=left, right=right):
+            return ["since", _formula_shape(left), _formula_shape(right)]
+        case PastFormula(subformula=child, witness=witness):
+            return ["past", _formula_shape(child), _formula_shape(witness)]
+        case AndFormula(left=left, right=right):
+            return ["and", _formula_shape(left), _formula_shape(right)]
+        case OrFormula(left=left, right=right):
+            return ["or", _formula_shape(left), _formula_shape(right)]
+        case NotFormula(subformula=child):
+            return ["not", _formula_shape(child)]
+        case _:
+            raise TypeError(f"Unknown formula type: {type(formula).__name__}")
+
+
+def formula_fingerprint(formula: AnyFormula) -> str:
+    """Stable semantic identity used to validate durable CPL state.
+
+    Display strings and callable representations are intentionally absent.
+    Python cannot generally determine whether a predicate's helpers, globals,
+    or external dependencies still mean the same thing, so low-level atoms
+    carry an explicit semantic version. Structural field-term formulas assign
+    that identity automatically.
+    """
+
+    payload = json.dumps(
+        _formula_shape(formula),
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    )
+    return hashlib.sha256(payload.encode()).hexdigest()

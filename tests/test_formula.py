@@ -4,7 +4,8 @@ from zippergen.formula import (
     AtomicFormula, OnFormula, YFormula, AtFormula,
     SinceFormula, PastFormula, ConstFormula,
     AndFormula, OrFormula, NotFormula, FieldTerm,
-    atom, At, Here, Y, on, since, P, true, false, subformulas,
+    atom, At, Here, Y, on, since, P, true, false, formula_fingerprint,
+    subformulas,
 )
 from zippergen.syntax import Lifeline
 
@@ -26,6 +27,28 @@ def test_atom_auto_src_from_name():
     def my_pred(env): return True
     f = atom(my_pred)
     assert f.src == "my_pred"
+
+
+def test_formula_fingerprint_tracks_semantics_not_display_text():
+    old = atom(lambda env: False, src="ready", version="ready-v1")
+    renamed = atom(lambda env: False, src="is ready", version="ready-v1")
+    changed = atom(lambda env: True, src="ready", version="ready-v2")
+
+    assert formula_fingerprint(old) == formula_fingerprint(renamed)
+    assert formula_fingerprint(old) != formula_fingerprint(changed)
+
+
+def test_atom_version_covers_external_semantic_dependencies():
+    predicate = lambda env: bool(env.get("ready"))
+
+    assert formula_fingerprint(atom(predicate, version="1")) != (
+        formula_fingerprint(atom(predicate, version="2"))
+    )
+
+
+def test_unversioned_atom_cannot_be_persisted_durably():
+    with pytest.raises(ValueError, match="needs a semantic version"):
+        formula_fingerprint(atom(lambda env: True, src="ready"))
 
 
 def test_on_creates_on_formula():

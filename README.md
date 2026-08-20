@@ -14,8 +14,10 @@ You write one protocol. It says who sends what to whom, who calls a model, and
 who owns each decision. ZipperGen works out the program each participant runs,
 and runs them.
 
-For well-formed workflows, those programs cannot deadlock. This is proved, not
-just tested. The proof is checked by machine, in Lean 4.
+For well-formed workflows in ZipperGen's formally covered core, those programs
+cannot deadlock. This is proved, not just tested: the core projection theorem
+is checked by machine in Lean 4. Parallel regions are covered by the separate
+EXPRESS/SOS result listed below.
 
 ---
 
@@ -502,8 +504,9 @@ The main result says that the projected local programs behave exactly like the
 global workflow. Freedom from deadlock follows from this, for well-formed
 workflows in the supported model.
 
-The main theorems are
+The core projection theorems are
 [machine-checked in Lean 4](https://github.com/zippergen-io/zippergen-lean/tree/main/isola).
+The parallel extension is established separately in the EXPRESS/SOS paper.
 The formal results are described in these papers:
 
 - Bollig, Függer, and Nowak. [Provable Coordination for LLM Agents via

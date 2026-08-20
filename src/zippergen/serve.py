@@ -69,6 +69,7 @@ from zippergen.execution_lock import (
     execution_lock_path,
 )
 from zippergen.deployment_profiles import (
+    DEPLOYMENT_PROFILE_SCHEMA_VERSION,
     _default_deployment_log_path,
     _default_deployment_store_path,
     _deployment_environment,
@@ -80,6 +81,7 @@ from zippergen.deployment_profiles import (
     _profile_mapping,
     _profile_options,
 )
+from zippergen.value_codec import encode_value
 from zippergen.deployment_checks import (
     DoctorConfig,
     _call_doctor_hook,
@@ -200,47 +202,6 @@ def _parse_llm_idle_timeouts(pairs: list[str]) -> dict[str, float]:
     return timeouts
 
 
-def _seed_inputs(wf: Workflow, inputs: dict) -> dict:
-    """Var defaults from the workflow namespace, overlaid by caller inputs —
-    parity with the in-process run() seeding (runtime.py:1014)."""
-    from zippergen.syntax import Var
-    env = {k: v.default for k, v in wf.ns.items() if isinstance(v, Var)}
-    env.update(inputs)
-    return env
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 def _write_deployment_secrets(path: Path, values: dict[str, str]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     payload = (json.dumps(values, indent=2, sort_keys=True) + "\n").encode()
@@ -294,7 +255,11 @@ def _write_deployment_artifacts(profile: dict[str, object]) -> None:
     Path(str(profile["log"])).expanduser().parent.mkdir(parents=True, exist_ok=True)
     _deployments_dir().mkdir(parents=True, exist_ok=True)
 
-    profile_path.write_text(json.dumps(profile, indent=2, sort_keys=True) + "\n")
+    stored_profile = dict(profile)
+    stored_profile["inputs"] = encode_value(profile.get("inputs") or {})
+    profile_path.write_text(
+        json.dumps(stored_profile, indent=2, sort_keys=True) + "\n"
+    )
     script_path.write_text(
         "#!/bin/sh\n"
         "set -eu\n"
@@ -3408,7 +3373,7 @@ def _deploy_command(args) -> int:
         workflow, module = load_workflow_spec(args.target)
         spec = deployment_spec_from_module(module)
         profile = {
-            "schema_version": 2,
+            "schema_version": DEPLOYMENT_PROFILE_SCHEMA_VERSION,
             "name": deployment_name,
             "project_id": workspace_project_id,
             "workflow": args.target,
@@ -3432,7 +3397,7 @@ def _deploy_command(args) -> int:
             "python": sys.executable,
         }
 
-    profile["schema_version"] = 2
+    profile["schema_version"] = DEPLOYMENT_PROFILE_SCHEMA_VERSION
     profile["project_id"] = workspace_project_id
     # A deployment snapshots the project's current routing.  Re-deploying is
     # what applies later edits to zippergen.toml; configuring an already

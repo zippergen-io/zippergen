@@ -120,6 +120,18 @@ def test_guided_input_rejects_non_json_values():
         _coerce_input("record", {"bad": (1, 2)}, Json)
 
 
+def test_guided_tuple_input_is_restored_from_a_json_array():
+    value = _coerce_input("coordinates", [1, [2, 3]], tuple)
+
+    assert value == (1, [2, 3])
+    assert type(value) is tuple
+
+
+def test_guided_float_input_rejects_non_finite_values():
+    with pytest.raises(SystemExit, match="not a finite number"):
+        _coerce_input("temperature", "nan", float)
+
+
 def test_durable_run_collects_multiple_inputs_and_reviews_inline(tmp_path):
     workspace = Workspace(_repository_root(), home=tmp_path / "home")
     responses = iter(

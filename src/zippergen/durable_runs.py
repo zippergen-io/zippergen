@@ -367,12 +367,26 @@ def _coerce_input(name: str, value: object, expected: type) -> object:
         if isinstance(value, bool):
             raise SystemExit(f"Input {name!r} must be a number; got {value!r}.")
         try:
-            return float(str(value))
+            result = float(str(value))
         except (TypeError, ValueError) as exc:
             raise SystemExit(
                 f"Input {name!r} must be a number; got {value!r}."
             ) from exc
-    return value
+        try:
+            return validate_zvalue(result, float, context=f"Input {name!r}")
+        except TypeError as exc:
+            raise SystemExit(str(exc)) from exc
+    if expected is tuple:
+        if type(value) is list:
+            value = tuple(value)
+        try:
+            return validate_zvalue(value, tuple, context=f"Input {name!r}")
+        except TypeError as exc:
+            raise SystemExit(str(exc)) from exc
+    try:
+        return validate_zvalue(value, expected, context=f"Input {name!r}")
+    except TypeError as exc:
+        raise SystemExit(str(exc)) from exc
 
 
 def collect_workflow_inputs(

@@ -3,6 +3,10 @@ from pathlib import Path
 
 import pytest
 
+from zippergen.deployment_profiles import (
+    DEPLOYMENT_PROFILE_SCHEMA_VERSION,
+    _load_deployment_profile,
+)
 from zippergen.deployments import (
     DeploymentRemovalError,
     compact_deployment_logs,
@@ -10,6 +14,29 @@ from zippergen.deployments import (
     remove_deployment_artifacts,
     unregister_deployment_service,
 )
+from zippergen.serve import _write_deployment_artifacts
+
+
+def test_deployment_profile_preserves_typed_inputs(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(home))
+    profile = {
+        "schema_version": DEPLOYMENT_PROFILE_SCHEMA_VERSION,
+        "name": "typed-inputs",
+        "cwd": str(tmp_path),
+        "store": str(home / "runs/typed-inputs.sqlite"),
+        "log": str(home / "logs/typed-inputs.log"),
+        "python": "/usr/bin/python3",
+        "inputs": {"coordinates": (1, [2, 3])},
+    }
+
+    _write_deployment_artifacts(profile)
+    raw = json.loads((home / "deployments/typed-inputs.json").read_text())
+    assert "__zippergen_typed_value_v1__" in raw["inputs"]
+
+    loaded = _load_deployment_profile("typed-inputs")
+    assert loaded["inputs"] == {"coordinates": (1, [2, 3])}
+    assert type(loaded["inputs"]["coordinates"]) is tuple
 
 
 def _deployment_fixture(tmp_path, monkeypatch, name="review-demo"):

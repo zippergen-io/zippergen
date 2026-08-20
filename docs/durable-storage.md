@@ -141,6 +141,14 @@ update affects no row and the stale transaction rolls back, including any send
 or receive it attempted. This turns accidental concurrent execution into a
 loud ownership error instead of duplicated protocol work.
 
+The compare-and-swap is a consistency check, not an ownership lease. Normal
+execution also holds the project's single-supervisor lock. If two supervisors
+are started by bypassing that CLI boundary, both can reach the same external
+call before one loses the later compare-and-swap. The stale result cannot enter
+durable state, but the remote call may already have happened twice. The crash
+guarantees below therefore assume one supervisor per project, which is the
+execution model the CLI enforces.
+
 ## 4. Crash guarantees
 
 One rule covers everything:
@@ -177,10 +185,13 @@ role's control state does **not** advance while this happens. A fallback, when
 one is declared, commits exactly like any other action result: one transaction,
 one step forward.
 
-Durable coordination values use a tagged JSON encoding, so tuples and lists
-remain distinct across role state, outstanding messages, and workflow results.
-The SQLite columns remain ordinary JSON text; the tags carry only the container
-type information that plain JSON lacks.
+Durable coordination values use one tagged JSON encoding, so tuples and lists
+remain distinct across role state, causal field views, outstanding messages,
+workflow results, managed-run records, and deployment profiles. The files and
+SQLite columns remain ordinary JSON; the tags carry only the container type
+information that plain JSON lacks. Non-finite floats, cycles, non-string
+dictionary keys, and unsupported Python objects are rejected before they cross
+a durable boundary.
 
 The counter is a local variable on the stack of the invocation, deliberately.
 Nothing about retrying is written to the store: no event log, no attempt rows,
@@ -243,6 +254,13 @@ past — it needs the current summary of it.
 
 - The monitor's state, vector clock included, is a column on `role_state`. It
   commits with everything else, so it can never drift from the variables.
+- The snapshot names every subformula by a deterministic semantic fingerprint,
+  not its display text or a callable representation. Python cannot generally
+  determine whether a predicate's helpers, globals, or external dependencies
+  still mean the same thing, so low-level durable atoms require
+  `atom(..., version="descriptive-v1")`. Change that identity whenever the
+  predicate's meaning changes. Structural field-term formulas assign their
+  identity automatically.
 
 Both sides are atomic, which is what makes the picture local:
 
@@ -291,13 +309,17 @@ types through which statements read and write the durable environment:
 | a changed literal used by a statement | yes |
 | a rewritten `@effect` or `@pure` **body** | **no** |
 | a rewritten LLM **prompt** | **no** |
-| a guard computing something different | **no** |
+| a plain Python guard computing something different | **no** |
+| a CPL atom's declared semantic `version` | **yes, for live monitor state** |
 
-The last three change future computation but do not change how committed state
-is decoded. Excluding them is deliberate: fixing a typo in a prompt should not
-force a reset that throws away live state. Expressions are different. They are
-part of the choreography, and a renamed expression variable could otherwise
-read a default instead of the committed value under its old name.
+Action bodies, prompts, and plain Python guards change future computation but
+do not change how committed state is decoded. Excluding them is deliberate:
+fixing a typo in a prompt should not force a reset that throws away live state.
+Expressions are different. They are part of the choreography, and a renamed
+expression variable could otherwise read a default instead of the committed
+value under its old name. CPL formulas are different too: their accumulated
+truth values are durable state, so changing an atom's semantics must invalidate
+that state rather than reinterpret it.
 
 There is a test that pins both halves of this, so the guarantee is executable
 rather than a claim in prose.
@@ -325,7 +347,34 @@ zg deploy compact
 Dropping history is a retention choice, not a recovery operation. The explicit
 stop makes the combined command predictable and its log rotation lossless.
 
-## 8. What this replaced
+Completed human tasks, answer tokens, and notification records are retained as
+audit records. They are bounded by the number of human interactions, not by the
+live computation, and currently have no automatic retention policy. This is a
+deliberate visibility choice, not recovery state; operators with a formal
+retention requirement should account for it when sizing and backing up the
+store rather than assuming every table is bounded.
+
+## 8. Filesystem, sensitivity, and backup
+
+The SQLite file is local-machine coordination. Keep it on a local filesystem
+with reliable POSIX locking and `fsync`; do not put a live store on NFS, a
+cloud-synchronised directory, or a volume whose locking guarantees are
+unclear. ZipperGen currently supports macOS and Linux for managed execution;
+the execution lock uses `fcntl`, so Windows is not a supported runtime host.
+
+The store is created owner-only (`0600`) because it can contain workflow
+inputs, model outputs, message payloads, human-task context, approval tokens,
+and connector bookkeeping. Do not edit rows directly. SQLite's online backup
+API or its `.backup` command can copy a live store consistently; protect the
+copy with the same permissions.
+
+Restoring an older backup restores an older belief about the outside world.
+Any LLM call or `@effect` completed after that backup may run again on resume,
+including email sends and connector writes. Review that replay window before
+starting the restored store, and make irreversible effects idempotent where
+the external system supports it.
+
+## 9. What this replaced
 
 The previous design recovered by replaying an append-only event log, with
 per-role snapshots as checkpoints and a compaction pass whose safety depended

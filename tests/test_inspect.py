@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from zippergen.deployment_profiles import DEPLOYMENT_PROFILE_SCHEMA_VERSION
 from zippergen.live_display import _screen_lines, watch_frames
 from zippergen.locator import resolve_path, statement_node_paths
 from zippergen.projection import project
@@ -14,6 +15,7 @@ from zippergen.control import encode_control
 from zippergen.store import open_store, write_role_state
 from zippergen.syntax import ActStmt, _ordered_workflow_lifelines
 from zippergen.workspace import Workspace
+from zippergen.value_codec import encode_value
 
 
 EXAMPLE = Path(__file__).resolve().parents[1] / "examples" / "email_approval.py"
@@ -180,12 +182,14 @@ def test_inspect_selects_the_projects_unnamed_deployment_explicitly(
     deployments = workspace.home / "deployments"
     deployments.mkdir(parents=True)
     (deployments / f"{name}.json").write_text(json.dumps({
+        "schema_version": DEPLOYMENT_PROFILE_SCHEMA_VERSION,
         "name": name,
         "project_id": workspace.project_manifest().get("project_id"),
         "source_cwd": str(workspace.root),
         "cwd": str(workspace.root),
         "workflow": "workflow.py:email_approval",
         "store": record["store"],
+        "inputs": encode_value({}),
     }))
 
     assert main(["deploy", "inspect", "--json"]) == 0

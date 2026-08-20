@@ -190,7 +190,11 @@ def test_snapshot_view_is_deep_copy():
 
 
 def test_monitor_state_roundtrip_uses_stable_formula_indexes():
-    phi = atom(lambda env: env.get("approved", False), src="approved")
+    phi = atom(
+        lambda env: env.get("approved", False),
+        src="approved",
+        version="approved-v1",
+    )
     guard = Y(phi)
     first = make_monitor("A", ["A", "B"], guard)
     first.on_event("act", {"approved": True})
@@ -202,6 +206,28 @@ def test_monitor_state_roundtrip_uses_stable_formula_indexes():
     assert second.snapshot_state() == state
     second.on_event("act", {"approved": True})
     assert second.guard_value(guard) is True
+
+
+def test_monitor_state_refuses_changed_atom_semantics_with_same_label():
+    old = Y(atom(lambda env: False, src="ready", version="ready-v1"))
+    new = Y(atom(lambda env: True, src="ready", version="ready-v2"))
+    first = make_monitor("A", ["A"], old)
+    first.on_event("act", {})
+
+    with pytest.raises(ValueError, match="formulas changed"):
+        make_monitor("A", ["A"], new).restore_state(first.snapshot_state())
+
+
+def test_monitor_state_preserves_tuple_field_values():
+    guard = atom(lambda env: True, version="always-v1")
+    first = make_monitor("A", ["A"], guard)
+    first.on_event("act", {"coordinates": (1, [2, 3])})
+
+    second = make_monitor("A", ["A"], guard)
+    second.restore_state(first.snapshot_state())
+
+    assert second.field_view["A"]["coordinates"] == (1, [2, 3])
+    assert type(second.field_view["A"]["coordinates"]) is tuple
 
 
 def test_field_view_snapshots_mutable_local_values():

@@ -35,7 +35,9 @@ from zippergen.formula import (
     AtomicFormula, OnFormula, YFormula, AtFormula,
     ConstFormula, SinceFormula, PastFormula,
     AndFormula, OrFormula, NotFormula,
+    formula_fingerprint,
 )
+from zippergen.value_codec import decode_value, encode_value
 
 __all__ = ["MonitorState"]
 
@@ -244,17 +246,19 @@ class MonitorState:
         return _copy_field_view(self.field_view)
 
     def snapshot_state(self) -> dict[str, object]:
-        """Return JSON-safe bounded state for durable loop checkpoints."""
+        """Return JSON-safe bounded state for durable recovery."""
 
         formula_indexes = {
             id(formula): index
             for index, formula in enumerate(self.subformulas)
         }
         return {
-            "version": 1,
+            "version": 2,
             "name": self.name,
             "lifelines": list(self.lifelines),
-            "formulas": [repr(formula) for formula in self.subformulas],
+            "formulas": [
+                formula_fingerprint(formula) for formula in self.subformulas
+            ],
             "vc": dict(self.vc),
             "view": {
                 lifeline: {
@@ -264,7 +268,7 @@ class MonitorState:
                 }
                 for lifeline, values in self.view.items()
             },
-            "field_view": self.snapshot_field_view(),
+            "field_view": encode_value(self.snapshot_field_view()),
             "val": {
                 str(formula_indexes[formula_id]): bool(value)
                 for formula_id, value in self._val.items()
@@ -275,13 +279,15 @@ class MonitorState:
     def restore_state(self, state: dict[str, object]) -> None:
         """Restore a state produced by snapshot_state after full validation."""
 
-        if state.get("version") != 1:
+        if state.get("version") != 2:
             raise ValueError("Unsupported CPL monitor snapshot version.")
         if state.get("name") != self.name:
             raise ValueError("CPL monitor snapshot belongs to another lifeline.")
         if state.get("lifelines") != self.lifelines:
             raise ValueError("CPL monitor lifelines changed since the snapshot.")
-        formulas = [repr(formula) for formula in self.subformulas]
+        formulas = [
+            formula_fingerprint(formula) for formula in self.subformulas
+        ]
         if state.get("formulas") != formulas:
             raise ValueError("CPL formulas changed since the snapshot.")
         raw_vc = state.get("vc")
@@ -322,10 +328,16 @@ class MonitorState:
             lifeline: decode_values(raw_view.get(lifeline, {}))
             for lifeline in self.lifelines
         }
+        try:
+            decoded_field_view = decode_value(raw_field_view)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("CPL monitor field view is invalid.") from exc
+        if not isinstance(decoded_field_view, dict):
+            raise ValueError("CPL monitor field view is invalid.")
         field_view = {
             lifeline: _copy_field_map(
-                raw_field_view.get(lifeline, {})
-                if isinstance(raw_field_view.get(lifeline, {}), dict)
+                decoded_field_view.get(lifeline, {})
+                if isinstance(decoded_field_view.get(lifeline, {}), dict)
                 else {}
             )
             for lifeline in self.lifelines

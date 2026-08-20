@@ -9,6 +9,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from zippergen.deployment_profiles import DEPLOYMENT_PROFILE_SCHEMA_VERSION
 from zippergen.serve import (
     _deployment_command,
     _launchd_service_status,
@@ -24,6 +25,7 @@ from zippergen.store import (
     record_history,
 )
 from zippergen.workspace import Workspace
+from zippergen.value_codec import decode_value, encode_value
 
 
 WORKFLOW_SOURCE = """
@@ -1243,7 +1245,7 @@ def test_deploy_prepares_a_profile_that_runs_for_its_project(tmp_path, monkeypat
     assert profile["store"] == str(store_path)
     assert profile["llm"] == "mock"
     assert profile["llms"] == {}
-    assert profile["inputs"] == {"topic": "deploy"}
+    assert decode_value(profile["inputs"]) == {"topic": "deploy"}
     assert script_path.exists()
     assert f"ZIPPERGEN_HOME={zippergen_home}" in script_path.read_text()
     assert service_path.exists()
@@ -1289,7 +1291,7 @@ def test_deploy_records_external_paths_absolutely(
     capsys.readouterr()
 
     profile = json.loads(_the_deployment(home).read_text())
-    assert profile["inputs"]["directory"] == str(mailbox.resolve())
+    assert decode_value(profile["inputs"])["directory"] == str(mailbox.resolve())
 
 
 def test_internal_deployment_run_does_not_conflict_with_its_own_service(
@@ -2031,6 +2033,7 @@ def test_doctor_returns_failure_for_broken_profile(tmp_path, monkeypatch, capsys
     deployments.mkdir(parents=True)
     name = Workspace(home=zippergen_home).directory.name
     (deployments / f"{name}.json").write_text(json.dumps({
+        "schema_version": DEPLOYMENT_PROFILE_SCHEMA_VERSION,
         "name": name,
         "source_cwd": str(Path.cwd()),
         "project_id": Workspace().project_manifest().get("project_id"),
@@ -2039,6 +2042,7 @@ def test_doctor_returns_failure_for_broken_profile(tmp_path, monkeypatch, capsys
         "store": str(tmp_path / "runs" / "broken.sqlite"),
         "log": str(tmp_path / "logs" / "broken.log"),
         "python": str(tmp_path / "missing-python"),
+        "inputs": encode_value({}),
     }))
 
     rc = main(["deploy", "check", "--strict", "--json", "--no-systemd"])

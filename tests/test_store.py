@@ -13,6 +13,7 @@ import pytest
 from zippergen.store import (
     DurableChannel,
     RoleStateConflict,
+    StoreSchemaError,
     WorkflowIdentityError,
     claim_workflow_identity,
     complete_human_task,
@@ -76,6 +77,18 @@ def test_open_store_is_wal_and_owner_private(tmp_path):
     finally:
         conn.close()
     assert oct(path.stat().st_mode)[-3:] == "600"
+
+
+def test_open_store_refuses_an_unknown_current_state_schema(tmp_path):
+    path = tmp_path / "s.sqlite"
+    conn = open_store(str(path))
+    conn.execute(
+        "UPDATE store_meta SET value='999' WHERE key='schema_version'"
+    )
+    conn.close()
+
+    with pytest.raises(StoreSchemaError, match="schema 999"):
+        open_store(str(path))
 
 
 # ---------------------------------------------------------------------------
@@ -320,7 +333,7 @@ def test_causal_metadata_round_trips_on_an_outstanding_message(tmp_path):
             ("payload",),
             vc={"A": 3, "B": 1},
             view={"A": {7: True}},
-            field_view={"A": ["x"]},
+            field_view={"A": {"coordinates": (1, [2, 3])}},
         )
         conn.execute("COMMIT")
 
@@ -333,7 +346,8 @@ def test_causal_metadata_round_trips_on_an_outstanding_message(tmp_path):
         assert values == ("payload",)
         assert vc == {"A": 3, "B": 1}
         assert view == {"A": {7: True}}
-        assert field_view == {"A": ["x"]}
+        assert field_view == {"A": {"coordinates": (1, [2, 3])}}
+        assert type(field_view["A"]["coordinates"]) is tuple
     finally:
         conn.close()
 

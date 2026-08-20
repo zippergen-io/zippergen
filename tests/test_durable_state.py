@@ -29,6 +29,7 @@ from zippergen.control import (
 from zippergen.projection import project
 from zippergen.role_runner import RoleRunner
 from zippergen.runtime import _build_formula_monitors
+from zippergen.value_codec import dumps_value
 from zippergen.sqlite_runner import run_sqlite
 from zippergen.store import (
     RoleStateConflict,
@@ -225,6 +226,7 @@ def model_workflow(n: int @ A) -> str:
 monitored_guard = atom(
     lambda env: env.get("total", 0) < env.get("limit", 0),
     src="total < limit",
+    version="total-below-limit-v1",
 )
 
 
@@ -237,7 +239,11 @@ def monitored_loop(limit: int @ A) -> int:
 
 
 # A monitored two-role workflow, so sends carry a causal stamp.
-sent_guard = atom(lambda env: env.get("sent", 0) > 0, src="sent > 0")
+sent_guard = atom(
+    lambda env: env.get("sent", 0) > 0,
+    src="sent > 0",
+    version="sent-positive-v1",
+)
 
 
 @workflow
@@ -370,7 +376,7 @@ def test_messages_on_one_route_stay_in_order(tmp_path):
             conn.execute(
                 "INSERT INTO outstanding_messages(sender,receiver,channel,payload) "
                 "VALUES('A','B','main',?)",
-                (json.dumps([value]),),
+                    (dumps_value((value,)),),
             )
         conn.execute("COMMIT")
         from zippergen.store import DurableChannel
@@ -393,7 +399,7 @@ def test_a_coregion_receive_takes_the_earliest_send_across_routes(tmp_path):
             conn.execute(
                 "INSERT INTO outstanding_messages(sender,receiver,channel,payload) "
                 "VALUES(?,'R','main',?)",
-                (sender, json.dumps([value])),
+                    (sender, dumps_value((value,))),
             )
         conn.execute("COMMIT")
         from zippergen.store import DurableChannel

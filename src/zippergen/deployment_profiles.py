@@ -21,6 +21,10 @@ from zippergen.deployment_platform import (
     slug as _slug,
     zippergen_home as _zippergen_home,
 )
+from zippergen.value_codec import decode_value
+
+
+DEPLOYMENT_PROFILE_SCHEMA_VERSION = 3
 
 
 def _load_deployment_profile(name: str) -> dict[str, object]:
@@ -33,6 +37,19 @@ def _load_deployment_profile(name: str) -> dict[str, object]:
         raise SystemExit(f"Deployment profile is not valid JSON: {path}") from exc
     if not isinstance(profile, dict):
         raise SystemExit(f"Deployment profile is not an object: {path}")
+    if profile.get("schema_version") != DEPLOYMENT_PROFILE_SCHEMA_VERSION:
+        raise SystemExit(
+            f"Unsupported deployment profile schema in {path}: "
+            f"{profile.get('schema_version')!r}. Redeploy this project to "
+            "create a current profile."
+        )
+    try:
+        inputs = decode_value(profile.get("inputs"))
+    except (TypeError, ValueError) as exc:
+        raise SystemExit(f"Deployment inputs are malformed in {path}.") from exc
+    if not isinstance(inputs, dict):
+        raise SystemExit(f"Deployment inputs are not an object in {path}.")
+    profile["inputs"] = inputs
     return profile
 
 

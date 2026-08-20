@@ -8,11 +8,12 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
-import math
 import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import Union
+
+from zippergen.value_codec import json_value_error, portable_value_error
 
 __all__ = [
     # Types
@@ -73,75 +74,15 @@ class Json:
 _BUILTIN_ZTYPES: frozenset[type] = frozenset(
     {str, int, bool, float, tuple, Json}
 )
-_MAX_JSON_DEPTH = 128
-
-
 def is_ztype(x: object) -> bool:
     """Return True iff x is a supported ZipperGen coordination type."""
     return x in _BUILTIN_ZTYPES
 
 
-def _json_value_error(
-    value: object,
-    *,
-    path: str = "$",
-    active: set[int] | None = None,
-    depth: int = 0,
-) -> str | None:
-    if value is None or type(value) in {bool, int, str}:
-        return None
-    if type(value) is float:
-        return None if math.isfinite(value) else f"{path} is not a finite number"
-    if type(value) not in {list, dict}:
-        return (
-            f"{path} has type {type(value).__name__}; expected a built-in "
-            "null, boolean, number, string, list, or dictionary"
-        )
-    if depth >= _MAX_JSON_DEPTH:
-        return f"{path} nests deeper than {_MAX_JSON_DEPTH} levels"
-
-    active = set() if active is None else active
-    identity = id(value)
-    if identity in active:
-        return f"{path} contains a circular reference"
-    active.add(identity)
-    try:
-        if isinstance(value, list):
-            for index, item in enumerate(value):
-                error = _json_value_error(
-                    item,
-                    path=f"{path}[{index}]",
-                    active=active,
-                    depth=depth + 1,
-                )
-                if error is not None:
-                    return error
-            return None
-
-        assert isinstance(value, dict)
-        for key, item in value.items():
-            if type(key) is not str:
-                return (
-                    f"{path} has a {type(key).__name__} key; "
-                    "JSON object keys must be strings"
-                )
-            error = _json_value_error(
-                item,
-                path=f"{path}.{key}",
-                active=active,
-                depth=depth + 1,
-            )
-            if error is not None:
-                return error
-        return None
-    finally:
-        active.remove(identity)
-
-
 def is_json_value(value: object) -> bool:
     """Return whether ``value`` is a finite, non-circular JSON value."""
 
-    return _json_value_error(value) is None
+    return json_value_error(value) is None
 
 
 def validate_zvalue(
@@ -153,7 +94,7 @@ def validate_zvalue(
     """Validate one runtime value against a coordination type."""
 
     if expected is Json:
-        error = _json_value_error(value)
+        error = json_value_error(value)
         if error is not None:
             raise TypeError(f"{context} is not a valid Json value: {error}.")
         return value
@@ -162,6 +103,10 @@ def validate_zvalue(
             f"{context} has type {type(value).__name__}; "
             f"expected {expected.__name__}."
         )
+    if expected in {float, tuple}:
+        error = portable_value_error(value)
+        if error is not None:
+            raise TypeError(f"{context} is not portable: {error}.")
     return value
 
 

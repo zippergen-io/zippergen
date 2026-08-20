@@ -437,7 +437,10 @@ from zippergen.formula import atom, At, Here, Y, P, on
 _CPLPlanner2  = Lifeline("CPLPlanner2")
 _CPLExecutor2 = Lifeline("CPLExecutor2")
 
-_approved_atom2 = atom(lambda env: env.get("approved", False))
+_approved_atom2 = atom(
+    lambda env: env.get("approved", False),
+    version="runtime-approved-v1",
+)
 _ya_guard2      = At[_CPLPlanner2](_approved_atom2)
 
 
@@ -497,7 +500,10 @@ def test_field_term_guard_routes_false():
 # --- Y (previous local event) ---
 
 _YOwner = Lifeline("YLocalOwner")
-_flag_atom = atom(lambda env: env.get("flag", False))
+_flag_atom = atom(
+    lambda env: env.get("flag", False),
+    version="runtime-flag-v1",
+)
 _prev_flag = Y(_flag_atom)
 
 
@@ -538,7 +544,7 @@ def test_y_local_guard_true_after_prior_act():
 # --- Y false when no prior event ---
 
 _NoHistOwner = Lifeline("NoHistOwner")
-_nh_guard = Y(atom(lambda env: True))
+_nh_guard = Y(atom(lambda env: True, version="runtime-always-v1"))
 
 
 @workflow
@@ -563,7 +569,12 @@ _InlineExecutor = Lifeline("InlineExecutor")
 @workflow
 def _inline_formula_workflow(approved: bool @ _InlinePlanner) -> str:
     _InlinePlanner(approved) >> _InlineExecutor(approved)
-    if At[_InlinePlanner](atom(lambda env: env.get("approved", False))) @ _InlineExecutor:
+    if At[_InlinePlanner](
+        atom(
+            lambda env: env.get("approved", False),
+            version="runtime-inline-approved-v1",
+        )
+    ) @ _InlineExecutor:
         _InlineExecutor: out = _yes_str(approved)
     else:
         _InlineExecutor: out = _no_str(approved)
@@ -577,7 +588,9 @@ def test_inline_formula_guard_is_discovered_before_execution():
 # --- P (non-strict causal past) ---
 
 _PastOwner = Lifeline("PastOwner")
-_past_guard = P(atom(lambda env: env.get("flag", False)))
+_past_guard = P(
+    atom(lambda env: env.get("flag", False), version="runtime-past-flag-v1")
+)
 
 
 @workflow
@@ -598,7 +611,10 @@ def test_past_guard_sees_current_local_event():
 
 _RemotePastPlanner = Lifeline("RemotePastPlanner")
 _RemotePastExecutor = Lifeline("RemotePastExecutor")
-_remote_approved = on(_RemotePastPlanner) & atom(lambda env: env.get("approved", False))
+_remote_approved = on(_RemotePastPlanner) & atom(
+    lambda env: env.get("approved", False),
+    version="runtime-remote-approved-v1",
+)
 _remote_past_guard = P(_remote_approved)
 
 
@@ -623,7 +639,13 @@ _RelayDevice = Lifeline("RelayDevice")
 _Relay1 = Lifeline("Relay1")
 _Relay2 = Lifeline("Relay2")
 _Indicator = Lifeline("Indicator")
-_latest_device_on = At[_RelayDevice](atom(lambda env: env.get("flag", False), src="flag"))
+_latest_device_on = At[_RelayDevice](
+    atom(
+        lambda env: env.get("flag", False),
+        src="flag",
+        version="runtime-device-flag-v1",
+    )
+)
 
 
 @workflow
@@ -672,6 +694,7 @@ _fresh_receive = Y(atom(
         and event.message_vc["MetaPlanner"] == event.vc["MetaPlanner"]
     ),
     src="fresh_receive",
+    version="runtime-fresh-receive-v1",
 ))
 
 

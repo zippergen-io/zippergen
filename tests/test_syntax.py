@@ -114,6 +114,19 @@ def test_json_rejects_container_subclasses():
         validate_zvalue(CustomList([1, 2]), Json)
 
 
+def test_scalar_float_must_be_finite():
+    with pytest.raises(TypeError, match="not a finite number"):
+        validate_zvalue(math.nan, float)
+
+
+def test_tuple_values_must_be_portable_recursively():
+    value = ("ok", [1, {"nested": (True, None)}])
+
+    assert validate_zvalue(value, tuple) is value
+    with pytest.raises(TypeError, match="not portable"):
+        validate_zvalue((object(),), tuple)
+
+
 # ---------------------------------------------------------------------------
 # seq — right-associative fold with EmptyStmt identity
 # ---------------------------------------------------------------------------
