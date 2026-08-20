@@ -1068,3 +1068,41 @@ def test_routing_separates_configured_from_actually_reached(project, capsys):
 
     assert reached != configured, "a live check must not look like an offline one"
     assert broken not in {reached, configured}
+
+
+@pytest.mark.parametrize(
+    "command",
+    [["config"], ["check"], ["model"], ["connector"], ["assistant"]],
+    ids=["config", "check", "model", "connector", "assistant"],
+)
+def test_every_view_uses_one_routing_grammar(project, capsys, command):
+    """Five commands show routing. They must not each invent a layout.
+
+    The grammar is: a status marker in the first narrow column, the
+    participant, what it is, and `From` naming the key you would type after
+    `assign`.
+    """
+
+    _root, workspace = project
+    workspace.save_model_configuration(
+        "writer", {"connection": "openai-main", "model": "gpt-4o-mini"}
+    )
+    assert main(["model", "assign", "Writer", "writer"]) == 0
+    capsys.readouterr()
+
+    assert main(command) in (0, 1)
+
+    output = capsys.readouterr().out
+    assert "Effective routing" in output, "every routing view carries the heading"
+    table = output.split("Effective routing")[1]
+    header = next(
+        (line for line in table.splitlines() if "Participant" in line), None
+    )
+    if header is None:
+        # This workflow has nothing of that family to route; the heading and
+        # its empty line are the whole contract there.
+        return
+    assert header.lstrip().startswith("Participant"), (
+        "the status marker column carries no heading"
+    )
+    assert header.rstrip().endswith("From"), "From is the last column"

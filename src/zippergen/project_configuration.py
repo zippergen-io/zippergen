@@ -195,6 +195,53 @@ def _routing_status(renderer: TerminalRenderer, item: Mapping[str, object]) -> s
     return renderer.status_mark("success" if item.get("verified") else "info")
 
 
+CONNECTOR_ROUTE_KINDS = (
+    "human",
+    "telegram",
+    "gmail",
+    "google-sheets",
+    "google-calendar",
+)
+
+
+def _render_connector_routing(
+    renderer: TerminalRenderer,
+    report: Mapping[str, object],
+) -> None:
+    """Both connector views ask the same question, so they share one answer."""
+
+    connectors = report.get("connectors") or {}
+    raw = connectors.get("configurations") if isinstance(connectors, dict) else []
+    resources = {
+        str(item.get("name")): str(
+            item.get("chat_id")
+            or item.get("spreadsheet_id")
+            or item.get("query")
+            or item.get("account")
+            or "-"
+        )
+        for item in raw or []
+        if isinstance(item, dict)
+    }
+
+    def resource(item: Mapping[str, object]) -> str:
+        # The full value is in the Configurations table above, so this one
+        # only has to be recognisable; a long id would squeeze out the
+        # columns that carry the answer.
+        text = resources.get(str(item.get("configuration")), "-")
+        return text if len(text) <= 22 else text[:21] + "\u2026"
+
+    _render_effective_routing(
+        renderer,
+        report,
+        CONNECTOR_ROUTE_KINDS,
+        subject="Slot",
+        resolved_header="Resource",
+        resolved=resource,
+        empty="Nothing reaches outside this workflow.",
+    )
+
+
 def _render_effective_routing(
     renderer: TerminalRenderer,
     report: Mapping[str, object],
@@ -1372,6 +1419,15 @@ def render_configuration(
         _nested_assignment_rows(assignments),
         empty="No assignments.",
     )
+    _render_effective_routing(
+        renderer,
+        report,
+        ("model",),
+        subject="Action",
+        resolved_header="Resolves to",
+        resolved=lambda item: item.get("effective"),
+        empty="No participant calls a model.",
+    )
     renderer.framed_section("Assistants")
     _render_assistant_tables(report, renderer, compact_titles=True)
     renderer.framed_section("Connectors")
@@ -1408,6 +1464,7 @@ def render_configuration(
         ],
         empty="This workflow has no connector slots.",
     )
+    _render_connector_routing(renderer, report)
     renderer.framed_section("Site")
     renderer.table(
         "Private state",
@@ -1486,25 +1543,25 @@ def render_readiness(
         ],
     )
     routes = report.get("effective_routing") or []
-    route_rows = routes if isinstance(routes, list) else []
+    route_rows = [item for item in routes if isinstance(item, dict)]
+    previous = None
+    rows: list[tuple[object, ...]] = []
+    for item in route_rows:
+        participant = item.get("participant")
+        rows.append((
+            _routing_status(renderer, item),
+            "" if participant == previous else participant,
+            item.get("action"),
+            item.get("kind"),
+            item.get("configuration"),
+            item.get("source"),
+        ))
+        previous = participant
     _render_columns_or_empty(
         renderer,
         "Effective routing",
-        ("Status", "Participant", "Action", "Kind", "Configuration", "Effective"),
-        [
-            (
-                renderer.status_mark(
-                    "success" if item.get("available") else "error"
-                ),
-                item.get("participant"),
-                item.get("action"),
-                item.get("kind"),
-                item.get("configuration"),
-                item.get("effective"),
-            )
-            for item in route_rows
-            if isinstance(item, dict)
-        ],
+        ("", "Participant", "Action", "Kind", "Configuration", "From"),
+        rows,
         empty="No model, assistant, human, or connector routes.",
     )
     raw_checks = report.get("checks") or []
@@ -1717,38 +1774,7 @@ def render_connector_configuration(
         ],
         empty="This workflow has no connector slots.",
     )
-    def _short(value: object) -> str:
-        """Keep a long resource from squeezing out the columns beside it.
-
-        The full value is in the Configurations table directly above, so this
-        one only has to be recognisable.
-        """
-
-        text = str(value)
-        return text if len(text) <= 22 else text[:21] + "\u2026"
-
-    resources = {
-        str(item.get("name")): (
-            item.get("chat_id")
-            or item.get("spreadsheet_id")
-            or item.get("query")
-            or item.get("account")
-            or "-"
-        )
-        for item in connectors.get("configurations") or []
-        if isinstance(item, dict)
-    }
-    _render_effective_routing(
-        renderer,
-        report,
-        ("human", "telegram", "gmail", "google-sheets", "google-calendar"),
-        subject="Slot",
-        resolved_header="Resource",
-        resolved=lambda item: _short(
-            resources.get(str(item.get("configuration")), "-")
-        ),
-        empty="Nothing reaches outside this workflow.",
-    )
+    _render_connector_routing(renderer, report)
     if show_checks:
         _render_selected_checks(report, renderer, "connector")
 
