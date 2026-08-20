@@ -123,3 +123,76 @@ def test_every_standalone_skill_command_matches_the_real_parser():
         tokens = shlex.split(command, comments=True)
         _parser, arguments = _parse_cli_args(tokens[1:])
         assert arguments.cmd, command
+
+
+FAMILIES = {"provider", "model", "assistant", "connector"}
+
+
+def _cli_commands() -> list[tuple[str, ...]]:
+    """Every command a person can type, read from the real parser."""
+
+    import argparse
+
+    from zippergen.serve import HIDDEN_COMMANDS, _parse_cli_args
+
+    parser, _arguments = _parse_cli_args([])
+
+    def subcommands(node):
+        for action in node._actions:
+            if isinstance(action, argparse._SubParsersAction):
+                return action.choices
+        return {}
+
+    found: list[tuple[str, ...]] = []
+
+    def walk(node, path):
+        for name, child in subcommands(node).items():
+            if name in HIDDEN_COMMANDS:
+                continue
+            found.append((*path, name))
+            walk(child, (*path, name))
+
+    walk(parser, ())
+    return found
+
+
+def _documented(command: tuple[str, ...], text: str) -> bool:
+    if " ".join(command) in text:
+        return True
+    # The four configuration families share one documented pattern rather than
+    # repeating every verb four times, e.g. "TYPE rename OLD NEW".
+    return (
+        len(command) == 2
+        and command[0] in FAMILIES
+        and f"TYPE {command[1]}" in text
+    )
+
+
+@pytest.mark.parametrize(
+    "documents",
+    [
+        ("docs/workflow-development-deployment-guide.tex",),
+        (
+            "src/zippergen/skills/zippergen-workflows/SKILL.md",
+            "src/zippergen/skills/zippergen-workflows/references/dsl-and-cli.md",
+        ),
+    ],
+    ids=["guide", "skill"],
+)
+def test_every_command_is_documented(documents):
+    """Prose has no tests, so it drifts every time behaviour improves.
+
+    Four times in one day a document went quietly wrong because a command
+    changed. This does not check that the words are *right* -- nothing can --
+    but it does catch the case where a command exists and nobody wrote it
+    down at all.
+    """
+
+    text = "".join((REPO / name).read_text() for name in documents)
+    missing = sorted(
+        " ".join(command)
+        for command in _cli_commands()
+        if not _documented(command, text)
+    )
+
+    assert not missing, "undocumented commands: " + ", ".join(missing)

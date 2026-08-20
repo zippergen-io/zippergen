@@ -692,6 +692,38 @@ zg provider authorize google-work --handoff  # or hand it to another computer
 zg provider accept google-work
 ```
 
+Every configuration family offers the same verbs, so learning one teaches all
+four:
+
+```bash
+zg model unassign Writer            # drop one assignment, keep the configuration
+zg model rename old-name new-name   # move the name and everything naming it
+zg model remove old-name            # delete an unused configuration
+zg assistant unassign Developer
+zg assistant rename old-name new-name
+zg assistant remove old-name
+zg connector unassign Mailbox
+zg connector rename old-name new-name
+zg connector remove old-name
+zg provider rename old-name new-name
+zg provider remove old-name
+```
+
+A selected durable run and a supervised deployment share the same inspection
+verbs, one aimed at each:
+
+```bash
+zg run trace                        # recent protocol events
+zg run tasks                        # decisions waiting for a person
+zg run approve --task 1 --yes       # answer one
+zg deploy trace
+zg deploy tasks
+zg deploy approve --task 1 --yes
+zg deploy list                      # every deployment on this computer
+zg deploy prune                     # clear orphans and stale archives
+zg completion zsh                   # shell completion; also bash and fish
+```
+
 `rename OLD NEW` exists for every family. It moves the name and everything
 that referred to it in one write: assignments, requirement bindings, and for a
 provider connection its credential and site endpoint, which are keyed by that

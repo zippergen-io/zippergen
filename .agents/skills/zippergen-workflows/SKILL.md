@@ -138,12 +138,25 @@ participants may name the same configuration. Use
 `[models.assignments.actions]` with a quoted `"Writer.draft_reply"` key only
 when one action needs a different model. `zg run --llm mock` is a temporary
 global override and replaces all project assignments for that run.
+
+`default = "mock"` is what `zg init` writes, so a participant with no
+assignment answers with a placeholder rather than a real model. A run says so
+on standard error when it happens:
+
+```
+Mock model (not a real one) for: Gatekeeper. Assign one with 'zg model assign TARGET NAME'.
+```
+
+Read that line before treating a run's output as evidence of anything. It is
+absent when every participant that calls an LLM has a real model.
 Use `zg config` to inspect the full effective configuration and missing local
 facts without contacting providers. `zg validate` is also offline. Use
 `zg check` for project-wide readiness; it contacts configured providers and
-may send a small model request. `zg check` exits zero once it has run, so read
-its output rather than its exit code. Pass `--strict` to make anything that is
-not ready exit non-zero.
+may send a small model request. Every `check` command -- `zg check`,
+`zg provider check`, `zg model check`, `zg connector check`,
+`zg assistant check`, `zg deploy check` -- exits zero once it has run, so read
+its output rather than its exit code. Pass `--strict` to any of them to make
+anything that is not ready exit non-zero.
 
 For an `@assistant` action, choose Codex or Claude through a named project
 configuration. Do not hard-code the backend merely to route one project:

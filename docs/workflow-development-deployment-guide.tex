@@ -612,8 +612,14 @@ zg run --durable --llm openai:gpt-4o-mini
 # Ctrl-C
 zg run status
 zg run inspect --agent Writer
+zg run trace                 # recent protocol events
+zg run tasks                 # decisions waiting for a person
+zg run approve               # answer one
 zg run --resume
 \end{lstlisting}
+
+The four inspection verbs are the same ones \texttt{zg deploy} offers, aimed
+at the selected development run instead of the service.
 
 Starting another \texttt{zg run -{}-durable} discards the older selected
 development run and creates fresh state. To abandon the selected run, stop its
