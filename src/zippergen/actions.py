@@ -9,12 +9,14 @@ from __future__ import annotations
 import inspect
 import hashlib
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 
+from zippergen.llm_policy import FOREVER
+from zippergen.value_codec import dumps_value
 from zippergen.syntax import (
     ZType, LLMAction, PureAction, EffectAction, AssistantAction, PlannerAction,
-    HumanAction, Lifeline, is_ztype,
+    HumanAction, Lifeline, is_ztype, validate_zvalue,
 )
 
 __all__ = ["llm", "pure", "effect", "assistant", "planner", "human"]
@@ -91,12 +93,81 @@ def _validate_output_specs(
 # @llm decorator
 # ---------------------------------------------------------------------------
 
+#: Distinguishes "no fallback" from a fallback that is legitimately ``None``,
+#: which a Json output may be.
+_NO_FALLBACK = object()
+
+
+def _validated_retries(name: str, retries: object) -> int | str:
+    if retries == FOREVER:
+        return FOREVER
+    if type(retries) is int and retries >= 0:
+        return retries
+    raise ValueError(
+        f"@llm action '{name}' retries= must be a non-negative integer or "
+        f"{FOREVER!r}, got {retries!r}."
+    )
+
+
+def _validated_fallback(
+    name: str,
+    outputs: tuple[tuple[str, ZType], ...],
+    fallback: object,
+) -> str | None:
+    """Check a declared fallback now, and store it as canonical JSON.
+
+    Checking here means a mistyped fallback is a workflow that will not load,
+    rather than a surprise on the day a model finally misbehaves -- which is
+    exactly the day nobody wants a second failure.
+    """
+
+    if fallback is _NO_FALLBACK:
+        return None
+
+    if len(outputs) == 1:
+        output_name, output_type = outputs[0]
+        values: dict[str, object] = {output_name: fallback}
+    else:
+        if not isinstance(fallback, Mapping):
+            raise TypeError(
+                f"@llm action '{name}' declares {len(outputs)} outputs, so "
+                f"fallback= must be a mapping of "
+                f"{{{', '.join(repr(n) for n, _ in outputs)}}}, got "
+                f"{type(fallback).__name__}."
+            )
+        declared = {output_name for output_name, _ in outputs}
+        given = set(fallback)
+        if given != declared:
+            missing = ", ".join(sorted(declared - given)) or "none"
+            extra = ", ".join(sorted(given - declared)) or "none"
+            raise ValueError(
+                f"@llm action '{name}' fallback= must name exactly the "
+                f"declared outputs. Missing: {missing}. Unexpected: {extra}."
+            )
+        values = dict(fallback)
+
+    for output_name, output_type in outputs:
+        validate_zvalue(
+            values[output_name],
+            output_type,
+            context=f"@llm action '{name}' fallback for output {output_name!r}",
+        )
+    try:
+        return dumps_value(values)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(
+            f"@llm action '{name}' fallback= is not JSON-serializable: {exc}."
+        ) from exc
+
+
 def llm(
     *,
     system: str,
     user: str,
     parse: str,
     outputs: OutputSpec,
+    retries: int | str = 3,
+    fallback: object = _NO_FALLBACK,
 ) -> Callable[[Callable], LLMAction]:
     """
     Decorator that produces a LLMAction node.
@@ -111,16 +182,30 @@ def llm(
         Expected output format: ``"json"``, ``"text"``, or ``"bool"``.
     outputs : sequence of (name, ZType) pairs
         Output variable names and their ZipperGen types.
+    retries : int or ``"forever"``, optional
+        Attempts after the first, for failures worth repeating: network
+        trouble, rate limits, and answers that do not parse or do not match
+        the declared outputs. ``"forever"`` keeps trying until the run stops.
+    fallback : optional
+        What this action produces when the retries are spent, or when the
+        provider fails permanently. For one output it is the value itself;
+        for several it is a mapping naming exactly the declared outputs.
+        Omitting it keeps the failure loud.
     """
     def decorator(fn: Callable) -> LLMAction:
         inputs = _extract_inputs(fn)
+        validated_outputs = _validate_output_specs(fn.__name__, outputs)
         return LLMAction(
             name=fn.__name__,
             inputs=inputs,
-            outputs=_validate_output_specs(fn.__name__, outputs),
+            outputs=validated_outputs,
             system_prompt=system,
             user_prompt=user,
             parse_format=parse,
+            retries=_validated_retries(fn.__name__, retries),
+            fallback_json=_validated_fallback(
+                fn.__name__, validated_outputs, fallback
+            ),
         )
     return decorator
 

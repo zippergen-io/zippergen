@@ -41,6 +41,62 @@ dictionaries with string keys. Use it for structured records and tool results.
 ZipperGen validates the whole value before durable execution. Do not pass
 arbitrary Python objects through workflow variables.
 
+### When the model fails
+
+An `@llm` action fails in three ways, and they need different answers. A
+refused connection, a timeout, a 429 or a transient 5xx is worth repeating. So
+is an answer that arrives but does not parse, or does not match the declared
+outputs -- the next sample may well be valid. A rejected key, an unknown model
+or a malformed request is not: it will fail identically forever.
+
+```python
+@llm(
+    system="Draft concise replies.",
+    user="{message}",
+    parse="text",
+    outputs=[("draft", str)],
+    retries="forever",          # keep trying until the run is stopped
+)
+def draft_reply(message: str): ...
+
+
+@llm(
+    system="Classify the request.",
+    user="{message}",
+    parse="bool",
+    outputs=[("accepted", bool)],
+    retries=3,                  # three attempts after the first
+    fallback=False,             # then this, instead of failing
+)
+def classify(message: str): ...
+```
+
+`retries` is a non-negative integer or `"forever"`; omitted it is `3`.
+`fallback` is the output value itself for one output, or a mapping naming
+exactly the declared outputs for several. Its names, types and JSON validity
+are checked when the action is declared, not when a model first misbehaves.
+
+Omitting `fallback` keeps the failure loud: the last error is raised. Declaring
+one changes what happens twice over -- when the retries run out, and when a
+permanent failure occurs, which is not retried at all. Waiting is 2, 4, 8
+seconds and so on, capped at 30, and a provider's `Retry-After` wins over that.
+A stopped run interrupts the wait immediately and does *not* take the fallback:
+cancellation is not failure.
+
+Nothing else is caught. A bug in ZipperGen or in a workflow's own code
+propagates, because a retry loop that swallows every exception turns a typo
+into an unbounded wait.
+
+A declared `tuple` output keeps its type. ZipperGen's tagged value encoding
+distinguishes tuples from lists, including when they are nested, before the
+fallback is checked. Fallback and real answers pass the same check, in the
+action's own output namespace, before being bound to workflow variables.
+
+Retries are counted within one invocation, so two lifelines calling the same
+model do not share a budget. The count does not survive a crash: a process that
+dies mid-action starts its budget again on resume, which is the same
+at-least-once boundary every external action has.
+
 Use workflow inputs for application data that belongs to a participant, not
 for every operational setting used by an effect. If the requested run command
 does not pass a directory or endpoint, give that setting a useful project
@@ -733,8 +789,14 @@ It touches up to three files, which cannot be written atomically, so the order
 is the guarantee: private values are copied under the new name, the committed
 manifest is switched, and only then are the old private values removed. An
 interruption at any point leaves a project that still works -- under the old
-name before the switch, the new one after it. At worst a duplicate credential
-is left behind, and rerunning the same rename removes it.
+name before the switch, the new one after it. If it stopped during the final
+cleanup, a duplicate credential is left behind under the old name; running the
+same rename again finishes the cleanup and removes it.
+
+That rerun is recognised only by the evidence copy-then-switch actually leaves:
+every private value under the old name exists identically under the new one. An
+unrelated leftover under some other name is not that, and is refused rather
+than deleted.
 
 `configure` creates or updates the named configuration. In an interactive
 terminal, an existing configuration's current values become the defaults.

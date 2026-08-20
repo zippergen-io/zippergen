@@ -30,6 +30,7 @@ import threading
 import time
 from typing import Any, cast
 
+from zippergen.errors import WorkflowCancelled
 from zippergen.control import (
     PartialReceiveAny,
     decode_control,
@@ -93,7 +94,7 @@ def _begin_immediate(conn, stop: threading.Event | None = None) -> None:
             if "database is locked" not in str(exc).lower():
                 raise
             if stop is not None and stop.is_set():
-                raise RuntimeError("Workflow cancelled") from exc
+                raise WorkflowCancelled("Workflow cancelled") from exc
             time.sleep(0.05)
 
 
@@ -293,7 +294,7 @@ class RoleRunner:
                     f"Human task {task_id!r} ended with status {status!r}"
                 )
             if self.stop is not None and self.stop.is_set():
-                raise RuntimeError("Workflow cancelled")
+                raise WorkflowCancelled("Workflow cancelled")
             time.sleep(0.05)
 
     def _resolve_human_task(self, pending: PendingExternal) -> dict:
@@ -377,6 +378,11 @@ class RoleRunner:
             self.llm_backend,
             self.human_backend,
             self.assistant_backend,
+            # The retry wait must end the moment the deployment is stopped,
+            # and this call is made with no transaction open, so a long wait
+            # here blocks nothing but itself.
+            stop=self.stop,
+            trace=self.trace,
         )
 
     # ---- the loop ---------------------------------------------------------
@@ -409,7 +415,7 @@ class RoleRunner:
     def run_live(self) -> None:
         while not isinstance(self.residual, EmptyStmt):
             if self.stop is not None and self.stop.is_set():
-                raise RuntimeError("Workflow cancelled")
+                raise WorkflowCancelled("Workflow cancelled")
 
             _begin_immediate(self.conn, self.stop)
             out, progressed = self.step(self.residual)
@@ -458,7 +464,7 @@ class RoleRunner:
             status, detail = self._status_for(self.residual, blocked=True)
             self._publish_status(status, detail)
             if self.stop is not None and self.stop.is_set():
-                raise RuntimeError("Workflow cancelled")
+                raise WorkflowCancelled("Workflow cancelled")
             self._sleep_after_idle_step()
 
     def run(self) -> dict:
@@ -469,7 +475,7 @@ class RoleRunner:
                 self._rollback()
             if isinstance(exc, RoleStateConflict):
                 raise
-            state = "cancelled" if "Workflow cancelled" in str(exc) else "failed"
+            state = "cancelled" if isinstance(exc, WorkflowCancelled) else "failed"
             try:
                 set_role_status(
                     self.conn,

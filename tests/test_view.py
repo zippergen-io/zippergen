@@ -7,6 +7,7 @@ from zippergen import (
     Lifeline,
     Var,
     effect,
+    llm,
     pure,
     workflow,
 )
@@ -15,6 +16,7 @@ from zippergen.projection import project
 from zippergen.syntax import ActStmt
 from zippergen.view import (
     ViewOptions,
+    _render_action,
     render_local_projection_with_pointers,
     render_workflow,
     render_workflow_json,
@@ -64,6 +66,16 @@ zippergen_deployment = DeploymentSpec(
 )
 
 
+@llm(
+    system="Decide.",
+    user="{value}",
+    parse="bool",
+    outputs=[("accepted", bool)],
+    fallback=False,
+)
+def decide(value: str): ...
+
+
 def test_global_protocol_view_is_source_like_code():
     code = render_workflow(editorial, options=ViewOptions())
 
@@ -73,6 +85,12 @@ def test_global_protocol_view_is_source_like_code():
     assert "Editor: edited = edit_text(text)" in code
     assert "if (approved) @ Author:" in code
     assert "return published @ Publisher" in code
+
+
+def test_llm_fallback_is_visible_in_the_action_view():
+    rendered = "\n".join(_render_action(decide, full=True))
+
+    assert "fallback=False" in rendered
 
 
 def test_json_type_is_visible_in_code_and_structured_views():

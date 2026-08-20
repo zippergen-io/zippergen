@@ -112,6 +112,8 @@ def _action_definition(action: object) -> dict[str, object]:
             "system_prompt": action.system_prompt,
             "user_prompt": action.user_prompt,
             "parse_format": action.parse_format,
+            "retries": action.retries,
+            "fallback": action.fallback_json,
         })
     elif isinstance(action, PureAction):
         base.update({"kind": "pure", "implementation_hash": _implementation_hash(action)})

@@ -12,6 +12,8 @@ import threading
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 
+from zippergen.errors import WorkflowCancelled
+
 __all__ = ["make_cli_human_backend", "make_sqlite_human_backend"]
 
 
@@ -50,7 +52,7 @@ class _MainThreadHumanDispatcher:
 
     def _submit(self, action, inputs: dict) -> dict:
         if self.stop.is_set():
-            raise RuntimeError("Workflow cancelled")
+            raise WorkflowCancelled("Workflow cancelled")
         request = _HumanRequest(
             action=action,
             inputs=dict(inputs),
@@ -59,7 +61,7 @@ class _MainThreadHumanDispatcher:
         self.requests.put(request)
         while not request.done.wait(0.05):
             if self.stop.is_set():
-                raise RuntimeError("Workflow cancelled")
+                raise WorkflowCancelled("Workflow cancelled")
         if request.error is not None:
             raise request.error
         assert request.result is not None
@@ -99,7 +101,7 @@ class _MainThreadHumanDispatcher:
     def cancel_pending(self) -> None:
         """Release role threads without completing their durable human tasks."""
 
-        error = RuntimeError("Workflow cancelled")
+        error = WorkflowCancelled("Workflow cancelled")
         with self._lock:
             active = self._active
         if active is not None and not active.done.is_set():

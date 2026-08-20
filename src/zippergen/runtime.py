@@ -9,6 +9,7 @@ import copy
 import hashlib
 import json
 import math
+import sys
 import threading
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -18,7 +19,12 @@ import textwrap
 
 from zippergen.planner import _exec_planner, _validate_planner_spec
 from zippergen.human_tasks import validate_human_action_result
+from zippergen.errors import WorkflowCancelled
 
+from zippergen.llm_policy import (
+    attempt_llm_action,
+    checked_llm_outputs,
+)
 from zippergen.syntax import (
     EmptyStmt, SendStmt, RecvStmt, ReceiveAnyStmt, SelfAssignStmt, ActStmt, SkipStmt,
     SeqStmt, IfStmt, WhileStmt, IfRecvStmt, WhileRecvStmt,
@@ -175,6 +181,9 @@ def console_trace(event: dict) -> None:
         else:
             lines.append("  bindings")
             lines.append("    (none)")
+    elif t == "llm_retry":
+        lines = [f"[{lifeline}] --- {event['action']} retrying ---"]
+        lines.append(f"  {event.get('detail') or 'retrying'}")
     elif t == "act_start":
         lines = [f"[{lifeline}] --- {event['action']} ---"]
         inputs = event.get("inputs") or {}
@@ -348,7 +357,7 @@ def _receive_any(
             if item is not None:
                 return sender, item
         if stop is not None and stop.is_set():
-            raise RuntimeError("Workflow cancelled: another lifeline failed")
+            raise WorkflowCancelled("Workflow cancelled: another lifeline failed")
         time.sleep(0.01)
 
 
@@ -441,6 +450,62 @@ def _assistant_action_out_map(action, named_outputs, outs) -> dict:
     return result
 
 
+def llm_out_map(
+    action,
+    named_inputs: dict,
+    outs,
+    llm_backend,
+    *,
+    stop=None,
+    trace=None,
+) -> dict:
+    """Call the model until the answer is usable, or the policy gives up.
+
+    One attempt is transport, parse, coercion and output validation together,
+    because a well-formed response carrying the wrong type has failed just as
+    surely as a refused connection, and asking again may fix either.
+    """
+
+    def attempt() -> dict:
+        named_outputs = llm_backend(action, named_inputs)
+        return checked_llm_outputs(action, named_outputs)
+
+    # One namespace throughout: a real answer and a declared fallback both
+    # arrive keyed by the action's own output names, already checked against
+    # the declared types. Guessing which namespace a result was in silently
+    # mixed them up when a variable happened to share another output's name.
+    outputs = attempt_llm_action(
+        action,
+        attempt,
+        stop=stop,
+        report=_retry_reporter(trace, action),
+        check=lambda values: checked_llm_outputs(action, values),
+    )
+    result = {
+        var.name: outputs[aname] for (aname, _), var in zip(action.outputs, outs)
+    }
+    return _validate_action_out_map(action, result, outs, source="LLM backend")
+
+
+def _retry_reporter(trace, action):
+    """Say what is being waited for, once per attempt, without a traceback."""
+
+    def report(message: str) -> None:
+        if trace is not None:
+            # Every trace event is keyed by "type"; console_trace reads it
+            # directly, so "kind" made the first retry raise KeyError.
+            trace({
+                "type": "llm_retry",
+                "action": action.name,
+                "action_kind": "llm",
+                "detail": message,
+            })
+        else:
+            print(f"[zippergen] {message}", file=sys.stderr)
+
+    return report
+
+
 def external_out_map(
     action,
     named_inputs,
@@ -448,6 +513,9 @@ def external_out_map(
     llm_backend,
     human_backend,
     assistant_backend,
+    *,
+    stop=None,
+    trace=None,
 ) -> dict:
     """Return the environment delta for a durable external action.
 
@@ -484,16 +552,8 @@ def external_out_map(
             action, named_inputs, human_backend(action, named_inputs)
         )
         return {outs[0].name: named_outputs[action.output]}
-    named_outputs = llm_backend(action, named_inputs)   # LLMAction
-    result = {
-        var.name: named_outputs.get(aname)
-        for (aname, _), var in zip(action.outputs, outs)
-    }
-    return _validate_action_out_map(
-        action,
-        result,
-        outs,
-        source="LLM backend",
+    return llm_out_map(  # LLMAction
+        action, named_inputs, outs, llm_backend, stop=stop, trace=trace
     )
 
 
@@ -960,11 +1020,10 @@ def _exec(
                 named_outputs = assistant_backend(action, named_inputs)
                 out_map = _assistant_action_out_map(action, named_outputs, outs)
             else:
-                named_outputs = llm_backend(action, named_inputs)
-                out_map = {
-                    var.name: named_outputs.get(aname)
-                    for (aname, _), var in zip(action.outputs, outs)
-                }
+                out_map = llm_out_map(
+                    action, named_inputs, outs, llm_backend,
+                    stop=stop, trace=trace,
+                )
             if isinstance(action, HumanAction):
                 if not action.visible:
                     out_map[outs[0].name] = validate_zvalue(
@@ -1016,7 +1075,9 @@ def _exec(
 
             while any(not isinstance(branch, EmptyStmt) for branch in residuals):
                 if stop is not None and stop.is_set():
-                    raise RuntimeError("Workflow cancelled: another lifeline failed")
+                    raise WorkflowCancelled(
+                        "Workflow cancelled: another lifeline failed"
+                    )
 
                 progressed = False
                 for _ in range(len(residuals)):
@@ -1431,8 +1492,7 @@ def run(
             continue
         result = box[0]
         if isinstance(result, Exception):
-            msg = str(result)
-            if "Workflow cancelled" in msg:
+            if isinstance(result, WorkflowCancelled):
                 if cancelled is None:
                     cancelled = (ll.name, result)
             else:

@@ -129,6 +129,16 @@ def human_task_options(spec: Mapping[str, object]) -> tuple[str, ...]:
     )
 
 
+class InvalidHumanAnswer(ValueError):
+    """A person gave an answer this task cannot accept.
+
+    Distinct from a malformed task specification, which is a defect in
+    ZipperGen or in the store rather than something a person typed. Callers
+    that decide whether to explain-and-move-on or to fail loudly need to tell
+    those two apart, and both were plain ValueError until they had to.
+    """
+
+
 def _parse_bool(raw: object) -> bool:
     if isinstance(raw, bool):
         return raw
@@ -139,7 +149,7 @@ def _parse_bool(raw: object) -> bool:
         "false", "no", "0", "n", "decline", "declined", "reject", "rejected"
     }:
         return False
-    raise ValueError(f"Cannot parse boolean human response: {raw!r}")
+    raise InvalidHumanAnswer(f"Cannot parse boolean human response: {raw!r}")
 
 
 def human_task_result_from_value(
@@ -157,7 +167,7 @@ def human_task_result_from_value(
         )
     else:
         if value is _MISSING or value is None:
-            raise ValueError(f"Human task requires a text value for {output!r}.")
+            raise InvalidHumanAnswer(f"Human task requires a text value for {output!r}.")
         result_value = str(value)
         options = human_task_options(canonical)
         if options:
@@ -165,11 +175,13 @@ def human_task_result_from_value(
             if raw.isdigit() and 1 <= int(raw) <= len(options):
                 result_value = options[int(raw) - 1]
             elif raw not in options:
-                raise ValueError(f"Choose a number between 1 and {len(options)}.")
+                raise InvalidHumanAnswer(f"Choose a number between 1 and {len(options)}.")
 
     result: dict[str, object] = {output: result_value}
     if kind == "ack" and result_value is not True:
-        raise ValueError("An acknowledgement can only be completed affirmatively.")
+        raise InvalidHumanAnswer(
+            "An acknowledgement can only be completed affirmatively."
+        )
     return result
 
 

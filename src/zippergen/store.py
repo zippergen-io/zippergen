@@ -35,6 +35,8 @@ from zippergen.human_tasks import (
     validate_human_task_result,
     validate_human_task_spec,
 )
+from zippergen.errors import WorkflowCancelled
+from zippergen.value_codec import dumps_value, loads_value
 
 
 SCHEMA_VERSION = 2
@@ -293,7 +295,7 @@ def load_role_state(conn, role: str) -> dict | None:
     if row is None:
         return None
     return {
-        "env": json.loads(row[0]),
+        "env": loads_value(row[0]),
         "control": json.loads(row[1]),
         "monitor": json.loads(row[2]) if row[2] is not None else None,
         "steps": int(row[3]),
@@ -325,7 +327,7 @@ def write_role_state(
     """
 
     values = (
-        json.dumps(env),
+        dumps_value(env),
         json.dumps(control),
         None if monitor is None else json.dumps(monitor),
         int(steps),
@@ -420,7 +422,7 @@ def _json_safe(value):
 
 
 def write_workflow_result(conn, workflow: str, value: object) -> None:
-    payload = json.dumps(_json_safe(value))
+    payload = dumps_value(value)
     now = time.time()
     conn.execute("BEGIN IMMEDIATE")
     try:
@@ -443,7 +445,7 @@ def load_workflow_result(conn, workflow: str) -> object | None:
     ).fetchone()
     if row is None:
         return None
-    return json.loads(row[0])
+    return loads_value(row[0])
 
 
 def list_workflow_results(conn) -> list[dict]:
@@ -454,7 +456,7 @@ def list_workflow_results(conn) -> list[dict]:
     return [
         {
             "workflow": row[0],
-            "value": json.loads(row[1]),
+            "value": loads_value(row[1]),
             "created_at": row[2],
             "updated_at": row[3],
         }
@@ -542,7 +544,7 @@ def ensure_human_task(
             json.dumps(locator),
             action,
             input_hash,
-            json.dumps(inputs),
+            dumps_value(inputs),
             json.dumps(canonical_spec),
             "pending",
             None,
@@ -805,7 +807,7 @@ def load_human_task(conn, task_id: str) -> dict | None:
         "locator": json.loads(row[2]),
         "action": row[3],
         "input_hash": row[4],
-        "inputs": json.loads(row[5]),
+        "inputs": loads_value(row[5]),
         "spec": spec,
         "status": row[7],
         "result": result,
@@ -820,6 +822,17 @@ def load_human_task(conn, task_id: str) -> dict | None:
 
 
 Item = tuple[int, tuple, "dict | None", "dict | None", "dict | None"]
+
+
+def _decode_message_values(payload: str) -> tuple:
+    """Decode the sent value sequence, including legacy untagged arrays."""
+
+    decoded = loads_value(payload)
+    if type(decoded) is tuple:
+        return decoded
+    if type(decoded) is list:
+        return tuple(decoded)
+    raise StoreSchemaError("A durable message payload is not a value sequence.")
 
 
 def _encode_causal_stamp(vc, view, field_view) -> str | None:
@@ -873,7 +886,7 @@ class DurableChannel:
                 sender,
                 receiver,
                 channel,
-                json.dumps(list(values)),
+                dumps_value(values),
                 _encode_causal_stamp(vc, view, field_view),
             ),
         )
@@ -926,7 +939,7 @@ class DurableChannel:
             if item is not None:
                 return item
             if stop is not None and stop.is_set():
-                raise RuntimeError("Workflow cancelled")
+                raise WorkflowCancelled("Workflow cancelled")
             time.sleep(0.02)
 
     def _not_taken(self) -> tuple[str, tuple]:
@@ -944,7 +957,7 @@ class DurableChannel:
 
     @staticmethod
     def _row_to_item(rowid, payload, stamp) -> Item:
-        values = tuple(json.loads(payload)) if payload is not None else ()
+        values = _decode_message_values(payload) if payload is not None else ()
         vc, view, field_view = _decode_causal_stamp(stamp)
         return (int(rowid), values, vc, view, field_view)
 
@@ -975,7 +988,7 @@ def list_outstanding_messages(conn) -> list[dict]:
             "sender": row[1],
             "receiver": row[2],
             "channel": row[3],
-            "payload": json.loads(row[4]),
+            "payload": list(_decode_message_values(row[4])),
         }
         for row in rows
     ]

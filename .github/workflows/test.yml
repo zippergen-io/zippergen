@@ -30,8 +30,8 @@ jobs:
 
   types:
     # A separate job, because the test matrix installs only Python and pytest.
-    # The pyright test skips when it cannot run, so without this nothing in CI
-    # would notice type errors returning.
+    # This is the only place type errors are caught: the suite does not run
+    # pyright, so without this job nothing would notice them returning.
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5

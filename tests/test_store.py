@@ -121,6 +121,27 @@ def test_role_state_round_trips_and_keeps_only_the_latest(tmp_path):
         conn.close()
 
 
+def test_role_state_preserves_nested_coordination_container_types(tmp_path):
+    conn = open_store(str(tmp_path / "s.sqlite"))
+    value = ([1, 2], (3, 4), {"items": [5, 6]})
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        write_role_state(
+            conn,
+            "A",
+            env={"value": value},
+            control={"k": "done"},
+            monitor=None,
+            steps=1,
+            status="done",
+        )
+        conn.execute("COMMIT")
+
+        assert load_role_state(conn, "A")["env"] == {"value": value}
+    finally:
+        conn.close()
+
+
 def test_role_state_compare_and_swap_rejects_a_stale_step(tmp_path):
     conn = open_store(str(tmp_path / "s.sqlite"))
     try:
@@ -222,6 +243,24 @@ def test_a_send_is_outstanding_until_the_receiver_deletes_it(tmp_path):
         receiver.clear_taken()
 
         assert list_outstanding_messages(conn) == []
+    finally:
+        conn.close()
+
+
+def test_a_message_preserves_nested_coordination_container_types(tmp_path):
+    conn = open_store(str(tmp_path / "s.sqlite"))
+    value = ([1, 2], (3, 4), {"items": [5, 6]})
+    try:
+        sender = DurableChannel(conn, "A")
+        conn.execute("BEGIN IMMEDIATE")
+        sender.put("A", "B", "main", (value,))
+        conn.execute("COMMIT")
+
+        receiver = DurableChannel(conn, "B")
+        conn.execute("BEGIN IMMEDIATE")
+        item = receiver.try_get("A", "B", "main")
+        assert item is not None and item[1] == (value,)
+        conn.execute("ROLLBACK")
     finally:
         conn.close()
 
@@ -496,7 +535,7 @@ def test_workflow_result_lifecycle(tmp_path):
     assert load_workflow_result(conn, "wf") is None
 
     write_workflow_result(conn, "wf", (1, True))
-    assert load_workflow_result(conn, "wf") == [1, True]
+    assert load_workflow_result(conn, "wf") == (1, True)
 
     created_at = conn.execute(
         "SELECT created_at FROM workflow_results WHERE workflow='wf'"

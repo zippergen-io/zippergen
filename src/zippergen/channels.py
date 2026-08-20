@@ -11,6 +11,8 @@ from __future__ import annotations
 import queue
 import threading
 
+from zippergen.errors import WorkflowCancelled
+
 Item = tuple[int, tuple, "dict | None", "dict | None", "dict | None"]
 
 
@@ -36,7 +38,9 @@ class _SeqQueue:
                 return self._q.get(timeout=0.5)
             except queue.Empty:
                 if stop.is_set():
-                    raise RuntimeError("Workflow cancelled: another lifeline failed")
+                    raise WorkflowCancelled(
+                        "Workflow cancelled: another lifeline failed"
+                    )
 
     def get_nowait(self) -> Item:
         return self._q.get_nowait()

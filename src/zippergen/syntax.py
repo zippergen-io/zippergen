@@ -403,6 +403,12 @@ class LLMAction:
     system_prompt: str
     user_prompt: str        # may contain {var_name} placeholders
     parse_format: str       # "json" | "text" | "bool"
+    #: Attempts after the first: a non-negative int, or the literal "forever".
+    retries: int | str = 3
+    #: The declared fallback outputs as canonical JSON, or None for none.
+    #: JSON rather than the values themselves so the action stays hashable and
+    #: its fingerprint stays stable between processes.
+    fallback_json: str | None = None
 
     def __repr__(self) -> str:
         ins = ", ".join(f"{n}: {t.__name__}" for n, t in self.inputs)

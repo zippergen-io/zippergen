@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 
 from zippergen.serve import _parse_cli_args, main
-from zippergen.workspace import Workspace
+from zippergen.workspace import Workspace, WorkspaceError
 
 
 EXAMPLE = Path(__file__).resolve().parents[1] / "examples" / "email_approval.py"
@@ -1148,3 +1148,154 @@ def test_a_completed_rename_leaves_no_duplicate_behind(project):
     assert workspace.provider_secret("alerts-bot", "bot_token") == "private"
     assert workspace.provider_secret("approval-bot", "bot_token") is None
     assert "approval-bot" not in workspace.provider_connections()
+
+
+def _interrupt_after_the_switch(workspace, monkeypatch, rename):
+    """Run a rename that dies immediately after the manifest is written."""
+
+    real_write = type(workspace)._write_project_configuration
+
+    def stop_after_the_switch(self, **kwargs):
+        real_write(self, **kwargs)
+        raise KeyboardInterrupt("interrupted during cleanup")
+
+    monkeypatch.setattr(
+        type(workspace), "_write_project_configuration", stop_after_the_switch
+    )
+    with pytest.raises(KeyboardInterrupt):
+        rename()
+    monkeypatch.undo()
+
+
+@pytest.mark.parametrize(
+    "channel",
+    ["secret", "site-endpoint", "model-override"],
+)
+def test_rerunning_an_interrupted_rename_finishes_every_storage_channel(
+    project, monkeypatch, channel
+):
+    """Interruption after the switch is the one window copy-first leaves open.
+
+    Each private channel is cleaned up by a different line, and testing only
+    one of them is how a recovery boundary hides a gap.
+    """
+
+    _root, workspace = project
+
+    if channel == "model-override":
+        workspace.save_model_configuration(
+            "old-model",
+            {"connection": "local-main", "model": "qwen3:14b", "idle_timeout": 30},
+        )
+        assert workspace.load()["model_configuration_overrides"].get("old-model")
+        _interrupt_after_the_switch(
+            workspace,
+            monkeypatch,
+            lambda: workspace.rename_model_configuration("old-model", "new-model"),
+        )
+        overrides = workspace.load()["model_configuration_overrides"]
+        assert set(overrides) >= {"old-model", "new-model"}, "copied, not moved"
+
+        assert workspace.rename_model_configuration("old-model", "new-model") == (
+            "new-model"
+        )
+
+        overrides = workspace.load()["model_configuration_overrides"]
+        assert "old-model" not in overrides
+        assert overrides["new-model"]
+        return
+
+    if channel == "secret":
+        workspace.save_provider_secret("approval-bot", "bot_token", "private")
+    else:
+        workspace.save_provider_connection(
+            "approval-bot", {"kind": "telegram", "base_url": "http://x:1/v1"}
+        )
+
+    _interrupt_after_the_switch(
+        workspace,
+        monkeypatch,
+        lambda: workspace.rename_provider_connection("approval-bot", "alerts-bot"),
+    )
+
+    if channel == "secret":
+        assert workspace.provider_secret("approval-bot", "bot_token") == "private"
+        assert workspace.provider_secret("alerts-bot", "bot_token") == "private"
+    else:
+        overrides = workspace.load()["provider_connection_overrides"]
+        assert set(overrides) >= {"approval-bot", "alerts-bot"}, "copied, not moved"
+
+    assert workspace.rename_provider_connection("approval-bot", "alerts-bot") == (
+        "alerts-bot"
+    )
+
+    if channel == "secret":
+        assert workspace.provider_secret("approval-bot", "bot_token") is None
+        assert workspace.provider_secret("alerts-bot", "bot_token") == "private"
+    else:
+        overrides = workspace.load()["provider_connection_overrides"]
+        assert "approval-bot" not in overrides
+        assert overrides["alerts-bot"]["base_url"] == "http://x:1/v1"
+
+
+def test_recovery_reruns_even_when_the_command_had_stray_whitespace(
+    project, monkeypatch
+):
+    """The identical command must reach the branch it reached the first time."""
+
+    _root, workspace = project
+    workspace.save_provider_secret("approval-bot", "bot_token", "private")
+    _interrupt_after_the_switch(
+        workspace,
+        monkeypatch,
+        lambda: workspace.rename_provider_connection("approval-bot", " alerts-bot "),
+    )
+
+    assert workspace.rename_provider_connection(
+        "approval-bot", " alerts-bot "
+    ) == "alerts-bot"
+    assert workspace.provider_secret("approval-bot", "bot_token") is None
+
+
+def test_recovery_does_not_excuse_a_genuine_typo(project):
+    """Only an actual leftover counts as an interrupted rename."""
+
+    _root, workspace = project
+
+    with pytest.raises(WorkspaceError, match="does not exist"):
+        workspace.rename_provider_connection("never-existed", "approval-bot")
+
+
+def test_an_unrelated_orphan_credential_is_never_silently_deleted(project):
+    """"Some state exists under the old name" is not proof of a rename.
+
+    Copy-then-switch leaves every old value duplicated under the new name.
+    Requiring only that the old name has *something* let an unrelated leftover
+    be deleted by a mistyped rename.
+    """
+
+    _root, workspace = project
+    secrets = workspace.load_secrets()
+    secrets["provider:orphan:bot_token"] = "unrelated"
+    workspace.save_secrets(secrets)
+
+    with pytest.raises(WorkspaceError, match="does not exist"):
+        workspace.rename_provider_connection("orphan", "approval-bot")
+
+    assert workspace.load_secrets()["provider:orphan:bot_token"] == "unrelated"
+
+
+def test_a_partial_copy_is_not_treated_as_a_finished_one(project):
+    """Every old value must have an identical counterpart, not just one."""
+
+    _root, workspace = project
+    secrets = workspace.load_secrets()
+    secrets["provider:orphan:bot_token"] = "one"
+    secrets["provider:orphan:other"] = "two"
+    secrets["provider:approval-bot:bot_token"] = "one"
+    workspace.save_secrets(secrets)
+
+    with pytest.raises(WorkspaceError, match="does not exist"):
+        workspace.rename_provider_connection("orphan", "approval-bot")
+
+    assert workspace.load_secrets()["provider:orphan:other"] == "two"

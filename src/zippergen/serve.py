@@ -732,6 +732,9 @@ def _trace_summary(role: str, event: object) -> str:
         seq = event.get("seq")
         seq_text = f" seq={seq}" if seq is not None else ""
         return f"{role} {event_type} {kind} {action}{seq_text} {payload_name}={_short_json(payload)}"
+    if event_type == "llm_retry":
+        action = event.get("action", "?")
+        return f"{role} llm_retry {action} {event.get('detail') or ''}".rstrip()
     if event_type == "decision":
         kind = event.get("kind", "if")
         return f"{role} decision {kind} value={_short_json(event.get('value'))}"

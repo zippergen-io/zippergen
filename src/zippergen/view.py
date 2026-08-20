@@ -89,6 +89,17 @@ def _type_name(value: type) -> str:
     return getattr(value, "__name__", repr(value))
 
 
+def _fallback_display(action) -> str:
+    """Show the fallback as it was written: one value, or a mapping."""
+
+    from zippergen.llm_policy import decode_fallback
+
+    values = decode_fallback(action) or {}
+    if len(action.outputs) == 1:
+        return repr(values[action.outputs[0][0]])
+    return repr(values)
+
+
 def _return_type(outputs: tuple[tuple[str, type], ...]) -> str:
     if not outputs:
         return "None"
@@ -215,14 +226,21 @@ def _render_action(action: object, *, full: bool) -> list[str]:
     if isinstance(action, LLMAction):
         system = action.system_prompt if full else "<hidden at this detail level>"
         user = action.user_prompt if full else "<hidden at this detail level>"
-        return [
+        lines = [
             "@llm(",
             f"    system={system!r},",
             f"    user={user!r},",
             f"    parse={action.parse_format!r},",
+        ]
+        if action.retries != 3:
+            lines.append(f"    retries={action.retries!r},")
+        if action.fallback_json is not None:
+            lines.append(f"    fallback={_fallback_display(action)},")
+        lines.extend([
             ")",
             f"def {action.name}({params}) -> {result_type}: ...",
-        ]
+        ])
+        return lines
     if isinstance(action, AssistantAction):
         instruction_value = (
             action.instructions

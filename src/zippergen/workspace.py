@@ -2265,6 +2265,46 @@ class Workspace:
             )
         return normalized
 
+    def _provider_copy_completed(self, old: str, new: str) -> bool:
+        """Whether the private state under ``old`` was already copied to ``new``.
+
+        This is the evidence that an interrupted rename, and not some unrelated
+        leftover, put both names in the store. Copy-then-switch guarantees the
+        property: every value under the old name exists identically under the
+        new one. Requiring only that *some* state exists under the old name
+        would let an unrelated orphan be deleted by a mistyped rename.
+        """
+
+        prefix_old = f"provider:{old}:"
+        secrets = self.load_secrets()
+        old_secrets = {
+            key[len(prefix_old):]: value
+            for key, value in secrets.items()
+            if key.startswith(prefix_old)
+        }
+        overrides = self.load().get("provider_connection_overrides") or {}
+        if not old_secrets and old not in overrides:
+            return False
+        for field, value in old_secrets.items():
+            if secrets.get(f"provider:{new}:{field}") != value:
+                return False
+        if old in overrides and overrides.get(new) != overrides[old]:
+            return False
+        return True
+
+    def _finish_provider_rename(self, old: str, new: str) -> None:
+        """Run only the cleanup half, for a rename interrupted after the switch."""
+
+        overrides = dict(self.load().get("provider_connection_overrides") or {})
+        overrides.pop(old, None)
+        self.update(provider_connection_overrides=overrides)
+        prefix = f"provider:{old}:"
+        self.save_secrets({
+            key: value
+            for key, value in self.load_secrets().items()
+            if not key.startswith(prefix)
+        })
+
     def rename_provider_connection(self, old: str, new: str) -> str:
         """Rename one connection, and take everything that named it with it.
 
@@ -2273,8 +2313,22 @@ class Workspace:
         a browser. Site state moves with the visible configuration.
         """
 
+        # Normalise before deciding anything, so rerunning the identical
+        # command -- whitespace and all -- reaches the same branch it did the
+        # first time.
+        candidate = _configuration_name(new, subject="provider connection")
+        previous = str(old).strip()
+        connections = self.provider_connections()
+        if previous not in connections and candidate in connections:
+            # The manifest already names the new connection, so an earlier run
+            # got past the switch and stopped during cleanup. Finishing it is
+            # what "run the same rename again" has to mean; refusing would
+            # leave a duplicate credential nobody has a command to remove.
+            if self._provider_copy_completed(previous, candidate):
+                self._finish_provider_rename(previous, candidate)
+                return candidate
         normalized = self._rename_guard(
-            old, new, self.provider_connections(), "provider connection"
+            previous, candidate, connections, "provider connection"
         )
         manifest = self.project_manifest()
         providers = _object_table(manifest["providers"], field="providers")
@@ -2342,10 +2396,28 @@ class Workspace:
     def rename_model_configuration(self, old: str, new: str) -> str:
         """Rename one model configuration and every assignment naming it."""
 
+        configurations = {
+            k: v for k, v in self.model_configurations().items() if k != "mock"
+        }
+        candidate = _configuration_name(
+            new, subject="model configuration", reserved={"mock"}
+        )
+        previous = str(old).strip()
+        overrides = dict(self.load().get("model_configuration_overrides") or {})
+        if (
+            previous not in configurations
+            and candidate in configurations
+            and previous in overrides
+            # The same proof as for a connection: the copy already happened.
+            and overrides.get(candidate) == overrides[previous]
+        ):
+            overrides.pop(previous, None)
+            self.update(model_configuration_overrides=overrides)
+            return candidate
         normalized = self._rename_guard(
-            old,
-            new,
-            {k: v for k, v in self.model_configurations().items() if k != "mock"},
+            previous,
+            candidate,
+            configurations,
             "model configuration",
             reserved={"mock"},
         )

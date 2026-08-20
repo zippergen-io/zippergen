@@ -16,6 +16,7 @@ from typing import Any
 
 from zippergen.human_tasks import (
     human_task_options,
+    InvalidHumanAnswer,
     human_task_result_from_value,
     validate_human_task_spec,
 )
@@ -204,7 +205,11 @@ def complete_task_with_token(
         )
     try:
         result = human_task_result_from_value(task["spec"], value)
-    except ValueError as exc:
+    except InvalidHumanAnswer as exc:
+        # Only what a person typed. A malformed stored specification also
+        # raises ValueError from here, and that is a defect in ZipperGen or
+        # the store: reporting it as a bad answer would consume the update and
+        # hide the fault.
         raise TaskAnswerInvalid(str(exc)) from exc
     task = complete_human_task(conn, task["task_id"], result)
     mark_human_task_token_used(conn, token)

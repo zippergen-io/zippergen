@@ -577,9 +577,16 @@ def _planner_llm_definition_error(fn_node) -> str | None:
         return "generated @llm configuration may not use ** expansion"
     keywords = {keyword.arg: keyword.value for keyword in decorator.keywords}
     required = {"system", "user", "parse", "outputs"}
-    if len(keywords) != len(decorator.keywords) or set(keywords) != required:
+    optional = {"retries", "fallback"}
+    if len(keywords) != len(decorator.keywords) or not required <= set(keywords):
         return (
             "generated @llm requires exactly system=, user=, parse=, and outputs="
+        )
+    unexpected = set(keywords) - required - optional
+    if unexpected:
+        return (
+            "generated @llm may not use "
+            + ", ".join(sorted(f"{name}=" for name in unexpected))
         )
     for name in ("system", "user", "parse"):
         value = keywords[name]
@@ -595,7 +602,8 @@ def _planner_llm_definition_error(fn_node) -> str | None:
     raw_outputs = keywords["outputs"]
     if not isinstance(raw_outputs, (_ast.Tuple, _ast.List)) or not raw_outputs.elts:
         return "generated @llm outputs= must be a non-empty literal sequence"
-    output_names: set[str] = set()
+    output_names: list[str] = []
+    seen_output_names: set[str] = set()
     output_types: list[type] = []
     for item in raw_outputs.elts:
         if not (
@@ -612,14 +620,62 @@ def _planner_llm_definition_error(fn_node) -> str | None:
                 "(`name`, supported_type) pairs"
             )
         output_name = item.elts[0].value
-        if output_name in output_names:
+        if output_name in seen_output_names:
             return f"generated @llm output name {output_name!r} is duplicated"
-        output_names.add(output_name)
+        output_names.append(output_name)
+        seen_output_names.add(output_name)
         output_types.append(_TYPE_MAP[item.elts[1].id])
     if parse_format == "text" and output_types != [str]:
         return "generated @llm parse='text' requires one str output"
     if parse_format == "bool" and output_types != [bool]:
         return "generated @llm parse='bool' requires one bool output"
+    return _planner_llm_policy_error(
+        keywords, output_names, output_types
+    )
+
+
+def _planner_llm_policy_error(
+    keywords,
+    output_names: list[str],
+    output_types: list[type],
+) -> str | None:
+    """Allow only literal retry and fallback declarations in generated code.
+
+    A planner writes this source, so anything that has to be evaluated to be
+    understood cannot be reviewed before it runs. Constants can be read.
+    """
+
+    import ast as _ast
+
+    retries = keywords.get("retries")
+    if retries is not None:
+        try:
+            # literal_eval rather than a Constant check, so that -1 is read as
+            # the number it is and rejected for being negative, not for being
+            # a unary expression.
+            value = _ast.literal_eval(retries)
+        except (ValueError, SyntaxError, TypeError):
+            return "generated @llm retries= must be a literal"
+        if not (value == "forever" or (type(value) is int and value >= 0)):
+            return (
+                "generated @llm retries= must be a non-negative integer "
+                "literal or 'forever'"
+            )
+
+    fallback = keywords.get("fallback")
+    if fallback is None:
+        return None
+    try:
+        value = _ast.literal_eval(fallback)
+    except (ValueError, SyntaxError, TypeError):
+        return "generated @llm fallback= must be a literal"
+    from zippergen.actions import _validated_fallback
+
+    outputs = tuple(zip(output_names, output_types))
+    try:
+        _validated_fallback("generated", outputs, value)
+    except (TypeError, ValueError) as exc:
+        return f"generated @llm fallback= is invalid: {exc}"
     return None
 
 
@@ -1202,6 +1258,26 @@ def _validate_planner_spec(
             or check_inputs_used())
 
 
+def _planner_llm_call(llm_backend, action: LLMAction) -> dict:
+    """Generate one candidate through the shared LLM policy.
+
+    Two budgets meet here and must not be confused. This one covers the call
+    itself -- a refused connection, a rate limit, an answer that is not a
+    string -- and is the ordinary `retries` on the action. `PlannerAction.
+    max_retries` is the other: how many *invalid generated workflows* are
+    worth correcting. A network blip is not a bad candidate, and spending a
+    candidate on one would be wrong.
+    """
+
+    from zippergen.llm_policy import attempt_llm_action, checked_llm_outputs
+
+    return attempt_llm_action(
+        action,
+        lambda: checked_llm_outputs(action, llm_backend(action, {})),
+        check=lambda values: checked_llm_outputs(action, values),
+    )
+
+
 def _strip_fences(spec: str) -> str:
     """Remove markdown code fences if the LLM wrapped the output."""
     spec = spec.strip()
@@ -1312,10 +1388,10 @@ def _exec_planner(action: PlannerAction, named_inputs: dict, llm_backend, trace=
     user_content_safe = user_content.replace("{", "{{").replace("}", "}}")
 
     # --- 3. Call LLM ---
-    spec_result = llm_backend(
+    spec_result = _planner_llm_call(
+        llm_backend,
         LLMAction(name="_generate_spec", inputs=(), outputs=(("workflow_spec", str),),
                   system_prompt=system, user_prompt=user_content_safe, parse_format="text"),
-        {},
     )
     spec = _strip_fences(str(spec_result.get("workflow_spec", "")))
 
@@ -1374,7 +1450,8 @@ Key rules:
 
 Current (broken) workflow:
 {spec}"""
-        spec_result = llm_backend(
+        spec_result = _planner_llm_call(
+            llm_backend,
             LLMAction(
                 name=f"_generate_spec_retry{attempt}",
                 inputs=(), outputs=(("workflow_spec", str),),
@@ -1382,7 +1459,6 @@ Current (broken) workflow:
                 user_prompt=correction.replace("{", "{{").replace("}", "}}"),
                 parse_format="text",
             ),
-            {},
         )
         spec = _strip_fences(str(spec_result.get("workflow_spec", "")))
 

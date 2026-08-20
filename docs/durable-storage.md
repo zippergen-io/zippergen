@@ -168,6 +168,36 @@ We do not claim at-most-once or exactly-once for anything external. If you need
 it, the outside system has to offer idempotency, and today ZipperGen does not
 thread an idempotency key through `@effect`.
 
+### Retries live in memory, not in the store
+
+An `@llm` action may declare `retries=` and a `fallback=`. The whole attempt is
+retried -- request, parse, coercion and the declared output types -- until it
+produces a usable answer, exhausts the budget, or hits a permanent failure. The
+role's control state does **not** advance while this happens. A fallback, when
+one is declared, commits exactly like any other action result: one transaction,
+one step forward.
+
+Durable coordination values use a tagged JSON encoding, so tuples and lists
+remain distinct across role state, outstanding messages, and workflow results.
+The SQLite columns remain ordinary JSON text; the tags carry only the container
+type information that plain JSON lacks.
+
+The counter is a local variable on the stack of the invocation, deliberately.
+Nothing about retrying is written to the store: no event log, no attempt rows,
+no schema change. That buys a simple, inspectable store, and it costs one
+honest limitation:
+
+> **A finite retry budget starts again if the process itself crashes.** An
+> action declaring `retries=3` that fails twice, crashes, and resumes will make
+> up to four further attempts. The budget bounds one invocation, not the total
+> work done across a crash.
+
+This is the same boundary every external action already has, and for the same
+reason: the only way to bound attempts across a crash is to record them before
+making the call, which is another write that can itself be interrupted.
+Cancellation is separate and exact -- a stopped run interrupts the wait
+immediately and never takes the fallback, because stopping is not failing.
+
 ### Why human actions are different
 
 A human question can sit unanswered for days while nothing is running. So it

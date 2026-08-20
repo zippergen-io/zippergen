@@ -1264,3 +1264,50 @@ def test_a_defect_in_processing_is_not_swallowed_as_a_retry(tmp_path, monkeypatc
                 "message": {"chat": {"id": 4242}, "message_id": 4},
             },
         })
+
+
+def test_a_corrupt_task_specification_is_not_reported_as_a_bad_answer(
+    tmp_path, monkeypatch
+):
+    """A malformed stored spec is a defect here, not a person's mistake.
+
+    Both used to raise ValueError, so treating every ValueError as an invalid
+    answer consumed the update and left the task pending -- hiding a store or
+    ZipperGen fault behind a message about the reply.
+    """
+
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(tmp_path / "home"))
+    store = tmp_path / "corrupt.sqlite"
+    _create_task(store, task_id="task-1")
+    conn = open_store(str(store))
+    try:
+        token = ensure_human_task_token(
+            conn, "task-1", channel="telegram:approval-chat"
+        )["token"]
+    finally:
+        conn.close()
+
+    notifier = TelegramDeploymentNotifier(
+        str(store),
+        FakeTelegramClient([]),
+        connection="approval-bot",
+        routes={"approval-chat": {"chat_id": "4242", "channel": "telegram:approval-chat"}},
+        assignments={"Mailbox": "approval-chat"},
+        fingerprint="fingerprint-corrupt",
+    )
+    monkeypatch.setattr(
+        "zippergen.telegram_notify.human_task_result_from_value",
+        lambda *a, **k: (_ for _ in ()).throw(
+            ValueError("Human task specification kind 'nonsense' is unsupported.")
+        ),
+    )
+
+    with pytest.raises(ValueError, match="specification"):
+        notifier.process_update({
+            "update_id": 913,
+            "callback_query": {
+                "id": "cb-913",
+                "data": f"zg:yes:{token}",
+                "message": {"chat": {"id": 4242}, "message_id": 5},
+            },
+        })

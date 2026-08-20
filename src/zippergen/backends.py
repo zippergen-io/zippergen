@@ -7,12 +7,19 @@ import math
 import os
 import threading
 import time
+from datetime import datetime
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from urllib import request
 from urllib.error import HTTPError, URLError
 
+from zippergen.llm_policy import (
+    LLMError,
+    LLMInvalidResponseError,
+    LLMPermanentError,
+    LLMTransientError,
+)
 from zippergen.syntax import Json, validate_zvalue
 
 __all__ = [
@@ -73,35 +80,115 @@ def _coerce_output(value: object, type_: type) -> object:
     return value
 
 
-def _retry_json_request(req: request.Request, *, timeout: float, max_retries: int) -> dict:
-    for attempt in range(max_retries + 1):
-        try:
-            with request.urlopen(req, timeout=timeout) as response:
-                return json.loads(response.read().decode("utf-8"))
-        except HTTPError as exc:
-            detail = exc.read().decode("utf-8", errors="replace")
-            if exc.code in {429, 500, 502, 503, 504} and attempt < max_retries:
-                retry_after = exc.headers.get("Retry-After") if exc.headers else None
-                try:
-                    delay = float(retry_after) if retry_after else (2.0 ** attempt * 2)
-                except ValueError:
-                    delay = 1.0 + attempt
-                time.sleep(delay)
-                continue
-            raise RuntimeError(f"API error: {detail}") from exc
-        except URLError as exc:
-            if attempt < max_retries:
-                time.sleep(1.0 + attempt)
-                continue
-            raise RuntimeError(f"Could not reach API: {exc.reason}") from exc
-        except OSError as exc:
-            # Catches ConnectionResetError and similar low-level socket errors
-            # that occur during response reading, after urlopen() succeeds.
-            if attempt < max_retries:
-                time.sleep(1.0 + attempt)
-                continue
-            raise RuntimeError(f"Connection error: {exc}") from exc
-    raise RuntimeError("Unreachable.")
+#: Statuses worth waiting for. Everything else the provider returns is a
+#: statement about the request, and repeating it produces the same statement.
+_TRANSIENT_STATUS = {408, 409, 425, 429, 500, 502, 503, 504}
+
+
+def _retry_after_seconds(headers) -> float | None:
+    """Read ``Retry-After`` in either standard form.
+
+    The header is defined as a delay in seconds or an HTTP date. Supporting
+    only the first silently ignored providers that send the second, which then
+    got the invented backoff instead of the wait they asked for.
+    """
+
+    raw = headers.get("Retry-After") if headers else None
+    if not raw:
+        return None
+    try:
+        return max(0.0, float(raw))
+    except (TypeError, ValueError):
+        pass
+    try:
+        from email.utils import parsedate_to_datetime
+
+        when = parsedate_to_datetime(str(raw))
+    except (TypeError, ValueError):
+        return None
+    if when is None:
+        return None
+    now = datetime.now(when.tzinfo) if when.tzinfo else datetime.now()
+    return max(0.0, (when - now).total_seconds())
+
+
+def _chat_completion_text(body: object, *, provider: str) -> str:
+    """Pull the message text out of an OpenAI-shaped envelope.
+
+    A body can be valid JSON and still unusable -- a missing key, an empty
+    choices list, a non-string content. That is a malformed response, worth
+    another sample, not a defect in ZipperGen. Only the response's shape is
+    converted here; anything else this function could raise would be a bug and
+    is left alone.
+    """
+
+    try:
+        content = body["choices"][0]["message"]["content"]  # type: ignore[index]
+    except (KeyError, IndexError, TypeError) as exc:
+        raise LLMInvalidResponseError(
+            f"{provider} response has no message content: {_short_content(repr(body))}"
+        ) from exc
+    if not isinstance(content, str):
+        raise LLMInvalidResponseError(
+            f"Unexpected {provider} response content: {content!r}"
+        )
+    return content
+
+
+def _anthropic_text(body: object) -> str:
+    """Join the text blocks of an Anthropic envelope, or say it is unusable."""
+
+    content_blocks = body.get("content") if isinstance(body, dict) else None
+    text_parts = (
+        [
+            block["text"]
+            for block in content_blocks
+            if isinstance(block, dict)
+            and block.get("type") == "text"
+            and isinstance(block.get("text"), str)
+        ]
+        if isinstance(content_blocks, list)
+        else []
+    )
+    if not text_parts:
+        raise LLMInvalidResponseError(
+            f"Unexpected Anthropic response content: "
+            f"{_short_content(repr(content_blocks))}"
+        )
+    return "\n".join(text_parts)
+
+
+def _json_request(req: request.Request, *, timeout: float) -> dict:
+    """Perform one HTTP call and classify any failure.
+
+    There is no retry here. This is the boundary that knows what a provider's
+    status codes mean; deciding what to do about them belongs to one policy,
+    in ``llm_policy``, which also sees parsing and validation failures.
+    """
+
+    try:
+        with request.urlopen(req, timeout=timeout) as response:
+            return json.loads(response.read().decode("utf-8"))
+    except HTTPError as exc:
+        detail = exc.read().decode("utf-8", errors="replace")
+        if exc.code in _TRANSIENT_STATUS:
+            raise LLMTransientError(
+                f"API error {exc.code}: {detail}",
+                retry_after=_retry_after_seconds(exc.headers),
+            ) from exc
+        raise LLMPermanentError(f"API error {exc.code}: {detail}") from exc
+    except URLError as exc:
+        raise LLMTransientError(f"Could not reach API: {exc.reason}") from exc
+    except TimeoutError as exc:
+        raise LLMTransientError(f"API request timed out after {timeout}s") from exc
+    except OSError as exc:
+        # ConnectionResetError and similar, raised while reading the response
+        # after urlopen() has already succeeded.
+        raise LLMTransientError(f"Connection error: {exc}") from exc
+    except json.JSONDecodeError as exc:
+        raise LLMInvalidResponseError(
+            f"API returned a body that is not JSON: {exc.msg}"
+        ) from exc
 
 
 _TYPE_NAMES = {
@@ -200,7 +287,7 @@ def _parse_response(action, content: str) -> dict[str, object]:
         try:
             return {name: _coerce_output(content.strip(), type_)}
         except ValueError as exc:
-            raise RuntimeError(
+            raise LLMInvalidResponseError(
                 f"LLM action '{action.name}' returned invalid {parse} output: {exc}. "
                 f"Raw response: {_short_content(content)!r}"
             ) from exc
@@ -208,7 +295,7 @@ def _parse_response(action, content: str) -> dict[str, object]:
     try:
         raw_outputs = json.loads(content)
     except json.JSONDecodeError as exc:
-        raise RuntimeError(
+        raise LLMInvalidResponseError(
             f"LLM action '{action.name}' returned invalid JSON: {exc.msg}. "
             f"Raw response: {_short_content(content)!r}"
         ) from exc
@@ -217,7 +304,7 @@ def _parse_response(action, content: str) -> dict[str, object]:
         return _coerce_outputs(action, raw_outputs)
     except ValueError as exc:
         expected = ", ".join(name for name, _ in action.outputs)
-        raise RuntimeError(
+        raise LLMInvalidResponseError(
             f"LLM action '{action.name}' returned invalid JSON output: {exc}. "
             f"Expected keys: {expected}. Raw response: {_short_content(content)!r}"
         ) from exc
@@ -333,7 +420,6 @@ def make_mistral_backend(
     temperature: float = 0.2,
     max_tokens: int = 2048,
     timeout: float = 90.0,
-    max_retries: int = 3,
 ) -> Callable:
     """Return a Mistral backend callable compatible with ``Workflow.configure``."""
 
@@ -356,10 +442,8 @@ def make_mistral_backend(
             },
             method="POST",
         )
-        body = _retry_json_request(req, timeout=timeout, max_retries=max_retries)
-        content = body["choices"][0]["message"]["content"]
-        if not isinstance(content, str):
-            raise RuntimeError(f"Unexpected Mistral response content: {content!r}")
+        body = _json_request(req, timeout=timeout)
+        content = _chat_completion_text(body, provider="Mistral")
         return _parse_response(action, content)
 
     return backend
@@ -379,7 +463,6 @@ def make_openai_backend(
     temperature: float = 0.2,
     max_tokens: int = 2048,
     timeout: float = 90.0,
-    max_retries: int = 3,
 ) -> Callable:
     """Return an OpenAI-compatible backend callable for ``Workflow.configure``."""
 
@@ -404,10 +487,8 @@ def make_openai_backend(
             },
             method="POST",
         )
-        body = _retry_json_request(req, timeout=timeout, max_retries=max_retries)
-        content = body["choices"][0]["message"]["content"]
-        if not isinstance(content, str):
-            raise RuntimeError(f"Unexpected OpenAI response content: {content!r}")
+        body = _json_request(req, timeout=timeout)
+        content = _chat_completion_text(body, provider="OpenAI")
         return _parse_response(action, content)
 
     return backend
@@ -419,7 +500,6 @@ def make_anthropic_backend(
     model: str = "claude-sonnet-4-6",
     max_tokens: int = 1024,
     timeout: float = 90.0,
-    max_retries: int = 3,
 ) -> Callable:
     """Return an Anthropic Claude backend callable compatible with ``Workflow.configure``."""
 
@@ -449,18 +529,8 @@ def make_anthropic_backend(
             },
             method="POST",
         )
-        body = _retry_json_request(req, timeout=timeout, max_retries=max_retries)
-        content_blocks = body.get("content")
-        if not isinstance(content_blocks, list):
-            raise RuntimeError(f"Unexpected Anthropic response content: {content_blocks!r}")
-        text_parts: list[str] = [
-            block["text"]  # type: ignore[index]  — guarded by isinstance check
-            for block in content_blocks
-            if isinstance(block, dict) and block.get("type") == "text" and isinstance(block.get("text"), str)
-        ]
-        if not text_parts:
-            raise RuntimeError(f"Unexpected Anthropic response content: {content_blocks!r}")
-        return _parse_response(action, "\n".join(text_parts))
+        body = _json_request(req, timeout=timeout)
+        return _parse_response(action, _anthropic_text(body))
 
     return backend
 
@@ -709,8 +779,8 @@ def _make_ollama_release(*, model: str, base_url: str, timeout: float) -> Callab
             method="POST",
         )
         try:
-            _retry_json_request(req, timeout=timeout, max_retries=0)
-        except RuntimeError:
+            _json_request(req, timeout=timeout)
+        except (LLMError, OSError):
             # Best effort: model release should not make a workflow fail after
             # the LLM action already completed successfully.
             pass

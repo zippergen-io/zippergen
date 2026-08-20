@@ -6,7 +6,6 @@ process, but every role communicates through the durable SQLite store via
 """
 from __future__ import annotations
 
-import json
 import tempfile
 import threading
 import time
@@ -15,10 +14,16 @@ from pathlib import Path
 from typing import cast
 
 from zippergen.control import program_fingerprint
+from zippergen.errors import WorkflowCancelled
 from zippergen.projection import project
 from zippergen.role_runner import RoleRunner
 from zippergen.runtime import _build_formula_monitors, console_trace, mock_llm
-from zippergen.store import claim_workflow_identity, open_store, write_workflow_result
+from zippergen.store import (
+    claim_workflow_identity,
+    load_workflow_result,
+    open_store,
+    write_workflow_result,
+)
 from zippergen.syntax import (
     Lifeline,
     Var,
@@ -135,13 +140,10 @@ class LocalSupervisor:
     def _load_existing_result(self) -> object:
         conn = open_store(self.store_path)
         try:
-            row = conn.execute(
-                "SELECT value FROM workflow_results WHERE workflow=?",
-                (self.wf.name,),
-            ).fetchone()
-            if row is None:
+            result = load_workflow_result(conn, self.wf.name)
+            if result is None:
                 return _NO_RESULT
-            return _restore_workflow_result(self.wf, json.loads(row[0]))
+            return _restore_workflow_result(self.wf, result)
         finally:
             conn.close()
 
@@ -277,7 +279,7 @@ class LocalSupervisor:
                 missing.append(lifeline.name)
                 continue
             if isinstance(result, BaseException):
-                if "Workflow cancelled" in str(result):
+                if isinstance(result, WorkflowCancelled):
                     if cancelled is None:
                         cancelled = (lifeline.name, result)
                 elif root_cause is None:
