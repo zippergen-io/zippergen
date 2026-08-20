@@ -1132,3 +1132,135 @@ def test_an_answer_for_another_deployment_is_left_alone(tmp_path, monkeypatch):
         assert len(list_updates(inbox)) == 1, "another deployment still needs it"
     finally:
         inbox.close()
+
+
+def test_an_unusable_answer_is_explained_once_and_the_task_stays_pending(
+    tmp_path, monkeypatch
+):
+    """"maybe" to a yes/no question is the person's mistake, not a fault.
+
+    The message is spent -- repeating the complaint on every poll would be
+    worse than useless -- but the task must stay pending so a better answer
+    can still arrive.
+    """
+
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(tmp_path / "home"))
+    store = tmp_path / "unusable.sqlite"
+    _create_task(store, task_id="task-1")
+    conn = open_store(str(store))
+    try:
+        token = ensure_human_task_token(
+            conn, "task-1", channel="telegram:approval-chat"
+        )["token"]
+    finally:
+        conn.close()
+
+    update = {
+        "update_id": 910,
+        "message": {"chat": {"id": 4242}, "text": f"/zg {token} maybe"},
+    }
+    client = FakeTelegramClient([])
+    notifier = TelegramDeploymentNotifier(
+        str(store),
+        client,
+        connection="approval-bot",
+        routes={"approval-chat": {"chat_id": "4242", "channel": "telegram:approval-chat"}},
+        assignments={"Mailbox": "approval-chat"},
+        fingerprint="fingerprint-unusable",
+    )
+
+    assert notifier.process_update(update) == SETTLED
+
+    inbox = open_inbox("fingerprint-unusable")
+    try:
+        record_updates(inbox, [update], offset=910)
+        assert consume_once("fingerprint-unusable", notifier.process_update) == 1
+        assert list_updates(inbox) == [], "a rejected message must not be kept"
+    finally:
+        inbox.close()
+
+    conn = open_store(str(store))
+    try:
+        task = load_human_task(conn, "task-1")
+        assert task is not None and task["status"] == "pending", (
+            "the person must still be able to answer properly"
+        )
+    finally:
+        conn.close()
+
+
+def test_a_storage_fault_keeps_the_answer_for_the_next_poll(tmp_path, monkeypatch):
+    """Transient means retry. Only storage and network count as transient."""
+
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(tmp_path / "home"))
+    store = tmp_path / "faulty.sqlite"
+    _create_task(store, task_id="task-1")
+    conn = open_store(str(store))
+    try:
+        token = ensure_human_task_token(
+            conn, "task-1", channel="telegram:approval-chat"
+        )["token"]
+    finally:
+        conn.close()
+
+    notifier = TelegramDeploymentNotifier(
+        str(store),
+        FakeTelegramClient([]),
+        connection="approval-bot",
+        routes={"approval-chat": {"chat_id": "4242", "channel": "telegram:approval-chat"}},
+        assignments={"Mailbox": "approval-chat"},
+        fingerprint="fingerprint-faulty",
+    )
+    monkeypatch.setattr(
+        "zippergen.telegram_notify.complete_task_with_token",
+        lambda *a, **k: (_ for _ in ()).throw(sqlite3.OperationalError("locked")),
+    )
+
+    outcome = notifier.process_update({
+        "update_id": 911,
+        "callback_query": {
+            "id": "cb-911",
+            "data": f"zg:yes:{token}",
+            "message": {"chat": {"id": 4242}, "message_id": 3},
+        },
+    })
+
+    assert outcome == RETRY
+
+
+def test_a_defect_in_processing_is_not_swallowed_as_a_retry(tmp_path, monkeypatch):
+    """A bug here must crash, not spin quietly on every polling cycle."""
+
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(tmp_path / "home"))
+    store = tmp_path / "buggy.sqlite"
+    _create_task(store, task_id="task-1")
+    conn = open_store(str(store))
+    try:
+        token = ensure_human_task_token(
+            conn, "task-1", channel="telegram:approval-chat"
+        )["token"]
+    finally:
+        conn.close()
+
+    notifier = TelegramDeploymentNotifier(
+        str(store),
+        FakeTelegramClient([]),
+        connection="approval-bot",
+        routes={"approval-chat": {"chat_id": "4242", "channel": "telegram:approval-chat"}},
+        assignments={"Mailbox": "approval-chat"},
+        fingerprint="fingerprint-buggy",
+    )
+    monkeypatch.setattr(
+        "zippergen.telegram_notify.complete_task_with_token",
+        lambda *a, **k: (_ for _ in ()).throw(AttributeError("typo")),
+    )
+
+    with pytest.raises(AttributeError):
+        notifier.process_update({
+            "update_id": 912,
+            "callback_query": {
+                "id": "cb-912",
+                "data": f"zg:yes:{token}",
+                "message": {"chat": {"id": 4242}, "message_id": 4},
+            },
+        })

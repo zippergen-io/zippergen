@@ -2304,30 +2304,39 @@ class Workspace:
                 field="connectors.configurations",
             ).items()
         }
-        # Three files cannot be written atomically, so they are written in the
-        # order that makes an interruption harmless. The private state moves
-        # first: a credential filed under both names is inert, because nothing
-        # reads a name the manifest does not mention. The manifest moves last,
-        # and only then does the new name become the one anything looks up.
+        # Three files cannot be written atomically, so the order is the
+        # guarantee: copy, switch, then clean up. The private values exist
+        # under both names while the manifest is switched, so an interruption
+        # at any point leaves a project that still works -- under the old name
+        # before the switch, under the new one after it. Only the duplicate is
+        # left behind, and rerunning the rename removes it.
         state = self.load()
-        self.update(
-            provider_connection_overrides=_renamed_key(
-                state.get("provider_connection_overrides"), old, normalized
-            )
-        )
+        overrides = dict(state.get("provider_connection_overrides") or {})
+        if old in overrides:
+            overrides[normalized] = overrides[old]
+            self.update(provider_connection_overrides=overrides)
         prefix = f"provider:{old}:"
         secrets = self.load_secrets()
-        self.save_secrets({
-            (
-                f"provider:{normalized}:{key[len(prefix):]}"
-                if key.startswith(prefix)
-                else key
-            ): value
-            for key, value in secrets.items()
-        })
+        copied = dict(secrets)
+        for key, value in secrets.items():
+            if key.startswith(prefix):
+                copied[f"provider:{normalized}:{key[len(prefix):]}"] = value
+        if copied != secrets:
+            self.save_secrets(copied)
+
         self._write_project_configuration(
             providers=providers, models=models, connectors=connectors
         )
+
+        # From here the new name is the live one. What remains is cleanup, and
+        # an interruption during it costs only a stale duplicate.
+        overrides.pop(old, None)
+        self.update(provider_connection_overrides=overrides)
+        self.save_secrets({
+            key: value
+            for key, value in copied.items()
+            if not key.startswith(prefix)
+        })
         return normalized
 
     def rename_model_configuration(self, old: str, new: str) -> str:
@@ -2348,15 +2357,16 @@ class Workspace:
         models["assignments"] = _repointed_assignments(
             models.get("assignments"), old, normalized
         )
-        # Private state first, visible manifest last: see
-        # `rename_provider_connection` for why the order is the guarantee.
+        # Copy, switch, clean up: see `rename_provider_connection` for why the
+        # order is the guarantee.
         state = self.load()
-        self.update(
-            model_configuration_overrides=_renamed_key(
-                state.get("model_configuration_overrides"), old, normalized
-            )
-        )
+        overrides = dict(state.get("model_configuration_overrides") or {})
+        if old in overrides:
+            overrides[normalized] = overrides[old]
+            self.update(model_configuration_overrides=overrides)
         self._write_project_configuration(models=models)
+        if overrides.pop(old, None) is not None:
+            self.update(model_configuration_overrides=overrides)
         return normalized
 
     def rename_connector_configuration(self, old: str, new: str) -> str:

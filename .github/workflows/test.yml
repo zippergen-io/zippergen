@@ -27,3 +27,23 @@ jobs:
 
       - name: Run tests
         run: python -m pytest tests/ -v
+
+  types:
+    # A separate job, because the test matrix installs only Python and pytest.
+    # The pyright test skips when it cannot run, so without this nothing in CI
+    # would notice type errors returning.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Install
+        run: pip install -e .
+
+      - name: Type-check
+        run: uvx pyright

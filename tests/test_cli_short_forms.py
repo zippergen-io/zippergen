@@ -10,7 +10,6 @@ so these commands infer it.
 """
 
 import argparse
-import json
 import shutil
 from pathlib import Path
 
@@ -456,32 +455,41 @@ def test_a_projection_that_promises_a_result_shows_where_it_comes_from(
     assert "return" not in writer
 
 
-def test_pyright_types_stay_clean():
-    """The reviewer found six type errors; a clean run should stay clean.
+def test_generated_completion_positions_agree_across_shells():
+    """Presence is not enough: a rule can be emitted at the wrong word.
 
-    Skipped where pyright is not installed, so it never blocks a contributor
-    who has not got it, but fails loudly wherever it does run.
+    One table feeds three shells that count words differently. zsh's key
+    counts from the program and includes the action; bash's COMP_CWORD counts
+    the program as word 0; fish counts the words already typed. A shared
+    off-by-one puts candidates one argument early -- suggesting a provider
+    kind where the name belongs -- while still passing a presence check.
     """
 
-    import subprocess
+    import re
 
-    if shutil.which("uvx") is None:
-        pytest.skip("uvx is not available")
-    result = subprocess.run(
-        ["uvx", "pyright", "--outputjson"],
-        cwd=Path(__file__).resolve().parents[1],
-        capture_output=True,
-        text=True,
-    )
-    if result.returncode not in (0, 1):
-        pytest.skip(f"pyright could not run: {result.stderr[:200]}")
-    report = json.loads(result.stdout)
-    errors = [
-        item
-        for item in report.get("generalDiagnostics", [])
-        if item.get("severity") == "error"
-    ]
-    assert not errors, "\n".join(
-        f"{item['file']}:{item['range']['start']['line'] + 1} {item['message']}"
-        for item in errors
-    )
+    from zippergen.completion import POSITIONAL_COMPLETIONS, render_completion
+
+    zsh = render_completion("zsh")
+    bash = render_completion("bash")
+    fish = render_completion("fish")
+
+    for (command, action, index), candidate in POSITIONAL_COMPLETIONS.items():
+        assert f"    {command}:{action}:{index + 2}) kind={candidate} ;;" in zsh
+        assert (
+            f"$cmd == {command} && $action == {action} "
+            f"&& $COMP_CWORD -eq {index + 1} ]]; then kind={candidate}"
+        ) in bash
+        assert (
+            f"__fish_seen_subcommand_from {command}; "
+            f"and __fish_seen_subcommand_from {action}; "
+            f"and test (count (commandline -opc)) -eq {index + 1}' "
+            f"-a '(zg __complete {candidate} 2>/dev/null)'"
+        ) in fish
+
+    # One anchor checked against the hand-written script this replaced, so the
+    # three formulas cannot drift together into a consistent wrong answer.
+    assert (
+        "$cmd == provider && $action == configure && $COMP_CWORD -eq 4 ]]; "
+        "then kind=provider-kinds"
+    ) in bash
+    assert "    provider:configure:5) kind=provider-kinds ;;" in zsh

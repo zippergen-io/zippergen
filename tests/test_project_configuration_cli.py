@@ -1108,31 +1108,43 @@ def test_every_view_uses_one_routing_grammar(project, capsys, command):
     assert header.rstrip().endswith("From"), "From is the last column"
 
 
-def test_a_rename_leaves_private_state_ahead_of_the_manifest(project, monkeypatch):
+def test_a_rename_interrupted_before_the_switch_still_works(project, monkeypatch):
     """Three files cannot be written atomically, so order is the guarantee.
 
-    The committed manifest is written last. An interruption before it leaves a
-    credential filed under both names, which is inert -- nothing reads a name
-    the manifest does not mention. The reverse order would leave the project
-    pointing at a name whose credential had not moved yet.
+    Private values are copied under the new name before the manifest switches,
+    so a crash at the worst moment leaves a project that still works under the
+    old name. Moving them instead would leave the manifest naming a connection
+    whose credential had already gone.
     """
 
     _root, workspace = project
     workspace.save_provider_secret("approval-bot", "bot_token", "private")
-    order: list[str] = []
-    real_write = type(workspace)._write_project_configuration
-    real_secrets = type(workspace).save_secrets
+
+    def stop_before_switch(self, **_kw):
+        raise KeyboardInterrupt("interrupted at the worst moment")
+
     monkeypatch.setattr(
-        type(workspace),
-        "_write_project_configuration",
-        lambda self, **kw: (order.append("manifest"), real_write(self, **kw))[1],
+        type(workspace), "_write_project_configuration", stop_before_switch
     )
-    monkeypatch.setattr(
-        type(workspace),
-        "save_secrets",
-        lambda self, values: (order.append("secrets"), real_secrets(self, values))[1],
+
+    with pytest.raises(KeyboardInterrupt):
+        workspace.rename_provider_connection("approval-bot", "alerts-bot")
+
+    monkeypatch.undo()
+    assert workspace.provider_secret("approval-bot", "bot_token") == "private", (
+        "the name the manifest still points at must keep working"
     )
+    assert "approval-bot" in workspace.provider_connections()
+
+
+def test_a_completed_rename_leaves_no_duplicate_behind(project):
+    """Cleanup is the third step, and it must actually happen."""
+
+    _root, workspace = project
+    workspace.save_provider_secret("approval-bot", "bot_token", "private")
 
     workspace.rename_provider_connection("approval-bot", "alerts-bot")
 
-    assert order.index("secrets") < order.index("manifest")
+    assert workspace.provider_secret("alerts-bot", "bot_token") == "private"
+    assert workspace.provider_secret("approval-bot", "bot_token") is None
+    assert "approval-bot" not in workspace.provider_connections()

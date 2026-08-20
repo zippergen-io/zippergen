@@ -729,10 +729,12 @@ everything that referred to it: assignments, requirement bindings, and for a
 provider connection its credential and site endpoint, which are keyed by that
 name. Doing it by hand leaves the project inconsistent in between.
 
-It touches up to three files, which cannot be written atomically, so they are
-written in the order that makes an interruption harmless: private state first,
-the committed manifest last. A credential filed under both names is inert,
-because nothing reads a name the manifest does not mention.
+It touches up to three files, which cannot be written atomically, so the order
+is the guarantee: private values are copied under the new name, the committed
+manifest is switched, and only then are the old private values removed. An
+interruption at any point leaves a project that still works -- under the old
+name before the switch, the new one after it. At worst a duplicate credential
+is left behind, and rerunning the same rename removes it.
 
 `configure` creates or updates the named configuration. In an interactive
 terminal, an existing configuration's current values become the defaults.

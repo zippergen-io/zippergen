@@ -169,6 +169,16 @@ class TaskAlreadySettled(ValueError):
     """
 
 
+class TaskAnswerInvalid(ValueError):
+    """This answer is addressed here, and it is not a valid reply.
+
+    A person typed something the task cannot accept -- "maybe" to a yes/no
+    question, an option number out of range. The task stays pending so they
+    can try again, but this particular message is spent: repeating the
+    complaint on every poll would be worse than useless.
+    """
+
+
 def complete_task_with_token(
     conn,
     token: str,
@@ -192,7 +202,10 @@ def complete_task_with_token(
         raise TaskAlreadySettled(
             f"Human task {task['task_id']} is already {task['status']}."
         )
-    result = human_task_result_from_value(task["spec"], value)
+    try:
+        result = human_task_result_from_value(task["spec"], value)
+    except ValueError as exc:
+        raise TaskAnswerInvalid(str(exc)) from exc
     task = complete_human_task(conn, task["task_id"], result)
     mark_human_task_token_used(conn, token)
     return task
@@ -435,19 +448,31 @@ class TelegramNotifier:
             # Another deployment sharing this bot may own it. Say nothing and
             # leave it for them.
             return NOT_MINE
-        except TaskAlreadySettled as exc:
-            # Ours, and spent. Answering once is courteous; keeping it would
-            # mean answering on every poll until it ages out.
+        except (TaskAlreadySettled, TaskAnswerInvalid) as exc:
+            # Ours, and this message is spent either way. Say why once; the
+            # task stays pending if the answer was merely unusable, so a
+            # better reply can still arrive. Keeping it would mean repeating
+            # the same complaint on every poll until it ages out.
             self._answer_callback_best_effort(callback, str(exc))
             return SETTLED
-        except Exception:
-            # A database or network fault is temporary. Keep the update so the
-            # answer is not lost, and try again next time.
+        except (sqlite3.Error, OSError) as exc:
+            # Storage or network, and therefore temporary. Keep the update so
+            # the answer is not lost. Anything else is a defect in this code
+            # and is left to crash rather than be retried in a loop.
+            del exc
             return RETRY
 
         self._answer_callback_best_effort(callback, "Recorded.")
         self._clear_callback_buttons_best_effort(message)
         return SETTLED
+
+    def _say_best_effort(self, text: str) -> None:
+        """Explaining a problem must not become a second problem."""
+
+        try:
+            self.client.send_message(self._target, text)
+        except (TelegramAPIError, OSError):
+            pass
 
     def _process_message(self, message: dict) -> str:
         chat = message.get("chat") or {}
@@ -499,13 +524,11 @@ class TelegramNotifier:
             return SETTLED
         except TaskNotForThisRoute:
             return NOT_MINE
-        except TaskAlreadySettled as exc:
-            self.client.send_message(
-                self._target, f"Could not record response: {exc}"
-            )
+        except (TaskAlreadySettled, TaskAnswerInvalid) as exc:
+            self._say_best_effort(f"Could not record response: {exc}")
             return SETTLED
-        except Exception as exc:
-            self.client.send_message(self._target, f"Could not record response: {exc}")
+        except (sqlite3.Error, OSError) as exc:
+            self._say_best_effort(f"Could not record response: {exc}")
             return RETRY
 
 

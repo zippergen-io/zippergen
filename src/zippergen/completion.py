@@ -57,9 +57,12 @@ def _zsh_positionals() -> str:
 
 
 def _bash_positionals() -> str:
+    # COMP_CWORD counts the program as word 0, so the word being completed
+    # sits one past the table index. zsh's compadd key counts from 1 and
+    # includes the action, and fish counts the words already typed.
     return "\n".join(
         f"  elif [[ $cmd == {command} && $action == {action} "
-        f"&& $COMP_CWORD -eq {index} ]]; then kind={candidate}"
+        f"&& $COMP_CWORD -eq {index + 1} ]]; then kind={candidate}"
         for (command, action, index), candidate in POSITIONAL_COMPLETIONS.items()
     )
 
