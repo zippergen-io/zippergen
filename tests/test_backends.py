@@ -13,6 +13,7 @@ from zippergen.backends import (
     make_openai_backend,
     router_from_specs,
 )
+from zippergen.llm_policy import LLMInvalidResponseError
 
 
 ConfigUser = Lifeline("ConfigUser")
@@ -117,6 +118,18 @@ def test_backend_rejects_non_finite_json_output():
 
     with pytest.raises(RuntimeError, match="not a finite number"):
         _parse_response(action, '{"record": {"score": NaN}}')
+
+
+@pytest.mark.parametrize("content", ["", "   ", "\n\t"])
+def test_backend_rejects_empty_text_output(content):
+    action = SimpleNamespace(
+        name="draft",
+        outputs=(("draft", str),),
+        parse_format="text",
+    )
+
+    with pytest.raises(LLMInvalidResponseError, match="returned empty text output"):
+        _parse_response(action, content)
 
 
 def test_managed_backend_is_lazy_and_releases_after_call():

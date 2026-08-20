@@ -284,8 +284,13 @@ def _parse_response(action, content: str) -> dict[str, object]:
     parse = getattr(action, "parse_format", "json") or "json"
     if parse in {"text", "bool"} and len(action.outputs) == 1:
         name, type_ = action.outputs[0]
+        stripped = content.strip()
+        if not stripped:
+            raise LLMInvalidResponseError(
+                f"LLM action '{action.name}' returned empty {parse} output."
+            )
         try:
-            return {name: _coerce_output(content.strip(), type_)}
+            return {name: _coerce_output(stripped, type_)}
         except ValueError as exc:
             raise LLMInvalidResponseError(
                 f"LLM action '{action.name}' returned invalid {parse} output: {exc}. "

@@ -196,7 +196,11 @@ def systemd_service_status(name: str) -> dict[str, object]:
         state = "running"
         healthy = True
         detail = f"{unit} is running"
-    elif active == "activating" or restarts and exit_code not in {None, 0}:
+    # Current systemd state determines whether the service is restarting.
+    # NRestarts and ExecMainStatus are historical diagnostics: they remain
+    # non-zero after a deliberate stop and must not make an inactive unit look
+    # live forever.
+    elif active == "activating":
         state = "restarting"
         healthy = False
         detail = (
