@@ -2288,7 +2288,9 @@ class Workspace:
                 if isinstance(values, dict) and values.get("connection") == old
                 else values
             )
-            for name, values in (models.get("configurations") or {}).items()
+            for name, values in _object_table(
+                models.get("configurations") or {}, field="models.configurations"
+            ).items()
         }
         connectors = _object_table(manifest["connectors"], field="connectors")
         connectors["configurations"] = {
@@ -2297,11 +2299,16 @@ class Workspace:
                 if isinstance(values, dict) and values.get("connection") == old
                 else values
             )
-            for name, values in (connectors.get("configurations") or {}).items()
+            for name, values in _object_table(
+                connectors.get("configurations") or {},
+                field="connectors.configurations",
+            ).items()
         }
-        self._write_project_configuration(
-            providers=providers, models=models, connectors=connectors
-        )
+        # Three files cannot be written atomically, so they are written in the
+        # order that makes an interruption harmless. The private state moves
+        # first: a credential filed under both names is inert, because nothing
+        # reads a name the manifest does not mention. The manifest moves last,
+        # and only then does the new name become the one anything looks up.
         state = self.load()
         self.update(
             provider_connection_overrides=_renamed_key(
@@ -2318,6 +2325,9 @@ class Workspace:
             ): value
             for key, value in secrets.items()
         })
+        self._write_project_configuration(
+            providers=providers, models=models, connectors=connectors
+        )
         return normalized
 
     def rename_model_configuration(self, old: str, new: str) -> str:
@@ -2338,13 +2348,15 @@ class Workspace:
         models["assignments"] = _repointed_assignments(
             models.get("assignments"), old, normalized
         )
-        self._write_project_configuration(models=models)
+        # Private state first, visible manifest last: see
+        # `rename_provider_connection` for why the order is the guarantee.
         state = self.load()
         self.update(
             model_configuration_overrides=_renamed_key(
                 state.get("model_configuration_overrides"), old, normalized
             )
         )
+        self._write_project_configuration(models=models)
         return normalized
 
     def rename_connector_configuration(self, old: str, new: str) -> str:

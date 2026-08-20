@@ -10,6 +10,7 @@ so these commands infer it.
 """
 
 import argparse
+import json
 import shutil
 from pathlib import Path
 
@@ -418,10 +419,17 @@ def test_completion_uses_the_registered_command_tree():
         "__fish_seen_subcommand_from status reset inspect trace tasks approve"
         in fish
     )
-    assert "provider set-credential check remove accept" in fish
     assert "__zg_complete_options" in fish
-    assert "provider:accept:4" in render_completion("zsh")
-    assert "set-credential|check|remove|accept" in render_completion("bash")
+    # Every shell is generated from one positional table, so each must carry
+    # every rule. Asserting coverage rather than syntax is what catches a new
+    # command reaching one shell and not the other two.
+    from zippergen.completion import POSITIONAL_COMPLETIONS
+
+    for shell in ("zsh", "bash", "fish"):
+        script = render_completion(shell)
+        for (command, action, _index), candidate in POSITIONAL_COMPLETIONS.items():
+            assert candidate in script, (shell, candidate)
+            assert action in script, (shell, command, action)
 
 
 def test_a_projection_that_promises_a_result_shows_where_it_comes_from(
@@ -446,3 +454,34 @@ def test_a_projection_that_promises_a_result_shows_where_it_comes_from(
 
     assert "-> None" in writer
     assert "return" not in writer
+
+
+def test_pyright_types_stay_clean():
+    """The reviewer found six type errors; a clean run should stay clean.
+
+    Skipped where pyright is not installed, so it never blocks a contributor
+    who has not got it, but fails loudly wherever it does run.
+    """
+
+    import subprocess
+
+    if shutil.which("uvx") is None:
+        pytest.skip("uvx is not available")
+    result = subprocess.run(
+        ["uvx", "pyright", "--outputjson"],
+        cwd=Path(__file__).resolve().parents[1],
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode not in (0, 1):
+        pytest.skip(f"pyright could not run: {result.stderr[:200]}")
+    report = json.loads(result.stdout)
+    errors = [
+        item
+        for item in report.get("generalDiagnostics", [])
+        if item.get("severity") == "error"
+    ]
+    assert not errors, "\n".join(
+        f"{item['file']}:{item['range']['start']['line'] + 1} {item['message']}"
+        for item in errors
+    )

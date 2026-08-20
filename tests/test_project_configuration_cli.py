@@ -1106,3 +1106,33 @@ def test_every_view_uses_one_routing_grammar(project, capsys, command):
         "the status marker column carries no heading"
     )
     assert header.rstrip().endswith("From"), "From is the last column"
+
+
+def test_a_rename_leaves_private_state_ahead_of_the_manifest(project, monkeypatch):
+    """Three files cannot be written atomically, so order is the guarantee.
+
+    The committed manifest is written last. An interruption before it leaves a
+    credential filed under both names, which is inert -- nothing reads a name
+    the manifest does not mention. The reverse order would leave the project
+    pointing at a name whose credential had not moved yet.
+    """
+
+    _root, workspace = project
+    workspace.save_provider_secret("approval-bot", "bot_token", "private")
+    order: list[str] = []
+    real_write = type(workspace)._write_project_configuration
+    real_secrets = type(workspace).save_secrets
+    monkeypatch.setattr(
+        type(workspace),
+        "_write_project_configuration",
+        lambda self, **kw: (order.append("manifest"), real_write(self, **kw))[1],
+    )
+    monkeypatch.setattr(
+        type(workspace),
+        "save_secrets",
+        lambda self, values: (order.append("secrets"), real_secrets(self, values))[1],
+    )
+
+    workspace.rename_provider_connection("approval-bot", "alerts-bot")
+
+    assert order.index("secrets") < order.index("manifest")

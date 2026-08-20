@@ -113,8 +113,8 @@ def _used_connector_names(
 def _connector_slots(
     workflow: Workflow | None,
     module: ModuleType | None,
-    assignments: dict[str, object],
-    bindings: dict[str, str],
+    assignments: Mapping[str, object],
+    bindings: Mapping[str, str],
 ) -> list[dict[str, str]]:
     """List every connector slot with the exact name you would type for it.
 
@@ -1542,7 +1542,8 @@ def render_readiness(
             ),
         ],
     )
-    routes = report.get("effective_routing") or []
+    raw_routes = report.get("effective_routing") or []
+    routes = raw_routes if isinstance(raw_routes, list) else []
     route_rows = [item for item in routes if isinstance(item, dict)]
     previous = None
     rows: list[tuple[object, ...]] = []
@@ -2186,7 +2187,7 @@ def _assign_human_action(
     workflow: str,
     target: str,
     configuration: str | None,
-) -> dict[str, dict[str, str]]:
+) -> dict[str, object]:
     configurations = workspace.connector_configurations()
     if configuration is not None:
         selected_configuration = configurations.get(configuration)

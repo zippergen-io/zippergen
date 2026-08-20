@@ -207,19 +207,36 @@ def fetch_once(client, fingerprint: str, *, timeout: float = 0) -> int:
             conn.close()
 
 
-def consume_once(fingerprint: str, process_update) -> int:
-    """Take the updates ``process_update`` recognises, and leave the rest.
+#: What one deployment concluded about one update. Two states are not enough:
+#: "I could not act on this" covers both an update addressed to somebody else,
+#: which must be left for them, and one addressed here that is already spent,
+#: which must be dropped or it is retried until it ages out.
+SETTLED = "settled"
+NOT_MINE = "not-mine"
+RETRY = "retry"
 
-    An update this caller cannot resolve belongs to another deployment sharing
-    the bot, so it stays. Age, not this pass, removes one that belongs to
-    nobody.
+
+def consume_once(fingerprint: str, process_update) -> int:
+    """Take the updates this deployment has finished with, and leave the rest.
+
+    ``process_update`` returns one of ``SETTLED``, ``NOT_MINE`` or ``RETRY``.
+    Only ``SETTLED`` removes the update: it means this deployment owns the
+    answer and nothing further will ever come of it, whether that is because
+    the task was just completed or because it was already complete when the
+    answer arrived. ``True`` and ``False`` are still accepted and read as
+    ``SETTLED`` and ``NOT_MINE``.
     """
 
     conn = open_inbox(fingerprint)
     try:
         processed = 0
         for update_id, update in list_updates(conn):
-            if not process_update(update):
+            outcome = process_update(update)
+            if outcome is True:
+                outcome = SETTLED
+            elif outcome is False:
+                outcome = NOT_MINE
+            if outcome != SETTLED:
                 continue
             remove_update(conn, update_id)
             processed += 1

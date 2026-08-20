@@ -99,8 +99,7 @@ def _check_google_authorization(
         if not granted:
             raise ConnectorWiringError(
                 f"Google connection {connection!r} is not authorized on this "
-                f"machine. Use 'zippergen provider authorize {connection} "
-                "--scopes ...'."
+                f"machine. Use 'zippergen provider authorize {connection}'."
             )
         if not google_scopes_cover(granted, required):
             missing = [
@@ -198,7 +197,7 @@ def connector_runtime(
                 raise ConnectorWiringError(
                     f"Google connection {connection!r} is not authorized on "
                     f"this machine. Use 'zippergen provider authorize "
-                    f"{connection} --scopes ...'."
+                    f"{connection}'."
                 )
             secrets["authorized_user_json"] = credential
         return configuration, connection, provider, secrets
@@ -320,7 +319,7 @@ def connector_environment_from_snapshot(
             if not google_credential:
                 raise ConnectorWiringError(
                     f"Google connection {connection!r} is not authorized. Use "
-                    f"'zippergen provider authorize {connection} --scopes ...'."
+                    f"'zippergen provider authorize {connection}'."
                 )
             environment[credential_env] = google_credential
     return environment

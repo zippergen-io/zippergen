@@ -724,10 +724,15 @@ zg deploy prune                     # clear orphans and stale archives
 zg completion zsh                   # shell completion; also bash and fish
 ```
 
-`rename OLD NEW` exists for every family. It moves the name and everything
-that referred to it in one write: assignments, requirement bindings, and for a
+`rename OLD NEW` exists for every family. One command moves the name and
+everything that referred to it: assignments, requirement bindings, and for a
 provider connection its credential and site endpoint, which are keyed by that
 name. Doing it by hand leaves the project inconsistent in between.
+
+It touches up to three files, which cannot be written atomically, so they are
+written in the order that makes an interruption harmless: private state first,
+the committed manifest last. A credential filed under both names is inert,
+because nothing reads a name the manifest does not mention.
 
 `configure` creates or updates the named configuration. In an interactive
 terminal, an existing configuration's current values become the defaults.

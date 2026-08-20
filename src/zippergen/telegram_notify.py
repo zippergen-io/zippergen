@@ -19,7 +19,14 @@ from zippergen.human_tasks import (
     human_task_result_from_value,
     validate_human_task_spec,
 )
-from zippergen.telegram_inbox import bot_fingerprint, consume_once, fetch_once
+from zippergen.telegram_inbox import (
+    NOT_MINE,
+    RETRY,
+    SETTLED,
+    bot_fingerprint,
+    consume_once,
+    fetch_once,
+)
 from zippergen.store import (
     complete_human_task,
     ensure_human_task_token,
@@ -145,6 +152,23 @@ def load_telegram_chat_id(explicit: str | None = None) -> str:
     return explicit or os.environ.get("ZIPPERGEN_TELEGRAM_CHAT_ID", "")
 
 
+class TaskNotForThisRoute(ValueError):
+    """This answer is not addressed to this deployment.
+
+    Several deployments may share one bot, so an unknown token is the normal
+    case rather than a fault: it belongs to somebody else's store, and this
+    process must leave it alone.
+    """
+
+
+class TaskAlreadySettled(ValueError):
+    """This answer is addressed here, but nothing more can come of it.
+
+    The task is already complete, or its store was reset. Either way the
+    answer is spent, and keeping it would mean retrying forever.
+    """
+
+
 def complete_task_with_token(
     conn,
     token: str,
@@ -154,14 +178,20 @@ def complete_task_with_token(
 ) -> dict:
     token_record = load_human_task_token(conn, token)
     if token_record is None:
-        raise ValueError(f"Human task token not found: {token}")
+        raise TaskNotForThisRoute(f"Human task token not found: {token}")
     if channel is not None and token_record["channel"] != channel:
-        raise ValueError("This response belongs to another connector route.")
+        raise TaskNotForThisRoute(
+            "This response belongs to another connector route."
+        )
     task = load_human_task(conn, token_record["task_id"])
     if task is None:
-        raise ValueError(f"Human task not found: {token_record['task_id']}")
+        raise TaskAlreadySettled(
+            f"Human task not found: {token_record['task_id']}"
+        )
     if task["status"] != "pending":
-        raise ValueError(f"Human task {task['task_id']} is already {task['status']}.")
+        raise TaskAlreadySettled(
+            f"Human task {task['task_id']} is already {task['status']}."
+        )
     result = human_task_result_from_value(task["spec"], value)
     task = complete_human_task(conn, task["task_id"], result)
     mark_human_task_token_used(conn, token)
@@ -326,14 +356,14 @@ class TelegramNotifier:
         finally:
             conn.close()
 
-    def process_update(self, update: dict) -> bool:
+    def process_update(self, update: dict) -> str:
         callback = update.get("callback_query")
         if callback:
             return self._process_callback(callback)
         message = update.get("message") or update.get("edited_message")
         if message:
             return self._process_message(message)
-        return False
+        return NOT_MINE
 
     def poll_updates_once(self, *, timeout: float = 0) -> int:
         fetch_once(self.client, self._bot, timeout=timeout)
@@ -374,17 +404,17 @@ class TelegramNotifier:
         except Exception:
             pass
 
-    def _process_callback(self, callback: dict) -> bool:
+    def _process_callback(self, callback: dict) -> str:
         parsed = parse_callback_data(str(callback.get("data") or ""))
         if parsed is None:
-            return False
+            return NOT_MINE
         message = callback.get("message") or {}
         chat = message.get("chat") or {}
         if not self._chat_matches(chat.get("id")):
             self._answer_callback_best_effort(
                 callback, "This task belongs to another chat."
             )
-            return False
+            return NOT_MINE
 
         token, value = parsed
         try:
@@ -401,18 +431,28 @@ class TelegramNotifier:
                     raise
             finally:
                 conn.close()
-        except ValueError as exc:
+        except TaskNotForThisRoute:
+            # Another deployment sharing this bot may own it. Say nothing and
+            # leave it for them.
+            return NOT_MINE
+        except TaskAlreadySettled as exc:
+            # Ours, and spent. Answering once is courteous; keeping it would
+            # mean answering on every poll until it ages out.
             self._answer_callback_best_effort(callback, str(exc))
-            return False
+            return SETTLED
+        except Exception:
+            # A database or network fault is temporary. Keep the update so the
+            # answer is not lost, and try again next time.
+            return RETRY
 
         self._answer_callback_best_effort(callback, "Recorded.")
         self._clear_callback_buttons_best_effort(message)
-        return True
+        return SETTLED
 
-    def _process_message(self, message: dict) -> bool:
+    def _process_message(self, message: dict) -> str:
         chat = message.get("chat") or {}
         if not self._chat_matches(chat.get("id")):
-            return False
+            return NOT_MINE
         text = str(message.get("text") or "")
         parsed = parse_text_response(text)
         if parsed is None:
@@ -439,7 +479,7 @@ class TelegramNotifier:
                 finally:
                     conn.close()
         if parsed is None:
-            return False
+            return NOT_MINE
         token, value = parsed
         try:
             conn = open_store(self.store_path)
@@ -456,10 +496,17 @@ class TelegramNotifier:
             finally:
                 conn.close()
             self.client.send_message(self._target, f"Recorded response for task {task['task_id']}.")
-            return True
+            return SETTLED
+        except TaskNotForThisRoute:
+            return NOT_MINE
+        except TaskAlreadySettled as exc:
+            self.client.send_message(
+                self._target, f"Could not record response: {exc}"
+            )
+            return SETTLED
         except Exception as exc:
             self.client.send_message(self._target, f"Could not record response: {exc}")
-            return False
+            return RETRY
 
 
 @dataclass
@@ -672,9 +719,11 @@ class TelegramDeploymentNotifier:
             ),
         )
 
-    def process_update(self, update: dict) -> bool:
+    def process_update(self, update: dict) -> str:
         notifier = self._notifier_for_update(update)
-        return notifier.process_update(update) if notifier is not None else False
+        if notifier is None:
+            return NOT_MINE
+        return notifier.process_update(update)
 
     def poll_updates_once(self, *, timeout: float = 0) -> int:
         """Fetch on everyone's behalf if allowed, then take what is ours.

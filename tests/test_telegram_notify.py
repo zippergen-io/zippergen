@@ -22,6 +22,15 @@ from zippergen.store import (
     load_human_task_token,
     open_store,
 )
+from zippergen.telegram_inbox import (
+    NOT_MINE,
+    RETRY,
+    SETTLED,
+    consume_once,
+    list_updates,
+    open_inbox,
+    record_updates,
+)
 from zippergen.telegram_notify import (
     TelegramAPIError,
     TelegramBotClient,
@@ -291,7 +300,7 @@ def test_telegram_callback_completes_boolean_task(tmp_path):
             "data": f"zg:no:{token}",
             "message": {"message_id": 99, "chat": {"id": 123}},
         },
-    }) is True
+    }) == SETTLED
 
     conn = open_store(str(store_path))
     try:
@@ -413,7 +422,7 @@ def test_telegram_text_command_completes_string_task(tmp_path):
     assert notifier.process_update({
         "update_id": 1,
         "message": {"chat": {"id": "123"}, "text": f"/zg {token} Edited reply"},
-    }) is True
+    }) == SETTLED
 
     conn = open_store(str(store_path))
     try:
@@ -1027,3 +1036,99 @@ def test_every_bot_read_goes_through_the_shared_cursor():
         f"but found {callers}"
     )
     assert callers[0].startswith("telegram_inbox.py"), callers
+
+
+def test_an_answer_that_arrived_twice_does_not_stick_in_the_shared_inbox(
+    tmp_path, monkeypatch
+):
+    """Completing the task and dropping the update are two databases apart.
+
+    A crash between them leaves an answer whose task is already complete. On
+    the next poll the task refuses to complete again -- correctly -- and the
+    old code read that refusal as "belongs to another deployment" and kept the
+    update forever, re-contacting Telegram on every cycle.
+    """
+
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(tmp_path / "home"))
+    store = tmp_path / "twice.sqlite"
+    _create_task(store, task_id="task-1")
+    conn = open_store(str(store))
+    try:
+        token = ensure_human_task_token(
+            conn, "task-1", channel="telegram:approval-chat"
+        )["token"]
+    finally:
+        conn.close()
+
+    update = {
+        "update_id": 900,
+        "callback_query": {
+            "id": "cb-900",
+            "data": f"zg:yes:{token}",
+            "message": {"chat": {"id": 4242}, "message_id": 7},
+        },
+    }
+    client = FakeTelegramClient([update])
+    notifier = TelegramDeploymentNotifier(
+        str(store),
+        client,
+        connection="approval-bot",
+        routes={"approval-chat": {"chat_id": "4242", "channel": "telegram:approval-chat"}},
+        assignments={"Mailbox": "approval-chat"},
+        fingerprint="fingerprint-twice",
+    )
+
+    # First pass completes the task. Simulate the crash by putting the update
+    # back exactly as Telegram would have re-delivered it.
+    assert notifier.process_update(update) == SETTLED
+    inbox = open_inbox("fingerprint-twice")
+    try:
+        record_updates(inbox, [update], offset=900)
+        assert len(list_updates(inbox)) == 1
+    finally:
+        inbox.close()
+
+    # Second pass: the task is already complete, so nothing more can come of
+    # this answer. It must be dropped, not retried forever.
+    assert notifier.process_update(update) == SETTLED
+    assert consume_once("fingerprint-twice", notifier.process_update) == 1
+
+    inbox = open_inbox("fingerprint-twice")
+    try:
+        assert list_updates(inbox) == [], "a spent answer must not be retained"
+    finally:
+        inbox.close()
+
+
+def test_an_answer_for_another_deployment_is_left_alone(tmp_path, monkeypatch):
+    """The other half of the rule: unknown tokens are somebody else's."""
+
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(tmp_path / "home"))
+    store = tmp_path / "mine.sqlite"
+    _create_task(store, task_id="task-mine")
+    update = {
+        "update_id": 901,
+        "callback_query": {
+            "id": "cb-901",
+            "data": "zg:yes:token-belonging-to-another-store",
+            "message": {"chat": {"id": 4242}, "message_id": 8},
+        },
+    }
+    notifier = TelegramDeploymentNotifier(
+        str(store),
+        FakeTelegramClient([]),
+        connection="approval-bot",
+        routes={"approval-chat": {"chat_id": "4242", "channel": "telegram:approval-chat"}},
+        assignments={"Mailbox": "approval-chat"},
+        fingerprint="fingerprint-other",
+    )
+
+    assert notifier.process_update(update) == NOT_MINE
+
+    inbox = open_inbox("fingerprint-other")
+    try:
+        record_updates(inbox, [update], offset=901)
+        assert consume_once("fingerprint-other", notifier.process_update) == 0
+        assert len(list_updates(inbox)) == 1, "another deployment still needs it"
+    finally:
+        inbox.close()
