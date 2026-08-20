@@ -169,6 +169,18 @@ def _connector_slots(
     return slots
 
 
+#: The four families name resolution levels differently in their own code.
+#: One column can only mean one thing, so assistants are translated here into
+#: the words every other family uses: the key you would type after `assign`.
+_ASSISTANT_SOURCE_WORDS = {
+    "action assignment": "action",
+    "participant assignment": "participant",
+    "default assignment": "default",
+    "runtime default": "default",
+    "missing": "unassigned",
+}
+
+
 def _routing_status(renderer: TerminalRenderer, item: Mapping[str, object]) -> str:
     """Three states, because "configured" and "reached" are different news.
 
@@ -976,7 +988,9 @@ def configuration_report(
                         "configuration": item.get("configuration") or "missing",
                         "effective": backend or "missing",
                         "available": available,
-                        "source": str(item.get("scope") or "default"),
+                        "source": _ASSISTANT_SOURCE_WORDS.get(
+                            str(item.get("source") or ""), "default"
+                        ),
                         "verified": True,
                     }
                 )
@@ -1616,23 +1630,33 @@ def _render_assistant_tables(
         _nested_assignment_rows(assignments),
         empty="No assignments.",
     )
-    resolved_rows = [
-        (
-            item.get("target"),
-            item.get("backend") or "missing",
-            item.get("source"),
-            item.get("access"),
-            item.get("external_tools"),
-            item.get("shell"),
-        )
-        for item in assistants.get("resolved") or []
-        if isinstance(item, dict)
-    ]
+    _render_effective_routing(
+        renderer,
+        report,
+        ("assistant",),
+        subject="Action",
+        resolved_header="Backend",
+        resolved=lambda item: item.get("effective"),
+        empty="No participant runs an assistant.",
+    )
+    # Access, tools and shell are declared on the `@assistant` action, not
+    # configured, so they answer "what may it do" rather than "what will it
+    # use". Kept out of the routing table, where they sat at the right edge
+    # and read as more routing.
     _render_columns_or_empty(
         renderer,
-        "Effective routing" if compact_titles else "Effective assistant routing",
-        ("Target", "Backend", "Source", "Access", "Tools", "Shell"),
-        resolved_rows,
+        "Permissions" if compact_titles else "Assistant permissions",
+        ("Target", "Access", "Tools", "Shell"),
+        [
+            (
+                item.get("target"),
+                item.get("access"),
+                item.get("external_tools"),
+                item.get("shell"),
+            )
+            for item in assistants.get("resolved") or []
+            if isinstance(item, dict)
+        ],
         empty="No assistant actions.",
     )
 

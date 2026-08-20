@@ -405,3 +405,27 @@ def test_fresh_clone_keeps_routing_and_reports_only_the_missing_cli(
             "available": False,
         }
     ]
+
+
+def test_assistant_routing_shares_the_grammar_of_the_other_families(
+    tmp_path, monkeypatch, capsys
+):
+    """One visual grammar across models, connectors and assistants.
+
+    Same columns, same three-state marker, and `From` naming the key you
+    would type after `assign` -- so learning one family teaches the others.
+    """
+
+    _root, _home, workspace = _project(tmp_path, monkeypatch)
+    workspace.save_assistant_configuration("coding-agent", "codex")
+    assert main(["assistant", "assign", "Developer", "coding-agent"]) == 0
+    capsys.readouterr()
+
+    assert main(["assistant"]) == 0
+
+    output = capsys.readouterr().out
+    routing = output.split("Effective routing")[1].split("Permissions")[0]
+    assert "Participant" in routing and "From" in routing
+    assert "participant" in routing, "From must name the key, not a sentence"
+    assert "Access" not in routing, "permissions are a different question"
+    assert "Access" in output.split("Permissions")[1]
