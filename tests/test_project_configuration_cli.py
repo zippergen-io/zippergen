@@ -528,7 +528,7 @@ def test_config_reports_an_unassigned_model_credential_without_contacting_it(
     main(["model", "configure", "unused", "openai-main", "gpt-4o-mini"])
     capsys.readouterr()
     monkeypatch.setattr(
-        "zippergen.project_configuration._live_model_check",
+        "zippergen.configuration_checks._live_model_check",
         lambda *_args, **_kwargs: pytest.fail("config must remain offline"),
     )
 
@@ -586,7 +586,7 @@ def test_config_display_and_check_have_distinct_jobs(project, monkeypatch, capsy
         actions={"Writer.draft_reply": "mock"},
     )
     monkeypatch.setattr(
-        "zippergen.project_configuration._live_model_check",
+        "zippergen.configuration_checks._live_model_check",
         lambda *_args, **_kwargs: None,
     )
 
@@ -788,7 +788,7 @@ def test_a_missing_google_library_is_reported_before_authorizing(
 
     _root, workspace = project
     monkeypatch.setattr(
-        "zippergen.project_configuration.google_support_installed",
+        "zippergen.configuration_checks.google_support_installed",
         lambda: False,
     )
 
