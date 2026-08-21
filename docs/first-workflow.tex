@@ -734,10 +734,13 @@ A deployment you no longer want:
 zg deploy remove
 \end{lstlisting}
 
-Its durable store is kept. That is the record of what actually ran, and it is
-the one thing no rebuild can recover. Everything else, the environment and
-service files and the bundled source, is written again by deploying again.
-\texttt{--purge} removes the store too, when you mean it.
+Its durable store is archived rather than deleted. That is the record of what
+actually ran, and it is the one thing no rebuild can recover, so it is moved to
+ZipperGen's trash directory instead of thrown away. Archived is not the same as
+left in place: deploying again builds a new deployment and starts from an empty
+store. Everything else, the environment and service files and the bundled
+source, is written again by deploying again. \texttt{--purge} deletes the store
+too, when you mean it.
 
 \section{Put it on a server}
 

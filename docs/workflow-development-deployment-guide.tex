@@ -1080,13 +1080,13 @@ much of it is in use. A bare \texttt{zg deploy compact} trims to that budget; it
 does not empty the store. Event numbers keep climbing when the budget changes,
 so \texttt{trace -{}-after N} stays correct.
 
-\subsection{What removal keeps}
+\subsection{What removal archives}
 
 \begin{center}
 \begin{tabularx}{0.95\linewidth}{@{}llX@{}}
 \toprule
-durable store, log & kept & the record of what actually ran \\
-profile & kept & what produced them \\
+durable store, log & archived & the record of what actually ran \\
+profile & archived & what produced them \\
 secrets & \textbf{deleted} & must not be left behind \\
 environment, bundle & deleted & rebuilt by deploying again \\
 service files & deleted & regenerated \\
@@ -1094,7 +1094,7 @@ service files & deleted & regenerated \\
 \end{tabularx}
 \end{center}
 
-\texttt{-{}-purge} keeps nothing, including the store. Both commands name what
+Archived means moved to ZipperGen's trash directory, not left where it was: after a removal the deployment no longer exists where the commands look for it, and a later \texttt{zg deploy} builds a new one starting from an empty store. \texttt{-{}-purge} keeps nothing, including the store. Both commands name what
 they are about to destroy before asking, so read the list rather than the verb.
 
 What survives lands under \path{ZIPPERGEN_HOME/trash/}, readable only by you,

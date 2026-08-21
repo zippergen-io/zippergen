@@ -389,7 +389,7 @@ stops before starting when a model, assistant CLI, or connector is not ready:
 zg deploy
 zg deploy status
 zg deploy logs
-zg deploy remove              # the durable store is kept
+zg deploy remove              # store and profile move to trash, not deleted
 zg deploy reset --yes         # archive durable state; stays stopped afterwards
 ```
 

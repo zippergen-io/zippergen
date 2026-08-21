@@ -747,8 +747,11 @@ keep climbing across a budget change, so `trace --after N` stays correct.
 Completed human tasks, answer tokens, and connector notifications remain as
 audit records. They are not needed for recovery, currently have no automatic
 retention policy, and therefore grow with the number of human interactions.
-`remove` deletes a deployment but keeps its durable store unless you
-purge it. `reset` is the recoverable way to start over: it stops the service,
+`remove` unregisters the service and takes the deployment out of use. Its
+profile, durable store and log are moved to ZipperGen's trash directory rather
+than deleted, so a removal is undoable; `--purge` deletes them instead. Either
+way the deployment stops existing where the commands look for it, so a later
+`zg deploy` builds a new one and starts from an empty store. `reset` is the recoverable way to start over: it stops the service,
 archives the store and its SQLite sidecars under ZipperGen's trash directory,
 creates an empty store, and leaves the service stopped. Start it again with
 `zg deploy start` once you have looked: a reset clears connector progress too,

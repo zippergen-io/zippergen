@@ -5150,9 +5150,12 @@ def _parse_cli_args(
 
     deploy_remove = deploy_sub.add_parser(
         "remove",
-        help="delete a deployment, keeping its durable store unless purged",
+        help=(
+            "unregister the service and take the deployment out of use; its "
+            "profile, store and log move to trash unless purged"
+        ),
     )
-    deploy_remove.add_argument("--purge", action="store_true", help="Delete the durable store and log too, leaving nothing.")
+    deploy_remove.add_argument("--purge", action="store_true", help="Delete everything permanently, including the profile, store and log. Nothing is archived.")
     deploy_remove.add_argument("--yes", action="store_true", help="Do not ask for confirmation.")
 
     deploy_compact = deploy_sub.add_parser(
