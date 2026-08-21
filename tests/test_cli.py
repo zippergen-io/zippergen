@@ -280,6 +280,67 @@ def test_history_keep_needs_a_run_that_records_one(tmp_path, monkeypatch):
         main(["run", "--llm", "mock", "--history-keep", "25"])
 
 
+def test_deploying_over_a_store_that_needs_resetting_still_works(
+    tmp_path,
+    capsys,
+):
+    """Deploying is how you reach a profile you can reset, so it must not die here.
+
+    A store this ZipperGen cannot open is exactly what `zg deploy reset` is for.
+    Applying the history budget to it is a convenience; failing on it would trap
+    an upgrade with no way through.
+    """
+
+    import sqlite3
+
+    from zippergen import serve
+
+    # A real store written by an older ZipperGen: valid SQLite, older schema.
+    store = tmp_path / "old.sqlite"
+    conn = sqlite3.connect(store)
+    conn.execute("CREATE TABLE store_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+    conn.execute("INSERT INTO store_meta VALUES('schema_version','2')")
+    conn.commit()
+    conn.close()
+
+    serve._apply_deployment_history_keep({"store": str(store), "history_keep": 2000})
+
+    output = capsys.readouterr().out
+    assert "could not be opened" in output
+    # The reason is reported, not hidden.
+    assert "StoreSchemaError" in output
+    assert "budget of 2000 is recorded" in output
+
+
+def test_a_store_that_is_not_a_database_is_reported_the_same_way(tmp_path, capsys):
+    from zippergen import serve
+
+    store = tmp_path / "junk.sqlite"
+    store.write_bytes(b"not a database at all")
+
+    serve._apply_deployment_history_keep({"store": str(store), "history_keep": 500})
+
+    output = capsys.readouterr().out
+    assert "could not be opened" in output
+    assert "budget of 500 is recorded" in output
+
+
+def test_a_store_that_can_be_opened_gets_the_budget(tmp_path):
+    from zippergen import serve
+    from zippergen.store import open_store, read_history_keep
+
+    store = tmp_path / "run.sqlite"
+    open_store(str(store)).close()
+
+    serve._apply_deployment_history_keep({"store": str(store), "history_keep": 2000})
+
+    conn = open_store(str(store))
+    try:
+        assert read_history_keep(conn) == 2000
+    finally:
+        conn.close()
+
+
 def _compact_fixture(tmp_path, monkeypatch, store):
     """Set up the one deployment ``zg deploy compact`` acts on."""
 

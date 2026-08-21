@@ -139,6 +139,7 @@ from zippergen.store import (
     load_human_task_token,
     mark_human_task_token_used,
     open_store,
+    StoreSchemaError,
     write_history_keep,
 )
 
@@ -338,7 +339,22 @@ def _apply_deployment_history_keep(profile: Mapping[str, object]) -> None:
         return
     from zippergen.storage_maintenance import set_store_history_keep
 
-    set_store_history_keep(str(path), keep)
+    try:
+        set_store_history_keep(str(path), keep)
+    except (StoreSchemaError, sqlite3.DatabaseError) as exc:
+        # A store this ZipperGen cannot open is the situation 'zg deploy reset'
+        # exists for, and deploying is how you reach a profile you can reset.
+        # Failing here would leave an upgrade no way through. The reason is
+        # printed rather than hidden, and the readiness checks report the same
+        # store properly a few steps later.
+        print(
+            f"The existing durable store could not be opened, so its history "
+            f"budget was not changed: {type(exc).__name__}: {exc}"
+        )
+        print(
+            f"A budget of {keep} is recorded on the deployment, and the store "
+            "created by 'zg deploy reset' will use it."
+        )
 
 
 def _initialize_deployment_store(profile: dict[str, object]) -> bool:
