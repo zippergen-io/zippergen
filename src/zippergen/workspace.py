@@ -23,6 +23,7 @@ import time
 import tomllib
 import uuid
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any
 
 from zippergen.value_codec import decode_value, encode_value
@@ -31,6 +32,64 @@ from zippergen.value_codec import decode_value, encode_value
 WORKSPACE_SCHEMA_VERSION = 2
 RUN_SCHEMA_VERSION = 2
 PROJECT_SCHEMA_VERSION = 2
+
+
+# Three files here carry a schema version: the project manifest, the workspace
+# state, and a run record. All three are configuration, not durable recovery
+# state, so the rule for them is the one the deployment profile follows: carry
+# an older one forward when its shape is known, and refuse clearly otherwise.
+#
+# Only the durable store refuses outright, and for a reason that does not apply
+# here: a control position means something only under the program that wrote it.
+# Copying that refusal onto configuration is what left an upgrade no way
+# through, twice.
+#
+# Each entry upgrades a record from its key version to the next one. Empty means
+# no older shape is known yet; the refusal below still says what to do.
+_PROJECT_UPGRADES: dict[int, Callable[[dict], None]] = {}
+_WORKSPACE_UPGRADES: dict[int, Callable[[dict], None]] = {}
+_RUN_UPGRADES: dict[int, Callable[[dict], None]] = {}
+
+
+def _migrate_record(
+    record: dict,
+    *,
+    current: int,
+    upgrades: dict[int, Callable[[dict], None]],
+    what: str,
+    path: Path,
+    recreate: str,
+) -> None:
+    """Bring one stored record up to the current schema, in memory.
+
+    Nothing is written back: reading should not rewrite. The next command that
+    edits the record writes the current schema out.
+    """
+
+    version = record.get("schema_version")
+    if version == current:
+        return
+    if not isinstance(version, int) or isinstance(version, bool):
+        raise WorkspaceError(
+            f"The {what} in {path} does not say which schema it uses "
+            f"({version!r}). {recreate}"
+        )
+    if version > current:
+        raise WorkspaceError(
+            f"The {what} in {path} uses schema {version}, but this ZipperGen "
+            f"reads {current}. It was written by a newer ZipperGen; upgrade "
+            "this one to use it."
+        )
+    while version < current:
+        upgrade = upgrades.get(version)
+        if upgrade is None:
+            raise WorkspaceError(
+                f"The {what} in {path} uses schema {version}, which this "
+                f"ZipperGen cannot carry forward. {recreate}"
+            )
+        upgrade(record)
+        version += 1
+        record["schema_version"] = version
 PROJECT_MANIFEST_NAME = "zippergen.toml"
 SPECIFICATION_FILE_NAME = "specification.md"
 _IGNORED_DISCOVERY_PARTS = {
@@ -642,11 +701,17 @@ class Workspace:
             raise WorkspaceError(
                 f"Could not read project manifest {self.manifest_path}: {exc}"
             ) from exc
-        if manifest.get("schema_version") != PROJECT_SCHEMA_VERSION:
-            raise WorkspaceError(
-                f"Unsupported project schema in {self.manifest_path}: "
-                f"{manifest.get('schema_version')!r}"
-            )
+        _migrate_record(
+            manifest,
+            current=PROJECT_SCHEMA_VERSION,
+            upgrades=_PROJECT_UPGRADES,
+            what="project manifest",
+            path=self.manifest_path,
+            recreate=(
+                "Recreate it with 'zippergen init' in this directory, then "
+                "reapply its configuration."
+            ),
+        )
         name = str(manifest.get("name") or "").strip()
         if not name:
             raise WorkspaceError(f"Project name is empty in {self.manifest_path}.")
@@ -1096,11 +1161,17 @@ class Workspace:
         if not self.state_path.exists():
             return self.default_state()
         state = _read_json(self.state_path)
-        if state.get("schema_version") != WORKSPACE_SCHEMA_VERSION:
-            raise WorkspaceError(
-                f"Unsupported workspace schema in {self.state_path}: "
-                f"{state.get('schema_version')!r}"
-            )
+        _migrate_record(
+            state,
+            current=WORKSPACE_SCHEMA_VERSION,
+            upgrades=_WORKSPACE_UPGRADES,
+            what="workspace state",
+            path=self.state_path,
+            recreate=(
+                "Delete the file; it holds only local site facts and is "
+                "rebuilt on the next command."
+            ),
+        )
         if Path(str(state.get("project_root"))).resolve() != self.root:
             raise WorkspaceError(
                 f"Workspace {self.state_path} belongs to another project root."
@@ -2010,11 +2081,14 @@ class Workspace:
 
     def load_run(self, run_id: str) -> dict[str, Any]:
         record = _read_json(self.run_path(run_id))
-        if record.get("schema_version") != RUN_SCHEMA_VERSION:
-            raise WorkspaceError(
-                f"Unsupported run schema in {self.run_path(run_id)}: "
-                f"{record.get('schema_version')!r}"
-            )
+        _migrate_record(
+            record,
+            current=RUN_SCHEMA_VERSION,
+            upgrades=_RUN_UPGRADES,
+            what="run record",
+            path=self.run_path(run_id),
+            recreate="Start a new run with 'zippergen run --durable'.",
+        )
         try:
             inputs = decode_value(record.get("inputs"))
         except (TypeError, ValueError) as exc:

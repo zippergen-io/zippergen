@@ -313,6 +313,16 @@ the advice to redeploy could not be followed; `zg deploy remove` keeps the
 profile too. A schema a given ZipperGen cannot carry forward — an unknown one,
 or one written by a newer version — is still refused, and says which it is.
 
+The same rule covers the project manifest, the workspace state, and a run
+record, all of which are configuration. One rule, applied in one place per file:
+
+> **Configuration is carried forward. Durable recovery state is refused, with an
+> error naming the command that replaces it.**
+
+`tests/test_upgrade_path.py` is the only place that runs current code over state
+an older ZipperGen wrote. Every other test builds its state fresh, which is why
+two upgrade failures reached a real deployment before it existed.
+
 ### What the fingerprint covers, exactly
 
 It answers one question: **does the stored durable state still mean the same
