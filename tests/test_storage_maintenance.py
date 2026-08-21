@@ -297,12 +297,64 @@ def test_initializing_a_budget_leaves_an_existing_store_alone(tmp_path):
     assert report.outstanding_messages == 1
 
 
-def test_event_numbers_never_repeat_after_the_trace_is_turned_off(tmp_path):
-    """Event numbers are the stored order that ``trace --after`` pages through.
+def test_concurrent_roles_never_collide_on_an_event_number(tmp_path):
+    """One role per thread writes here, each on its own connection.
 
-    ``history`` uses a plain INTEGER PRIMARY KEY, so SQLite starts again from 1
-    once the table is empty — and a budget of zero empties it. Reusing a number
-    would make ``--after N`` skip every new event until the counter caught up.
+    An earlier version chose the id in Python -- SELECT MAX(id), then INSERT it
+    -- to keep numbering climbing across a budget change. Two threads read the
+    same maximum, and the second insert failed with a UNIQUE violation, which
+    surfaces as a killed lifeline in a running workflow. Only the database can
+    hand out an id without racing its own writers.
+    """
+
+    import threading
+
+    path = str(tmp_path / "s.sqlite")
+    setup = open_store(path)
+    try:
+        write_history_keep(setup, 10_000)
+    finally:
+        setup.close()
+
+    errors: list[BaseException] = []
+    start = threading.Barrier(4)
+
+    def writer(role: str) -> None:
+        conn = open_store(path)
+        try:
+            start.wait()
+            for index in range(60):
+                record_history(conn, role, {"type": "step", "index": index})
+        except BaseException as exc:  # noqa: BLE001 - reported, not swallowed
+            errors.append(exc)
+        finally:
+            conn.close()
+
+    threads = [
+        threading.Thread(target=writer, args=(f"R{n}",), daemon=True)
+        for n in range(4)
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+
+    assert not errors, errors
+    conn = open_store(path)
+    try:
+        ids = [row["rowid"] for row in list_history(conn)]
+    finally:
+        conn.close()
+    assert len(ids) == 240
+    assert len(set(ids)) == 240
+
+
+def test_turning_the_trace_off_records_where_numbering_reached(tmp_path):
+    """SQLite reuses ids once the table is empty, and a budget of zero empties it.
+
+    Numbering is not forced to continue -- that cannot be done without racing
+    concurrent writers -- so the mark is recorded instead, and a reader can tell
+    that `--after N` no longer means what it did.
     """
 
     path = str(tmp_path / "s.sqlite")
@@ -311,44 +363,40 @@ def test_event_numbers_never_repeat_after_the_trace_is_turned_off(tmp_path):
         write_history_keep(conn, 25)
         for index in range(25):
             record_history(conn, "A", {"type": "step", "index": index})
-        before = [row["rowid"] for row in list_history(conn)]
+        assert read_history_high_water(conn) < 25  # nothing has trimmed yet
 
         write_history_keep(conn, 0)
-        write_history_keep(conn, 25)
-        for index in range(3):
-            record_history(conn, "A", {"type": "step", "index": 100 + index})
-        after = [row["rowid"] for row in list_history(conn)]
-    finally:
-        conn.close()
-
-    assert before == list(range(1, 26))
-    assert min(after) > max(before)
-    conn = open_store(path)
-    try:
-        # The paging a trace viewer does still reaches the new events.
-        assert [row["rowid"] for row in list_history(conn, after_id=max(before))] == after
+        assert read_history_high_water(conn) == 25
     finally:
         conn.close()
 
 
-def test_the_high_water_mark_survives_reopening(tmp_path):
+def test_a_budget_can_be_set_before_the_store_exists(tmp_path):
+    """A run records where its store will be before anything opens it.
+
+    Setting the budget at that moment has to create the store rather than fail,
+    which is the difference between this and ``set_store_history_keep``.
+    """
+
+    path = tmp_path / "not-yet.sqlite"
+    assert not path.exists()
+
+    initialize_store_history_keep(path, 25)
+
+    assert path.is_file()
+    assert inspect_store_storage(path).history_keep == 25
+
+
+def test_initializing_a_budget_leaves_an_existing_store_alone(tmp_path):
     path = str(tmp_path / "s.sqlite")
-    conn = open_store(path)
-    try:
-        write_history_keep(conn, 10)
-        for index in range(10):
-            record_history(conn, "A", {"type": "step", "index": index})
-        write_history_keep(conn, 0)
-    finally:
-        conn.close()
+    _populated_store(path, history_rows=5)
 
-    conn = open_store(path)
-    try:
-        assert read_history_high_water(conn) == 10
-        write_history_keep(conn, 5)
-        assert record_history(conn, "A", {"type": "step"}) == 11
-    finally:
-        conn.close()
+    initialize_store_history_keep(path, 3)
+
+    report = inspect_store_storage(path)
+    assert report.history_keep == 3
+    assert report.roles == 1
+    assert report.outstanding_messages == 1
 
 
 def test_ordinary_trimming_does_not_disturb_event_numbers(tmp_path):

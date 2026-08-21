@@ -404,12 +404,19 @@ The budget is recorded on the deployment as well as in the store, so
 `zg deploy reset` — which archives the store and starts an empty one — does not
 quietly put the trace back to the default.
 
-Event numbers keep climbing across a budget change. `history` uses a plain
-`INTEGER PRIMARY KEY`, so SQLite would start again from 1 once a budget of zero
-emptied the table; the highest number handed out is kept in `store_meta` under
-`history_high_water` and the next event continues from there. Without that,
-`trace --after N` would skip every new event until the counter caught up, and
-the event number is what the trace table calls the authoritative stored order.
+Event numbers restart if a budget of zero empties the table. `history` uses a
+plain `INTEGER PRIMARY KEY`, so SQLite hands out 1 again once nothing is left,
+and `trace --after N` then skips new events until the counter catches up. The
+highest number reached is recorded in `store_meta` under `history_high_water`
+so a reader can tell that happened.
+
+Numbering is deliberately **not** forced to continue. Doing so means choosing
+the id in Python — `SELECT MAX(id)`, then inserting it — and one role per thread
+writes here concurrently, each on its own connection. Two threads read the same
+maximum and the second insert fails with a `UNIQUE` violation, which surfaces as
+a killed lifeline in a running workflow. Only the database can hand out an id
+without racing its own writers, and a restarted trace counter after a deliberate
+operator action is a far smaller cost than that.
 
 Each new history event carries a wall-clock `recorded_at` timestamp for the
 human-facing trace table. That timestamp is observational: row ids and causal

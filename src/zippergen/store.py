@@ -54,10 +54,17 @@ HISTORY_RETENTION_BATCH = 1_000
 
 HISTORY_KEEP_META = "history_keep"
 
-# The largest history id ever handed out. ``history`` uses a plain INTEGER
-# PRIMARY KEY, so SQLite starts again from 1 once the table is empty, and a
-# budget of zero empties it. Event numbers are the stored order that
-# ``trace --after`` pages through, so they are kept climbing here instead.
+# The largest history id handed out so far, recorded whenever history is
+# trimmed. `history` uses a plain INTEGER PRIMARY KEY, so SQLite starts again
+# from 1 once the table is empty, and a budget of zero empties it; this records
+# that it happened, so `trace --after N` can be told numbering restarted.
+#
+# Numbering is deliberately not forced to continue. Doing that means choosing
+# the id in Python -- SELECT MAX(id), then INSERT it -- and one role per thread
+# writes here concurrently, so two threads read the same maximum and the second
+# insert fails with a UNIQUE violation. Only the database can hand out an id
+# without racing its own writers, and a killed lifeline is far worse than a
+# restarted trace counter.
 HISTORY_HIGH_WATER_META = "history_high_water"
 
 
@@ -615,20 +622,6 @@ def _remember_history_high_water(conn) -> None:
         write_meta(conn, HISTORY_HIGH_WATER_META, str(current))
 
 
-def _next_history_id(conn) -> int:
-    """The next event number, which never repeats one already used.
-
-    SQLite would reuse ids from 1 after the table is emptied. Reading the mark
-    costs nothing in the ordinary case, where the table is not empty and its own
-    maximum is the answer.
-    """
-
-    current = _history_max_id(conn)
-    if current == 0:
-        current = read_history_high_water(conn)
-    return current + 1
-
-
 def prune_history(conn, *, keep: int = HISTORY_KEEP_DEFAULT) -> int:
     if keep < 0:
         raise ValueError("keep must be zero or greater")
@@ -659,11 +652,16 @@ def record_history(conn, role: str, event: dict) -> int:
     if keep == 0:
         return 0
     stored_event = {**event, "recorded_at": time.time()}
-    rowid = _next_history_id(conn)
-    conn.execute(
-        "INSERT INTO history(id,role,payload) VALUES(?,?,?)",
-        (rowid, role, json.dumps(_json_safe(stored_event))),
+    # SQLite assigns the id. One role per thread, each with its own connection,
+    # writes here concurrently, and only the database can hand out an id without
+    # a race. Choosing one in Python -- SELECT MAX(id), then INSERT it -- reads
+    # the same maximum in two threads and fails the second with a UNIQUE
+    # violation, which kills a lifeline in a running workflow.
+    cur = conn.execute(
+        "INSERT INTO history(role,payload) VALUES(?,?)",
+        (role, json.dumps(_json_safe(stored_event))),
     )
+    rowid = _lastrowid(cur)
     if rowid % _history_trim_batch(keep) == 0:
         prune_history(conn, keep=keep)
     return rowid
