@@ -1047,7 +1047,7 @@ rule exactly.
 \texttt{zg deploy approve} & answer one \\
 \texttt{zg deploy check} & readiness checks, in detail \\
 \texttt{zg deploy start} / \texttt{zg deploy stop} & move the service \\
-\texttt{zg deploy compact} & prune optional history and rotate logs; refuses while running \\
+\texttt{zg deploy compact} & trim optional history and rotate logs; refuses while running \\
 \texttt{zg deploy reset --yes} & archive durable state; start again yourself \\
 \texttt{zg deploy remove} & delete it \\
 \texttt{zg deploy list} & every deployment on this computer, orphans included \\
@@ -1055,6 +1055,30 @@ rule exactly.
 \bottomrule
 \end{tabularx}
 \end{center}
+
+\subsection{How much trace it keeps}
+
+What recovery reads does not grow with execution history: one row per
+participant, plus messages nobody has absorbed yet. The trace is separate, and
+recovery never reads it, so how much of it to keep is your choice. A store keeps
+the newest 10,000 events unless told otherwise.
+
+That is a count of events, not a size. A workflow whose events carry large
+values --- a whole email, a long model answer --- holds far more bytes at the
+same budget than one passing short strings, so size it for what your workflow
+actually produces.
+
+\begin{lstlisting}[language=bash]
+zg deploy --history-keep 50000              # a wider window
+zg deploy --history-keep 0                  # record no trace at all
+zg deploy compact --set-history-keep 2000   # change it later, and apply it now
+zg run --durable --history-keep 500         # the same choice for one run
+\end{lstlisting}
+
+\texttt{zg deploy status} and \texttt{zg run status} report the budget and how
+much of it is in use. A bare \texttt{zg deploy compact} trims to that budget; it
+does not empty the store. Event numbers keep climbing when the budget changes,
+so \texttt{trace -{}-after N} stays correct.
 
 \subsection{What removal keeps}
 
@@ -1302,7 +1326,7 @@ zg connector assign Mailbox approval-chat
 \texttt{deploy start/stop} & move the service \\
 \texttt{deploy status/logs/check} & operate and diagnose \\
 \texttt{deploy inspect/trace/tasks/approve} & observe or answer the deployment \\
-\texttt{deploy compact/reset/remove} & prune history and logs, reset state, or delete \\
+\texttt{deploy compact/reset/remove} & trim history and logs, reset state, or delete \\
 \bottomrule
 \end{tabularx}
 \end{center}

@@ -238,7 +238,7 @@ def test_compact_drops_history_and_rotates_logs(tmp_path, monkeypatch, capsys):
     )
     changed: list[str] = []
 
-    def prune(_path, *, keep):
+    def prune(_path, *, keep=None):
         changed.append("history")
         return SimpleNamespace(
             removed_rows=12,
@@ -271,6 +271,13 @@ def test_compact_drops_history_and_rotates_logs(tmp_path, monkeypatch, capsys):
     assert "reclaimed bytes: 3072" in output
     assert "removed archives: 2 (768 bytes)" in output
     assert changed == ["logs", "history"]
+
+
+def test_history_keep_needs_a_run_that_records_one(tmp_path, monkeypatch):
+    """A plain run has no store, so the option would silently do nothing."""
+
+    with pytest.raises(SystemExit, match="requires --durable or --resume"):
+        main(["run", "--llm", "mock", "--history-keep", "25"])
 
 
 def _compact_fixture(tmp_path, monkeypatch, store):

@@ -2659,10 +2659,11 @@ def _compact_command(args) -> int:
             _write_deployment_artifacts(profile)
             outcome = set_store_history_keep(str(store), args.set_history_keep)
         else:
-            # No number given means "tidy this up", which is the store's own
-            # budget. It used to mean "delete all of it", which is a surprising
-            # thing for a bare command to do to the only record of what ran.
-            outcome = prune_store_history(str(store), keep=args.keep_history)
+            # "Tidy this up" means the store's own budget. It used to mean
+            # "delete all of it", which is a surprising thing for a bare command
+            # to do to the only record of what ran. Changing the budget is a
+            # separate request, made with --set-history-keep.
+            outcome = prune_store_history(str(store))
         print(f"Store {store}")
         print(f"  history budget: {_history_budget_text(str(store))}")
         print(f"  removed history rows: {outcome.removed_rows}")
@@ -5137,7 +5138,6 @@ def _parse_cli_args(
         help="drop optional history and rotate logs",
     )
     deploy_compact.add_argument("--keep-archives", type=int, default=3, help="How many rotated log archives to retain. Default 3.")
-    deploy_compact.add_argument("--keep-history", type=int, default=None, help="Trim history to this many rows for this run only. Default: the store's own budget.")
     deploy_compact.add_argument("--set-history-keep", type=int, default=None, metavar="ROWS", help="Change how many history rows this deployment keeps from now on, and apply it. 0 turns the trace off.")
 
     deploy_logs = deploy_sub.add_parser("logs", help="show logs for a deployment")
@@ -5296,6 +5296,11 @@ def main(argv=None) -> int:
             return _approve_command(args)
         if getattr(args, "durable", False) or getattr(args, "resume", False):
             return _durable_run_command(args)
+        if getattr(args, "history_keep", None) is not None:
+            raise SystemExit(
+                "--history-keep requires --durable or --resume. A plain run "
+                "keeps no store to record a trace in."
+            )
         return _run_workflow_command(args)
     if args.cmd == "show":
         return _show_command(args)

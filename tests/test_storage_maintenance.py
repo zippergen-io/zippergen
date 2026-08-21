@@ -22,6 +22,7 @@ from zippergen.store import (
     ensure_human_task_token,
     list_history,
     open_store,
+    read_history_high_water,
     read_history_keep,
     record_history,
     record_human_task_notification,
@@ -294,3 +295,75 @@ def test_initializing_a_budget_leaves_an_existing_store_alone(tmp_path):
     assert report.history_keep == 3
     assert report.roles == 1
     assert report.outstanding_messages == 1
+
+
+def test_event_numbers_never_repeat_after_the_trace_is_turned_off(tmp_path):
+    """Event numbers are the stored order that ``trace --after`` pages through.
+
+    ``history`` uses a plain INTEGER PRIMARY KEY, so SQLite starts again from 1
+    once the table is empty — and a budget of zero empties it. Reusing a number
+    would make ``--after N`` skip every new event until the counter caught up.
+    """
+
+    path = str(tmp_path / "s.sqlite")
+    conn = open_store(path)
+    try:
+        write_history_keep(conn, 25)
+        for index in range(25):
+            record_history(conn, "A", {"type": "step", "index": index})
+        before = [row["rowid"] for row in list_history(conn)]
+
+        write_history_keep(conn, 0)
+        write_history_keep(conn, 25)
+        for index in range(3):
+            record_history(conn, "A", {"type": "step", "index": 100 + index})
+        after = [row["rowid"] for row in list_history(conn)]
+    finally:
+        conn.close()
+
+    assert before == list(range(1, 26))
+    assert min(after) > max(before)
+    conn = open_store(path)
+    try:
+        # The paging a trace viewer does still reaches the new events.
+        assert [row["rowid"] for row in list_history(conn, after_id=max(before))] == after
+    finally:
+        conn.close()
+
+
+def test_the_high_water_mark_survives_reopening(tmp_path):
+    path = str(tmp_path / "s.sqlite")
+    conn = open_store(path)
+    try:
+        write_history_keep(conn, 10)
+        for index in range(10):
+            record_history(conn, "A", {"type": "step", "index": index})
+        write_history_keep(conn, 0)
+    finally:
+        conn.close()
+
+    conn = open_store(path)
+    try:
+        assert read_history_high_water(conn) == 10
+        write_history_keep(conn, 5)
+        assert record_history(conn, "A", {"type": "step"}) == 11
+    finally:
+        conn.close()
+
+
+def test_ordinary_trimming_does_not_disturb_event_numbers(tmp_path):
+    """Trimming to a positive budget keeps the newest rows, so ids just continue."""
+
+    path = str(tmp_path / "s.sqlite")
+    conn = open_store(path)
+    try:
+        write_history_keep(conn, 5)
+        for index in range(60):
+            record_history(conn, "A", {"type": "step", "index": index})
+        ids = [row["rowid"] for row in list_history(conn)]
+    finally:
+        conn.close()
+
+    assert ids == sorted(ids)
+    assert ids == list(range(ids[0], ids[0] + len(ids)))
+    assert ids[-1] == 60

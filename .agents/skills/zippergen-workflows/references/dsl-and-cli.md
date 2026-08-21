@@ -737,11 +737,13 @@ budget than one passing short strings:
 zg deploy --history-keep 50000              # a wider window
 zg deploy --history-keep 0                  # record no trace at all
 zg deploy compact --set-history-keep 2000   # change it later, and apply it now
+zg run --durable --history-keep 500         # the same choice for one run
 ```
 
-`zg deploy status` reports the budget and how much of it is in use. Bare
-`zg deploy compact` trims to that budget; it does not empty the store. Use
-`--set-history-keep 0` to ask for that deliberately.
+`zg deploy status` and `zg run status` report the budget and how much of it is
+in use. Bare `zg deploy compact` trims to that budget; it does not empty the
+store. Use `--set-history-keep 0` to ask for that deliberately. Event numbers
+keep climbing across a budget change, so `trace --after N` stays correct.
 Completed human tasks, answer tokens, and connector notifications remain as
 audit records. They are not needed for recovery, currently have no automatic
 retention policy, and therefore grow with the number of human interactions.

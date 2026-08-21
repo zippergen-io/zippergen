@@ -350,6 +350,7 @@ workflow actually produces:
 zg deploy --history-keep 50000       # a bigger window for a quiet workflow
 zg deploy --history-keep 0           # record no trace at all
 zg deploy compact --set-history-keep 2000   # change it later, and apply it now
+zg run --durable --history-keep 500  # the same choice for one durable run
 ```
 
 A budget of zero writes nothing, so it costs nothing rather than writing and
@@ -361,6 +362,13 @@ the budget together with how much of it is in use.
 The budget is recorded on the deployment as well as in the store, so
 `zg deploy reset` — which archives the store and starts an empty one — does not
 quietly put the trace back to the default.
+
+Event numbers keep climbing across a budget change. `history` uses a plain
+`INTEGER PRIMARY KEY`, so SQLite would start again from 1 once a budget of zero
+emptied the table; the highest number handed out is kept in `store_meta` under
+`history_high_water` and the next event continues from there. Without that,
+`trace --after N` would skip every new event until the counter caught up, and
+the event number is what the trace table calls the authoritative stored order.
 
 Each new history event carries a wall-clock `recorded_at` timestamp for the
 human-facing trace table. That timestamp is observational: row ids and causal

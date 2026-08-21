@@ -481,22 +481,25 @@ the service again if it was running. The archive is never silently deleted.
 the deployment first, because the combined command refuses before changing
 either resource while its service is running.
 
-**Durable state does not grow with time; the trace does, and you set the
-bound.** `role_state` holds one row per participant and `outstanding_messages`
-only what nobody has absorbed yet, so recovery state is the size of the
-computation, not of its past. The trace is separate, recovery never reads it,
-and each store keeps the newest 10,000 rows unless you say otherwise. That is a
-row count, not a size, so size it for the events your workflow actually
-produces:
+**Core recovery state does not grow with execution history; the trace does, and
+you set the bound.** `role_state` holds one row per participant and
+`outstanding_messages` only what nobody has absorbed yet, so what recovery reads
+is the size of the computation, not of its past. (Answered human tasks and their
+tokens are kept as audit records and do grow with how many people have replied.)
+The trace is separate again, recovery never reads it, and each store keeps the
+newest 10,000 rows unless you say otherwise. That is a row count, not a size, so
+size it for the events your workflow actually produces:
 
 ```bash
 zg deploy --history-keep 50000              # a wider window
 zg deploy --history-keep 0                  # record no trace at all
 zg deploy compact --set-history-keep 2000   # change it later, and apply it now
+zg run --durable --history-keep 500         # the same choice for one run
 ```
 
-`zg deploy status` reports the budget and how much of it is in use. Bare
-`zg deploy compact` trims to that budget rather than emptying the store.
+`zg deploy status` and `zg run status` report the budget and how much of it is in
+use. Bare `zg deploy compact` trims to that budget rather than emptying the
+store.
 `zg deploy list` also works outside a project and shows every deployment on
 the computer. If a project directory was deleted or reinitialized, use
 `zg deploy prune`; it unregisters orphaned services and archives their durable

@@ -54,6 +54,12 @@ HISTORY_RETENTION_BATCH = 1_000
 
 HISTORY_KEEP_META = "history_keep"
 
+# The largest history id ever handed out. ``history`` uses a plain INTEGER
+# PRIMARY KEY, so SQLite starts again from 1 once the table is empty, and a
+# budget of zero empties it. Event numbers are the stored order that
+# ``trace --after`` pages through, so they are kept climbing here instead.
+HISTORY_HIGH_WATER_META = "history_high_water"
+
 
 class StoreSchemaError(Exception):
     """The store on disk does not match the durable model this code implements."""
@@ -580,9 +586,53 @@ def _history_trim_batch(keep: int) -> int:
     return max(1, min(HISTORY_RETENTION_BATCH, keep // 10))
 
 
+def _history_max_id(conn) -> int:
+    row = conn.execute("SELECT MAX(id) FROM history").fetchone()
+    return int(row[0]) if row is not None and row[0] is not None else 0
+
+
+def read_history_high_water(conn) -> int:
+    """The largest history id handed out so far, including deleted rows."""
+
+    raw = read_meta(conn, HISTORY_HIGH_WATER_META)
+    if raw is None:
+        return 0
+    try:
+        mark = int(raw)
+    except ValueError as exc:
+        raise StoreSchemaError(
+            f"Store setting {HISTORY_HIGH_WATER_META}={raw!r} is not a whole "
+            "number. Reset the run or deployment to start a clean store."
+        ) from exc
+    return max(0, mark)
+
+
+def _remember_history_high_water(conn) -> None:
+    """Record the current highest id before anything deletes rows."""
+
+    current = _history_max_id(conn)
+    if current > read_history_high_water(conn):
+        write_meta(conn, HISTORY_HIGH_WATER_META, str(current))
+
+
+def _next_history_id(conn) -> int:
+    """The next event number, which never repeats one already used.
+
+    SQLite would reuse ids from 1 after the table is emptied. Reading the mark
+    costs nothing in the ordinary case, where the table is not empty and its own
+    maximum is the answer.
+    """
+
+    current = _history_max_id(conn)
+    if current == 0:
+        current = read_history_high_water(conn)
+    return current + 1
+
+
 def prune_history(conn, *, keep: int = HISTORY_KEEP_DEFAULT) -> int:
     if keep < 0:
         raise ValueError("keep must be zero or greater")
+    _remember_history_high_water(conn)
     if keep == 0:
         cursor = conn.execute("DELETE FROM history")
         return int(cursor.rowcount) if cursor.rowcount >= 0 else 0
@@ -609,11 +659,11 @@ def record_history(conn, role: str, event: dict) -> int:
     if keep == 0:
         return 0
     stored_event = {**event, "recorded_at": time.time()}
-    cur = conn.execute(
-        "INSERT INTO history(role,payload) VALUES(?,?)",
-        (role, json.dumps(_json_safe(stored_event))),
+    rowid = _next_history_id(conn)
+    conn.execute(
+        "INSERT INTO history(id,role,payload) VALUES(?,?,?)",
+        (rowid, role, json.dumps(_json_safe(stored_event))),
     )
-    rowid = _lastrowid(cur)
     if rowid % _history_trim_batch(keep) == 0:
         prune_history(conn, keep=keep)
     return rowid
