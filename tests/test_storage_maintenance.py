@@ -10,15 +10,23 @@ import pytest
 
 from zippergen.storage_maintenance import (
     check_store_integrity,
+    initialize_store_history_keep,
     inspect_store_storage,
     prune_store_history,
+    set_store_history_keep,
 )
 from zippergen.store import (
+    HISTORY_KEEP_DEFAULT,
+    StoreSchemaError,
     ensure_human_task,
     ensure_human_task_token,
+    list_history,
     open_store,
+    read_history_keep,
     record_history,
     record_human_task_notification,
+    write_history_keep,
+    write_meta,
     write_role_state,
 )
 
@@ -126,3 +134,163 @@ def test_pruning_can_keep_the_newest_rows(tmp_path):
 def test_pruning_a_missing_store_is_an_error(tmp_path):
     with pytest.raises(FileNotFoundError):
         prune_store_history(tmp_path / "absent.sqlite")
+
+
+# ---------------------------------------------------------------------------
+# The history budget: how much trace a store keeps
+# ---------------------------------------------------------------------------
+
+
+def test_a_store_keeps_the_default_budget_until_it_is_told_otherwise(tmp_path):
+    path = str(tmp_path / "s.sqlite")
+    _populated_store(path)
+
+    assert inspect_store_storage(path).history_keep == HISTORY_KEEP_DEFAULT
+
+
+def test_the_budget_bounds_what_a_running_store_accumulates(tmp_path):
+    """The point of the budget: writing more does not grow the store."""
+
+    path = str(tmp_path / "s.sqlite")
+    conn = open_store(path)
+    try:
+        write_history_keep(conn, 20)
+        for index in range(500):
+            record_history(conn, "A", {"type": "step", "index": index})
+    finally:
+        conn.close()
+
+    report = inspect_store_storage(path)
+    assert report.history_keep == 20
+    # Trimming happens in batches, so the table sits a little over budget in
+    # between. A tenth is the documented headroom.
+    assert 20 <= report.history_rows <= 22
+
+
+def test_the_newest_events_are_the_ones_kept(tmp_path):
+    path = str(tmp_path / "s.sqlite")
+    conn = open_store(path)
+    try:
+        write_history_keep(conn, 5)
+        for index in range(100):
+            record_history(conn, "A", {"type": "step", "index": index})
+        kept = [row["event"]["index"] for row in list_history(conn)]
+    finally:
+        conn.close()
+
+    assert kept == sorted(kept)
+    assert kept[-1] == 99
+
+
+def test_a_budget_of_zero_records_nothing_at_all(tmp_path):
+    path = str(tmp_path / "s.sqlite")
+    conn = open_store(path)
+    try:
+        write_history_keep(conn, 0)
+        assert record_history(conn, "A", {"type": "step"}) == 0
+    finally:
+        conn.close()
+
+    assert inspect_store_storage(path).history_rows == 0
+
+
+def test_lowering_the_budget_applies_immediately(tmp_path):
+    """A budget nobody has reached yet would otherwise be a promise, not a fact.
+
+    With a budget of zero nothing is ever written again, so no later write can
+    trim what is already there. Setting the budget has to do it.
+    """
+
+    path = str(tmp_path / "s.sqlite")
+    _populated_store(path, history_rows=40)
+
+    outcome = set_store_history_keep(path, 0)
+
+    assert outcome.removed_rows == 40
+    report = inspect_store_storage(path)
+    assert report.history_rows == 0
+    assert report.history_keep == 0
+    # The invariant that makes this safe.
+    assert report.roles == 1
+    assert report.outstanding_messages == 1
+    assert report.pending_tasks == 1
+
+
+def test_the_budget_survives_reopening_the_store(tmp_path):
+    path = str(tmp_path / "s.sqlite")
+    conn = open_store(path)
+    try:
+        write_history_keep(conn, 250)
+    finally:
+        conn.close()
+
+    conn = open_store(path)
+    try:
+        assert read_history_keep(conn) == 250
+    finally:
+        conn.close()
+
+
+def test_pruning_with_no_number_uses_the_stores_own_budget(tmp_path):
+    """A bare 'tidy this up' trims to the budget, it does not empty the store."""
+
+    path = str(tmp_path / "s.sqlite")
+    _populated_store(path, history_rows=40)
+    conn = open_store(path)
+    try:
+        write_history_keep(conn, 30)
+    finally:
+        conn.close()
+
+    prune_store_history(path)
+
+    assert inspect_store_storage(path).history_rows == 30
+
+
+def test_a_negative_budget_is_refused(tmp_path):
+    path = str(tmp_path / "s.sqlite")
+    _populated_store(path)
+
+    with pytest.raises(ValueError):
+        set_store_history_keep(path, -1)
+
+
+def test_a_hand_edited_budget_is_reported_not_ignored(tmp_path):
+    path = str(tmp_path / "s.sqlite")
+    _populated_store(path)
+    conn = open_store(path)
+    try:
+        write_meta(conn, "history_keep", "lots")
+    finally:
+        conn.close()
+
+    with pytest.raises(StoreSchemaError):
+        inspect_store_storage(path)
+
+
+def test_a_budget_can_be_set_before_the_store_exists(tmp_path):
+    """A run records where its store will be before anything opens it.
+
+    Setting the budget at that moment has to create the store rather than fail,
+    which is the difference between this and ``set_store_history_keep``.
+    """
+
+    path = tmp_path / "not-yet.sqlite"
+    assert not path.exists()
+
+    initialize_store_history_keep(path, 25)
+
+    assert path.is_file()
+    assert inspect_store_storage(path).history_keep == 25
+
+
+def test_initializing_a_budget_leaves_an_existing_store_alone(tmp_path):
+    path = str(tmp_path / "s.sqlite")
+    _populated_store(path, history_rows=5)
+
+    initialize_store_history_keep(path, 3)
+
+    report = inspect_store_storage(path)
+    assert report.history_keep == 3
+    assert report.roles == 1
+    assert report.outstanding_messages == 1

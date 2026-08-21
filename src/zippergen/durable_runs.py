@@ -511,6 +511,7 @@ def run_durable(
     *,
     workflow_spec: str | None = None,
     resume: bool = False,
+    history_keep: int | None = None,
     provided_inputs: dict[str, object] | None = None,
     llm: str | None = None,
     llms: dict[str, str] | None = None,
@@ -536,6 +537,7 @@ def run_durable(
             workspace,
             workflow_spec=workflow_spec,
             resume=resume,
+            history_keep=history_keep,
             provided_inputs=provided_inputs,
             llm=llm,
             llms=llms,
@@ -561,6 +563,7 @@ def _run_durable_in_project(
     *,
     workflow_spec: str | None,
     resume: bool,
+    history_keep: int | None = None,
     provided_inputs: dict[str, object] | None,
     llm: str | None,
     llms: dict[str, str] | None,
@@ -763,6 +766,14 @@ def _run_durable_in_project(
     environment = provider_environment
 
     store_path = str(record["store"])
+    if history_keep is not None:
+        # A storage setting, not workflow configuration: it changes how much of
+        # the trace is kept, never what the run computes. Safe on a resume too.
+        # The store is recorded before anything opens it, so this may be the
+        # thing that creates it.
+        from zippergen.storage_maintenance import initialize_store_history_keep
+
+        initialize_store_history_keep(store_path, history_keep)
     workspace.update(current_run=selected_run_id)
     workspace.update_run(selected_run_id, status="running", error=None)
     if renderer is not None:

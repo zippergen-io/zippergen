@@ -6,6 +6,9 @@ computation: one row per role, plus messages nobody has absorbed yet.
 
 The only thing that accumulates is ``history``, which recovery never reads.
 Pruning it is a retention choice, not a correctness argument.
+
+Each store records its own history budget, so the choice is the operator's
+rather than a constant in this file. See ``zippergen.store.read_history_keep``.
 """
 
 from __future__ import annotations
@@ -14,7 +17,13 @@ import sqlite3
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from zippergen.store import open_store, prune_history
+from zippergen.store import (
+    HISTORY_KEEP_DEFAULT,
+    open_store,
+    prune_history,
+    read_history_keep,
+    write_history_keep,
+)
 
 
 @dataclass(frozen=True)
@@ -27,6 +36,7 @@ class StorageReport:
     roles: int
     outstanding_messages: int
     history_rows: int
+    history_keep: int
     completed_tasks: int
     pending_tasks: int
     task_tokens: int
@@ -114,6 +124,7 @@ def inspect_store_storage(path: str | Path) -> StorageReport:
         roles=0,
         outstanding_messages=0,
         history_rows=0,
+        history_keep=HISTORY_KEEP_DEFAULT,
         completed_tasks=0,
         pending_tasks=0,
         task_tokens=0,
@@ -158,6 +169,11 @@ def inspect_store_storage(path: str | Path) -> StorageReport:
             roles=_count(conn, "role_state"),
             outstanding_messages=_count(conn, "outstanding_messages"),
             history_rows=_count(conn, "history"),
+            history_keep=(
+                read_history_keep(conn)
+                if _table_exists(conn, "store_meta")
+                else HISTORY_KEEP_DEFAULT
+            ),
             completed_tasks=task_counts.get("done", 0),
             pending_tasks=task_counts.get("pending", 0),
             task_tokens=_count(conn, "human_task_tokens"),
@@ -179,15 +195,16 @@ class HistoryPruneResult:
     after_bytes: int
 
 
-def prune_store_history(
+def _trim_store_history(
     path: str | Path,
-    *,
-    keep: int = 0,
+    trim,
 ) -> HistoryPruneResult:
-    """Drop optional history and reclaim the space.
+    """Run one history change in its own transaction, then reclaim the space.
 
-    Recovery never reads history, so this is safe at any moment, including
-    while the deployment is running. ``keep=0`` removes all of it.
+    ``trim`` receives the open connection and returns the number of rows it
+    removed. Everything around it — the transaction, the checkpoint, the vacuum
+    and the before/after measurement — is the same for every caller, so it lives
+    here rather than in each one.
     """
 
     store = Path(path).expanduser()
@@ -198,7 +215,7 @@ def prune_store_history(
     try:
         conn.execute("BEGIN IMMEDIATE")
         try:
-            removed = prune_history(conn, keep=keep)
+            removed = trim(conn)
             conn.execute("COMMIT")
         except BaseException:
             conn.execute("ROLLBACK")
@@ -217,3 +234,58 @@ def prune_store_history(
         before_bytes=before_bytes,
         after_bytes=sum(sqlite_family_size(store)),
     )
+
+
+def prune_store_history(
+    path: str | Path,
+    *,
+    keep: int | None = None,
+) -> HistoryPruneResult:
+    """Trim optional history and reclaim the space.
+
+    Recovery never reads history, so this is safe at any moment, including
+    while the deployment is running. ``keep=None`` trims to the store's own
+    budget, which is what a plain "tidy this up" means; a number overrides it
+    for this one call without changing what the store keeps from now on.
+    """
+
+    def trim(conn) -> int:
+        budget = read_history_keep(conn) if keep is None else keep
+        return prune_history(conn, keep=budget)
+
+    return _trim_store_history(path, trim)
+
+
+def set_store_history_keep(
+    path: str | Path,
+    keep: int,
+) -> HistoryPruneResult:
+    """Change how many history rows a store keeps, and apply it now."""
+
+    if keep < 0:
+        raise ValueError("history budget must be zero or greater")
+    return _trim_store_history(path, lambda conn: write_history_keep(conn, keep))
+
+
+def initialize_store_history_keep(path: str | Path, keep: int) -> None:
+    """Record a history budget on a store, creating the store if it is absent.
+
+    A run records where its store will be before anything opens it, so the
+    budget is often set on a file that does not exist yet. There is nothing to
+    trim or reclaim in that case, which is why this does not go through
+    ``set_store_history_keep``.
+    """
+
+    if keep < 0:
+        raise ValueError("history budget must be zero or greater")
+    conn = open_store(str(Path(path).expanduser()))
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            write_history_keep(conn, keep)
+            conn.execute("COMMIT")
+        except BaseException:
+            conn.execute("ROLLBACK")
+            raise
+    finally:
+        conn.close()

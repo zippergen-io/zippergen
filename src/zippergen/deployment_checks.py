@@ -32,6 +32,7 @@ from zippergen.store import (
     list_role_states,
     list_workflow_results,
     open_store,
+    read_history_keep,
 )
 from zippergen.deployment_platform import (
     deployment_launchd_path as _deployment_launchd_path,
@@ -210,6 +211,12 @@ def _store_status(store_path: str) -> dict[str, object]:
         done_task_count = sum(1 for row in human_rows if row[3] == "done")
         results = list_workflow_results(conn)
         connectors = list_connector_health(conn)
+        history = {
+            "rows": int(
+                conn.execute("SELECT COUNT(*) FROM history").fetchone()[0]
+            ),
+            "keep": read_history_keep(conn),
+        }
     finally:
         conn.close()
 
@@ -245,6 +252,7 @@ def _store_status(store_path: str) -> dict[str, object]:
         "pending_human_tasks": pending_tasks,
         "done_human_task_count": done_task_count,
         "workflow_results": results,
+        "history": history,
     }
 
 

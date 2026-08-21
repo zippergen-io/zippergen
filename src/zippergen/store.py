@@ -41,8 +41,18 @@ from zippergen.value_codec import decode_value, dumps_value, encode_value, loads
 
 SCHEMA_VERSION = 3
 
-HISTORY_RETENTION_KEEP = 10_000
+# How many history rows a store keeps when it does not say otherwise. History is
+# optional and recovery never reads it, so this is a retention choice, not a
+# correctness one. A store records its own value under ``history_keep`` in
+# ``store_meta``; see ``read_history_keep``.
+HISTORY_KEEP_DEFAULT = 10_000
+
+# The largest number of rows added between trims. Trimming on every write would
+# pay a delete scan per event, so it happens in batches; see
+# ``_history_trim_batch``, which scales the batch down for smaller budgets.
 HISTORY_RETENTION_BATCH = 1_000
+
+HISTORY_KEEP_META = "history_keep"
 
 
 class StoreSchemaError(Exception):
@@ -516,7 +526,61 @@ def list_workflow_results(conn) -> list[dict]:
 # ---------------------------------------------------------------------------
 
 
-def prune_history(conn, *, keep: int = HISTORY_RETENTION_KEEP) -> int:
+def read_history_keep(conn) -> int:
+    """How many history rows this store keeps.
+
+    A store with no recorded budget keeps ``HISTORY_KEEP_DEFAULT``. The value is
+    written by ``write_history_keep`` and validated there, so a value that does
+    not parse means the file was edited by hand and is reported rather than
+    quietly replaced.
+    """
+
+    raw = read_meta(conn, HISTORY_KEEP_META)
+    if raw is None:
+        return HISTORY_KEEP_DEFAULT
+    try:
+        keep = int(raw)
+    except ValueError as exc:
+        raise StoreSchemaError(
+            f"Store setting {HISTORY_KEEP_META}={raw!r} is not a whole number. "
+            "Set it again with 'zg deploy compact --set-history-keep N'."
+        ) from exc
+    if keep < 0:
+        raise StoreSchemaError(
+            f"Store setting {HISTORY_KEEP_META}={keep} is negative. "
+            "Set it again with 'zg deploy compact --set-history-keep N'."
+        )
+    return keep
+
+
+def write_history_keep(conn, keep: int) -> int:
+    """Record how many history rows this store keeps. Zero records none.
+
+    Rows already over the new budget are dropped here rather than at the next
+    trim, so the budget is true as soon as it is set. A budget of zero stops
+    further writes, which would otherwise mean nothing ever trims the rows that
+    were already there. Returns the number of rows removed.
+    """
+
+    if keep < 0:
+        raise ValueError("history budget must be zero or greater")
+    write_meta(conn, HISTORY_KEEP_META, str(int(keep)))
+    return prune_history(conn, keep=int(keep))
+
+
+def _history_trim_batch(keep: int) -> int:
+    """How many rows to add between trims, for a given budget.
+
+    Trimming on every write would pay a delete scan per event, so it happens in
+    batches and the table sits a little over budget in between. The batch is a
+    tenth of the budget, capped, which keeps that overshoot at 10% whatever the
+    budget is instead of letting a small budget hold twice its size.
+    """
+
+    return max(1, min(HISTORY_RETENTION_BATCH, keep // 10))
+
+
+def prune_history(conn, *, keep: int = HISTORY_KEEP_DEFAULT) -> int:
     if keep < 0:
         raise ValueError("keep must be zero or greater")
     if keep == 0:
@@ -532,14 +596,26 @@ def prune_history(conn, *, keep: int = HISTORY_RETENTION_KEEP) -> int:
 
 
 def record_history(conn, role: str, event: dict) -> int:
+    """Append one trace event, honouring this store's history budget.
+
+    A budget of zero writes nothing and returns 0, so a deployment that wants no
+    trace pays nothing for it. The budget is read per event rather than cached:
+    the lookup is a single row from a two-row table, far below the cost of the
+    surrounding commit, and reading it every time means a budget changed on a
+    live store takes effect immediately.
+    """
+
+    keep = read_history_keep(conn)
+    if keep == 0:
+        return 0
     stored_event = {**event, "recorded_at": time.time()}
     cur = conn.execute(
         "INSERT INTO history(role,payload) VALUES(?,?)",
         (role, json.dumps(_json_safe(stored_event))),
     )
     rowid = _lastrowid(cur)
-    if rowid % HISTORY_RETENTION_BATCH == 0:
-        prune_history(conn, keep=HISTORY_RETENTION_KEEP)
+    if rowid % _history_trim_batch(keep) == 0:
+        prune_history(conn, keep=keep)
     return rowid
 
 

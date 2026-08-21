@@ -723,10 +723,25 @@ There is no workflow or deployment name to pass: the project identifies both.
 `tasks` show recent events and pending human tasks. Trace output is a timestamped
 table; its event number remains the authoritative stored order, while the
 wall-clock time and paired action duration are for operational diagnosis.
-`compact` drops optional
+`compact` trims optional
 inspection history and rotates logs; it refuses while the deployment is
 running, before changing either resource. Recovery never reads that history,
 but the stopped-service precondition also makes log rotation lossless.
+
+How much history a store keeps is the operator's choice, recorded per store.
+The default is the newest 10,000 rows. That is a row count, not a size, so a
+workflow whose events carry large values holds far more bytes at the same
+budget than one passing short strings:
+
+```bash
+zg deploy --history-keep 50000              # a wider window
+zg deploy --history-keep 0                  # record no trace at all
+zg deploy compact --set-history-keep 2000   # change it later, and apply it now
+```
+
+`zg deploy status` reports the budget and how much of it is in use. Bare
+`zg deploy compact` trims to that budget; it does not empty the store. Use
+`--set-history-keep 0` to ask for that deliberately.
 Completed human tasks, answer tokens, and connector notifications remain as
 audit records. They are not needed for recovery, currently have no automatic
 retention policy, and therefore grow with the number of human interactions.

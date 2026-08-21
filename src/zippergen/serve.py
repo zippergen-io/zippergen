@@ -139,6 +139,7 @@ from zippergen.store import (
     load_human_task_token,
     mark_human_task_token_used,
     open_store,
+    write_history_keep,
 )
 
 
@@ -300,8 +301,53 @@ def _write_deployment_artifacts(profile: dict[str, object]) -> None:
     launchd_path.write_bytes(plistlib.dumps(launchd, sort_keys=True))
 
 
+def _profile_history_keep(profile: Mapping[str, object]) -> int | None:
+    """The history budget this deployment asked for, if it asked for one."""
+
+    raw = profile.get("history_keep")
+    if raw is None:
+        return None
+    try:
+        keep = int(raw)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        raise SystemExit(
+            f"Deployment history_keep is not a whole number: {raw!r}. "
+            "Set it again with 'zg deploy --history-keep N'."
+        ) from None
+    if keep < 0:
+        raise SystemExit(
+            f"Deployment history_keep is negative: {keep}. "
+            "Set it again with 'zg deploy --history-keep N'."
+        )
+    return keep
+
+
+def _apply_deployment_history_keep(profile: Mapping[str, object]) -> None:
+    """Bring an existing store in line with the deployment's history budget.
+
+    ``_initialize_deployment_store`` stamps a store it creates. This covers the
+    ordinary case of redeploying a project whose store is already there.
+    """
+
+    keep = _profile_history_keep(profile)
+    store = profile.get("store")
+    if keep is None or not store:
+        return
+    path = Path(str(store)).expanduser()
+    if not path.is_file():
+        return
+    from zippergen.storage_maintenance import set_store_history_keep
+
+    set_store_history_keep(str(path), keep)
+
+
 def _initialize_deployment_store(profile: dict[str, object]) -> bool:
-    """Allocate one valid durable store for a deployment if it has none."""
+    """Allocate one valid durable store for a deployment if it has none.
+
+    A reset archives the old store and lands here with a fresh one, so the
+    deployment's history budget is stamped on at creation. Without that, every
+    reset would quietly put the trace back to the default.
+    """
 
     path = Path(str(profile["store"])).expanduser()
     if path.exists():
@@ -309,6 +355,11 @@ def _initialize_deployment_store(profile: dict[str, object]) -> bool:
     path.parent.mkdir(parents=True, exist_ok=True)
     try:
         connection = open_store(str(path))
+        keep = _profile_history_keep(profile)
+        if keep is not None:
+            write_history_keep(connection, keep)
+    except SystemExit:
+        raise
     except Exception as exc:
         raise SystemExit(
             f"Could not initialize deployment store {path}: "
@@ -957,6 +1008,15 @@ def _print_status(status: dict[str, object]) -> None:
                 f"on {message['channel']}"
             )
 
+    history = status.get("history")
+    if isinstance(history, dict):
+        keep = int(history.get("keep") or 0)
+        rows = int(history.get("rows") or 0)
+        if keep == 0:
+            print("Trace history: off (this store records none)")
+        else:
+            print(f"Trace history: {rows:,} of {keep:,} rows kept")
+
     tasks = status.get("pending_human_tasks")
     if isinstance(tasks, list):
         print(f"Pending human tasks: {len(tasks)}")
@@ -1393,10 +1453,13 @@ def _durable_run_from_project(args, workspace) -> int:
         connector_environment["ZIPPERGEN_CONNECTORS_JSON"] = json.dumps(
             snapshot
         )
+    if args.history_keep is not None and args.history_keep < 0:
+        raise SystemExit("--history-keep must be zero or greater.")
     run_durable(
         workspace,
         workflow_spec=args.workflow,
         resume=args.resume,
+        history_keep=args.history_keep,
         provided_inputs=inputs,
         llm=args.llm,
         llms=normalize_llm_overrides(_parse_inputs(args.llm_for)),
@@ -2561,7 +2624,10 @@ def _compact_command(args) -> int:
 
     from zippergen.deployment_platform import deployment_service_status
     from zippergen.deployments import DeploymentRemovalError, compact_deployment_logs
-    from zippergen.storage_maintenance import prune_store_history
+    from zippergen.storage_maintenance import (
+        prune_store_history,
+        set_store_history_keep,
+    )
 
     profile = _load_deployment_profile(args.name)
     service = deployment_service_status(args.name)
@@ -2586,14 +2652,36 @@ def _compact_command(args) -> int:
             f"({logs.removed_archive_bytes} bytes)"
         )
     if store:
-        outcome = prune_store_history(str(store), keep=args.keep_history)
+        if args.set_history_keep is not None:
+            if args.set_history_keep < 0:
+                raise SystemExit("--set-history-keep must be zero or greater.")
+            profile["history_keep"] = int(args.set_history_keep)
+            _write_deployment_artifacts(profile)
+            outcome = set_store_history_keep(str(store), args.set_history_keep)
+        else:
+            # No number given means "tidy this up", which is the store's own
+            # budget. It used to mean "delete all of it", which is a surprising
+            # thing for a bare command to do to the only record of what ran.
+            outcome = prune_store_history(str(store), keep=args.keep_history)
         print(f"Store {store}")
+        print(f"  history budget: {_history_budget_text(str(store))}")
         print(f"  removed history rows: {outcome.removed_rows}")
         print(
             "  reclaimed bytes: "
             f"{max(0, outcome.before_bytes - outcome.after_bytes)}"
         )
     return 0
+
+
+def _history_budget_text(store: str) -> str:
+    """Describe a store's history budget the way a person would say it."""
+
+    from zippergen.storage_maintenance import inspect_store_storage
+
+    report = inspect_store_storage(store)
+    if report.history_keep == 0:
+        return "0 rows (history is off)"
+    return f"{report.history_rows:,} of {report.history_keep:,} rows kept"
 
 
 def _print_reset_consequences(name: str, profile: Mapping[str, object]) -> None:
@@ -3463,12 +3551,19 @@ def _finalize_guided_deployment(
         profile["log_generation_offset"] = 0
     profile["deployment_generation_at"] = profile["updated_at"]
 
+    history_keep = getattr(args, "history_keep", None)
+    if history_keep is not None:
+        if history_keep < 0:
+            raise SystemExit("--history-keep must be zero or greater.")
+        profile["history_keep"] = int(history_keep)
+
     if not args.no_bundle:
         _bundle_deployment(profile, spec, workflow)
     # Persist enough state to resume configuration even if dependency install
     # or an interactive OAuth step fails.
     _write_deployment_artifacts(profile)
     _initialize_deployment_store(profile)
+    _apply_deployment_history_keep(profile)
     _prepare_deployment_environment(profile, spec, skip_install=args.no_install)
     _write_deployment_artifacts(profile)
     _run_deployment_setup(profile, spec, values, skip_setup=args.no_setup)
@@ -4835,6 +4930,16 @@ def _parse_cli_args(
         help="Continue the project's most recent unfinished run.",
     )
     rn.add_argument(
+        "--history-keep",
+        type=int,
+        default=None,
+        metavar="ROWS",
+        help=(
+            "How many trace rows this run's store keeps. 0 records none. "
+            "Default 10000."
+        ),
+    )
+    rn.add_argument(
         "--project",
         help="Project root for a durable run; defaults to discovery.",
     )
@@ -4983,6 +5088,7 @@ def _parse_cli_args(
     _add_guided_deployment_arguments(deploy)
     deploy.add_argument("--no-bundle", action="store_true", help=argparse.SUPPRESS)
     deploy.add_argument("--no-start", action="store_true", help="Configure the deployment without starting its service.")
+    deploy.add_argument("--history-keep", type=int, default=None, metavar="ROWS", help="How many trace rows this deployment's store keeps. 0 records none. Default 10000.")
     deploy_sub = deploy.add_subparsers(dest="deploy_action")
 
     deploy_list = deploy_sub.add_parser(
@@ -5031,7 +5137,8 @@ def _parse_cli_args(
         help="drop optional history and rotate logs",
     )
     deploy_compact.add_argument("--keep-archives", type=int, default=3, help="How many rotated log archives to retain. Default 3.")
-    deploy_compact.add_argument("--keep-history", type=int, default=0, help="How many history rows to retain. Default 0, meaning drop all of it.")
+    deploy_compact.add_argument("--keep-history", type=int, default=None, help="Trim history to this many rows for this run only. Default: the store's own budget.")
+    deploy_compact.add_argument("--set-history-keep", type=int, default=None, metavar="ROWS", help="Change how many history rows this deployment keeps from now on, and apply it. 0 turns the trace off.")
 
     deploy_logs = deploy_sub.add_parser("logs", help="show logs for a deployment")
     deploy_logs.add_argument("--tail", type=int, default=80, help="Number of log lines to show.")

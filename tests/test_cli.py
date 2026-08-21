@@ -24,6 +24,7 @@ from zippergen.store import (
     open_store,
     record_history,
 )
+from zippergen.storage_maintenance import inspect_store_storage
 from zippergen.workspace import Workspace
 from zippergen.value_codec import decode_value, encode_value
 
@@ -270,6 +271,106 @@ def test_compact_drops_history_and_rotates_logs(tmp_path, monkeypatch, capsys):
     assert "reclaimed bytes: 3072" in output
     assert "removed archives: 2 (768 bytes)" in output
     assert changed == ["logs", "history"]
+
+
+def _compact_fixture(tmp_path, monkeypatch, store):
+    """Set up the one deployment ``zg deploy compact`` acts on."""
+
+    from zippergen import deployments, serve
+
+    home = tmp_path / "zg-home"
+    (home / "deployments").mkdir(parents=True)
+    name = Workspace(home=home).directory.name
+    profile = {
+        "store": str(store),
+        "source_cwd": str(Path.cwd()),
+        "project_id": Workspace().project_manifest().get("project_id"),
+    }
+    (home / "deployments" / f"{name}.json").write_text(json.dumps(profile))
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(home))
+    monkeypatch.setattr(serve, "_load_deployment_profile", lambda _name: dict(profile))
+    written: dict[str, object] = {}
+    monkeypatch.setattr(
+        serve, "_write_deployment_artifacts", lambda p: written.update(p)
+    )
+    monkeypatch.setattr(
+        deployments,
+        "compact_deployment_logs",
+        lambda _name, _profile, *, keep_archives: SimpleNamespace(
+            removed_archives=0, removed_archive_bytes=0
+        ),
+    )
+    return written
+
+
+def test_bare_compact_trims_to_the_budget_instead_of_emptying_the_store(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    """A command with no arguments must not throw away the only record of a run.
+
+    ``compact`` used to default to keeping nothing. Trimming to the store's own
+    budget is what "tidy this up" means; emptying it is a separate request.
+    """
+
+    from zippergen.store import open_store, record_history, write_history_keep
+
+    store = tmp_path / "run.sqlite"
+    conn = open_store(str(store))
+    try:
+        write_history_keep(conn, 25)
+        for index in range(400):
+            record_history(conn, "A", {"type": "step", "index": index})
+    finally:
+        conn.close()
+    _compact_fixture(tmp_path, monkeypatch, store)
+
+    assert main(["deploy", "compact"]) == 0
+
+    assert inspect_store_storage(str(store)).history_rows == 25
+    assert "history budget: 25 of 25 rows kept" in capsys.readouterr().out
+
+
+def test_setting_the_history_budget_persists_and_applies(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    from zippergen.store import open_store, read_history_keep, record_history
+
+    store = tmp_path / "run.sqlite"
+    conn = open_store(str(store))
+    try:
+        for index in range(60):
+            record_history(conn, "A", {"type": "step", "index": index})
+    finally:
+        conn.close()
+    written = _compact_fixture(tmp_path, monkeypatch, store)
+
+    assert main(["deploy", "compact", "--set-history-keep", "10"]) == 0
+
+    conn = open_store(str(store))
+    try:
+        assert read_history_keep(conn) == 10
+    finally:
+        conn.close()
+    assert inspect_store_storage(str(store)).history_rows == 10
+    # Recorded on the deployment too, so a reset does not lose the choice.
+    assert written["history_keep"] == 10
+    assert "removed history rows: 50" in capsys.readouterr().out
+
+
+def test_turning_the_trace_off_is_reported_as_off(tmp_path, monkeypatch, capsys):
+    from zippergen.store import open_store
+
+    store = tmp_path / "run.sqlite"
+    open_store(str(store)).close()
+    _compact_fixture(tmp_path, monkeypatch, store)
+
+    assert main(["deploy", "compact", "--set-history-keep", "0"]) == 0
+
+    assert "history budget: 0 rows (history is off)" in capsys.readouterr().out
 
 
 def test_compact_refuses_before_changing_a_running_deployment(

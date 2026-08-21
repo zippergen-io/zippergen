@@ -336,7 +336,32 @@ incompatible edit.
 `role_state` has one row per lifeline. `outstanding_messages` holds only what
 has not been absorbed. Neither grows with how long the workflow has run.
 
-`history` accumulates and is pruned online, keeping the newest 10,000 rows.
+`history` accumulates and is pruned online. Each store records its own budget
+under `history_keep` in `store_meta`; a store that says nothing keeps the newest
+10,000 rows. Trimming happens in batches of a tenth of the budget rather than on
+every write, so the table sits up to ten percent over budget in between.
+
+The budget is a row count, not a size. A workflow whose events carry large
+values — a whole email, a long model response — will hold far more bytes at
+10,000 rows than one passing short strings. Size the budget for the events the
+workflow actually produces:
+
+```bash
+zg deploy --history-keep 50000       # a bigger window for a quiet workflow
+zg deploy --history-keep 0           # record no trace at all
+zg deploy compact --set-history-keep 2000   # change it later, and apply it now
+```
+
+A budget of zero writes nothing, so it costs nothing rather than writing and
+deleting. Setting a budget also trims immediately: a budget nobody has reached
+yet would otherwise be a promise rather than a fact, and with a budget of zero
+no later write would ever trim what was already there. `zg deploy status` reports
+the budget together with how much of it is in use.
+
+The budget is recorded on the deployment as well as in the store, so
+`zg deploy reset` — which archives the store and starts an empty one — does not
+quietly put the trace back to the default.
+
 Each new history event carries a wall-clock `recorded_at` timestamp for the
 human-facing trace table. That timestamp is observational: row ids and causal
 stamps remain the ordering facts, and recovery never reads the timestamp.
@@ -352,6 +377,10 @@ stopped and refuses before changing either resource:
 zg deploy stop
 zg deploy compact
 ```
+
+With no arguments `compact` trims history to the store's own budget. It does not
+empty the store: throwing away the only record of what ran is a separate request,
+made with `--set-history-keep 0` or `--keep-history 0`.
 
 Dropping history is a retention choice, not a recovery operation. The explicit
 stop makes the combined command predictable and its log rotation lossless.

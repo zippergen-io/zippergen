@@ -9,6 +9,7 @@ from zippergen.store import (
     list_role_states,
     list_history,
     record_history,
+    write_history_keep,
     load_workflow_result,
     open_store,
     WorkflowIdentityError,
@@ -847,10 +848,9 @@ def test_history_pruning_does_not_disturb_a_pending_human_task(
     answer, because recovery does not read history at all.
     """
 
-    monkeypatch.setattr("zippergen.store.HISTORY_RETENTION_KEEP", 2)
-    monkeypatch.setattr("zippergen.store.HISTORY_RETENTION_BATCH", 2)
     path = str(tmp_path / "human-history-retention.sqlite")
     conn = open_store(path)
+    write_history_keep(conn, 2)
     for index in range(5):
         record_history(conn, "PHuman", {"type": "old", "index": index})
 
