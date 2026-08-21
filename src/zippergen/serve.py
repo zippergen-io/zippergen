@@ -52,7 +52,8 @@ from zippergen.deployment_platform import (
     launchd_service_status as _launchd_service_status,
     run_launchctl as _run_launchctl,
     run_systemctl as _run_systemctl,
-    service_is_live,
+    service_is_running,
+    service_may_be_attached,
     service_manager as _service_manager,
     slug as _slug,
     systemctl_command as _systemctl_command,
@@ -400,15 +401,17 @@ def _deployment_lifecycle_command(args, action: str) -> int:
 
     profile = _load_deployment_profile(args.name)
     name = str(profile["name"])
+    # Read the state once, up front. Every decision below and the sentence this
+    # prints at the end are about the difference between before and after.
+    before = deployment_service_status(name)
     if action == "start" and not args.dry_run:
         # "start" means make sure it is running, so a running service is
         # already the answer. Bringing it down and up again would interrupt
         # whatever step is in flight, and an interrupted model call or effect
         # can run a second time.
-        status = deployment_service_status(name)
-        if status.get("state") in {"running", "restarting"}:
+        if service_is_running(before):
             print(
-                f"Deployment {name} is already running ({status.get('detail')})."
+                f"Deployment {name} is already running ({before.get('detail')})."
             )
             if getattr(args, "enable", False):
                 print(
@@ -467,11 +470,37 @@ def _deployment_lifecycle_command(args, action: str) -> int:
                 dry_run=args.dry_run,
             )
         else:
-            _run_launchctl(_launchctl_command("bootout", service), dry_run=args.dry_run)
+            # A missing agent is the outcome stop is asking for, not a failure.
+            # What actually happened is decided from the state afterwards.
+            _run_launchctl(
+                _launchctl_command("bootout", service),
+                dry_run=args.dry_run,
+                check=False,
+            )
     if args.dry_run:
         return 0
-    done = {"start": "Started", "stop": "Stopped"}[action]
-    print(f"{done} deployment {name} ({service}).")
+    # Report what is true afterwards, not which verb was typed. "Stopped" on a
+    # service that was already stopped reads as though something happened, and
+    # sends people looking for what.
+    after = deployment_service_status(name)
+    running_before = service_is_running(before)
+    running_after = service_is_running(after)
+    if action == "start":
+        if running_after and running_before:
+            print(f"Deployment {name} was already running ({service}).")
+        elif running_after:
+            print(f"Started deployment {name} ({service}).")
+        else:
+            print(f"Deployment {name} did not start ({service}): {after['detail']}")
+            return 1
+    else:
+        if not running_before:
+            print(f"Deployment {name} was already stopped ({service}).")
+        elif running_after:
+            print(f"Deployment {name} is still running ({service}): {after['detail']}")
+            return 1
+        else:
+            print(f"Stopped deployment {name} ({service}).")
     return 0
 
 
@@ -2619,7 +2648,7 @@ def _compact_command(args) -> int:
 
     profile = _load_deployment_profile(args.name)
     service = deployment_service_status(args.name)
-    if service_is_live(service):
+    if service_may_be_attached(service):
         raise SystemExit(
             f"Stop deployment {args.name} before compacting it. "
             f"Current service state: {service['detail']}"
@@ -2778,7 +2807,7 @@ def _reset_deployment_command(args) -> int:
 
     service = deployment_service_status(args.name)
     was_running = service.get("state") in {"running", "restarting"}
-    needs_stop = service_is_live(service)
+    needs_stop = service_is_running(service)
     lifecycle = argparse.Namespace(
         name=args.name,
         dry_run=False,

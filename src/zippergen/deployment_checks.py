@@ -328,8 +328,13 @@ def _systemd_active_check(name: str) -> dict[str, object]:
 
     state = (result.stdout or result.stderr or "").strip() or f"exit {result.returncode}"
     if result.returncode == 0:
-        return _doctor_check("ok", "systemd active", f"{unit} is active", state=state)
-    return _doctor_check("warn", "systemd active", f"{unit} is not active: {state}", state=state)
+        return _doctor_check("ok", "service", f"{unit} is running", state=state)
+    return _doctor_check(
+        "warn",
+        "service",
+        "the service is not running; start it with 'zippergen deploy start'",
+        state=state,
+    )
 
 
 def _launchd_active_check(name: str) -> dict[str, object]:
@@ -340,6 +345,13 @@ def _launchd_active_check(name: str) -> dict[str, object]:
         kind = "fail"
     else:
         kind = "warn"
+        status = {
+            **status,
+            "detail": (
+                "the service is not running; start it with "
+                "'zippergen deploy start'"
+            ),
+        }
     return _doctor_check(
         kind,
         "launchd process",

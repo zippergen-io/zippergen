@@ -151,21 +151,39 @@ def run_launchctl(
 # Both service managers report the same small vocabulary: running, restarting,
 # completed, loaded, not-loaded, unknown.
 #
-# A deployment's durable state may only be replaced when no process can still be
-# attached to it. That is the question these two names answer, once, for every
-# command that needs it. Enumerating the safe states instead is what made a
-# deliberately stopped systemd unit -- which reports "loaded", not "completed" --
-# look unsafe, so reset refused the very state it had just created.
-#
-# "unknown" counts as live: it means the service manager could not be asked, so
-# a stopped service cannot be confirmed, and reset destroys state.
-LIVE_SERVICE_STATES = frozenset({"running", "restarting", "unknown"})
+# Two different questions get asked about it, and they answer "unknown"
+# differently. Giving them one name is how "already running" started being said
+# about a service nobody could reach.
+RUNNING_SERVICE_STATES = frozenset({"running", "restarting"})
 
 
-def service_is_live(status: Mapping[str, object]) -> bool:
-    """True when a process may still be attached to this deployment."""
+def service_is_running(status: Mapping[str, object]) -> bool:
+    """Is a process running now? Used to decide whether to act.
 
-    return str(status.get("state") or "unknown") in LIVE_SERVICE_STATES
+    "unknown" is not a yes: it means the service manager could not be asked, and
+    reporting a service as already running on that basis stops a start that
+    should have been attempted.
+    """
+
+    return str(status.get("state") or "unknown") in RUNNING_SERVICE_STATES
+
+
+def service_may_be_attached(status: Mapping[str, object]) -> bool:
+    """Might a process still hold this deployment's store? Used before destroying it.
+
+    "unknown" is a yes here, for the same reason it is a no above: it means the
+    service manager could not be asked, so a stopped service cannot be
+    confirmed, and reset and compact destroy state.
+
+    Enumerating the safe states instead is what made a deliberately stopped
+    systemd unit -- which reports "loaded", not "completed" -- look unsafe, so
+    reset refused the very state it had just created.
+    """
+
+    return (
+        service_is_running(status)
+        or str(status.get("state") or "unknown") == "unknown"
+    )
 
 
 def systemd_service_status(name: str) -> dict[str, object]:

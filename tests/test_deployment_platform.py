@@ -65,12 +65,21 @@ def test_activating_systemd_service_is_restarting(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# When is it safe to change a deployment's durable state?
+# Two questions about a service, which answer "unknown" differently
 # ---------------------------------------------------------------------------
 
 
-def test_a_stopped_service_is_not_live(  # noqa: D103
-):
+ALL_REPORTED_STATES = (
+    "running",
+    "restarting",
+    "completed",
+    "loaded",
+    "not-loaded",
+    "unknown",
+)
+
+
+def test_a_stopped_service_is_not_running_and_holds_nothing():
     """The state a deliberate stop actually produces on systemd.
 
     `systemctl stop` on a long-running unit leaves it inactive with a non-zero
@@ -79,33 +88,62 @@ def test_a_stopped_service_is_not_live(  # noqa: D103
     because it was stopped.
     """
 
-    from zippergen.deployment_platform import service_is_live
+    from zippergen.deployment_platform import (
+        service_is_running,
+        service_may_be_attached,
+    )
 
-    assert service_is_live({"state": "loaded"}) is False
-    assert service_is_live({"state": "completed"}) is False
-    assert service_is_live({"state": "not-loaded"}) is False
-
-
-def test_a_service_that_may_still_have_a_process_is_live():
-    from zippergen.deployment_platform import service_is_live
-
-    assert service_is_live({"state": "running"}) is True
-    assert service_is_live({"state": "restarting"}) is True
+    for state in ("loaded", "completed", "not-loaded"):
+        assert service_is_running({"state": state}) is False, state
+        assert service_may_be_attached({"state": state}) is False, state
 
 
-def test_an_unknown_service_state_counts_as_live():
-    """Reset destroys state, so 'could not ask' must not read as 'stopped'."""
+def test_a_live_service_answers_yes_to_both():
+    from zippergen.deployment_platform import (
+        service_is_running,
+        service_may_be_attached,
+    )
 
-    from zippergen.deployment_platform import service_is_live
+    for state in ("running", "restarting"):
+        assert service_is_running({"state": state}) is True, state
+        assert service_may_be_attached({"state": state}) is True, state
 
-    assert service_is_live({"state": "unknown"}) is True
-    assert service_is_live({}) is True
+
+def test_an_unknown_state_blocks_destruction_but_does_not_claim_it_is_running():
+    """The one state where the two questions must disagree.
+
+    Reset destroys durable state, so "could not ask the service manager" must
+    not read as "stopped". But it must not read as "running" either: that is
+    what made `deploy start` report a service as already running when nothing
+    could reach it, and skip the start entirely.
+    """
+
+    from zippergen.deployment_platform import (
+        service_is_running,
+        service_may_be_attached,
+    )
+
+    assert service_is_running({"state": "unknown"}) is False
+    assert service_may_be_attached({"state": "unknown"}) is True
+    # A status with no state at all is unknown, not stopped.
+    assert service_is_running({}) is False
+    assert service_may_be_attached({}) is True
 
 
-def test_every_state_the_managers_report_is_classified():
-    """Both managers share one vocabulary; none of it may fall through."""
+def test_every_state_the_managers_report_is_answered_by_both():
+    """Neither question may fall through on anything either manager emits."""
 
-    from zippergen.deployment_platform import LIVE_SERVICE_STATES
+    from zippergen.deployment_platform import (
+        service_is_running,
+        service_may_be_attached,
+    )
 
-    reported = {"running", "restarting", "completed", "loaded", "not-loaded", "unknown"}
-    assert LIVE_SERVICE_STATES <= reported
+    for state in ALL_REPORTED_STATES:
+        assert isinstance(service_is_running({"state": state}), bool), state
+        assert isinstance(service_may_be_attached({"state": state}), bool), state
+    # Anything that may hold the store is either running or unaskable.
+    assert {s for s in ALL_REPORTED_STATES if service_may_be_attached({"state": s})} == {
+        "running",
+        "restarting",
+        "unknown",
+    }
