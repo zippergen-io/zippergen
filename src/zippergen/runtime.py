@@ -264,6 +264,23 @@ class _CondEnv:
         )
 
 
+class _ConditionValueUnavailable(LookupError):
+    """Formula discovery reached a value that exists only during execution."""
+
+
+class _FormulaProbeEnv(_CondEnv):
+    """Resolve formula globals without pretending workflow variables have values."""
+
+    def __getattr__(self, name: str) -> object:
+        ns = object.__getattribute__(self, "_ns")
+        if name not in ns:
+            raise _ConditionValueUnavailable(name)
+        value = ns[name]
+        if isinstance(value, Var):
+            raise _ConditionValueUnavailable(name)
+        return value
+
+
 def _eval(expr, env: Env) -> object:
     match expr:
         case VarExpr(var=v):
@@ -958,13 +975,6 @@ def _exec(
 
         case ActStmt(lifeline=_, action=action, inputs=ins, outputs=outs):
             in_vals = tuple(_eval(x, env) for x in ins)
-
-            if not hasattr(action, 'inputs'):
-                raise RuntimeError(
-                    f"Action lookup failed: expected an action object but got "
-                    f"{type(action).__name__} '{getattr(action, 'name', repr(action))}'. "
-                    f"An output variable likely has the same name as an action — rename it."
-                )
             named_inputs = {name: val for (name, _), val in zip(action.inputs, in_vals)}
             # For display, prefer the argument variable name over the formal parameter name.
             display_inputs = {
@@ -1238,8 +1248,12 @@ def _condition_formula(condition, ns: dict) -> _Formula | None:
     if not callable(condition):
         return None
     try:
-        raw = condition(_CondEnv({}, ns))
-    except Exception:
+        raw = condition(_FormulaProbeEnv({}, ns))
+    except _ConditionValueUnavailable:
+        # Ordinary workflow guards depend on values that do not exist until
+        # execution. Formula guards resolve from the workflow namespace and can
+        # be discovered now. Do not hide other exceptions: they indicate a
+        # broken guard or formula-building expression.
         return None
     return raw if isinstance(raw, _Formula) else None
 

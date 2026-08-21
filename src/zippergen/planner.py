@@ -334,10 +334,9 @@ def _extract_intermediate_var_types(
     """
     import ast as _ast
 
-    try:
-        tree = _ast.parse(spec)
-    except SyntaxError:
-        return {}
+    # The planner validator parsed this exact specification successfully before
+    # this helper is called, so a syntax error here is an invariant violation.
+    tree = _ast.parse(spec)
 
     fn_node = next(
         (n for n in _ast.walk(tree)
@@ -1553,13 +1552,10 @@ Current (broken) workflow:
 
         # Extract inner workflow parameter names to build initial_envs.
         inner_params: list[str] = []
-        try:
-            for fn_node in _ast.walk(_ast.parse(spec)):
-                if isinstance(fn_node, _ast.FunctionDef) and fn_node.name == "generated_workflow":
-                    inner_params = [arg.arg for arg in fn_node.args.args]
-                    break
-        except SyntaxError:
-            pass
+        for fn_node in _ast.walk(_ast.parse(spec)):
+            if isinstance(fn_node, _ast.FunctionDef) and fn_node.name == "generated_workflow":
+                inner_params = [arg.arg for arg in fn_node.args.args]
+                break
         inputs_for_wf = {name: named_inputs[name] for name in inner_params if name in named_inputs}
 
         def _inner_backend(act_node, inp):

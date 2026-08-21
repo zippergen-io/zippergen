@@ -9,7 +9,24 @@ import pytest
 from zippergen.syntax import Lifeline, Var
 from zippergen.actions import pure, llm
 from zippergen.builder import workflow
-from zippergen.runtime import run, mock_llm
+from zippergen.runtime import _condition_formula, run, mock_llm
+
+
+def test_formula_discovery_ignores_an_ordinary_guard_without_runtime_values():
+    assert _condition_formula(lambda env: env.missing > 0, {}) is None
+
+
+def test_formula_discovery_does_not_compare_declared_variables():
+    declared = Var("declared", int)
+    assert _condition_formula(lambda env: env.declared < 3, {"declared": declared}) is None
+
+
+def test_formula_discovery_does_not_hide_a_broken_guard():
+    def broken_guard(_env):
+        raise ValueError("broken formula construction")
+
+    with pytest.raises(ValueError, match="broken formula construction"):
+        _condition_formula(broken_guard, {})
 
 # Module-level Var declarations used by tests that inspect or reuse exact Var
 # objects. Ordinary workflow outputs may also be inferred from action metadata.
