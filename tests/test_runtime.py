@@ -749,7 +749,7 @@ def test_monitor_trace_includes_vector_clock_metadata():
 # Durable mode: external acts surface as PendingExternal, decisions are local
 # ---------------------------------------------------------------------------
 
-from zippergen.runtime import _step, PendingExternal, mock_llm
+from zippergen.runtime import _ResolvedExternal, _step, PendingExternal, mock_llm
 from zippergen.syntax import ActStmt, Lifeline, Var, VarExpr
 from zippergen.actions import pure
 
@@ -771,11 +771,17 @@ def _llm_act():
 def test_step_external_act_returns_pending_and_touches_nothing():
     act = _llm_act()
     env = {"x": 5}
+    events = []
     out, progressed = _step(
-        act, env, None, {}, mock_llm, None, None, None, {}, None, durable=True
+        act, env, None, {}, mock_llm, None, None, events.append, {}, None,
+        durable=True,
     )
     assert isinstance(out, PendingExternal) and out.node is act
     assert out.inputs == {"x": 5} and progressed is False
+    assert out.trace_start is not None
+    assert out.trace_start["type"] == "act_start"
+    assert out.trace_start["seq"] == out.trace_seq
+    assert events == [], "the driver records the start only after rolling back"
     assert env == {"x": 5}
 
 
@@ -791,11 +797,40 @@ def test_a_resolved_external_act_applies_its_outputs_and_advances():
 
     out, progressed = _step(
         act, env, None, {}, boom, None, None, None, {}, None,
-        durable=True, resolved={id(act): {"y": 99}},
+        durable=True,
+        resolved={id(act): _ResolvedExternal({"y": 99}, None)},
     )
     from zippergen.syntax import EmptyStmt
     assert progressed is True and isinstance(out, EmptyStmt)
     assert env["y"] == 99
+
+
+def test_external_trace_brackets_the_driver_call_with_one_sequence():
+    act = _llm_act()
+    env = {"x": 5}
+    events = []
+    pending, progressed = _step(
+        act, env, None, {}, mock_llm, None, None, events.append, {}, None,
+        durable=True,
+    )
+    assert isinstance(pending, PendingExternal) and not progressed
+    assert pending.trace_start is not None and pending.trace_seq is not None
+
+    # RoleRunner emits this after rolling back and immediately before calling
+    # the outside world.
+    events.append(pending.trace_start)
+    advanced, progressed = _step(
+        act, env, None, {}, mock_llm, None, None, events.append, {}, None,
+        durable=True,
+        resolved={
+            id(act): _ResolvedExternal({"y": 99}, pending.trace_seq)
+        },
+    )
+
+    from zippergen.syntax import EmptyStmt
+    assert progressed and isinstance(advanced, EmptyStmt)
+    assert [event["type"] for event in events] == ["act_start", "act"]
+    assert events[0]["seq"] == events[1]["seq"]
 
 
 def test_parallel_branch_pending_external_propagates():

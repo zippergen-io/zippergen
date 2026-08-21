@@ -590,6 +590,43 @@ def test_completed_effect_run_returns_without_another_python_call(tmp_path):
     assert after == before
 
 
+def test_durable_effect_trace_starts_before_the_outside_call(tmp_path):
+    path = str(tmp_path / "effect-trace.sqlite")
+    _effect_calls["n"] = 0
+    observations = []
+
+    def observe(event):
+        if event.get("action") == "p_external_counter":
+            observations.append((event["type"], event["seq"], _effect_calls["n"]))
+
+    assert run_sqlite(
+        sqlite_effect_round,
+        [PAsk, PAnswer],
+        {"PAsk": {"n": 10}},
+        store_path=path,
+        timeout=10,
+        trace=observe,
+    ) == 11
+
+    assert observations == [
+        ("act_start", observations[0][1], 0),
+        ("act", observations[0][1], 1),
+    ]
+
+    conn = open_store(path)
+    try:
+        events = [
+            item
+            for item in list_history(conn)
+            if item["event"].get("action") == "p_external_counter"
+        ]
+    finally:
+        conn.close()
+    assert [item["event"]["type"] for item in events] == ["act_start", "act"]
+    assert events[0]["rowid"] < events[1]["rowid"]
+    assert events[0]["event"]["recorded_at"] <= events[1]["event"]["recorded_at"]
+
+
 def test_run_sqlite_hidden_effect_does_not_emit_trace_card(tmp_path):
     path = str(tmp_path / "hidden-effect.sqlite")
     assert run_sqlite(

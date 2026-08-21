@@ -532,9 +532,10 @@ def prune_history(conn, *, keep: int = HISTORY_RETENTION_KEEP) -> int:
 
 
 def record_history(conn, role: str, event: dict) -> int:
+    stored_event = {**event, "recorded_at": time.time()}
     cur = conn.execute(
         "INSERT INTO history(role,payload) VALUES(?,?)",
-        (role, json.dumps(_json_safe(event))),
+        (role, json.dumps(_json_safe(stored_event))),
     )
     rowid = _lastrowid(cur)
     if rowid % HISTORY_RETENTION_BATCH == 0:

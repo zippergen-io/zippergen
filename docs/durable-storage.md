@@ -130,9 +130,11 @@ through `busy_timeout`.
 `synchronous=FULL` are set explicitly on every connection, and the file is
 created `0600` before SQLite opens it.
 
-**I6. History is never read by recovery.** It is written inside whatever
-transaction is open and lost on rollback, and that is fine. There is a test
-that deletes all of it and then resumes.
+**I6. History is never read by recovery.** Progress events share the state
+transaction and are lost when it rolls back. An outside-world action's start
+and retry events are recorded with no transaction open, because that is also
+when the call occurs. Either way, history is observation rather than state.
+There is a test that deletes all of it and then resumes.
 
 **I7. A stale runner cannot commit.** A runner loads a role position and its
 committed `steps` count together. Every later state write includes
@@ -335,6 +337,13 @@ incompatible edit.
 has not been absorbed. Neither grows with how long the workflow has run.
 
 `history` accumulates and is pruned online, keeping the newest 10,000 rows.
+Each new history event carries a wall-clock `recorded_at` timestamp for the
+human-facing trace table. That timestamp is observational: row ids and causal
+stamps remain the ordering facts, and recovery never reads the timestamp.
+Visible outside-world actions record their `act_start` after the transaction is
+released and immediately before the call. Their matching `act` event therefore
+lets the trace table report useful elapsed time, including LLM and connector
+latency; an unmatched start records an interrupted or failed call honestly.
 That automatic pruning is recovery-independent. The combined maintenance
 command also rotates deployment logs, so it requires the deployment to be
 stopped and refuses before changing either resource:

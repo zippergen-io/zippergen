@@ -396,6 +396,22 @@ def test_history_records_and_prunes(tmp_path):
         conn.close()
 
 
+def test_history_adds_a_timestamp_without_mutating_the_trace_event(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr("zippergen.store.time.time", lambda: 1_700_000_000.125)
+    conn = open_store(str(tmp_path / "s.sqlite"))
+    event = {"type": "step", "index": 1}
+    try:
+        record_history(conn, "A", event)
+        stored = list_history(conn)[0]["event"]
+    finally:
+        conn.close()
+
+    assert event == {"type": "step", "index": 1}
+    assert stored["recorded_at"] == 1_700_000_000.125
+
+
 def test_human_task_lifecycle(tmp_path):
     conn = open_store(str(tmp_path / "s.sqlite"))
     task_id = human_task_id("A", [0], "abc", 0)

@@ -27,6 +27,7 @@ import time
 from collections.abc import Callable, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from types import ModuleType
 
@@ -669,47 +670,187 @@ def _short_text(value: object, *, limit: int = 120) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "..."
 
 
-def _short_json(value: object, *, limit: int = 160) -> str:
-    text = json.dumps(value, default=str, sort_keys=True)
-    return text if len(text) <= limit else text[: limit - 1] + "..."
+def _trace_seconds(value: object) -> float | None:
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return None
+    timestamp = float(value)
+    if not math.isfinite(timestamp):
+        return None
+    return timestamp
 
 
-def _trace_summary(role: str, event: object) -> str:
+def _trace_time(value: object) -> str:
+    timestamp = _trace_seconds(value)
+    if timestamp is None:
+        return "—"
+    try:
+        return datetime.fromtimestamp(timestamp).astimezone().isoformat(
+            sep=" ", timespec="milliseconds"
+        )
+    except (OSError, OverflowError, ValueError):
+        return "—"
+
+
+def _trace_value(value: object, *, limit: int = 120) -> str:
+    text = json.dumps(value, ensure_ascii=False, default=str, sort_keys=True)
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def _trace_fields(value: object) -> str:
+    if not isinstance(value, dict):
+        return _trace_value(value)
+    return " · ".join(
+        f"{name}={_trace_value(field)}" for name, field in value.items()
+    )
+
+
+def _control_values(values: object) -> tuple[bool, list[object]]:
+    if not isinstance(values, list):
+        return False, []
+    is_control = any(
+        isinstance(value, str) and value.startswith("κ_ctrl_")
+        for value in values
+    )
+    visible: list[object] = []
+    for value in values:
+        if not (isinstance(value, str) and value.startswith("κ_ctrl_")):
+            visible.append(value)
+    return is_control, visible
+
+
+def _trace_duration(seconds: float) -> str:
+    if seconds < 0.001:
+        return "<1ms"
+    if seconds < 1:
+        return f"{round(seconds * 1000)}ms"
+    if seconds < 60:
+        return f"{seconds:.2f}s"
+    minutes, remainder = divmod(seconds, 60)
+    return f"{int(minutes)}m {remainder:.1f}s"
+
+
+def _trace_row(
+    item: dict,
+    *,
+    duration: float | None = None,
+) -> tuple[str, str, str, str, str]:
+    role = str(item.get("role") or "-")
+    event = item.get("event")
     if not isinstance(event, dict):
-        return f"{role} {_short_json(event)}"
+        return "—", f"#{item['rowid']}", role, "event", _trace_value(event)
 
+    timestamp = _trace_time(event.get("recorded_at"))
     event_type = event.get("type", "event")
     if event_type == "send":
         source = event.get("from", role)
         target = event.get("to", "?")
         channel = event.get("channel") or "-"
-        return f"{role} send {source}->{target} {channel} values={_short_json(event.get('values') or [])}"
+        control, visible_values = _control_values(event.get("values"))
+        if control:
+            detail = f"{source} → {target} [{channel}]"
+            if visible_values:
+                detail += f" · value={_trace_value(visible_values[0])}"
+            return timestamp, f"#{item['rowid']}", role, "control send", detail
+        detail = f"{source} → {target} [{channel}]"
+        bindings = event.get("bindings") or {}
+        if bindings:
+            detail += f" · {_trace_fields(bindings)}"
+        return timestamp, f"#{item['rowid']}", role, "send", detail
     if event_type == "recv":
         source = event.get("from", "?")
         target = event.get("to", role)
         channel = event.get("channel") or "-"
-        return f"{role} recv {source}->{target} {channel} bindings={_short_json(event.get('bindings') or {})}"
+        bindings = event.get("bindings") or {}
+        detail = f"{source} → {target} [{channel}]"
+        if bindings:
+            detail += f" · {_trace_fields(bindings)}"
+        kind = "control receive" if event.get("ctrl") else "receive"
+        return timestamp, f"#{item['rowid']}", role, kind, detail
     if event_type in {"act_start", "act"}:
         action = event.get("action", "?")
-        kind = event.get("action_kind") or "action"
-        payload_name = "outputs" if event_type == "act" else "inputs"
-        payload = event.get(payload_name) or {}
+        action_kind = event.get("action_kind") or "action"
+        phase = "start" if event_type == "act_start" else "done"
+        payload_name = "inputs" if event_type == "act_start" else "outputs"
+        detail = str(action)
         seq = event.get("seq")
-        seq_text = f" seq={seq}" if seq is not None else ""
-        return f"{role} {event_type} {kind} {action}{seq_text} {payload_name}={_short_json(payload)}"
+        if seq is not None:
+            detail += f" · seq={seq}"
+        payload = event.get(payload_name) or {}
+        if payload:
+            detail += f" · {_trace_fields(payload)}"
+        if duration is not None:
+            detail += f" · {_trace_duration(duration)}"
+        return (
+            timestamp,
+            f"#{item['rowid']}",
+            role,
+            f"{action_kind} {phase}",
+            detail,
+        )
     if event_type == "llm_retry":
         action = event.get("action", "?")
-        return f"{role} llm_retry {action} {event.get('detail') or ''}".rstrip()
+        detail = str(action)
+        if event.get("detail"):
+            detail += f" · {event['detail']}"
+        return timestamp, f"#{item['rowid']}", role, "LLM retry", detail
     if event_type == "decision":
-        kind = event.get("kind", "if")
-        return f"{role} decision {kind} value={_short_json(event.get('value'))}"
-    return f"{role} {event_type} {_short_json(event)}"
+        decision_kind = event.get("kind", "if")
+        value = event.get("value")
+        label = (
+            "continue" if value else "exit"
+        ) if decision_kind == "while" else ("true" if value else "false")
+        detail = f"{decision_kind} → {label}"
+        condition = event.get("formula") or event.get("condition")
+        if condition:
+            detail += f" · {condition}"
+        return timestamp, f"#{item['rowid']}", role, "decision", detail
+
+    remainder = {
+        key: value
+        for key, value in event.items()
+        if key not in {"type", "recorded_at"}
+    }
+    return (
+        timestamp,
+        f"#{item['rowid']}",
+        role,
+        str(event_type),
+        _trace_fields(remainder),
+    )
+
+
+def _trace_rows(events: list[dict]) -> list[tuple[object, ...]]:
+    starts: dict[tuple[str, int], float] = {}
+    rows: list[tuple[object, ...]] = []
+    for item in events:
+        role = str(item.get("role") or "-")
+        event = item.get("event")
+        duration = None
+        if isinstance(event, dict):
+            seq = event.get("seq")
+            timestamp = _trace_seconds(event.get("recorded_at"))
+            if type(seq) is int and timestamp is not None:
+                key = (role, seq)
+                if event.get("type") == "act_start":
+                    starts[key] = timestamp
+                elif event.get("type") == "act" and key in starts:
+                    measured = timestamp - starts[key]
+                    if measured >= 0:
+                        duration = measured
+        rows.append(_trace_row(item, duration=duration))
+    return rows
 
 
 def _print_trace_events(events: list[dict]) -> None:
-    print(f"Trace events: {len(events)}")
-    for item in events:
-        print(f"#{item['rowid']} {_trace_summary(item.get('role') or '-', item.get('event'))}")
+    from zippergen.rendering import TerminalRenderer
+
+    renderer = TerminalRenderer()
+    count = len(events)
+    renderer.columns(
+        f"Trace ({count} event{'s' if count != 1 else ''})",
+        ("Time", "#", "Participant", "Event", "Detail"),
+        _trace_rows(events),
+    )
 
 
 def _print_tasks(tasks: list[dict], *, heading: str) -> None:

@@ -56,6 +56,16 @@ class PendingExternal:
     durable mode."""
     node: object
     inputs: dict
+    trace_start: dict | None = None
+    trace_seq: int | None = None
+
+
+@dataclass(frozen=True)
+class _ResolvedExternal:
+    """Result returned by the durable driver after an outside-world call."""
+
+    outputs: dict[str, object]
+    trace_seq: int | None
 
 
 # ---------------------------------------------------------------------------
@@ -576,7 +586,7 @@ def _step(
     stop: threading.Event | None,
     durable: bool = False,
     assistant_backend=None,
-    resolved: dict | None = None,
+    resolved: dict[int, _ResolvedExternal] | None = None,
 ) -> tuple[Residual | PendingExternal, bool]:
     """Execute at most one enabled local step.
 
@@ -622,20 +632,17 @@ def _step(
                 # The driver already ran this action outside the transaction.
                 # Applying the outputs and advancing control happen together, in
                 # the caller's single commit.
-                out_map = resolved[id(stmt)]
+                resolution = resolved[id(stmt)]
+                out_map = resolution.outputs
                 env.update(out_map)
                 if monitor:
                     monitor.on_event("act", env)
                 if trace and _action_visible(action):
-                    act_seq = _next_act_seq()
-                    trace({
-                        "type": "act_start",
-                        "lifeline": threading.current_thread().name,
-                        "action": action.name,
-                        "action_kind": _action_kind(action),
-                        "inputs": {k: _jsonify(v) for k, v in named_inputs.items()},
-                        "seq": act_seq,
-                    })
+                    act_seq = resolution.trace_seq
+                    if act_seq is None:
+                        raise RuntimeError(
+                            "Resolved visible external action has no trace sequence."
+                        )
                     trace({
                         "type": "act",
                         "lifeline": threading.current_thread().name,
@@ -647,7 +654,24 @@ def _step(
                         **_monitor_trace_fields(monitor),
                     })
                 return EmptyStmt(), True
-            return PendingExternal(stmt, named_inputs), False   # driver resolves it
+            trace_start = None
+            trace_seq = None
+            if trace and _action_visible(action):
+                trace_seq = _next_act_seq()
+                trace_start = {
+                    "type": "act_start",
+                    "lifeline": threading.current_thread().name,
+                    "action": action.name,
+                    "action_kind": _action_kind(action),
+                    "inputs": {k: _jsonify(v) for k, v in named_inputs.items()},
+                    "seq": trace_seq,
+                }
+            return PendingExternal(
+                stmt,
+                named_inputs,
+                trace_start=trace_start,
+                trace_seq=trace_seq,
+            ), False
 
         case RecvStmt(lifeline=A, bindings=ys, sender=B, channel=channel):
             item = _try_channel_get(ch, B.name, A.name, channel)

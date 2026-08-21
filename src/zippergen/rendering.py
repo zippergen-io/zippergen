@@ -60,6 +60,7 @@ _ATOMIC_COLUMN_HEADINGS = frozenset(
         "used by",
     }
 )
+_PRESERVED_COLUMN_HEADINGS = frozenset({"#"})
 _MAX_ATOMIC_STATUS_WIDTH = 24
 
 
@@ -288,6 +289,9 @@ class TerminalRenderer:
                 heading.strip().casefold() in _IDENTIFIER_COLUMN_HEADINGS
                 for heading in headers
             ]
+            for index, heading in enumerate(headers):
+                if heading.strip().casefold() in _PRESERVED_COLUMN_HEADINGS:
+                    minimums[index] = natural_widths[index]
             while sum(widths) > available:
                 candidates = [
                     index

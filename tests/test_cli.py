@@ -2190,6 +2190,7 @@ def test_status_command_reports_missing_store(tmp_path, monkeypatch, capsys):
 
 def test_trace_command_reports_recent_trace_events(tmp_path, monkeypatch, capsys):
     store_path = _prepared_deployment_store(tmp_path, monkeypatch, capsys)
+    monkeypatch.setattr("zippergen.store.time.time", lambda: 1_700_000_000.125)
     conn = open_store(str(store_path))
     first = record_history(
         conn,
@@ -2215,14 +2216,19 @@ def test_trace_command_reports_recent_trace_events(tmp_path, monkeypatch, capsys
     assert rc == 0
     assert "Subject: project deployment" in captured.out
     assert f"Store: {store_path}" in captured.out
-    assert "Trace events: 1" in captured.out
-    assert f"#{second} User recv Writer->User main" in captured.out
-    assert "draft" in captured.out
+    assert "Trace (1 event)" in captured.out
+    assert "Time" in captured.out
+    assert "Participant" in captured.out
+    assert "2023-11-" in captured.out
+    assert f"#{second}" in captured.out
+    assert "Writer → User [main]" in captured.out
+    assert 'draft="Looks good."' in captured.out
     assert f"#{first}" not in captured.out
 
 
 def test_trace_command_outputs_json_after_rowid(tmp_path, monkeypatch, capsys):
     store_path = _prepared_deployment_store(tmp_path, monkeypatch, capsys)
+    monkeypatch.setattr("zippergen.store.time.time", lambda: 1_700_000_000.125)
     conn = open_store(str(store_path))
     first = record_history(
         conn,
@@ -2249,9 +2255,95 @@ def test_trace_command_outputs_json_after_rowid(tmp_path, monkeypatch, capsys):
                 "action": "draft",
                 "action_kind": "llm",
                 "outputs": {"reply": "hello"},
+                "recorded_at": 1_700_000_000.125,
             },
         }
     ]
+
+
+def test_trace_command_renders_control_messages_without_internal_tags(
+    tmp_path, monkeypatch, capsys
+):
+    store_path = _prepared_deployment_store(tmp_path, monkeypatch, capsys)
+    conn = open_store(str(store_path))
+    event_id = record_history(
+        conn,
+        "Mailbox",
+        {
+            "type": "send",
+            "from": "Mailbox",
+            "to": "Extractor",
+            "channel": "main",
+            "values": [True, "κ_ctrl_internal"],
+        },
+    )
+    conn.close()
+
+    assert main(["deploy", "trace", "--tail", "1"]) == 0
+
+    output = capsys.readouterr().out
+    assert f"#{event_id}" in output
+    assert "control send" in output
+    assert "Mailbox → Extractor [main]" in output
+    assert "value=true" in output
+    assert "κ_ctrl_internal" not in output
+
+
+def test_trace_command_marks_legacy_events_without_a_timestamp(
+    tmp_path, monkeypatch, capsys
+):
+    store_path = _prepared_deployment_store(tmp_path, monkeypatch, capsys)
+    conn = open_store(str(store_path))
+    cursor = conn.execute(
+        "INSERT INTO history(role,payload) VALUES(?,?)",
+        ("Writer", json.dumps({"type": "decision", "kind": "while", "value": True})),
+    )
+    event_id = int(cursor.lastrowid)
+    conn.close()
+
+    assert main(["deploy", "trace", "--tail", "1"]) == 0
+
+    output = capsys.readouterr().out
+    assert f"#{event_id}" in output
+    assert "—" in output
+    assert "while → continue" in output
+
+
+def test_trace_command_shows_elapsed_action_time(tmp_path, monkeypatch, capsys):
+    store_path = _prepared_deployment_store(tmp_path, monkeypatch, capsys)
+    recorded_times = iter((1_700_000_000.000, 1_700_000_000.013))
+    monkeypatch.setattr("zippergen.store.time.time", lambda: next(recorded_times))
+    conn = open_store(str(store_path))
+    record_history(
+        conn,
+        "Writer",
+        {
+            "type": "act_start",
+            "action": "draft_reply",
+            "action_kind": "llm",
+            "inputs": {"message": "Hello"},
+            "seq": 7,
+        },
+    )
+    record_history(
+        conn,
+        "Writer",
+        {
+            "type": "act",
+            "action": "draft_reply",
+            "action_kind": "llm",
+            "outputs": {"draft": "Hi"},
+            "seq": 7,
+        },
+    )
+    conn.close()
+
+    assert main(["deploy", "trace", "--tail", "2"]) == 0
+
+    output = capsys.readouterr().out
+    assert "llm start" in output
+    assert "llm done" in output
+    assert "13ms" in output
 
 
 def test_tasks_command_lists_pending_tasks(tmp_path, monkeypatch, capsys):

@@ -44,6 +44,7 @@ from zippergen.human_tasks import (
 )
 from zippergen.runtime import (
     PendingExternal,
+    _ResolvedExternal,
     _input_hash,
     _step,
     external_out_map,
@@ -191,8 +192,9 @@ class RoleRunner:
 
     def _make_trace(self, trace):
         def durable_trace(event: dict) -> None:
-            # History is written inside whatever transaction is open. It is
-            # never read back by recovery, so losing it on rollback is fine.
+            # Progress events share the current state transaction. External
+            # starts and retries happen with no transaction open and therefore
+            # autocommit. Recovery never reads either kind of history row.
             record_history(self.conn, self.role, event)
             if trace is not None:
                 trace(event)
@@ -426,6 +428,8 @@ class RoleRunner:
                 self._rollback()
                 status, detail = self._external_status(out)
                 self._publish_status(status, detail)
+                if out.trace_start is not None:
+                    self.trace(out.trace_start)
                 out_map = self._resolve_external(out)
                 # The result and the next control state commit together. If the
                 # process dies before this, the control state still points at
@@ -433,7 +437,13 @@ class RoleRunner:
                 _begin_immediate(self.conn, self.stop)
                 try:
                     advanced, moved = self.step(
-                        self.residual, resolved={id(out.node): out_map}
+                        self.residual,
+                        resolved={
+                            id(out.node): _ResolvedExternal(
+                                out_map,
+                                out.trace_seq,
+                            )
+                        },
                     )
                     assert moved and not isinstance(advanced, PendingExternal), (
                         "resolved external action failed to advance the role"

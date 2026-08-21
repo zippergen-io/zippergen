@@ -703,7 +703,10 @@ There is no workflow or deployment name to pass: the project identifies both.
 `inspect` shows each participant's current local program position. Its
 `--watch` mode refreshes that view in place, once per second by default. Use
 `--interval SECONDS` to change the rate. `trace` and
-`tasks` show recent events and pending human tasks. `compact` drops optional
+`tasks` show recent events and pending human tasks. Trace output is a timestamped
+table; its event number remains the authoritative stored order, while the
+wall-clock time and paired action duration are for operational diagnosis.
+`compact` drops optional
 inspection history and rotates logs; it refuses while the deployment is
 running, before changing either resource. Recovery never reads that history,
 but the stopped-service precondition also makes log rotation lossless.
