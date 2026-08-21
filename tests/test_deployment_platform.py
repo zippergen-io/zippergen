@@ -2,6 +2,8 @@
 
 import subprocess
 
+import pytest
+
 from zippergen.deployment_platform import systemd_service_status
 
 
@@ -147,3 +149,68 @@ def test_every_state_the_managers_report_is_answered_by_both():
         "restarting",
         "unknown",
     }
+
+
+# ---------------------------------------------------------------------------
+# Every deploy verb declares what it needs from the service
+# ---------------------------------------------------------------------------
+
+
+def _parser_deploy_verbs() -> set[str]:
+    """The verbs the CLI parser actually accepts, read from the parser itself."""
+
+    import contextlib
+    import io
+
+    from zippergen.serve import _parse_cli_args
+
+    buffer = io.StringIO()
+    with contextlib.redirect_stdout(buffer), contextlib.suppress(SystemExit):
+        _parse_cli_args(["deploy", "--help"])
+    text = buffer.getvalue()
+    start = text.index("{")
+    end = text.index("}", start)
+    return {verb.strip() for verb in text[start + 1:end].split(",") if verb.strip()}
+
+
+def test_every_deploy_verb_declares_its_service_requirement():
+    """A verb cannot be added without answering the question.
+
+    Four hand-written guards is how four different rules ended up in four files,
+    all of them wrong about a service that had just been stopped. The table is
+    only worth having if it cannot fall behind the parser.
+    """
+
+    from zippergen.deployment_platform import DEPLOY_SERVICE_REQUIREMENT
+
+    declared = {verb for verb in DEPLOY_SERVICE_REQUIREMENT if verb is not None}
+    assert _parser_deploy_verbs() == declared
+    # The bare `zg deploy` is an entry point too.
+    assert None in DEPLOY_SERVICE_REQUIREMENT
+
+
+def test_every_requirement_is_one_of_the_two_answers():
+    from zippergen.deployment_platform import DEPLOY_SERVICE_REQUIREMENT
+
+    assert set(DEPLOY_SERVICE_REQUIREMENT.values()) <= {"any", "stopped"}
+
+
+def test_every_stopped_verb_has_wording_for_its_refusal():
+    from zippergen.deployment_platform import (
+        DEPLOY_REQUIREMENT_VERB,
+        DEPLOY_SERVICE_REQUIREMENT,
+    )
+
+    needs_wording = {
+        verb
+        for verb, requirement in DEPLOY_SERVICE_REQUIREMENT.items()
+        if requirement == "stopped"
+    }
+    assert needs_wording == set(DEPLOY_REQUIREMENT_VERB)
+
+
+def test_an_undeclared_verb_is_a_programming_error(monkeypatch):
+    from zippergen import deployment_platform
+
+    with pytest.raises(AssertionError, match="has no entry"):
+        deployment_platform.enforce_deploy_requirement("teleport", "d")

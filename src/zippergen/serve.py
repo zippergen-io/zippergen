@@ -52,8 +52,9 @@ from zippergen.deployment_platform import (
     launchd_service_status as _launchd_service_status,
     run_launchctl as _run_launchctl,
     run_systemctl as _run_systemctl,
+    enforce_deploy_requirement,
+    ServiceIsLiveError,
     service_is_running,
-    service_may_be_attached,
     service_manager as _service_manager,
     slug as _slug,
     systemctl_command as _systemctl_command,
@@ -2646,13 +2647,8 @@ def _compact_command(args) -> int:
         set_store_history_keep,
     )
 
+    # The dispatcher has already refused this if a service may hold the store.
     profile = _load_deployment_profile(args.name)
-    service = deployment_service_status(args.name)
-    if service_may_be_attached(service):
-        raise SystemExit(
-            f"Stop deployment {args.name} before compacting it. "
-            f"Current service state: {service['detail']}"
-        )
     store = profile.get("store")
     try:
         logs = compact_deployment_logs(
@@ -2806,7 +2802,7 @@ def _reset_deployment_command(args) -> int:
             return 1
 
     service = deployment_service_status(args.name)
-    was_running = service.get("state") in {"running", "restarting"}
+    was_running = service_is_running(service)
     needs_stop = service_is_running(service)
     lifecycle = argparse.Namespace(
         name=args.name,
@@ -5359,10 +5355,13 @@ def main(argv=None) -> int:
     if args.cmd == "deploy":
         action = getattr(args, "deploy_action", None)
         if action is None:
+            enforce_deploy_requirement(None, "")
             return _deploy_command(args)
         if action == "list":
+            enforce_deploy_requirement(action, "")
             return _deployment_list_command(args)
         if action == "prune":
+            enforce_deploy_requirement(action, "")
             return _deployment_prune_command(args)
         # Every public verb acts on this project's deployment. The generated
         # service script alone supplies the hidden profile identity because it
@@ -5372,6 +5371,10 @@ def main(argv=None) -> int:
         # `status` reads `deployment`; it no longer takes one as an
         # argument, so the attribute has to be created, not updated.
         args.deployment = resolved
+        try:
+            enforce_deploy_requirement(action, resolved)
+        except ServiceIsLiveError as exc:
+            raise SystemExit(str(exc)) from exc
         if action in {"start", "stop"}:
             return _deployment_lifecycle_command(args, action)
         if action == "remove":

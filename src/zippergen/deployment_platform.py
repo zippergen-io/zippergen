@@ -186,6 +186,76 @@ def service_may_be_attached(status: Mapping[str, object]) -> bool:
     )
 
 
+class ServiceIsLiveError(Exception):
+    """A command that changes durable state was refused because a service may hold it."""
+
+
+# What every deploy verb needs from the service before it may run. ``None`` is
+# the bare `zg deploy`.
+#
+# The point of a table is that a verb cannot be added without answering the
+# question. Four separate hand-written guards is how four different rules ended
+# up in four files, all of them wrong about a service that had just been
+# stopped. A completeness test keeps this in step with the parser.
+#
+#   "any"      -- reads, reports, or manages the service itself
+#   "stopped"  -- replaces or destroys durable state, so nothing may hold it
+DEPLOY_SERVICE_REQUIREMENT: dict[str | None, str] = {
+    None: "any",        # bare deploy; it rebuilds the bundle, and warns rather than refuses
+    "start": "any",     # manages the service
+    "stop": "any",      # manages the service
+    "list": "any",
+    "prune": "any",     # spans deployments; decides per deployment inside
+    "status": "any",
+    "logs": "any",
+    "check": "any",
+    "inspect": "any",
+    "trace": "any",
+    "tasks": "any",
+    "approve": "any",
+    "reset": "any",     # stops the service itself, then guards before archiving
+    "compact": "stopped",
+    "remove": "stopped",
+}
+
+# How the refusal reads, per verb, completing "Stop deployment NAME before ...".
+DEPLOY_REQUIREMENT_VERB = {
+    "compact": "compacting it",
+    "remove": "removing it",
+}
+
+
+def require_service_stopped(name: str, verb: str) -> None:
+    """Refuse a command that would change durable state under a live service.
+
+    Every such command asks the same question and refuses in the same words.
+    Asking it here, once, is what keeps the answer from drifting.
+    """
+
+    status = deployment_service_status(name)
+    if service_may_be_attached(status):
+        raise ServiceIsLiveError(
+            f"Stop deployment {name} before {verb}. "
+            f"Current service state: {status.get('detail') or status.get('state')}"
+        )
+
+
+def enforce_deploy_requirement(action: str | None, name: str) -> None:
+    """Apply the declared requirement for one deploy verb.
+
+    An unlisted verb is a programming error, not a user error: the parser
+    accepted something this table has never been asked about.
+    """
+
+    requirement = DEPLOY_SERVICE_REQUIREMENT.get(action, "__missing__")
+    if requirement == "__missing__":
+        raise AssertionError(
+            f"deploy verb {action!r} has no entry in DEPLOY_SERVICE_REQUIREMENT"
+        )
+    if requirement == "stopped":
+        require_service_stopped(name, DEPLOY_REQUIREMENT_VERB[str(action)])
+
+
 def systemd_service_status(name: str) -> dict[str, object]:
     unit = systemd_unit_name(name)
     try:
