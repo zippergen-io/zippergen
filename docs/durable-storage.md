@@ -371,6 +371,19 @@ zg deploy compact --set-history-keep 2000   # change it later, and apply it now
 zg run --durable --history-keep 500  # the same choice for one durable run
 ```
 
+Which command writes which is fixed, so there is one place to look:
+
+| command | what it writes |
+|---|---|
+| `zg deploy --history-keep N` | the budget on the profile, and on a store it creates |
+| `zg deploy reset` | a new store, carrying the profile's budget |
+| `zg deploy compact --set-history-keep N` | the budget on an existing store, and trims it |
+
+`zg deploy` never opens a store it did not just create. Deploying is
+configuration; the store is state, and `reset` and `compact` are the two
+commands that own state. So a store this ZipperGen cannot open never breaks a
+deploy: the readiness checks report it once, and `reset` is the way through.
+
 A budget of zero writes nothing, so it costs nothing rather than writing and
 deleting. Setting a budget also trims immediately: a budget nobody has reached
 yet would otherwise be a promise rather than a fact, and with a budget of zero

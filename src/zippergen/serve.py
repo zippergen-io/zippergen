@@ -139,7 +139,6 @@ from zippergen.store import (
     load_human_task_token,
     mark_human_task_token_used,
     open_store,
-    StoreSchemaError,
     write_history_keep,
 )
 
@@ -323,42 +322,14 @@ def _profile_history_keep(profile: Mapping[str, object]) -> int | None:
     return keep
 
 
-def _apply_deployment_history_keep(profile: Mapping[str, object]) -> None:
-    """Bring an existing store in line with the deployment's history budget.
-
-    ``_initialize_deployment_store`` stamps a store it creates. This covers the
-    ordinary case of redeploying a project whose store is already there.
-    """
-
-    keep = _profile_history_keep(profile)
-    store = profile.get("store")
-    if keep is None or not store:
-        return
-    path = Path(str(store)).expanduser()
-    if not path.is_file():
-        return
-    from zippergen.storage_maintenance import set_store_history_keep
-
-    try:
-        set_store_history_keep(str(path), keep)
-    except (StoreSchemaError, sqlite3.DatabaseError) as exc:
-        # A store this ZipperGen cannot open is the situation 'zg deploy reset'
-        # exists for, and deploying is how you reach a profile you can reset.
-        # Failing here would leave an upgrade no way through. The reason is
-        # printed rather than hidden, and the readiness checks report the same
-        # store properly a few steps later.
-        print(
-            f"The existing durable store could not be opened, so its history "
-            f"budget was not changed: {type(exc).__name__}: {exc}"
-        )
-        print(
-            f"A budget of {keep} is recorded on the deployment, and the store "
-            "created by 'zg deploy reset' will use it."
-        )
-
-
 def _initialize_deployment_store(profile: dict[str, object]) -> bool:
     """Allocate one valid durable store for a deployment if it has none.
+
+    This is the only place ``zg deploy`` writes to a store, and it writes only
+    to one it just created. Deploying is configuration; the store is state, and
+    the two commands that own state are ``reset`` (replace it) and ``compact``
+    (change what it keeps). Keeping that line means deploy never has to cope
+    with a store it cannot open — the readiness checks report that, once.
 
     A reset archives the old store and lands here with a fresh one, so the
     deployment's history budget is stamped on at creation. Without that, every
@@ -3580,7 +3551,6 @@ def _finalize_guided_deployment(
     # or an interactive OAuth step fails.
     _write_deployment_artifacts(profile)
     _initialize_deployment_store(profile)
-    _apply_deployment_history_keep(profile)
     _prepare_deployment_environment(profile, spec, skip_install=args.no_install)
     _write_deployment_artifacts(profile)
     _run_deployment_setup(profile, spec, values, skip_setup=args.no_setup)
@@ -3593,7 +3563,17 @@ def _finalize_guided_deployment(
         else:
             _print_doctor(name, checks)
         if any(check.get("status") == "fail" for check in checks):
-            print(f"Deployment {name} was configured but not started because doctor found failures.")
+            if args.no_start:
+                print(
+                    f"Deployment {name} is configured. It was not started "
+                    "because --no-start was given, and the checks above found "
+                    "problems to fix before starting it."
+                )
+            else:
+                print(
+                    f"Deployment {name} was configured but not started because "
+                    "the checks above found problems."
+                )
             return 1
 
     if not args.no_start:
