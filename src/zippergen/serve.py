@@ -88,6 +88,7 @@ from zippergen.deployment_checks import (
     _call_doctor_hook,
     _doctor_check,
     _doctor_checks,
+    deployment_freshness_checks,
     _launchd_active_check,
     _path_parent_check,
     _safe_json_loads,
@@ -227,6 +228,7 @@ def _run_args_from_deployment(profile: dict[str, object]):
         llm_idle_timeout_for=_jsonable_kv_pairs(
             profile.get("llm_idle_timeouts") or {}  # type: ignore[arg-type]
         ),
+        llm_temperatures=profile.get("llm_temperatures") or {},
         assistant=profile.get("assistant") or None,
         assistants=normalize_assistant_overrides(profile.get("assistants")),
         store=str(profile["store"]),
@@ -1185,10 +1187,12 @@ def _run_workflow_from_project(args, workspace) -> int:
         default_spec=args.llm,
         overrides=_parse_inputs(args.llm_for),
         idle_timeouts=_parse_llm_idle_timeouts(args.llm_idle_timeout_for),
+        temperatures=getattr(args, "llm_temperatures", None),
     )
     selected_llm = routing.default_spec
     llms = routing.overrides
     llm_idle_timeouts = routing.idle_timeouts
+    llm_temperatures = routing.temperatures
     from zippergen.models import effective_llm_routes, fake_model_notice
 
     notice = fake_model_notice(effective_llm_routes(wf, selected_llm, llms))
@@ -1272,6 +1276,7 @@ def _run_workflow_from_project(args, workspace) -> int:
         assistants=assistant_routing.overrides,
         llm_idle_timeout=args.llm_idle_timeout,
         llm_idle_timeouts=llm_idle_timeouts,
+        llm_temperatures=llm_temperatures,
         store_path=store_path,
         inputs=inputs,
         options=options,
@@ -1282,6 +1287,7 @@ def _run_workflow_from_project(args, workspace) -> int:
         "timeout": args.timeout,
         "llm_idle_timeout": args.llm_idle_timeout,
         "llm_idle_timeouts": llm_idle_timeouts,
+        "llm_temperatures": llm_temperatures,
         "execution": execution,
         "store_path": store_path,
         "assistant_root": str(workspace.root),
@@ -1900,12 +1906,16 @@ def _model_command(args) -> int:
             idle_timeout = args.idle_timeout
             if idle_timeout is None and existing.get("idle_timeout") is not None:
                 idle_timeout = float(str(existing["idle_timeout"]))
+            temperature = args.temperature
+            if temperature is None and existing.get("temperature") is not None:
+                temperature = float(str(existing["temperature"]))
             value = configure_model(
                 workspace,
                 name,
                 connection,
                 model,
                 idle_timeout=idle_timeout,
+                temperature=temperature,
             )
             print(
                 f"Saved model configuration {name}: "
@@ -3527,6 +3537,7 @@ def _deploy_command(args) -> int:
             "llms": {},
             "llm_idle_timeout": None,
             "llm_idle_timeouts": {},
+            "llm_temperatures": {},
             "assistant": None,
             "assistants": {},
             "options": {},
@@ -3570,6 +3581,7 @@ def _deploy_command(args) -> int:
     profile["llms"] = model_routing.overrides
     profile["llm_idle_timeout"] = None
     profile["llm_idle_timeouts"] = model_routing.idle_timeouts
+    profile["llm_temperatures"] = model_routing.temperatures
     assistant_routing = project_assistant_routing(
         model_workspace,
         model_workflow_spec,
@@ -3676,6 +3688,7 @@ def _status_command(args) -> int:
     status = _store_status(str(profile["store"]))
     status["deployment"] = args.name
     status["service"] = service
+    status["freshness"] = deployment_freshness_checks(profile)
     if args.json:
         print(json.dumps(status, default=str))
         return 0
@@ -3684,6 +3697,9 @@ def _status_command(args) -> int:
     workflow = profile.get("workflow")
     if workflow:
         print(f"Workflow: {workflow}")
+    for check in status["freshness"]:
+        marker = "OK" if check["status"] == "ok" else "WARN"
+        print(f"{marker} {check['name']}: {check['detail']}")
     _print_status(status)
     return 0
 
@@ -4545,6 +4561,14 @@ def _parse_cli_args(
         help=(
             "Unload a local Ollama model after this many seconds without an "
             "active call; 0 unloads after each call."
+        ),
+    )
+    model_configure.add_argument(
+        "--temperature",
+        type=float,
+        help=(
+            "Default sampling temperature from 0 to 1; an @llm action may "
+            "override it."
         ),
     )
     model_configure.add_argument("--project", help="Project root.")

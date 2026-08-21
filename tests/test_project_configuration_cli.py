@@ -64,6 +64,19 @@ def test_model_configuration_and_assignment_are_ordinary_commands(
     )["lifelines"] == {"Writer": "writer"}
 
 
+def test_zero_temperature_round_trips_as_a_toml_number(project):
+    root, workspace = project
+
+    assert main([
+        "model", "configure", "classifier", "openai-main", "gpt-4o-mini",
+        "--temperature", "0",
+    ]) == 0
+
+    manifest = tomllib.loads((root / "zippergen.toml").read_text())
+    assert manifest["models"]["configurations"]["classifier"]["temperature"] == 0
+    assert workspace.model_configurations()["classifier"]["temperature"] == "0"
+
+
 def test_model_and_connector_configuration_share_name_first_grammar():
     _parser, model = _parse_cli_args(
         ["model", "configure", "writer", "openai-main", "gpt-4o-mini"]
@@ -555,7 +568,7 @@ def test_reconfiguring_interactively_keeps_existing_values_as_defaults(
     _root, workspace = project
     main([
         "model", "configure", "writer", "local-main", "qwen2.5:14b",
-        "--idle-timeout", "300",
+        "--idle-timeout", "300", "--temperature", "0",
     ])
     monkeypatch.setattr("zippergen.serve.sys.stdin.isatty", lambda: True)
     monkeypatch.setattr("builtins.input", lambda _prompt: "")
@@ -567,6 +580,7 @@ def test_reconfiguring_interactively_keeps_existing_values_as_defaults(
         "model": "qwen2.5:14b",
         "spec": "local@local-main:qwen2.5:14b",
         "idle_timeout": "300",
+        "temperature": "0",
     }
 
 
@@ -714,6 +728,7 @@ def test_completion_options_come_from_the_real_parser(capsys):
     options = capsys.readouterr().out.splitlines()
     assert "--base-url" not in options
     assert "--idle-timeout" in options
+    assert "--temperature" in options
     assert main(["__complete", "options", "provider", "configure"]) == 0
     assert "--base-url" in capsys.readouterr().out.splitlines()
 

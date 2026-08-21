@@ -440,6 +440,13 @@ def policy_with_fallback(m: str): ...
 def policy_forever(m: str): ...
 
 
+@llm(
+    system="C.", user="{m}", parse="bool", outputs=[("ok", bool)],
+    temperature=0,
+)
+def policy_zero_temperature(m: str): ...
+
+
 def test_the_semantic_record_changes_when_the_policy_changes():
     """A different retry or fallback declaration is a different action."""
 
@@ -449,11 +456,28 @@ def test_the_semantic_record_changes_when_the_policy_changes():
     more_retries = _action_definition(policy_more_retries)
     with_fallback = _action_definition(policy_with_fallback)
     forever = _action_definition(policy_forever)
+    zero_temperature = _action_definition(policy_zero_temperature)
 
     assert plain != more_retries, "retries= must be part of the record"
     assert more_retries != with_fallback, "fallback= must be part of the record"
     assert plain != forever
+    assert plain != zero_temperature
+    assert zero_temperature["temperature"] == 0.0
     assert _action_definition(policy_plain) == plain, "stable for one declaration"
+
+
+@pytest.mark.parametrize("temperature", [-0.1, 1.1, float("inf")])
+def test_llm_declaration_rejects_invalid_temperature(temperature):
+    with pytest.raises(ValueError, match="between 0 and 1"):
+
+        @llm(
+            system="C.",
+            user="{m}",
+            parse="bool",
+            outputs=[("ok", bool)],
+            temperature=temperature,
+        )
+        def invalid_temperature(m: str): ...
 
 
 # ---------------------------------------------------------------------------

@@ -11,6 +11,7 @@ from zippergen.assistant_configuration import (
     project_assistant_routing,
     resolved_assistant_actions,
 )
+from zippergen.backends import model_accepts_temperature
 from zippergen.configuration_checks import (
     Check,
     _check,
@@ -33,6 +34,7 @@ from zippergen.provider_connections import (
 from zippergen.semantic import workflow_semantics
 from zippergen.syntax import Workflow
 from zippergen.workspace import Workspace, WorkspaceError
+
 
 def _effective_routing(
     workspace: Workspace,
@@ -72,11 +74,19 @@ def _effective_routing(
 
         semantics = workflow_semantics(workflow, module=module)
         sites = semantics.get("action_sites") or []
+        definitions = semantics.get("action_definitions") or {}
+        action_definitions = definitions if isinstance(definitions, Mapping) else {}
         seen_sites: set[tuple[str, str, str]] = set()
         raw_model_overrides = resolved_models.get("overrides") or {}
         model_overrides = (
             {str(key): value for key, value in raw_model_overrides.items()}
             if isinstance(raw_model_overrides, Mapping)
+            else {}
+        )
+        raw_temperatures = resolved_models.get("temperatures") or {}
+        model_temperatures = (
+            {str(key): float(value) for key, value in raw_temperatures.items()}
+            if isinstance(raw_temperatures, Mapping)
             else {}
         )
         raw_model_actions = model_profile.get("actions") or {}
@@ -122,6 +132,25 @@ def _effective_routing(
                     or model_profile.get("default")
                     or "workflow default"
                 )
+                definition = action_definitions.get(action) or {}
+                action_temperature = (
+                    definition.get("temperature")
+                    if isinstance(definition, Mapping)
+                    else None
+                )
+                configured_temperature = model_temperatures.get(
+                    target, model_temperatures.get(participant)
+                )
+                accepts_temperature = model_accepts_temperature(selected)
+                effective_temperature = (
+                    float(action_temperature)
+                    if action_temperature is not None
+                    else configured_temperature
+                    if configured_temperature is not None
+                    else 0.2
+                    if accepts_temperature
+                    else None
+                )
                 # Which level won is the answer to "where do I change this?",
                 # and every value below names the target you would type after
                 # `assign`.
@@ -160,6 +189,17 @@ def _effective_routing(
                     )
                 if live:
                     available = available and check_passes(f"live model {selected}")
+                if action_temperature is not None:
+                    if not accepts_temperature:
+                        available = False
+                        checks.append(
+                            _check(
+                                "fail",
+                                f"model temperature {target}",
+                                f"{selected} does not support an explicit temperature",
+                                scopes=("model",),
+                            )
+                        )
                 effective_routing.append(
                     {
                         "participant": participant,
@@ -167,6 +207,16 @@ def _effective_routing(
                         "kind": "model",
                         "configuration": configuration,
                         "effective": selected,
+                        "temperature": effective_temperature,
+                        "temperature_source": (
+                            "action"
+                            if action_temperature is not None
+                            else "model configuration"
+                            if configured_temperature is not None
+                            else "ZipperGen default"
+                            if accepts_temperature
+                            else "provider default"
+                        ),
                         "available": available,
                         "source": source,
                         "verified": bool(live),
@@ -322,6 +372,7 @@ def configuration_report(
             "model": values.get("model", ""),
             "spec": values.get("spec", ""),
             "idle_timeout": values.get("idle_timeout"),
+            "temperature": values.get("temperature"),
             "source": _project_model_source(manifest, name, values),
         }
         for name, values in sorted(model_configurations.items())
@@ -335,8 +386,21 @@ def configuration_report(
         "default": "mock",
         "overrides": {},
         "idle_timeouts": {},
+        "temperatures": {},
     }
     checks: list[Check] = []
+    for item in model_rows:
+        if item.get("temperature") is not None and not model_accepts_temperature(
+            str(item.get("spec") or "")
+        ):
+            checks.append(
+                _check(
+                    "fail",
+                    f"model temperature {item['name']}",
+                    f"{item['spec']} does not support an explicit temperature",
+                    scopes=("model",),
+                )
+            )
     if workflow_error:
         checks.append(
             _check("fail", "workflow", workflow_error, scopes=("all",))
@@ -374,6 +438,7 @@ def configuration_report(
                 "default": routing.default_spec,
                 "overrides": routing.overrides,
                 "idle_timeouts": routing.idle_timeouts,
+                "temperatures": routing.temperatures,
             }
             checks.append(
                 _check(

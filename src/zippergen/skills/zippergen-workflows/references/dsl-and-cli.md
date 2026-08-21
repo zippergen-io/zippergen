@@ -65,6 +65,7 @@ def draft_reply(message: str): ...
     user="{message}",
     parse="bool",
     outputs=[("accepted", bool)],
+    temperature=0,              # action policy overrides model configuration
     retries=3,                  # three attempts after the first
     fallback=False,             # then this, instead of failing
 )
@@ -82,6 +83,13 @@ permanent failure occurs, which is not retried at all. Waiting is 2, 4, 8
 seconds and so on, capped at 30, and a provider's `Retry-After` wins over that.
 A stopped run interrupts the wait immediately and does *not* take the fallback:
 cancellation is not failure.
+
+Temperature is optional and ranges from 0 to 1. Put the ordinary default on a
+named model configuration; use `@llm(temperature=...)` only when one action
+needs to pin its sampling policy independently of routing. The action wins.
+Zero lowers sampling variation but does not guarantee identical hosted-model
+answers. Current model families that removed sampling controls reject an
+explicit temperature clearly; ZipperGen never drops one silently.
 
 Nothing else is caught. A bug in ZipperGen or in a workflow's own code
 propagates, because a retry loop that swallows every exception turns a typo
@@ -406,6 +414,10 @@ def read_mail() -> str:
 Keep the account, Gmail search query, and OAuth token outside workflow source.
 The account and query are project configuration. The token is private site
 state.
+`GmailMailbox.fetch_one_unread()` returns one canonical `gmail_id`, the RFC
+`message_id`, Gmail's integer `internal_date_ms`, and the raw sender-supplied
+`date` header. Use `internal_date_ms` for Gmail inbox ordering; do not treat
+the `date` header as trusted arrival time.
 Google connectors need the optional extra, `zippergen[google]`, in the
 environment that runs `zg`; `zg provider check` reports it as *google support
 installed*. `zg provider authorize CONNECTION` then authorizes Gmail and Google
@@ -694,6 +706,11 @@ zg deploy remove
 Stop a running deployment before invoking bare `zg deploy` to update its code
 or configuration. `start` on a deployment that is already running does
 nothing, so it is safe to repeat.
+
+`zg deploy status` and `zg deploy check` report workflow-bundle freshness and
+ZipperGen-runtime freshness separately. Stale is a warning: the immutable
+service keeps running its deployed snapshot until it is deliberately
+redeployed.
 
 `zg deploy inspect --watch` shows that deployment's live position.
 

@@ -283,6 +283,13 @@ For local Ollama configurations, `Idle release` means how long ZipperGen keeps
 the model loaded after the last active call. `0` unloads it after every call;
 an unset value leaves the provider policy unchanged.
 
+`--temperature` sets a portable default for that model configuration. An
+individual `@llm(temperature=...)` declaration takes precedence, which is
+useful for classifiers that need low-variance sampling. Temperature 0 reduces
+sampling variation; it does not make a hosted model mathematically
+deterministic. Models that removed temperature are reported by `zg model
+check` rather than silently ignoring an explicit setting.
+
 The commands write the portable routing to `zippergen.toml`:
 
 ```toml
@@ -385,6 +392,11 @@ zg deploy logs
 zg deploy remove              # the durable store is kept
 zg deploy reset --yes         # archive durable state; stays stopped afterwards
 ```
+
+`zg deploy status` reports service and durable state together with two
+freshness checks: the ZipperGen runtime installed for the service and the
+workflow source bundle. A stale warning means the immutable deployment keeps
+running its older snapshot until you redeploy; it does not stop the service.
 
 Use `zg deploy --no-start` only when you deliberately want to prepare and
 review a stopped deployment before a later `zg deploy start`. It is not a

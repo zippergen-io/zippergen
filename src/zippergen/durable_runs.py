@@ -476,6 +476,7 @@ def _run_setup_hook(
     llms: dict[str, str],
     llm_idle_timeout: float | None,
     llm_idle_timeouts: dict[str, float],
+    llm_temperatures: dict[str, float],
     assistant: str | None,
     assistants: dict[str, str],
     store_path: str,
@@ -495,6 +496,7 @@ def _run_setup_hook(
             assistants=assistants,
             llm_idle_timeout=llm_idle_timeout,
             llm_idle_timeouts=llm_idle_timeouts,
+            llm_temperatures=llm_temperatures,
             store_path=store_path,
             inputs=inputs,
             options=dict(options),
@@ -632,6 +634,10 @@ def _run_durable_in_project(
                 record.get("llm_idle_timeouts") or {}
             ).items()
         }
+        selected_temperatures = {
+            str(target): float(value)
+            for target, value in (record.get("llm_temperatures") or {}).items()
+        }
         selected_assistant = (
             str(record["assistant"]) if record.get("assistant") else None
         )
@@ -681,6 +687,7 @@ def _run_durable_in_project(
         selected_llms = routing.overrides
         selected_idle_timeout = llm_idle_timeout
         selected_idle_timeouts = routing.idle_timeouts
+        selected_temperatures = routing.temperatures
         assistant_routing = project_assistant_routing(
             workspace,
             stored_spec,
@@ -725,6 +732,7 @@ def _run_durable_in_project(
             llms=selected_llms,
             llm_idle_timeout=selected_idle_timeout,
             llm_idle_timeouts=selected_idle_timeouts,
+            llm_temperatures=selected_temperatures,
             assistant=selected_assistant,
             assistants=selected_assistants,
             options=run_options,
@@ -840,6 +848,7 @@ def _run_durable_in_project(
                 llms=selected_llms,
                 llm_idle_timeout=selected_idle_timeout,
                 llm_idle_timeouts=selected_idle_timeouts,
+                llm_temperatures=selected_temperatures,
                 assistant=selected_assistant,
                 assistants=selected_assistants,
                 store_path=store_path,
@@ -860,6 +869,7 @@ def _run_durable_in_project(
                 llm_config,
                 llm_idle_timeout=selected_idle_timeout,
                 llm_idle_timeouts=selected_idle_timeouts,
+                llm_temperatures=selected_temperatures,
                 execution="sqlite",
                 store_path=store_path,
                 timeout=timeout,

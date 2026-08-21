@@ -40,6 +40,7 @@ class RunConfig:
     assistants: dict[str, str]
     llm_idle_timeout: float | None
     llm_idle_timeouts: dict[str, float]
+    llm_temperatures: dict[str, float]
     store_path: str | None
     inputs: dict[str, object]
     options: dict[str, object]

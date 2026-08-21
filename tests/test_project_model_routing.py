@@ -62,6 +62,7 @@ def _configured_project(tmp_path: Path, monkeypatch) -> tuple[Path, Path]:
         {
             "connection": "scripted-tests",
             "model": str(replies),
+            "temperature": "0.4",
         },
     )
     workspace.save_model_assignment_profile(
@@ -99,6 +100,7 @@ def test_project_model_assignment_drives_plain_and_durable_runs(
     assert record["llms"] == {
         "Writer": f"scripted@scripted-tests:{root / 'replies.json'}"
     }
+    assert record["llm_temperatures"] == {"Writer": 0.4}
 
 
 def test_action_assignment_overrides_its_participant_assignment(

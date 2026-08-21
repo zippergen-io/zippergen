@@ -348,6 +348,8 @@ class LLMAction:
     system_prompt: str
     user_prompt: str        # may contain {var_name} placeholders
     parse_format: str       # "json" | "text" | "bool"
+    #: Sampling temperature, or None to inherit the assigned model configuration.
+    temperature: float | None = None
     #: Attempts after the first: a non-negative int, or the literal "forever".
     retries: int | str = 3
     #: The declared fallback outputs as canonical JSON, or None for none.
@@ -914,6 +916,7 @@ class Workflow:
                   mock_delay: tuple[float, float] = (1.0, 2.0),
                   llm_idle_timeout: float | None = None,
                   llm_idle_timeouts: Mapping[str, float] | None = None,
+                  llm_temperatures: Mapping[str, float] | None = None,
                   execution: str | None = None,
                   store_path: str | None = None,
                   human_backend: object | None = None,
@@ -938,6 +941,8 @@ class Workflow:
                   the model after this many seconds without LLM calls.
         llm_idle_timeouts : optional participant or action-specific idle
                   release times for managed local backends.
+        llm_temperatures : optional participant or action-specific model
+                  temperatures. An ``@llm`` value takes precedence.
         execution : ``"sqlite"`` for durable execution or ``"memory"`` for
                     an in-process disposable run.
         store_path : optional SQLite store path used when ``execution="sqlite"``.
@@ -956,6 +961,7 @@ class Workflow:
                                    mock_delay=mock_delay,
                                    llm_idle_timeout=llm_idle_timeout,
                                    llm_idle_timeouts=llm_idle_timeouts,
+                                   llm_temperatures=llm_temperatures,
                                    execution=execution, store_path=store_path,
                                    human_backend=human_backend,
                                    assistant=assistant,

@@ -514,6 +514,12 @@ participants can share the same named configuration, and one exact action can
 be assigned with a target such as \texttt{Writer.draft\_reply}.
 \texttt{zg run -{}-llm mock} remains useful as a temporary override.
 
+Temperature is portable model behavior. An individual
+\texttt{@llm(temperature=...)} declaration overrides the named configuration.
+Zero reduces sampling variation but does not guarantee identical answers from
+a hosted model. If a selected model removed sampling controls, ZipperGen
+reports the explicit setting instead of silently ignoring it.
+
 When working by hand, you can also run \texttt{zg model configure} and
 \texttt{zg model assign} with no values. ZipperGen then asks the questions and
 shows the available choices. It asks for the provider connection and model
@@ -712,6 +718,11 @@ zg deploy logs
 zg deploy status
 zg deploy inspect --watch
 \end{lstlisting}
+
+\texttt{zg deploy status} distinguishes freshness of the ZipperGen runtime
+from freshness of the workflow source bundle. A stale warning means that the
+immutable service is still running its previous snapshot; redeploy to update
+it.
 
 Use \texttt{zg deploy -{}-no-start} only when you deliberately want to prepare
 and review a stopped deployment before a later \texttt{zg deploy start}. It is

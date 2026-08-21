@@ -758,6 +758,13 @@ A model configuration that names a local connection also accepts
 model after that long without a call. It is rejected for any other kind of
 connection, because only a local server has memory of yours to release.
 
+Any model configuration accepts
+\texttt{-{}-temperature VALUE} from 0 to 1. This is portable project behavior,
+and an explicit \texttt{@llm(temperature=...)} on one action takes precedence.
+Zero reduces sampling variation; it is not a determinism guarantee. Some
+current model families removed sampling parameters, so configuration checks
+reject an explicit unsupported value rather than silently dropping it.
+
 \subsection{Asking a person}
 
 A \texttt{@human} action stops and waits. Where the question appears depends on
@@ -835,6 +842,12 @@ says it needs Gmail with permission to mark mail read, unless it is written
 down. Writing it down is what lets \texttt{zg connector check} report an
 empty hole before a deployment starts, and what tells you exactly which
 Google permission to grant.
+
+\texttt{GmailMailbox.fetch\_one\_unread()} returns one canonical
+\texttt{gmail\_id}, the RFC \texttt{message\_id}, Gmail's integer
+\texttt{internal\_date\_ms}, and the raw sender-supplied \texttt{date} header.
+Use the internal date for Gmail inbox ordering; the mail header is not a
+trusted arrival timestamp.
 
 The project then says which one, assigning a configuration to that
 requirement by name:
@@ -1025,7 +1038,7 @@ rule exactly.
 \begin{center}
 \begin{tabularx}{0.95\linewidth}{@{}lX@{}}
 \toprule
-\texttt{zg deploy status} & is it running, and where is it \\
+\texttt{zg deploy status} & is it running, what state does it hold, and are its runtime and workflow bundle current \\
 \texttt{zg deploy logs} & what it has been doing \\
 \texttt{zg deploy inspect} & where each participant's local program is now \\
 \texttt{zg deploy inspect --watch} & keep that position open and refresh it in place \\

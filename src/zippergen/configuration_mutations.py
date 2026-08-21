@@ -23,6 +23,7 @@ def configure_model(
     model: str,
     *,
     idle_timeout: float | None = None,
+    temperature: float | None = None,
 ) -> dict[str, str]:
     selected_connection = connection.strip()
     selected_model = model.strip()
@@ -34,6 +35,10 @@ def configure_model(
         if not math.isfinite(idle_timeout) or idle_timeout < 0:
             raise WorkspaceError("Idle timeout must be a non-negative finite number.")
         values["idle_timeout"] = str(idle_timeout)
+    if temperature is not None:
+        if not math.isfinite(temperature) or not 0 <= temperature <= 1:
+            raise WorkspaceError("Temperature must be between 0 and 1.")
+        values["temperature"] = str(temperature)
     return workspace.save_model_configuration(name, values)
 
 

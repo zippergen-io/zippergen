@@ -105,7 +105,7 @@ def test_read_only_gmail_binding_blocks_modification():
     )
 
     with pytest.raises(GmailError, match="read-only"):
-        mailbox.mark_processed({"id": "gmail-1"})
+        mailbox.mark_processed({"gmail_id": "gmail-1"})
     with pytest.raises(GmailError, match="read-only"):
         mailbox.create_draft(
             {"sender": "alice@example.com"},
@@ -121,6 +121,7 @@ def test_gmail_reads_one_message_without_marking_it_processed(monkeypatch):
         {
             "id": "gmail-1",
             "threadId": "thread-1",
+            "internalDate": "1787055326000",
             "payload": {
                 "mimeType": "text/plain",
                 "headers": [
@@ -128,6 +129,7 @@ def test_gmail_reads_one_message_without_marking_it_processed(monkeypatch):
                     {"name": "To", "value": "calls@example.com"},
                     {"name": "Subject", "value": "New call"},
                     {"name": "Message-ID", "value": "<source@example.com>"},
+                    {"name": "Date", "value": "Tue, 18 Aug 2026 12:15:26 +0200"},
                 ],
                 "body": {"data": body},
             },
@@ -144,7 +146,10 @@ def test_gmail_reads_one_message_without_marking_it_processed(monkeypatch):
     message = mailbox.fetch_one_unread()
 
     assert message is not None
-    assert message["id"] == "gmail-1"
+    assert "id" not in message
+    assert message["gmail_id"] == "gmail-1"
+    assert message["internal_date_ms"] == 1787055326000
+    assert message["date"] == "Tue, 18 Aug 2026 12:15:26 +0200"
     assert message["sender"] == "Alice <alice@example.com>"
     assert message["body"] == "Call details"
     assert all("/modify" not in call[1] for call in session.calls)
@@ -160,7 +165,7 @@ def test_gmail_marks_the_exact_message_processed(monkeypatch):
     )
     monkeypatch.setattr(mailbox, "_session", lambda: session)
 
-    mailbox.mark_processed({"id": "gmail-1"})
+    mailbox.mark_processed({"gmail_id": "gmail-1"})
 
     method, url, kwargs = session.calls[0]
     assert method == "post"

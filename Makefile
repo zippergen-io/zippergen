@@ -5,7 +5,11 @@ MANUAL_DOC := workflow-development-deployment-guide
 DOC_NAMES := $(FIRST_WORKFLOW_DOC) $(MANUAL_DOC)
 DOC_SOURCES := $(addprefix $(DOC_DIR)/,$(addsuffix .tex,$(DOC_NAMES)))
 
-.PHONY: docs docs-check docs-first-workflow docs-manual
+.PHONY: docs docs-check docs-first-workflow docs-manual dist
+
+dist:
+	@rm -rf build dist
+	@uv build
 
 docs: docs-first-workflow docs-manual
 

@@ -167,7 +167,7 @@ class GmailMailbox:
         value = self._response_json(response, "message search")
         return int(value.get("resultSizeEstimate") or 0)
 
-    def fetch_one_unread(self) -> dict[str, str] | None:
+    def fetch_one_unread(self) -> dict[str, object] | None:
         messages = self._list(maximum=1)
         if not messages:
             return None
@@ -181,11 +181,19 @@ class GmailMailbox:
         payload = value.get("payload")
         payload_record = payload if isinstance(payload, dict) else {}
         headers = _headers(payload_record)
+        raw_internal_date = value.get("internalDate")
+        try:
+            internal_date_ms = (
+                int(str(raw_internal_date)) if raw_internal_date is not None else None
+            )
+        except ValueError as exc:
+            raise GmailError("Gmail message has an invalid internalDate.") from exc
         return {
-            "id": str(value.get("id") or message_id),
             "gmail_id": str(value.get("id") or message_id),
             "thread_id": str(value.get("threadId") or ""),
             "message_id": headers.get("message-id", ""),
+            "internal_date_ms": internal_date_ms,
+            "date": headers.get("date", ""),
             "in_reply_to": headers.get("in-reply-to", ""),
             "references": headers.get("references", ""),
             "sender": headers.get("from", ""),
@@ -272,7 +280,7 @@ class GmailMailbox:
         message_id = (
             str(meta)
             if isinstance(meta, str)
-            else str(meta.get("id") or meta.get("gmail_id") or "")
+            else str(meta.get("gmail_id") or "")
         )
         if not message_id:
             raise GmailError("Cannot mark a Gmail message without its ID.")

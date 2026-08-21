@@ -5,8 +5,22 @@ import pytest
 
 from zippergen.deployment import DeploymentSpec
 from zippergen.deployment_environment import (
+    deployment_source_provenance,
     prepare_deployment_environment as _prepare_deployment_environment,
 )
+from zippergen.deployment_checks import deployment_freshness_checks
+from zippergen.workflow_io import load_workflow_spec
+
+
+WORKFLOW_SOURCE = """
+from zippergen import Lifeline, workflow
+
+Worker = Lifeline("Worker")
+
+@workflow
+def sample(value: str @ Worker) -> str:
+    return value @ Worker
+"""
 
 
 def test_managed_environment_uses_uv_and_replaces_an_old_environment_atomically(
@@ -143,3 +157,72 @@ def test_google_connector_deployment_installs_the_optional_extra(
     install_requirement = calls[1][-1]
     assert install_requirement.endswith("[google]")
     assert profile["zippergen_extras"] == ["google"]
+
+
+def test_workflow_source_fingerprint_covers_only_bundle_inputs(tmp_path, monkeypatch):
+    root = tmp_path / "project"
+    root.mkdir()
+    workflow_path = root / "workflow.py"
+    workflow_path.write_text(WORKFLOW_SOURCE)
+    prompt = root / "prompt.txt"
+    prompt.write_text("first\n")
+    manifest = root / "zippergen.toml"
+    manifest.write_text('workflow_entry = "workflow.py:sample"\n')
+    unrelated = root / "notes.txt"
+    unrelated.write_text("one\n")
+    monkeypatch.chdir(root)
+    workflow, _module = load_workflow_spec("workflow.py:sample")
+    profile: dict[str, object] = {
+        "cwd": str(root),
+        "workflow": "workflow.py:sample",
+    }
+    spec = DeploymentSpec(files=("prompt.txt",))
+
+    first = deployment_source_provenance(profile, spec, workflow)
+    unrelated.write_text("two\n")
+    assert deployment_source_provenance(profile, spec, workflow) == first
+
+    prompt.write_text("second\n")
+    assert deployment_source_provenance(profile, spec, workflow) != first
+
+    prompt.write_text("first\n")
+    manifest.write_text(
+        'workflow_entry = "workflow.py:sample"\n[models.assignments]\n'
+    )
+    assert deployment_source_provenance(profile, spec, workflow) != first
+
+
+def test_freshness_distinguishes_runtime_and_workflow_source(
+    tmp_path, monkeypatch
+):
+    root = tmp_path / "project"
+    root.mkdir()
+    workflow_path = root / "workflow.py"
+    workflow_path.write_text(WORKFLOW_SOURCE)
+    monkeypatch.chdir(root)
+    workflow, _module = load_workflow_spec("workflow.py:sample")
+    profile: dict[str, object] = {
+        "cwd": str(root),
+        "workflow": "workflow.py:sample",
+        "source_cwd": str(root),
+        "source_workflow": "workflow.py:sample",
+        "zippergen_runtime": {"source_sha256": "runtime-a"},
+    }
+    profile["workflow_source"] = deployment_source_provenance(
+        profile, DeploymentSpec(), workflow
+    )
+    monkeypatch.setattr(
+        "zippergen.deployment_environment.zippergen_runtime_provenance",
+        lambda: {"source_sha256": "runtime-a"},
+    )
+
+    current = deployment_freshness_checks(profile)
+    assert [(item["name"], item["freshness"]) for item in current] == [
+        ("ZipperGen runtime", "current"),
+        ("workflow source", "current"),
+    ]
+
+    workflow_path.write_text(WORKFLOW_SOURCE + "\n# changed but not committed\n")
+    stale = deployment_freshness_checks(profile)
+    assert stale[0]["freshness"] == "current"
+    assert stale[1]["freshness"] == "stale"

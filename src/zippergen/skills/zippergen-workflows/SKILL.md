@@ -110,6 +110,12 @@ OpenAI-compatible server works. Add `--idle-timeout SECONDS` to
 `zg model configure` to unload the model between calls; it is valid only for a
 local connection.
 
+`--temperature` is a portable model-configuration default. An explicit
+`@llm(temperature=...)` wins for that action. Use 0 for lower-variance
+classification, but do not describe it as a determinism guarantee. Some model
+families reject sampling parameters; `zg model check` reports an explicit
+unsupported value instead of silently dropping it.
+
 Do not ask for a key in the agent conversation and do not enter it for the
 user. Ask the user to run `zg provider set-credential CONNECTION` in their own
 terminal, or set the provider's normal environment variable. One saved key may
@@ -427,6 +433,10 @@ Everything else acts on that same deployment, so you do not name it:
 `remove`. A project has one deployment; two of them means two project
 directories. To apply a code or configuration change, stop it and run bare
 `zg deploy` again.
+
+Status and check distinguish two freshness signals: the deployed ZipperGen
+runtime and the immutable workflow bundle. A stale warning calls for redeploy;
+it is informational and does not stop the existing service.
 
 Never assume permission to send live messages, modify production data,
 complete OAuth, or restart a live service merely because the user requested

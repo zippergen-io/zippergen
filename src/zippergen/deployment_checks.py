@@ -58,6 +58,117 @@ from zippergen.deployment_profiles import (
 )
 
 
+def _provenance_check(
+    label: str,
+    recorded: object,
+    current: object,
+) -> dict[str, object]:
+    """Compare two honest provenance signals without guessing through gaps."""
+
+    before = recorded if isinstance(recorded, dict) else {}
+    now = current if isinstance(current, dict) else {}
+    before_hash = str(before.get("source_sha256") or "")
+    now_hash = str(now.get("source_sha256") or "")
+    signal = "source hash"
+    if before_hash or now_hash:
+        if not before_hash or not now_hash:
+            return _doctor_check(
+                "warn",
+                label,
+                "freshness cannot be compared because only one source hash is available",
+                freshness="unavailable",
+            )
+        matches = before_hash == now_hash
+    else:
+        before_version = str(before.get("version") or "")
+        now_version = str(now.get("version") or "")
+        if before_version and now_version and "unknown" not in {
+            before_version, now_version
+        }:
+            matches = before_version == now_version
+            signal = "package version"
+        else:
+            return _doctor_check(
+                "warn",
+                label,
+                "freshness cannot be compared from the available provenance",
+                freshness="unavailable",
+            )
+    before_revision = str(before.get("revision") or "")
+    now_revision = str(now.get("revision") or "")
+    revisions = (
+        f"; deployed {before_revision[:12]}, current {now_revision[:12]}"
+        if before_revision and now_revision
+        else ""
+    )
+    return _doctor_check(
+        "ok" if matches else "warn",
+        label,
+        (
+            f"current ({signal}){revisions}"
+            if matches
+            else f"deployment is behind the current source ({signal}){revisions}; redeploy to update it"
+        ),
+        freshness="current" if matches else "stale",
+        signal=signal,
+    )
+
+
+def deployment_freshness_checks(
+    profile: dict[str, object],
+) -> list[dict[str, object]]:
+    """Compare deployed runtime and workflow snapshots with current sources."""
+
+    from zippergen.deployment_environment import (
+        deployment_source_provenance,
+        zippergen_runtime_provenance,
+    )
+
+    checks = [
+        _provenance_check(
+            "ZipperGen runtime",
+            profile.get("zippergen_runtime"),
+            zippergen_runtime_provenance(),
+        )
+    ]
+    source_cwd = Path(str(profile.get("source_cwd") or "")).expanduser()
+    source_workflow = str(profile.get("source_workflow") or "")
+    if not source_workflow or not source_cwd.is_dir():
+        checks.append(
+            _doctor_check(
+                "warn",
+                "workflow source",
+                "freshness cannot be compared because the source project is unavailable",
+                freshness="unavailable",
+            )
+        )
+        return checks
+    previous = Path.cwd()
+    try:
+        os.chdir(source_cwd)
+        workflow, module = load_workflow_spec(source_workflow)
+        spec = deployment_spec_from_module(module)
+        current = deployment_source_provenance(profile, spec, workflow)
+    except (SystemExit, Exception) as exc:
+        checks.append(
+            _doctor_check(
+                "warn",
+                "workflow source",
+                f"freshness cannot be compared: {type(exc).__name__}: {exc}",
+                freshness="unavailable",
+            )
+        )
+    else:
+        checks.append(
+            _provenance_check(
+                "workflow source", profile.get("workflow_source"), current
+            )
+        )
+    finally:
+        os.chdir(previous)
+    return checks
+
+
 def _safe_json_loads(value):
     if value is None:
         return None
@@ -289,6 +400,7 @@ def _doctor_checks(
     profile = _load_deployment_profile(name)
     profile_name = str(profile.get("name") or name)
     checks.append(_doctor_check("ok", "profile", f"loaded {profile_path}", path=str(profile_path)))
+    checks.extend(deployment_freshness_checks(profile))
 
     for field in ["workflow", "cwd", "store", "log"]:
         if profile.get(field):

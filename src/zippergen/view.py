@@ -232,6 +232,8 @@ def _render_action(action: object, *, full: bool) -> list[str]:
             f"    user={user!r},",
             f"    parse={action.parse_format!r},",
         ]
+        if action.temperature is not None:
+            lines.append(f"    temperature={action.temperature!r},")
         if action.retries != 3:
             lines.append(f"    retries={action.retries!r},")
         if action.fallback_json is not None:

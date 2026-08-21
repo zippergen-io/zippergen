@@ -10,10 +10,11 @@ from zippergen.backends import (
     ManagedBackend,
     backend_from_spec,
     make_lifeline_router,
+    make_anthropic_backend,
     make_openai_backend,
     router_from_specs,
 )
-from zippergen.llm_policy import LLMInvalidResponseError
+from zippergen.llm_policy import LLMInvalidResponseError, LLMPermanentError
 
 
 ConfigUser = Lifeline("ConfigUser")
@@ -89,6 +90,69 @@ def test_openai_backend_accepts_custom_base_url(monkeypatch):
     assert seen["payload"]["model"] == "Qwen/Qwen2.5-7B-Instruct"
 
 
+def test_action_temperature_overrides_the_model_configuration(monkeypatch):
+    seen = {}
+
+    def fake_urlopen(req, *, timeout):
+        seen.update(json.loads(req.data.decode("utf-8")))
+        return _Response()
+
+    monkeypatch.setattr("zippergen.backends.request.urlopen", fake_urlopen)
+    backend = make_openai_backend(
+        api_key="test", model="gpt-4o-mini", temperature=0.7
+    )
+    action = SimpleNamespace(
+        name="classify",
+        system_prompt="Classify.",
+        user_prompt="Input.",
+        outputs=(("text", str),),
+        parse_format="text",
+        temperature=0.0,
+    )
+
+    backend(action, {})
+
+    assert seen["temperature"] == 0.0
+
+
+@pytest.mark.parametrize("model", ["claude-opus-5", "claude-opus-4-8", "claude-sonnet-5"])
+def test_new_claude_models_omit_implicit_temperature(monkeypatch, model):
+    seen = {}
+
+    def fake_request(req, *, timeout):
+        seen.update(json.loads(req.data.decode("utf-8")))
+        return {"content": [{"type": "text", "text": "hello"}]}
+
+    monkeypatch.setattr("zippergen.backends._json_request", fake_request)
+    backend = make_anthropic_backend(api_key="test", model=model)
+    action = SimpleNamespace(
+        name="say",
+        system_prompt="Be brief.",
+        user_prompt="Hello.",
+        outputs=(("text", str),),
+        parse_format="text",
+        temperature=None,
+    )
+
+    assert backend(action, {}) == {"text": "hello"}
+    assert "temperature" not in seen
+
+
+def test_new_claude_models_reject_explicit_temperature():
+    backend = make_anthropic_backend(api_key="test", model="claude-opus-5")
+    action = SimpleNamespace(
+        name="say",
+        system_prompt="Be brief.",
+        user_prompt="Hello.",
+        outputs=(("text", str),),
+        parse_format="text",
+        temperature=0.0,
+    )
+
+    with pytest.raises(LLMPermanentError, match="does not support"):
+        backend(action, {})
+
+
 def test_backend_parses_nested_json_output_without_stringifying_it():
     action = SimpleNamespace(
         name="extract",
@@ -159,7 +223,9 @@ def test_managed_backend_is_lazy_and_releases_after_call():
 def test_router_uses_route_specific_idle_release(monkeypatch):
     selected: list[tuple[str, float | None]] = []
 
-    def fake_backend_from_spec(spec, *, fallback=None, idle_timeout=None):
+    def fake_backend_from_spec(
+        spec, *, fallback=None, idle_timeout=None, temperature=None
+    ):
         selected.append((spec, idle_timeout))
         return (lambda action, inputs: {"text": "done"}), spec
 
@@ -188,7 +254,9 @@ def test_router_shares_one_managed_backend_for_one_local_configuration(
 ):
     built = []
 
-    def fake_backend_from_spec(spec, *, fallback=None, idle_timeout=None):
+    def fake_backend_from_spec(
+        spec, *, fallback=None, idle_timeout=None, temperature=None
+    ):
         backend = lambda action, inputs: {"text": "done"}
         built.append((spec, idle_timeout, backend))
         return backend, spec
@@ -214,7 +282,7 @@ def test_router_rejects_conflicting_idle_policies_across_local_aliases(
 ):
     monkeypatch.setattr(
         "zippergen.backends.backend_from_spec",
-        lambda spec, *, fallback=None, idle_timeout=None: (
+        lambda spec, *, fallback=None, idle_timeout=None, temperature=None: (
             lambda action, inputs: {"text": "done"},
             spec,
         ),

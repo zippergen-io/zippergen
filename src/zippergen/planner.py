@@ -18,6 +18,7 @@ constants so they can be studied, ablated, and extended independently.
 
 from __future__ import annotations
 
+import math
 import threading
 
 from zippergen.syntax import (
@@ -576,7 +577,7 @@ def _planner_llm_definition_error(fn_node) -> str | None:
         return "generated @llm configuration may not use ** expansion"
     keywords = {keyword.arg: keyword.value for keyword in decorator.keywords}
     required = {"system", "user", "parse", "outputs"}
-    optional = {"retries", "fallback"}
+    optional = {"temperature", "retries", "fallback"}
     if len(keywords) != len(decorator.keywords) or not required <= set(keywords):
         return (
             "generated @llm requires exactly system=, user=, parse=, and outputs="
@@ -638,13 +639,27 @@ def _planner_llm_policy_error(
     output_names: list[str],
     output_types: list[type],
 ) -> str | None:
-    """Allow only literal retry and fallback declarations in generated code.
+    """Allow only literal temperature, retry and fallback declarations.
 
     A planner writes this source, so anything that has to be evaluated to be
     understood cannot be reviewed before it runs. Constants can be read.
     """
 
     import ast as _ast
+
+    temperature = keywords.get("temperature")
+    if temperature is not None:
+        try:
+            value = _ast.literal_eval(temperature)
+        except (ValueError, SyntaxError, TypeError):
+            return "generated @llm temperature= must be a literal"
+        if (
+            not isinstance(value, (int, float))
+            or isinstance(value, bool)
+            or not math.isfinite(float(value))
+            or not 0 <= float(value) <= 1
+        ):
+            return "generated @llm temperature= must be between 0 and 1"
 
     retries = keywords.get("retries")
     if retries is not None:

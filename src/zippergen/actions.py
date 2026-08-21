@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import inspect
 import hashlib
+import math
 import re
 from collections.abc import Callable, Mapping
 from pathlib import Path
@@ -166,6 +167,7 @@ def llm(
     user: str,
     parse: str,
     outputs: OutputSpec,
+    temperature: float | None = None,
     retries: int | str = 3,
     fallback: object = _NO_FALLBACK,
 ) -> Callable[[Callable], LLMAction]:
@@ -182,6 +184,9 @@ def llm(
         Expected output format: ``"json"``, ``"text"``, or ``"bool"``.
     outputs : sequence of (name, ZType) pairs
         Output variable names and their ZipperGen types.
+    temperature : float, optional
+        Sampling temperature between 0 and 1. When omitted, inherit the
+        assigned model configuration. An action value takes precedence.
     retries : int or ``"forever"``, optional
         Attempts after the first, for failures worth repeating: network
         trouble, rate limits, and answers that do not parse or do not match
@@ -192,6 +197,15 @@ def llm(
         for several it is a mapping naming exactly the declared outputs.
         Omitting it keeps the failure loud.
     """
+    if temperature is not None:
+        if not isinstance(temperature, (int, float)) or isinstance(
+            temperature, bool
+        ):
+            raise TypeError("@llm temperature= must be a number between 0 and 1.")
+        temperature = float(temperature)
+        if not math.isfinite(temperature) or not 0 <= temperature <= 1:
+            raise ValueError("@llm temperature= must be between 0 and 1.")
+
     def decorator(fn: Callable) -> LLMAction:
         inputs = _extract_inputs(fn)
         validated_outputs = _validate_output_specs(fn.__name__, outputs)
@@ -202,6 +216,7 @@ def llm(
             system_prompt=system,
             user_prompt=user,
             parse_format=parse,
+            temperature=temperature,
             retries=_validated_retries(fn.__name__, retries),
             fallback_json=_validated_fallback(
                 fn.__name__, validated_outputs, fallback

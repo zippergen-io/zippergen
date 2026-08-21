@@ -46,6 +46,20 @@ PROVIDER_API_KEY_VARIABLES: Mapping[str, str] = {
     "mistral": "MISTRAL_API_KEY",
 }
 
+_DEFAULT_TEMPERATURE = 0.2
+
+
+def _selected_temperature(action, configured: float | None) -> tuple[float, bool]:
+    """Return the action-over-model temperature and whether it was explicit."""
+
+    action_value = getattr(action, "temperature", None)
+    explicit = action_value is not None or configured is not None
+    selected = action_value if action_value is not None else configured
+    value = _DEFAULT_TEMPERATURE if selected is None else float(selected)
+    if not math.isfinite(value) or not 0 <= value <= 1:
+        raise LLMPermanentError("LLM temperature must be between 0 and 1.")
+    return value, explicit
+
 
 def _coerce_bool(value: object) -> bool:
     if isinstance(value, bool):
@@ -422,7 +436,7 @@ def make_mistral_backend(
     *,
     api_key: str,
     model: str = "mistral-small-latest",
-    temperature: float = 0.2,
+    temperature: float | None = None,
     max_tokens: int = 2048,
     timeout: float = 90.0,
 ) -> Callable:
@@ -430,9 +444,10 @@ def make_mistral_backend(
 
     def backend(action, inputs: dict[str, object]) -> dict[str, object]:
         messages, use_json = _build_messages(action, inputs)
+        selected_temperature, _explicit = _selected_temperature(action, temperature)
         payload: dict = {
             "model": model,
-            "temperature": temperature,
+            "temperature": selected_temperature,
             "max_tokens": max_tokens,
             "messages": messages,
         }
@@ -460,12 +475,42 @@ def _openai_uses_completion_tokens(model: str) -> bool:
     return bool(_re.match(r'^o\d', model)) or model.startswith("gpt-5")
 
 
+def _anthropic_rejects_sampling_parameters(model: str) -> bool:
+    """Return True for Claude models that removed temperature/top-p/top-k."""
+
+    normalized = model.casefold().replace(".", "-").replace("_", "-")
+    families = (
+        "fable-5",
+        "mythos-5",
+        "mythos-preview",
+        "opus-5",
+        "opus-4-8",
+        "opus-4-7",
+        "sonnet-5",
+    )
+    return any(family in normalized for family in families)
+
+
+def model_accepts_temperature(spec: str) -> bool:
+    """Return whether this routed model accepts a temperature parameter."""
+
+    provider_token, model = _split_llm_spec(spec)
+    provider, _connection = _provider_parts(provider_token)
+    if model is None:
+        return True
+    if provider in {"openai", "ollama", "local"}:
+        return not _openai_uses_completion_tokens(model)
+    if provider in {"anthropic", "claude"}:
+        return not _anthropic_rejects_sampling_parameters(model)
+    return True
+
+
 def make_openai_backend(
     *,
     api_key: str,
     model: str = "gpt-4o-mini",
     base_url: str = "https://api.openai.com/v1",
-    temperature: float = 0.2,
+    temperature: float | None = None,
     max_tokens: int = 2048,
     timeout: float = 90.0,
 ) -> Callable:
@@ -475,11 +520,18 @@ def make_openai_backend(
 
     def backend(action, inputs: dict[str, object]) -> dict[str, object]:
         messages, use_json = _build_messages(action, inputs)
+        selected_temperature, explicit_temperature = _selected_temperature(
+            action, temperature
+        )
         payload: dict = {"model": model, "messages": messages}
         if _openai_uses_completion_tokens(model):
+            if explicit_temperature:
+                raise LLMPermanentError(
+                    f"Model {model!r} does not support an explicit temperature."
+                )
             payload["max_completion_tokens"] = max_tokens
         else:
-            payload["temperature"] = temperature
+            payload["temperature"] = selected_temperature
             payload["max_tokens"] = max_tokens
         if use_json:
             payload["response_format"] = {"type": "json_object"}
@@ -503,12 +555,16 @@ def make_anthropic_backend(
     *,
     api_key: str,
     model: str = "claude-sonnet-4-6",
+    temperature: float | None = None,
     max_tokens: int = 1024,
     timeout: float = 90.0,
 ) -> Callable:
     """Return an Anthropic Claude backend callable compatible with ``Workflow.configure``."""
 
     def backend(action, inputs: dict[str, object]) -> dict[str, object]:
+        selected_temperature, explicit_temperature = _selected_temperature(
+            action, temperature
+        )
         user_prompt = action.user_prompt.format(**inputs)
         parse = getattr(action, "parse_format", "json") or "json"
         if parse == "json":
@@ -523,6 +579,14 @@ def make_anthropic_backend(
             "system": action.system_prompt,
             "messages": [{"role": "user", "content": content}],
         }
+        if _anthropic_rejects_sampling_parameters(model):
+            if explicit_temperature:
+                raise LLMPermanentError(
+                    f"Model {model!r} does not support an explicit temperature; "
+                    "use Anthropic output_config.effort where appropriate."
+                )
+        else:
+            payload["temperature"] = selected_temperature
 
         req = request.Request(
             "https://api.anthropic.com/v1/messages",
@@ -798,6 +862,7 @@ def backend_from_spec(
     *,
     fallback: Callable | None = None,
     idle_timeout: float | None = None,
+    temperature: float | None = None,
 ) -> tuple[Callable, str]:
     """Build an LLM backend from a compact spec such as ``"openai:gpt-4o"``.
 
@@ -841,6 +906,7 @@ def backend_from_spec(
             make_mistral_backend(
                 api_key=api_key,
                 model=model,
+                temperature=temperature,
                 max_tokens=_env_int("MISTRAL_MAX_TOKENS", 2048),
                 timeout=_env_float("MISTRAL_TIMEOUT", 90.0),
             ),
@@ -865,6 +931,7 @@ def backend_from_spec(
                 api_key=api_key,
                 model=model,
                 base_url=base_url,
+                temperature=temperature,
                 max_tokens=_env_int("OPENAI_MAX_TOKENS", 2048),
                 timeout=_env_float("OPENAI_TIMEOUT", 90.0),
             ),
@@ -894,6 +961,7 @@ def backend_from_spec(
                     api_key=api_key,
                     model=model,
                     base_url=base_url,
+                    temperature=temperature,
                     max_tokens=max_tokens,
                     timeout=timeout,
                 ),
@@ -917,6 +985,7 @@ def backend_from_spec(
             make_anthropic_backend(
                 api_key=api_key,
                 model=model,
+                temperature=temperature,
                 max_tokens=_env_int("ANTHROPIC_MAX_TOKENS", 1024),
                 timeout=_env_float("ANTHROPIC_TIMEOUT", 90.0),
             ),
@@ -979,6 +1048,7 @@ def router_from_specs(
     fallback_label: str = "mock LLM",
     idle_timeout: float | None = None,
     idle_timeouts: Mapping[str, float] | None = None,
+    temperatures: Mapping[str, float] | None = None,
 ) -> tuple[Callable, str]:
     """Build a participant and action backend router from compact LLM specs.
 
@@ -994,8 +1064,17 @@ def router_from_specs(
 
     built_backends: dict[str, Callable] = {}
     labels: list[str] = []
-    shared_backends: dict[tuple[str, float | None], tuple[Callable, str]] = {}
+    shared_backends: dict[
+        tuple[str, float | None, float | None], tuple[Callable, str]
+    ] = {}
     route_idle_timeouts = dict(idle_timeouts or {})
+    route_temperatures = dict(temperatures or {})
+    unknown_temperature_routes = sorted(set(route_temperatures) - set(routes))
+    if unknown_temperature_routes:
+        raise ValueError(
+            "Temperature refers to unknown LLM route(s): "
+            + ", ".join(unknown_temperature_routes)
+        )
     validate_local_idle_policies(
         routes,
         idle_timeout=idle_timeout,
@@ -1011,6 +1090,7 @@ def router_from_specs(
                 if lifeline_name in route_idle_timeouts
                 else idle_timeout
             )
+            selected_temperature = route_temperatures.get(lifeline_name)
             provider_token, model = _split_llm_spec(provider)
             provider_name, connection = _provider_parts(provider_token)
             managed_local = provider_name in {"local", "ollama"}
@@ -1024,6 +1104,7 @@ def router_from_specs(
             cache_key = (
                 physical_spec,
                 selected_idle_timeout if managed_local else None,
+                selected_temperature,
             )
             cached = shared_backends.get(cache_key)
             if cached is None:
@@ -1031,6 +1112,7 @@ def router_from_specs(
                     provider,
                     fallback=fallback,
                     idle_timeout=selected_idle_timeout,
+                    temperature=selected_temperature,
                 )
                 shared_backends[cache_key] = cached
             backend, label = cached

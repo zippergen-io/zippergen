@@ -30,6 +30,7 @@ class ModelRouting:
     default_spec: str
     overrides: dict[str, str]
     idle_timeouts: dict[str, float]
+    temperatures: dict[str, float]
 
 
 def normalize_llm_overrides(values: object) -> dict[str, str]:
@@ -169,7 +170,7 @@ def project_model_routing(
 
     fallback = str(fallback_default).strip() or "mock"
     if not workspace.has_model_assignment_profile(workflow_spec):
-        return ModelRouting(fallback, {}, {})
+        return ModelRouting(fallback, {}, {}, {})
 
     profile = workspace.model_assignment_profile(
         workflow_spec,
@@ -214,6 +215,7 @@ def project_model_routing(
     # explicit error is much safer than silently routing another model.
     routes = effective_llm_routes(workflow, default_spec, named_overrides)
     idle_timeouts: dict[str, float] = {}
+    temperatures: dict[str, float] = {}
     for target in routes:
         participant = target.partition(".")[0]
         selected = target_configurations.get(
@@ -221,22 +223,35 @@ def project_model_routing(
             target_configurations.get(participant, default_configuration),
         )
         raw_timeout = str(selected.get("idle_timeout") or "").strip()
-        if not raw_timeout:
-            continue
-        try:
-            timeout = float(raw_timeout)
-        except ValueError as exc:
-            raise SystemExit(
-                f"Model configuration idle timeout for {target} must be a number."
-            ) from exc
-        if not math.isfinite(timeout) or timeout < 0:
-            raise SystemExit(
-                f"Model configuration idle timeout for {target} must be a "
-                "non-negative finite number."
-            )
-        idle_timeouts[target] = timeout
+        if raw_timeout:
+            try:
+                timeout = float(raw_timeout)
+            except ValueError as exc:
+                raise SystemExit(
+                    f"Model configuration idle timeout for {target} must be a number."
+                ) from exc
+            if not math.isfinite(timeout) or timeout < 0:
+                raise SystemExit(
+                    f"Model configuration idle timeout for {target} must be a "
+                    "non-negative finite number."
+                )
+            idle_timeouts[target] = timeout
+        raw_temperature = str(selected.get("temperature") or "").strip()
+        if raw_temperature:
+            try:
+                temperature = float(raw_temperature)
+            except ValueError as exc:
+                raise SystemExit(
+                    f"Model configuration temperature for {target} must be a number."
+                ) from exc
+            if not math.isfinite(temperature) or not 0 <= temperature <= 1:
+                raise SystemExit(
+                    f"Model configuration temperature for {target} must be "
+                    "between 0 and 1."
+                )
+            temperatures[target] = temperature
 
-    return ModelRouting(default_spec, named_overrides, idle_timeouts)
+    return ModelRouting(default_spec, named_overrides, idle_timeouts, temperatures)
 
 
 def apply_model_overrides(
@@ -245,6 +260,7 @@ def apply_model_overrides(
     default_spec: str | None = None,
     overrides: Mapping[str, str] | None = None,
     idle_timeouts: Mapping[str, float] | None = None,
+    temperatures: Mapping[str, float] | None = None,
 ) -> ModelRouting:
     """Apply direct command-line choices over one project routing snapshot.
 
@@ -259,13 +275,16 @@ def apply_model_overrides(
             raise SystemExit("The default LLM spec must not be empty.")
         selected_overrides: dict[str, str] = {}
         selected_idle_timeouts: dict[str, float] = {}
+        selected_temperatures: dict[str, float] = {}
     else:
         selected_default = routing.default_spec
         selected_overrides = dict(routing.overrides)
         selected_idle_timeouts = dict(routing.idle_timeouts)
+        selected_temperatures = dict(routing.temperatures)
 
     for target, spec in normalize_llm_overrides(overrides).items():
         selected_idle_timeouts.pop(target, None)
+        selected_temperatures.pop(target, None)
         if spec.casefold() in {"inherit", "default"}:
             selected_overrides.pop(target, None)
         else:
@@ -273,8 +292,12 @@ def apply_model_overrides(
     selected_idle_timeouts.update(
         {str(target): float(value) for target, value in (idle_timeouts or {}).items()}
     )
+    selected_temperatures.update(
+        {str(target): float(value) for target, value in (temperatures or {}).items()}
+    )
     return ModelRouting(
         selected_default,
         selected_overrides,
         selected_idle_timeouts,
+        selected_temperatures,
     )

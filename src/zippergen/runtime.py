@@ -1560,6 +1560,7 @@ def _workflow_configure(
     mock_delay: tuple[float, float] = (1.0, 2.0),
     llm_idle_timeout: float | None = None,
     llm_idle_timeouts: Mapping[str, float] | None = None,
+    llm_temperatures: Mapping[str, float] | None = None,
     execution: str | None = None,
     store_path: str | None = None,
     human_backend: object | None = None,
@@ -1580,6 +1581,15 @@ def _workflow_configure(
         for value in normalized_idle_timeouts.values()
     ):
         raise ValueError("llm_idle_timeouts values must be non-negative.")
+    normalized_temperatures = {
+        str(target): float(value)
+        for target, value in (llm_temperatures or {}).items()
+    }
+    if any(
+        not math.isfinite(value) or not 0 <= value <= 1
+        for value in normalized_temperatures.values()
+    ):
+        raise ValueError("llm_temperatures values must be between 0 and 1.")
     if callable(llm):
         if backend is not None:
             raise ValueError("Use either positional backend/llm or 'backend=', not both.")
@@ -1606,6 +1616,7 @@ def _workflow_configure(
             fallback=lambda a, i: mock_llm(a, i, min_delay=mock_delay[0], max_delay=mock_delay[1]),
             idle_timeout=llm_idle_timeout,
             idle_timeouts=normalized_idle_timeouts,
+            temperatures=normalized_temperatures,
         )
         wf._rt._backend = built_backend
     if backend is not None:

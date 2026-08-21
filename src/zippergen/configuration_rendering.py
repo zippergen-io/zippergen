@@ -183,6 +183,16 @@ def _idle_release_display(item: Mapping[str, object]) -> str:
     return "after each call" if seconds == 0 else f"after {seconds:g} s"
 
 
+def _effective_model_display(item: Mapping[str, object]) -> str:
+    temperature = item.get("temperature")
+    suffix = (
+        f"T={float(str(temperature)):g}"
+        if temperature is not None
+        else "T=provider"
+    )
+    return f"{item.get('effective')} · {suffix}"
+
+
 def render_configuration(
     report: dict[str, object],
     renderer: TerminalRenderer,
@@ -229,6 +239,7 @@ def render_configuration(
             item.get("name"),
             item.get("connection") or "-",
             item.get("model") or "-",
+            item.get("temperature") if item.get("temperature") is not None else "default",
             _idle_release_display(item),
             item.get("source"),
         )
@@ -238,7 +249,7 @@ def render_configuration(
     _render_columns_or_empty(
         renderer,
         "Configurations",
-        ("Name", "Connection", "Model", "Idle release", "Source"),
+        ("Name", "Connection", "Model", "Temperature", "Idle release", "Source"),
         model_configuration_rows,
         empty="No configurations.",
     )
@@ -257,7 +268,7 @@ def render_configuration(
         ("model",),
         subject="Action",
         resolved_header="Resolves to",
-        resolved=lambda item: item.get("effective"),
+        resolved=_effective_model_display,
         empty="No participant calls a model.",
     )
     renderer.framed_section("Assistants")
@@ -456,6 +467,7 @@ def render_model_configuration(
             item.get("name"),
             item.get("connection") or "-",
             item.get("model") or "-",
+            item.get("temperature") if item.get("temperature") is not None else "default",
             _idle_release_display(item),
             item.get("source"),
         )
@@ -465,7 +477,7 @@ def render_model_configuration(
     _render_columns_or_empty(
         renderer,
         "Configurations",
-        ("Name", "Connection", "Model", "Idle release", "Source"),
+        ("Name", "Connection", "Model", "Temperature", "Idle release", "Source"),
         configuration_rows,
         empty="No configurations.",
     )
@@ -484,7 +496,7 @@ def render_model_configuration(
         ("model",),
         subject="Action",
         resolved_header="Resolves to",
-        resolved=lambda item: item.get("effective"),
+        resolved=_effective_model_display,
         empty="No participant calls a model.",
     )
     if show_checks:

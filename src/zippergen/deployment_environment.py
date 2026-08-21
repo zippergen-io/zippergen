@@ -50,36 +50,23 @@ def _copy_deployment_source(source: Path, target: Path) -> None:
     shutil.copy2(source, target)
 
 
-def bundle_deployment(
+def _deployment_sources(
     profile: dict[str, object],
     spec: DeploymentSpec,
     workflow: Workflow,
-) -> None:
-    """Snapshot a path-based workflow and every declared deployment file."""
+) -> tuple[Path, str, Path | None, list[Path]]:
+    """Resolve exactly the source paths copied into one deployment bundle."""
 
     source_cwd = Path(
         str(profile.get("source_cwd") or profile["cwd"])
     ).expanduser().resolve()
-    source_workflow = str(
-        profile.get("source_workflow") or profile["workflow"]
-    )
-    module_ref, separator, workflow_name = source_workflow.partition(":")
+    source_workflow = str(profile.get("source_workflow") or profile["workflow"])
+    module_ref = source_workflow.partition(":")[0]
     module_path = Path(module_ref).expanduser()
     if not module_path.is_absolute():
         module_path = source_cwd / module_path
     if not module_path.exists():
-        # Importable modules are already packaged Python artifacts. Path-based
-        # workflows get a concrete source bundle here.
-        profile.setdefault("source_cwd", str(source_cwd))
-        profile.setdefault("source_workflow", source_workflow)
-        return
-
-    version = (
-        f"{time.strftime('%Y%m%d-%H%M%S')}-"
-        f"{time.time_ns() % 1_000_000_000:09d}"
-    )
-    bundle_root = deployment_bundles_dir(str(profile["name"])) / version
-    bundle_root.mkdir(parents=True, exist_ok=False)
+        return source_cwd, source_workflow, None, []
 
     sources = [module_path.resolve()]
     for declared in spec.files:
@@ -104,6 +91,95 @@ def bundle_deployment(
             ) from exc
         if path not in sources:
             sources.append(path)
+    return source_cwd, source_workflow, module_path.resolve(), sources
+
+
+def _deployment_source_digest(sources: list[Path], source_cwd: Path) -> str:
+    """Hash the project inputs that determine one deployment."""
+
+    files: dict[str, Path] = {}
+    ignored_parts = {".git", ".venv", "__pycache__"}
+    for source in sources:
+        target = _bundle_relative_path(source, source_cwd)
+        if source.is_dir():
+            for path in source.rglob("*"):
+                relative = path.relative_to(source)
+                if (
+                    not path.is_file()
+                    or any(part in ignored_parts for part in relative.parts)
+                    or path.suffix == ".pyc"
+                ):
+                    continue
+                files[str(target / relative)] = path
+        else:
+            files[str(target)] = source
+    digest = hashlib.sha256()
+    for relative, path in sorted(files.items()):
+        digest.update(relative.encode())
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()
+
+
+def deployment_source_provenance(
+    profile: dict[str, object],
+    spec: DeploymentSpec,
+    workflow: Workflow,
+) -> dict[str, str]:
+    """Describe the workflow source that a deployment bundle represents."""
+
+    source_cwd, _source_workflow, module_path, sources = _deployment_sources(
+        profile, spec, workflow
+    )
+    if module_path is None:
+        return {"kind": "importable-module", "source": str(profile["workflow"])}
+    manifest = source_cwd / "zippergen.toml"
+    provenance_sources = [*sources, *([manifest] if manifest.is_file() else [])]
+    result = {
+        "kind": "source-bundle",
+        "source": str(source_cwd),
+        "source_sha256": _deployment_source_digest(
+            provenance_sources, source_cwd
+        ),
+    }
+    revision = _checkout_revision(source_cwd)
+    if revision:
+        result["revision"] = revision
+    return result
+
+
+def bundle_deployment(
+    profile: dict[str, object],
+    spec: DeploymentSpec,
+    workflow: Workflow,
+) -> None:
+    """Snapshot a path-based workflow and every declared deployment file."""
+
+    source_cwd, source_workflow, module_path, sources = _deployment_sources(
+        profile, spec, workflow
+    )
+    module_ref, separator, workflow_name = source_workflow.partition(":")
+    if module_path is None:
+        # Importable modules are already packaged Python artifacts. Path-based
+        # workflows get a concrete source bundle here.
+        profile.setdefault("source_cwd", str(source_cwd))
+        profile.setdefault("source_workflow", source_workflow)
+        profile["workflow_source"] = deployment_source_provenance(
+            profile, spec, workflow
+        )
+        return
+
+    version = (
+        f"{time.strftime('%Y%m%d-%H%M%S')}-"
+        f"{time.time_ns() % 1_000_000_000:09d}"
+    )
+    bundle_root = deployment_bundles_dir(str(profile["name"])) / version
+    bundle_root.mkdir(parents=True, exist_ok=False)
+
+    profile["workflow_source"] = deployment_source_provenance(
+        profile, spec, workflow
+    )
 
     copied: dict[Path, Path] = {}
     for source in sources:
@@ -111,7 +187,7 @@ def bundle_deployment(
         _copy_deployment_source(source, bundle_root / relative)
         copied[source] = relative
 
-    workflow_relative = copied[module_path.resolve()]
+    workflow_relative = copied[module_path]
     profile["source_cwd"] = str(source_cwd)
     profile["source_workflow"] = source_workflow
     profile["cwd"] = str(bundle_root)
@@ -183,7 +259,7 @@ def _checkout_revision(project_root: Path) -> str | None:
     return None
 
 
-def _zippergen_runtime_provenance() -> dict[str, str]:
+def zippergen_runtime_provenance() -> dict[str, str]:
     """Describe the ZipperGen source selected for a deployment environment."""
 
     from importlib.metadata import PackageNotFoundError, version
@@ -260,7 +336,7 @@ def prepare_deployment_environment(
     profile["packages"] = requirements
     zippergen_extras = _deployment_zippergen_extras(profile)
     profile["zippergen_extras"] = list(zippergen_extras)
-    profile["zippergen_runtime"] = _zippergen_runtime_provenance()
+    profile["zippergen_runtime"] = zippergen_runtime_provenance()
     if skip_install:
         profile["python"] = str(profile.get("python") or sys.executable)
         return

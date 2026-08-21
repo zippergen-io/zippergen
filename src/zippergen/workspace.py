@@ -49,7 +49,7 @@ _IGNORED_DISCOVERY_PARTS = {
     "venv",
 }
 
-_MODEL_PROJECT_FIELDS = frozenset({"connection", "model"})
+_MODEL_PROJECT_FIELDS = frozenset({"connection", "model", "temperature"})
 # Checks are always live, so their results are never stored.  These are the
 # fields that describe one machine rather than the project.
 _MODEL_SITE_FIELDS = frozenset({"idle_timeout"})
@@ -149,7 +149,7 @@ def configuration_name_problem(
 
 
 def _idle_timeout(value: object, *, provider: str, subject: str) -> str:
-    raw = str(value or "").strip()
+    raw = "" if value is None else str(value).strip()
     if not raw:
         return ""
     if provider != "local":
@@ -168,6 +168,21 @@ def _idle_timeout(value: object, *, provider: str, subject: str) -> str:
             f"{subject} idle_timeout must be a non-negative finite number of seconds."
         )
     return str(int(seconds)) if seconds.is_integer() else str(seconds)
+
+
+def _temperature(value: object, *, subject: str) -> str:
+    """Validate one portable model sampling temperature."""
+
+    raw = "" if value is None else str(value).strip()
+    if not raw:
+        return ""
+    try:
+        temperature = float(raw)
+    except ValueError as exc:
+        raise WorkspaceError(f"{subject} temperature must be a number.") from exc
+    if not math.isfinite(temperature) or not 0 <= temperature <= 1:
+        raise WorkspaceError(f"{subject} temperature must be between 0 and 1.")
+    return str(int(temperature)) if temperature.is_integer() else str(temperature)
 
 
 def _validated_model_configuration(
@@ -211,12 +226,18 @@ def _validated_model_configuration(
             f"Model configuration {normalized!r} uses provider connection "
             f"{connection!r} ({provider}), which cannot run models."
         )
-    return {
+    result = {
         "connection": connection,
         "model": model,
         "provider": provider,
         "spec": connected_model_spec(connection, provider, model),
     }
+    temperature = _temperature(
+        value.get("temperature"), subject=f"Model configuration {normalized!r}"
+    )
+    if temperature:
+        result["temperature"] = temperature
+    return result
 
 
 def _validated_connector_configuration(
@@ -384,6 +405,16 @@ def _toml_string(value: object) -> str:
             "key instead."
         )
     return json.dumps(str(value), ensure_ascii=False)
+
+
+def _toml_literal(value: object) -> str:
+    """Render one typed TOML scalar used by hand-editable project settings."""
+
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (int, float)):
+        return str(value)
+    return _toml_string(value)
 
 
 def _toml_key(value: object) -> str:
@@ -819,7 +850,7 @@ class Workspace:
             assert isinstance(raw, dict)
             lines.extend(["", f"[models.configurations.{_toml_key(name)}]"])
             lines.extend(
-                f"{_toml_key(key)} = {_toml_string(value)}"
+                f"{_toml_key(key)} = {_toml_literal(value)}"
                 for key, value in sorted(raw.items())
             )
         assignments = model_data.get("assignments") or {}
@@ -1235,10 +1266,12 @@ class Workspace:
             for key, value in raw_project.items()
             if isinstance(value, dict)
         }
-        project_configuration = {
+        project_configuration: dict[str, object] = {
             "connection": validated["connection"],
             "model": validated["model"],
         }
+        if validated.get("temperature"):
+            project_configuration["temperature"] = float(validated["temperature"])
         project_configurations[normalized] = project_configuration
         models["configurations"] = project_configurations
         self._write_project_configuration(models=models)
@@ -1913,6 +1946,7 @@ class Workspace:
         llms: dict[str, str] | None = None,
         llm_idle_timeout: float | None = None,
         llm_idle_timeouts: dict[str, float] | None = None,
+        llm_temperatures: dict[str, float] | None = None,
         assistant: str | None = None,
         assistants: dict[str, str] | None = None,
         options: dict[str, object] | None = None,
@@ -1949,6 +1983,10 @@ class Workspace:
             "llm_idle_timeouts": {
                 str(target): float(value)
                 for target, value in (llm_idle_timeouts or {}).items()
+            },
+            "llm_temperatures": {
+                str(target): float(value)
+                for target, value in (llm_temperatures or {}).items()
             },
             "assistant": assistant,
             "assistants": dict(assistants or {}),
