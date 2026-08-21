@@ -7,6 +7,7 @@ import platform
 import re
 import shlex
 import subprocess
+from collections.abc import Mapping
 from pathlib import Path
 
 
@@ -145,6 +146,26 @@ def run_launchctl(
     except subprocess.CalledProcessError as exc:
         command = shlex.join(args)
         raise SystemExit(f"Command failed with exit code {exc.returncode}: {command}") from exc
+
+
+# Both service managers report the same small vocabulary: running, restarting,
+# completed, loaded, not-loaded, unknown.
+#
+# A deployment's durable state may only be replaced when no process can still be
+# attached to it. That is the question these two names answer, once, for every
+# command that needs it. Enumerating the safe states instead is what made a
+# deliberately stopped systemd unit -- which reports "loaded", not "completed" --
+# look unsafe, so reset refused the very state it had just created.
+#
+# "unknown" counts as live: it means the service manager could not be asked, so
+# a stopped service cannot be confirmed, and reset destroys state.
+LIVE_SERVICE_STATES = frozenset({"running", "restarting", "unknown"})
+
+
+def service_is_live(status: Mapping[str, object]) -> bool:
+    """True when a process may still be attached to this deployment."""
+
+    return str(status.get("state") or "unknown") in LIVE_SERVICE_STATES
 
 
 def systemd_service_status(name: str) -> dict[str, object]:

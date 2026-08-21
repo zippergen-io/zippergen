@@ -289,3 +289,47 @@ def test_unregister_refuses_unknown_state_with_an_installed_service(
         match="Cannot verify",
     ):
         unregister_deployment_service("review-demo")
+
+
+def test_reset_accepts_a_service_that_was_deliberately_stopped(tmp_path, monkeypatch):
+    """`zg deploy reset` stopped the service, then refused because it was stopped.
+
+    On systemd a stopped long-running unit reports "loaded": inactive, still
+    installed, non-zero last exit because SIGTERM ended it. The old guard
+    allowed only "not-loaded" and "completed", so reset was unreachable on every
+    Linux deployment.
+    """
+
+    from zippergen import deployments
+
+    store = tmp_path / "run.sqlite"
+    store.write_text("durable state")
+    profile = {"name": "d", "store": str(store)}
+    monkeypatch.setattr(
+        deployments,
+        "_deployment_service_status",
+        lambda _name: {"state": "loaded", "detail": "unit is inactive"},
+    )
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(tmp_path / "home"))
+
+    result = deployments.reset_deployment_store("d", profile)
+
+    assert not store.exists()
+    assert result.archive is not None
+
+
+def test_reset_still_refuses_while_the_service_is_running(tmp_path, monkeypatch):
+    from zippergen import deployments
+
+    store = tmp_path / "run.sqlite"
+    store.write_text("durable state")
+    monkeypatch.setattr(
+        deployments,
+        "_deployment_service_status",
+        lambda _name: {"state": "running", "detail": "unit is running"},
+    )
+
+    with pytest.raises(deployments.DeploymentRemovalError, match="before resetting"):
+        deployments.reset_deployment_store("d", {"name": "d", "store": str(store)})
+
+    assert store.exists()

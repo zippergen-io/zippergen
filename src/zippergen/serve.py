@@ -52,6 +52,7 @@ from zippergen.deployment_platform import (
     launchd_service_status as _launchd_service_status,
     run_launchctl as _run_launchctl,
     run_systemctl as _run_systemctl,
+    service_is_live,
     service_manager as _service_manager,
     slug as _slug,
     systemctl_command as _systemctl_command,
@@ -2618,7 +2619,7 @@ def _compact_command(args) -> int:
 
     profile = _load_deployment_profile(args.name)
     service = deployment_service_status(args.name)
-    if service["state"] not in {"not-loaded", "completed"}:
+    if service_is_live(service):
         raise SystemExit(
             f"Stop deployment {args.name} before compacting it. "
             f"Current service state: {service['detail']}"
@@ -2777,7 +2778,7 @@ def _reset_deployment_command(args) -> int:
 
     service = deployment_service_status(args.name)
     was_running = service.get("state") in {"running", "restarting"}
-    needs_stop = service.get("state") not in {"not-loaded", "completed"}
+    needs_stop = service_is_live(service)
     lifecycle = argparse.Namespace(
         name=args.name,
         dry_run=False,

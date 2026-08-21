@@ -10,6 +10,7 @@ import time
 from typing import Iterable
 
 from zippergen.deployment_platform import (
+    service_is_live,
     deployment_bundles_dir as _deployment_bundles_dir,
     deployment_environment_dir as _deployment_environment_dir,
     deployment_launchd_path as _deployment_launchd_path,
@@ -509,7 +510,7 @@ def reset_deployment_store(
     """
 
     service = _deployment_service_status(name)
-    if service["state"] not in {"not-loaded", "completed"}:
+    if service_is_live(service):
         raise DeploymentRemovalError(
             f"Stop deployment {name} before resetting its durable state. "
             f"Current service state: {service['detail']}"
@@ -584,7 +585,7 @@ def compact_deployment_logs(
     if keep_archives < 0:
         raise ValueError("keep_archives must be zero or greater")
     service = _deployment_service_status(name)
-    if service["state"] not in {"not-loaded", "completed"}:
+    if service_is_live(service):
         raise DeploymentRemovalError(
             f"Stop deployment {name} before rotating its log. "
             f"Current service state: {service['detail']}"
