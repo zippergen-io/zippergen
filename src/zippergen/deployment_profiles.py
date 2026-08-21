@@ -21,10 +21,69 @@ from zippergen.deployment_platform import (
     slug as _slug,
     zippergen_home as _zippergen_home,
 )
-from zippergen.value_codec import decode_value
+from zippergen.value_codec import decode_value, encode_value
 
 
 DEPLOYMENT_PROFILE_SCHEMA_VERSION = 3
+
+
+# A profile is configuration: where the store lives, which model to route to,
+# what the deployment fields were answered with. It is not durable recovery
+# state, so it is carried forward here rather than refused. The store keeps the
+# stricter rule for itself, because control positions only mean something under
+# the program that wrote them.
+#
+# Each entry upgrades a profile from its key version to the next one.
+
+
+def _upgrade_profile_2_to_3(profile: dict[str, object]) -> None:
+    """Schema 3 stores deployment inputs with the typed value codec.
+
+    Schema 2 stored them as plain JSON, which loses the difference between, say,
+    an int and a str that happens to hold digits.
+    """
+
+    profile["inputs"] = encode_value(profile.get("inputs") or {})
+
+
+_PROFILE_UPGRADES = {2: _upgrade_profile_2_to_3}
+
+
+def _migrate_deployment_profile(profile: dict[str, object], path: Path) -> None:
+    """Bring a stored profile up to the current schema, in memory.
+
+    Nothing is written back here: reading a profile should not change it. The
+    next command that edits the deployment writes the current schema out, and
+    until then the file stays as it was.
+    """
+
+    version = profile.get("schema_version")
+    if version == DEPLOYMENT_PROFILE_SCHEMA_VERSION:
+        return
+    if not isinstance(version, int) or isinstance(version, bool):
+        raise SystemExit(
+            f"Deployment profile {path} does not say which schema it uses "
+            f"({version!r}). Remove the file and run 'zippergen deploy' to "
+            "create a current one; you will be asked for its settings again."
+        )
+    if version > DEPLOYMENT_PROFILE_SCHEMA_VERSION:
+        raise SystemExit(
+            f"Deployment profile {path} uses schema {version}, but this "
+            f"ZipperGen reads {DEPLOYMENT_PROFILE_SCHEMA_VERSION}. It was "
+            "written by a newer ZipperGen; upgrade this one to use it."
+        )
+    while version < DEPLOYMENT_PROFILE_SCHEMA_VERSION:
+        upgrade = _PROFILE_UPGRADES.get(version)
+        if upgrade is None:
+            raise SystemExit(
+                f"Deployment profile {path} uses schema {version}, which this "
+                "ZipperGen cannot carry forward. Remove the file and run "
+                "'zippergen deploy' to create a current one; you will be asked "
+                "for its settings again."
+            )
+        upgrade(profile)
+        version += 1
+        profile["schema_version"] = version
 
 
 def _load_deployment_profile(name: str) -> dict[str, object]:
@@ -37,12 +96,7 @@ def _load_deployment_profile(name: str) -> dict[str, object]:
         raise SystemExit(f"Deployment profile is not valid JSON: {path}") from exc
     if not isinstance(profile, dict):
         raise SystemExit(f"Deployment profile is not an object: {path}")
-    if profile.get("schema_version") != DEPLOYMENT_PROFILE_SCHEMA_VERSION:
-        raise SystemExit(
-            f"Unsupported deployment profile schema in {path}: "
-            f"{profile.get('schema_version')!r}. Redeploy this project to "
-            "create a current profile."
-        )
+    _migrate_deployment_profile(profile, path)
     try:
         inputs = decode_value(profile.get("inputs"))
     except (TypeError, ValueError) as exc:

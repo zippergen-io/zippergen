@@ -295,6 +295,24 @@ Three cases, kept distinct:
 - **A fresh start** — `zg deploy reset`, new store, new claim.
 - **An incompatible edit** — refused with a clear error naming `zg deploy reset`.
 
+### The deployment profile is not durable state
+
+The store is never migrated: a control position only means something under the
+program that wrote it, so an incompatible edit is refused and you reset.
+
+A deployment's **profile** is the opposite case, and follows the opposite rule.
+It is configuration — where the store lives, which model to route to, what the
+deployment fields were answered with — so it is carried forward across schema
+changes rather than refused. `_load_deployment_profile` upgrades an older
+profile in memory; the next command that edits the deployment writes the
+current schema out. Reading a profile never rewrites it.
+
+Refusing an old profile would in fact have no way out. `zg deploy` is the
+command that writes a current profile, and it loads the existing one first, so
+the advice to redeploy could not be followed; `zg deploy remove` keeps the
+profile too. A schema a given ZipperGen cannot carry forward — an unknown one,
+or one written by a newer version — is still refused, and says which it is.
+
 ### What the fingerprint covers, exactly
 
 It answers one question: **does the stored durable state still mean the same
