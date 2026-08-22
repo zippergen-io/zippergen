@@ -151,6 +151,28 @@ durable state, but the remote call may already have happened twice. The crash
 guarantees below therefore assume one supervisor per project, which is the
 execution model the CLI enforces.
 
+### A guard decides; it does not compute
+
+The loop above drops the transaction before every external action, and that is
+the whole reason an LLM call or a connector request cannot hold the write lock.
+A condition has no way to ask for the same treatment: deciding a branch is part
+of taking one step, so it is evaluated between `BEGIN IMMEDIATE` and `COMMIT`.
+
+So a guard must decide from values the workflow already has. `@workflow` refuses
+one that calls anything:
+
+```python
+Mailbox: has_mail = mailbox_has_mail()   # an action -- outside the transaction
+if has_mail @ Mailbox:                   # a guard -- inside it, and cheap
+```
+
+`if mailbox_has_mail() @ Mailbox:` is rejected at build time. A deployed mailbox
+poller written that way made a Gmail request inside the transaction on every
+cycle, holding the write lock for its duration and blocking all four
+participants. Causal-past formulas — `At[A](phi)`, `Y(phi)` and the rest — are
+still allowed: they build a formula the monitor evaluates from state the runtime
+already holds, and reach nothing outside.
+
 ## 4. Crash guarantees
 
 One rule covers everything:

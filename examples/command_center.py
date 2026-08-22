@@ -101,6 +101,8 @@ chat_cancel_status   = Var("chat_cancel_status",   str)
 chat_today           = Var("chat_today",           str)
 chat_event_details   = Var("chat_event_details",   str)
 chat_sched_event     = Var("chat_sched_event",      str)
+has_mail = Var("has_mail", bool, default=False)
+has_chat = Var("has_chat", bool, default=False)
 chat_confirmed_event = Var("chat_confirmed_event",  bool)
 
 # draft_email_from_chat (exclusive to chat branch, touches Writer/User/Mailbox)
@@ -141,6 +143,7 @@ _email_meta: dict[str, dict] = {}
 # Infrastructure — email
 # ---------------------------------------------------------------------------
 
+@effect
 def mail_present() -> bool:
     if _gmail is not None:
         return _gmail.count_unread() > 0  # type: ignore[union-attr]
@@ -260,6 +263,7 @@ def create_draft_from_instruction(chat_msg: str, reply: str) -> str:
 # Infrastructure — Telegram
 # ---------------------------------------------------------------------------
 
+@effect
 def chat_present() -> bool:
     if _gchat is not None:
         return _gchat.count_unread_messages() > 0  # type: ignore[union-attr]
@@ -926,7 +930,8 @@ def command_center():
         with branch:
             # ── Email stream ──────────────────────────────────────────────
             while True @ Mailbox:
-                if mail_present() @ Mailbox:
+                Mailbox: has_mail = mail_present()
+                if has_mail @ Mailbox:
                     Mailbox: email = pop_pending_email()
                     Mailbox(email) >> Dispatcher(email)
                     Dispatcher: route = classify_email(email)
@@ -954,7 +959,8 @@ def command_center():
             # Telegram is the control interface; side effects go to the
             # right lifeline (Calendar, Mailbox).
             while True @ Chat:
-                if chat_present() @ Chat:
+                Chat: has_chat = chat_present()
+                if has_chat @ Chat:
                     Chat: chat_msg = pop_pending_chat()
                     Chat(chat_msg) >> Dispatcher(chat_msg)
                     Dispatcher: chat_route = classify_chat(chat_msg)

@@ -36,7 +36,7 @@ Modes
                   python examples/personal_assistant.py
 """
 
-from zippergen import Lifeline, Var, branch, llm, parallel, pure, workflow
+from zippergen import Lifeline, Var, branch, llm, parallel, pure, workflow, effect
 from zippergen.actions import human
 from zippergen.backends import make_openai_backend
 
@@ -89,8 +89,14 @@ _email_meta: dict[str, dict] = {}
 # Infrastructure  (swap between mock and live via _gmail module-level var)
 # ---------------------------------------------------------------------------
 
-# Plain Python predicate — must stay outside @pure; guards are lambdas.
+@effect
 def mail_present() -> bool:
+    """Ask the mailbox whether anything is waiting.
+
+    An action rather than a guard expression: a guard is evaluated inside the
+    durable write transaction, and this can make a network call.
+    """
+
     if _gmail is not None:
         return _gmail.count_unread() > 0  # type: ignore[union-attr]
     return len(INBOX) > 0
@@ -245,7 +251,8 @@ def approve_or_edit(email: str, reply: str): pass
 
 @workflow
 def inbox_assistant() -> str:
-    while mail_present() @ Dispatcher:
+    Dispatcher: more_mail = mail_present()
+    while more_mail @ Dispatcher:
         Dispatcher: email = pop_pending()
         Dispatcher: route = classify(email)
         Dispatcher: route = normalize_route(route)
@@ -282,6 +289,8 @@ def inbox_assistant() -> str:
             User: reply = accept_edit(edit, reply)
             User(email, reply) >> Mailbox(email, reply)
             Mailbox: status = create_draft(email, reply)
+
+        Dispatcher: more_mail = mail_present()
 
     Dispatcher: summary = inbox_done()
     return summary @ Dispatcher

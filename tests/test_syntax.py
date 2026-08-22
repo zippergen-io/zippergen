@@ -275,3 +275,128 @@ def test_participation_recv():
 def test_participation_receive_any():
     stmt = ReceiveAnyStmt(A, ((B, (VarExpr(x),)), (C, (VarExpr(y),))))
     assert participation_set(stmt) == frozenset({A})
+
+
+# ---------------------------------------------------------------------------
+# A guard decides; it does not compute
+# ---------------------------------------------------------------------------
+
+
+def test_a_guard_that_calls_out_is_refused(tmp_path):
+    """A guard runs inside the durable write transaction.
+
+    `role_runner` rolls that transaction back before every external action, on
+    purpose. A condition has no way to ask for the same treatment, so a guard
+    that reaches outside holds the write lock for the length of the call and
+    blocks every other participant. A deployed mailbox poller did exactly that
+    on every cycle.
+    """
+
+    source = '''
+from zippergen import Lifeline, Var, effect, workflow
+
+Mailbox = Lifeline("Mailbox")
+seen = Var("seen", int, default=0)
+
+
+@effect
+def mail_present() -> bool:
+    return True
+
+
+@effect
+def take_one() -> int:
+    return 1
+
+
+@workflow
+def poller() -> int:
+    if mail_present() @ Mailbox:
+        Mailbox: seen = take_one()
+    return seen @ Mailbox
+'''
+    path = tmp_path / "computed_guard.py"
+    path.write_text(source)
+
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("computed_guard", path)
+    module = importlib.util.module_from_spec(spec)
+    with pytest.raises(TypeError) as caught:
+        spec.loader.exec_module(module)
+
+    message = str(caught.value)
+    assert "calls mail_present()" in message
+    # The refusal must name the idiom that works.
+    assert "Compute it in an action first" in message
+
+
+def test_a_guard_over_variables_is_accepted(tmp_path):
+    source = '''
+from zippergen import Lifeline, Var, effect, workflow
+
+Mailbox = Lifeline("Mailbox")
+seen = Var("seen", int, default=0)
+has_mail = Var("has_mail", bool, default=False)
+
+
+@effect
+def mail_present() -> bool:
+    return True
+
+
+@effect
+def take_one() -> int:
+    return 1
+
+
+@workflow
+def poller() -> int:
+    Mailbox: has_mail = mail_present()
+    if has_mail @ Mailbox:
+        Mailbox: seen = take_one()
+    return seen @ Mailbox
+'''
+    path = tmp_path / "plain_guard.py"
+    path.write_text(source)
+
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("plain_guard", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    assert module.poller.name == "poller"
+
+
+def test_a_causal_past_formula_guard_is_still_accepted(tmp_path):
+    """At[A](atom(...)) is a call, but the monitor evaluates it, not the step."""
+
+    source = '''
+from zippergen import At, Lifeline, Var, atom, effect, workflow
+
+Owner = Lifeline("Owner")
+seen = Var("seen", int, default=0)
+
+
+@effect
+def take_one() -> int:
+    return 1
+
+
+@workflow
+def watched() -> int:
+    if At[Owner](atom(lambda env: env.get("seen", 0) > 0, version="v1")) @ Owner:
+        Owner: seen = take_one()
+    return seen @ Owner
+'''
+    path = tmp_path / "formula_guard.py"
+    path.write_text(source)
+
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("formula_guard", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    assert module.watched.name == "watched"

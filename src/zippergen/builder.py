@@ -12,6 +12,7 @@ import textwrap
 from collections.abc import Callable
 from typing import cast
 
+from zippergen.formula import __all__ as _FORMULA_NAMES
 from zippergen.syntax import (
     ZType, Json, Lifeline, Var,
     ZTypeAtLifeline,
@@ -135,6 +136,11 @@ def msg(
         receiver,
         tuple(_to_expr(x) for x in bindings),
     ))
+
+
+#: Guards may call these: they build causal-past formulas from state the
+#: runtime already holds, rather than computing anything outside.
+_FORMULA_VOCABULARY = frozenset(_FORMULA_NAMES)
 
 
 Action = LLMAction | PureAction | EffectAction | AssistantAction | PlannerAction | HumanAction
@@ -293,6 +299,60 @@ def _cond_ast(node: ast.expr) -> ast.expr:
         )
     # Constants and anything else pass through unchanged.
     return node
+
+
+def _guard_root_name(node: ast.expr) -> str:
+    """The leftmost name of a call target: ``At[A](x)`` and ``a.b()`` -> At, a."""
+
+    while True:
+        if isinstance(node, ast.Name):
+            return node.id
+        if isinstance(node, (ast.Subscript, ast.Attribute)):
+            node = node.value
+            continue
+        return ""
+
+
+def _reject_computed_guard(cond_node: ast.expr, keyword: str) -> None:
+    """Refuse a guard that computes something instead of reading variables.
+
+    A guard is evaluated inside the durable write transaction, between BEGIN
+    IMMEDIATE and COMMIT, because deciding a branch is part of taking one step.
+    Everything that reaches the outside world is kept out of that window on
+    purpose -- an external action rolls the transaction back before it calls out
+    -- but a condition has no way to say it needs the same treatment.
+
+    So the contract is that a guard decides using values the workflow already
+    has. Compute the value in an action first, then branch on it:
+
+        Mailbox: has_mail = check_mailbox()
+        if has_mail @ Mailbox:
+
+    rather than ``if check_mailbox() @ Mailbox:``, which holds the write lock
+    for the length of a network call and blocks every other participant.
+    """
+
+    def check(node: ast.AST) -> None:
+        if isinstance(node, ast.Call):
+            if _guard_root_name(node.func) in _FORMULA_VOCABULARY:
+                # A causal-past formula is not a computation. At[A](phi), Y(phi)
+                # and the rest build a Formula the monitor evaluates from state
+                # the runtime already holds, so neither the call nor anything
+                # inside it -- including an atom's predicate -- runs here.
+                return
+            called = ast.unparse(node.func)
+            raise TypeError(
+                f"@workflow: the {keyword} guard {ast.unparse(cond_node)!r} "
+                f"calls {called}(). A guard is evaluated inside the durable "
+                "transaction, so it must decide from values the workflow "
+                "already has. Compute it in an action first:\n"
+                f"    Owner: result = {called}(...)\n"
+                f"    {keyword} result @ Owner:"
+            )
+        for child in ast.iter_child_nodes(node):
+            check(child)
+
+    check(cond_node)
 
 
 def _make_cond_lambda(cond_node: ast.expr) -> ast.expr:
@@ -537,6 +597,7 @@ class _ProcTransformer(ast.NodeTransformer):
             return node
 
         cond_src = ast.unparse(node.test.left)      # type: ignore[arg-type]
+        _reject_computed_guard(node.test.left, "if")  # type: ignore[arg-type]
         cond = ast.Call(
             func=ast.Name(id="_tag_cond", ctx=ast.Load()),
             args=[_make_cond_lambda(node.test.left), ast.Constant(value=cond_src)],  # type: ignore[arg-type]
@@ -567,6 +628,7 @@ class _ProcTransformer(ast.NodeTransformer):
             return node
 
         cond_src = ast.unparse(node.test.left)      # type: ignore[arg-type]
+        _reject_computed_guard(node.test.left, "while")  # type: ignore[arg-type]
         cond = ast.Call(
             func=ast.Name(id="_tag_cond", ctx=ast.Load()),
             args=[_make_cond_lambda(node.test.left), ast.Constant(value=cond_src)],  # type: ignore[arg-type]

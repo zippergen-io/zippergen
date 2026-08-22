@@ -29,10 +29,12 @@ QUEUE_A = ["a1", "a2"]
 QUEUE_B = ["b1", "b2", "b3"]
 
 
+@pure
 def has_a() -> bool:
     return bool(QUEUE_A)
 
 
+@pure
 def has_b() -> bool:
     return bool(QUEUE_B)
 
@@ -68,15 +70,19 @@ def done() -> str:
 def parallel_while_smoke() -> str:
     with parallel:
         with branch:
-            while has_a() @ Stream_A:
+            Stream_A: more_a = has_a()
+            while more_a @ Stream_A:
                 Stream_A: item_a = pop_a()
                 Stream_A(item_a) >> User(item_a)
                 User: result_a = handle_a(item_a)
+                Stream_A: more_a = has_a()
         with branch:
-            while has_b() @ Stream_B:
+            Stream_B: more_b = has_b()
+            while more_b @ Stream_B:
                 Stream_B: item_b = pop_b()
                 Stream_B(item_b) >> User(item_b)
                 User: result_b = handle_b(item_b)
+                Stream_B: more_b = has_b()
 
     User: summary = done()
     return summary @ User

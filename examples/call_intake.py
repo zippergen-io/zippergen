@@ -89,6 +89,7 @@ zippergen_connectors = (
 # ---------------------------------------------------------------------------
 
 email = Var("email", str, default="")
+has_mail = Var("has_mail", bool, default=False)
 certified = Var("certified", bool, default=False)
 expected_recipient = Var("expected_recipient", bool, default=False)
 intake_kind = Var("intake_kind", str, default="")
@@ -1153,7 +1154,15 @@ def _log_mailbox_api_error(operation: str, exc: Exception) -> None:
     print(f"[CallIntake] Gmail {operation} failed ({type(exc).__name__}: {exc}); retrying.")
 
 
-def mail_present() -> bool:
+@effect(connector="call-mailbox", operation="count-unread")
+def mailbox_has_mail() -> bool:
+    """Ask the mailbox whether anything is waiting.
+
+    An action rather than a guard expression. A guard runs inside the durable
+    write transaction, and this makes a network call, which would hold the
+    write lock for its duration and block every other participant.
+    """
+
     if _email_client is not None:
         try:
             return _email_client.count_unread() > 0  # type: ignore[union-attr]
@@ -1541,7 +1550,8 @@ def extract_correction_json(email: str) -> None: ...
 @workflow
 def call_intake() -> str:
     while (processed_count < _message_limit) @ Mailbox:
-        if mail_present() @ Mailbox:
+        Mailbox: has_mail = mailbox_has_mail()
+        if has_mail @ Mailbox:
             Mailbox: email = pop_pending_email()
             Mailbox(email) >> Gatekeeper(email)
             Gatekeeper: expected_recipient = is_expected_intake_recipient(email)

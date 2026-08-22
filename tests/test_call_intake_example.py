@@ -138,7 +138,7 @@ def test_poll_interval_defaults_to_email_scale_and_can_be_overridden(tmp_path):
     assert module._poll_seconds == 300.0
 
 
-def test_mail_present_treats_gmail_poll_failure_as_no_mail(tmp_path):
+def test_mailbox_has_mail_treats_gmail_poll_failure_as_no_mail(tmp_path):
     module = _load_call_intake()
     module.reset_for_tests(
         fake_inbox=[],
@@ -153,7 +153,7 @@ def test_mail_present_treats_gmail_poll_failure_as_no_mail(tmp_path):
 
     module._email_client = FailingEmailClient()
 
-    assert module.mail_present() is False
+    assert module.mailbox_has_mail.fn() is False
 
 
 def test_pop_pending_email_retries_transient_fetch_failure(tmp_path):
