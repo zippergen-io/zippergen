@@ -848,6 +848,7 @@ def _trace_row(
     item: dict,
     *,
     duration: float | None = None,
+    incomplete: bool = False,
 ) -> tuple[str, str, str, str, str]:
     role = str(item.get("role") or "-")
     event = item.get("event")
@@ -881,20 +882,37 @@ def _trace_row(
             detail += f" · {_trace_fields(bindings)}"
         kind = "control receive" if event.get("ctrl") else "receive"
         return timestamp, f"#{item['rowid']}", role, kind, detail
-    if event_type in {"act_start", "act"}:
+    if event_type in {"act_start", "act", "act_failed"}:
         action = event.get("action", "?")
         action_kind = event.get("action_kind") or "action"
-        phase = "start" if event_type == "act_start" else "done"
-        payload_name = "inputs" if event_type == "act_start" else "outputs"
+        phase = (
+            "incomplete"
+            if event_type == "act_start" and incomplete
+            else "start" if event_type == "act_start"
+            else "failed" if event_type == "act_failed"
+            else "done"
+        )
         detail = str(action)
         seq = event.get("seq")
         if seq is not None:
             detail += f" · seq={seq}"
-        payload = event.get(payload_name) or {}
+        payload = (
+            event.get("inputs")
+            if event_type == "act_start"
+            else event.get("outputs")
+            if event_type == "act"
+            else {
+                key: event[key]
+                for key in ("error", "message")
+                if event.get(key)
+            }
+        ) or {}
         if payload:
             detail += f" · {_trace_fields(payload)}"
         if duration is not None:
             detail += f" · {_trace_duration(duration)}"
+        if incomplete:
+            detail += " · no completion recorded"
         return (
             timestamp,
             f"#{item['rowid']}",
@@ -935,24 +953,60 @@ def _trace_row(
 
 
 def _trace_rows(events: list[dict]) -> list[tuple[object, ...]]:
-    starts: dict[tuple[str, int], float] = {}
-    rows: list[tuple[object, ...]] = []
+    starts: dict[tuple[object, ...], list[tuple[int, float]]] = {}
+    matched_starts: set[int] = set()
+    durations: dict[int, float] = {}
     for item in events:
         role = str(item.get("role") or "-")
         event = item.get("event")
-        duration = None
-        if isinstance(event, dict):
-            seq = event.get("seq")
-            timestamp = _trace_seconds(event.get("recorded_at"))
-            if type(seq) is int and timestamp is not None:
-                key = (role, seq)
-                if event.get("type") == "act_start":
-                    starts[key] = timestamp
-                elif event.get("type") == "act" and key in starts:
-                    measured = timestamp - starts[key]
-                    if measured >= 0:
-                        duration = measured
-        rows.append(_trace_row(item, duration=duration))
+        if not isinstance(event, dict):
+            continue
+        timestamp = _trace_seconds(event.get("recorded_at"))
+        attempt_id = event.get("attempt_id")
+        seq = event.get("seq")
+        key: tuple[object, ...] | None
+        if isinstance(attempt_id, str) and attempt_id:
+            key = ("attempt", attempt_id)
+        elif type(seq) is int:
+            key = ("sequence", role, seq)
+        else:
+            key = None
+        if key is None or timestamp is None:
+            continue
+        if event.get("type") == "act_start":
+            starts.setdefault(key, []).append((int(item["rowid"]), timestamp))
+        elif event.get("type") in {"act", "act_failed"} and starts.get(key):
+            start_rowid, started_at = starts[key].pop()
+            matched_starts.add(start_rowid)
+            stored_ms = event.get("duration_ms")
+            if isinstance(stored_ms, (int, float)) and stored_ms >= 0:
+                durations[int(item["rowid"])] = stored_ms / 1000
+            else:
+                measured = timestamp - started_at
+                if measured >= 0:
+                    durations[int(item["rowid"])] = measured
+
+    rows: list[tuple[object, ...]] = []
+    for item in events:
+        event = item.get("event")
+        rowid = int(item["rowid"])
+        incomplete = (
+            isinstance(event, dict)
+            and event.get("type") == "act_start"
+            and rowid not in matched_starts
+        )
+        duration = durations.get(rowid)
+        if duration is None and isinstance(event, dict):
+            stored_ms = event.get("duration_ms")
+            if isinstance(stored_ms, (int, float)) and stored_ms >= 0:
+                duration = stored_ms / 1000
+        rows.append(
+            _trace_row(
+                item,
+                duration=duration,
+                incomplete=incomplete,
+            )
+        )
     return rows
 
 

@@ -10,6 +10,7 @@ import hashlib
 import json
 import math
 import threading
+import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import cast
@@ -58,6 +59,7 @@ class PendingExternal:
     inputs: dict
     trace_start: dict | None = None
     trace_seq: int | None = None
+    attempt_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -66,6 +68,8 @@ class _ResolvedExternal:
 
     outputs: dict[str, object]
     trace_seq: int | None
+    attempt_id: str | None = None
+    duration_ms: int | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -651,6 +655,8 @@ def _step(
                         "inputs": {k: _jsonify(v) for k, v in named_inputs.items()},
                         "outputs": {k: _jsonify(v) for k, v in out_map.items()},
                         "seq": act_seq,
+                        "attempt_id": resolution.attempt_id,
+                        "duration_ms": resolution.duration_ms,
                         **_monitor_trace_fields(monitor),
                     })
                 return EmptyStmt(), True
@@ -658,6 +664,7 @@ def _step(
             trace_seq = None
             if trace and _action_visible(action):
                 trace_seq = _next_act_seq()
+                attempt_id = uuid.uuid4().hex
                 trace_start = {
                     "type": "act_start",
                     "lifeline": threading.current_thread().name,
@@ -665,12 +672,16 @@ def _step(
                     "action_kind": _action_kind(action),
                     "inputs": {k: _jsonify(v) for k, v in named_inputs.items()},
                     "seq": trace_seq,
+                    "attempt_id": attempt_id,
                 }
+            else:
+                attempt_id = None
             return PendingExternal(
                 stmt,
                 named_inputs,
                 trace_start=trace_start,
                 trace_seq=trace_seq,
+                attempt_id=attempt_id,
             ), False
 
         case RecvStmt(lifeline=A, bindings=ys, sender=B, channel=channel):

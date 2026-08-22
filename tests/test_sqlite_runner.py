@@ -9,6 +9,7 @@ from zippergen.store import (
     list_role_states,
     list_history,
     record_history,
+    read_last_failure,
     write_history_keep,
     load_workflow_result,
     open_store,
@@ -22,14 +23,19 @@ from zippergen.locator import statement_node_paths
 from zippergen.projection import project
 from zippergen.role_runner import RoleRunner, _begin_immediate
 from zippergen.runtime import _input_hash
+from zippergen.serve import _trace_rows
 from zippergen.syntax import ReceiveAnyStmt, VarExpr
 from tests.loop_fixture import counter_loop, A as LoopA, B as LoopB
 from tests.test_examples_regression import _two_role_branch_workflow, A, B
 import json
+import os
 import pytest
 import sqlite3
+import subprocess
+import sys
 import threading
 import time
+from pathlib import Path
 
 PUser = Lifeline("PUser")
 POwner = Lifeline("POwner")
@@ -562,6 +568,118 @@ def test_completed_external_run_returns_without_another_backend_call(tmp_path):
     assert first == 10 and second == 10
     assert calls["n"] == 1
     assert after == before
+
+
+def test_external_failure_records_the_root_cause_and_terminal_trace(tmp_path):
+    path = str(tmp_path / "external-failure.sqlite")
+
+    def backend(_action, _inputs):
+        raise RuntimeError("local model endpoint refused the connection")
+
+    with pytest.raises(RuntimeError, match="local model endpoint refused"):
+        run_sqlite(
+            sqlite_external_round,
+            [PAsk, PAnswer],
+            {"PAsk": {"n": 1}},
+            store_path=path,
+            llm_backend=backend,
+            timeout=10,
+        )
+
+    conn = open_store(path)
+    try:
+        failure = read_last_failure(conn)
+        assert failure is not None
+        assert failure["role"] == "PAnswer"
+        assert failure["error"] == "RuntimeError"
+        assert failure["message"] == "local model endpoint refused the connection"
+        events = [
+            row["event"]
+            for row in list_history(conn)
+            if row["event"].get("action") == "p_classify"
+        ]
+    finally:
+        conn.close()
+
+    assert [event["type"] for event in events] == ["act_start", "act_failed"]
+    assert events[0]["attempt_id"] == events[1]["attempt_id"]
+    assert events[1]["duration_ms"] >= 0
+
+
+def test_process_death_leaves_an_incomplete_attempt_and_recovery_retries(
+    tmp_path,
+):
+    store_path = tmp_path / "crash.sqlite"
+    marker_path = tmp_path / "crashed.marker"
+    fixture = Path(__file__).parent / "fixtures" / "crash_once_workflow.py"
+    environment = dict(os.environ)
+    source_root = str(Path(__file__).parents[1] / "src")
+    environment["PYTHONPATH"] = os.pathsep.join(
+        value
+        for value in (source_root, environment.get("PYTHONPATH", ""))
+        if value
+    )
+    command = [
+        sys.executable,
+        str(fixture),
+        str(store_path),
+        str(marker_path),
+    ]
+
+    crashed = subprocess.run(
+        command,
+        cwd=fixture.parents[2],
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert crashed.returncode == 73
+
+    def action_rows() -> list[dict]:
+        conn = open_store(str(store_path))
+        try:
+            rows = conn.execute(
+                "SELECT id, role, payload FROM history ORDER BY id"
+            ).fetchall()
+        finally:
+            conn.close()
+        return [
+            {"rowid": row[0], "role": row[1], "event": json.loads(row[2])}
+            for row in rows
+            if json.loads(row[2]).get("action") == "crash_once"
+        ]
+
+    after_crash = action_rows()
+    assert [row["event"]["type"] for row in after_crash] == ["act_start"]
+    assert _trace_rows(after_crash)[0][3] == "effect incomplete"
+
+    recovered = subprocess.run(
+        command,
+        cwd=fixture.parents[2],
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=20,
+    )
+    assert recovered.returncode == 0, recovered.stderr
+    assert json.loads(recovered.stdout) == {"result": 2}
+
+    after_recovery = action_rows()
+    assert [row["event"]["type"] for row in after_recovery] == [
+        "act_start",
+        "act_start",
+        "act",
+    ]
+    first_attempt, retry_attempt, completion = [
+        row["event"] for row in after_recovery
+    ]
+    assert first_attempt["attempt_id"] != retry_attempt["attempt_id"]
+    assert completion["attempt_id"] == retry_attempt["attempt_id"]
+    rendered = _trace_rows(after_recovery)
+    assert rendered[0][3] == "effect incomplete"
+    assert rendered[1][3] == "effect start"
+    assert rendered[2][3] == "effect done"
 
 
 def test_completed_effect_run_returns_without_another_python_call(tmp_path):

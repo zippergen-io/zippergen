@@ -57,6 +57,7 @@ from zippergen.store import (
     human_task_id,
     load_human_task,
     load_role_state,
+    record_last_failure,
     record_history,
     RoleStateConflict,
     set_role_status,
@@ -430,7 +431,40 @@ class RoleRunner:
                 self._publish_status(status, detail)
                 if out.trace_start is not None:
                     self.trace(out.trace_start)
-                out_map = self._resolve_external(out)
+                started_at = time.monotonic()
+                try:
+                    out_map = self._resolve_external(out)
+                except BaseException as exc:
+                    if (
+                        out.trace_start is not None
+                        and not isinstance(exc, WorkflowCancelled)
+                    ):
+                        try:
+                            self.trace({
+                                "type": "act_failed",
+                                "lifeline": self.role,
+                                "action": out.trace_start.get("action"),
+                                "action_kind": out.trace_start.get("action_kind"),
+                                "seq": out.trace_seq,
+                                "attempt_id": out.attempt_id,
+                                "duration_ms": max(
+                                    0,
+                                    round(
+                                        (time.monotonic() - started_at) * 1000
+                                    ),
+                                ),
+                                "error": type(exc).__name__,
+                                "message": " ".join(str(exc).split())[:500],
+                            })
+                        except Exception:
+                            # Failure evidence is best-effort and must never
+                            # replace the exception that actually killed the
+                            # lifeline.
+                            pass
+                    raise
+                duration_ms = max(
+                    0, round((time.monotonic() - started_at) * 1000)
+                )
                 # The result and the next control state commit together. If the
                 # process dies before this, the control state still points at
                 # the action and it runs again.
@@ -442,6 +476,8 @@ class RoleRunner:
                             id(out.node): _ResolvedExternal(
                                 out_map,
                                 out.trace_seq,
+                                out.attempt_id,
+                                duration_ms,
                             )
                         },
                     )
@@ -486,16 +522,25 @@ class RoleRunner:
             if isinstance(exc, RoleStateConflict):
                 raise
             state = "cancelled" if isinstance(exc, WorkflowCancelled) else "failed"
+            failure_detail = {
+                "error": type(exc).__name__,
+                "message": " ".join(str(exc).split())[:500],
+            }
             try:
                 set_role_status(
                     self.conn,
                     self.role,
                     state,
-                    {"error": type(exc).__name__},
+                    failure_detail,
                     expected_steps=self.steps,
                 )
             except (sqlite3.Error, RoleStateConflict):
                 pass
+            if state == "failed":
+                try:
+                    record_last_failure(self.conn, self.role, exc)
+                except sqlite3.Error:
+                    pass
             raise
         set_role_status(
             self.conn,

@@ -2374,6 +2374,73 @@ def test_trace_command_reports_recent_trace_events(tmp_path, monkeypatch, capsys
     assert f"#{first}" not in captured.out
 
 
+def test_trace_marks_an_unmatched_action_start_as_incomplete(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    store_path = _prepared_deployment_store(tmp_path, monkeypatch, capsys)
+    conn = open_store(str(store_path))
+    record_history(
+        conn,
+        "Extractor",
+        {
+            "type": "act_start",
+            "action": "classify_intake",
+            "action_kind": "llm",
+            "inputs": {},
+            "seq": 17,
+        },
+    )
+    conn.close()
+
+    assert main(["deploy", "trace", "--tail", "1"]) == 0
+
+    output = capsys.readouterr().out
+    assert "llm incomplete" in output
+    assert "completion recorded" in output
+
+
+def test_trace_pairs_a_failed_action_attempt_and_shows_its_duration(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    store_path = _prepared_deployment_store(tmp_path, monkeypatch, capsys)
+    timestamps = iter((1_700_000_000.0, 1_700_000_002.0))
+    monkeypatch.setattr("zippergen.store.time.time", lambda: next(timestamps))
+    conn = open_store(str(store_path))
+    start = {
+        "type": "act_start",
+        "action": "classify_intake",
+        "action_kind": "llm",
+        "inputs": {},
+        "seq": 17,
+        "attempt_id": "attempt-17",
+    }
+    record_history(conn, "Extractor", start)
+    record_history(conn, "Extractor", {
+        "type": "act_failed",
+        "action": "classify_intake",
+        "action_kind": "llm",
+        "seq": 17,
+        "attempt_id": "attempt-17",
+        "duration_ms": 2000,
+        "error": "RuntimeError",
+        "message": "model unavailable",
+    })
+    conn.close()
+
+    assert main(["deploy", "trace", "--tail", "2"]) == 0
+
+    output = capsys.readouterr().out
+    assert "llm failed" in output
+    assert 'message="model' in output
+    assert "unavailable" in output
+    assert "2.00s" in output
+    assert "llm incomplete" not in output
+
+
 def test_trace_command_outputs_json_after_rowid(tmp_path, monkeypatch, capsys):
     store_path = _prepared_deployment_store(tmp_path, monkeypatch, capsys)
     monkeypatch.setattr("zippergen.store.time.time", lambda: 1_700_000_000.125)

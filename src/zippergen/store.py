@@ -66,6 +66,7 @@ HISTORY_KEEP_META = "history_keep"
 # without racing its own writers, and a killed lifeline is far worse than a
 # restarted trace counter.
 HISTORY_HIGH_WATER_META = "history_high_water"
+LAST_FAILURE_META = "last_failure"
 
 
 class StoreSchemaError(Exception):
@@ -350,6 +351,43 @@ def write_meta(conn, key: str, value: str) -> None:
         "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
         (key, str(value)),
     )
+
+
+def _exception_summary(exc: BaseException, *, limit: int = 500) -> str:
+    """One bounded diagnostic line suitable for durable status metadata."""
+
+    message = " ".join(str(exc).split()) or type(exc).__name__
+    return message if len(message) <= limit else message[: limit - 1] + "…"
+
+
+def record_last_failure(conn, role: str, exc: BaseException) -> dict[str, object]:
+    """Remember the latest root lifeline failure independently of history."""
+
+    failure: dict[str, object] = {
+        "role": role,
+        "error": type(exc).__name__,
+        "message": _exception_summary(exc),
+        "recorded_at": time.time(),
+    }
+    write_meta(conn, LAST_FAILURE_META, json.dumps(failure, sort_keys=True))
+    return failure
+
+
+def read_last_failure(conn) -> dict[str, object] | None:
+    raw = read_meta(conn, LAST_FAILURE_META)
+    if raw is None:
+        return None
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise StoreSchemaError(
+            f"Store setting {LAST_FAILURE_META} is not valid JSON."
+        ) from exc
+    if not isinstance(value, dict):
+        raise StoreSchemaError(
+            f"Store setting {LAST_FAILURE_META} is not a JSON object."
+        )
+    return value
 
 
 class WorkflowIdentityError(Exception):
