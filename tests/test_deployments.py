@@ -468,3 +468,55 @@ def test_reset_still_refuses_while_the_service_is_running(tmp_path, monkeypatch)
         deployments.reset_deployment_store("d", {"name": "d", "store": str(store)})
 
     assert store.exists()
+
+
+def test_a_brand_new_home_passes_its_own_readiness_checks(tmp_path, monkeypatch):
+    """The first deploy on a new machine must not fail its own checks.
+
+    The readiness checks require a private home containing a log directory.
+    Creating that only when a candidate is published meant the checks demanded
+    a state that nothing had created yet, so every first deploy failed.
+    """
+
+    from zippergen.serve import _prepare_managed_home
+
+    home = tmp_path / "home"
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(home))
+    profile = {
+        "schema_version": DEPLOYMENT_PROFILE_SCHEMA_VERSION,
+        "name": "first-deploy",
+        "cwd": str(tmp_path),
+        "store": str(home / "runs/first-deploy.sqlite"),
+        "log": str(home / "logs/first-deploy.log"),
+        "python": "/usr/bin/python3",
+    }
+
+    _prepare_managed_home(profile)
+
+    assert home.is_dir()
+    assert (home / "logs").is_dir(), "the log directory the checks require"
+    assert (home / "runs").is_dir()
+    assert (home / "deployments").is_dir()
+    for directory in (home, home / "logs", home / "runs", home / "deployments"):
+        assert directory.stat().st_mode & 0o077 == 0, directory
+
+
+def test_preparing_the_managed_home_twice_changes_nothing(tmp_path, monkeypatch):
+    from zippergen.serve import _prepare_managed_home
+
+    home = tmp_path / "home"
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(home))
+    profile = {
+        "schema_version": DEPLOYMENT_PROFILE_SCHEMA_VERSION,
+        "name": "twice",
+        "cwd": str(tmp_path),
+        "store": str(home / "runs/twice.sqlite"),
+        "log": str(home / "logs/twice.log"),
+        "python": "/usr/bin/python3",
+    }
+
+    _prepare_managed_home(profile)
+    (home / "logs" / "twice.log").write_text("kept\n")
+    _prepare_managed_home(profile)
+
+    assert (home / "logs" / "twice.log").read_text() == "kept\n"

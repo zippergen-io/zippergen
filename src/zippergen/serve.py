@@ -294,12 +294,18 @@ def _deployment_command(name: str, *, python_executable: str | None = None) -> s
     )
 
 
-def _write_deployment_artifacts(profile: dict[str, object]) -> None:
-    name = str(profile["name"])
-    profile_path = _deployment_profile_path(name)
-    script_path = _deployment_script_path(name)
-    service_path = _deployment_service_path(name)
-    launchd_path = _deployment_launchd_path(name)
+def _prepare_managed_home(profile: Mapping[str, object]) -> None:
+    """Create ZipperGen's own directories, private, before anything reads them.
+
+    The managed home is ZipperGen's workspace rather than part of any one
+    deployment, so making it is a precondition for evaluating a candidate, not
+    a step in publishing one. Doing it only at publication time is what made
+    the readiness checks demand a state that only publication created, so the
+    first deploy on a new machine always failed its own checks.
+
+    Called more than once per deploy on purpose: every step is idempotent.
+    """
+
     home = _zippergen_home()
     ensure_private_directory(home)
     store_path = Path(str(profile["store"])).expanduser()
@@ -313,6 +319,17 @@ def _write_deployment_artifacts(profile: dict[str, object]) -> None:
         except ValueError:
             continue
         ensure_private_directory(directory)
+
+
+def _write_deployment_artifacts(profile: dict[str, object]) -> None:
+    name = str(profile["name"])
+    profile_path = _deployment_profile_path(name)
+    script_path = _deployment_script_path(name)
+    service_path = _deployment_service_path(name)
+    launchd_path = _deployment_launchd_path(name)
+    home = _zippergen_home()
+    _prepare_managed_home(profile)
+    log_path = Path(str(profile["log"])).expanduser()
 
     try:
         log_path.resolve().relative_to(home.resolve())
@@ -4140,6 +4157,7 @@ def _finalize_guided_deployment(
             if raw_bundle and raw_bundle != previous_bundle:
                 candidate_bundle = Path(raw_bundle)
 
+        _prepare_managed_home(profile)
         store_created = _initialize_deployment_store(profile)
         environment_update = _prepare_deployment_environment(
             profile,
