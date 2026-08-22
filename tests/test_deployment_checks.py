@@ -1,6 +1,7 @@
 import subprocess
 
 from zippergen.deployment_checks import (
+    _systemd_active_check,
     _systemd_enabled_check,
     _systemd_linger_check,
 )
@@ -50,3 +51,25 @@ def test_systemd_enabled_check_gives_the_exact_enable_sequence(monkeypatch):
     assert check["state"] == "disabled"
     assert "zippergen-mailbox-poller.service" in check["detail"]
     assert "zippergen deploy start --enable" in check["detail"]
+
+
+def test_systemd_failed_service_is_a_failure_with_diagnostics(monkeypatch):
+    monkeypatch.setattr(
+        "zippergen.deployment_checks._systemd_service_status",
+        lambda _name: {
+            "manager": "systemd",
+            "state": "loaded",
+            "healthy": False,
+            "active_state": "failed",
+            "detail": (
+                "zippergen-demo.service failed; last exit code 1. "
+                "Inspect 'zippergen deploy logs'"
+            ),
+        },
+    )
+
+    check = _systemd_active_check("demo")
+
+    assert check["status"] == "fail"
+    assert check["active_state"] == "failed"
+    assert "deploy logs" in check["detail"]

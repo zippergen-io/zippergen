@@ -53,6 +53,7 @@ from zippergen.deployment_platform import (
     run_launchctl as _run_launchctl,
     run_systemctl as _run_systemctl,
     enforce_deploy_requirement,
+    require_service_stopped,
     ServiceIsLiveError,
     service_is_running,
     service_manager as _service_manager,
@@ -148,6 +149,7 @@ from zippergen.store import (
     mark_human_task_token_used,
     open_store,
     open_store_readonly,
+    read_history_keep,
     write_history_keep,
 )
 
@@ -179,6 +181,40 @@ def _parse_inputs(pairs: list[str]) -> dict:
         except json.JSONDecodeError:
             out[k] = v                  # bare string fallback
     return out
+
+
+def _nonnegative_int_argument(value: str) -> int:
+    try:
+        parsed = int(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be a whole number") from exc
+    if parsed < 0:
+        raise argparse.ArgumentTypeError("must be zero or greater")
+    return parsed
+
+
+def _positive_int_argument(value: str) -> int:
+    parsed = _nonnegative_int_argument(value)
+    if parsed == 0:
+        raise argparse.ArgumentTypeError("must be greater than zero")
+    return parsed
+
+
+def _nonnegative_float_argument(value: str) -> float:
+    try:
+        parsed = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("must be a number") from exc
+    if not math.isfinite(parsed) or parsed < 0:
+        raise argparse.ArgumentTypeError("must be a finite number zero or greater")
+    return parsed
+
+
+def _positive_float_argument(value: str) -> float:
+    parsed = _nonnegative_float_argument(value)
+    if parsed == 0:
+        raise argparse.ArgumentTypeError("must be greater than zero")
+    return parsed
 
 
 def _parse_input_json(text: str | None) -> dict:
@@ -291,10 +327,6 @@ def _write_deployment_artifacts(profile: dict[str, object]) -> None:
     stored_profile = dict(profile)
     stored_profile["inputs"] = encode_value(profile.get("inputs") or {})
     write_private_text(
-        profile_path,
-        json.dumps(stored_profile, indent=2, sort_keys=True) + "\n"
-    )
-    write_private_text(
         script_path,
         "#!/bin/sh\n"
         "set -eu\n"
@@ -333,6 +365,13 @@ def _write_deployment_artifacts(profile: dict[str, object]) -> None:
         "Umask": 0o077,
     }
     write_private_bytes(launchd_path, plistlib.dumps(launchd, sort_keys=True))
+    # The profile is the publication point: the service reads it to decide
+    # which immutable bundle and configuration to run. Write every supporting
+    # artifact first so a profile never points at files we have not finished.
+    write_private_text(
+        profile_path,
+        json.dumps(stored_profile, indent=2, sort_keys=True) + "\n"
+    )
 
 
 def _profile_history_keep(profile: Mapping[str, object]) -> int | None:
@@ -396,7 +435,7 @@ def _apply_existing_history_keep(
     *,
     requested: int | None,
     store_created: bool,
-) -> None:
+) -> int | None:
     """Apply an explicit deploy-time budget to a store that already exists.
 
     A profile setting is the reset default; the store setting controls the
@@ -407,11 +446,12 @@ def _apply_existing_history_keep(
     """
 
     if requested is None or store_created:
-        return
+        return None
     path = Path(str(profile["store"])).expanduser()
     try:
         connection = open_store(str(path))
         try:
+            previous = read_history_keep(connection)
             connection.execute("BEGIN IMMEDIATE")
             try:
                 write_history_keep(connection, requested)
@@ -426,16 +466,17 @@ def _apply_existing_history_keep(
             f"Could not apply --history-keep to existing store {path}: "
             f"{type(exc).__name__}: {exc}"
         ) from exc
+    return previous
 
 
 def _install_systemd_unit(profile: dict[str, object], *, dry_run: bool = False) -> Path:
     name = str(profile["name"])
-    _write_deployment_artifacts(profile)
     source = _deployment_service_path(name)
     target = _installed_systemd_service_path(name)
     if dry_run:
         print(f"Install systemd unit: {source} -> {target}")
         return target
+    _write_deployment_artifacts(profile)
     target.parent.mkdir(parents=True, exist_ok=True)
     write_private_text(target, source.read_text())
     return target
@@ -443,12 +484,12 @@ def _install_systemd_unit(profile: dict[str, object], *, dry_run: bool = False) 
 
 def _install_launchd_agent(profile: dict[str, object], *, dry_run: bool = False) -> Path:
     name = str(profile["name"])
-    _write_deployment_artifacts(profile)
     source = _deployment_launchd_path(name)
     target = _installed_launchd_path(name)
     if dry_run:
         print(f"Install launchd agent: {source} -> {target}")
         return target
+    _write_deployment_artifacts(profile)
     target.parent.mkdir(parents=True, exist_ok=True)
     write_private_bytes(target, source.read_bytes())
     return target
@@ -608,6 +649,9 @@ def _deployment_lifecycle_command(args, action: str) -> int:
 def _logs_command(args) -> int:
     if args.tail <= 0:
         raise SystemExit("--tail must be greater than 0.")
+    if args.interval is not None and not args.follow:
+        raise SystemExit("--interval requires --follow.")
+    interval = 1.0 if args.interval is None else args.interval
     profile = _load_deployment_profile(args.name)
     log_path = Path(str(profile.get("log") or _default_deployment_log_path(args.name))).expanduser()
     if not log_path.exists():
@@ -637,7 +681,7 @@ def _logs_command(args) -> int:
     if not args.follow:
         return 0
     while True:
-        time.sleep(args.interval)
+        time.sleep(interval)
         lines = visible_lines()
         for line in lines[seen:]:
             print(line)
@@ -1495,9 +1539,7 @@ def _require_deployment_update_slot(project_key: str) -> None:
     active = active_execution(
         execution_lock_path(_zippergen_home(), project_key)
     )
-    if active is None:
-        return
-    if active.owner == "project deployment":
+    if active is not None and active.owner == "project deployment":
         detail = (
             f" (PID {active.pid})" if active.pid is not None else ""
         )
@@ -1505,12 +1547,24 @@ def _require_deployment_update_slot(project_key: str) -> None:
             f"The project deployment is already running{detail}. Stop it "
             "with 'zg deploy stop' before updating it with 'zg deploy'."
         )
-    raise SystemExit(
-        _execution_conflict_message(
-            active,
-            requested="a deployment update",
+    if active is not None:
+        raise SystemExit(
+            _execution_conflict_message(
+                active,
+                requested="a deployment update",
+            )
         )
-    )
+    # A supervisor restart delay has no process holding the execution lock.
+    # If a unit is installed, also ask the service manager so redeploy cannot
+    # swap its environment just before the supervisor starts it again.
+    if (
+        _installed_systemd_service_path(project_key).exists()
+        or _installed_launchd_path(project_key).exists()
+    ):
+        try:
+            require_service_stopped(project_key, "updating it")
+        except ServiceIsLiveError as exc:
+            raise SystemExit(str(exc)) from exc
 
 
 def _run_workflow_command(args) -> int:
@@ -2787,12 +2841,24 @@ def _deployment_inventory() -> list[dict[str, object]]:
                     "ownership": f"invalid profile: {exc}",
                     "orphaned": True,
                     "service": "unknown",
+                    "profile_loadable": False,
                 }
             )
             continue
         if not isinstance(profile, dict):
+            rows.append(
+                {
+                    "name": path.stem,
+                    "project": "unknown",
+                    "ownership": "invalid profile: top-level value is not an object",
+                    "orphaned": True,
+                    "service": "unknown",
+                    "profile_loadable": False,
+                }
+            )
             continue
         name = str(profile.get("name") or path.stem)
+        profile_loadable = True
         source = Path(str(profile.get("source_cwd") or "")).expanduser()
         orphaned = False
         ownership = "current"
@@ -2823,6 +2889,7 @@ def _deployment_inventory() -> list[dict[str, object]]:
                 "ownership": ownership,
                 "orphaned": orphaned,
                 "service": service.get("state") or "unknown",
+                "profile_loadable": profile_loadable,
             }
         )
     return rows
@@ -2941,8 +3008,45 @@ def _deployment_prune_command(args) -> int:
             print("Nothing was changed.")
             return 1
 
-    for name in names:
-        _remove_command(argparse.Namespace(name=name, purge=False, yes=True))
+    for row in orphaned:
+        name = str(row["name"])
+        if row.get("profile_loadable", True):
+            _remove_command(argparse.Namespace(name=name, purge=False, yes=True))
+            continue
+        from zippergen.deployments import (
+            DeploymentRemovalError,
+            present_deployment_artifacts,
+            remove_deployment_artifacts,
+            unregister_deployment_service,
+        )
+
+        fallback_profile: dict[str, object] = {"name": name}
+        try:
+            artifacts = present_deployment_artifacts(name, fallback_profile)
+            _print_remove_consequences(
+                name,
+                artifacts,
+                purge=False,
+                profile=fallback_profile,
+            )
+            service = unregister_deployment_service(name)
+            result = remove_deployment_artifacts(
+                name,
+                fallback_profile,
+                purge=False,
+            )
+        except DeploymentRemovalError as exc:
+            raise SystemExit(str(exc)) from exc
+        print(
+            _remove_outcome(
+                name,
+                planned=len(artifacts),
+                removed=result.artifact_count,
+                service=service,
+            )
+        )
+        if result.archive is not None:
+            print(f"  Archive: {result.archive} ({_directory_size(result.archive)})")
     dropped = _prune_shared_connector_inboxes(keep_days=args.keep_days)
     if dropped:
         print(
@@ -3690,6 +3794,15 @@ def _collect_deployment_fields(
     overrides: dict[str, object],
     interactive: bool,
 ) -> tuple[dict[str, object], dict[str, str]]:
+    declared = {field.name for field in spec.fields}
+    unknown = sorted(set(overrides) - declared)
+    if unknown:
+        available = ", ".join(sorted(declared)) or "none"
+        raise SystemExit(
+            "Unknown deployment field"
+            f"{'s' if len(unknown) != 1 else ''}: {', '.join(unknown)}. "
+            f"Available fields: {available}."
+        )
     existing_secrets = _load_deployment_secrets(profile)
     values: dict[str, object] = {}
     secrets: dict[str, str] = dict(existing_secrets)
@@ -3851,6 +3964,19 @@ def _deployment_context(
     return profile, workflow, module, deployment_spec_from_module(module)
 
 
+def _workflow_source_identity(spec: str, cwd: Path) -> str:
+    """Canonicalize a workflow reference without importing it."""
+
+    module_ref, separator, workflow_name = spec.partition(":")
+    if not _looks_like_path(module_ref):
+        return spec
+    path = Path(module_ref).expanduser()
+    if not path.is_absolute():
+        path = cwd / path
+    resolved = str(path.resolve())
+    return resolved + (f":{workflow_name}" if separator else "")
+
+
 def _apply_deploy_arguments(
     profile: dict[str, object],
     args,
@@ -3913,12 +4039,38 @@ def _finalize_guided_deployment(
     args,
 ) -> int:
     name = str(profile["name"])
+    active_profile_existed = _deployment_profile_path(name).exists()
+    previous_bundle = str(profile.get("bundle") or "")
+    candidate_bundle: Path | None = None
+    environment_update = None
+    candidate_secrets: Path | None = None
+    canonical_secrets = _deployment_secrets_path(name)
+    remove_canonical_secrets = False
+    previous_secret_payload: bytes | None = None
+    secret_published = False
+    history_previous: int | None = None
+    store_created = False
+    published = False
+
     secret_fields = [field for field in spec.fields if field.secret]
+    if canonical_secrets.is_symlink():
+        raise SystemExit(
+            f"Refusing a symlinked deployment secrets file: {canonical_secrets}"
+        )
     if secret_fields or secrets:
-        secrets_path = _deployment_secrets_path(name)
-        _write_deployment_secrets(secrets_path, secrets)
-        profile["secrets_file"] = str(secrets_path)
+        ensure_private_directory(_deployments_dir())
+        fd, raw_candidate = tempfile.mkstemp(
+            prefix=f".{_slug(name)}.secrets-candidate-",
+            suffix=".json",
+            dir=_deployments_dir(),
+        )
+        os.close(fd)
+        candidate_secrets = Path(raw_candidate)
+        _write_deployment_secrets(candidate_secrets, secrets)
+        profile["secrets_file"] = str(candidate_secrets)
         profile["secret_names"] = sorted(secrets)
+    elif not profile.get("secrets_file") and canonical_secrets.exists():
+        remove_canonical_secrets = True
     profile["deployment_spec"] = spec.as_dict()
     profile["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
     log_path = Path(
@@ -3938,41 +4090,94 @@ def _finalize_guided_deployment(
             raise SystemExit("--history-keep must be zero or greater.")
         profile["history_keep"] = int(history_keep)
 
-    if not args.no_bundle:
-        _bundle_deployment(profile, spec, workflow)
-    # Persist enough state to resume configuration even if dependency install
-    # or an interactive OAuth step fails.
-    store_created = _initialize_deployment_store(profile)
-    _apply_existing_history_keep(
-        profile,
-        requested=history_keep,
-        store_created=store_created,
-    )
-    _write_deployment_artifacts(profile)
-    _prepare_deployment_environment(profile, spec, skip_install=args.no_install)
-    _write_deployment_artifacts(profile)
-    _run_deployment_setup(profile, spec, values, skip_setup=args.no_setup)
-    _write_deployment_artifacts(profile)
+    try:
+        if not args.no_bundle:
+            _bundle_deployment(profile, spec, workflow)
+            raw_bundle = str(profile.get("bundle") or "")
+            if raw_bundle and raw_bundle != previous_bundle:
+                candidate_bundle = Path(raw_bundle)
 
-    if not args.no_doctor:
-        checks = _doctor_checks(name, include_systemd=False, before_start=True)
-        if getattr(args, "concise", False):
-            _print_doctor_summary(name, checks)
-        else:
-            _print_doctor(name, checks)
-        if any(check.get("status") == "fail" for check in checks):
-            if args.no_start:
-                print(
-                    f"Deployment {name} is configured. It was not started "
-                    "because --no-start was given, and the checks above found "
-                    "problems to fix before starting it."
-                )
+        store_created = _initialize_deployment_store(profile)
+        environment_update = _prepare_deployment_environment(
+            profile,
+            spec,
+            skip_install=args.no_install,
+            defer_cleanup=True,
+        )
+        _run_deployment_setup(profile, spec, values, skip_setup=args.no_setup)
+
+        if not args.no_doctor:
+            checks = _doctor_checks(
+                name,
+                include_systemd=False,
+                before_start=True,
+                profile_override=profile,
+                check_artifacts=False,
+            )
+            if getattr(args, "concise", False):
+                _print_doctor_summary(name, checks)
             else:
+                _print_doctor(name, checks)
+            if any(check.get("status") == "fail" for check in checks):
                 print(
-                    f"Deployment {name} was configured but not started because "
-                    "the checks above found problems."
+                    f"Deployment candidate {name} was not applied because the "
+                    "checks above found problems. It was not started, and the "
+                    "previous deployment was left unchanged."
                 )
-            return 1
+                return 1
+
+        history_previous = _apply_existing_history_keep(
+            profile,
+            requested=history_keep,
+            store_created=store_created,
+        )
+        if candidate_secrets is not None:
+            if canonical_secrets.exists():
+                previous_secret_payload = canonical_secrets.read_bytes()
+            write_private_bytes(canonical_secrets, candidate_secrets.read_bytes())
+            secret_published = True
+            profile["secrets_file"] = str(canonical_secrets)
+        elif remove_canonical_secrets:
+            previous_secret_payload = canonical_secrets.read_bytes()
+            canonical_secrets.unlink()
+            secret_published = True
+
+        _write_deployment_artifacts(profile)
+        published = True
+        if environment_update is not None:
+            environment_update.commit()
+        if candidate_secrets is not None:
+            candidate_secrets.unlink(missing_ok=True)
+    except BaseException:
+        if history_previous is not None:
+            _apply_existing_history_keep(
+                profile,
+                requested=history_previous,
+                store_created=False,
+            )
+        if secret_published:
+            if previous_secret_payload is None:
+                canonical_secrets.unlink(missing_ok=True)
+            else:
+                write_private_bytes(canonical_secrets, previous_secret_payload)
+        raise
+    finally:
+        if not published:
+            if environment_update is not None:
+                environment_update.rollback()
+            if candidate_secrets is not None:
+                candidate_secrets.unlink(missing_ok=True)
+            if candidate_bundle is not None:
+                shutil.rmtree(candidate_bundle, ignore_errors=True)
+            if store_created and not active_profile_existed:
+                store = Path(str(profile["store"])).expanduser()
+                for path in (
+                    store,
+                    Path(str(store) + "-wal"),
+                    Path(str(store) + "-shm"),
+                    Path(str(store) + "-journal"),
+                ):
+                    path.unlink(missing_ok=True)
 
     if not args.no_start:
         lifecycle_args = argparse.Namespace(
@@ -4008,9 +4213,48 @@ def _deploy_command(args) -> int:
     _require_deployment_update_slot(deployment_name)
     if _deployment_profile_path(deployment_name).exists():
         existing = _resolved_deployment_name(args)
-        # Redeploying: keep the deployment this project already has.
         args.name = existing
-        profile, workflow, module, spec = _deployment_context(existing, source=True)
+        profile = _load_deployment_profile(existing)
+        recorded_source = str(
+            profile.get("source_workflow") or profile.get("workflow") or ""
+        )
+        recorded_cwd = Path(
+            str(profile.get("source_cwd") or profile.get("cwd") or ".")
+        ).expanduser()
+        selected = _workflow_source_identity(args.target, deployment_workspace.root)
+        recorded = _workflow_source_identity(recorded_source, recorded_cwd)
+        if selected != recorded:
+            store = _store_status(str(profile.get("store") or ""))
+            if store.get("state") not in {"empty", "missing"}:
+                raise SystemExit(
+                    "This project now selects a different workflow. Changing "
+                    "the deployed program while durable state exists would "
+                    "give its saved control positions a different meaning. "
+                    "Run 'zg deploy reset --yes', then run 'zg deploy' again."
+                )
+            workflow, module = load_workflow_spec(args.target)
+            spec = deployment_spec_from_module(module)
+            profile["workflow"] = args.target
+            profile["cwd"] = str(deployment_workspace.root)
+            profile["source_workflow"] = args.target
+            profile["source_cwd"] = str(deployment_workspace.root)
+            for key in (
+                "bundle",
+                "bundled_files",
+                "workflow_source",
+                "deployment_spec",
+                "secrets_file",
+                "secret_names",
+            ):
+                profile.pop(key, None)
+            profile["inputs"] = {}
+            profile["options"] = {}
+            profile["environment"] = {}
+        else:
+            # Redeploying the same program: retain its answered settings.
+            profile, workflow, module, spec = _deployment_context(
+                existing, source=True
+            )
     else:
         args.name = deployment_name
         workflow, module = load_workflow_spec(args.target)
@@ -4504,7 +4748,12 @@ def _inspect_command(args) -> int:
 
 
 def _trace_command(args) -> int:
-    if args.follow and args.interval <= 0:
+    if args.interval is not None and not args.follow:
+        raise SystemExit("--interval requires --follow.")
+    interval = 0.25 if args.interval is None else args.interval
+    if args.follow and (
+        not math.isfinite(interval) or interval <= 0
+    ):
         raise SystemExit("--interval must be greater than 0.")
     execution = _resolve_execution_reference(args)
     events = _load_trace_events(
@@ -4533,7 +4782,7 @@ def _trace_command(args) -> int:
     )
     try:
         while True:
-            time.sleep(args.interval)
+            time.sleep(interval)
             while True:
                 new_events = _load_trace_events(
                     execution.store,
@@ -4742,7 +4991,7 @@ def _add_guided_deployment_arguments(
     parser: argparse.ArgumentParser,
 ) -> None:
     parser.add_argument("--set", action="append", default=[], metavar="field=value", help="Declared deployment field value.")
-    parser.add_argument("--timeout", type=float, help="Workflow timeout; defaults to 0 (no deadline).")
+    parser.add_argument("--timeout", type=_nonnegative_float_argument, help="Workflow timeout; defaults to 0 (no deadline).")
     parser.add_argument("--yes", action="store_true", help="Accept defaults and existing environment values without prompting.")
     # Test and recovery switches remain parseable, but are deliberately not
     # part of the ordinary deployment contract.
@@ -4783,8 +5032,8 @@ def _add_owned_execution_commands(subparsers, *, owner: str) -> None:
     trace_parser.add_argument(
         "--project", default=argparse.SUPPRESS, help="Project root."
     )
-    trace_parser.add_argument("--tail", type=int, default=50, help="Maximum number of trace events to show.")
-    trace_parser.add_argument("--after", type=int, default=0, help="Only show trace events after this event rowid.")
+    trace_parser.add_argument("--tail", type=_positive_int_argument, default=50, help="Maximum number of trace events to show.")
+    trace_parser.add_argument("--after", type=_nonnegative_int_argument, default=0, help="Only show trace events after this event rowid.")
     trace_parser.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     trace_parser.add_argument(
         "--follow",
@@ -4794,7 +5043,6 @@ def _add_owned_execution_commands(subparsers, *, owner: str) -> None:
     trace_parser.add_argument(
         "--interval",
         type=float,
-        default=0.25,
         help="Polling interval in seconds for --follow. Default 0.25.",
     )
 
@@ -4807,7 +5055,7 @@ def _add_owned_execution_commands(subparsers, *, owner: str) -> None:
         "--project", default=argparse.SUPPRESS, help="Project root."
     )
     tasks_parser.add_argument("--all", action="store_true", help="Include completed tasks.")
-    tasks_parser.add_argument("--limit", type=int, help="Maximum number of tasks to show.")
+    tasks_parser.add_argument("--limit", type=_positive_int_argument, help="Maximum number of tasks to show.")
     tasks_parser.add_argument("--tokens", action="store_true", help="Generate/show durable approval tokens.")
     tasks_parser.add_argument("--channel", default="cli", help="Token channel name used with --tokens.")
     tasks_parser.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
@@ -4827,11 +5075,46 @@ def _add_owned_execution_commands(subparsers, *, owner: str) -> None:
         action="store_true",
         help="Read a durable approval token from one line of standard input.",
     )
-    approve_parser.add_argument("--yes", action="store_true", help="Complete a boolean task with true.")
+    approve_parser.add_argument("--yes", action="store_true", default=argparse.SUPPRESS, help="Complete a boolean task with true.")
     approve_parser.add_argument("--no", action="store_true", help="Complete a boolean task with false.")
     approve_parser.add_argument("--value", help="Value for string tasks, or explicit true/false for boolean tasks.")
     approve_parser.add_argument("--result-json", help="Complete with an explicit JSON object result.")
     approve_parser.add_argument("--json", action="store_true", help="Print the completed task as JSON.")
+
+
+def _reject_deploy_configuration_options(args, action: str) -> None:
+    """Keep bare-deploy options from becoming silent no-ops on verbs."""
+
+    used: list[str] = []
+    if getattr(args, "set", None):
+        used.append("--set")
+    if getattr(args, "timeout", None) is not None:
+        used.append("--timeout")
+    if getattr(args, "no_start", False):
+        used.append("--no-start")
+    if getattr(args, "history_keep", None) is not None:
+        used.append("--history-keep")
+    for attribute, flag in (
+        ("no_bundle", "--no-bundle"),
+        ("no_install", "--no-install"),
+        ("no_setup", "--no-setup"),
+        ("no_doctor", "--no-doctor"),
+    ):
+        if getattr(args, attribute, False):
+            used.append(flag)
+    if getattr(args, "yes", False) and action not in {
+        "approve",
+        "prune",
+        "remove",
+        "reset",
+    }:
+        used.append("--yes")
+    if not used:
+        return
+    raise SystemExit(
+        f"{', '.join(used)} configure a deployment and cannot be used with "
+        f"'zg deploy {action}'. Run them with bare 'zg deploy' instead."
+    )
 
 
 def _project_google_scopes(connection: str) -> tuple[str, ...]:
@@ -5397,7 +5680,7 @@ def _parse_cli_args(
     )
     rn.add_argument(
         "--history-keep",
-        type=int,
+        type=_nonnegative_int_argument,
         default=None,
         metavar="ROWS",
         help=(
@@ -5417,7 +5700,7 @@ def _parse_cli_args(
     rn.add_argument("--input", action="append", default=[], metavar="name=value", help="Workflow input value.")
     rn.add_argument("--input-json", help="Workflow inputs as a JSON object.")
     rn.add_argument("--option", action="append", default=[], metavar="name=value", help="Option passed to zippergen_setup(config).")
-    rn.add_argument("--timeout", type=float, default=0.0, help="Workflow timeout in seconds. Default 0 (no deadline).")
+    rn.add_argument("--timeout", type=_nonnegative_float_argument, default=0.0, help="Workflow timeout in seconds. Default 0 (no deadline).")
     run_sub = rn.add_subparsers(dest="run_action")
     run_status = run_sub.add_parser(
         "status",
@@ -5554,7 +5837,7 @@ def _parse_cli_args(
     _add_guided_deployment_arguments(deploy)
     deploy.add_argument("--no-bundle", action="store_true", help=argparse.SUPPRESS)
     deploy.add_argument("--no-start", action="store_true", help="Configure the deployment without starting its service.")
-    deploy.add_argument("--history-keep", type=int, default=None, metavar="ROWS", help="How many trace rows this deployment's store keeps. 0 records none. Default 10000.")
+    deploy.add_argument("--history-keep", type=_nonnegative_int_argument, default=None, metavar="ROWS", help="How many trace rows this deployment's store keeps. 0 records none. Default 10000.")
     deploy_sub = deploy.add_subparsers(dest="deploy_action")
 
     deploy_list = deploy_sub.add_parser(
@@ -5571,11 +5854,14 @@ def _parse_cli_args(
         ),
     )
     deploy_prune.add_argument(
-        "--yes", action="store_true", help="Do not ask for confirmation."
+        "--yes",
+        action="store_true",
+        default=argparse.SUPPRESS,
+        help="Do not ask for confirmation.",
     )
     deploy_prune.add_argument(
         "--keep-days",
-        type=float,
+        type=_nonnegative_float_argument,
         default=30.0,
         help=(
             "Keep archives newer than this many days, so a mistaken removal "
@@ -5599,19 +5885,19 @@ def _parse_cli_args(
         ),
     )
     deploy_remove.add_argument("--purge", action="store_true", help="Delete everything permanently, including the profile, store and log. Nothing is archived.")
-    deploy_remove.add_argument("--yes", action="store_true", help="Do not ask for confirmation.")
+    deploy_remove.add_argument("--yes", action="store_true", default=argparse.SUPPRESS, help="Do not ask for confirmation.")
 
     deploy_compact = deploy_sub.add_parser(
         "compact",
         help="drop optional history and rotate logs",
     )
-    deploy_compact.add_argument("--keep-archives", type=int, default=3, help="How many rotated log archives to retain. Default 3.")
-    deploy_compact.add_argument("--set-history-keep", type=int, default=None, metavar="ROWS", help="Change how many history rows this deployment keeps from now on, and apply it. 0 turns the trace off.")
+    deploy_compact.add_argument("--keep-archives", type=_nonnegative_int_argument, default=3, help="How many rotated log archives to retain. Default 3.")
+    deploy_compact.add_argument("--set-history-keep", type=_nonnegative_int_argument, default=None, metavar="ROWS", help="Change how many history rows this deployment keeps from now on, and apply it. 0 turns the trace off.")
 
     deploy_logs = deploy_sub.add_parser("logs", help="show logs for a deployment")
-    deploy_logs.add_argument("--tail", type=int, default=80, help="Number of log lines to show.")
+    deploy_logs.add_argument("--tail", type=_positive_int_argument, default=80, help="Number of log lines to show.")
     deploy_logs.add_argument("--follow", action="store_true", help="Keep watching the log file.")
-    deploy_logs.add_argument("--interval", type=float, default=1.0, help="Polling interval in seconds for --follow.")
+    deploy_logs.add_argument("--interval", type=_positive_float_argument, help="Polling interval in seconds for --follow. Default 1.")
 
     deploy_check = deploy_sub.add_parser("check", help="check a deployment for common problems")
     deploy_check.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
@@ -5643,6 +5929,7 @@ def _parse_cli_args(
     deploy_reset.add_argument(
         "--yes",
         action="store_true",
+        default=argparse.SUPPRESS,
         help="Reset without asking for confirmation.",
     )
     _add_owned_execution_commands(deploy_sub, owner="deploy")
@@ -5811,6 +6098,7 @@ def main(argv=None) -> int:
         if action is None:
             enforce_deploy_requirement(None, "")
             return _deploy_command(args)
+        _reject_deploy_configuration_options(args, action)
         if action == "list":
             enforce_deploy_requirement(action, "")
             return _deployment_list_command(args)

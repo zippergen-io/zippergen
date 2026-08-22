@@ -48,6 +48,7 @@ from zippergen.deployment_platform import (
     launchd_service_status as _launchd_service_status,
     service_manager as _service_manager,
     slug as _slug,
+    systemd_service_status as _systemd_service_status,
     systemctl_command as _systemctl_command,
     systemd_unit_name as _systemd_unit_name,
     zippergen_home as _zippergen_home,
@@ -341,28 +342,32 @@ def _required_model_provider_secrets(profile: dict[str, object]) -> dict[str, st
 
 
 def _systemd_active_check(name: str) -> dict[str, object]:
-    unit = _systemd_unit_name(name)
-    try:
-        result = subprocess.run(
-            _systemctl_command("is-active", unit),
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=5,
+    status = _systemd_service_status(name)
+    state = str(status.get("state") or "unknown")
+    extra = {key: value for key, value in status.items() if key != "detail"}
+    if state == "running" and bool(status.get("healthy")):
+        return _doctor_check(
+            "ok",
+            "service",
+            str(status.get("detail") or f"{_systemd_unit_name(name)} is running"),
+            **extra,
         )
-    except FileNotFoundError:
-        return _doctor_check("warn", "systemd active", "systemctl was not found")
-    except subprocess.TimeoutExpired:
-        return _doctor_check("warn", "systemd active", "systemctl timed out")
-
-    state = (result.stdout or result.stderr or "").strip() or f"exit {result.returncode}"
-    if result.returncode == 0:
-        return _doctor_check("ok", "service", f"{unit} is running", state=state)
+    if state in {"restarting"} or status.get("active_state") == "failed":
+        return _doctor_check(
+            "fail",
+            "service",
+            str(status.get("detail") or "the service is unhealthy"),
+            **extra,
+        )
     return _doctor_check(
         "warn",
         "service",
-        "the service is not running; start it with 'zippergen deploy start'",
-        state=state,
+        (
+            str(status.get("detail"))
+            if state == "unknown"
+            else "the service is not running; start it with 'zippergen deploy start'"
+        ),
+        **extra,
     )
 
 
@@ -521,6 +526,8 @@ def _doctor_checks(
     live_connectors: bool = True,
     check_store_integrity: bool = False,
     before_start: bool = False,
+    profile_override: dict[str, object] | None = None,
+    check_artifacts: bool = True,
 ) -> list[dict[str, object]]:
     """Report on one deployment.
 
@@ -533,9 +540,22 @@ def _doctor_checks(
 
     profile_path = _deployment_profile_path(name)
     checks: list[dict[str, object]] = []
-    profile = _load_deployment_profile(name)
+    profile = (
+        dict(profile_override)
+        if profile_override is not None
+        else _load_deployment_profile(name)
+    )
     profile_name = str(profile.get("name") or name)
-    checks.append(_doctor_check("ok", "profile", f"loaded {profile_path}", path=str(profile_path)))
+    checks.append(_doctor_check(
+        "ok",
+        "profile",
+        (
+            "candidate configuration is complete"
+            if profile_override is not None
+            else f"loaded {profile_path}"
+        ),
+        path=str(profile_path),
+    ))
     home = _zippergen_home()
     if home.is_symlink():
         checks.append(_doctor_check(
@@ -551,20 +571,21 @@ def _doctor_checks(
         checks.append(_doctor_check(
             "ok", "deployment home permissions", f"owner-only directory: {home}"
         ))
-    if profile_path.is_symlink():
-        checks.append(_doctor_check(
-            "fail", "profile permissions", f"profile is a symlink: {profile_path}"
-        ))
-    elif profile_path.stat().st_mode & 0o077:
-        checks.append(_doctor_check(
-            "fail",
-            "profile permissions",
-            f"permissions are not private: {profile_path}; run 'zg deploy check --repair-permissions'",
-        ))
-    else:
-        checks.append(_doctor_check(
-            "ok", "profile permissions", f"owner-only file: {profile_path}"
-        ))
+    if profile_override is None:
+        if profile_path.is_symlink():
+            checks.append(_doctor_check(
+                "fail", "profile permissions", f"profile is a symlink: {profile_path}"
+            ))
+        elif profile_path.stat().st_mode & 0o077:
+            checks.append(_doctor_check(
+                "fail",
+                "profile permissions",
+                f"permissions are not private: {profile_path}; run 'zg deploy check --repair-permissions'",
+            ))
+        else:
+            checks.append(_doctor_check(
+                "ok", "profile permissions", f"owner-only file: {profile_path}"
+            ))
     checks.extend(deployment_freshness_checks(profile))
 
     for field in ["workflow", "cwd", "store", "log"]:
@@ -590,7 +611,13 @@ def _doctor_checks(
         except Exception as exc:
             checks.append(_doctor_check("fail", "sqlite store", f"{type(exc).__name__}: {exc}"))
         else:
-            checks.append(_doctor_check("ok", "sqlite store", str(status["summary"]), state=status["state"]))
+            store_state = str(status["state"])
+            checks.append(_doctor_check(
+                "fail" if store_state == "incompatible" else "ok",
+                "sqlite store",
+                str(status["summary"]),
+                state=store_state,
+            ))
             if check_store_integrity:
                 from zippergen.storage_maintenance import (
                     check_store_integrity as inspect_integrity,
@@ -622,25 +649,26 @@ def _doctor_checks(
     elif not before_start:
         checks.append(_doctor_check("warn", "log file", f"log does not exist yet: {log_path}"))
 
-    script_path = _deployment_script_path(profile_name)
-    if script_path.exists() and os.access(script_path, os.X_OK):
-        checks.append(_doctor_check("ok", "run script", str(script_path)))
-    elif script_path.exists():
-        checks.append(_doctor_check("fail", "run script", f"script is not executable: {script_path}"))
-    else:
-        checks.append(_doctor_check("fail", "run script", f"script does not exist: {script_path}"))
+    if check_artifacts:
+        script_path = _deployment_script_path(profile_name)
+        if script_path.exists() and os.access(script_path, os.X_OK):
+            checks.append(_doctor_check("ok", "run script", str(script_path)))
+        elif script_path.exists():
+            checks.append(_doctor_check("fail", "run script", f"script is not executable: {script_path}"))
+        else:
+            checks.append(_doctor_check("fail", "run script", f"script does not exist: {script_path}"))
 
-    template_path = _deployment_service_path(profile_name)
-    if template_path.exists():
-        checks.append(_doctor_check("ok", "systemd template", str(template_path)))
-    else:
-        checks.append(_doctor_check("warn", "systemd template", f"template does not exist: {template_path}"))
+        template_path = _deployment_service_path(profile_name)
+        if template_path.exists():
+            checks.append(_doctor_check("ok", "systemd template", str(template_path)))
+        else:
+            checks.append(_doctor_check("warn", "systemd template", f"template does not exist: {template_path}"))
 
-    launchd_template = _deployment_launchd_path(profile_name)
-    if launchd_template.exists():
-        checks.append(_doctor_check("ok", "launchd template", str(launchd_template)))
-    else:
-        checks.append(_doctor_check("warn", "launchd template", f"template does not exist: {launchd_template}"))
+        launchd_template = _deployment_launchd_path(profile_name)
+        if launchd_template.exists():
+            checks.append(_doctor_check("ok", "launchd template", str(launchd_template)))
+        else:
+            checks.append(_doctor_check("warn", "launchd template", f"template does not exist: {launchd_template}"))
 
     try:
         manager = _service_manager()
@@ -655,9 +683,9 @@ def _doctor_checks(
         if manager == "launchd"
         else _installed_systemd_service_path(profile_name)
     )
-    if installed_path.exists():
+    if check_artifacts and installed_path.exists():
         checks.append(_doctor_check("ok", f"{manager or 'service'} installed", str(installed_path)))
-    elif not before_start:
+    elif check_artifacts and not before_start:
         checks.append(_doctor_check(
             "warn",
             f"{manager or 'service'} installed",

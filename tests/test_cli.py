@@ -3,6 +3,7 @@ import io
 import os
 import plistlib
 import shlex
+import sqlite3
 import subprocess
 import time
 from pathlib import Path
@@ -1654,6 +1655,38 @@ def test_redeploy_requires_the_existing_deployment_to_be_stopped(
             main(["deploy", "--yes"])
 
 
+def test_redeploy_refuses_a_supervisor_restart_gap_without_a_process_lock(
+    tmp_path, monkeypatch, capsys
+):
+    workflow_path = tmp_path / "workflow.py"
+    workflow_path.write_text(WORKFLOW_SOURCE)
+    home = tmp_path / "home"
+    config = tmp_path / "config"
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(home))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(config))
+    monkeypatch.setenv("ZIPPERGEN_SERVICE_MANAGER", "systemd")
+    monkeypatch.chdir(tmp_path)
+    assert _deploy_for_test([f"{workflow_path}:hello"]) == 0
+    capsys.readouterr()
+    profile = json.loads(_the_deployment(home).read_text())
+    installed = (
+        config / "systemd" / "user" / f"zippergen-{profile['name']}.service"
+    )
+    installed.parent.mkdir(parents=True)
+    installed.write_text("[Service]\n")
+    monkeypatch.setattr(
+        "zippergen.deployment_platform.deployment_service_status",
+        lambda _name: {
+            "state": "restarting",
+            "healthy": False,
+            "detail": "restart delay",
+        },
+    )
+
+    with pytest.raises(SystemExit, match="before updating it.*restart delay"):
+        main(["deploy", "--yes"])
+
+
 def test_two_projects_with_the_same_workflow_get_independent_deployments(
     tmp_path, monkeypatch, capsys
 ):
@@ -1741,6 +1774,11 @@ def test_start_deployment_dry_run_prints_systemd_commands(tmp_path, monkeypatch,
     capsys.readouterr()
     profile = json.loads(_the_deployment(zippergen_home).read_text())
     name = profile["name"]
+    managed = tuple((zippergen_home / "deployments").iterdir())
+    before = {
+        path: (path.stat().st_ino, path.stat().st_mtime_ns)
+        for path in managed
+    }
 
     rc = main(["deploy", "start", "--enable", "--dry-run"])
 
@@ -1758,6 +1796,10 @@ def test_start_deployment_dry_run_prints_systemd_commands(tmp_path, monkeypatch,
     ).read_text()
     assert "Restart=on-failure" in service
     assert "Restart=always" not in service
+    assert {
+        path: (path.stat().st_ino, path.stat().st_mtime_ns)
+        for path in managed
+    } == before
 
 
 def test_start_deployment_dry_run_prints_launchd_commands(tmp_path, monkeypatch, capsys):
@@ -1775,6 +1817,11 @@ def test_start_deployment_dry_run_prints_launchd_commands(tmp_path, monkeypatch,
     capsys.readouterr()
     profile = json.loads(_the_deployment(zippergen_home).read_text())
     name = profile["name"]
+    managed = tuple((zippergen_home / "deployments").iterdir())
+    before = {
+        path: (path.stat().st_ino, path.stat().st_mtime_ns)
+        for path in managed
+    }
 
     rc = main(["deploy", "start", "--dry-run"])
 
@@ -1792,6 +1839,10 @@ def test_start_deployment_dry_run_prints_launchd_commands(tmp_path, monkeypatch,
         ).read_bytes()
     )
     assert launchd["KeepAlive"] == {"SuccessfulExit": False}
+    assert {
+        path: (path.stat().st_ino, path.stat().st_mtime_ns)
+        for path in managed
+    } == before
 
 
 def test_start_refuses_a_deployment_that_fails_readiness(
@@ -3504,3 +3555,260 @@ def test_generated_service_command_matches_the_full_parser():
 
     assert arguments.cmd == "__run-deployment"
     assert arguments.profile == "private-project-id"
+
+
+def test_deploy_rejects_an_unknown_set_field_without_changing_the_profile(
+    tmp_path, monkeypatch, capsys
+):
+    workflow_path = tmp_path / "workflow.py"
+    workflow_path.write_text(WORKFLOW_SOURCE)
+    home = tmp_path / "home"
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(home))
+    monkeypatch.chdir(tmp_path)
+    assert _deploy_for_test([f"{workflow_path}:hello", "--set", "topic=old"]) == 0
+    capsys.readouterr()
+    profile_path = _the_deployment(home)
+    before = profile_path.read_bytes()
+
+    with pytest.raises(SystemExit, match="Unknown deployment field: recipent"):
+        main([
+            "deploy",
+            "--set",
+            "recipent=new",
+            "--no-start",
+            "--no-bundle",
+            "--no-install",
+            "--no-setup",
+            "--no-doctor",
+            "--yes",
+        ])
+
+    assert profile_path.read_bytes() == before
+
+
+def test_failed_redeploy_keeps_the_active_profile_and_remains_ready(
+    tmp_path, monkeypatch, capsys
+):
+    from zippergen import serve
+
+    workflow_path = tmp_path / "workflow.py"
+    workflow_path.write_text(WORKFLOW_SOURCE)
+    home = tmp_path / "home"
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(home))
+    monkeypatch.chdir(tmp_path)
+    assert _deploy_for_test([f"{workflow_path}:hello", "--set", "topic=old"]) == 0
+    capsys.readouterr()
+    profile_path = _the_deployment(home)
+    before = profile_path.read_bytes()
+
+    def fail_install(*_args, **_kwargs):
+        raise SystemExit("simulated install failure")
+
+    monkeypatch.setattr(serve, "_prepare_deployment_environment", fail_install)
+    with pytest.raises(SystemExit, match="simulated install failure"):
+        main([
+            "deploy",
+            "--set",
+            "topic=new",
+            "--no-start",
+            "--no-bundle",
+            "--no-setup",
+            "--no-doctor",
+            "--yes",
+        ])
+
+    assert profile_path.read_bytes() == before
+    assert main([
+        "deploy", "check", "--strict", "--json", "--no-systemd"
+    ]) == 0
+
+
+def test_setup_failure_rolls_back_a_swapped_candidate_environment(
+    tmp_path, monkeypatch, capsys
+):
+    from zippergen import serve
+
+    workflow_path = tmp_path / "workflow.py"
+    workflow_path.write_text(WORKFLOW_SOURCE)
+    home = tmp_path / "home"
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(home))
+    monkeypatch.chdir(tmp_path)
+    assert _deploy_for_test([f"{workflow_path}:hello", "--set", "topic=old"]) == 0
+    capsys.readouterr()
+    profile_path = _the_deployment(home)
+    before = profile_path.read_bytes()
+
+    class CandidateEnvironment:
+        committed = False
+        rolled_back = False
+
+        def commit(self):
+            self.committed = True
+
+        def rollback(self):
+            self.rolled_back = True
+
+    candidate = CandidateEnvironment()
+    monkeypatch.setattr(
+        serve,
+        "_prepare_deployment_environment",
+        lambda *_args, **_kwargs: candidate,
+    )
+    monkeypatch.setattr(
+        serve,
+        "_run_deployment_setup",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            SystemExit("simulated setup failure")
+        ),
+    )
+
+    with pytest.raises(SystemExit, match="simulated setup failure"):
+        main([
+            "deploy",
+            "--set",
+            "topic=new",
+            "--no-start",
+            "--no-bundle",
+            "--no-doctor",
+            "--yes",
+        ])
+
+    assert candidate.rolled_back is True
+    assert candidate.committed is False
+    assert profile_path.read_bytes() == before
+
+
+def test_redeploy_refuses_a_new_workflow_until_state_is_reset(
+    tmp_path, monkeypatch, capsys
+):
+    first = tmp_path / "one.py"
+    second = tmp_path / "two.py"
+    first.write_text(WORKFLOW_SOURCE)
+    second.write_text(WORKFLOW_SOURCE.replace('return topic + "!"', 'return topic + "?"'))
+    home = tmp_path / "home"
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(home))
+    monkeypatch.chdir(tmp_path)
+    assert _deploy_for_test([f"{first}:hello"]) == 0
+    capsys.readouterr()
+    assert _run_prepared_deployment(home) == 0
+    capsys.readouterr()
+    workspace = Workspace(tmp_path, home=home)
+    workspace.select_workflow("two.py:hello", cwd=tmp_path, replace=True)
+    deploy = [
+        "deploy",
+        "--no-start",
+        "--no-bundle",
+        "--no-install",
+        "--no-setup",
+        "--no-doctor",
+        "--yes",
+    ]
+
+    with pytest.raises(SystemExit, match="different workflow.*deploy reset"):
+        main(deploy)
+
+    stopped = {"state": "not-loaded", "healthy": False, "detail": "not loaded"}
+    monkeypatch.setattr(
+        "zippergen.deployment_platform.deployment_service_status",
+        lambda _name: stopped,
+    )
+    monkeypatch.setattr(
+        "zippergen.deployments._deployment_service_status",
+        lambda _name: stopped,
+    )
+    assert main(["deploy", "reset", "--yes"]) == 0
+    capsys.readouterr()
+    assert main(deploy) == 0
+    profile = json.loads(_the_deployment(home).read_text())
+    assert profile["source_workflow"].endswith("two.py:hello")
+
+
+def test_doctor_fails_an_incompatible_store(
+    tmp_path, monkeypatch, capsys
+):
+    store = _prepared_deployment_store(tmp_path, monkeypatch, capsys)
+    store.unlink()
+    connection = sqlite3.connect(store)
+    connection.execute(
+        "CREATE TABLE store_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+    )
+    connection.execute("INSERT INTO store_meta VALUES ('schema_version', '1')")
+    connection.commit()
+    connection.close()
+
+    assert main([
+        "deploy", "check", "--strict", "--json", "--no-systemd"
+    ]) == 1
+    checks = {
+        check["name"]: check
+        for check in json.loads(capsys.readouterr().out)["checks"]
+    }
+    assert checks["sqlite store"]["status"] == "fail"
+    assert checks["sqlite store"]["state"] == "incompatible"
+    assert "deploy reset" in checks["sqlite store"]["detail"]
+
+
+def test_prune_quarantines_an_invalid_orphan_profile(
+    tmp_path, monkeypatch, capsys
+):
+    home = tmp_path / "home"
+    deployments = home / "deployments"
+    deployments.mkdir(parents=True)
+    broken = deployments / "broken.json"
+    broken.write_text("{not json")
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(home))
+    monkeypatch.setattr(
+        "zippergen.deployments._service_manager", lambda: "systemd"
+    )
+    monkeypatch.setattr(
+        "zippergen.deployments._deployment_service_status",
+        lambda _name: {"state": "not-loaded", "detail": "not installed"},
+    )
+
+    assert main(["deploy", "prune", "--yes"]) == 0
+
+    assert not broken.exists()
+    archives = list((home / "trash" / "deployments").glob("broken-*"))
+    assert len(archives) == 1
+    assert (archives[0] / "profile" / "deployment.json").is_file()
+    assert "Removed broken" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["deploy", "--history-keep", "7", "status"],
+        ["deploy", "--set", "topic=x", "check"],
+        ["deploy", "--no-start", "start"],
+    ],
+)
+def test_deploy_management_verbs_reject_configuration_options(arguments):
+    with pytest.raises(SystemExit, match="configure a deployment"):
+        main(arguments)
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["deploy", "--timeout", "inf"],
+        ["deploy", "--history-keep", "-1"],
+        ["deploy", "prune", "--keep-days", "-1"],
+        ["deploy", "compact", "--keep-archives", "-1"],
+        ["deploy", "logs", "--interval", "nan"],
+        ["deploy", "trace", "--tail", "0"],
+        ["deploy", "tasks", "--limit", "0"],
+    ],
+)
+def test_deploy_rejects_invalid_numeric_options_at_parse_time(arguments):
+    with pytest.raises(SystemExit) as caught:
+        _parse_cli_args(arguments)
+    assert caught.value.code == 2
+
+
+@pytest.mark.parametrize("verb", ["logs", "trace"])
+def test_follow_intervals_are_not_silently_ignored(
+    verb, tmp_path, monkeypatch, capsys
+):
+    _prepared_deployment_store(tmp_path, monkeypatch, capsys)
+    with pytest.raises(SystemExit, match="--interval requires --follow"):
+        main(["deploy", verb, "--interval", "1"])

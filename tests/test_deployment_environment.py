@@ -114,6 +114,51 @@ def test_failed_ensurepip_keeps_the_previous_environment_and_has_guidance(
     assert not list((home / "environments").glob(".*-building-*"))
 
 
+def test_deferred_environment_swap_can_be_rolled_back(
+    tmp_path,
+    monkeypatch,
+):
+    home = tmp_path / "home"
+    environment = home / "environments" / "reviewed-answer"
+    environment.mkdir(parents=True)
+    sentinel = environment / "old-environment"
+    sentinel.write_text("still active\n")
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(home))
+    monkeypatch.setattr(
+        "zippergen.deployment_environment.shutil.which",
+        lambda name: "/tools/uv" if name == "uv" else None,
+    )
+
+    def fake_run(arguments, *, check):
+        command = [str(value) for value in arguments]
+        if command[1] == "venv":
+            python = Path(command[-1]) / "bin" / "python"
+            python.parent.mkdir(parents=True)
+            python.write_text("candidate python\n")
+        return subprocess.CompletedProcess(command, 0)
+
+    monkeypatch.setattr(
+        "zippergen.deployment_environment.subprocess.run",
+        fake_run,
+    )
+    profile: dict[str, object] = {"name": "reviewed-answer"}
+
+    update = _prepare_deployment_environment(
+        profile,
+        DeploymentSpec(),
+        skip_install=False,
+        defer_cleanup=True,
+    )
+
+    assert update is not None
+    assert not sentinel.exists()
+    assert (environment / "bin" / "python").is_file()
+    update.rollback()
+    assert sentinel.read_text() == "still active\n"
+    assert not (environment / "bin" / "python").exists()
+    assert not list((home / "environments").glob(".*-replaced-*"))
+
+
 def test_google_connector_deployment_installs_the_optional_extra(
     tmp_path,
     monkeypatch,

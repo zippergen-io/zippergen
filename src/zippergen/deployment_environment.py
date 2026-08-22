@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import os
+from dataclasses import dataclass
 from pathlib import Path
 import shutil
 import subprocess
@@ -21,6 +22,37 @@ from zippergen.deployment_platform import (
 from zippergen.syntax import Workflow
 from zippergen.validation import assistant_actions
 from zippergen.private_files import ensure_private_directory
+
+
+@dataclass
+class DeploymentEnvironmentUpdate:
+    """A completed environment swap that can still be committed or undone."""
+
+    environment: Path
+    previous: Path | None
+    finished: bool = False
+
+    def commit(self) -> None:
+        if self.finished:
+            return
+        if self.previous is not None:
+            shutil.rmtree(self.previous, ignore_errors=True)
+        self.finished = True
+
+    def rollback(self) -> None:
+        if self.finished:
+            return
+        if self.previous is None:
+            shutil.rmtree(self.environment, ignore_errors=True)
+        else:
+            replacement = self.environment.with_name(
+                f".{self.environment.name}-discarded-{time.time_ns()}"
+            )
+            if self.environment.exists() or self.environment.is_symlink():
+                os.replace(self.environment, replacement)
+            os.replace(self.previous, self.environment)
+            shutil.rmtree(replacement, ignore_errors=True)
+        self.finished = True
 
 
 def _deployment_python_path(environment_dir: Path) -> Path:
@@ -223,15 +255,19 @@ def bundle_deployment(
     bundle_root = bundles / version
     bundle_root.mkdir(parents=True, exist_ok=False)
 
-    profile["workflow_source"] = deployment_source_provenance(
-        profile, spec, workflow
-    )
+    try:
+        profile["workflow_source"] = deployment_source_provenance(
+            profile, spec, workflow
+        )
 
-    copied: dict[Path, Path] = {}
-    for source in sources:
-        relative = _bundle_relative_path(source, source_cwd)
-        _copy_deployment_source(source, bundle_root / relative)
-        copied[source] = relative
+        copied: dict[Path, Path] = {}
+        for source in sources:
+            relative = _bundle_relative_path(source, source_cwd)
+            _copy_deployment_source(source, bundle_root / relative)
+            copied[source] = relative
+    except BaseException:
+        shutil.rmtree(bundle_root, ignore_errors=True)
+        raise
 
     workflow_relative = copied[module_path]
     profile["source_cwd"] = str(source_cwd)
@@ -375,7 +411,8 @@ def prepare_deployment_environment(
     spec: DeploymentSpec,
     *,
     skip_install: bool,
-) -> None:
+    defer_cleanup: bool = False,
+) -> DeploymentEnvironmentUpdate | None:
     """Build and atomically install a deployment's private environment."""
 
     requirements = [package.requirement for package in spec.packages]
@@ -385,7 +422,7 @@ def prepare_deployment_environment(
     profile["zippergen_runtime"] = zippergen_runtime_provenance()
     if skip_install:
         profile["python"] = str(profile.get("python") or sys.executable)
-        return
+        return None
 
     name = str(profile["name"])
     environment_dir = deployment_environment_dir(name)
@@ -482,11 +519,17 @@ def prepare_deployment_environment(
             "Managed environment was built but could not replace "
             f"{environment_dir}: {exc}. The previous environment was restored."
         ) from None
-    if replaced is not None:
-        shutil.rmtree(replaced, ignore_errors=True)
-
     profile["python"] = str(_deployment_python_path(environment_dir))
     profile["environment_dir"] = str(environment_dir)
+    update = DeploymentEnvironmentUpdate(environment_dir, replaced)
+    if defer_cleanup:
+        return update
+    update.commit()
+    return None
 
 
-__all__ = ["bundle_deployment", "prepare_deployment_environment"]
+__all__ = [
+    "DeploymentEnvironmentUpdate",
+    "bundle_deployment",
+    "prepare_deployment_environment",
+]
