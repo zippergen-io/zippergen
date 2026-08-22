@@ -364,7 +364,7 @@ def _action_kind(action: object) -> str:
 
 def _action_visible(action: object) -> bool:
     return (
-        not isinstance(action, (PureAction, EffectAction, AssistantAction, HumanAction))
+        not isinstance(action, (PureAction, EffectAction, AssistantAction))
         or action.visible
     )
 
@@ -558,9 +558,8 @@ def external_out_map(
         named_outputs = assistant_backend(action, named_inputs)
         return _assistant_action_out_map(action, named_outputs, outs)
     if isinstance(action, HumanAction):
-        if not action.visible:
-            default = True if action.output_type is bool else ""
-            return {outs[0].name: default}
+        if not action.required:
+            return {outs[0].name: True}
         named_outputs = validate_human_action_result(
             action, named_inputs, human_backend(action, named_inputs)
         )
@@ -1042,11 +1041,8 @@ def _exec(
                     )
                 }
             elif isinstance(action, HumanAction):
-                if not action.visible:
-                    default: object = (
-                        True if action.output_type is bool else ""
-                    )
-                    out_map = {outs[0].name: default}
+                if not action.required:
+                    out_map = {outs[0].name: True}
                 else:
                     named_outputs = validate_human_action_result(
                         action, named_inputs, human_backend(action, named_inputs)
@@ -1061,7 +1057,7 @@ def _exec(
                     stop=stop, trace=trace,
                 )
             if isinstance(action, HumanAction):
-                if not action.visible:
+                if not action.required:
                     out_map[outs[0].name] = validate_zvalue(
                         out_map[outs[0].name],
                         action.output_type,

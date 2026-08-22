@@ -161,6 +161,10 @@ The workflow above has one decision, and `Mailbox` owns it. Its `@human`
 action pauses that local program and asks a person. You can ask ZipperGen what
 each participant really runs:
 
+Human actions require an answer by default. A non-blocking notice must be an
+explicit `@human(kind="ack", required=False)`; confirmations and edits cannot
+be silently auto-completed.
+
 ```bash
 zg show --agent Mailbox
 ```
@@ -408,7 +412,10 @@ Use `zg deploy --no-start` only when you deliberately want to prepare and
 review a stopped deployment before a later `zg deploy start`. It is not a
 required preliminary step. After a code change, stop a running deployment
 before running `zg deploy` again, so its bundle and managed environment are
-not replaced underneath it. `start` and `stop` move the service without
+not replaced underneath it. Redeploy stages immutable bundle, environment,
+and secret generations, then atomically publishes the profile that selects
+them; a killed deploy therefore leaves either the old or new release active,
+not a mixture. `start` and `stop` move the service without
 touching it, while `reset` discards durable execution state and `remove`
 uninstalls the service:
 
@@ -423,6 +430,11 @@ start at boot. If server policy permits it, enable linger once with
 `loginctl enable-linger "$USER"`. `zg deploy check` reports both systemd
 autostart and linger status. Before relying on the deployment unattended, test
 one logout and one reboot, then confirm `zg deploy status` is running.
+Before a Linux release, run the repository's real user-systemd lifecycle gate:
+
+```bash
+ZIPPERGEN_RUN_SYSTEMD_INTEGRATION=1 uv run pytest -q tests/test_systemd_deploy_integration.py
+```
 
 A workflow can ask a person on Telegram, read Gmail, or write to Google
 Sheets. Which chat, which spreadsheet, which Gmail query: that is project

@@ -468,13 +468,18 @@ class HumanAction:
     prefill: str | None = None             # template or literal for textarea; {var} = variable
     submit_label: str | None = None        # label for the primary action button
     cancel_label: str | None = None        # label for the secondary/cancel button
-    visible: bool = True                   # False → auto-complete silently (no UI card)
+    required: bool = True                  # False → non-blocking acknowledgement
 
     def __post_init__(self) -> None:
         if self.output_type not in (bool, str):
             raise ValueError(
                 f"HumanAction '{self.name}': output_type must be bool or str, "
                 f"got {self.output_type!r}"
+            )
+        if not self.required and (self.kind != "ack" or self.output_type is not bool):
+            raise ValueError(
+                f"HumanAction '{self.name}': required=False is only valid for "
+                "kind='ack' with a bool output"
             )
 
     def __repr__(self) -> str:

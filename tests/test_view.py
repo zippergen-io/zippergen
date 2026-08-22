@@ -13,7 +13,7 @@ from zippergen import (
 )
 from zippergen.locator import resolve_path, statement_node_paths
 from zippergen.projection import project
-from zippergen.syntax import ActStmt
+from zippergen.syntax import ActStmt, HumanAction, PlannerAction, PureAction
 from zippergen.view import (
     ViewOptions,
     _render_action,
@@ -91,6 +91,40 @@ def test_llm_fallback_is_visible_in_the_action_view():
     rendered = "\n".join(_render_action(decide, full=True))
 
     assert "fallback=False" in rendered
+
+
+def test_action_view_shows_capture_human_authority_and_planner_scope():
+    hidden = PureAction(
+        name="hidden",
+        inputs=(),
+        outputs=(("value", str),),
+        fn=lambda: "value",
+        visible=False,
+    )
+    notice = HumanAction(
+        name="notice",
+        inputs=(),
+        output="acknowledged",
+        output_type=bool,
+        kind="ack",
+        instruction="Recorded.",
+        required=False,
+    )
+    planner = PlannerAction(
+        name="coordinate",
+        inputs=(),
+        outputs=(("result", str),),
+        system_prompt="Coordinate reviewed work.",
+        actions=(hidden, notice),
+        lifelines=(Editor,),
+    )
+
+    assert "visible=False" in "\n".join(_render_action(hidden, full=False))
+    assert "required=False" in "\n".join(_render_action(notice, full=True))
+    rendered_planner = "\n".join(_render_action(planner, full=True))
+    assert "description='Coordinate reviewed work.'" in rendered_planner
+    assert "actions=['hidden', 'notice']" in rendered_planner
+    assert "lifelines=['Editor']" in rendered_planner
 
 
 def test_json_type_is_visible_in_code_and_structured_views():

@@ -103,6 +103,7 @@ def _action_definition(action: object) -> dict[str, object]:
             "prefill": action.prefill,
             "submit_label": action.submit_label,
             "cancel_label": action.cancel_label,
+            "required": action.required,
         })
     else:
         base["outputs"] = _pairs(getattr(action, "outputs", ()))
@@ -117,13 +118,18 @@ def _action_definition(action: object) -> dict[str, object]:
             "fallback": action.fallback_json,
         })
     elif isinstance(action, PureAction):
-        base.update({"kind": "pure", "implementation_hash": _implementation_hash(action)})
+        base.update({
+            "kind": "pure",
+            "implementation_hash": _implementation_hash(action),
+            "visible": action.visible,
+        })
     elif isinstance(action, EffectAction):
         base.update({
             "kind": "effect",
             "implementation_hash": _implementation_hash(action),
             "connector": action.connector,
             "operation": action.operation,
+            "visible": action.visible,
         })
     elif isinstance(action, AssistantAction):
         base.update({
@@ -136,14 +142,19 @@ def _action_definition(action: object) -> dict[str, object]:
             "shell": action.shell,
             "workspace": action.workspace,
             "timeout": action.timeout,
+            "visible": action.visible,
         })
     elif isinstance(action, PlannerAction):
         base.update({
             "kind": "planner",
+            "system_prompt": action.system_prompt,
             "allow": list(action.allow),
             "instructions": action.instructions,
             "lifelines": [item.name for item in action.lifelines],
             "actions": [item.name for item in action.actions],
+            "action_definitions": [
+                _action_definition(item) for item in action.actions
+            ],
             "max_retries": action.max_retries,
         })
     return base

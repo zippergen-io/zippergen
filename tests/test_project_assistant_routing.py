@@ -344,6 +344,13 @@ def test_durable_run_and_deployment_snapshot_project_assistant_routes(
     capsys.readouterr()
     assert captured[-1] == ("codex", {"Reviewer": "claude"})
 
+    monkeypatch.setattr("zippergen.serve._bundle_deployment", lambda *_args: None)
+    monkeypatch.setattr(
+        "zippergen.serve._prepare_deployment_environment", lambda *_args, **_kwargs: None
+    )
+    monkeypatch.setattr("zippergen.serve._run_deployment_setup", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("zippergen.serve._doctor_checks", lambda *_args, **_kwargs: [])
+
     assert main([
         "run", "--durable", "--input", "request=change", "--yes"
     ]) == 0
@@ -358,10 +365,6 @@ def test_durable_run_and_deployment_snapshot_project_assistant_routes(
         "--set",
         "request=change",
         "--no-start",
-        "--no-bundle",
-        "--no-install",
-        "--no-setup",
-        "--no-doctor",
         "--yes",
     ]) == 0
     capsys.readouterr()

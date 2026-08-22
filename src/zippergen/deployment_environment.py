@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import os
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,6 +18,7 @@ from zippergen.deployment import DeploymentSpec
 from zippergen.deployment_platform import (
     deployment_bundles_dir,
     deployment_environment_dir,
+    deployment_environment_releases_dir,
     slug,
 )
 from zippergen.syntax import Workflow
@@ -26,7 +28,7 @@ from zippergen.private_files import ensure_private_directory
 
 @dataclass
 class DeploymentEnvironmentUpdate:
-    """A completed environment swap that can still be committed or undone."""
+    """An unpublished environment generation that can be kept or discarded."""
 
     environment: Path
     previous: Path | None
@@ -36,22 +38,23 @@ class DeploymentEnvironmentUpdate:
         if self.finished:
             return
         if self.previous is not None:
-            shutil.rmtree(self.previous, ignore_errors=True)
+            if self.previous.is_symlink():
+                self.previous.unlink(missing_ok=True)
+            else:
+                shutil.rmtree(self.previous, ignore_errors=True)
+        for stale in self.environment.parent.iterdir():
+            if stale == self.environment:
+                continue
+            if stale.is_symlink() or stale.is_file():
+                stale.unlink(missing_ok=True)
+            elif stale.is_dir():
+                shutil.rmtree(stale, ignore_errors=True)
         self.finished = True
 
     def rollback(self) -> None:
         if self.finished:
             return
-        if self.previous is None:
-            shutil.rmtree(self.environment, ignore_errors=True)
-        else:
-            replacement = self.environment.with_name(
-                f".{self.environment.name}-discarded-{time.time_ns()}"
-            )
-            if self.environment.exists() or self.environment.is_symlink():
-                os.replace(self.environment, replacement)
-            os.replace(self.previous, self.environment)
-            shutil.rmtree(replacement, ignore_errors=True)
+        shutil.rmtree(self.environment, ignore_errors=True)
         self.finished = True
 
 
@@ -117,7 +120,7 @@ def _deployment_sources(
     profile: dict[str, object],
     spec: DeploymentSpec,
     workflow: Workflow,
-) -> tuple[Path, str, Path | None, list[Path]]:
+) -> tuple[Path, str, Path, list[Path], bool]:
     """Resolve exactly the source paths copied into one deployment bundle."""
 
     source_cwd = Path(
@@ -128,10 +131,42 @@ def _deployment_sources(
     module_path = Path(module_ref).expanduser()
     if not module_path.is_absolute():
         module_path = source_cwd / module_path
-    if not module_path.exists():
-        return source_cwd, source_workflow, None, []
-
-    sources = [module_path.resolve()]
+    preserve_import = False
+    if module_path.exists():
+        module_path = module_path.resolve()
+        sources = [module_path]
+    else:
+        try:
+            module_spec = importlib.util.find_spec(module_ref)
+            top_spec = importlib.util.find_spec(module_ref.split(".", 1)[0])
+        except (ImportError, ModuleNotFoundError, ValueError) as exc:
+            raise SystemExit(
+                f"Workflow module {module_ref!r} cannot be located for an "
+                "immutable deployment bundle: {exc}"
+            ) from None
+        if module_spec is None or module_spec.origin is None or top_spec is None:
+            raise SystemExit(
+                f"Workflow module {module_ref!r} has no bundleable source. "
+                "Deploy a project-local Python file or package."
+            )
+        module_path = Path(module_spec.origin).resolve()
+        locations = top_spec.submodule_search_locations
+        top_source = (
+            Path(next(iter(locations))).resolve()
+            if locations
+            else Path(str(top_spec.origin)).resolve()
+        )
+        try:
+            top_source.relative_to(source_cwd)
+            module_path.relative_to(source_cwd)
+        except ValueError as exc:
+            raise SystemExit(
+                f"Workflow module {module_ref!r} resolves outside the project "
+                f"root ({module_path}). Use a project-local module so deploy "
+                "can snapshot the exact source."
+            ) from exc
+        sources = [top_source]
+        preserve_import = True
     for declared in spec.files:
         path = Path(declared).expanduser()
         if not path.is_absolute():
@@ -160,7 +195,7 @@ def _deployment_sources(
             sources.append(path)
     for source in sources:
         _validate_source_symlinks(source)
-    return source_cwd, source_workflow, module_path.resolve(), sources
+    return source_cwd, source_workflow, module_path, sources, preserve_import
 
 
 def _deployment_source_digest(sources: list[Path], source_cwd: Path) -> str:
@@ -205,11 +240,9 @@ def deployment_source_provenance(
 ) -> dict[str, str]:
     """Describe the workflow source that a deployment bundle represents."""
 
-    source_cwd, _source_workflow, module_path, sources = _deployment_sources(
+    source_cwd, _source_workflow, _module_path, sources, _preserve_import = _deployment_sources(
         profile, spec, workflow
     )
-    if module_path is None:
-        return {"kind": "importable-module", "source": str(profile["workflow"])}
     manifest = source_cwd / "zippergen.toml"
     provenance_sources = [*sources, *([manifest] if manifest.is_file() else [])]
     result = {
@@ -232,20 +265,10 @@ def bundle_deployment(
 ) -> None:
     """Snapshot a path-based workflow and every declared deployment file."""
 
-    source_cwd, source_workflow, module_path, sources = _deployment_sources(
+    source_cwd, source_workflow, module_path, sources, preserve_import = _deployment_sources(
         profile, spec, workflow
     )
     module_ref, separator, workflow_name = source_workflow.partition(":")
-    if module_path is None:
-        # Importable modules are already packaged Python artifacts. Path-based
-        # workflows get a concrete source bundle here.
-        profile.setdefault("source_cwd", str(source_cwd))
-        profile.setdefault("source_workflow", source_workflow)
-        profile["workflow_source"] = deployment_source_provenance(
-            profile, spec, workflow
-        )
-        return
-
     version = (
         f"{time.strftime('%Y%m%d-%H%M%S')}-"
         f"{time.time_ns() % 1_000_000_000:09d}"
@@ -269,13 +292,16 @@ def bundle_deployment(
         shutil.rmtree(bundle_root, ignore_errors=True)
         raise
 
-    workflow_relative = copied[module_path]
     profile["source_cwd"] = str(source_cwd)
     profile["source_workflow"] = source_workflow
     profile["cwd"] = str(bundle_root)
-    profile["workflow"] = str(workflow_relative) + (
-        f":{workflow_name}" if separator else ""
-    )
+    if preserve_import:
+        profile["workflow"] = source_workflow
+    else:
+        workflow_relative = copied[module_path]
+        profile["workflow"] = str(workflow_relative) + (
+            f":{workflow_name}" if separator else ""
+        )
     profile["bundle"] = str(bundle_root)
     profile["bundled_files"] = [str(path) for path in copied.values()]
 
@@ -413,7 +439,12 @@ def prepare_deployment_environment(
     skip_install: bool,
     defer_cleanup: bool = False,
 ) -> DeploymentEnvironmentUpdate | None:
-    """Build and atomically install a deployment's private environment."""
+    """Build an immutable environment generation for profile publication.
+
+    The active profile remains the only publication point. Until that profile
+    is atomically replaced, a crash can leave an unused generation behind but
+    cannot make the previous deployment run with a candidate environment.
+    """
 
     requirements = [package.requirement for package in spec.packages]
     profile["packages"] = requirements
@@ -425,12 +456,18 @@ def prepare_deployment_environment(
         return None
 
     name = str(profile["name"])
-    environment_dir = deployment_environment_dir(name)
-    ensure_private_directory(environment_dir.parent)
+    legacy_environment = deployment_environment_dir(name)
+    releases_dir = deployment_environment_releases_dir(name)
+    ensure_private_directory(releases_dir)
+    version = (
+        f"{time.strftime('%Y%m%d-%H%M%S')}-"
+        f"{time.time_ns() % 1_000_000_000:09d}"
+    )
+    environment_dir = releases_dir / version
     build_dir = Path(
         tempfile.mkdtemp(
             prefix=f".{slug(name)}-building-",
-            dir=environment_dir.parent,
+            dir=releases_dir,
         )
     )
     build_python = _deployment_python_path(build_dir)
@@ -501,27 +538,31 @@ def prepare_deployment_environment(
             "deployment environment, if any, was left unchanged."
         ) from None
 
-    replaced: Path | None = None
     try:
-        if environment_dir.exists() or environment_dir.is_symlink():
-            replaced = environment_dir.with_name(
-                f".{environment_dir.name}-replaced-"
-                f"{time.strftime('%Y%m%d-%H%M%S')}-"
-                f"{time.time_ns() % 1_000_000_000:09d}"
-            )
-            os.replace(environment_dir, replaced)
         os.replace(build_dir, environment_dir)
     except OSError as exc:
-        if replaced is not None and replaced.exists():
-            os.replace(replaced, environment_dir)
         shutil.rmtree(build_dir, ignore_errors=True)
         raise SystemExit(
-            "Managed environment was built but could not replace "
-            f"{environment_dir}: {exc}. The previous environment was restored."
+            "Managed environment was built but could not publish candidate "
+            f"{environment_dir}: {exc}. The previous environment is unchanged."
         ) from None
+    previous_raw = profile.get("environment_dir")
+    previous = (
+        Path(str(previous_raw)).expanduser()
+        if previous_raw
+        else legacy_environment
+    )
+    managed_root = releases_dir.parents[1].resolve()
+    try:
+        previous.resolve(strict=False).relative_to(managed_root)
+    except ValueError:
+        previous = None
+    else:
+        if not (previous.exists() or previous.is_symlink()):
+            previous = None
     profile["python"] = str(_deployment_python_path(environment_dir))
     profile["environment_dir"] = str(environment_dir)
-    update = DeploymentEnvironmentUpdate(environment_dir, replaced)
+    update = DeploymentEnvironmentUpdate(environment_dir, previous)
     if defer_cleanup:
         return update
     update.commit()

@@ -134,16 +134,18 @@ def test_deployment_snapshots_project_model_assignments(
     tmp_path, monkeypatch, capsys
 ):
     root, home = _configured_project(tmp_path, monkeypatch)
+    monkeypatch.setattr("zippergen.serve._bundle_deployment", lambda *_args: None)
+    monkeypatch.setattr(
+        "zippergen.serve._prepare_deployment_environment", lambda *_args, **_kwargs: None
+    )
+    monkeypatch.setattr("zippergen.serve._run_deployment_setup", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("zippergen.serve._doctor_checks", lambda *_args, **_kwargs: [])
 
     assert main([
         "deploy",
         "--set",
         "topic=hello",
         "--no-start",
-        "--no-bundle",
-        "--no-install",
-        "--no-setup",
-        "--no-doctor",
         "--yes",
     ]) == 0
     capsys.readouterr()

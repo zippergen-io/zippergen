@@ -14,6 +14,8 @@ Highlights:
   reset/archival operations.
 - Managed systemd and launchd deployments with status, freshness, logs,
   inspection, trace streaming, maintenance, and lifecycle commands.
+- Crash-safe deployment publication through immutable bundle, environment,
+  and secret generations selected by one atomic profile update.
 - Gmail, Google Sheets, Telegram, and coding-assistant integrations.
 - External-action attempt, duration, and failure diagnostics, including honest
   incomplete attempts after process death.
@@ -32,6 +34,10 @@ Operational notes:
 - Managed deployments use at-least-once external effects. Effects must be
   idempotent because a process can die after the outside world changed but
   before the successor control position was committed.
+- Human actions now require a response unless they are explicitly declared as
+  `kind="ack", required=False`. The former `@human(visible=False)` shortcut is
+  removed because it could silently grant approval; `visible=False` remains a
+  trace-persistence choice for `@pure`, `@effect`, and `@assistant`.
 
 ## 0.1.0a2 — 2026-06-29
 

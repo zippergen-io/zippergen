@@ -263,6 +263,8 @@ def _render_action(action: object, *, full: bool) -> list[str]:
             arguments.append(f"workspace={action.workspace!r}")
         if action.timeout is not None:
             arguments.append(f"timeout={action.timeout!r}")
+        if not action.visible:
+            arguments.append("visible=False")
         rendered = [
             f"@assistant({', '.join(arguments)})",
             f"def {action.name}({params}) -> {result_type}: ...",
@@ -279,14 +281,39 @@ def _render_action(action: object, *, full: bool) -> list[str]:
             rendered = [rendered[0], *comments, rendered[1]]
         return rendered
     if isinstance(action, HumanAction):
+        arguments = [
+            f"kind={action.kind!r}",
+            f"outputs={[f'{action.output}: {_type_name(action.output_type)}']!r}",
+        ]
+        for name, value in (
+            ("context", action.context),
+            ("instruction", action.instruction),
+            ("prefill", action.prefill),
+            ("submit_label", action.submit_label),
+            ("cancel_label", action.cancel_label),
+        ):
+            if value is not None:
+                arguments.append(f"{name}={value!r}")
+        if not action.required:
+            arguments.append("required=False")
         return [
-            f"@human(kind={action.kind!r}, instruction={action.instruction!r})",
+            f"@human({', '.join(arguments)})",
             f"def {action.name}({params}) -> {result_type}: ...",
         ]
     if isinstance(action, PlannerAction):
+        description = (
+            action.system_prompt if full else "<hidden at this detail level>"
+        )
         instructions = action.instructions if full else "<hidden at this detail level>"
         return [
-            f"@planner(allow={action.allow!r}, instructions={instructions!r})",
+            "@planner(",
+            f"    description={description!r},",
+            f"    actions={[item.name for item in action.actions]!r},",
+            f"    lifelines={[item.name for item in action.lifelines]!r},",
+            f"    allow={list(action.allow)!r},",
+            f"    instructions={instructions!r},",
+            f"    max_retries={action.max_retries!r},",
+            ")",
             f"def {action.name}({params}) -> {result_type}: ...",
         ]
     decorator = "effect" if isinstance(action, EffectAction) else "pure"
@@ -296,6 +323,8 @@ def _render_action(action: object, *, full: bool) -> list[str]:
             arguments.append(f"connector={action.connector!r}")
         if action.operation is not None:
             arguments.append(f"operation={action.operation!r}")
+    if not getattr(action, "visible", True):
+        arguments.append("visible=False")
     rendered = (
         f"@{decorator}({', '.join(arguments)})"
         if arguments

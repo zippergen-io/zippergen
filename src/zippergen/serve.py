@@ -25,7 +25,7 @@ import tempfile
 import threading
 import time
 from collections.abc import Callable, Mapping
-from contextlib import contextmanager
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -41,6 +41,7 @@ from zippergen.deployment_platform import (
     deployment_launchd_path as _deployment_launchd_path,
     deployment_profile_path as _deployment_profile_path,
     deployment_script_path as _deployment_script_path,
+    deployment_secrets_dir as _deployment_secrets_dir,
     deployment_secrets_path as _deployment_secrets_path,
     deployment_service_path as _deployment_service_path,
     deployments_dir as _deployments_dir,
@@ -288,7 +289,7 @@ def _run_args_from_deployment(profile: dict[str, object]):
 def _deployment_command(name: str, *, python_executable: str | None = None) -> str:
     python = python_executable or sys.executable
     return (
-        f"{shlex.quote(python)} -m zippergen.serve __run-deployment "
+        f"{shlex.quote(python)} -m zippergen.serve __launch-deployment "
         f"--profile {shlex.quote(_slug(name))}"
     )
 
@@ -330,9 +331,9 @@ def _write_deployment_artifacts(profile: dict[str, object]) -> None:
         script_path,
         "#!/bin/sh\n"
         "set -eu\n"
-        f"cd {shlex.quote(str(profile['cwd']))}\n"
+        f"cd {shlex.quote(str(_zippergen_home()))}\n"
         f"exec env ZIPPERGEN_HOME={shlex.quote(str(_zippergen_home()))} "
-        f"{_deployment_command(name, python_executable=str(profile.get('python') or sys.executable))}\n"
+        f"{_deployment_command(name)}\n"
     )
     script_path.chmod(0o700)
     write_private_text(
@@ -343,7 +344,7 @@ def _write_deployment_artifacts(profile: dict[str, object]) -> None:
         "[Service]\n"
         "Type=simple\n"
         "UMask=0077\n"
-        f"WorkingDirectory={profile['cwd']}\n"
+        f"WorkingDirectory={_zippergen_home()}\n"
         f"ExecStart={script_path}\n"
         "Restart=on-failure\n"
         "RestartSec=10\n"
@@ -355,7 +356,7 @@ def _write_deployment_artifacts(profile: dict[str, object]) -> None:
     launchd = {
         "Label": _launchd_label(name),
         "ProgramArguments": [str(script_path)],
-        "WorkingDirectory": str(profile["cwd"]),
+        "WorkingDirectory": str(_zippergen_home()),
         "RunAtLoad": True,
         "KeepAlive": {"SuccessfulExit": False},
         "ThrottleInterval": 10,
@@ -1504,16 +1505,35 @@ def _hold_deployment_execution(profile: Mapping[str, object]):
     """Hold the source project's slot for one supervised deployment process."""
 
     path = execution_lock_path(_zippergen_home(), str(profile["name"]))
-    try:
-        with execution_lock(path, owner="project deployment"):
-            yield
-    except ExecutionLockError as exc:
-        raise SystemExit(
-            _execution_conflict_message(
-                exc.active,
-                requested="the project deployment",
+    deadline = time.monotonic() + 30.0
+    stack = ExitStack()
+    while True:
+        try:
+            stack.enter_context(
+                execution_lock(path, owner="project deployment")
             )
-        ) from None
+            break
+        except ExecutionLockError as exc:
+            # Bare deploy starts the supervised process before releasing its
+            # publication lock. Waiting here closes the start/redeploy gap:
+            # the service sees the published profile, then takes the same
+            # execution slot immediately after publication completes.
+            if (
+                exc.active.owner == "a deployment update"
+                and time.monotonic() < deadline
+            ):
+                time.sleep(0.05)
+                continue
+            raise SystemExit(
+                _execution_conflict_message(
+                    exc.active,
+                    requested="the project deployment",
+                )
+            ) from None
+    try:
+        yield
+    finally:
+        stack.close()
 
 
 def _require_deployment_execution_slot(
@@ -1524,6 +1544,12 @@ def _require_deployment_execution_slot(
     active = active_execution(
         execution_lock_path(_zippergen_home(), str(profile["name"]))
     )
+    if (
+        active is not None
+        and active.owner == "a deployment update"
+        and active.pid == os.getpid()
+    ):
+        return
     if active is not None and active.owner != "project deployment":
         raise SystemExit(
             _execution_conflict_message(
@@ -1533,38 +1559,18 @@ def _require_deployment_execution_slot(
         )
 
 
-def _require_deployment_update_slot(project_key: str) -> None:
-    """Require an idle project before replacing deployment artifacts."""
+@contextmanager
+def _hold_deployment_mutation(name: str, *, owner: str):
+    """Hold the same slot the supervised process needs for a mutation."""
 
-    active = active_execution(
-        execution_lock_path(_zippergen_home(), project_key)
-    )
-    if active is not None and active.owner == "project deployment":
-        detail = (
-            f" (PID {active.pid})" if active.pid is not None else ""
-        )
+    path = execution_lock_path(_zippergen_home(), name)
+    try:
+        with execution_lock(path, owner=owner):
+            yield
+    except ExecutionLockError as exc:
         raise SystemExit(
-            f"The project deployment is already running{detail}. Stop it "
-            "with 'zg deploy stop' before updating it with 'zg deploy'."
-        )
-    if active is not None:
-        raise SystemExit(
-            _execution_conflict_message(
-                active,
-                requested="a deployment update",
-            )
-        )
-    # A supervisor restart delay has no process holding the execution lock.
-    # If a unit is installed, also ask the service manager so redeploy cannot
-    # swap its environment just before the supervisor starts it again.
-    if (
-        _installed_systemd_service_path(project_key).exists()
-        or _installed_launchd_path(project_key).exists()
-    ):
-        try:
-            require_service_stopped(project_key, "updating it")
-        except ServiceIsLiveError as exc:
-            raise SystemExit(str(exc)) from exc
+            _execution_conflict_message(exc.active, requested=owner)
+        ) from None
 
 
 def _run_workflow_command(args) -> int:
@@ -2728,6 +2734,18 @@ a formal document.
 def _remove_command(args) -> int:
     """Delete a deployment. Its managed store survives unless --purge."""
 
+    with _hold_deployment_mutation(
+        args.name, owner="a deployment removal"
+    ):
+        try:
+            enforce_deploy_requirement("remove", args.name)
+        except ServiceIsLiveError as exc:
+            raise SystemExit(str(exc)) from exc
+        return _remove_command_locked(args)
+
+
+def _remove_command_locked(args) -> int:
+
     from zippergen.deployments import (
         DeploymentRemovalError,
         present_deployment_artifacts,
@@ -3076,6 +3094,17 @@ def _compact_command(args) -> int:
     lossless and prevents the command from failing after deleting history.
     """
 
+    with _hold_deployment_mutation(
+        args.name, owner="a deployment compaction"
+    ):
+        try:
+            enforce_deploy_requirement("compact", args.name)
+        except ServiceIsLiveError as exc:
+            raise SystemExit(str(exc)) from exc
+        return _compact_command_locked(args)
+
+
+def _compact_command_locked(args) -> int:
     from zippergen.deployment_platform import deployment_service_status
     from zippergen.deployments import DeploymentRemovalError, compact_deployment_logs
     from zippergen.storage_maintenance import (
@@ -3223,18 +3252,26 @@ def _print_remove_consequences(
             f"  Archived under {_zippergen_home() / 'trash' / 'deployments'}: "
             f"{', '.join(kept)}."
         )
-    owned = {
-        Path(item.path).expanduser().resolve()
+    owned = tuple(
+        (
+            Path(item.path).expanduser().resolve(),
+            getattr(item, "kind", "file") == "directory",
+        )
         for item in artifacts
         if getattr(item, "path", None) is not None
-    }
+    )
     preserved = []
     for field in ("store", "log", "secrets_file"):
         raw_path = (profile or {}).get(field)
         if not raw_path:
             continue
         path = Path(str(raw_path)).expanduser().resolve()
-        if path.exists() and path not in owned:
+        is_owned = any(
+            path == root
+            or (is_directory and path.is_relative_to(root))
+            for root, is_directory in owned
+        )
+        if path.exists() and not is_owned:
             preserved.append(f"{field} ({path})")
     if preserved:
         print(
@@ -3277,11 +3314,12 @@ def _reset_deployment_command(args) -> int:
     )
     if needs_stop:
         _deployment_lifecycle_command(lifecycle, "stop")
-    try:
-        result = reset_deployment_store(args.name, profile)
-    except DeploymentRemovalError as exc:
-        raise SystemExit(str(exc)) from exc
-    _initialize_deployment_store(profile)
+    with _hold_deployment_mutation(args.name, owner="a deployment reset"):
+        try:
+            result = reset_deployment_store(args.name, profile)
+        except DeploymentRemovalError as exc:
+            raise SystemExit(str(exc)) from exc
+        _initialize_deployment_store(profile)
     print(f"Reset deployment state: {result.store}")
     if result.archive is not None:
         print(
@@ -4045,9 +4083,12 @@ def _finalize_guided_deployment(
     environment_update = None
     candidate_secrets: Path | None = None
     canonical_secrets = _deployment_secrets_path(name)
-    remove_canonical_secrets = False
-    previous_secret_payload: bytes | None = None
-    secret_published = False
+    previous_secrets_raw = profile.get("secrets_file")
+    previous_secrets = (
+        Path(str(previous_secrets_raw)).expanduser()
+        if previous_secrets_raw
+        else canonical_secrets if canonical_secrets.exists() else None
+    )
     history_previous: int | None = None
     store_created = False
     published = False
@@ -4058,19 +4099,21 @@ def _finalize_guided_deployment(
             f"Refusing a symlinked deployment secrets file: {canonical_secrets}"
         )
     if secret_fields or secrets:
-        ensure_private_directory(_deployments_dir())
+        secrets_dir = _deployment_secrets_dir(name)
+        ensure_private_directory(secrets_dir)
         fd, raw_candidate = tempfile.mkstemp(
-            prefix=f".{_slug(name)}.secrets-candidate-",
+            prefix="generation-",
             suffix=".json",
-            dir=_deployments_dir(),
+            dir=secrets_dir,
         )
         os.close(fd)
         candidate_secrets = Path(raw_candidate)
         _write_deployment_secrets(candidate_secrets, secrets)
         profile["secrets_file"] = str(candidate_secrets)
         profile["secret_names"] = sorted(secrets)
-    elif not profile.get("secrets_file") and canonical_secrets.exists():
-        remove_canonical_secrets = True
+    else:
+        profile.pop("secrets_file", None)
+        profile["secret_names"] = []
     profile["deployment_spec"] = spec.as_dict()
     profile["updated_at"] = time.strftime("%Y-%m-%dT%H:%M:%S%z")
     log_path = Path(
@@ -4131,23 +4174,29 @@ def _finalize_guided_deployment(
             requested=history_keep,
             store_created=store_created,
         )
-        if candidate_secrets is not None:
-            if canonical_secrets.exists():
-                previous_secret_payload = canonical_secrets.read_bytes()
-            write_private_bytes(canonical_secrets, candidate_secrets.read_bytes())
-            secret_published = True
-            profile["secrets_file"] = str(canonical_secrets)
-        elif remove_canonical_secrets:
-            previous_secret_payload = canonical_secrets.read_bytes()
-            canonical_secrets.unlink()
-            secret_published = True
-
         _write_deployment_artifacts(profile)
         published = True
         if environment_update is not None:
             environment_update.commit()
+        if previous_secrets is not None and previous_secrets != candidate_secrets:
+            managed_secrets = _deployment_secrets_dir(name).resolve()
+            canonical = canonical_secrets.resolve(strict=False)
+            resolved_previous = previous_secrets.resolve(strict=False)
+            if resolved_previous == canonical:
+                previous_secrets.unlink(missing_ok=True)
+            else:
+                try:
+                    resolved_previous.relative_to(managed_secrets)
+                except ValueError:
+                    pass
+                else:
+                    previous_secrets.unlink(missing_ok=True)
         if candidate_secrets is not None:
-            candidate_secrets.unlink(missing_ok=True)
+            for stale in candidate_secrets.parent.iterdir():
+                if stale != candidate_secrets and (
+                    stale.is_symlink() or not stale.is_dir()
+                ):
+                    stale.unlink(missing_ok=True)
     except BaseException:
         if history_previous is not None:
             _apply_existing_history_keep(
@@ -4155,11 +4204,6 @@ def _finalize_guided_deployment(
                 requested=history_previous,
                 store_created=False,
             )
-        if secret_published:
-            if previous_secret_payload is None:
-                canonical_secrets.unlink(missing_ok=True)
-            else:
-                write_private_bytes(canonical_secrets, previous_secret_payload)
         raise
     finally:
         if not published:
@@ -4179,17 +4223,35 @@ def _finalize_guided_deployment(
                 ):
                     path.unlink(missing_ok=True)
 
-    if not args.no_start:
-        lifecycle_args = argparse.Namespace(
-            name=name,
-            enable=True,
-            dry_run=False,
-            skip_readiness=True,
-        )
-        lifecycle_result = _deployment_lifecycle_command(lifecycle_args, "start")
-        if lifecycle_result != 0:
-            return lifecycle_result
+    return 0
 
+
+def _deploy_command(args) -> int:
+    from zippergen.workspace import Workspace
+
+    workspace = Workspace(getattr(args, "project", None))
+    name = workspace.directory.name
+    with _hold_deployment_mutation(name, owner="a deployment update"):
+        try:
+            enforce_deploy_requirement(None, name)
+        except ServiceIsLiveError as exc:
+            raise SystemExit(str(exc)) from exc
+        result = _deploy_command_locked(args)
+        if result != 0:
+            return result
+        name = str(getattr(args, "name", name))
+        if not args.no_start:
+            lifecycle_args = argparse.Namespace(
+                name=name,
+                enable=True,
+                dry_run=False,
+                skip_readiness=True,
+            )
+            lifecycle_result = _deployment_lifecycle_command(
+                lifecycle_args, "start"
+            )
+            if lifecycle_result != 0:
+                return lifecycle_result
     print(f"Deployment: {name}")
     if not getattr(args, "concise", False):
         print("Status: zippergen deploy status")
@@ -4198,7 +4260,7 @@ def _finalize_guided_deployment(
     return 0
 
 
-def _deploy_command(args) -> int:
+def _deploy_command_locked(args) -> int:
     # The workflow and the deployment both come from the project. The private
     # deployment identity is derived from project path + project id and is
     # never typed by the user.
@@ -4210,7 +4272,6 @@ def _deploy_command(args) -> int:
         deployment_workspace.project_manifest().get("project_id") or ""
     )
     deployment_name = deployment_workspace.directory.name
-    _require_deployment_update_slot(deployment_name)
     if _deployment_profile_path(deployment_name).exists():
         existing = _resolved_deployment_name(args)
         args.name = existing
@@ -4349,6 +4410,28 @@ def _run_deployment_command(args) -> int:
                 )
     finally:
         os.chdir(old_cwd)
+
+
+def _launch_deployment_command(args) -> int:
+    """Bootstrap the active profile, then replace this process with its runtime."""
+
+    profile = _load_deployment_profile(args.profile)
+    python = Path(str(profile.get("python") or "")).expanduser()
+    if not python.is_file():
+        raise SystemExit(
+            f"Deployment runtime is missing: {python}. Run 'zg deploy' to "
+            "rebuild the managed environment."
+        )
+    arguments = [
+        str(python),
+        "-m",
+        "zippergen.serve",
+        "__run-deployment",
+        "--profile",
+        _slug(str(profile["name"])),
+    ]
+    os.execve(str(python), arguments, dict(os.environ))
+    raise AssertionError("os.execve returned")
 
 
 def _start_deployment_connector_workers(
@@ -4993,11 +5076,7 @@ def _add_guided_deployment_arguments(
     parser.add_argument("--set", action="append", default=[], metavar="field=value", help="Declared deployment field value.")
     parser.add_argument("--timeout", type=_nonnegative_float_argument, help="Workflow timeout; defaults to 0 (no deadline).")
     parser.add_argument("--yes", action="store_true", help="Accept defaults and existing environment values without prompting.")
-    # Test and recovery switches remain parseable, but are deliberately not
-    # part of the ordinary deployment contract.
-    parser.add_argument("--no-install", action="store_true", help=argparse.SUPPRESS)
-    parser.add_argument("--no-setup", action="store_true", help=argparse.SUPPRESS)
-    parser.add_argument("--no-doctor", action="store_true", help=argparse.SUPPRESS)
+    parser.set_defaults(no_install=False, no_setup=False, no_doctor=False)
 
 
 def _add_owned_execution_commands(subparsers, *, owner: str) -> None:
@@ -5094,14 +5173,6 @@ def _reject_deploy_configuration_options(args, action: str) -> None:
         used.append("--no-start")
     if getattr(args, "history_keep", None) is not None:
         used.append("--history-keep")
-    for attribute, flag in (
-        ("no_bundle", "--no-bundle"),
-        ("no_install", "--no-install"),
-        ("no_setup", "--no-setup"),
-        ("no_doctor", "--no-doctor"),
-    ):
-        if getattr(args, attribute, False):
-            used.append(flag)
     if getattr(args, "yes", False) and action not in {
         "approve",
         "prune",
@@ -5243,7 +5314,17 @@ def _provider_authorize_google_command(args) -> int:
 # Registered but kept out of help. `__complete` backs shell completion,
 # `__run-deployment` is the generated service entry point, and `notify` is an
 # adapter a deployment runs for itself rather than a user task.
-HIDDEN_COMMANDS = frozenset({"__complete", "__run-deployment", "notify"})
+HIDDEN_COMMANDS = frozenset({
+    "__complete", "__launch-deployment", "__run-deployment", "notify"
+})
+
+
+class _NoAbbrevArgumentParser(argparse.ArgumentParser):
+    """Argument parser whose long options must always be spelled exactly."""
+
+    def __init__(self, *args, **kwargs):
+        kwargs.setdefault("allow_abbrev", False)
+        super().__init__(*args, **kwargs)
 
 
 def _parse_cli_args(
@@ -5251,7 +5332,7 @@ def _parse_cli_args(
 ) -> tuple[argparse.ArgumentParser, argparse.Namespace]:
     """Build the real CLI parser and parse arguments without dispatching."""
 
-    ap = argparse.ArgumentParser(
+    ap = _NoAbbrevArgumentParser(
         prog="zippergen",
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -5835,10 +5916,12 @@ def _parse_cli_args(
         ),
     )
     _add_guided_deployment_arguments(deploy)
-    deploy.add_argument("--no-bundle", action="store_true", help=argparse.SUPPRESS)
+    deploy.set_defaults(no_bundle=False)
     deploy.add_argument("--no-start", action="store_true", help="Configure the deployment without starting its service.")
     deploy.add_argument("--history-keep", type=_nonnegative_int_argument, default=None, metavar="ROWS", help="How many trace rows this deployment's store keeps. 0 records none. Default 10000.")
-    deploy_sub = deploy.add_subparsers(dest="deploy_action")
+    deploy_sub = deploy.add_subparsers(
+        dest="deploy_action", parser_class=_NoAbbrevArgumentParser
+    )
 
     deploy_list = deploy_sub.add_parser(
         "list",
@@ -5935,6 +6018,8 @@ def _parse_cli_args(
     _add_owned_execution_commands(deploy_sub, owner="deploy")
     internal_run = sub.add_parser("__run-deployment")
     internal_run.add_argument("--profile", required=True)
+    internal_launch = sub.add_parser("__launch-deployment")
+    internal_launch.add_argument("--profile", required=True)
 
     nt = sub.add_parser("notify", description="Notification adapter a deployment runs for itself.")
     notify_sub = nt.add_subparsers(dest="adapter", required=True)
@@ -5942,8 +6027,8 @@ def _parse_cli_args(
     out.add_argument("--store", required=True, help="SQLite store path.")
     out.add_argument("--channel", default="stdout", help="Approval token channel name.")
     out.add_argument("--watch", action="store_true", help="Keep polling for new pending tasks.")
-    out.add_argument("--interval", type=float, default=2.0, help="Polling interval in seconds for --watch.")
-    out.add_argument("--limit", type=int, help="Maximum number of tasks to notify per poll.")
+    out.add_argument("--interval", type=_positive_float_argument, default=2.0, help="Polling interval in seconds for --watch.")
+    out.add_argument("--limit", type=_positive_int_argument, help="Maximum number of tasks to notify per poll.")
     out.add_argument("--quiet", action="store_true", help="Suppress the no-pending-tasks message in one-shot mode.")
 
     tg = notify_sub.add_parser("telegram", help="send and receive human task approvals through Telegram")
@@ -5955,9 +6040,9 @@ def _parse_cli_args(
     )
     tg.add_argument("--channel", default="telegram", help="Approval token channel name.")
     tg.add_argument("--watch", action="store_true", help="Keep polling Telegram and the local store.")
-    tg.add_argument("--interval", type=float, default=2.0, help="Delay between store scans in --watch mode.")
-    tg.add_argument("--poll-timeout", type=float, default=20.0, help="Telegram long-poll timeout in seconds.")
-    tg.add_argument("--limit", type=int, help="Maximum number of tasks to notify per poll.")
+    tg.add_argument("--interval", type=_positive_float_argument, default=2.0, help="Delay between store scans in --watch mode.")
+    tg.add_argument("--poll-timeout", type=_positive_float_argument, default=20.0, help="Telegram long-poll timeout in seconds.")
+    tg.add_argument("--limit", type=_positive_int_argument, help="Maximum number of tasks to notify per poll.")
     tg.add_argument("--resend", action="store_true", help="Resend already-notified pending tasks.")
     tg.add_argument("--quiet", action="store_true", help="Suppress progress messages.")
 
@@ -6093,10 +6178,11 @@ def main(argv=None) -> int:
         return _run_deployment_command(
             argparse.Namespace(name=str(profile["name"]))
         )
+    if args.cmd == "__launch-deployment":
+        return _launch_deployment_command(args)
     if args.cmd == "deploy":
         action = getattr(args, "deploy_action", None)
         if action is None:
-            enforce_deploy_requirement(None, "")
             return _deploy_command(args)
         _reject_deploy_configuration_options(args, action)
         if action == "list":
@@ -6113,10 +6199,11 @@ def main(argv=None) -> int:
         # `status` reads `deployment`; it no longer takes one as an
         # argument, so the attribute has to be created, not updated.
         args.deployment = resolved
-        try:
-            enforce_deploy_requirement(action, resolved)
-        except ServiceIsLiveError as exc:
-            raise SystemExit(str(exc)) from exc
+        if action not in {"remove", "compact", "reset"}:
+            try:
+                enforce_deploy_requirement(action, resolved)
+            except ServiceIsLiveError as exc:
+                raise SystemExit(str(exc)) from exc
         if action in {"start", "stop"}:
             return _deployment_lifecycle_command(args, action)
         if action == "remove":

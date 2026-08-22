@@ -310,7 +310,7 @@ def draft_reply(message: str): ...
 Writer: draft = draft_reply(message)
 \end{lstlisting}
 
-For \texttt{@pure} and \texttt{@effect}, \texttt{visible=False} is a
+For \texttt{@pure}, \texttt{@effect}, and \texttt{@assistant}, \texttt{visible=False} is a
 persistence choice rather than a display filter: the action's own trace events
 are never written. It does not hide decisions or control sends and receives
 around that action. Use it only for intentionally unrecorded operational work,
@@ -780,6 +780,11 @@ reject an explicit unsupported value rather than silently dropping it.
 
 A \texttt{@human} action stops and waits. Where the question appears depends on
 configuration:
+
+An answer is required by default. The only non-blocking form is an explicit
+\texttt{kind="ack", required=False} acknowledgement. It is recorded and
+resolves to true without creating a human task; confirmations, edits,
+selections, and inputs cannot use \texttt{required=False}.
 
 \begin{center}
 \begin{tabularx}{0.95\linewidth}{@{}lX@{}}

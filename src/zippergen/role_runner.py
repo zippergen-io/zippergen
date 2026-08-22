@@ -269,7 +269,7 @@ class RoleRunner:
         node = cast(ActStmt, pending.node)
         action = node.action
         detail: dict = {"action": action.name}
-        if isinstance(action, HumanAction) and action.visible:
+        if isinstance(action, HumanAction) and action.required:
             detail["kind"] = "human"
             return "waiting_human", detail
         if isinstance(action, AssistantAction):
@@ -372,7 +372,7 @@ class RoleRunner:
     def _resolve_external(self, pending: PendingExternal) -> dict:
         node = cast(ActStmt, pending.node)
         action = node.action
-        if isinstance(action, HumanAction) and action.visible:
+        if isinstance(action, HumanAction) and action.required:
             return self._resolve_human_task(pending)
         return external_out_map(
             action,

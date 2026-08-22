@@ -477,10 +477,15 @@ It does not prove whether the remote call succeeded, failed, or was still
 running when the process disappeared. A static trace labels that row
 `incomplete`; `zg deploy status` is the source for current live activity.
 
-`visible=False` on a `@pure` or `@effect` is a persistence choice, not merely a
+`visible=False` on a `@pure`, `@effect`, or `@assistant` is a persistence choice, not merely a
 display filter: that action's own start, completion, and failure events are not
 written. It does not suppress decisions or control sends and receives around
 the action, and recovery is unchanged either way.
+
+Human authority is separate from trace visibility. A `@human` action waits for
+a durable answer by default. Only `kind="ack"` accepts `required=False`; that
+non-blocking notice resolves to true without creating a human task and is still
+recorded. Confirmations, edits, selections, and inputs cannot be auto-completed.
 
 That automatic pruning is recovery-independent. The combined maintenance
 command also rotates deployment logs, so it requires the deployment to be

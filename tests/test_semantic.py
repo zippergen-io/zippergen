@@ -3,6 +3,7 @@ from types import ModuleType
 
 from zippergen.deployment import DeploymentField, DeploymentSpec
 from zippergen.semantic import (
+    _action_definition,
     read_semantic_snapshot,
     render_semantic_diff,
     semantic_diff,
@@ -14,9 +15,11 @@ from zippergen.syntax import (
     ActStmt,
     EffectAction,
     IfStmt,
+    HumanAction,
     Lifeline,
     MsgStmt,
     PureAction,
+    PlannerAction,
     Var,
     VarExpr,
     Workflow,
@@ -107,6 +110,38 @@ def test_workflow_semantics_records_context_and_effect_kind():
     assert model["action_definitions"]["normalize"]["kind"] == "effect"
     assert model["controls"][0]["code"] == "if (approved) @ Worker"
     assert "if:Worker:approved=true" in model["messages"][1]["context"]
+
+
+def test_action_semantics_include_capture_authority_and_planner_vocabulary():
+    hidden = PureAction(
+        name="hidden",
+        inputs=(),
+        outputs=(("value", str),),
+        fn=lambda: "value",
+        visible=False,
+    )
+    notice = HumanAction(
+        name="notice",
+        inputs=(),
+        output="acknowledged",
+        output_type=bool,
+        kind="ack",
+        required=False,
+    )
+    planner = PlannerAction(
+        name="coordinate",
+        inputs=(),
+        outputs=(("result", str),),
+        system_prompt="Coordinate reviewed work.",
+        actions=(hidden, notice),
+        lifelines=(Worker,),
+    )
+
+    definition = _action_definition(planner)
+
+    assert definition["system_prompt"] == "Coordinate reviewed work."
+    assert definition["action_definitions"][0]["visible"] is False
+    assert definition["action_definitions"][1]["required"] is False
 
 
 def test_semantic_diff_reports_protocol_effect_and_deployment_changes():

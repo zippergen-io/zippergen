@@ -569,7 +569,7 @@ def human(
     prefill: str | None = None,
     submit_label: str | None = None,
     cancel_label: str | None = None,
-    visible: bool = True,
+    required: bool = True,
 ):
     """
     Decorator that produces a HumanAction node.
@@ -601,6 +601,10 @@ def human(
         Label for the primary (approve/submit) button.
     cancel_label : str, optional
         Label for the secondary (decline/cancel) button.
+    required : bool, optional
+        Whether execution must wait for a human response. ``False`` is only
+        valid for ``kind="ack"``; that acknowledgement is recorded and
+        resolves to ``True`` without creating a human task.
     """
     _valid_kinds = {"confirm", "edit", "select", "input", "ack"}
 
@@ -632,6 +636,10 @@ def human(
                 f"@human '{fn_name}': kind='{kind}' requires a str output, "
                 f"got '{output_type.__name__}'"
             )
+        if not required and kind != "ack":
+            raise ValueError(
+                f"@human '{fn_name}': required=False is only valid for kind='ack'"
+            )
 
         # Validate {var} placeholders in template fields
         for field_name, value in (
@@ -659,7 +667,7 @@ def human(
             prefill=prefill,
             submit_label=submit_label,
             cancel_label=cancel_label,
-            visible=visible,
+            required=required,
         )
 
     return decorator

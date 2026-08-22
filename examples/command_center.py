@@ -702,7 +702,7 @@ def choose_from_proposed_slots(email: str, availability: str): pass
     instruction="Calendar event created.",
     outputs=["ack: bool"],
     submit_label="Noted",
-    visible=False,
+    required=False,
 )
 def acknowledge_event_created(event_summary: str): pass
 

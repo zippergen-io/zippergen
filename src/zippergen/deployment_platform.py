@@ -45,11 +45,25 @@ def deployment_secrets_path(name: str) -> Path:
 
 
 def deployment_environment_dir(name: str) -> Path:
+    """Legacy single-generation environment path."""
+
     return zippergen_home() / "environments" / slug(name)
+
+
+def deployment_environment_releases_dir(name: str) -> Path:
+    """Directory of immutable environment generations for a deployment."""
+
+    return zippergen_home() / "environments" / ".releases" / slug(name)
 
 
 def deployment_bundles_dir(name: str) -> Path:
     return zippergen_home() / "apps" / slug(name)
+
+
+def deployment_secrets_dir(name: str) -> Path:
+    """Directory of immutable secret generations for a deployment."""
+
+    return deployments_dir() / ".secrets" / slug(name)
 
 
 def systemd_user_dir() -> Path:
@@ -201,7 +215,7 @@ class ServiceIsLiveError(Exception):
 #   "any"      -- reads, reports, or manages the service itself
 #   "stopped"  -- replaces or destroys durable state, so nothing may hold it
 DEPLOY_SERVICE_REQUIREMENT: dict[str | None, str] = {
-    None: "any",        # bare deploy; it rebuilds the bundle, and warns rather than refuses
+    None: "stopped",    # bare deploy replaces the active immutable release
     "start": "any",     # manages the service
     "stop": "any",      # manages the service
     "list": "any",
@@ -220,6 +234,7 @@ DEPLOY_SERVICE_REQUIREMENT: dict[str | None, str] = {
 
 # How the refusal reads, per verb, completing "Stop deployment NAME before ...".
 DEPLOY_REQUIREMENT_VERB = {
+    None: "updating it",
     "compact": "compacting it",
     "remove": "removing it",
 }
@@ -253,7 +268,7 @@ def enforce_deploy_requirement(action: str | None, name: str) -> None:
             f"deploy verb {action!r} has no entry in DEPLOY_SERVICE_REQUIREMENT"
         )
     if requirement == "stopped":
-        require_service_stopped(name, DEPLOY_REQUIREMENT_VERB[str(action)])
+        require_service_stopped(name, DEPLOY_REQUIREMENT_VERB[action])
 
 
 def systemd_service_status(name: str) -> dict[str, object]:

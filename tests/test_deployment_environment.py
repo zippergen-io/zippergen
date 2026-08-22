@@ -5,6 +5,7 @@ import pytest
 
 from zippergen.deployment import DeploymentSpec
 from zippergen.deployment_environment import (
+    bundle_deployment,
     deployment_source_provenance,
     prepare_deployment_environment as _prepare_deployment_environment,
 )
@@ -23,7 +24,7 @@ def sample(value: str @ Worker) -> str:
 """
 
 
-def test_managed_environment_uses_uv_and_replaces_an_old_environment_atomically(
+def test_managed_environment_uses_an_immutable_generation(
     tmp_path,
     monkeypatch,
 ):
@@ -63,12 +64,13 @@ def test_managed_environment_uses_uv_and_replaces_an_old_environment_atomically(
     assert calls[0][0:3] == ["/tools/uv", "venv", "--python"]
     assert calls[1][0:3] == ["/tools/uv", "pip", "install"]
     assert calls[1][3:5] == ["--refresh-package", "zippergen"]
-    assert Path(str(profile["python"])) == environment / "bin" / "python"
+    managed = Path(str(profile["environment_dir"]))
+    assert managed.parent == home / "environments" / ".releases" / "reviewed-answer"
+    assert Path(str(profile["python"])) == managed / "bin" / "python"
     assert isinstance(profile["zippergen_runtime"], dict)
-    assert (environment / "bin" / "python").read_text() == "managed python\n"
+    assert (managed / "bin" / "python").read_text() == "managed python\n"
     assert not (environment / "old-environment").exists()
-    assert not list((home / "environments").glob(".*-building-*"))
-    assert not list((home / "environments").glob(".*-replaced-*"))
+    assert not list(managed.parent.glob(".*-building-*"))
 
 
 def test_failed_ensurepip_keeps_the_previous_environment_and_has_guidance(
@@ -114,7 +116,7 @@ def test_failed_ensurepip_keeps_the_previous_environment_and_has_guidance(
     assert not list((home / "environments").glob(".*-building-*"))
 
 
-def test_deferred_environment_swap_can_be_rolled_back(
+def test_deferred_environment_generation_can_be_rolled_back(
     tmp_path,
     monkeypatch,
 ):
@@ -151,12 +153,12 @@ def test_deferred_environment_swap_can_be_rolled_back(
     )
 
     assert update is not None
-    assert not sentinel.exists()
-    assert (environment / "bin" / "python").is_file()
+    candidate = update.environment
+    assert sentinel.read_text() == "still active\n"
+    assert (candidate / "bin" / "python").is_file()
     update.rollback()
     assert sentinel.read_text() == "still active\n"
-    assert not (environment / "bin" / "python").exists()
-    assert not list((home / "environments").glob(".*-replaced-*"))
+    assert not candidate.exists()
 
 
 def test_google_connector_deployment_installs_the_optional_extra(
@@ -313,3 +315,49 @@ def test_freshness_distinguishes_runtime_and_workflow_source(
     assert runtime_stale["freshness"] == "stale"
     assert "fixes in the current checkout are not active" in runtime_stale["detail"]
     assert "cannot show its severity" in runtime_stale["detail"]
+
+
+def test_dotted_project_module_is_bundled_instead_of_left_mutable(
+    tmp_path, monkeypatch
+):
+    root = tmp_path / "project"
+    package = root / "mailflow"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text(
+        "from .workflow import sample\n"
+    )
+    (package / "workflow.py").write_text(WORKFLOW_SOURCE)
+    home = tmp_path / "home"
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(home))
+    monkeypatch.syspath_prepend(str(root))
+    workflow, _module = load_workflow_spec("mailflow.workflow:sample")
+    profile: dict[str, object] = {
+        "name": "mailflow",
+        "cwd": str(root),
+        "workflow": "mailflow.workflow:sample",
+    }
+
+    bundle_deployment(profile, DeploymentSpec(), workflow)
+
+    bundle = Path(str(profile["bundle"]))
+    assert profile["workflow"] == "mailflow.workflow:sample"
+    assert (bundle / "mailflow" / "workflow.py").read_text() == WORKFLOW_SOURCE
+    assert profile["workflow_source"]["kind"] == "source-bundle"
+
+
+def test_dotted_module_outside_project_is_refused(
+    tmp_path, monkeypatch
+):
+    root = tmp_path / "project"
+    root.mkdir()
+    workflow_path = root / "workflow.py"
+    workflow_path.write_text(WORKFLOW_SOURCE)
+    workflow, _module = load_workflow_spec(f"{workflow_path}:sample")
+    profile: dict[str, object] = {
+        "name": "external",
+        "cwd": str(root),
+        "workflow": "zippergen.serve:main",
+    }
+
+    with pytest.raises(SystemExit, match="resolves outside the project root"):
+        bundle_deployment(profile, DeploymentSpec(), workflow)

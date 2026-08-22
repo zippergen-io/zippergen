@@ -193,7 +193,7 @@ def send_reply(address: str, body: str) -> str:
     return "sent"
 ```
 
-For `@pure` and `@effect`, `visible=False` is a persistence choice rather than
+For `@pure`, `@effect`, and `@assistant`, `visible=False` is a persistence choice rather than
 a display filter: that action's own start, completion, and failure events are
 never written. It does not hide decisions or control sends and receives around
 the action. Use it only for intentionally unrecorded operational work, not to
@@ -548,6 +548,12 @@ def approve(draft: str) -> None: ...
 
 Do not replace a required human approval with an LLM judgment unless the user
 explicitly changes the authority model.
+
+Human actions are required by default. The only non-blocking form is an
+acknowledgement declared with `kind="ack", required=False`; it resolves to
+`True` without creating a human task, but it is still recorded in the trace and
+semantic model. `required=False` is rejected for confirmations, edits,
+selections, and free-form input, so it cannot silently grant human authority.
 
 Terminal human prompts are labelled `REQUEST · Participant` (`NOTICE` for an
 acknowledgement). If a local effect also prints a user-facing outcome, begin it

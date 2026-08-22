@@ -127,6 +127,28 @@ def test_human_decorator_ack():
     assert acknowledge.submit_label == "Noted"
     assert acknowledge.cancel_label is None
 
+
+def test_non_required_human_action_is_limited_to_acknowledgements():
+    from zippergen.actions import human
+
+    with pytest.raises(ValueError, match="only valid for kind='ack'"):
+        @human(
+            kind="confirm",
+            outputs=["approved: bool"],
+            required=False,
+        )
+        def silently_approve(): pass
+
+    with pytest.raises(ValueError, match="only valid for kind='ack'"):
+        HumanAction(
+            name="silently_edit",
+            inputs=(),
+            output="answer",
+            output_type=str,
+            kind="edit",
+            required=False,
+        )
+
 def test_human_decorator_input():
     from zippergen.actions import human
 
@@ -374,3 +396,41 @@ def test_runtime_human_trace_kind():
     ]
     assert len(human_events) == 2
     assert {event["action_kind"] for event in human_events} == {"human"}
+
+
+@human(
+    kind="ack",
+    instruction="Recorded.",
+    outputs=["acknowledged: bool"],
+    required=False,
+)
+def record_notice(): pass
+
+
+@workflow
+def non_blocking_acknowledgement() -> bool:
+    with _Human:
+        acknowledged = record_notice()
+    return acknowledged @ _Human
+
+
+def test_non_required_acknowledgement_is_explicit_and_traced():
+    events = []
+
+    def unexpected_backend(action, inputs):
+        raise AssertionError("non-required acknowledgement asked a human")
+
+    result = run(
+        non_blocking_acknowledgement,
+        [_Human],
+        {},
+        human_backend=unexpected_backend,
+        trace=events.append,
+    )
+
+    assert result is True
+    human_events = [
+        event for event in events
+        if event.get("action") == "record_notice"
+    ]
+    assert [event["type"] for event in human_events] == ["act_start", "act"]

@@ -2,12 +2,15 @@ import json
 import io
 import os
 import plistlib
+import signal
 import shlex
 import sqlite3
 import subprocess
 import time
+from contextlib import ExitStack
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
@@ -128,6 +131,11 @@ def _the_deployment(zippergen_home, suffix=".json"):
     return found[0]
 
 
+def _deployment_secrets(zippergen_home) -> Path:
+    profile = json.loads(_the_deployment(zippergen_home).read_text())
+    return Path(profile["secrets_file"])
+
+
 def _run_prepared_deployment(zippergen_home) -> int:
     """Exercise the hidden entry point used by generated service scripts."""
 
@@ -148,7 +156,7 @@ def _deploy_for_test(arguments: list[str]) -> int:
     previous = Path.cwd()
     try:
         os.chdir(root)
-        return main(
+        return _deploy_main_for_test(
             [
                 "deploy",
                 *deployment_arguments,
@@ -162,6 +170,33 @@ def _deploy_for_test(arguments: list[str]) -> int:
         )
     finally:
         os.chdir(previous)
+
+
+def _deploy_main_for_test(arguments: list[str]) -> int:
+    """Translate retired deployment bypass flags into local test doubles."""
+
+    flags = {
+        "--no-bundle": ("_bundle_deployment", None),
+        "--no-install": ("_prepare_deployment_environment", None),
+        "--no-setup": ("_run_deployment_setup", None),
+        "--no-doctor": ("_doctor_checks", []),
+    }
+    cleaned = [argument for argument in arguments if argument not in flags]
+    with ExitStack() as stack:
+        stack.enter_context(patch(
+            "zippergen.deployment_platform.deployment_service_status",
+            return_value={
+                "state": "not-loaded",
+                "healthy": False,
+                "detail": "not loaded",
+            },
+        ))
+        for flag, (name, result) in flags.items():
+            if flag in arguments:
+                stack.enter_context(
+                    patch(f"zippergen.serve.{name}", return_value=result)
+                )
+        return main(cleaned)
 
 
 def _configure_model_for_test(
@@ -1538,7 +1573,7 @@ def test_bare_deploy_propagates_a_failed_service_start(
         lambda _args, action: starts.append(action) or 1,
     )
 
-    rc = main([
+    rc = _deploy_main_for_test([
         "deploy",
         "--no-bundle",
         "--no-install",
@@ -1650,7 +1685,7 @@ def test_redeploy_requires_the_existing_deployment_to_be_stopped(
     with execution_lock(lock_path, owner="project deployment"):
         with pytest.raises(
             SystemExit,
-            match="already running.*zg deploy stop.*before updating",
+            match="active project deployment.*deployment update",
         ):
             main(["deploy", "--yes"])
 
@@ -1701,7 +1736,7 @@ def test_two_projects_with_the_same_workflow_get_independent_deployments(
         workspace.select_workflow("workflow.py:hello", cwd=root)
         monkeypatch.chdir(root)
         monkeypatch.setenv("ZIPPERGEN_HOME", str(home))
-        assert main([
+        assert _deploy_main_for_test([
             "deploy",
             "--set",
             "topic=test",
@@ -1934,7 +1969,7 @@ def test_guided_deploy_persists_an_implicit_model_provider_secret(
     assert rc == 0
     capsys.readouterr()
     secrets = json.loads(
-        _the_deployment(zippergen_home, ".secrets.json").read_text()
+        _deployment_secrets(zippergen_home).read_text()
     )
     assert secrets == {
         "ZIPPERGEN_PROVIDER_MISTRAL_DASH_TEST_API_KEY": "private-key"
@@ -1993,7 +2028,7 @@ def test_guided_deploy_preserves_google_connector_credential_json(
     assert rc == 0
     capsys.readouterr()
     secrets = json.loads(
-        _the_deployment(zippergen_home, ".secrets.json").read_text()
+        _deployment_secrets(zippergen_home).read_text()
     )
     stored = next(value for value in secrets.values() if value == credential)
     assert stored == credential
@@ -2050,7 +2085,7 @@ def test_guided_deploy_blocks_a_missing_selected_model_credential(
     previous = Path.cwd()
     try:
         os.chdir(tmp_path)
-        rc = main(
+        rc = _deploy_main_for_test(
             [
                 "deploy",
                 "--yes",
@@ -2080,7 +2115,7 @@ def test_guided_deploy_persists_config_and_private_secrets(tmp_path, monkeypatch
     workspace.select_workflow("guided_workflow.py:guided", cwd=tmp_path)
     monkeypatch.chdir(tmp_path)
 
-    rc = main([
+    rc = _deploy_main_for_test([
         "deploy",
         "--set",
         "topic=deploy",
@@ -2095,7 +2130,7 @@ def test_guided_deploy_persists_config_and_private_secrets(tmp_path, monkeypatch
 
     captured = capsys.readouterr()
     profile_path = _the_deployment(zippergen_home)
-    secrets_path = _the_deployment(zippergen_home, ".secrets.json")
+    secrets_path = _deployment_secrets(zippergen_home)
     profile_text = profile_path.read_text()
     profile = json.loads(profile_text)
     assert rc == 0
@@ -2147,7 +2182,7 @@ def test_explicit_redeploy_replaces_the_named_deployment_source(
         "--no-start",
     ]
 
-    assert main(arguments) == 0
+    assert _deploy_main_for_test(arguments) == 0
     capsys.readouterr()
     first_profile = json.loads(
         (_the_deployment(zippergen_home)).read_text()
@@ -2164,7 +2199,7 @@ def test_explicit_redeploy_replaces_the_named_deployment_source(
     workflow_path.write_text(
         WORKFLOW_SOURCE.replace('return topic + "!"', 'return topic + "?"')
     )
-    assert main(arguments) == 0
+    assert _deploy_main_for_test(arguments) == 0
     capsys.readouterr()
     second_profile = json.loads(
         (_the_deployment(zippergen_home)).read_text()
@@ -2237,7 +2272,7 @@ def test_configure_keeps_existing_secret_when_updating_public_field(tmp_path, mo
     workspace.initialize_project(name=tmp_path.name)
     workspace.select_workflow("guided_workflow.py:guided", cwd=tmp_path)
     monkeypatch.chdir(tmp_path)
-    main([
+    _deploy_main_for_test([
         "deploy",
         "--set",
         "topic=deploy",
@@ -2249,7 +2284,7 @@ def test_configure_keeps_existing_secret_when_updating_public_field(tmp_path, mo
     ])
     capsys.readouterr()
 
-    rc = main([
+    rc = _deploy_main_for_test([
         "deploy",
         "--set",
         "prefix=updated",
@@ -2263,7 +2298,7 @@ def test_configure_keeps_existing_secret_when_updating_public_field(tmp_path, mo
 
     capsys.readouterr()
     profile = json.loads((_the_deployment(zippergen_home)).read_text())
-    secrets = json.loads((_the_deployment(zippergen_home, ".secrets.json")).read_text())
+    secrets = json.loads(_deployment_secrets(zippergen_home).read_text())
     assert rc == 0
     assert profile["options"]["prefix"] == "updated"
     assert secrets == {"DEMO_TOKEN": "top-secret"}
@@ -2469,7 +2504,7 @@ def test_doctor_returns_failure_for_broken_profile(tmp_path, monkeypatch, capsys
     assert main(["deploy", "check", "--json", "--no-systemd"]) == 0
 def test_status_command_reports_completed_run(tmp_path, monkeypatch, capsys):
     store_path = _prepared_deployment_store(tmp_path, monkeypatch, capsys)
-    assert main([
+    assert _deploy_main_for_test([
         "deploy",
         "--set",
         "topic=status",
@@ -3553,8 +3588,41 @@ def test_generated_service_command_matches_the_full_parser():
     module_index = command.index("zippergen.serve")
     _parser, arguments = _parse_cli_args(command[module_index + 1 :])
 
-    assert arguments.cmd == "__run-deployment"
+    assert arguments.cmd == "__launch-deployment"
     assert arguments.profile == "private-project-id"
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["deploy", "--no-bundle"],
+        ["deploy", "--no-install"],
+        ["deploy", "--no-setup"],
+        ["deploy", "--no-doctor"],
+        ["deploy", "logs", "--fol"],
+        ["deploy", "prune", "--keep-a", "2"],
+    ],
+)
+def test_deploy_rejects_bypasses_and_abbreviated_options(arguments):
+    with pytest.raises(SystemExit) as raised:
+        _parse_cli_args(arguments)
+
+    assert raised.value.code == 2
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["notify", "stdout", "--store", "state.sqlite", "--interval", "0"],
+        ["notify", "stdout", "--store", "state.sqlite", "--limit", "-1"],
+        ["notify", "telegram", "--store", "state.sqlite", "--poll-timeout", "0"],
+    ],
+)
+def test_notify_rejects_non_positive_polling_values(arguments):
+    with pytest.raises(SystemExit) as raised:
+        _parse_cli_args(arguments)
+
+    assert raised.value.code == 2
 
 
 def test_deploy_rejects_an_unknown_set_field_without_changing_the_profile(
@@ -3571,7 +3639,7 @@ def test_deploy_rejects_an_unknown_set_field_without_changing_the_profile(
     before = profile_path.read_bytes()
 
     with pytest.raises(SystemExit, match="Unknown deployment field: recipent"):
-        main([
+        _deploy_main_for_test([
             "deploy",
             "--set",
             "recipent=new",
@@ -3606,7 +3674,7 @@ def test_failed_redeploy_keeps_the_active_profile_and_remains_ready(
 
     monkeypatch.setattr(serve, "_prepare_deployment_environment", fail_install)
     with pytest.raises(SystemExit, match="simulated install failure"):
-        main([
+        _deploy_main_for_test([
             "deploy",
             "--set",
             "topic=new",
@@ -3621,6 +3689,57 @@ def test_failed_redeploy_keeps_the_active_profile_and_remains_ready(
     assert main([
         "deploy", "check", "--strict", "--json", "--no-systemd"
     ]) == 0
+
+
+@pytest.mark.skipif(not hasattr(os, "fork"), reason="requires POSIX process death")
+def test_process_death_before_profile_publication_keeps_the_old_release(
+    tmp_path, monkeypatch
+):
+    from zippergen import serve
+
+    home = tmp_path / "home"
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(home))
+    deployments = home / "deployments"
+    deployments.mkdir(parents=True)
+    old_profile = {
+        "name": "mailflow",
+        "cwd": str(tmp_path / "old-bundle"),
+        "python": str(tmp_path / "old-environment" / "bin" / "python"),
+        "workflow": "workflow.py:sample",
+        "store": str(home / "stores" / "mailflow.sqlite"),
+        "log": str(home / "logs" / "mailflow.log"),
+    }
+    profile_path = deployments / "mailflow.json"
+    profile_path.write_text(json.dumps(old_profile))
+    candidate = {
+        **old_profile,
+        "cwd": str(tmp_path / "candidate-bundle"),
+        "python": str(tmp_path / "candidate-environment" / "bin" / "python"),
+        "secrets_file": str(tmp_path / "candidate-secrets.json"),
+    }
+
+    pid = os.fork()
+    if pid == 0:
+        original = serve.write_private_text
+
+        def die_before_profile(path, content):
+            if Path(path) == profile_path:
+                os.kill(os.getpid(), signal.SIGKILL)
+            return original(path, content)
+
+        serve.write_private_text = die_before_profile
+        serve._write_deployment_artifacts(candidate)
+        os._exit(0)
+
+    _finished, status = os.waitpid(pid, 0)
+
+    assert os.WIFSIGNALED(status)
+    assert os.WTERMSIG(status) == signal.SIGKILL
+    assert json.loads(profile_path.read_text()) == old_profile
+    script = (deployments / "mailflow.sh").read_text()
+    assert "__launch-deployment" in script
+    assert "candidate-bundle" not in script
+    assert "candidate-environment" not in script
 
 
 def test_setup_failure_rolls_back_a_swapped_candidate_environment(
@@ -3663,7 +3782,7 @@ def test_setup_failure_rolls_back_a_swapped_candidate_environment(
     )
 
     with pytest.raises(SystemExit, match="simulated setup failure"):
-        main([
+        _deploy_main_for_test([
             "deploy",
             "--set",
             "topic=new",
@@ -3705,7 +3824,7 @@ def test_redeploy_refuses_a_new_workflow_until_state_is_reset(
     ]
 
     with pytest.raises(SystemExit, match="different workflow.*deploy reset"):
-        main(deploy)
+        _deploy_main_for_test(deploy)
 
     stopped = {"state": "not-loaded", "healthy": False, "detail": "not loaded"}
     monkeypatch.setattr(
@@ -3718,7 +3837,7 @@ def test_redeploy_refuses_a_new_workflow_until_state_is_reset(
     )
     assert main(["deploy", "reset", "--yes"]) == 0
     capsys.readouterr()
-    assert main(deploy) == 0
+    assert _deploy_main_for_test(deploy) == 0
     profile = json.loads(_the_deployment(home).read_text())
     assert profile["source_workflow"].endswith("two.py:hello")
 
