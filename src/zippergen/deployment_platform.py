@@ -271,6 +271,25 @@ def enforce_deploy_requirement(action: str | None, name: str) -> None:
         require_service_stopped(name, DEPLOY_REQUIREMENT_VERB[action])
 
 
+def unreachable_service_status(
+    manager: str, service: str, detail: str
+) -> dict[str, object]:
+    """The service manager could not be asked, so nothing is known.
+
+    "unknown" is not a guess about the process; it is the honest answer to a
+    question nobody could put. Answering "not-loaded" instead is what let
+    compact and remove destroy a store while a service still held it.
+    """
+
+    return {
+        "manager": manager,
+        "service": service,
+        "state": "unknown",
+        "healthy": False,
+        "detail": detail,
+    }
+
+
 def systemd_service_status(name: str) -> dict[str, object]:
     unit = systemd_unit_name(name)
     try:
@@ -286,26 +305,27 @@ def systemd_service_status(name: str) -> dict[str, object]:
             timeout=5,
         )
     except FileNotFoundError:
-        return {
-            "manager": "systemd",
-            "service": unit,
-            "state": "unknown",
-            "healthy": False,
-            "detail": "systemctl was not found",
-        }
+        return unreachable_service_status(
+            "systemd", unit, "systemctl was not found"
+        )
     except subprocess.TimeoutExpired:
-        return {
-            "manager": "systemd",
-            "service": unit,
-            "state": "unknown",
-            "healthy": False,
-            "detail": "systemctl timed out",
-        }
+        return unreachable_service_status("systemd", unit, "systemctl timed out")
     values = {}
     for raw in (result.stdout or "").splitlines():
         key, separator, value = raw.partition("=")
         if separator:
             values[key] = value
+    # A unit that does not exist is still an answer: `systemctl show` succeeds
+    # and reports LoadState=not-found. So a non-zero exit never means "no such
+    # service" -- it means systemctl could not reach the user manager at all,
+    # which is what an ssh session without a lingering login looks like.
+    if result.returncode != 0 or not values:
+        detail = (result.stderr or result.stdout or "").strip().splitlines()
+        return unreachable_service_status(
+            "systemd",
+            unit,
+            f"systemctl could not be asked: {detail[0] if detail else 'no output'}",
+        )
     active = values.get("ActiveState", "")
     sub = values.get("SubState", "")
     try:
@@ -316,10 +336,22 @@ def systemd_service_status(name: str) -> dict[str, object]:
         restarts = int(values.get("NRestarts", "0"))
     except ValueError:
         restarts = 0
-    if result.returncode == 0 and active == "active" and sub == "running":
+    # Whether the unit exists at all is settled before anything is read into
+    # how it ran. An uninstalled unit still reports inactive with exit status
+    # 0, which is indistinguishable from a workflow that finished.
+    if values.get("LoadState") == "not-found":
+        state = "not-loaded"
+        healthy = False
+        detail = f"{unit} is not installed"
+    elif active == "active" and sub == "running":
         state = "running"
         healthy = True
+        # A process that keeps dying and coming back is running every time it
+        # is looked at. The restart count is the only thing that distinguishes
+        # it from one that has been up since it started, so it is always said.
         detail = f"{unit} is running"
+        if restarts:
+            detail += f" after {restarts} restart(s)"
     # Current systemd state determines whether the service is restarting.
     # NRestarts and ExecMainStatus are historical diagnostics: they remain
     # non-zero after a deliberate stop and must not make an inactive unit look
@@ -331,18 +363,10 @@ def systemd_service_status(name: str) -> dict[str, object]:
             f"{unit} is not healthy; {active or 'unknown'}/{sub or 'unknown'}, "
             f"last exit code {exit_code}, {restarts} restart(s)"
         )
-    elif (
-        result.returncode == 0
-        and active == "inactive"
-        and exit_code == 0
-    ):
+    elif active == "inactive" and exit_code == 0:
         state = "completed"
         healthy = True
         detail = f"{unit} completed successfully"
-    elif values.get("LoadState") == "not-found":
-        state = "not-loaded"
-        healthy = False
-        detail = f"{unit} is not installed"
     elif active == "failed" or sub == "failed":
         state = "loaded"
         healthy = False
@@ -351,7 +375,7 @@ def systemd_service_status(name: str) -> dict[str, object]:
             f"{restarts} restart(s). Inspect 'zippergen deploy logs'"
         )
     else:
-        state = "loaded" if result.returncode == 0 else "not-loaded"
+        state = "loaded"
         healthy = False
         detail = f"{unit} is {active or sub or 'not active'}"
     return {
@@ -367,36 +391,46 @@ def systemd_service_status(name: str) -> dict[str, object]:
     }
 
 
-def launchd_service_status(name: str) -> dict[str, object]:
-    service = f"{launchctl_domain()}/{launchd_label(name)}"
+def launchctl_print(target: str) -> subprocess.CompletedProcess | None:
+    """Ask launchctl about one target, or report that it could not be asked.
+
+    ``None`` means launchctl itself did not run. A returned process may still
+    carry a non-zero code: that is launchctl answering, not launchctl failing.
+    """
+
     try:
-        result = subprocess.run(
-            launchctl_command("print", service),
+        return subprocess.run(
+            launchctl_command("print", target),
             check=False,
             capture_output=True,
             text=True,
             timeout=5,
         )
-    except FileNotFoundError:
-        return {
-            "manager": "launchd",
-            "service": service,
-            "state": "unknown",
-            "healthy": False,
-            "detail": "launchctl was not found",
-        }
-    except subprocess.TimeoutExpired:
-        return {
-            "manager": "launchd",
-            "service": service,
-            "state": "unknown",
-            "healthy": False,
-            "detail": "launchctl timed out",
-        }
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return None
+
+
+def launchd_service_status(name: str) -> dict[str, object]:
+    service = f"{launchctl_domain()}/{launchd_label(name)}"
+    result = launchctl_print(service)
+    if result is None:
+        return unreachable_service_status(
+            "launchd", service, "launchctl could not be asked"
+        )
     if result.returncode != 0:
+        # `launchctl print` fails the same way for "there is no such service"
+        # and for "I cannot reach that domain", and those two must not be
+        # confused: only the first one makes it safe to destroy the store.
+        # Printing the domain separates them -- it succeeds exactly when
+        # launchctl could have found the service had it been loaded.
+        domain = launchctl_print(launchctl_domain())
         detail = (
             result.stderr or result.stdout or "not loaded"
         ).strip().splitlines()[0]
+        if domain is None or domain.returncode != 0:
+            return unreachable_service_status(
+                "launchd", service, f"launchctl could not be asked: {detail}"
+            )
         return {
             "manager": "launchd",
             "service": service,
@@ -432,7 +466,12 @@ def launchd_service_status(name: str) -> dict[str, object]:
     if state == "running" or active_count > 0:
         health = "running"
         healthy = True
+        # A process that keeps dying and coming back is running every time it
+        # is looked at. The launch count is the only thing that distinguishes
+        # it from one that has been up since it started, so it is always said.
         detail = f"{service} is running"
+        if runs > 1:
+            detail += f" after {runs} launch(es)"
     elif last_exit not in {None, 0}:
         health = "restarting"
         healthy = False

@@ -208,8 +208,43 @@ def _store_status(store_path: str) -> dict[str, object]:
             "summary": "store does not exist",
         }
 
+    # Opening a store and reading it answer one question -- can this durable
+    # state be inspected? -- so they share one answer. A file whose header is
+    # intact but whose pages are damaged opens and then fails on the first
+    # SELECT, and splitting the answer is what made `deploy status` traceback
+    # on a store that `deploy check` reported cleanly.
     try:
         conn = open_store_readonly(path)
+        try:
+            roles = list_role_states(conn)
+            outstanding = list_outstanding_messages(conn)
+            human_rows = conn.execute(
+                "SELECT task_id, role, action, status, created_at, updated_at "
+                "FROM human_tasks ORDER BY updated_at DESC"
+            ).fetchall()
+            pending_tasks = [
+                {
+                    "task_id": row[0],
+                    "role": row[1],
+                    "action": row[2],
+                    "created_at": row[4],
+                    "updated_at": row[5],
+                }
+                for row in human_rows
+                if row[3] == "pending"
+            ]
+            done_task_count = sum(1 for row in human_rows if row[3] == "done")
+            results = list_workflow_results(conn)
+            connectors = list_connector_health(conn)
+            history = {
+                "rows": int(
+                    conn.execute("SELECT COUNT(*) FROM history").fetchone()[0]
+                ),
+                "keep": read_history_keep(conn),
+            }
+            last_failure = read_last_failure(conn)
+        finally:
+            conn.close()
     except (OSError, StoreSchemaError, sqlite3.Error) as exc:
         return {
             "store": str(path),
@@ -217,36 +252,6 @@ def _store_status(store_path: str) -> dict[str, object]:
             "state": "incompatible",
             "summary": f"cannot inspect durable state: {exc}",
         }
-    try:
-        roles = list_role_states(conn)
-        outstanding = list_outstanding_messages(conn)
-        human_rows = conn.execute(
-            "SELECT task_id, role, action, status, created_at, updated_at "
-            "FROM human_tasks ORDER BY updated_at DESC"
-        ).fetchall()
-        pending_tasks = [
-            {
-                "task_id": row[0],
-                "role": row[1],
-                "action": row[2],
-                "created_at": row[4],
-                "updated_at": row[5],
-            }
-            for row in human_rows
-            if row[3] == "pending"
-        ]
-        done_task_count = sum(1 for row in human_rows if row[3] == "done")
-        results = list_workflow_results(conn)
-        connectors = list_connector_health(conn)
-        history = {
-            "rows": int(
-                conn.execute("SELECT COUNT(*) FROM history").fetchone()[0]
-            ),
-            "keep": read_history_keep(conn),
-        }
-        last_failure = read_last_failure(conn)
-    finally:
-        conn.close()
 
     if pending_tasks:
         state = "waiting"
@@ -606,31 +611,27 @@ def _doctor_checks(
     checks.append(_path_parent_check("log path", log_path))
 
     if store_path.exists():
-        try:
-            status = _store_status(str(store_path))
-        except Exception as exc:
-            checks.append(_doctor_check("fail", "sqlite store", f"{type(exc).__name__}: {exc}"))
-        else:
-            store_state = str(status["state"])
-            checks.append(_doctor_check(
-                "fail" if store_state == "incompatible" else "ok",
-                "sqlite store",
-                str(status["summary"]),
-                state=store_state,
-            ))
-            if check_store_integrity:
-                from zippergen.storage_maintenance import (
-                    check_store_integrity as inspect_integrity,
-                )
+        status = _store_status(str(store_path))
+        store_state = str(status["state"])
+        checks.append(_doctor_check(
+            "fail" if store_state == "incompatible" else "ok",
+            "sqlite store",
+            str(status["summary"]),
+            state=store_state,
+        ))
+        if check_store_integrity:
+            from zippergen.storage_maintenance import (
+                check_store_integrity as inspect_integrity,
+            )
 
-                integrity = inspect_integrity(store_path)
-                checks.append(
-                    _doctor_check(
-                        "ok" if integrity.ok else "fail",
-                        "sqlite integrity",
-                        integrity.detail,
-                    )
+            integrity = inspect_integrity(store_path)
+            checks.append(
+                _doctor_check(
+                    "ok" if integrity.ok else "fail",
+                    "sqlite integrity",
+                    integrity.detail,
                 )
+            )
     else:
         checks.append(_doctor_check("warn", "sqlite store", f"store does not exist yet: {store_path}"))
 

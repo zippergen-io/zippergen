@@ -73,3 +73,34 @@ def test_systemd_failed_service_is_a_failure_with_diagnostics(monkeypatch):
     assert check["status"] == "fail"
     assert check["active_state"] == "failed"
     assert "deploy logs" in check["detail"]
+
+
+def test_a_store_that_opens_but_cannot_be_read_is_reported_not_raised(tmp_path):
+    """Damage can leave the header intact and the pages unreadable.
+
+    Such a store opens and then fails on the first SELECT. Reporting that as a
+    state keeps every caller -- `deploy status` as well as `deploy check` --
+    from having to catch database errors of its own.
+    """
+
+    from zippergen.deployment_checks import _store_status
+    from zippergen.store import open_store, record_history
+
+    store = tmp_path / "rot.sqlite"
+    conn = open_store(str(store))
+    conn.execute("BEGIN IMMEDIATE")
+    for seq in range(3000):
+        record_history(conn, "A", {"kind": "act", "seq": seq, "pad": "y" * 200})
+    conn.execute("COMMIT")
+    conn.close()
+
+    # Leave page 1 -- the header and schema -- alone, so the file still opens.
+    raw = bytearray(store.read_bytes())
+    for offset in range(len(raw) // 2, min(len(raw) // 2 + 30_000, len(raw))):
+        raw[offset] ^= 0xFF
+    store.write_bytes(bytes(raw))
+
+    status = _store_status(str(store))
+
+    assert status["state"] == "incompatible"
+    assert "cannot inspect durable state" in str(status["summary"])

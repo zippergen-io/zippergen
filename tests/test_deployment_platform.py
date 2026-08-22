@@ -239,3 +239,174 @@ def test_an_undeclared_verb_is_a_programming_error(monkeypatch):
 
     with pytest.raises(AssertionError, match="has no entry"):
         deployment_platform.enforce_deploy_requirement("teleport", "d")
+
+
+# A service manager that cannot be reached must never be mistaken for one that
+# answered "there is no such service": the first leaves a process possibly
+# holding the store, and the second is what makes compact and remove safe.
+
+
+def test_systemctl_that_cannot_reach_the_bus_is_unknown_not_absent(monkeypatch):
+    """`systemctl show` reports a missing unit with exit 0 and LoadState=not-found.
+
+    A non-zero exit therefore never means "no such service" -- it means the user
+    manager could not be reached, which is what an ssh session without a
+    lingering login looks like.
+    """
+
+    monkeypatch.setattr(
+        "zippergen.deployment_platform.subprocess.run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args[0],
+            1,
+            stdout="",
+            stderr="Failed to connect to bus: No medium found\n",
+        ),
+    )
+
+    status = systemd_service_status("call-intake")
+
+    assert status["state"] == "unknown"
+    assert status["healthy"] is False
+    assert "could not be asked" in str(status["detail"])
+
+
+def test_systemctl_reporting_a_missing_unit_is_absent_not_unknown(monkeypatch):
+    monkeypatch.setattr(
+        "zippergen.deployment_platform.subprocess.run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args[0],
+            0,
+            stdout="LoadState=not-found\nActiveState=inactive\nSubState=dead\n",
+            stderr="",
+        ),
+    )
+
+    assert systemd_service_status("call-intake")["state"] == "not-loaded"
+
+
+def test_a_running_systemd_service_reports_how_often_it_restarted(monkeypatch):
+    """A crash loop is running every time it is looked at.
+
+    Without the count, a unit that dies and returns every ten seconds is
+    reported exactly like one that has been up since it started.
+    """
+
+    monkeypatch.setattr(
+        "zippergen.deployment_platform.subprocess.run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args[0],
+            0,
+            stdout=_systemd_show(
+                active="active", sub="running", status=1, restarts=47
+            ),
+            stderr="",
+        ),
+    )
+
+    status = systemd_service_status("call-intake")
+
+    assert status["state"] == "running"
+    assert status["restarts"] == 47
+    assert "47 restart(s)" in str(status["detail"])
+
+
+def test_a_steadily_running_systemd_service_says_nothing_about_restarts(monkeypatch):
+    monkeypatch.setattr(
+        "zippergen.deployment_platform.subprocess.run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args[0],
+            0,
+            stdout=_systemd_show(
+                active="active", sub="running", status=0, restarts=0
+            ),
+            stderr="",
+        ),
+    )
+
+    assert systemd_service_status("call-intake")["detail"].endswith("is running")
+
+
+def _launchctl_replies(replies: dict[str, tuple[int, str]]):
+    """Answer `launchctl print TARGET` from a table keyed by target."""
+
+    def run(args, **kwargs):
+        target = args[-1]
+        code, err = replies[target]
+        return subprocess.CompletedProcess(args, code, stdout="", stderr=err)
+
+    return run
+
+
+def test_launchctl_that_cannot_reach_the_domain_is_unknown_not_absent(monkeypatch):
+    from zippergen.deployment_platform import (
+        launchctl_domain,
+        launchd_label,
+        launchd_service_status,
+    )
+
+    domain = launchctl_domain()
+    service = f"{domain}/{launchd_label('call-intake')}"
+    monkeypatch.setattr(
+        "zippergen.deployment_platform.subprocess.run",
+        _launchctl_replies({
+            service: (113, "Bad request.\n"),
+            domain: (112, "Could not find domain\n"),
+        }),
+    )
+
+    status = launchd_service_status("call-intake")
+
+    assert status["state"] == "unknown"
+    assert "could not be asked" in str(status["detail"])
+
+
+def test_launchctl_answering_for_a_reachable_domain_is_absent(monkeypatch):
+    from zippergen.deployment_platform import (
+        launchctl_domain,
+        launchd_label,
+        launchd_service_status,
+    )
+
+    domain = launchctl_domain()
+    service = f"{domain}/{launchd_label('call-intake')}"
+    monkeypatch.setattr(
+        "zippergen.deployment_platform.subprocess.run",
+        _launchctl_replies({
+            service: (113, "Could not find service\n"),
+            domain: (0, ""),
+        }),
+    )
+
+    assert launchd_service_status("call-intake")["state"] == "not-loaded"
+
+
+@pytest.mark.parametrize("failure", [FileNotFoundError, subprocess.TimeoutExpired])
+def test_a_launchctl_that_does_not_run_is_unknown(monkeypatch, failure):
+    from zippergen.deployment_platform import launchd_service_status
+
+    def run(args, **kwargs):
+        raise failure("launchctl", 5) if failure is subprocess.TimeoutExpired \
+            else failure("launchctl")
+
+    monkeypatch.setattr("zippergen.deployment_platform.subprocess.run", run)
+
+    assert launchd_service_status("call-intake")["state"] == "unknown"
+
+
+def test_every_way_of_not_getting_an_answer_protects_the_store(monkeypatch):
+    """The point of "unknown": destructive verbs refuse when nobody could ask."""
+
+    from zippergen.deployment_platform import (
+        ServiceIsLiveError,
+        enforce_deploy_requirement,
+    )
+
+    monkeypatch.setattr(
+        "zippergen.deployment_platform.deployment_service_status",
+        lambda name: {"state": "unknown", "detail": "could not be asked"},
+    )
+
+    for verb in ("compact", "remove"):
+        with pytest.raises(ServiceIsLiveError):
+            enforce_deploy_requirement(verb, "call-intake")
