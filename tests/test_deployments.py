@@ -520,3 +520,35 @@ def test_preparing_the_managed_home_twice_changes_nothing(tmp_path, monkeypatch)
     _prepare_managed_home(profile)
 
     assert (home / "logs" / "twice.log").read_text() == "kept\n"
+
+
+def test_a_world_readable_log_from_an_earlier_release_is_made_private(
+    tmp_path, monkeypatch
+):
+    """The checks require a private log file, not merely a private directory.
+
+    A log left readable by an older release failed the checks on every later
+    deploy, because the only code that tightened it ran after they had already
+    refused the candidate.
+    """
+
+    from zippergen.serve import _prepare_managed_home
+
+    home = tmp_path / "home"
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(home))
+    log_path = home / "logs" / "legacy.log"
+    log_path.parent.mkdir(parents=True)
+    log_path.write_text("from an earlier release\n")
+    log_path.chmod(0o644)
+
+    _prepare_managed_home({
+        "schema_version": DEPLOYMENT_PROFILE_SCHEMA_VERSION,
+        "name": "legacy",
+        "cwd": str(tmp_path),
+        "store": str(home / "runs/legacy.sqlite"),
+        "log": str(log_path),
+        "python": "/usr/bin/python3",
+    })
+
+    assert log_path.stat().st_mode & 0o077 == 0
+    assert log_path.read_text() == "from an earlier release\n", "log kept"

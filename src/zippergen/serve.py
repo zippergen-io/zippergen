@@ -295,13 +295,17 @@ def _deployment_command(name: str, *, python_executable: str | None = None) -> s
 
 
 def _prepare_managed_home(profile: Mapping[str, object]) -> None:
-    """Create ZipperGen's own directories, private, before anything reads them.
+    """Make everything ZipperGen owns under its home private, before it is read.
 
     The managed home is ZipperGen's workspace rather than part of any one
-    deployment, so making it is a precondition for evaluating a candidate, not
-    a step in publishing one. Doing it only at publication time is what made
-    the readiness checks demand a state that only publication created, so the
-    first deploy on a new machine always failed its own checks.
+    deployment, so preparing it is a precondition for evaluating a candidate,
+    not a step in publishing one. Doing it only at publication time is what
+    made the readiness checks demand a state that only publication created, so
+    a first deploy failed on the home, and a later one on a log file left
+    world-readable by an earlier release.
+
+    Directories and the log file are one job for that reason: the checks ask
+    the same question of both, so both are answered in the same place.
 
     Called more than once per deploy on purpose: every step is idempotent.
     """
@@ -320,6 +324,14 @@ def _prepare_managed_home(profile: Mapping[str, object]) -> None:
             continue
         ensure_private_directory(directory)
 
+    try:
+        log_path.resolve().relative_to(home.resolve())
+    except ValueError:
+        return
+    log_fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    os.close(log_fd)
+    log_path.chmod(0o600)
+
 
 def _write_deployment_artifacts(profile: dict[str, object]) -> None:
     name = str(profile["name"])
@@ -327,20 +339,7 @@ def _write_deployment_artifacts(profile: dict[str, object]) -> None:
     script_path = _deployment_script_path(name)
     service_path = _deployment_service_path(name)
     launchd_path = _deployment_launchd_path(name)
-    home = _zippergen_home()
     _prepare_managed_home(profile)
-    log_path = Path(str(profile["log"])).expanduser()
-
-    try:
-        log_path.resolve().relative_to(home.resolve())
-    except ValueError:
-        pass
-    else:
-        log_fd = os.open(
-            log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600
-        )
-        os.close(log_fd)
-        log_path.chmod(0o600)
 
     stored_profile = dict(profile)
     stored_profile["inputs"] = encode_value(profile.get("inputs") or {})
