@@ -2690,7 +2690,9 @@ def test_trace_follow_does_not_call_a_fresh_action_start_incomplete(
                         "type": "act_start",
                         "action": "mailbox_has_mail",
                         "action_kind": "effect",
-                        "inputs": {},
+                        "inputs": {
+                            "email": "A deliberately long email summary " * 5,
+                        },
                         "seq": 4,
                         "attempt_id": "attempt-4",
                     },
@@ -2739,6 +2741,10 @@ def test_trace_follow_does_not_call_a_fresh_action_start_incomplete(
         assert line.index("Mailbox") == header.index("Participant")
         assert line.index("effect") == header.index("Event")
         assert line.index("mailbox_has_mail") == header.index("Detail")
+    start_index = lines.index(start)
+    continuation = lines[start_index + 1]
+    assert continuation.startswith(" " * header.index("Detail"))
+    assert "deliberately long" in continuation
 
 
 def test_trace_follow_rejects_a_non_positive_interval(

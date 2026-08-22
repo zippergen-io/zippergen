@@ -232,15 +232,13 @@ class TerminalRenderer:
             return "…"[:width]
         return text[: width - 1] + "…"
 
-    def columns(
+    def column_widths(
         self,
-        title: str,
         headers: tuple[str, ...],
         rows: list[tuple[object, ...]],
-        *,
-        right_aligned: frozenset[int] = frozenset(),
-        major: bool = True,
-    ) -> None:
+    ) -> tuple[int, ...]:
+        """Calculate one reusable layout for a set of column rows."""
+
         if not headers:
             raise ValueError("A column table requires at least one heading.")
         if any(len(row) != len(headers) for row in rows):
@@ -309,7 +307,23 @@ class TerminalRenderer:
                     ),
                 )
                 widths[selected] -= 1
-        self.section(title, major=major)
+        return tuple(widths)
+
+    def column_rows(
+        self,
+        headers: tuple[str, ...],
+        rows: list[tuple[object, ...]],
+        widths: tuple[int, ...],
+        *,
+        right_aligned: frozenset[int] = frozenset(),
+    ) -> None:
+        """Emit rows with a previously calculated column layout."""
+
+        if len(widths) != len(headers):
+            raise ValueError("Every column width must match one heading.")
+        if any(len(row) != len(headers) for row in rows):
+            raise ValueError("Every column-table row must match its headings.")
+        rendered = [tuple(str(value) for value in row) for row in rows]
         bounded_columns = {
             index
             for index, heading in enumerate(headers)
@@ -317,7 +331,7 @@ class TerminalRenderer:
             in (_IDENTIFIER_COLUMN_HEADINGS | _ATOMIC_COLUMN_HEADINGS)
         }
 
-        def emit_row(values: tuple[str, ...]) -> None:
+        for values in rendered:
             wrapped = [
                 (
                     [self.truncated_cell(value, widths[index])]
@@ -343,11 +357,34 @@ class TerminalRenderer:
                     ).rstrip()
                 )
 
-        emit_row(headers)
+    def columns(
+        self,
+        title: str,
+        headers: tuple[str, ...],
+        rows: list[tuple[object, ...]],
+        *,
+        right_aligned: frozenset[int] = frozenset(),
+        major: bool = True,
+        widths: tuple[int, ...] | None = None,
+    ) -> tuple[int, ...]:
+        if widths is None:
+            widths = self.column_widths(headers, rows)
+        self.section(title, major=major)
+        self.column_rows(
+            headers,
+            [headers],
+            widths,
+            right_aligned=right_aligned,
+        )
         self.emit("  ".join("─" * width for width in widths))
-        for row in rendered:
-            emit_row(row)
+        self.column_rows(
+            headers,
+            rows,
+            widths,
+            right_aligned=right_aligned,
+        )
         self.emit()
+        return widths
 
     def next(self, value: object) -> None:
         self.section("Next")

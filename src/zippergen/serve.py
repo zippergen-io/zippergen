@@ -1041,57 +1041,50 @@ def _print_trace_events(events: list[dict]) -> None:
     )
 
 
-_TRACE_FOLLOW_HEADERS = ("Time", "#", "Participant", "Event", "Detail")
-_TRACE_FOLLOW_WIDTHS = (29, 12, 16, 20)
+_TRACE_HEADERS = ("Time", "#", "Participant", "Event", "Detail")
 
 
-def _trace_follow_line(values: tuple[object, ...]) -> str:
-    """Render one row against the stable layout used by a followed trace."""
-
-    from zippergen.rendering import TerminalRenderer
-
-    renderer = TerminalRenderer()
-    cells = []
-    for value, width in zip(values[:-1], _TRACE_FOLLOW_WIDTHS, strict=True):
-        bounded = renderer.truncated_cell(value, width)
-        cells.append(renderer.pad_cell(bounded, width))
-    cells.append(str(values[-1]))
-    return "  ".join(cells).rstrip()
-
-
-def _print_trace_follow_table(events: list[dict]) -> None:
-    """Print the initial snapshot using the stable streaming layout."""
+def _print_trace_follow_table(events: list[dict]) -> tuple[int, ...]:
+    """Print and retain one table layout for the whole followed trace."""
 
     from zippergen.rendering import TerminalRenderer
 
     renderer = TerminalRenderer()
+    rows = _trace_rows(events)
+    largest_rowid = max((int(event["rowid"]) for event in events), default=0)
+    id_digits = max(4, len(str(largest_rowid)) + 1)
+    layout_hint = (
+        "0000-00-00 00:00:00.000+00:00",
+        "#" + "0" * id_digits,
+        "Participant",
+        "assistant failed",
+        "D" * renderer.data_output_columns(),
+    )
+    widths = renderer.column_widths(_TRACE_HEADERS, [*rows, layout_hint])
     count = len(events)
-    renderer.section(f"Trace ({count} event{'s' if count != 1 else ''})")
-    renderer.emit(_trace_follow_line(_TRACE_FOLLOW_HEADERS))
-    detail_width = max(
-        len(_TRACE_FOLLOW_HEADERS[-1]),
-        renderer.data_output_columns()
-        - sum(_TRACE_FOLLOW_WIDTHS)
-        - 2 * (len(_TRACE_FOLLOW_HEADERS) - 1),
+    renderer.columns(
+        f"Trace ({count} event{'s' if count != 1 else ''})",
+        _TRACE_HEADERS,
+        rows,
+        widths=widths,
     )
-    renderer.emit(
-        "  ".join(
-            [*("─" * width for width in _TRACE_FOLLOW_WIDTHS), "─" * detail_width]
-        )
-    )
-    for row in _trace_rows(events):
-        renderer.emit(_trace_follow_line(row))
+    return widths
 
 
-def _print_trace_follow_events(events: list[dict]) -> None:
+def _print_trace_follow_events(
+    events: list[dict],
+    widths: tuple[int, ...],
+) -> None:
     """Append trace rows without reprinting the table banner each poll."""
+
+    from zippergen.rendering import TerminalRenderer
 
     # A completion commonly lands in the next polling batch.  A newly seen
     # start is therefore only a start, not evidence of an incomplete attempt.
     # Static snapshots still mark starts whose terminal event is absent.
     rows = _trace_rows(events, mark_unmatched_incomplete=False)
-    for row in rows:
-        print(_trace_follow_line(row), flush=True)
+    renderer = TerminalRenderer(output=lambda value: print(value, flush=True))
+    renderer.column_rows(_TRACE_HEADERS, rows, widths)
 
 
 def _print_tasks(tasks: list[dict], *, heading: str) -> None:
@@ -4361,6 +4354,7 @@ def _trace_command(args) -> int:
         after_rowid=args.after,
         limit=args.tail,
     )
+    follow_widths: tuple[int, ...] | None = None
     if args.json and args.follow:
         for event in events:
             print(json.dumps(event, default=str), flush=True)
@@ -4369,7 +4363,7 @@ def _trace_command(args) -> int:
     else:
         _print_execution_reference(execution)
         if args.follow:
-            _print_trace_follow_table(events)
+            follow_widths = _print_trace_follow_table(events)
         else:
             _print_trace_events(events)
     if not args.follow:
@@ -4396,7 +4390,9 @@ def _trace_command(args) -> int:
                     for event in new_events:
                         print(json.dumps(event, default=str), flush=True)
                 else:
-                    _print_trace_follow_events(new_events)
+                    if follow_widths is None:
+                        raise AssertionError("follow table layout was not prepared")
+                    _print_trace_follow_events(new_events, follow_widths)
                 if len(new_events) < args.tail:
                     break
     except KeyboardInterrupt:
