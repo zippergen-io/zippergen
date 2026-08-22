@@ -2669,6 +2669,78 @@ def test_trace_follow_prints_the_table_banner_only_once(
     assert "if → false" in output
 
 
+def test_trace_follow_does_not_call_a_fresh_action_start_incomplete(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    store_path = _prepared_deployment_store(tmp_path, monkeypatch, capsys)
+    polls = 0
+
+    def advance(_interval):
+        nonlocal polls
+        polls += 1
+        writer = open_store(str(store_path))
+        try:
+            if polls == 1:
+                record_history(
+                    writer,
+                    "Mailbox",
+                    {
+                        "type": "act_start",
+                        "action": "mailbox_has_mail",
+                        "action_kind": "effect",
+                        "inputs": {},
+                        "seq": 4,
+                        "attempt_id": "attempt-4",
+                    },
+                )
+                return
+            if polls == 2:
+                record_history(
+                    writer,
+                    "Mailbox",
+                    {
+                        "type": "act",
+                        "action": "mailbox_has_mail",
+                        "action_kind": "effect",
+                        "outputs": {"has_mail": False},
+                        "seq": 4,
+                        "attempt_id": "attempt-4",
+                        "duration_ms": 417,
+                    },
+                )
+                return
+        finally:
+            writer.close()
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("zippergen.serve.time.sleep", advance)
+
+    assert main([
+        "deploy",
+        "trace",
+        "--follow",
+        "--interval",
+        "0.01",
+    ]) == 0
+
+    output = capsys.readouterr().out
+    assert "effect start" in output
+    assert "effect incomplete" not in output
+    assert "effect done" in output
+    assert "417ms" in output
+    lines = output.splitlines()
+    header = next(line for line in lines if line.startswith("Time"))
+    start = next(line for line in lines if "effect start" in line)
+    done = next(line for line in lines if "effect done" in line)
+    for line in (start, done):
+        assert line.index("#") == header.index("#")
+        assert line.index("Mailbox") == header.index("Participant")
+        assert line.index("effect") == header.index("Event")
+        assert line.index("mailbox_has_mail") == header.index("Detail")
+
+
 def test_trace_follow_rejects_a_non_positive_interval(
     tmp_path,
     monkeypatch,

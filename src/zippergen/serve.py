@@ -966,7 +966,11 @@ def _trace_row(
     )
 
 
-def _trace_rows(events: list[dict]) -> list[tuple[object, ...]]:
+def _trace_rows(
+    events: list[dict],
+    *,
+    mark_unmatched_incomplete: bool = True,
+) -> list[tuple[object, ...]]:
     starts: dict[tuple[object, ...], list[tuple[int, float]]] = {}
     matched_starts: set[int] = set()
     durations: dict[int, float] = {}
@@ -1005,7 +1009,8 @@ def _trace_rows(events: list[dict]) -> list[tuple[object, ...]]:
         event = item.get("event")
         rowid = int(item["rowid"])
         incomplete = (
-            isinstance(event, dict)
+            mark_unmatched_incomplete
+            and isinstance(event, dict)
             and event.get("type") == "act_start"
             and rowid not in matched_starts
         )
@@ -1036,14 +1041,57 @@ def _print_trace_events(events: list[dict]) -> None:
     )
 
 
+_TRACE_FOLLOW_HEADERS = ("Time", "#", "Participant", "Event", "Detail")
+_TRACE_FOLLOW_WIDTHS = (29, 12, 16, 20)
+
+
+def _trace_follow_line(values: tuple[object, ...]) -> str:
+    """Render one row against the stable layout used by a followed trace."""
+
+    from zippergen.rendering import TerminalRenderer
+
+    renderer = TerminalRenderer()
+    cells = []
+    for value, width in zip(values[:-1], _TRACE_FOLLOW_WIDTHS, strict=True):
+        bounded = renderer.truncated_cell(value, width)
+        cells.append(renderer.pad_cell(bounded, width))
+    cells.append(str(values[-1]))
+    return "  ".join(cells).rstrip()
+
+
+def _print_trace_follow_table(events: list[dict]) -> None:
+    """Print the initial snapshot using the stable streaming layout."""
+
+    from zippergen.rendering import TerminalRenderer
+
+    renderer = TerminalRenderer()
+    count = len(events)
+    renderer.section(f"Trace ({count} event{'s' if count != 1 else ''})")
+    renderer.emit(_trace_follow_line(_TRACE_FOLLOW_HEADERS))
+    detail_width = max(
+        len(_TRACE_FOLLOW_HEADERS[-1]),
+        renderer.data_output_columns()
+        - sum(_TRACE_FOLLOW_WIDTHS)
+        - 2 * (len(_TRACE_FOLLOW_HEADERS) - 1),
+    )
+    renderer.emit(
+        "  ".join(
+            [*("─" * width for width in _TRACE_FOLLOW_WIDTHS), "─" * detail_width]
+        )
+    )
+    for row in _trace_rows(events):
+        renderer.emit(_trace_follow_line(row))
+
+
 def _print_trace_follow_events(events: list[dict]) -> None:
     """Append trace rows without reprinting the table banner each poll."""
 
-    for timestamp, event_id, role, event, detail in _trace_rows(events):
-        print(
-            f"{timestamp}  {event_id}  {role}  {event}  {detail}",
-            flush=True,
-        )
+    # A completion commonly lands in the next polling batch.  A newly seen
+    # start is therefore only a start, not evidence of an incomplete attempt.
+    # Static snapshots still mark starts whose terminal event is absent.
+    rows = _trace_rows(events, mark_unmatched_incomplete=False)
+    for row in rows:
+        print(_trace_follow_line(row), flush=True)
 
 
 def _print_tasks(tasks: list[dict], *, heading: str) -> None:
@@ -4320,7 +4368,10 @@ def _trace_command(args) -> int:
         print(json.dumps(events, default=str))
     else:
         _print_execution_reference(execution)
-        _print_trace_events(events)
+        if args.follow:
+            _print_trace_follow_table(events)
+        else:
+            _print_trace_events(events)
     if not args.follow:
         return 0
 
