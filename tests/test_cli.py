@@ -22,6 +22,7 @@ from zippergen.store import (
     load_human_task,
     load_human_task_token,
     open_store,
+    read_history_keep,
     record_history,
 )
 from zippergen.storage_maintenance import inspect_store_storage
@@ -1965,6 +1966,44 @@ def test_explicit_redeploy_replaces_the_named_deployment_source(
     assert _run_prepared_deployment(zippergen_home) == 0
     captured = capsys.readouterr()
     assert json.loads(captured.out) == {"result": "updated?"}
+
+
+def test_redeploy_applies_an_explicit_history_budget_to_the_existing_store(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    workflow_path = tmp_path / "workflow.py"
+    workflow_path.write_text(WORKFLOW_SOURCE)
+    zippergen_home = tmp_path / "zg-home"
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(zippergen_home))
+    monkeypatch.chdir(tmp_path)
+
+    assert _deploy_for_test([f"{workflow_path}:hello"]) == 0
+    capsys.readouterr()
+    profile = json.loads(_the_deployment(zippergen_home).read_text())
+    store_path = Path(profile["store"])
+    conn = open_store(str(store_path))
+    try:
+        for index in range(30):
+            record_history(conn, "User", {"type": "step", "index": index})
+    finally:
+        conn.close()
+
+    assert _deploy_for_test([
+        f"{workflow_path}:hello",
+        "--history-keep",
+        "7",
+    ]) == 0
+
+    conn = open_store(str(store_path))
+    try:
+        assert read_history_keep(conn) == 7
+        assert conn.execute("SELECT COUNT(*) FROM history").fetchone() == (7,)
+    finally:
+        conn.close()
+    profile = json.loads(_the_deployment(zippergen_home).read_text())
+    assert profile["history_keep"] == 7
 
 
 def test_configure_keeps_existing_secret_when_updating_public_field(tmp_path, monkeypatch, capsys):

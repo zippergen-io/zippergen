@@ -407,14 +407,15 @@ Which command writes which is fixed, so there is one place to look:
 
 | command | what it writes |
 |---|---|
-| `zg deploy --history-keep N` | the budget on the profile, and on a store it creates |
+| `zg deploy --history-keep N` | the budget on the profile and the current store; trims immediately |
 | `zg deploy reset` | a new store, carrying the profile's budget |
 | `zg deploy compact --set-history-keep N` | the budget on an existing store, and trims it |
 
-`zg deploy` never opens a store it did not just create. Deploying is
-configuration; the store is state, and `reset` and `compact` are the two
-commands that own state. So a store this ZipperGen cannot open never breaks a
-deploy: the readiness checks report it once, and `reset` is the way through.
+An ordinary `zg deploy` does not open an existing store while changing
+configuration. Passing `--history-keep` is the explicit exception: that option
+owns the store setting, so it updates and trims the current store as well as the
+profile. An incompatible store therefore does not block an ordinary redeploy;
+`reset` remains the way through it.
 
 A budget of zero writes nothing, so it costs nothing rather than writing and
 deleting. Setting a budget also trims immediately: a budget nobody has reached

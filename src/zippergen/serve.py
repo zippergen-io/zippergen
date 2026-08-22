@@ -360,6 +360,43 @@ def _initialize_deployment_store(profile: dict[str, object]) -> bool:
     return True
 
 
+def _apply_existing_history_keep(
+    profile: dict[str, object],
+    *,
+    requested: int | None,
+    store_created: bool,
+) -> None:
+    """Apply an explicit deploy-time budget to a store that already exists.
+
+    A profile setting is the reset default; the store setting controls the
+    running deployment. Recording only the former makes ``--history-keep`` look
+    successful while leaving live behavior unchanged. Opening an existing
+    store remains conditional on this explicit state-setting request, so an
+    ordinary redeploy still never trips over incompatible recovery state.
+    """
+
+    if requested is None or store_created:
+        return
+    path = Path(str(profile["store"])).expanduser()
+    try:
+        connection = open_store(str(path))
+        try:
+            connection.execute("BEGIN IMMEDIATE")
+            try:
+                write_history_keep(connection, requested)
+                connection.execute("COMMIT")
+            except BaseException:
+                connection.execute("ROLLBACK")
+                raise
+        finally:
+            connection.close()
+    except Exception as exc:
+        raise SystemExit(
+            f"Could not apply --history-keep to existing store {path}: "
+            f"{type(exc).__name__}: {exc}"
+        ) from exc
+
+
 def _install_systemd_unit(profile: dict[str, object], *, dry_run: bool = False) -> Path:
     name = str(profile["name"])
     _write_deployment_artifacts(profile)
@@ -3592,8 +3629,13 @@ def _finalize_guided_deployment(
         _bundle_deployment(profile, spec, workflow)
     # Persist enough state to resume configuration even if dependency install
     # or an interactive OAuth step fails.
+    store_created = _initialize_deployment_store(profile)
+    _apply_existing_history_keep(
+        profile,
+        requested=history_keep,
+        store_created=store_created,
+    )
     _write_deployment_artifacts(profile)
-    _initialize_deployment_store(profile)
     _prepare_deployment_environment(profile, spec, skip_install=args.no_install)
     _write_deployment_artifacts(profile)
     _run_deployment_setup(profile, spec, values, skip_setup=args.no_setup)
