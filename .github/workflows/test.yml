@@ -48,3 +48,25 @@ jobs:
 
       - name: Type-check
         run: uvx pyright
+
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+
+      - name: Build and check distributions
+        run: |
+          python -m pip install build twine
+          python -m build
+          python -m twine check dist/*
+
+      - name: Install and smoke-test the wheel
+        run: |
+          python -m venv /tmp/zippergen-wheel-smoke
+          /tmp/zippergen-wheel-smoke/bin/pip install dist/*.whl
+          /tmp/zippergen-wheel-smoke/bin/zg --help
+          /tmp/zippergen-wheel-smoke/bin/zg deploy --help

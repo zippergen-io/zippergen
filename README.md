@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/zippergen-lockup-ink.svg" alt="ZipperGen" width="420">
+  <img src="https://raw.githubusercontent.com/zippergen-io/zippergen/main/assets/zippergen-lockup-ink.svg" alt="ZipperGen" width="420">
 </p>
 
 <p align="center">
@@ -55,14 +55,6 @@ pip install zippergen
 
 ZipperGen needs Python 3.11 or newer. It has no other dependencies. It
 installs two commands: `zippergen`, and `zg` for short.
-
-> The version on PyPI is older than the CLI shown here. Until the next
-> release, install from a clone:
->
-> ```bash
-> git clone https://github.com/zippergen-io/zippergen.git
-> cd zippergen && pip install -e .
-> ```
 
 ## Quick start
 
@@ -161,7 +153,7 @@ knows which one it holds.
 
 The tutorial goes through all of this step by step, including approval on your
 phone and a real deployment:
-[**Your first ZipperGen workflow**](docs/first-workflow.pdf).
+[**Your first ZipperGen workflow**](https://github.com/zippergen-io/zippergen/blob/main/docs/first-workflow.pdf).
 
 ## What you get from writing one protocol
 
@@ -389,7 +381,8 @@ stops before starting when a model, assistant CLI, or connector is not ready:
 zg deploy
 zg deploy status
 zg deploy logs
-zg deploy remove              # store and profile move to trash, not deleted
+zg deploy trace --follow      # append newly committed events until Ctrl-C
+zg deploy remove              # profile, store and log move to trash
 zg deploy reset --yes         # archive durable state; stays stopped afterwards
 ```
 
@@ -400,6 +393,13 @@ freshness checks: the ZipperGen runtime installed for the service and the
 workflow source bundle. A stale warning means the immutable deployment keeps
 running its older snapshot until you redeploy; it does not stop the service,
 and provenance alone cannot tell whether the source difference is important.
+`zg deploy trace` reports the service and runtime freshness before the event
+table, so a stopped deployment is not mistaken for a quiet one. With
+`--follow`, newly committed actions appear first as `start`, followed by
+`done` or `failed`; a static trace calls a start `incomplete` only when no
+terminal event was recorded. Use `status`, not an unmatched trace event, to
+decide what is running now. `inspect --watch` redraws current state in place;
+`trace --follow` preserves the table and appends events.
 
 Use `zg deploy --no-start` only when you deliberately want to prepare and
 review a stopped deployment before a later `zg deploy start`. It is not a
@@ -413,6 +413,13 @@ uninstalls the service:
 zg deploy stop
 zg deploy       # rebuild and start the updated deployment
 ```
+
+On Linux, bare `zg deploy` enables the systemd user unit for autostart. A
+long-lived server account also needs its user manager to survive logout and
+start at boot. If server policy permits it, enable linger once with
+`loginctl enable-linger "$USER"`. `zg deploy check` reports both systemd
+autostart and linger status. Before relying on the deployment unattended, test
+one logout and one reboot, then confirm `zg deploy status` is running.
 
 A workflow can ask a person on Telegram, read Gmail, or write to Google
 Sheets. Which chat, which spreadsheet, which Gmail query: that is project
@@ -455,13 +462,13 @@ zg
 ├── workflow
 │   └── select
 ├── provider
-│   └── configure · set-credential · check · remove · authorize · accept
+│   └── configure · set-credential · check · rename · remove · authorize · accept
 ├── model
-│   └── configure · assign · unassign · check · remove
+│   └── configure · assign · unassign · check · rename · remove
 ├── assistant
-│   └── configure · assign · unassign · check · remove
+│   └── configure · assign · unassign · check · rename · remove
 ├── connector
-│   └── configure · assign · unassign · bind · unbind · check · remove
+│   └── configure · assign · unassign · check · rename · remove
 ├── run
 │   └── status · reset · inspect · trace · tasks · approve
 ├── deploy
@@ -476,10 +483,16 @@ from the implementation. Run `zg <command> --help` for arguments and examples.
 Stores are not part of the ordinary command surface. Each durable run owns its
 managed store; the project deployment owns another. Their commands always
 begin with that owner, for example `zg run tasks` and `zg deploy tasks`. To
-discard a deployment's durable history,
+discard all of a deployment's durable execution state,
 `zg deploy reset --yes` stops it, archives its SQLite files under
-`$ZIPPERGEN_HOME/trash/deployment-stores/`, creates an empty store, and starts
-the service again if it was running. The archive is never silently deleted.
+`$ZIPPERGEN_HOME/trash/deployment-stores/`, creates an empty store, and leaves
+the service stopped. Start it yourself after checking the consequences; the
+reset also clears connector progress, so a mailbox may be read again. The
+archive is never silently deleted.
+`zg deploy remove` is a deployment operation instead: it unregisters the
+service and moves the profile, store, and log to trash, while deleting
+credentials and rebuildable artifacts. A later deploy starts from an empty
+store and requires those credentials again. `remove --purge` keeps no archive.
 `zg deploy compact` trims optional inspection history and rotates logs; stop
 the deployment first, because the combined command refuses before changing
 either resource while its service is running.
@@ -490,8 +503,13 @@ you set the bound.** `role_state` holds one row per participant and
 is the size of the computation, not of its past. (Answered human tasks and their
 tokens are kept as audit records and do grow with how many people have replied.)
 The trace is separate again, recovery never reads it, and each store keeps the
-newest 10,000 rows unless you say otherwise. That is a row count, not a size, so
-size it for the events your workflow actually produces:
+newest 10,000 rows unless you say otherwise. That is a FIFO row count, not a
+time window or a byte limit. Frequent routine events can therefore evict a
+useful incident surprisingly quickly, and events carrying whole emails or
+model answers can make the same row budget use far more disk. Measure the real
+event rate and payload distribution of the workflow before choosing a value;
+very large budgets also make the periodic prune on the writer path more
+expensive.
 
 ```bash
 zg deploy --history-keep 50000              # a wider window
@@ -525,13 +543,14 @@ configurations, participants, actions, and connector requirements.
 
 | | |
 |---|---|
-| [`examples/email_approval.py`](examples/email_approval.py) | the tutorial workflow: watch a mailbox, draft, approve, send |
-| [`examples/diagnosis.py`](examples/diagnosis.py) | two reviewers loop until they agree, the paper's example |
-| [`examples/call_intake.py`](examples/call_intake.py) | Gmail in, Sheets out, deployed as a service |
-| [Your first ZipperGen workflow](docs/first-workflow.pdf) | the tutorial |
-| [Development and deployment guide](docs/workflow-development-deployment-guide.pdf) | the long reference |
-| [Durable storage](docs/durable-storage.md) | current-state recovery, crash guarantees, identity, and history retention |
-| [Workflow authoring skill](.agents/skills/zippergen-workflows/SKILL.md) | what a coding agent follows, also printed by `zippergen skill` |
+| [`examples/email_approval.py`](https://github.com/zippergen-io/zippergen/blob/main/examples/email_approval.py) | the tutorial workflow: watch a mailbox, draft, approve, send |
+| [`examples/diagnosis.py`](https://github.com/zippergen-io/zippergen/blob/main/examples/diagnosis.py) | two reviewers loop until they agree, the paper's example |
+| [`examples/call_intake.py`](https://github.com/zippergen-io/zippergen/blob/main/examples/call_intake.py) | Gmail in, Sheets out, deployed as a service |
+| [Your first ZipperGen workflow](https://github.com/zippergen-io/zippergen/blob/main/docs/first-workflow.pdf) | the tutorial |
+| [Development and deployment guide](https://github.com/zippergen-io/zippergen/blob/main/docs/workflow-development-deployment-guide.pdf) | the long reference |
+| [Durable storage](https://github.com/zippergen-io/zippergen/blob/main/docs/durable-storage.md) | current-state recovery, crash guarantees, identity, and history retention |
+| [Workflow authoring skill](https://github.com/zippergen-io/zippergen/blob/main/.agents/skills/zippergen-workflows/SKILL.md) | what a coding agent follows, also printed by `zippergen skill` |
+| [Changelog](https://github.com/zippergen-io/zippergen/blob/main/CHANGELOG.md) | release notes and upgrade-visible changes |
 
 ## Formal foundation
 
@@ -558,5 +577,6 @@ guarantees before the run starts.
 
 ## License
 
-ZipperGen is released under the Apache License 2.0. See [`LICENSE`](LICENSE)
+ZipperGen is released under the Apache License 2.0. See
+[`LICENSE`](https://github.com/zippergen-io/zippergen/blob/main/LICENSE)
 for the full terms.

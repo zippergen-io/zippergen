@@ -26,19 +26,22 @@ human_task_notifications
 
 adapter_state         -- connector bookkeeping
 workflow_results      -- what a finished workflow returned
-store_meta            -- schema version, workflow identity
+store_meta            -- schema version, workflow identity, operator settings
 
 history               -- optional. Never read by recovery.
 ```
 
-That is all of it. Nine tables, and only the first two are the computation.
+That is all of it. Nine tables. The first two are the projected lifelines'
+computation; pending `human_tasks` also participate in recovery, while their
+tokens and notifications are supporting audit and delivery records.
 
 - `env` is the role's variables, as JSON.
 - `control` is where the role is in its program. Section 2.
 - `monitor` is CPL monitor state, which includes the vector clock.
 - `steps` counts committed steps. It is what tells two visits to the same
   human action in a loop apart.
-- `status` and `detail` are for `zg run inspect`. Recovery ignores them.
+- `status` and `detail` feed the run and deployment observation commands,
+  including `status` and `inspect`. Recovery ignores them.
 
 **The durable state is `role_state` plus `outstanding_messages` plus
 `human_tasks`.** Everything else is either derived or optional.
@@ -131,10 +134,11 @@ through `busy_timeout`.
 created `0600` before SQLite opens it.
 
 **I6. History is never read by recovery.** Progress events share the state
-transaction and are lost when it rolls back. An outside-world action's start
-and retry events are recorded with no transaction open, because that is also
-when the call occurs. Either way, history is observation rather than state.
-There is a test that deletes all of it and then resumes.
+transaction and are lost when it rolls back. An outside-world action's start,
+retry, and best-effort failure events are recorded with no transaction open,
+because that is also when the call occurs. Its successful completion shares
+the transaction that advances control. Either way, history is observation
+rather than state. There is a test that deletes all of it and then resumes.
 
 **I7. A stale runner cannot commit.** A runner loads a role position and its
 committed `steps` count together. Every later state write includes
@@ -331,9 +335,18 @@ current schema out. Reading a profile never rewrites it.
 
 Refusing an old profile would in fact have no way out. `zg deploy` is the
 command that writes a current profile, and it loads the existing one first, so
-the advice to redeploy could not be followed; `zg deploy remove` keeps the
-profile too. A schema a given ZipperGen cannot carry forward — an unknown one,
-or one written by a newer version — is still refused, and says which it is.
+the advice to redeploy could not be followed. `zg deploy remove` also has to
+load the profile before it can unregister and archive the deployment, so it is
+not a migration path either. A schema a given ZipperGen cannot carry forward —
+an unknown one, or one written by a newer version — is still refused, and says
+which it is.
+
+For a profile that can be read, `zg deploy remove` unregisters the service and
+moves the profile, durable store, and log together under
+`$ZIPPERGEN_HOME/trash/deployments/`. It deletes credentials, the managed
+environment, source bundle, and service files because those are either private
+or rebuildable. The archive is no longer an active deployment: deploying again
+creates a new store. `remove --purge` keeps no archive at all.
 
 The same rule covers the project manifest, the workspace state, and a run
 record, all of which are configuration. One rule, applied in one place per file:
@@ -388,13 +401,22 @@ has not been absorbed. Neither grows with how long the workflow has run.
 
 `history` accumulates and is pruned online. Each store records its own budget
 under `history_keep` in `store_meta`; a store that says nothing keeps the newest
-10,000 rows. Trimming happens in batches of a tenth of the budget rather than on
-every write, so the table sits up to ten percent over budget in between.
+10,000 rows. Trimming happens in batches of a tenth of the budget, capped at
+1,000 events, rather than on every write, so the table sits above budget in
+between trims.
 
-The budget is a row count, not a size. A workflow whose events carry large
-values — a whole email, a long model response — will hold far more bytes at
-10,000 rows than one passing short strings. Size the budget for the events the
-workflow actually produces:
+The budget is a FIFO row count, not a time window or a size. A workflow whose
+events carry large values — a whole email, a long model response — will hold far
+more bytes at 10,000 rows than one passing short strings. Frequent routine
+events also evict older incidents exactly like important events. For example, a
+four-participant poller measured at 14 events per minute fills the default in
+about 12 hours even when almost every poll finds nothing.
+
+Measure the workflow's real event rate and payload-size distribution before
+choosing a value. A very large budget is not free: the periodic prune uses an
+offset scan and runs on the writer path. The row ceiling also does not bound the
+whole SQLite file family exactly because pages and the WAL have their own
+overhead.
 
 ```bash
 zg deploy --history-keep 50000       # a bigger window for a quiet workflow
@@ -444,10 +466,22 @@ operator action is a far smaller cost than that.
 Each new history event carries a wall-clock `recorded_at` timestamp for the
 human-facing trace table. That timestamp is observational: row ids and causal
 stamps remain the ordering facts, and recovery never reads the timestamp.
-Visible outside-world actions record their `act_start` after the transaction is
-released and immediately before the call. Their matching `act` event therefore
-lets the trace table report useful elapsed time, including LLM and connector
-latency; an unmatched start records an interrupted or failed call honestly.
+Visible outside-world actions record an `act_start`, including a fresh
+`attempt_id`, after the transaction is released and immediately before the
+call. A successful `act` or best-effort `act_failed` terminal event carries the
+same attempt id and a measured `duration_ms`, so the trace can pair concurrent
+and restarted attempts without guessing from sequence numbers. Cancellation is
+not recorded as failure. If the process dies before a terminal event commits,
+the start remains unmatched; that means only **no completion was recorded**.
+It does not prove whether the remote call succeeded, failed, or was still
+running when the process disappeared. A static trace labels that row
+`incomplete`; `zg deploy status` is the source for current live activity.
+
+`visible=False` on a `@pure` or `@effect` is a persistence choice, not merely a
+display filter: that action's own start, completion, and failure events are not
+written. It does not suppress decisions or control sends and receives around
+the action, and recovery is unchanged either way.
+
 That automatic pruning is recovery-independent. The combined maintenance
 command also rotates deployment logs, so it requires the deployment to be
 stopped and refuses before changing either resource:
@@ -459,7 +493,7 @@ zg deploy compact
 
 With no arguments `compact` trims history to the store's own budget. It does not
 empty the store: throwing away the only record of what ran is a separate request,
-made with `--set-history-keep 0` or `--keep-history 0`.
+made with `--set-history-keep 0`.
 
 Dropping history is a retention choice, not a recovery operation. The explicit
 stop makes the combined command predictable and its log rotation lossless.

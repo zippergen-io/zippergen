@@ -329,11 +329,12 @@ def _profile_history_keep(profile: Mapping[str, object]) -> int | None:
 def _initialize_deployment_store(profile: dict[str, object]) -> bool:
     """Allocate one valid durable store for a deployment if it has none.
 
-    This is the only place ``zg deploy`` writes to a store, and it writes only
-    to one it just created. Deploying is configuration; the store is state, and
-    the two commands that own state are ``reset`` (replace it) and ``compact``
-    (change what it keeps). Keeping that line means deploy never has to cope
-    with a store it cannot open — the readiness checks report that, once.
+    An ordinary ``zg deploy`` writes a store only here, immediately after it
+    creates it. Deploying is configuration while the store is state, so an
+    ordinary redeploy never has to open incompatible recovery state; readiness
+    checks report that state instead. The explicit ``--history-keep`` option is
+    the narrow exception handled below because that option directly owns one
+    store setting.
 
     A reset archives the old store and lands here with a fresh one, so the
     deployment's history budget is stamped on at creation. Without that, every
@@ -449,6 +450,13 @@ def _deployment_lifecycle_command(args, action: str) -> int:
         # whatever step is in flight, and an interrupted model call or effect
         # can run a second time.
         if service_is_running(before):
+            if not bool(before.get("healthy")):
+                print(
+                    f"Deployment {name} is already restarting but is not "
+                    f"healthy ({before.get('detail')}). Inspect "
+                    "'zippergen deploy logs'."
+                )
+                return 1
             print(
                 f"Deployment {name} is already running ({before.get('detail')})."
             )
@@ -487,7 +495,15 @@ def _deployment_lifecycle_command(args, action: str) -> int:
             _run_systemctl(_systemctl_command("daemon-reload"), dry_run=args.dry_run)
             if args.enable:
                 _run_systemctl(_systemctl_command("enable", unit), dry_run=args.dry_run)
-        _run_systemctl(_systemctl_command(action, unit), dry_run=args.dry_run)
+        # systemctl rejects `stop` for a unit that is not installed. That is
+        # already the requested outcome, just as a missing launchd agent is,
+        # so do not turn an idempotent stop into a command failure.
+        if not (
+            action == "stop"
+            and not args.dry_run
+            and str(before.get("state") or "unknown") == "not-loaded"
+        ):
+            _run_systemctl(_systemctl_command(action, unit), dry_run=args.dry_run)
         service = unit
     else:
         label = _launchd_label(name)
@@ -525,19 +541,35 @@ def _deployment_lifecycle_command(args, action: str) -> int:
     running_before = service_is_running(before)
     running_after = service_is_running(after)
     if action == "start":
-        if running_after and running_before:
+        healthy_after = bool(after.get("healthy"))
+        if healthy_after and running_after and running_before:
             print(f"Deployment {name} was already running ({service}).")
-        elif running_after:
+        elif healthy_after and running_after:
             print(f"Started deployment {name} ({service}).")
+        elif healthy_after and str(after.get("state")) == "completed":
+            print(f"Deployment {name} completed successfully ({service}).")
         else:
-            print(f"Deployment {name} did not start ({service}): {after['detail']}")
+            print(
+                f"Deployment {name} did not become healthy ({service}): "
+                f"{after['detail']}"
+            )
             return 1
     else:
-        if not running_before:
-            print(f"Deployment {name} was already stopped ({service}).")
-        elif running_after:
+        after_state = str(after.get("state") or "unknown")
+        before_state = str(before.get("state") or "unknown")
+        if after_state == "unknown":
+            print(
+                f"Could not confirm deployment {name} stopped ({service}): "
+                f"{after.get('detail') or 'service state is unknown'}"
+            )
+            return 1
+        if running_after:
             print(f"Deployment {name} is still running ({service}): {after['detail']}")
             return 1
+        if before_state == "unknown":
+            print(f"Deployment {name} is stopped ({service}).")
+        elif not running_before:
+            print(f"Deployment {name} was already stopped ({service}).")
         else:
             print(f"Stopped deployment {name} ({service}).")
     return 0
@@ -971,7 +1003,7 @@ def _trace_rows(
     *,
     mark_unmatched_incomplete: bool = True,
 ) -> list[tuple[object, ...]]:
-    starts: dict[tuple[object, ...], list[tuple[int, float]]] = {}
+    starts: dict[tuple[object, ...], list[tuple[int, float | None]]] = {}
     matched_starts: set[int] = set()
     durations: dict[int, float] = {}
     for item in events:
@@ -989,7 +1021,7 @@ def _trace_rows(
             key = ("sequence", role, seq)
         else:
             key = None
-        if key is None or timestamp is None:
+        if key is None:
             continue
         if event.get("type") == "act_start":
             starts.setdefault(key, []).append((int(item["rowid"]), timestamp))
@@ -999,7 +1031,7 @@ def _trace_rows(
             stored_ms = event.get("duration_ms")
             if isinstance(stored_ms, (int, float)) and stored_ms >= 0:
                 durations[int(item["rowid"])] = stored_ms / 1000
-            else:
+            elif timestamp is not None and started_at is not None:
                 measured = timestamp - started_at
                 if measured >= 0:
                     durations[int(item["rowid"])] = measured
@@ -3825,7 +3857,9 @@ def _finalize_guided_deployment(
             dry_run=False,
             skip_readiness=True,
         )
-        _deployment_lifecycle_command(lifecycle_args, "start")
+        lifecycle_result = _deployment_lifecycle_command(lifecycle_args, "start")
+        if lifecycle_result != 0:
+            return lifecycle_result
 
     print(f"Deployment: {name}")
     if not getattr(args, "concise", False):

@@ -639,6 +639,120 @@ def test_start_does_nothing_when_the_deployment_is_already_running(
     assert "is already running" in capsys.readouterr().out
 
 
+def test_start_reports_an_existing_restart_loop_as_unhealthy(
+    tmp_path, monkeypatch, capsys
+):
+    _prepared_deployment_store(tmp_path, monkeypatch, capsys)
+    monkeypatch.setattr(
+        "zippergen.deployment_platform.deployment_service_status",
+        lambda _name: {
+            "state": "restarting",
+            "healthy": False,
+            "detail": "last exit code 1, 5 restart(s)",
+        },
+    )
+    monkeypatch.setattr(
+        "zippergen.serve._run_launchctl",
+        lambda *a, **k: pytest.fail("start must not disturb a restart loop"),
+    )
+    monkeypatch.setattr(
+        "zippergen.serve._run_systemctl",
+        lambda *a, **k: pytest.fail("start must not disturb a restart loop"),
+    )
+
+    assert main(["deploy", "start"]) == 1
+    output = capsys.readouterr().out
+    assert "already restarting" in output
+    assert "not healthy" in output
+    assert "zippergen deploy logs" in output
+
+
+def test_start_does_not_report_a_new_restart_loop_as_started(
+    tmp_path, monkeypatch, capsys
+):
+    _prepared_deployment_store(tmp_path, monkeypatch, capsys)
+    states = iter((
+        {
+            "state": "not-loaded",
+            "healthy": False,
+            "detail": "service is not installed",
+        },
+        {
+            "state": "restarting",
+            "healthy": False,
+            "detail": "last exit code 1, 1 restart(s)",
+        },
+    ))
+    monkeypatch.setattr(
+        "zippergen.deployment_platform.deployment_service_status",
+        lambda _name: next(states),
+    )
+    monkeypatch.setattr("zippergen.serve._service_manager", lambda: "launchd")
+    monkeypatch.setattr("zippergen.serve._run_launchctl", lambda *a, **k: None)
+    monkeypatch.setattr("zippergen.serve._doctor_checks", lambda *a, **k: [])
+
+    assert main(["deploy", "start"]) == 1
+    output = capsys.readouterr().out
+    assert "did not become healthy" in output
+    assert "Started deployment" not in output
+
+
+def test_systemd_stop_is_idempotent_when_the_unit_is_not_installed(
+    tmp_path, monkeypatch, capsys
+):
+    """A missing systemd unit is already the outcome stop asks for."""
+
+    _prepared_deployment_store(tmp_path, monkeypatch, capsys)
+    monkeypatch.setattr("zippergen.serve._service_manager", lambda: "systemd")
+    monkeypatch.setattr(
+        "zippergen.deployment_platform.deployment_service_status",
+        lambda _name: {
+            "state": "not-loaded",
+            "healthy": False,
+            "detail": "unit is not installed",
+        },
+    )
+    monkeypatch.setattr(
+        "zippergen.serve._run_systemctl",
+        lambda *a, **k: pytest.fail("stop must not invoke a missing unit"),
+    )
+
+    assert main(["deploy", "stop"]) == 0
+    assert "was already stopped" in capsys.readouterr().out
+
+
+def test_stop_does_not_claim_success_when_post_status_is_unknown(
+    tmp_path, monkeypatch, capsys
+):
+    """A timed-out status query cannot prove that the process released its store."""
+
+    _prepared_deployment_store(tmp_path, monkeypatch, capsys)
+    monkeypatch.setattr("zippergen.serve._service_manager", lambda: "systemd")
+    states = iter((
+        {
+            "state": "running",
+            "healthy": True,
+            "detail": "unit is running",
+        },
+        {
+            "state": "unknown",
+            "healthy": False,
+            "detail": "systemctl timed out",
+        },
+    ))
+    monkeypatch.setattr(
+        "zippergen.deployment_platform.deployment_service_status",
+        lambda _name: next(states),
+    )
+    monkeypatch.setattr("zippergen.serve._run_systemctl", lambda *a, **k: None)
+
+    assert main(["deploy", "stop"]) == 1
+    output = capsys.readouterr().out
+    assert "Could not confirm" in output
+    assert "systemctl timed out" in output
+    assert "Stopped deployment" not in output
+
+
 def test_reset_never_starts_the_service(tmp_path, monkeypatch, capsys):
     """Reset is a state operation, so it leaves the running axis alone.
 
@@ -1395,6 +1509,42 @@ def test_deploy_prepares_a_profile_that_runs_for_its_project(tmp_path, monkeypat
     assert rc == 0
     assert status["store"] == str(store_path)
     assert status["state"] == "done"
+
+
+def test_bare_deploy_propagates_a_failed_service_start(
+    tmp_path, monkeypatch, capsys
+):
+    """Configured is not launched: automation must see the failed postcondition."""
+
+    from zippergen import serve
+
+    workflow_path = tmp_path / "deploy_workflow.py"
+    workflow_path.write_text(WORKFLOW_SOURCE)
+    zippergen_home = tmp_path / "zg-home"
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(zippergen_home))
+    monkeypatch.chdir(tmp_path)
+    workspace = Workspace(tmp_path, home=zippergen_home)
+    workspace.initialize_project(name=tmp_path.name)
+    workspace.select_workflow(f"{workflow_path}:hello", cwd=tmp_path)
+    starts: list[str] = []
+    monkeypatch.setattr(
+        serve,
+        "_deployment_lifecycle_command",
+        lambda _args, action: starts.append(action) or 1,
+    )
+
+    rc = main([
+        "deploy",
+        "--no-bundle",
+        "--no-install",
+        "--no-setup",
+        "--no-doctor",
+        "--yes",
+    ])
+
+    assert rc == 1
+    assert starts == ["start"]
+    assert "Deployment:" not in capsys.readouterr().out
 
 
 def test_deploy_records_external_paths_absolutely(
@@ -2832,6 +2982,41 @@ def test_trace_command_marks_legacy_events_without_a_timestamp(
     assert f"#{event_id}" in output
     assert "—" in output
     assert "while → continue" in output
+
+
+def test_trace_pairs_legacy_actions_without_timestamps(
+    tmp_path, monkeypatch, capsys
+):
+    store_path = _prepared_deployment_store(tmp_path, monkeypatch, capsys)
+    conn = open_store(str(store_path))
+    for event in (
+        {
+            "type": "act_start",
+            "action": "draft_reply",
+            "action_kind": "llm",
+            "inputs": {"message": "Hello"},
+            "seq": 7,
+        },
+        {
+            "type": "act",
+            "action": "draft_reply",
+            "action_kind": "llm",
+            "outputs": {"draft": "Hi"},
+            "seq": 7,
+        },
+    ):
+        conn.execute(
+            "INSERT INTO history(role,payload) VALUES(?,?)",
+            ("Writer", json.dumps(event)),
+        )
+    conn.close()
+
+    assert main(["deploy", "trace", "--tail", "2"]) == 0
+
+    output = capsys.readouterr().out
+    assert "llm start" in output
+    assert "llm done" in output
+    assert "llm incomplete" not in output
 
 
 def test_trace_command_shows_elapsed_action_time(tmp_path, monkeypatch, capsys):

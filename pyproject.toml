@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "zippergen"
-version = "0.1.0a2"
+version = "0.1.0a3"
 description = "Python DSL and runtime for structured multi-agent coordination"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -19,6 +19,8 @@ classifiers = [
   "Intended Audience :: Developers",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
   "Topic :: Software Development :: Libraries",
   "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
@@ -40,6 +42,7 @@ dev = [
 [project.urls]
 Homepage = "https://github.com/zippergen-io/zippergen"
 Repository = "https://github.com/zippergen-io/zippergen"
+Changelog = "https://github.com/zippergen-io/zippergen/blob/main/CHANGELOG.md"
 
 [project.scripts]
 zippergen = "zippergen.serve:main"

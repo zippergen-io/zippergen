@@ -290,6 +290,7 @@ An action is work one participant does.
 \toprule
 \texttt{@llm} & a model call with a prompt and declared outputs \\
 \texttt{@pure} & ordinary Python, output name and type from the return annotation \\
+\texttt{@effect} & Python that may touch the outside world; resolved outside the durable write transaction \\
 \texttt{@human} & stops and asks a person: \texttt{confirm}, \texttt{select}, \texttt{input} \\
 \texttt{@assistant} & runs a coding agent against a repository \\
 \texttt{@planner} & asks a model to generate a sub-workflow, validated before it runs \\
@@ -308,6 +309,12 @@ def draft_reply(message: str): ...
 
 Writer: draft = draft_reply(message)
 \end{lstlisting}
+
+For \texttt{@pure} and \texttt{@effect}, \texttt{visible=False} is a
+persistence choice rather than a display filter: the action's own trace events
+are never written. It does not hide decisions or control sends and receives
+around that action. Use it only for intentionally unrecorded operational work,
+not to conceal meaningful protocol behavior.
 
 Model failures are part of the action declaration, not provider-specific
 runtime configuration. A finite integer counts retries after the first call;
@@ -924,7 +931,7 @@ zg deploy stop
 zg deploy                     # rebuild and start the updated deployment
 \end{lstlisting}
 
-\subsection{The six lifecycle commands}
+\subsection{The five lifecycle operations}
 
 A project has exactly one deployment. Its identity comes from the project path
 and project id, which is why none of these commands takes a name.
@@ -974,8 +981,10 @@ may re-read a mailbox that was already handled. Start it again with
 A durable run is only a store file, so it has state and nothing else, and
 \texttt{zg run reset} is its whole vocabulary. A deployment is that store plus
 a registered service, a profile, credentials, a managed environment and a
-source bundle, so it needs the second verb as well. \texttt{zg run reset} and
-\texttt{zg deploy reset} mean exactly the same thing.
+source bundle, so it needs the second verb as well. Both reset commands abandon
+the current durable execution, but they retain it differently: run reset
+deletes its record and store unless \texttt{-{}-archive} is requested, while
+deployment reset always archives the store and leaves the service stopped.
 
 Neither substitutes for the other. \texttt{remove} deletes credentials, so
 removing and deploying again costs you a token re-entry rather than being a
@@ -1038,23 +1047,31 @@ rule exactly.
 \begin{center}
 \begin{tabularx}{0.95\linewidth}{@{}lX@{}}
 \toprule
-\texttt{zg deploy status} & is it running, what state does it hold, and are its runtime and workflow bundle current \\
+\texttt{zg deploy status} & is it running, what state does it hold, which action is live, what failed last, and are its runtime and workflow bundle current \\
 \texttt{zg deploy logs} & what it has been doing \\
 \texttt{zg deploy inspect} & where each participant's local program is now \\
 \texttt{zg deploy inspect --watch} & keep that position open and refresh it in place \\
-\texttt{zg deploy trace} & recent protocol events \\
+\texttt{zg deploy trace} & recent protocol events, prefaced by service and runtime freshness \\
+\texttt{zg deploy trace --follow} & append newly committed events without redrawing the table \\
 \texttt{zg deploy tasks} & decisions waiting for a person \\
 \texttt{zg deploy approve} & answer one \\
 \texttt{zg deploy check} & readiness checks, in detail \\
 \texttt{zg deploy start} / \texttt{zg deploy stop} & move the service \\
 \texttt{zg deploy compact} & trim optional history and rotate logs; refuses while running \\
 \texttt{zg deploy reset --yes} & archive durable state; start again yourself \\
-\texttt{zg deploy remove} & delete it \\
+\texttt{zg deploy remove} & unregister it; archive profile, store and log unless purged \\
 \texttt{zg deploy list} & every deployment on this computer, orphans included \\
 \texttt{zg deploy prune} & clear orphans and stale archives \\
 \bottomrule
 \end{tabularx}
 \end{center}
+
+\texttt{inspect -{}-watch} redraws current state in place. Trace is an event
+record: \texttt{trace -{}-follow} preserves its table and appends rows. A newly
+committed external action appears as \emph{start}, followed later by
+\emph{done} or \emph{failed}. In a static trace, an unmatched start is called
+\emph{incomplete}: no terminal event was recorded, which does not prove whether
+the remote operation succeeded. Use status for current live activity.
 
 \subsection{How much trace it keeps}
 
@@ -1063,10 +1080,17 @@ participant, plus messages nobody has absorbed yet. The trace is separate, and
 recovery never reads it, so how much of it to keep is your choice. A store keeps
 the newest 10,000 events unless told otherwise.
 
-That is a count of events, not a size. A workflow whose events carry large
-values --- a whole email, a long model answer --- holds far more bytes at the
-same budget than one passing short strings, so size it for what your workflow
-actually produces.
+That is a FIFO count of events, not a time window or a size. A workflow whose
+events carry large values --- a whole email, a long model answer --- holds far
+more bytes at the same budget than one passing short strings. Frequent routine
+events also evict old incidents at exactly the same rate as important ones. A
+measured four-participant poller writing 14 events per minute filled the default
+in about 12 hours even while nearly every poll found nothing.
+
+Measure the real event rate and payload distribution before choosing a value.
+A very large budget is not free: periodic pruning uses an offset scan on the
+writer path, and the SQLite pages and WAL mean a row count is not an exact
+on-disk ceiling.
 
 \begin{lstlisting}[language=bash]
 zg deploy --history-keep 50000              # a wider window
@@ -1167,11 +1191,24 @@ is empty and permanent; nothing needs to clean it up.
         the environment or via \texttt{zg provider set-credential}, the Telegram
         token the same way, and Google with \texttt{zg provider authorize
         --handoff} on your laptop and \texttt{zg provider accept} there.
-  \item \texttt{zg deploy} prepares, checks and starts the service.
+  \item \texttt{zg deploy} prepares, checks, enables and starts the service.
 \end{enumerate}
 
 Nothing secret is in the repository, so step 3 is the whole difference between
 a clone and a running service.
+
+On Linux, bare deploy enables the systemd user unit, but the account's user
+manager must also survive logout and start at boot. If server policy permits
+it, enable linger once and inspect both facts:
+
+\begin{lstlisting}[style=shell]
+loginctl enable-linger "$USER"
+zg deploy check
+\end{lstlisting}
+
+The check reports \emph{systemd autostart} and \emph{systemd linger}
+separately. Before relying on the service unattended, log out once and reboot
+once, then confirm with \texttt{zg deploy status} that it came back.
 
 \section{Working with a coding agent}
 
@@ -1326,7 +1363,7 @@ zg connector assign Mailbox approval-chat
 \texttt{deploy start/stop} & move the service \\
 \texttt{deploy status/logs/check} & operate and diagnose \\
 \texttt{deploy inspect/trace/tasks/approve} & observe or answer the deployment \\
-\texttt{deploy compact/reset/remove} & trim history and logs, reset state, or delete \\
+\texttt{deploy compact/reset/remove} & trim history and logs, reset state, or unregister and archive \\
 \bottomrule
 \end{tabularx}
 \end{center}

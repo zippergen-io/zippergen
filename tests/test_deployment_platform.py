@@ -66,6 +66,31 @@ def test_activating_systemd_service_is_restarting(monkeypatch):
     assert status["healthy"] is False
 
 
+def test_failed_systemd_service_keeps_exit_diagnostics_and_an_action(monkeypatch):
+    monkeypatch.setattr(
+        "zippergen.deployment_platform.subprocess.run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(
+            args[0],
+            0,
+            stdout=_systemd_show(
+                active="failed",
+                sub="failed",
+                status=73,
+                restarts=5,
+            ),
+            stderr="",
+        ),
+    )
+
+    status = systemd_service_status("call-intake")
+
+    assert status["state"] == "loaded"
+    assert status["healthy"] is False
+    assert "last exit code 73" in status["detail"]
+    assert "5 restart(s)" in status["detail"]
+    assert "zippergen deploy logs" in status["detail"]
+
+
 # ---------------------------------------------------------------------------
 # Two questions about a service, which answer "unknown" differently
 # ---------------------------------------------------------------------------

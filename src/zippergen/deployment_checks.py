@@ -365,6 +365,93 @@ def _systemd_active_check(name: str) -> dict[str, object]:
     )
 
 
+def _systemd_enabled_check(name: str) -> dict[str, object]:
+    """Say whether the user unit will be started with its user manager."""
+
+    unit = _systemd_unit_name(name)
+    try:
+        result = subprocess.run(
+            _systemctl_command("is-enabled", unit),
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except FileNotFoundError:
+        return _doctor_check("warn", "systemd autostart", "systemctl was not found")
+    except subprocess.TimeoutExpired:
+        return _doctor_check("warn", "systemd autostart", "systemctl timed out")
+
+    state = (result.stdout or result.stderr or "").strip() or f"exit {result.returncode}"
+    if result.returncode == 0:
+        return _doctor_check(
+            "ok",
+            "systemd autostart",
+            f"{unit} is {state}",
+            state=state,
+        )
+    return _doctor_check(
+        "warn",
+        "systemd autostart",
+        (
+            f"{unit} is {state}; stop it, then run "
+            "'zippergen deploy start --enable'"
+        ),
+        state=state,
+    )
+
+
+def _systemd_linger_check() -> dict[str, object]:
+    """Check whether user services survive logout and start during boot."""
+
+    user = os.environ.get("USER") or str(os.getuid())
+    try:
+        result = subprocess.run(
+            [
+                "loginctl",
+                "show-user",
+                str(os.getuid()),
+                "--property=Linger",
+                "--value",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except FileNotFoundError:
+        return _doctor_check(
+            "warn",
+            "systemd linger",
+            "loginctl was not found; verify that this user manager survives logout",
+        )
+    except subprocess.TimeoutExpired:
+        return _doctor_check(
+            "warn",
+            "systemd linger",
+            "loginctl timed out; verify that this user manager survives logout",
+        )
+
+    value = (result.stdout or result.stderr or "").strip().casefold()
+    if result.returncode == 0 and value == "yes":
+        return _doctor_check(
+            "ok",
+            "systemd linger",
+            "enabled; user services can remain available without a login session",
+            enabled=True,
+        )
+    return _doctor_check(
+        "warn",
+        "systemd linger",
+        (
+            "disabled or unavailable; the deployment may stop after logout or "
+            f"fail to start at boot. Enable it with 'loginctl enable-linger {user}' "
+            "if permitted by this server's policy"
+        ),
+        enabled=False,
+    )
+
+
 def _launchd_active_check(name: str) -> dict[str, object]:
     status = _launchd_service_status(name)
     if status["state"] in {"running", "completed"}:
@@ -969,10 +1056,13 @@ def _doctor_checks(
                     f"import {package.import_name} is not available in {python_path}",
                 ))
 
+    if include_systemd and manager == "systemd":
+        checks.append(_systemd_linger_check())
     if include_systemd and installed_path.exists():
         if manager == "launchd":
             checks.append(_launchd_active_check(profile_name))
         elif manager == "systemd":
+            checks.append(_systemd_enabled_check(profile_name))
             checks.append(_systemd_active_check(profile_name))
 
     if workflow is not None and module is not None:

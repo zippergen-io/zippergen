@@ -717,16 +717,35 @@ the deployment before it starts:
 zg deploy logs
 zg deploy status
 zg deploy inspect --watch
+zg deploy trace --follow
 \end{lstlisting}
 
 \texttt{zg deploy status} distinguishes freshness of the ZipperGen runtime
 from freshness of the workflow source bundle. A stale warning means that the
 immutable service is still running its previous snapshot; redeploy to update
-it.
+it. Status also names an external action currently in flight, with its elapsed
+time, and the last terminal lifeline failure. Trace begins with service and
+runtime freshness, so a stopped deployment is not mistaken for a quiet one.
+\texttt{inspect -{}-watch} redraws current state; \texttt{trace -{}-follow}
+keeps the event table and appends newly committed rows. A live action first
+appears as \emph{start}, then \emph{done} or \emph{failed}. Only a static trace
+calls a start \emph{incomplete} when no terminal event was recorded; use status
+to decide what is running now.
 
 Use \texttt{zg deploy -{}-no-start} only when you deliberately want to prepare
 and review a stopped deployment before a later \texttt{zg deploy start}. It is
 not a required preliminary step.
+
+The trace keeps the newest 10,000 events by default. That is a FIFO row count,
+not a time or byte guarantee: frequent routine polls can evict an incident, and
+events carrying whole emails can make the same count use much more disk. Measure
+the real workflow before choosing \texttt{zg deploy -{}-history-keep N}; very
+large budgets also make the periodic writer-path prune more expensive.
+
+\texttt{zg deploy reset -{}-yes} is different from stopping. It archives and
+replaces all durable execution state, including connector progress, and always
+leaves the service stopped. A later start begins the workflow again and may
+re-read mail already handled.
 
 A deployment you no longer want:
 
@@ -734,13 +753,13 @@ A deployment you no longer want:
 zg deploy remove
 \end{lstlisting}
 
-Its durable store is archived rather than deleted. That is the record of what
-actually ran, and it is the one thing no rebuild can recover, so it is moved to
-ZipperGen's trash directory instead of thrown away. Archived is not the same as
-left in place: deploying again builds a new deployment and starts from an empty
-store. Everything else, the environment and service files and the bundled
-source, is written again by deploying again. \texttt{--purge} deletes the store
-too, when you mean it.
+Its profile, durable store and log are moved to ZipperGen's trash directory
+rather than deleted. Archived is not the same as left in place: deploying again
+builds a new deployment and starts from an empty store. Credentials are deleted
+even for an ordinary removal and must be entered or authorized again; the
+managed environment, service files and bundled source are deleted because a
+later deploy rebuilds them. \texttt{--purge} deletes everything permanently and
+keeps no archive.
 
 \section{Put it on a server}
 
@@ -792,8 +811,18 @@ giving it the secret.
 The last command prepares, checks, and starts the deployment. It probes the
 model and connector first, so a token typed wrongly here fails now rather than
 in the middle of an approval. On Linux it installs a small \texttt{systemd}
-user service that restarts the workflow if it fails. You never write that
-file, and \texttt{zg deploy status},
+user service that restarts the workflow if it fails, and enables that unit for
+autostart. A server account also needs its user manager to survive logout and
+start at boot. If local policy permits it, enable linger once:
+
+\begin{lstlisting}[style=shell]
+loginctl enable-linger "$USER"
+zg deploy check
+\end{lstlisting}
+
+The check reports both systemd autostart and linger. Before leaving the service
+unattended, log out once and reboot once, checking \texttt{zg deploy status}
+after each. You never write the unit file, and \texttt{zg deploy status},
 \texttt{zg deploy logs} and \texttt{zg deploy stop} manage it from here.
 
 This is the point of the loop. The workflow you built does not finish, so

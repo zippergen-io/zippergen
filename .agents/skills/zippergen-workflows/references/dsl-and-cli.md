@@ -193,8 +193,11 @@ def send_reply(address: str, body: str) -> str:
     return "sent"
 ```
 
-Use `@effect(visible=False)` only for intentionally hidden operational work,
-not to conceal meaningful protocol behavior.
+For `@pure` and `@effect`, `visible=False` is a persistence choice rather than
+a display filter: that action's own start, completion, and failure events are
+never written. It does not hide decisions or control sends and receives around
+the action. Use it only for intentionally unrecorded operational work, not to
+conceal meaningful protocol behavior.
 
 ### Durable state between actions
 
@@ -711,7 +714,9 @@ nothing, so it is safe to repeat.
 ZipperGen-runtime freshness separately. Stale is a warning: the immutable
 service keeps running its deployed snapshot until it is deliberately
 redeployed. Status also names a currently executing external action with its
-elapsed time and preserves the latest terminal lifeline failure.
+elapsed time and preserves the latest terminal lifeline failure. Deployment
+trace reports service state and runtime freshness before its event table, so a
+stopped deployment is not mistaken for a quiet one.
 
 `zg deploy inspect --watch` shows that deployment's live position.
 
@@ -724,18 +729,25 @@ There is no workflow or deployment name to pass: the project identifies both.
 `tasks` show recent events and pending human tasks. Trace output is a timestamped
 table; its event number remains the authoritative stored order, while the
 wall-clock time and paired action duration are for operational diagnosis.
-Use `trace --follow` for newly committed events. An action start without a
-terminal event in the retained window is shown as incomplete, not assumed to
-still be running; use status for live activity.
+Use `trace --follow` for newly committed events. It preserves the table and
+appends an action first as `start`, followed later by `done` or `failed`.
+Static trace output calls an unmatched start `incomplete`: no terminal event
+was recorded, which does not prove whether the remote operation succeeded or
+is still running. Use status for live activity. This is intentionally different
+from `inspect --watch`, which redraws current state in place.
+
 `compact` trims optional
 inspection history and rotates logs; it refuses while the deployment is
 running, before changing either resource. Recovery never reads that history,
 but the stopped-service precondition also makes log rotation lossless.
 
 How much history a store keeps is the operator's choice, recorded per store.
-The default is the newest 10,000 rows. That is a row count, not a size, so a
-workflow whose events carry large values holds far more bytes at the same
-budget than one passing short strings:
+The default is the newest 10,000 rows. That is a FIFO row count, not a time
+window or byte ceiling. Frequent routine traffic can evict incidents quickly,
+and a workflow whose events carry large values holds far more bytes at the same
+budget than one passing short strings. Measure the workflow's real event rate
+and payload distribution before choosing a value; very large budgets also make
+the periodic writer-path prune more expensive:
 
 ```bash
 zg deploy --history-keep 50000              # a wider window
@@ -751,6 +763,13 @@ keep climbing across a budget change, so `trace --after N` stays correct.
 Completed human tasks, answer tokens, and connector notifications remain as
 audit records. They are not needed for recovery, currently have no automatic
 retention policy, and therefore grow with the number of human interactions.
+
+On Linux, bare `zg deploy` enables the systemd user unit. A long-lived server
+account also needs its user manager to survive logout and start at boot. When
+server policy permits it, run `loginctl enable-linger "$USER"` once.
+`zg deploy check` reports systemd autostart and linger separately. Test one
+logout and one reboot before relying on the deployment unattended.
+
 `remove` unregisters the service and takes the deployment out of use. Its
 profile, durable store and log are moved to ZipperGen's trash directory rather
 than deleted, so a removal is undoable; `--purge` deletes them instead. Either

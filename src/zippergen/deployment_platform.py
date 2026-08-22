@@ -328,6 +328,13 @@ def systemd_service_status(name: str) -> dict[str, object]:
         state = "not-loaded"
         healthy = False
         detail = f"{unit} is not installed"
+    elif active == "failed" or sub == "failed":
+        state = "loaded"
+        healthy = False
+        detail = (
+            f"{unit} failed; last exit code {exit_code}, "
+            f"{restarts} restart(s). Inspect 'zippergen deploy logs'"
+        )
     else:
         state = "loaded" if result.returncode == 0 else "not-loaded"
         healthy = False
