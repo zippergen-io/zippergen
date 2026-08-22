@@ -250,7 +250,10 @@ Assign `Maintainer.action_name` when only one action needs a different
 backend. `zg config` shows the effective backend together with the action's
 `access`, `external_tools`, and `shell` policy. Those permissions remain part
 of the reviewed `@assistant` declaration. Codex and Claude continue to manage
-their own login and credentials.
+their own login and credentials. ZipperGen sends action input over standard
+input, disables each CLI's session persistence, and gives the child only basic
+process settings plus that CLI's own authentication variables. Workflow model
+keys and connector credentials are not inherited by assistant subprocesses.
 
 ## Deterministic testing
 
@@ -436,6 +439,19 @@ zg provider authorize google-work --scopes gmail.readonly,spreadsheets
 zg provider accept google-work                 # paste the private result
 zg check                                       # routing and live providers
 ```
+
+A private Telegram chat defaults its trusted approver to that chat's user id.
+For a group, name the one person who may answer:
+
+```bash
+zg connector configure approval-chat approval-bot \
+  --chat-id=-100123456 --allowed-user-id=12345678
+```
+
+Other group members may see the task but cannot settle it. Local terminal
+approvals use `zg deploy approve --task TASK_ID`; an external capability token
+can be supplied without exposing it in the process list by piping one line to
+`zg deploy approve --token-stdin`.
 
 Use `zg config` at any time to see provider connections; effective model,
 assistant, and connector configurations; assignments and bindings; private-state

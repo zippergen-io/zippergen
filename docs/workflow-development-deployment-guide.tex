@@ -585,6 +585,10 @@ fixed instructions and its \texttt{access}, \path{external_tools}, and
 \texttt{zg assistant check} verifies that each selected CLI is installed and
 supports every safety option that ZipperGen relies on. It does not log in.
 Codex and Claude continue to manage their own authentication.
+Action input is sent over standard input, backend session persistence is
+disabled, and assistant subprocesses receive only ordinary process settings
+plus the selected CLI's authentication variables. They do not inherit model
+and connector credentials from the workflow process.
 
 \subsection{Deterministic testing}
 
@@ -1054,8 +1058,8 @@ rule exactly.
 \texttt{zg deploy trace} & recent protocol events, prefaced by service and runtime freshness \\
 \texttt{zg deploy trace --follow} & append newly committed events without redrawing the table \\
 \texttt{zg deploy tasks} & decisions waiting for a person \\
-\texttt{zg deploy approve} & answer one \\
-\texttt{zg deploy check} & readiness checks, in detail \\
+\texttt{zg deploy approve --task ID} & answer one locally; use \texttt{--token-stdin} for an external capability token \\
+\texttt{zg deploy check} & readiness checks, including private file modes; \texttt{--repair-permissions} fixes managed paths \\
 \texttt{zg deploy start} / \texttt{zg deploy stop} & move the service \\
 \texttt{zg deploy compact} & trim optional history and rotate logs; refuses while running \\
 \texttt{zg deploy reset --yes} & archive durable state; start again yourself \\
@@ -1138,6 +1142,16 @@ somebody may still need, so it is never the one deleted.
 
 Sharing one Telegram bot across projects is expected and supported. It needs
 one thing you cannot see, so it is worth knowing why.
+
+A Telegram connector also names the user allowed to answer. For a private
+chat this defaults to the chat id. A group must set it explicitly:
+
+\begin{lstlisting}[style=shell]
+zg connector configure approval-chat approval-bot \
+  --chat-id=-100123456 --allowed-user-id=12345678
+\end{lstlisting}
+
+Other members can see the buttons but cannot settle the durable task.
 
 Telegram's inbound queue is \emph{one queue per bot with one cursor}, and
 reading it destroys: an update is confirmed, and forgotten, as soon as a later

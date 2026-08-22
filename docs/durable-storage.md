@@ -519,6 +519,19 @@ and connector bookkeeping. Do not edit rows directly. SQLite's online backup
 API or its `.backup` command can copy a live store consistently; protect the
 copy with the same permissions.
 
+Managed deployment directories are owner-only (`0700`), and profiles, logs,
+stores, service templates, and credential files are owner-only (`0600`). The
+generated systemd and launchd services also set an owner-only umask. `zg deploy
+check` reports weaker permissions; `zg deploy check --repair-permissions`
+repairs managed paths without changing external files referenced by a legacy
+or manually edited profile.
+
+`zg deploy remove` owns only canonical files created under the configured
+ZipperGen home, plus its installed service registration. A profile's external
+`store`, `log`, or `secrets_file` reference is never sufficient authority to
+move or delete that external path. `reset` and `compact` refuse external store
+or log references instead of treating them as managed state.
+
 Restoring an older backup restores an older belief about the outside world.
 Any LLM call or `@effect` completed after that backup may run again on resume,
 including email sends and connector writes. Review that replay window before
