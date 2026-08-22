@@ -86,6 +86,11 @@ from zippergen.deployment_profiles import (
     _profile_options,
 )
 from zippergen.value_codec import encode_value
+from zippergen.private_files import (
+    ensure_private_directory,
+    write_private_bytes,
+    write_private_text,
+)
 from zippergen.deployment_checks import (
     DoctorConfig,
     _call_doctor_hook,
@@ -210,12 +215,11 @@ def _parse_llm_idle_timeouts(pairs: list[str]) -> dict[str, float]:
 
 
 def _write_deployment_secrets(path: Path, values: dict[str, str]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = (json.dumps(values, indent=2, sort_keys=True) + "\n").encode()
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "wb") as stream:
-        stream.write(payload)
-    path.chmod(0o600)
+    ensure_private_directory(path.parent)
+    write_private_text(
+        path,
+        json.dumps(values, indent=2, sort_keys=True) + "\n",
+    )
 
 
 def _jsonable_kv_pairs(values: Mapping[str, object]) -> list[str]:
@@ -259,29 +263,54 @@ def _write_deployment_artifacts(profile: dict[str, object]) -> None:
     script_path = _deployment_script_path(name)
     service_path = _deployment_service_path(name)
     launchd_path = _deployment_launchd_path(name)
-    Path(str(profile["store"])).expanduser().parent.mkdir(parents=True, exist_ok=True)
-    Path(str(profile["log"])).expanduser().parent.mkdir(parents=True, exist_ok=True)
-    _deployments_dir().mkdir(parents=True, exist_ok=True)
+    home = _zippergen_home()
+    ensure_private_directory(home)
+    store_path = Path(str(profile["store"])).expanduser()
+    log_path = Path(str(profile["log"])).expanduser()
+    if log_path.is_symlink():
+        raise SystemExit(f"Refusing a symlinked deployment log: {log_path}")
+    for directory in (store_path.parent, log_path.parent, _deployments_dir()):
+        directory.mkdir(parents=True, exist_ok=True)
+        try:
+            directory.resolve().relative_to(home.resolve())
+        except ValueError:
+            continue
+        ensure_private_directory(directory)
+
+    try:
+        log_path.resolve().relative_to(home.resolve())
+    except ValueError:
+        pass
+    else:
+        log_fd = os.open(
+            log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600
+        )
+        os.close(log_fd)
+        log_path.chmod(0o600)
 
     stored_profile = dict(profile)
     stored_profile["inputs"] = encode_value(profile.get("inputs") or {})
-    profile_path.write_text(
+    write_private_text(
+        profile_path,
         json.dumps(stored_profile, indent=2, sort_keys=True) + "\n"
     )
-    script_path.write_text(
+    write_private_text(
+        script_path,
         "#!/bin/sh\n"
         "set -eu\n"
         f"cd {shlex.quote(str(profile['cwd']))}\n"
         f"exec env ZIPPERGEN_HOME={shlex.quote(str(_zippergen_home()))} "
         f"{_deployment_command(name, python_executable=str(profile.get('python') or sys.executable))}\n"
     )
-    script_path.chmod(0o755)
-    service_path.write_text(
+    script_path.chmod(0o700)
+    write_private_text(
+        service_path,
         "[Unit]\n"
         f"Description=ZipperGen deployment {name}\n"
         "After=network-online.target\n\n"
         "[Service]\n"
         "Type=simple\n"
+        "UMask=0077\n"
         f"WorkingDirectory={profile['cwd']}\n"
         f"ExecStart={script_path}\n"
         "Restart=on-failure\n"
@@ -301,8 +330,9 @@ def _write_deployment_artifacts(profile: dict[str, object]) -> None:
         "StandardOutPath": str(profile["log"]),
         "StandardErrorPath": str(profile["log"]),
         "ProcessType": "Background",
+        "Umask": 0o077,
     }
-    launchd_path.write_bytes(plistlib.dumps(launchd, sort_keys=True))
+    write_private_bytes(launchd_path, plistlib.dumps(launchd, sort_keys=True))
 
 
 def _profile_history_keep(profile: Mapping[str, object]) -> int | None:
@@ -407,7 +437,7 @@ def _install_systemd_unit(profile: dict[str, object], *, dry_run: bool = False) 
         print(f"Install systemd unit: {source} -> {target}")
         return target
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(source.read_text())
+    write_private_text(target, source.read_text())
     return target
 
 
@@ -420,7 +450,7 @@ def _install_launchd_agent(profile: dict[str, object], *, dry_run: bool = False)
         print(f"Install launchd agent: {source} -> {target}")
         return target
     target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_bytes(source.read_bytes())
+    write_private_bytes(target, source.read_bytes())
     return target
 
 
@@ -643,12 +673,72 @@ def _print_doctor_summary(
             print(f"FAIL {check.get('name')}: {check.get('detail')}")
 
 
+def _repair_deployment_permissions(
+    name: str,
+    profile: Mapping[str, object],
+) -> tuple[Path, ...]:
+    """Repair only files ZipperGen owns under its managed home."""
+
+    home = _zippergen_home().resolve()
+    ensure_private_directory(home)
+    repaired: list[Path] = [home]
+
+    directories = {
+        _deployments_dir(),
+        Path(str(profile.get("store") or "")).expanduser().parent,
+        Path(str(profile.get("log") or "")).expanduser().parent,
+    }
+    for directory in directories:
+        try:
+            directory.resolve().relative_to(home)
+        except ValueError:
+            continue
+        ensure_private_directory(directory)
+        repaired.append(directory)
+
+    private_files = {
+        _deployment_profile_path(name): 0o600,
+        _deployment_service_path(name): 0o600,
+        _deployment_launchd_path(name): 0o600,
+        _deployment_script_path(name): 0o700,
+    }
+    for field in ("store", "log", "secrets_file"):
+        raw_path = profile.get(field)
+        if not raw_path:
+            continue
+        path = Path(str(raw_path)).expanduser()
+        try:
+            path.resolve().relative_to(home)
+        except ValueError:
+            continue
+        private_files[path] = 0o600
+        if field == "store":
+            private_files[Path(str(path) + "-wal")] = 0o600
+            private_files[Path(str(path) + "-shm")] = 0o600
+
+    for path, mode in private_files.items():
+        if path.exists() and not path.is_symlink() and path.is_file():
+            path.chmod(mode)
+            repaired.append(path)
+    return tuple(repaired)
+
+
 def _doctor_command(args) -> int:
+    repaired: tuple[Path, ...] = ()
+    if args.repair_permissions:
+        profile = _load_deployment_profile(args.name)
+        repaired = _repair_deployment_permissions(args.name, profile)
     checks = _doctor_checks(
         args.name,
         include_systemd=not args.no_systemd,
         check_store_integrity=True,
     )
+    if repaired:
+        checks.append(_doctor_check(
+            "ok",
+            "permissions repaired",
+            f"secured {len(repaired)} managed path(s)",
+        ))
     if args.json:
         print(json.dumps({"deployment": args.name, "checks": checks}, default=str, sort_keys=True))
     else:
@@ -1147,11 +1237,8 @@ def _print_tasks(tasks: list[dict], *, heading: str) -> None:
 def _notify_stdout_task(task: dict) -> None:
     spec = task.get("spec") or {}
     rendered = spec.get("rendered") or {}
-    token = task.get("token")
     print("=" * 72)
     print(f"Human task: {task['task_id']}")
-    if token:
-        print(f"Token: {token}")
     print(f"Action: {task['role']}.{task['action']} ({spec.get('kind', 'human')})")
     instruction = rendered.get("instruction")
     context = rendered.get("context")
@@ -1165,22 +1252,22 @@ def _notify_stdout_task(task: dict) -> None:
     if prefill:
         print("\nPrefill:")
         print(prefill)
-    if token:
-        kind = spec.get("kind")
-        if kind == "confirm":
-            print("\nApprove:")
-            print(f"  zippergen deploy approve --token {token}")
-            print("Decline:")
-            print(f"  zippergen deploy approve --token {token} --no")
-        elif kind == "ack":
-            print("\nAcknowledge:")
-            print(f"  zippergen deploy approve --token {token}")
-        else:
-            print("\nRespond:")
-            print(
-                "  zippergen deploy approve "
-                f"--token {token} --value '<value>'"
-            )
+    task_id = task["task_id"]
+    kind = spec.get("kind")
+    if kind == "confirm":
+        print("\nApprove:")
+        print(f"  zippergen deploy approve --task {task_id} --yes")
+        print("Decline:")
+        print(f"  zippergen deploy approve --task {task_id} --no")
+    elif kind == "ack":
+        print("\nAcknowledge:")
+        print(f"  zippergen deploy approve --task {task_id}")
+    else:
+        print("\nRespond:")
+        print(
+            "  zippergen deploy approve "
+            f"--task {task_id} --value '<value>'"
+        )
 
 
 def _print_status(status: dict[str, object]) -> None:
@@ -2585,7 +2672,7 @@ a formal document.
 
 
 def _remove_command(args) -> int:
-    """Delete a deployment. Its durable store survives unless --purge."""
+    """Delete a deployment. Its managed store survives unless --purge."""
 
     from zippergen.deployments import (
         DeploymentRemovalError,
@@ -2600,7 +2687,9 @@ def _remove_command(args) -> int:
     except DeploymentRemovalError as exc:
         raise SystemExit(str(exc)) from exc
 
-    _print_remove_consequences(args.name, artifacts, purge=args.purge)
+    _print_remove_consequences(
+        args.name, artifacts, purge=args.purge, profile=profile
+    )
 
     if not args.yes:
         if not sys.stdin.isatty():
@@ -2994,6 +3083,7 @@ def _print_remove_consequences(
     artifacts,
     *,
     purge: bool,
+    profile: Mapping[str, object] | None = None,
 ) -> None:
     """Name what removal destroys, not only what it keeps.
 
@@ -3002,8 +3092,18 @@ def _print_remove_consequences(
     authorization. Listing only what survives hides exactly that.
     """
 
-    kept = [item.label for item in artifacts if item.retain and not purge]
-    lost = [item.label for item in artifacts if not (item.retain and not purge)]
+    def describe(item) -> str:
+        raw_path = getattr(item, "path", None)
+        return (
+            f"{item.label} ({Path(raw_path).resolve()})"
+            if raw_path is not None
+            else item.label
+        )
+
+    kept = [describe(item) for item in artifacts if item.retain and not purge]
+    lost = [
+        describe(item) for item in artifacts if not (item.retain and not purge)
+    ]
     print(f"Deployment {name}: {len(artifacts)} artifact(s) currently present.")
     if lost:
         print(f"  Deleted for good: {', '.join(lost)}.")
@@ -3018,6 +3118,24 @@ def _print_remove_consequences(
         print(
             f"  Archived under {_zippergen_home() / 'trash' / 'deployments'}: "
             f"{', '.join(kept)}."
+        )
+    owned = {
+        Path(item.path).expanduser().resolve()
+        for item in artifacts
+        if getattr(item, "path", None) is not None
+    }
+    preserved = []
+    for field in ("store", "log", "secrets_file"):
+        raw_path = (profile or {}).get(field)
+        if not raw_path:
+            continue
+        path = Path(str(raw_path)).expanduser().resolve()
+        if path.exists() and path not in owned:
+            preserved.append(f"{field} ({path})")
+    if preserved:
+        print(
+            "  Preserved external reference(s), because the profile does not "
+            f"confer ownership: {', '.join(preserved)}."
         )
     print("  The service is unregistered, so nothing runs it again.")
 
@@ -3319,14 +3437,20 @@ def _connector_configure_command(args) -> int:
             ),
             default=str(existing.get("chat_id") or "") or None,
         )
+        allowed_user_id = str(
+            args.allowed_user_id
+            or existing.get("allowed_user_id")
+            or chat_id
+        ).strip()
         values = {
             "connection": connection,
             "kind": "telegram",
             "chat_id": chat_id,
+            "allowed_user_id": allowed_user_id,
         }
-        described = f"chat {chat_id}"
+        described = f"chat {chat_id}, trusted user {allowed_user_id}"
     elif kind == "google-sheets":
-        if args.chat_id or args.account or args.query:
+        if args.chat_id or args.allowed_user_id or args.account or args.query:
             raise SystemExit(
                 "Google Sheets configuration uses --spreadsheet-id and --tab."
             )
@@ -3356,7 +3480,7 @@ def _connector_configure_command(args) -> int:
         }
         described = f"tab {tab}"
     elif kind == "gmail":
-        if args.chat_id or args.spreadsheet_id or args.tab:
+        if args.chat_id or args.allowed_user_id or args.spreadsheet_id or args.tab:
             raise SystemExit(
                 "Gmail configuration does not use --chat-id, "
                 "--spreadsheet-id, or --tab."
@@ -4495,10 +4619,13 @@ def _approve_command(args) -> int:
     try:
         token_record = None
         task_id = args.task
-        if args.token is not None:
-            token_record = load_human_task_token(conn, args.token)
+        if args.token_stdin:
+            token = sys.stdin.readline().strip()
+            if not token:
+                raise SystemExit("No human task token was received on stdin.")
+            token_record = load_human_task_token(conn, token)
             if token_record is None:
-                raise SystemExit(f"Human task token not found: {args.token}")
+                raise SystemExit("Human task token was not found.")
             task_id = token_record["task_id"]
         task = load_human_task(conn, task_id)
         if task is None:
@@ -4535,16 +4662,16 @@ def _notify_stdout_command(args) -> int:
             store_path,
             status="pending",
             limit=args.limit,
-            with_tokens=True,
+            with_tokens=False,
             token_channel=args.channel,
         )
         emitted = 0
         for task in tasks:
-            token = task.get("token") or task["task_id"]
-            if token in seen:
+            task_id = task["task_id"]
+            if task_id in seen:
                 continue
             _notify_stdout_task(task)
-            seen.add(token)
+            seen.add(task_id)
             emitted += 1
         if not args.watch:
             if emitted == 0 and not args.quiet:
@@ -4566,7 +4693,7 @@ def _notify_telegram_command(args) -> int:
     store_path = str(Path(args.store).expanduser())
     if not Path(store_path).exists():
         raise SystemExit(f"Store does not exist: {args.store}")
-    token = load_telegram_token(args.bot_token)
+    token = load_telegram_token()
     chat_id = load_telegram_chat_id(args.chat_id)
     if not chat_id:
         raise SystemExit("Telegram chat id is required. Set ZIPPERGEN_TELEGRAM_CHAT_ID or pass --chat-id.")
@@ -4575,6 +4702,11 @@ def _notify_telegram_command(args) -> int:
         store_path=store_path,
         client=client,
         chat_id=chat_id,
+        allowed_user_id=(
+            args.allowed_user_id
+            or os.environ.get("ZIPPERGEN_TELEGRAM_ALLOWED_USER_ID")
+            or chat_id
+        ),
         channel=args.channel,
         limit=args.limit,
     )
@@ -4690,7 +4822,11 @@ def _add_owned_execution_commands(subparsers, *, owner: str) -> None:
     )
     target = approve_parser.add_mutually_exclusive_group(required=True)
     target.add_argument("--task", help="Human task id.")
-    target.add_argument("--token", help="Durable approval token.")
+    target.add_argument(
+        "--token-stdin",
+        action="store_true",
+        help="Read a durable approval token from one line of standard input.",
+    )
     approve_parser.add_argument("--yes", action="store_true", help="Complete a boolean task with true.")
     approve_parser.add_argument("--no", action="store_true", help="Complete a boolean task with false.")
     approve_parser.add_argument("--value", help="Value for string tasks, or explicit true/false for boolean tasks.")
@@ -5139,6 +5275,13 @@ def _parse_cli_args(
         ),
     )
     connector_configure.add_argument(
+        "--allowed-user-id",
+        help=(
+            "Telegram user id allowed to answer approvals. Defaults to the "
+            "chat id for a private chat; set it explicitly for a group."
+        ),
+    )
+    connector_configure.add_argument(
         "--project",
         help="Project root; defaults to discovery from the current directory.",
     )
@@ -5473,6 +5616,11 @@ def _parse_cli_args(
     deploy_check = deploy_sub.add_parser("check", help="check a deployment for common problems")
     deploy_check.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
     deploy_check.add_argument(
+        "--repair-permissions",
+        action="store_true",
+        help="Make managed deployment directories and files owner-only.",
+    )
+    deploy_check.add_argument(
         "--strict",
         action="store_true",
         help="Exit non-zero when a check fails, for scripts.",
@@ -5513,8 +5661,11 @@ def _parse_cli_args(
 
     tg = notify_sub.add_parser("telegram", help="send and receive human task approvals through Telegram")
     tg.add_argument("--store", required=True, help="SQLite store path.")
-    tg.add_argument("--bot-token", help="Telegram bot token. Defaults to ZIPPERGEN_TELEGRAM_TOKEN.")
     tg.add_argument("--chat-id", help="Telegram chat id. Defaults to ZIPPERGEN_TELEGRAM_CHAT_ID.")
+    tg.add_argument(
+        "--allowed-user-id",
+        help="Telegram user id allowed to answer. Defaults to ZIPPERGEN_TELEGRAM_ALLOWED_USER_ID or the chat id.",
+    )
     tg.add_argument("--channel", default="telegram", help="Approval token channel name.")
     tg.add_argument("--watch", action="store_true", help="Keep polling Telegram and the local store.")
     tg.add_argument("--interval", type=float, default=2.0, help="Delay between store scans in --watch mode.")

@@ -51,7 +51,7 @@ class TelegramBotClient:
         if not token:
             raise ValueError(
                 "Telegram bot token is required. Set ZIPPERGEN_TELEGRAM_TOKEN "
-                "or pass --bot-token."
+                "in the process environment."
             )
         self.token = token
         self.timeout = timeout
@@ -189,7 +189,7 @@ def complete_task_with_token(
 ) -> dict:
     token_record = load_human_task_token(conn, token)
     if token_record is None:
-        raise TaskNotForThisRoute(f"Human task token not found: {token}")
+        raise TaskNotForThisRoute("Human task token was not found.")
     if channel is not None and token_record["channel"] != channel:
         raise TaskNotForThisRoute(
             "This response belongs to another connector route."
@@ -313,6 +313,7 @@ class TelegramNotifier:
     store_path: str
     client: TelegramBotClient
     chat_id: str
+    allowed_user_id: str | None = None
     channel: str = "telegram"
     limit: int | None = None
     #: Which bot this reads. Every reader of a bot shares one cursor, so this
@@ -390,6 +391,16 @@ class TelegramNotifier:
     def _chat_matches(self, chat_id: object) -> bool:
         return str(chat_id) == self._target
 
+    def _actor_matches(self, actor: object) -> bool:
+        # Direct integrations created before actor policies existed retain
+        # chat-principal behavior. Managed connector snapshots always provide
+        # an explicit value, defaulting to the private chat's user id.
+        if self.allowed_user_id is None:
+            return True
+        if not isinstance(actor, Mapping):
+            return False
+        return str(actor.get("id")) == str(self.allowed_user_id)
+
     def _answer_callback_best_effort(
         self, callback: Mapping[str, object], text: str
     ) -> None:
@@ -433,6 +444,11 @@ class TelegramNotifier:
                 callback, "This task belongs to another chat."
             )
             return NOT_MINE
+        if not self._actor_matches(callback.get("from")):
+            self._answer_callback_best_effort(
+                callback, "You are not authorized to answer this task."
+            )
+            return SETTLED
 
         token, value = parsed
         try:
@@ -483,6 +499,8 @@ class TelegramNotifier:
         chat = message.get("chat") or {}
         if not self._chat_matches(chat.get("id")):
             return NOT_MINE
+        if not self._actor_matches(message.get("from")):
+            return SETTLED
         text = str(message.get("text") or "")
         parsed = parse_text_response(text)
         if parsed is None:
@@ -742,6 +760,11 @@ class TelegramDeploymentNotifier:
             store_path=self.store_path,
             client=self.client,
             chat_id=chat_id,
+            allowed_user_id=(
+                str(route["allowed_user_id"])
+                if route.get("allowed_user_id")
+                else None
+            ),
             channel=str(
                 route.get("channel") or f"telegram:{name}"
             ),

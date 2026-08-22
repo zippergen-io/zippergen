@@ -1,4 +1,5 @@
 import json
+import io
 import os
 import plistlib
 import shlex
@@ -209,6 +210,9 @@ def _prepared_deployment_store(
     workflow_path.write_text(WORKFLOW_SOURCE)
     home = tmp_path / "zg-home"
     monkeypatch.setenv("ZIPPERGEN_HOME", str(home))
+    monkeypatch.setenv(
+        "ZIPPERGEN_LAUNCH_AGENTS_DIR", str(tmp_path / "launch-agents")
+    )
     monkeypatch.chdir(tmp_path)
     assert _deploy_for_test([f"{workflow_path}:hello"]) == 0
     capsys.readouterr()
@@ -2306,8 +2310,8 @@ def test_deploy_does_not_warn_about_what_it_is_about_to_do(
         )
     }
 
-    assert standalone["log file"]["status"] == "warn"
-    assert "log file" not in during_deploy
+    assert standalone["log file"]["status"] == "ok"
+    assert during_deploy["log file"]["status"] == "ok"
     installed = [key for key in standalone if key.endswith(" installed")]
     assert installed, "the standalone check must still report the unit"
     assert not [key for key in during_deploy if key.endswith(" installed")]
@@ -2338,6 +2342,47 @@ def test_doctor_reports_deployment_checks(tmp_path, monkeypatch, capsys):
     assert "initialized but empty" in checks["sqlite store"]["detail"]
     assert checks["sqlite integrity"]["status"] == "ok"
     assert checks["sqlite integrity"]["detail"] == "SQLite quick check passed"
+
+
+def test_doctor_reports_and_repairs_unsafe_managed_permissions(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    _prepared_deployment_store(tmp_path, monkeypatch, capsys)
+    home = tmp_path / "zg-home"
+    profile_path = _the_deployment(home)
+    profile = json.loads(profile_path.read_text())
+    log_path = Path(profile["log"])
+    home.chmod(0o755)
+    profile_path.chmod(0o644)
+    log_path.chmod(0o644)
+
+    assert main([
+        "deploy", "check", "--strict", "--json", "--no-systemd"
+    ]) == 1
+    failed = {
+        check["name"]
+        for check in json.loads(capsys.readouterr().out)["checks"]
+        if check["status"] == "fail"
+    }
+    assert "deployment home permissions" in failed
+    assert "profile permissions" in failed
+    assert "log file permissions" in failed
+
+    assert main([
+        "deploy",
+        "check",
+        "--repair-permissions",
+        "--strict",
+        "--json",
+        "--no-systemd",
+    ]) == 0
+    repaired = json.loads(capsys.readouterr().out)["checks"]
+    assert any(check["name"] == "permissions repaired" for check in repaired)
+    assert home.stat().st_mode & 0o777 == 0o700
+    assert profile_path.stat().st_mode & 0o777 == 0o600
+    assert log_path.stat().st_mode & 0o777 == 0o600
 
 
 def test_doctor_returns_failure_for_broken_profile(tmp_path, monkeypatch, capsys):
@@ -3245,7 +3290,11 @@ def test_tasks_command_generates_stable_channel_tokens(tmp_path, monkeypatch, ca
     assert second[0]["token"] == first[0]["token"]
 
 
-def test_approve_command_completes_task_by_token(tmp_path, monkeypatch, capsys):
+def test_approve_command_completes_task_by_token_from_stdin(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
     store_path = _prepared_deployment_store(tmp_path, monkeypatch, capsys)
     conn = open_store(str(store_path))
     ensure_human_task(
@@ -3263,7 +3312,8 @@ def test_approve_command_completes_task_by_token(tmp_path, monkeypatch, capsys):
     main(["deploy", "tasks", "--tokens", "--channel", "telegram", "--json"])
     token = json.loads(capsys.readouterr().out)[0]["token"]
 
-    rc = main(["deploy", "approve", "--token", token, "--yes"])
+    monkeypatch.setattr("sys.stdin", io.StringIO(token + "\n"))
+    rc = main(["deploy", "approve", "--token-stdin", "--yes"])
 
     captured = capsys.readouterr()
     assert rc == 0
@@ -3311,12 +3361,12 @@ def test_notify_stdout_prints_pending_task_with_token(tmp_path, capsys):
     captured = capsys.readouterr()
     assert rc == 0
     assert "Human task: task-1" in captured.out
-    assert "Token: zg_" in captured.out
+    assert "Token: zg_" not in captured.out
     assert "Action: User.approve (confirm)" in captured.out
     assert "Approve the deployment?" in captured.out
     assert "Production rollout" in captured.out
     assert "zippergen deploy approve" in captured.out
-    assert "--token zg_" in captured.out
+    assert "--task task-1" in captured.out
     assert "--no" in captured.out
 
 

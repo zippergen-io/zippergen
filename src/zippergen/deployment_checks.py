@@ -50,6 +50,7 @@ from zippergen.deployment_platform import (
     slug as _slug,
     systemctl_command as _systemctl_command,
     systemd_unit_name as _systemd_unit_name,
+    zippergen_home as _zippergen_home,
 )
 from zippergen.deployment_profiles import (
     _default_deployment_log_path,
@@ -535,6 +536,35 @@ def _doctor_checks(
     profile = _load_deployment_profile(name)
     profile_name = str(profile.get("name") or name)
     checks.append(_doctor_check("ok", "profile", f"loaded {profile_path}", path=str(profile_path)))
+    home = _zippergen_home()
+    if home.is_symlink():
+        checks.append(_doctor_check(
+            "fail", "deployment home permissions", f"directory is a symlink: {home}"
+        ))
+    elif home.exists() and home.stat().st_mode & 0o077:
+        checks.append(_doctor_check(
+            "fail",
+            "deployment home permissions",
+            f"permissions are not private: {home}; run 'zg deploy check --repair-permissions'",
+        ))
+    elif home.exists():
+        checks.append(_doctor_check(
+            "ok", "deployment home permissions", f"owner-only directory: {home}"
+        ))
+    if profile_path.is_symlink():
+        checks.append(_doctor_check(
+            "fail", "profile permissions", f"profile is a symlink: {profile_path}"
+        ))
+    elif profile_path.stat().st_mode & 0o077:
+        checks.append(_doctor_check(
+            "fail",
+            "profile permissions",
+            f"permissions are not private: {profile_path}; run 'zg deploy check --repair-permissions'",
+        ))
+    else:
+        checks.append(_doctor_check(
+            "ok", "profile permissions", f"owner-only file: {profile_path}"
+        ))
     checks.extend(deployment_freshness_checks(profile))
 
     for field in ["workflow", "cwd", "store", "log"]:
@@ -577,7 +607,17 @@ def _doctor_checks(
     else:
         checks.append(_doctor_check("warn", "sqlite store", f"store does not exist yet: {store_path}"))
 
-    if log_path.exists():
+    if log_path.is_symlink():
+        checks.append(_doctor_check(
+            "fail", "log file permissions", f"log is a symlink: {log_path}"
+        ))
+    elif log_path.exists() and log_path.stat().st_mode & 0o077:
+        checks.append(_doctor_check(
+            "fail",
+            "log file permissions",
+            f"permissions are not private: {log_path}; run 'zg deploy check --repair-permissions'",
+        ))
+    elif log_path.exists():
         checks.append(_doctor_check("ok", "log file", str(log_path)))
     elif not before_start:
         checks.append(_doctor_check("warn", "log file", f"log does not exist yet: {log_path}"))
@@ -629,7 +669,9 @@ def _doctor_checks(
     secret_count = len(raw_secret_names) if isinstance(raw_secret_names, (list, tuple, set)) else 0
     if secrets_path:
         secret_file = Path(str(secrets_path)).expanduser()
-        if not secret_file.exists():
+        if secret_file.is_symlink():
+            checks.append(_doctor_check("fail", "secrets file", f"file is a symlink: {secret_file}"))
+        elif not secret_file.exists():
             checks.append(_doctor_check("fail", "secrets file", f"file does not exist: {secret_file}"))
         elif secret_file.stat().st_mode & 0o077:
             checks.append(_doctor_check("fail", "secrets file", f"permissions are not private: {secret_file}"))

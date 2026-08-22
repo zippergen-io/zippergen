@@ -312,6 +312,43 @@ def test_telegram_callback_completes_boolean_task(tmp_path):
     assert client.edits == [{"chat_id": "123", "message_id": 99, "reply_markup": None}]
 
 
+def test_telegram_callback_rejects_an_untrusted_group_member(tmp_path):
+    store_path = tmp_path / "unauthorized-callback.sqlite"
+    _create_task(store_path)
+    client = FakeTelegramClient()
+    notifier = TelegramNotifier(
+        str(store_path),
+        client,
+        chat_id="-100123",
+        allowed_user_id="42",
+    )
+    notifier.send_pending_once()
+    token = client.sent[0]["reply_markup"]["inline_keyboard"][0][0][
+        "callback_data"
+    ].split(":", 2)[2]
+
+    result = notifier.process_update({
+        "callback_query": {
+            "id": "unauthorized",
+            "from": {"id": 7},
+            "data": f"zg:yes:{token}",
+            "message": {"message_id": 9, "chat": {"id": -100123}},
+        },
+    })
+
+    assert result == SETTLED
+    conn = open_store(str(store_path))
+    try:
+        assert load_human_task(conn, "task-1")["status"] == "pending"
+        assert load_human_task_token(conn, token)["used_at"] is None
+    finally:
+        conn.close()
+    assert client.answers == [{
+        "callback_query_id": "unauthorized",
+        "text": "You are not authorized to answer this task.",
+    }]
+
+
 def test_expired_callback_ack_does_not_undo_answer_or_block_offset(tmp_path):
     store_path = tmp_path / "expired-callback.sqlite"
     _create_task(store_path)

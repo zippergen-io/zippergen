@@ -903,7 +903,7 @@ def mark_human_task_token_used(conn, token: str) -> dict:
     )
     record = load_human_task_token(conn, token)
     if record is None:
-        raise KeyError(f"human task token {token!r} not found")
+        raise KeyError("human task token not found")
     return record
 
 

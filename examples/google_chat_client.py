@@ -23,6 +23,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import TypedDict
 
+from zippergen.private_files import write_private_text
+
 
 CREDENTIALS_PATH = Path(
     os.environ.get("ZIPPERGEN_GCHAT_CREDENTIALS",
@@ -74,7 +76,7 @@ def _get_service():
                 str(CREDENTIALS_PATH), SCOPES
             )
             creds = flow.run_local_server(port=0)
-        TOKEN_PATH.write_text(creds.to_json())
+        write_private_text(TOKEN_PATH, creds.to_json())
     return build("chat", "v1", credentials=creds)
 
 

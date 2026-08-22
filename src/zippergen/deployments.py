@@ -33,6 +33,11 @@ from zippergen.deployment_platform import (
     systemd_unit_name as _systemd_unit_name,
     zippergen_home as _zippergen_home,
 )
+from zippergen.deployment_profiles import (
+    _default_deployment_log_path,
+    _default_deployment_store_path,
+)
+from zippergen.private_files import write_private_text
 
 
 class DeploymentRemovalError(RuntimeError):
@@ -175,38 +180,29 @@ def deployment_artifacts(
         ),
     ]
 
-    secrets = profile.get("secrets_file")
-    if secrets:
+    canonical_store = Path(_default_deployment_store_path(name))
+    for index, path in enumerate(_sqlite_family(canonical_store)):
+        suffix = "" if index == 0 else path.name.removeprefix(canonical_store.name)
         artifacts.append(
             _artifact(
-                "Private secrets",
-                Path(str(secrets)),
-                "profile/custom-secrets.json",
-            )
-        )
-    store = profile.get("store")
-    if store:
-        store_path = Path(str(store)).expanduser()
-        for index, path in enumerate(_sqlite_family(store_path)):
-            suffix = "" if index == 0 else path.name.removeprefix(store_path.name)
-            artifacts.append(
-                _artifact(
-                    "Durable store" if index == 0 else f"Store sidecar {suffix}",
-                    path,
-                    f"state/store.sqlite{suffix}",
-                    retain=True,
-                )
-            )
-    log = profile.get("log")
-    if log:
-        artifacts.append(
-            _artifact(
-                "Deployment log",
-                Path(str(log)),
-                "logs/deployment.log",
+                "Durable store" if index == 0 else f"Store sidecar {suffix}",
+                path,
+                f"state/store.sqlite{suffix}",
                 retain=True,
             )
         )
+    artifacts.append(
+        _artifact(
+            "Deployment log",
+            Path(_default_deployment_log_path(name)),
+            "logs/deployment.log",
+            retain=True,
+        )
+    )
+
+    # A profile reference says where runtime state came from; it does not make
+    # an arbitrary external path deployment-owned. Canonical managed paths are
+    # listed above. External references are deliberately left untouched.
 
     unique: list[DeploymentArtifact] = []
     seen: set[Path] = set()
@@ -521,6 +517,12 @@ def reset_deployment_store(
             f"Deployment {name} has no durable store configured."
         )
     store = Path(str(raw_store)).expanduser()
+    canonical_store = Path(_default_deployment_store_path(name))
+    if _resolved(store) != _resolved(canonical_store):
+        raise DeploymentRemovalError(
+            f"Refusing to reset external store reference {store}. Only the "
+            f"managed deployment store may be reset: {canonical_store}"
+        )
     present = tuple(path for path in _sqlite_family(store) if _path_present(path))
     if not present:
         return DeploymentStoreResetResult(name, store, None, 0)
@@ -597,6 +599,12 @@ def compact_deployment_logs(
             f"Deployment {name} has no log path configured."
         )
     log = Path(str(raw_log)).expanduser()
+    canonical_log = Path(_default_deployment_log_path(name))
+    if _resolved(log) != _resolved(canonical_log):
+        raise DeploymentRemovalError(
+            f"Refusing to compact external log reference {log}. Only the "
+            f"managed deployment log may be compacted: {canonical_log}"
+        )
     if _path_present(log) and (
         not log.is_file() or log.is_symlink()
     ):
@@ -639,9 +647,9 @@ def compact_deployment_logs(
         profile["log_compacted_at"] = time.strftime(
             "%Y-%m-%dT%H:%M:%S%z"
         )
-        _deployment_profile_path(name).write_text(
+        write_private_text(
+            _deployment_profile_path(name),
             json.dumps(profile, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
         )
     except Exception as exc:
         raise DeploymentRemovalError(

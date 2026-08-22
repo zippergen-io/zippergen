@@ -192,6 +192,37 @@ def test_workflow_source_fingerprint_covers_only_bundle_inputs(tmp_path, monkeyp
     assert deployment_source_provenance(profile, spec, workflow) != first
 
 
+def test_declared_directory_rejects_a_symlink_outside_its_root(
+    tmp_path,
+    monkeypatch,
+):
+    root = tmp_path / "project"
+    root.mkdir()
+    workflow_path = root / "workflow.py"
+    workflow_path.write_text(WORKFLOW_SOURCE)
+    declared = root / "assets"
+    declared.mkdir()
+    outside = root / "private.txt"
+    outside.write_text("do not bundle")
+    try:
+        (declared / "linked-secret").symlink_to(outside)
+    except OSError as exc:
+        pytest.skip(f"symlinks unavailable: {exc}")
+    monkeypatch.chdir(root)
+    workflow, _module = load_workflow_spec("workflow.py:sample")
+    profile: dict[str, object] = {
+        "cwd": str(root),
+        "workflow": "workflow.py:sample",
+    }
+
+    with pytest.raises(SystemExit, match="symlink"):
+        deployment_source_provenance(
+            profile,
+            DeploymentSpec(files=("assets",)),
+            workflow,
+        )
+
+
 def test_freshness_distinguishes_runtime_and_workflow_source(
     tmp_path, monkeypatch
 ):

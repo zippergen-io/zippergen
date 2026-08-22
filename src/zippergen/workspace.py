@@ -121,6 +121,7 @@ _CONNECTOR_PROJECT_FIELDS = frozenset(
         "connection",
         "kind",
         "chat_id",
+        "allowed_user_id",
         "spreadsheet_id",
         "tab",
         "account",

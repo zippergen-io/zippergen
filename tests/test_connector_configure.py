@@ -82,6 +82,7 @@ def test_it_saves_a_configuration_the_project_can_commit(tmp_path):
         "connection": "approval-bot",
         "kind": "telegram",
         "chat_id": "4242",
+        "allowed_user_id": "4242",
     }
 
 
@@ -108,6 +109,28 @@ def test_telegram_setup_collects_the_chat_id_in_the_human_terminal(
     assert manifest["connectors"]["configurations"]["approval-chat"][
         "chat_id"
     ] == "4242"
+
+
+def test_telegram_group_records_the_explicit_trusted_user(tmp_path):
+    root = _project(tmp_path)
+    _provider(root, "approval-bot", "telegram")
+
+    result = _run(
+        root,
+        "connector",
+        "configure",
+        "approval-group",
+        "approval-bot",
+        "--chat-id=-1004242",
+        "--allowed-user-id=73",
+    )
+
+    assert result.returncode == 0, result.stderr
+    configuration = tomllib.loads((root / "zippergen.toml").read_text())[
+        "connectors"
+    ]["configurations"]["approval-group"]
+    assert configuration["chat_id"] == "-1004242"
+    assert configuration["allowed_user_id"] == "73"
 
 
 def test_the_bot_token_never_reaches_the_manifest(tmp_path):

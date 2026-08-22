@@ -20,6 +20,7 @@ from zippergen.deployment_platform import (
 )
 from zippergen.syntax import Workflow
 from zippergen.validation import assistant_actions
+from zippergen.private_files import ensure_private_directory
 
 
 def _deployment_python_path(environment_dir: Path) -> Path:
@@ -41,6 +42,7 @@ def _copy_deployment_source(source: Path, target: Path) -> None:
         shutil.copytree(
             source,
             target,
+            symlinks=True,
             ignore=shutil.ignore_patterns(
                 ".git", ".venv", "__pycache__", "*.pyc"
             ),
@@ -48,6 +50,35 @@ def _copy_deployment_source(source: Path, target: Path) -> None:
         return
     target.parent.mkdir(parents=True, exist_ok=True)
     shutil.copy2(source, target)
+
+
+def _validate_source_symlinks(source: Path) -> None:
+    """Reject links that would make a bundle escape its declared source."""
+
+    if not source.is_dir():
+        return
+    root = source.resolve()
+    for path in source.rglob("*"):
+        if not path.is_symlink():
+            continue
+        raw_target = Path(os.readlink(path))
+        if raw_target.is_absolute():
+            raise SystemExit(
+                f"Declared deployment directory contains an absolute symlink: {path}"
+            )
+        target = path.resolve(strict=False)
+        try:
+            target.relative_to(root)
+        except ValueError as exc:
+            raise SystemExit(
+                f"Declared deployment directory contains a symlink outside "
+                f"its root: {path} -> {raw_target}"
+            ) from exc
+        if not target.exists():
+            raise SystemExit(
+                f"Declared deployment directory contains a broken symlink: "
+                f"{path} -> {raw_target}"
+            )
 
 
 def _deployment_sources(
@@ -73,6 +104,10 @@ def _deployment_sources(
         path = Path(declared).expanduser()
         if not path.is_absolute():
             path = source_cwd / path
+        if path.is_symlink():
+            raise SystemExit(
+                f"Declared deployment source must not itself be a symlink: {path}"
+            )
         path = path.resolve()
         if not path.exists():
             raise SystemExit(f"Declared deployment file does not exist: {path}")
@@ -91,6 +126,8 @@ def _deployment_sources(
             ) from exc
         if path not in sources:
             sources.append(path)
+    for source in sources:
+        _validate_source_symlinks(source)
     return source_cwd, source_workflow, module_path.resolve(), sources
 
 
@@ -104,6 +141,9 @@ def _deployment_source_digest(sources: list[Path], source_cwd: Path) -> str:
         if source.is_dir():
             for path in source.rglob("*"):
                 relative = path.relative_to(source)
+                if path.is_symlink():
+                    files[str(target / relative)] = path
+                    continue
                 if (
                     not path.is_file()
                     or any(part in ignored_parts for part in relative.parts)
@@ -117,7 +157,11 @@ def _deployment_source_digest(sources: list[Path], source_cwd: Path) -> str:
     for relative, path in sorted(files.items()):
         digest.update(relative.encode())
         digest.update(b"\0")
-        digest.update(path.read_bytes())
+        if path.is_symlink():
+            digest.update(b"symlink\0")
+            digest.update(os.readlink(path).encode())
+        else:
+            digest.update(path.read_bytes())
         digest.update(b"\0")
     return digest.hexdigest()
 
@@ -174,7 +218,9 @@ def bundle_deployment(
         f"{time.strftime('%Y%m%d-%H%M%S')}-"
         f"{time.time_ns() % 1_000_000_000:09d}"
     )
-    bundle_root = deployment_bundles_dir(str(profile["name"])) / version
+    bundles = deployment_bundles_dir(str(profile["name"]))
+    ensure_private_directory(bundles)
+    bundle_root = bundles / version
     bundle_root.mkdir(parents=True, exist_ok=False)
 
     profile["workflow_source"] = deployment_source_provenance(
@@ -343,7 +389,7 @@ def prepare_deployment_environment(
 
     name = str(profile["name"])
     environment_dir = deployment_environment_dir(name)
-    environment_dir.parent.mkdir(parents=True, exist_ok=True)
+    ensure_private_directory(environment_dir.parent)
     build_dir = Path(
         tempfile.mkdtemp(
             prefix=f".{slug(name)}-building-",

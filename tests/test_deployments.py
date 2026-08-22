@@ -1,4 +1,6 @@
 import json
+import os
+import plistlib
 from pathlib import Path
 
 import pytest
@@ -12,9 +14,13 @@ from zippergen.deployments import (
     compact_deployment_logs,
     present_deployment_artifacts,
     remove_deployment_artifacts,
+    reset_deployment_store,
     unregister_deployment_service,
 )
-from zippergen.serve import _write_deployment_artifacts
+from zippergen.serve import (
+    _repair_deployment_permissions,
+    _write_deployment_artifacts,
+)
 
 
 def test_deployment_profile_preserves_typed_inputs(tmp_path, monkeypatch):
@@ -37,6 +43,73 @@ def test_deployment_profile_preserves_typed_inputs(tmp_path, monkeypatch):
     loaded = _load_deployment_profile("typed-inputs")
     assert loaded["inputs"] == {"coordinates": (1, [2, 3])}
     assert type(loaded["inputs"]["coordinates"]) is tuple
+
+
+def test_deployment_artifacts_are_private_under_a_permissive_umask(
+    tmp_path,
+    monkeypatch,
+):
+    home = tmp_path / "home"
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(home))
+    profile = {
+        "name": "private",
+        "cwd": str(tmp_path),
+        "store": str(home / "runs/private.sqlite"),
+        "log": str(home / "logs/private.log"),
+        "python": "/usr/bin/python3",
+        "inputs": {"private": "workflow-input"},
+    }
+
+    previous = os.umask(0o022)
+    try:
+        _write_deployment_artifacts(profile)
+    finally:
+        os.umask(previous)
+
+    for directory in (home, home / "runs", home / "logs", home / "deployments"):
+        assert directory.stat().st_mode & 0o777 == 0o700
+    for path in (
+        home / "logs/private.log",
+        home / "deployments/private.json",
+        home / "deployments/zippergen-private.service",
+        home / "deployments/io.zippergen.private.plist",
+    ):
+        assert path.stat().st_mode & 0o777 == 0o600
+    assert (home / "deployments/private.sh").stat().st_mode & 0o777 == 0o700
+    service = (home / "deployments/zippergen-private.service").read_text()
+    assert "UMask=0077" in service
+    launchd = plistlib.loads(
+        (home / "deployments/io.zippergen.private.plist").read_bytes()
+    )
+    assert launchd["Umask"] == 0o077
+
+
+def test_permission_repair_secures_existing_managed_artifacts(
+    tmp_path,
+    monkeypatch,
+):
+    home = tmp_path / "home"
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(home))
+    profile = {
+        "name": "repair",
+        "cwd": str(tmp_path),
+        "store": str(home / "runs/repair.sqlite"),
+        "log": str(home / "logs/repair.log"),
+        "python": "/usr/bin/python3",
+        "inputs": {},
+    }
+    _write_deployment_artifacts(profile)
+    profile_path = home / "deployments/repair.json"
+    log_path = home / "logs/repair.log"
+    home.chmod(0o755)
+    profile_path.chmod(0o644)
+    log_path.chmod(0o644)
+
+    _repair_deployment_permissions("repair", profile)
+
+    assert home.stat().st_mode & 0o777 == 0o700
+    assert profile_path.stat().st_mode & 0o777 == 0o600
+    assert log_path.stat().st_mode & 0o777 == 0o600
 
 
 def _deployment_fixture(tmp_path, monkeypatch, name="review-demo"):
@@ -127,6 +200,67 @@ def test_remove_deployment_leaves_no_secret_anywhere_in_the_archive(
         for path in trash.rglob("*")
         if path.is_file()
     )
+
+
+def test_remove_preserves_external_paths_referenced_by_a_profile(
+    tmp_path,
+    monkeypatch,
+):
+    _home, profile, _store, _log = _deployment_fixture(tmp_path, monkeypatch)
+    external = tmp_path / "external"
+    external.mkdir()
+    external_secrets = external / "secrets.json"
+    external_store = external / "state.sqlite"
+    external_log = external / "workflow.log"
+    external_secrets.write_text("private")
+    external_store.write_text("state")
+    external_log.write_text("log")
+    profile.update({
+        "secrets_file": str(external_secrets),
+        "store": str(external_store),
+        "log": str(external_log),
+    })
+
+    result = remove_deployment_artifacts("review-demo", profile, purge=False)
+
+    assert result.archive is not None
+    assert external_secrets.read_text() == "private"
+    assert external_store.read_text() == "state"
+    assert external_log.read_text() == "log"
+    archived_sources = json.loads(
+        (result.archive / "removal.json").read_text()
+    )["artifacts"]
+    assert str(external_secrets) not in {
+        item["source"] for item in archived_sources
+    }
+
+
+def test_reset_and_compact_refuse_external_profile_references(
+    tmp_path,
+    monkeypatch,
+):
+    home = tmp_path / "home"
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(home))
+    monkeypatch.setattr(
+        "zippergen.deployments._deployment_service_status",
+        lambda _name: {"state": "not-loaded", "detail": "not loaded"},
+    )
+    external_store = tmp_path / "external.sqlite"
+    external_log = tmp_path / "external.log"
+    external_store.write_text("keep-store")
+    external_log.write_text("keep-log")
+
+    with pytest.raises(DeploymentRemovalError, match="external store"):
+        reset_deployment_store(
+            "review-demo", {"store": str(external_store)}
+        )
+    with pytest.raises(DeploymentRemovalError, match="external log"):
+        compact_deployment_logs(
+            "review-demo", {"log": str(external_log)}
+        )
+
+    assert external_store.read_text() == "keep-store"
+    assert external_log.read_text() == "keep-log"
 
 
 def test_remove_deployment_artifacts_purge_leaves_no_archive(
@@ -302,7 +436,10 @@ def test_reset_accepts_a_service_that_was_deliberately_stopped(tmp_path, monkeyp
 
     from zippergen import deployments
 
-    store = tmp_path / "run.sqlite"
+    home = tmp_path / "home"
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(home))
+    store = home / "runs/d.sqlite"
+    store.parent.mkdir(parents=True)
     store.write_text("durable state")
     profile = {"name": "d", "store": str(store)}
     monkeypatch.setattr(
@@ -310,8 +447,6 @@ def test_reset_accepts_a_service_that_was_deliberately_stopped(tmp_path, monkeyp
         "_deployment_service_status",
         lambda _name: {"state": "loaded", "detail": "unit is inactive"},
     )
-    monkeypatch.setenv("ZIPPERGEN_HOME", str(tmp_path / "home"))
-
     result = deployments.reset_deployment_store("d", profile)
 
     assert not store.exists()

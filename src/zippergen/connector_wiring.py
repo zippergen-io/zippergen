@@ -224,6 +224,15 @@ def connector_runtime(
         token_env = provider_environment_name(connection, "bot_token")
         environment[token_env] = secrets["bot_token"]
         participant, _, action = target.partition(".")
+        chat_id = str(configuration.get("chat_id") or "")
+        allowed_user_id = str(
+            configuration.get("allowed_user_id") or chat_id
+        )
+        if chat_id.startswith("-") and allowed_user_id == chat_id:
+            raise ConnectorWiringError(
+                f"Telegram group connector {name!r} must name the trusted "
+                "approver with allowed_user_id/--allowed-user-id."
+            )
         snapshot[f"human:{target}"] = {
             "type": "human",
             "target": target,
@@ -233,7 +242,8 @@ def connector_runtime(
             "provider": provider,
             "connection": connection,
             "configuration": name,
-            "chat_id": configuration.get("chat_id"),
+            "chat_id": chat_id,
+            "allowed_user_id": allowed_user_id,
             "channel": configuration.get("channel") or f"telegram:{name}",
             "token_env": token_env,
         }
@@ -259,7 +269,14 @@ def connector_runtime(
         if requirement.kind == "telegram":
             token_env = provider_environment_name(connection, "bot_token")
             record.update(
-                {"chat_id": configuration.get("chat_id"), "token_env": token_env}
+                {
+                    "chat_id": configuration.get("chat_id"),
+                    "allowed_user_id": (
+                        configuration.get("allowed_user_id")
+                        or configuration.get("chat_id")
+                    ),
+                    "token_env": token_env,
+                }
             )
             environment[token_env] = secrets["bot_token"]
         elif requirement.kind in {"google-sheets", "gmail"}:
