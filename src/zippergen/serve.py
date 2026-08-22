@@ -142,6 +142,7 @@ from zippergen.store import (
     load_human_task_token,
     mark_human_task_token_used,
     open_store,
+    open_store_readonly,
     write_history_keep,
 )
 
@@ -676,22 +677,28 @@ def _load_trace_events(
     *,
     after_rowid: int = 0,
     limit: int = 50,
+    newest: bool = True,
 ) -> list[dict]:
     if limit <= 0:
         raise SystemExit("--tail must be greater than 0.")
     path = Path(store_path).expanduser()
     if not path.exists():
         raise SystemExit(f"Store does not exist: {store_path}")
-    conn = open_store(str(path))
+    # A trace refresh is observational. In particular, do not use open_store()
+    # here: its schema-claim transaction takes the WAL writer lock and can make
+    # readers wait for gaps in a busy multi-lifeline workflow.
+    conn = open_store_readonly(path)
     try:
+        order = "DESC" if newest else "ASC"
         rows = conn.execute(
             "SELECT id, role, payload FROM history WHERE id>? "
-            "ORDER BY id DESC LIMIT ?",
+            f"ORDER BY id {order} LIMIT ?",
             (after_rowid, limit),
         ).fetchall()
     finally:
         conn.close()
-    rows = list(reversed(rows))
+    if newest:
+        rows = list(reversed(rows))
     return [
         {
             "rowid": row[0],
@@ -922,6 +929,16 @@ def _print_trace_events(events: list[dict]) -> None:
         ("Time", "#", "Participant", "Event", "Detail"),
         _trace_rows(events),
     )
+
+
+def _print_trace_follow_events(events: list[dict]) -> None:
+    """Append trace rows without reprinting the table banner each poll."""
+
+    for timestamp, event_id, role, event, detail in _trace_rows(events):
+        print(
+            f"{timestamp}  {event_id}  {role}  {event}  {detail}",
+            flush=True,
+        )
 
 
 def _print_tasks(tasks: list[dict], *, heading: str) -> None:
@@ -4130,18 +4147,51 @@ def _inspect_command(args) -> int:
 
 
 def _trace_command(args) -> int:
+    if args.follow and args.interval <= 0:
+        raise SystemExit("--interval must be greater than 0.")
     execution = _resolve_execution_reference(args)
     events = _load_trace_events(
         execution.store,
         after_rowid=args.after,
         limit=args.tail,
     )
-    if args.json:
+    if args.json and args.follow:
+        for event in events:
+            print(json.dumps(event, default=str), flush=True)
+    elif args.json:
         print(json.dumps(events, default=str))
     else:
         _print_execution_reference(execution)
         _print_trace_events(events)
-    return 0
+    if not args.follow:
+        return 0
+
+    after_rowid = max(
+        (int(event["rowid"]) for event in events),
+        default=int(args.after),
+    )
+    try:
+        while True:
+            time.sleep(args.interval)
+            while True:
+                new_events = _load_trace_events(
+                    execution.store,
+                    after_rowid=after_rowid,
+                    limit=args.tail,
+                    newest=False,
+                )
+                if not new_events:
+                    break
+                after_rowid = int(new_events[-1]["rowid"])
+                if args.json:
+                    for event in new_events:
+                        print(json.dumps(event, default=str), flush=True)
+                else:
+                    _print_trace_follow_events(new_events)
+                if len(new_events) < args.tail:
+                    break
+    except KeyboardInterrupt:
+        return 0
 
 
 def _tasks_command(args) -> int:
@@ -4365,6 +4415,17 @@ def _add_owned_execution_commands(subparsers, *, owner: str) -> None:
     trace_parser.add_argument("--tail", type=int, default=50, help="Maximum number of trace events to show.")
     trace_parser.add_argument("--after", type=int, default=0, help="Only show trace events after this event rowid.")
     trace_parser.add_argument("--json", action="store_true", help="Print machine-readable JSON.")
+    trace_parser.add_argument(
+        "--follow",
+        action="store_true",
+        help="Print newly committed trace events until Ctrl-C.",
+    )
+    trace_parser.add_argument(
+        "--interval",
+        type=float,
+        default=0.25,
+        help="Polling interval in seconds for --follow. Default 0.25.",
+    )
 
     tasks_parser = subparsers.add_parser(
         "tasks",

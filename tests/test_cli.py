@@ -2370,6 +2370,141 @@ def test_trace_command_outputs_json_after_rowid(tmp_path, monkeypatch, capsys):
     ]
 
 
+def test_trace_command_follows_newly_committed_events(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    store_path = _prepared_deployment_store(tmp_path, monkeypatch, capsys)
+    conn = open_store(str(store_path))
+    first = record_history(
+        conn,
+        "Mailbox",
+        {"type": "decision", "kind": "while", "value": True},
+    )
+    conn.close()
+
+    polls = 0
+
+    def advance(_interval):
+        nonlocal polls
+        polls += 1
+        if polls == 1:
+            writer = open_store(str(store_path))
+            try:
+                for value in (False, True):
+                    record_history(
+                        writer,
+                        "Mailbox",
+                        {"type": "decision", "kind": "if", "value": value},
+                    )
+            finally:
+                writer.close()
+            return
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("zippergen.serve.time.sleep", advance)
+
+    assert main([
+        "deploy",
+        "trace",
+        "--tail",
+        "1",
+        "--follow",
+        "--interval",
+        "0.01",
+        "--json",
+    ]) == 0
+
+    rows = [json.loads(line) for line in capsys.readouterr().out.splitlines()]
+    assert rows[0]["rowid"] == first
+    assert rows[0]["event"]["kind"] == "while"
+    assert rows[1]["rowid"] > first
+    assert rows[1]["event"]["kind"] == "if"
+    assert rows[1]["event"]["value"] is False
+    assert rows[2]["rowid"] > rows[1]["rowid"]
+    assert rows[2]["event"]["value"] is True
+
+
+def test_trace_follow_prints_the_table_banner_only_once(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    store_path = _prepared_deployment_store(tmp_path, monkeypatch, capsys)
+    polls = 0
+
+    def advance(_interval):
+        nonlocal polls
+        polls += 1
+        if polls == 1:
+            writer = open_store(str(store_path))
+            try:
+                record_history(
+                    writer,
+                    "Mailbox",
+                    {"type": "decision", "kind": "if", "value": False},
+                )
+            finally:
+                writer.close()
+            return
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr("zippergen.serve.time.sleep", advance)
+
+    assert main([
+        "deploy",
+        "trace",
+        "--follow",
+        "--interval",
+        "0.01",
+    ]) == 0
+
+    output = capsys.readouterr().out
+    assert output.count("Trace (") == 1
+    assert "Mailbox" in output
+    assert "if → false" in output
+
+
+def test_trace_follow_rejects_a_non_positive_interval(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    _prepared_deployment_store(tmp_path, monkeypatch, capsys)
+
+    with pytest.raises(SystemExit, match="--interval must be greater than 0"):
+        main(["deploy", "trace", "--follow", "--interval", "0"])
+
+
+def test_trace_reader_does_not_compete_for_the_writer_lock(tmp_path):
+    from zippergen.serve import _load_trace_events
+
+    store_path = tmp_path / "live-trace.sqlite"
+    writer = open_store(str(store_path))
+    first = record_history(
+        writer,
+        "Mailbox",
+        {"type": "decision", "kind": "while", "value": True},
+    )
+
+    writer.execute("BEGIN IMMEDIATE")
+    second = record_history(
+        writer,
+        "Mailbox",
+        {"type": "decision", "kind": "if", "value": False},
+    )
+    try:
+        visible = _load_trace_events(str(store_path), limit=10)
+        assert [row["rowid"] for row in visible] == [first]
+    finally:
+        writer.execute("COMMIT")
+        writer.close()
+
+    visible = _load_trace_events(str(store_path), limit=10)
+    assert [row["rowid"] for row in visible] == [first, second]
+
+
 def test_trace_command_renders_control_messages_without_internal_tags(
     tmp_path, monkeypatch, capsys
 ):

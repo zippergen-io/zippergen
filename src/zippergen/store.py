@@ -238,6 +238,45 @@ def open_store(path: str) -> sqlite3.Connection:
     return conn
 
 
+def open_store_readonly(path: str | Path) -> sqlite3.Connection:
+    """Open an existing store without joining SQLite's writer queue.
+
+    Observation commands must not call :func:`open_store`: that function
+    claims or initializes the schema under ``BEGIN IMMEDIATE``, which is the
+    right startup contract for a runner but needlessly takes the single WAL
+    writer lock for a ``SELECT``. A busy multi-role workflow can otherwise
+    make a live trace reader appear to update in batches.
+    """
+
+    store_path = Path(path).expanduser()
+    if not store_path.is_file():
+        raise FileNotFoundError(store_path)
+    uri = f"{store_path.resolve().as_uri()}?mode=ro"
+    conn = sqlite3.connect(
+        uri,
+        uri=True,
+        isolation_level=None,
+        check_same_thread=False,
+        timeout=5.0,
+    )
+    try:
+        conn.execute("PRAGMA busy_timeout=5000")
+        conn.execute("PRAGMA query_only=ON")
+        _reject_replay_era_store(conn)
+        tables = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' LIMIT 1"
+        ).fetchone()
+        if tables is None:
+            raise StoreSchemaError(
+                "This SQLite file is empty and is not yet a ZipperGen durable store."
+            )
+        _check_store_schema(conn)
+    except BaseException:
+        conn.close()
+        raise
+    return conn
+
+
 def _reject_replay_era_store(conn: sqlite3.Connection) -> None:
     """Refuse a store written by the replay/snapshot design.
 
