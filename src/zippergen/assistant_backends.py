@@ -35,6 +35,7 @@ class AssistantCliCheck:
 
 _REQUIRED_CLI_OPTIONS = {
     "codex": (
+        "--ephemeral",
         "--strict-config",
         "--skip-git-repo-check",
         "--cd",
@@ -43,6 +44,8 @@ _REQUIRED_CLI_OPTIONS = {
         "--config",
     ),
     "claude": (
+        "--no-session-persistence",
+        "--input-format",
         "--print",
         "--permission-mode",
         "--tools",
@@ -52,6 +55,71 @@ _REQUIRED_CLI_OPTIONS = {
         "--strict-mcp-config",
     ),
 }
+
+
+_ASSISTANT_BASE_ENVIRONMENT = {
+    "ALL_PROXY",
+    "COLORTERM",
+    "COMSPEC",
+    "CURL_CA_BUNDLE",
+    "HOME",
+    "HTTPS_PROXY",
+    "HTTP_PROXY",
+    "LANG",
+    "LOGNAME",
+    "NO_COLOR",
+    "NO_PROXY",
+    "PATH",
+    "PATHEXT",
+    "REQUESTS_CA_BUNDLE",
+    "SHELL",
+    "SSL_CERT_DIR",
+    "SSL_CERT_FILE",
+    "SYSTEMROOT",
+    "TEMP",
+    "TERM",
+    "TMP",
+    "TMPDIR",
+    "USER",
+    "XDG_CACHE_HOME",
+    "XDG_CONFIG_HOME",
+    "XDG_STATE_HOME",
+}
+
+_ASSISTANT_AUTH_ENVIRONMENT = {
+    "codex": {
+        "AZURE_OPENAI_API_KEY",
+        "CODEX_API_KEY",
+        "CODEX_HOME",
+        "OPENAI_API_KEY",
+        "OPENAI_BASE_URL",
+    },
+    "claude": {
+        "ANTHROPIC_API_KEY",
+        "ANTHROPIC_AUTH_TOKEN",
+        "ANTHROPIC_BASE_URL",
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "CLAUDE_CONFIG_DIR",
+    },
+}
+
+
+def _assistant_environment(backend: str) -> dict[str, str]:
+    """Return the least-privilege environment for an assistant CLI.
+
+    A workflow process can hold credentials for every model and connector it
+    uses. Assistant actions process untrusted workflow values, so inheriting
+    that process environment would cross an unnecessary security boundary.
+    Keep only ordinary process settings and credentials belonging to the
+    selected assistant itself.
+    """
+
+    allowed = _ASSISTANT_BASE_ENVIRONMENT | _ASSISTANT_AUTH_ENVIRONMENT[backend]
+    return {
+        name: value
+        for name, value in os.environ.items()
+        if name in allowed or name.startswith("LC_")
+    }
 
 
 def check_cli_assistant(backend: str) -> AssistantCliCheck:
@@ -81,6 +149,7 @@ def check_cli_assistant(backend: str) -> AssistantCliCheck:
     try:
         completed = subprocess.run(
             command,
+            env=_assistant_environment(selected),
             text=True,
             capture_output=True,
             check=False,
@@ -276,6 +345,7 @@ def make_cli_assistant_backend(
             command = [
                 executable,
                 "exec",
+                "--ephemeral",
                 "--strict-config",
                 "--skip-git-repo-check",
                 "--cd",
@@ -308,6 +378,9 @@ def make_cli_assistant_backend(
             command = [
                 executable,
                 "--print",
+                "--no-session-persistence",
+                "--input-format",
+                "text",
                 "--permission-mode",
                 "plan" if action.access == "read-only" else "acceptEdits",
                 "--tools",
@@ -322,12 +395,12 @@ def make_cli_assistant_backend(
                         "--strict-mcp-config",
                     ]
                 )
-            command.append(prompt)
-            stdin = None
+            stdin = prompt
         try:
             completed = subprocess.run(
                 command,
                 cwd=workspace,
+                env=_assistant_environment(selected),
                 input=stdin,
                 text=True,
                 capture_output=True,
