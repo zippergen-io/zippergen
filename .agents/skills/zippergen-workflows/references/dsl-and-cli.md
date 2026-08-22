@@ -710,7 +710,8 @@ nothing, so it is safe to repeat.
 `zg deploy status` and `zg deploy check` report workflow-bundle freshness and
 ZipperGen-runtime freshness separately. Stale is a warning: the immutable
 service keeps running its deployed snapshot until it is deliberately
-redeployed.
+redeployed. Status also names a currently executing external action with its
+elapsed time and preserves the latest terminal lifeline failure.
 
 `zg deploy inspect --watch` shows that deployment's live position.
 
@@ -723,6 +724,9 @@ There is no workflow or deployment name to pass: the project identifies both.
 `tasks` show recent events and pending human tasks. Trace output is a timestamped
 table; its event number remains the authoritative stored order, while the
 wall-clock time and paired action duration are for operational diagnosis.
+Use `trace --follow` for newly committed events. An action start without a
+terminal event in the retained window is shown as incomplete, not assumed to
+still be running; use status for live activity.
 `compact` trims optional
 inspection history and rotates logs; it refuses while the deployment is
 running, before changing either resource. Recovery never reads that history,
@@ -830,9 +834,10 @@ verbs, one aimed at each:
 
 ```bash
 zg run trace                        # recent protocol events
+zg run trace --follow               # stream newly committed events until Ctrl-C
 zg run tasks                        # decisions waiting for a person
 zg run approve --task 1 --yes       # answer one
-zg deploy trace
+zg deploy trace --follow             # stream the live deployment trace
 zg deploy tasks
 zg deploy approve --task 1 --yes
 zg deploy list                      # every deployment on this computer

@@ -23,6 +23,7 @@ from zippergen.store import (
     load_human_task_token,
     open_store,
     read_history_keep,
+    record_last_failure,
     record_history,
 )
 from zippergen.storage_maintenance import inspect_store_storage
@@ -724,6 +725,21 @@ def test_remove_names_the_credentials_it_destroys(tmp_path):
 
     assert "nothing is kept" in purged
     assert "Archived under" not in purged
+
+
+def test_remove_reports_when_a_transient_artifact_closes_during_shutdown():
+    from zippergen import serve
+
+    outcome = serve._remove_outcome(
+        "demo",
+        planned=11,
+        removed=10,
+        service="service stopped and unregistered",
+    )
+
+    assert "10 artifact(s)" in outcome
+    assert "After service shutdown, 1 previously confirmed artifact(s)" in outcome
+    assert "were no longer present" in outcome
 
 
 def test_deploy_reset_archives_and_recreates_its_owned_store(
@@ -2318,6 +2334,57 @@ def test_status_speaks_plainly_about_a_stopped_service(
     assert "not-loaded" not in output
 
 
+def test_status_reports_what_a_lifeline_is_doing_and_for_how_long(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    store_path = _prepared_deployment_store(tmp_path, monkeypatch, capsys)
+    conn = open_store(str(store_path))
+    conn.execute(
+        "INSERT INTO role_state(role,env,control,monitor,steps,status,detail,updated_at) "
+        "VALUES(?,?,?,?,?,?,?,?)",
+        (
+            "Extractor",
+            "{}",
+            "{}",
+            None,
+            9,
+            "running_model",
+            json.dumps({"action": "classify_intake", "kind": "model"}),
+            1_700_000_000.0,
+        ),
+    )
+    conn.close()
+    monkeypatch.setattr("zippergen.serve.time.time", lambda: 1_700_000_196.0)
+
+    assert main(["deploy", "status"]) == 0
+
+    output = capsys.readouterr().out
+    assert "Extractor: running_model in classify_intake for 3m" in output
+
+
+def test_status_reports_the_latest_lifeline_failure(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    store_path = _prepared_deployment_store(tmp_path, monkeypatch, capsys)
+    conn = open_store(str(store_path))
+    record_last_failure(
+        conn,
+        "Extractor",
+        RuntimeError("local model endpoint refused the connection"),
+    )
+    conn.close()
+
+    assert main(["deploy", "status"]) == 0
+
+    output = capsys.readouterr().out
+    assert "Last failure: Extractor" in output
+    assert "RuntimeError: local model endpoint refused the connection" in output
+
+
 def test_status_command_reports_missing_store(tmp_path, monkeypatch, capsys):
     store_path = _prepared_deployment_store(tmp_path, monkeypatch, capsys)
     store_path.unlink()
@@ -2372,6 +2439,36 @@ def test_trace_command_reports_recent_trace_events(tmp_path, monkeypatch, capsys
     assert "Writer → User [main]" in captured.out
     assert 'draft="Looks good."' in captured.out
     assert f"#{first}" not in captured.out
+
+
+def test_deployment_trace_reports_service_and_runtime_freshness(
+    tmp_path,
+    monkeypatch,
+    capsys,
+):
+    _prepared_deployment_store(tmp_path, monkeypatch, capsys)
+    monkeypatch.setattr(
+        "zippergen.deployment_platform.deployment_service_status",
+        lambda _name: {
+            "state": "loaded",
+            "healthy": False,
+            "detail": "unit is inactive; last exit code 1",
+        },
+    )
+    monkeypatch.setattr(
+        "zippergen.serve.deployment_freshness_checks",
+        lambda _profile: [{
+            "name": "ZipperGen runtime",
+            "status": "warn",
+            "detail": "deployed code is behind; redeploy to apply current fixes",
+        }],
+    )
+
+    assert main(["deploy", "trace"]) == 0
+
+    output = capsys.readouterr().out
+    assert "Service: stopped (unit is inactive; last exit code 1)" in output
+    assert "WARN ZipperGen runtime: deployed code is behind" in output
 
 
 def test_trace_marks_an_unmatched_action_start_as_incomplete(

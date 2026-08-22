@@ -393,10 +393,13 @@ zg deploy remove              # store and profile move to trash, not deleted
 zg deploy reset --yes         # archive durable state; stays stopped afterwards
 ```
 
-`zg deploy status` reports service and durable state together with two
+`zg deploy status` reports service and durable state together with each active
+lifeline's current external action and elapsed time, plus the last terminal
+failure recorded by the runner. It also reports two
 freshness checks: the ZipperGen runtime installed for the service and the
 workflow source bundle. A stale warning means the immutable deployment keeps
-running its older snapshot until you redeploy; it does not stop the service.
+running its older snapshot until you redeploy; it does not stop the service,
+and provenance alone cannot tell whether the source difference is important.
 
 Use `zg deploy --no-start` only when you deliberately want to prepare and
 review a stopped deployment before a later `zg deploy start`. It is not a

@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import sqlite3
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -32,7 +33,10 @@ from zippergen.store import (
     list_role_states,
     list_workflow_results,
     open_store,
+    open_store_readonly,
     read_history_keep,
+    read_last_failure,
+    StoreSchemaError,
 )
 from zippergen.deployment_platform import (
     deployment_launchd_path as _deployment_launchd_path,
@@ -102,13 +106,26 @@ def _provenance_check(
         if before_revision and now_revision
         else ""
     )
+    if label == "ZipperGen runtime":
+        stale_detail = (
+            f"deployment is running older runtime code ({signal}){revisions}; "
+            "fixes in the current checkout are not active. The provenance "
+            "difference cannot show its severity; review the diff, then "
+            "redeploy to apply it"
+        )
+    else:
+        stale_detail = (
+            f"deployment is running its older immutable workflow bundle "
+            f"({signal}){revisions}; current source edits are not active. "
+            "Review the diff, then redeploy to apply it"
+        )
     return _doctor_check(
         "ok" if matches else "warn",
         label,
         (
             f"current ({signal}){revisions}"
             if matches
-            else f"deployment is behind the current source ({signal}){revisions}; redeploy to update it"
+            else stale_detail
         ),
         freshness="current" if matches else "stale",
         signal=signal,
@@ -189,7 +206,15 @@ def _store_status(store_path: str) -> dict[str, object]:
             "summary": "store does not exist",
         }
 
-    conn = open_store(str(path))
+    try:
+        conn = open_store_readonly(path)
+    except (OSError, StoreSchemaError, sqlite3.Error) as exc:
+        return {
+            "store": str(path),
+            "exists": True,
+            "state": "incompatible",
+            "summary": f"cannot inspect durable state: {exc}",
+        }
     try:
         roles = list_role_states(conn)
         outstanding = list_outstanding_messages(conn)
@@ -217,6 +242,7 @@ def _store_status(store_path: str) -> dict[str, object]:
             ),
             "keep": read_history_keep(conn),
         }
+        last_failure = read_last_failure(conn)
     finally:
         conn.close()
 
@@ -242,6 +268,7 @@ def _store_status(store_path: str) -> dict[str, object]:
             {
                 "role": row["role"],
                 "status": row["status"],
+                "detail": row["detail"],
                 "steps": row["steps"],
                 "updated_at": row["updated_at"],
             }
@@ -253,6 +280,7 @@ def _store_status(store_path: str) -> dict[str, object]:
         "done_human_task_count": done_task_count,
         "workflow_results": results,
         "history": history,
+        "last_failure": last_failure,
     }
 
 

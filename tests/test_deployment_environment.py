@@ -226,3 +226,14 @@ def test_freshness_distinguishes_runtime_and_workflow_source(
     stale = deployment_freshness_checks(profile)
     assert stale[0]["freshness"] == "current"
     assert stale[1]["freshness"] == "stale"
+    assert "immutable workflow bundle" in stale[1]["detail"]
+    assert "current source edits are not active" in stale[1]["detail"]
+
+    monkeypatch.setattr(
+        "zippergen.deployment_environment.zippergen_runtime_provenance",
+        lambda: {"source_sha256": "runtime-b"},
+    )
+    runtime_stale = deployment_freshness_checks(profile)[0]
+    assert runtime_stale["freshness"] == "stale"
+    assert "fixes in the current checkout are not active" in runtime_stale["detail"]
+    assert "cannot show its severity" in runtime_stale["detail"]

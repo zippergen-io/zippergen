@@ -635,6 +635,8 @@ class _ExecutionReference:
     subject: str
     status: str | None = None
     updated_at: str | None = None
+    service: Mapping[str, object] | None = None
+    freshness: tuple[dict[str, object], ...] = ()
 
 
 def _resolve_execution_reference(args) -> _ExecutionReference:
@@ -643,6 +645,8 @@ def _resolve_execution_reference(args) -> _ExecutionReference:
     from zippergen.workspace import Workspace
 
     if getattr(args, "execution_owner", "run") == "deploy":
+        from zippergen.deployment_platform import deployment_service_status
+
         profile = _load_deployment_profile(_resolved_deployment_name(args))
         return _ExecutionReference(
             store=str(profile["store"]),
@@ -652,6 +656,8 @@ def _resolve_execution_reference(args) -> _ExecutionReference:
                 if profile.get("updated_at")
                 else None
             ),
+            service=deployment_service_status(str(profile["name"])),
+            freshness=tuple(deployment_freshness_checks(profile)),
         )
     workspace = Workspace(getattr(args, "project", None))
     record = workspace.current_run()
@@ -688,6 +694,14 @@ def _print_execution_reference(reference: _ExecutionReference) -> None:
         renderer.emit(f"Status: {reference.status}")
     if reference.updated_at is not None:
         renderer.emit(f"Updated: {reference.updated_at}")
+    if reference.service is not None:
+        renderer.emit(f"Service: {_service_summary(reference.service)}")
+    for check in reference.freshness:
+        marker = "OK" if check.get("status") == "ok" else "WARN"
+        renderer.emit(
+            f"{marker} {check.get('name', 'freshness')}: "
+            f"{check.get('detail', 'no detail')}"
+        )
     renderer.emit(f"Store: {reference.store}")
     renderer.emit()
 
@@ -1108,10 +1122,26 @@ def _print_status(status: dict[str, object]) -> None:
     if isinstance(roles, list):
         print(f"Roles: {len(roles)}")
         for role in roles:
+            detail = role.get("detail") or {}
+            action = detail.get("action") if isinstance(detail, dict) else None
+            activity = f" in {action}" if action else ""
+            duration = (
+                f" for {_execution_age(role.get('updated_at'))}"
+                if str(role.get("status") or "").startswith("running_")
+                else ""
+            )
             print(
-                f"  {role['role']}: {role['status']} "
+                f"  {role['role']}: {role['status']}{activity}{duration} "
                 f"after {role['steps']} step(s)"
             )
+
+    last_failure = status.get("last_failure")
+    if isinstance(last_failure, dict):
+        role = last_failure.get("role") or "unknown lifeline"
+        error = last_failure.get("error") or "Error"
+        message = last_failure.get("message") or "no detail recorded"
+        occurred = _fmt_time(last_failure.get("recorded_at"))
+        print(f"Last failure: {role} · {error}: {message} · {occurred}")
 
     connectors = status.get("connectors")
     if isinstance(connectors, list) and connectors:
@@ -2515,7 +2545,14 @@ def _remove_command(args) -> int:
     except DeploymentRemovalError as exc:
         raise SystemExit(str(exc)) from exc
 
-    print(f"Removed {result.name}: {result.artifact_count} artifact(s). {service}")
+    print(
+        _remove_outcome(
+            result.name,
+            planned=len(artifacts),
+            removed=result.artifact_count,
+            service=service,
+        )
+    )
     if result.archive is not None:
         # The archive is the only thing this command keeps. Say where it is and
         # how large, so kept state does not become invisible state.
@@ -2530,6 +2567,31 @@ def _format_bytes(total: float) -> str:
             return f"{total:.0f} {unit}" if unit == "B" else f"{total:.1f} {unit}"
         total /= 1024
     return f"{total:.1f} GB"
+
+
+def _remove_outcome(
+    name: str,
+    *,
+    planned: int,
+    removed: int,
+    service: str,
+) -> str:
+    """Report what removal observed after stopping the service."""
+
+    text = f"Removed {name}: {removed} artifact(s). {service.rstrip('.')}."
+    if removed < planned:
+        missing = planned - removed
+        text += (
+            f" After service shutdown, {missing} previously confirmed "
+            "artifact(s) were no longer present."
+        )
+    elif removed > planned:
+        appeared = removed - planned
+        text += (
+            f" {appeared} additional artifact(s) appeared before removal "
+            "and were removed too."
+        )
+    return text
 
 
 def _directory_size(path: Path) -> str:
@@ -2869,7 +2931,7 @@ def _print_remove_consequences(
 
     kept = [item.label for item in artifacts if item.retain and not purge]
     lost = [item.label for item in artifacts if not (item.retain and not purge)]
-    print(f"Deployment {name}: {len(artifacts)} artifact(s) to remove.")
+    print(f"Deployment {name}: {len(artifacts)} artifact(s) currently present.")
     if lost:
         print(f"  Deleted for good: {', '.join(lost)}.")
     if any("secret" in item.label.casefold() for item in artifacts):
