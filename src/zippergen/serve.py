@@ -30,6 +30,10 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from types import ModuleType
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from zippergen.workspace import Workspace
 
 from zippergen.deployment import (
     DeploymentField,
@@ -3847,6 +3851,7 @@ def _display_default(value: object, *, secret: bool) -> str:
 # leaves an operator unable to tell a deliberate setting from a default nobody
 # chose. `zg deploy --yes` in particular answers every prompt silently, so the
 # source is the only thing that makes it reviewable.
+FIELD_SOURCE_PROJECT = "zippergen.toml"
 FIELD_SOURCE_DEPLOYMENT = "this deployment"
 FIELD_SOURCE_ENVIRONMENT = "environment"
 FIELD_SOURCE_DEFAULT = "declared default"
@@ -3862,6 +3867,7 @@ def _collect_deployment_fields(
     overrides: dict[str, object],
     interactive: bool,
     sources: dict[str, str] | None = None,
+    workspace: "Workspace | None" = None,
 ) -> tuple[dict[str, object], dict[str, str]]:
     declared = {field.name for field in spec.fields}
     unknown = sorted(set(overrides) - declared)
@@ -3873,6 +3879,12 @@ def _collect_deployment_fields(
             f"Available fields: {available}."
         )
     existing_secrets = _load_deployment_secrets(profile)
+    # One rule: every non-secret answer a person gives is kept in the visible
+    # project file, and the deployment profile is derived from it. Reading from
+    # anywhere else is what made "where is the value I typed?" have two answers.
+    project_answers = (
+        workspace.configuration_values() if workspace is not None else {}
+    )
     values: dict[str, object] = {}
     secrets: dict[str, str] = dict(existing_secrets)
 
@@ -3883,8 +3895,14 @@ def _collect_deployment_fields(
                 "passed with --set. Run interactively or provide "
                 f"{field.target_name} in the deployment environment."
             )
-        current = _profile_field_value(profile, field, existing_secrets)
-        origin = FIELD_SOURCE_DEPLOYMENT
+        current = None if field.secret else project_answers.get(field.name)
+        origin = FIELD_SOURCE_PROJECT
+        if current is None:
+            # A deployment configured before answers were kept in the project
+            # still has them only in its profile. Adopting the value here, and
+            # writing it back below, migrates it the first time it is deployed.
+            current = _profile_field_value(profile, field, existing_secrets)
+            origin = FIELD_SOURCE_DEPLOYMENT
         if current is None and field.target == "env":
             current = os.environ.get(field.target_name)
             origin = FIELD_SOURCE_ENVIRONMENT
@@ -3970,7 +3988,34 @@ def _collect_deployment_fields(
     profile["options"] = options
     profile["inputs"] = inputs
     profile["environment"] = environment
+    _record_answers_in_project(spec, values, workspace)
     return values, secrets
+
+
+def _record_answers_in_project(
+    spec: DeploymentSpec,
+    values: Mapping[str, object],
+    workspace: "Workspace | None",
+) -> None:
+    """Persist every non-secret answer where a person can find and edit it.
+
+    This is what makes the deployment profile derived rather than authored: an
+    answer typed once is kept in the visible project file, so it survives
+    removing the deployment, moving to another machine, and is reviewable in
+    version control like every other project choice.
+    """
+
+    if workspace is None:
+        return
+    answers = {
+        field.name: values[field.name]
+        for field in spec.fields
+        if not field.secret
+        and values.get(field.name) is not None
+        and _field_enabled(field, dict(values))
+    }
+    if answers != workspace.configuration_values():
+        workspace.write_configuration_values(answers)
 
 
 def _stored_deployment_configuration(
@@ -4167,6 +4212,7 @@ def _apply_deploy_arguments(
         overrides=overrides,
         interactive=interactive,
         sources=sources,
+        workspace=source_workspace,
     )
     # Every deploy says what it is configured with. A non-interactive `--yes`
     # answers each prompt from an existing deployment, the environment, or a

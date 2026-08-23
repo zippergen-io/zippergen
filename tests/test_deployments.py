@@ -672,3 +672,158 @@ def test_a_profile_without_a_declaration_shows_no_configuration(tmp_path, monkey
     monkeypatch.setenv("ZIPPERGEN_HOME", str(tmp_path / "home"))
 
     assert _stored_deployment_configuration({"name": "bare"}) is None
+
+
+# The invariant: every non-secret answer a person gives is kept in the visible
+# project file, and the deployment profile is derived from it. Two places to
+# author configuration is what made "where is the value I typed?" have two
+# answers depending on which code path collected it.
+
+
+def _configuration_spec():
+    from zippergen.deployment import DeploymentField, DeploymentSpec
+
+    return DeploymentSpec(
+        description="under test",
+        fields=(
+            DeploymentField("recipient", "Recipient", target="option"),
+            DeploymentField("rounds", "Rounds", target="option", default=4),
+            DeploymentField("token", "Token", target="env", secret=True),
+        ),
+    )
+
+
+def _workspace_at(tmp_path, monkeypatch):
+    from zippergen.workspace import Workspace
+
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(tmp_path / "home"))
+    project = tmp_path / "project"
+    project.mkdir()
+    workspace = Workspace(project, home=tmp_path / "home")
+    workspace.initialize_project(name="configured")
+    return workspace
+
+
+def test_an_answer_is_written_to_the_visible_project_file(tmp_path, monkeypatch):
+    from zippergen.serve import _collect_deployment_fields
+
+    workspace = _workspace_at(tmp_path, monkeypatch)
+    profile = {"name": "configured"}
+
+    _collect_deployment_fields(
+        _configuration_spec(),
+        profile,
+        overrides={"recipient": "alice@example.org"},
+        interactive=False,
+        workspace=workspace,
+    )
+
+    assert workspace.configuration_values() == {
+        "recipient": "alice@example.org",
+        "rounds": 4,
+    }
+    assert "alice@example.org" in workspace.manifest_path.read_text()
+
+
+def test_the_project_file_is_read_back_as_the_source(tmp_path, monkeypatch):
+    from zippergen import serve
+    from zippergen.serve import _collect_deployment_fields
+
+    workspace = _workspace_at(tmp_path, monkeypatch)
+    workspace.write_configuration_values(
+        {"recipient": "kept@example.org", "rounds": 9}
+    )
+    sources: dict[str, str] = {}
+
+    values, _ = _collect_deployment_fields(
+        _configuration_spec(),
+        {"name": "configured"},
+        overrides={},
+        interactive=False,
+        sources=sources,
+        workspace=workspace,
+    )
+
+    assert values["recipient"] == "kept@example.org"
+    assert values["rounds"] == 9, "a number keeps its type through TOML"
+    assert sources["recipient"] == serve.FIELD_SOURCE_PROJECT
+
+
+def test_a_secret_is_never_written_to_the_visible_project_file(
+    tmp_path, monkeypatch
+):
+    from zippergen.serve import _collect_deployment_fields
+
+    workspace = _workspace_at(tmp_path, monkeypatch)
+    monkeypatch.setenv("token", "sk-do-not-commit-me")
+
+    _collect_deployment_fields(
+        _configuration_spec(),
+        {"name": "configured"},
+        overrides={},
+        interactive=False,
+        workspace=workspace,
+    )
+
+    assert "token" not in workspace.configuration_values()
+    assert "sk-do-not-commit-me" not in workspace.manifest_path.read_text()
+
+
+def test_a_deployment_configured_before_this_rule_migrates_itself(
+    tmp_path, monkeypatch
+):
+    """An older deployment holds its answers only in its profile.
+
+    Adopting them on the next deploy, and writing them into the project, is the
+    whole migration: no separate command, and nothing for an operator to run.
+    """
+
+    from zippergen import serve
+    from zippergen.serve import _collect_deployment_fields
+
+    workspace = _workspace_at(tmp_path, monkeypatch)
+    assert workspace.configuration_values() == {}
+    legacy_profile = {
+        "name": "configured",
+        "options": {"recipient": "legacy@example.org", "rounds": 7},
+    }
+    sources: dict[str, str] = {}
+
+    values, _ = _collect_deployment_fields(
+        _configuration_spec(),
+        legacy_profile,
+        overrides={},
+        interactive=False,
+        sources=sources,
+        workspace=workspace,
+    )
+
+    assert values["recipient"] == "legacy@example.org"
+    assert sources["recipient"] == serve.FIELD_SOURCE_DEPLOYMENT
+    assert workspace.configuration_values() == {
+        "recipient": "legacy@example.org",
+        "rounds": 7,
+    }
+
+
+def test_an_edited_project_file_wins_over_the_published_profile(
+    tmp_path, monkeypatch
+):
+    from zippergen.serve import _collect_deployment_fields
+
+    workspace = _workspace_at(tmp_path, monkeypatch)
+    workspace.write_configuration_values({"recipient": "edited@example.org"})
+    published = {
+        "name": "configured",
+        "options": {"recipient": "published@example.org"},
+    }
+
+    values, _ = _collect_deployment_fields(
+        _configuration_spec(),
+        published,
+        overrides={},
+        interactive=False,
+        workspace=workspace,
+    )
+
+    assert values["recipient"] == "edited@example.org"

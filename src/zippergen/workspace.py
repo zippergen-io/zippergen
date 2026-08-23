@@ -23,7 +23,7 @@ import time
 import tomllib
 import uuid
 from pathlib import Path
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import Any
 
 from zippergen.value_codec import decode_value, encode_value
@@ -467,13 +467,56 @@ def _toml_string(value: object) -> str:
     return json.dumps(str(value), ensure_ascii=False)
 
 
+def _configuration_value(value: object, *, field: str) -> object:
+    """Validate one answer, which may be structured.
+
+    A deployment field can carry a whole record, not only a scalar, so the rule
+    is what TOML itself can represent rather than what is convenient to write.
+    Rejecting structured values here would push exactly those answers back into
+    the deployment profile, which is the split this section removes.
+    """
+
+    if isinstance(value, (str, bool, int, float)):
+        return value
+    if isinstance(value, (list, tuple)):
+        return [_configuration_value(item, field=field) for item in value]
+    if isinstance(value, dict):
+        return {
+            str(key): _configuration_value(item, field=f"{field}.{key}")
+            for key, item in value.items()
+        }
+    raise WorkspaceError(
+        f"Project {field} must be a string, number, boolean, list, or table; "
+        f"got {type(value).__name__}."
+    )
+
+
+def _scalar_values(raw: object, *, field: str) -> dict[str, object]:
+    """Read a table of answers, keeping each value's own type."""
+
+    if not isinstance(raw, dict):
+        raise WorkspaceError(f"Project {field} must be a table.")
+    return {
+        str(key): _configuration_value(value, field=f"{field}.{key}")
+        for key, value in raw.items()
+    }
+
+
 def _toml_literal(value: object) -> str:
-    """Render one typed TOML scalar used by hand-editable project settings."""
+    """Render one typed TOML value used by hand-editable project settings."""
 
     if isinstance(value, bool):
         return "true" if value else "false"
     if isinstance(value, (int, float)):
         return str(value)
+    if isinstance(value, (list, tuple)):
+        return "[" + ", ".join(_toml_literal(item) for item in value) + "]"
+    if isinstance(value, dict):
+        inner = ", ".join(
+            f"{_toml_key(key)} = {_toml_literal(item)}"
+            for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
+        )
+        return "{" + inner + "}"
     return _toml_string(value)
 
 
@@ -690,6 +733,7 @@ class Workspace:
                     "bindings": {},
                     "assignments": {"lifelines": {}, "actions": {}},
                 },
+                "configuration": {},
                 "exists": False,
             }
         try:
@@ -824,6 +868,13 @@ class Workspace:
             raw_connectors.get("bindings") or {},
             field="connectors.bindings",
         )
+        # The answers a person gave to this project's deployment questions.
+        # They live here, beside every other visible choice, so that "where is
+        # the value I typed?" has one answer rather than one per code path.
+        raw_configuration = manifest.get("configuration") or {}
+        if not isinstance(raw_configuration, dict):
+            raise WorkspaceError("Project configuration must be a table.")
+        configuration = _scalar_values(raw_configuration, field="configuration")
         return {
             "schema_version": PROJECT_SCHEMA_VERSION,
             "project_id": str(manifest.get("project_id") or "").strip() or None,
@@ -845,6 +896,7 @@ class Workspace:
                 "bindings": connector_bindings,
                 "assignments": connector_assignments,
             },
+            "configuration": configuration,
             "exists": True,
         }
 
@@ -855,6 +907,7 @@ class Workspace:
         models: dict[str, object] | None = None,
         assistants: dict[str, object] | None = None,
         connectors: dict[str, object] | None = None,
+        configuration: dict[str, object] | None = None,
     ) -> None:
         """Rewrite visible project configuration in deterministic TOML."""
 
@@ -875,6 +928,12 @@ class Workspace:
         connector_data = _object_table(
             connectors if connectors is not None else manifest["connectors"],
             field="connectors",
+        )
+        configuration_data = _scalar_values(
+            configuration
+            if configuration is not None
+            else manifest["configuration"],
+            field="configuration",
         )
         lines = [
             "# Visible, versionable ZipperGen project configuration.",
@@ -1001,8 +1060,29 @@ class Workspace:
                     f"{_toml_key(key)} = {_toml_string(value)}"
                     for key, value in sorted(values.items())
                 )
+        if configuration_data:
+            lines.extend(["", "[configuration]"])
+            lines.extend(
+                f"{_toml_key(key)} = {_toml_literal(value)}"
+                for key, value in sorted(configuration_data.items())
+            )
         _atomic_write_text(self.manifest_path, "\n".join(lines) + "\n")
 
+    def configuration_values(self) -> dict[str, object]:
+        """This project's answers to its deployment questions."""
+
+        values = self.project_manifest()["configuration"]
+        assert isinstance(values, dict)
+        return dict(values)
+
+    def write_configuration_values(self, values: Mapping[str, object]) -> None:
+        """Record answers in the visible project file.
+
+        Secrets never reach here: they are written to a private file by the
+        deployment layer and are not part of visible project configuration.
+        """
+
+        self._write_project_configuration(configuration=dict(values))
 
     def initialize_project(
         self,
