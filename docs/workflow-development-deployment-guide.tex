@@ -1058,6 +1058,23 @@ Every non-secret answer is kept in \path{zippergen.toml}, under
 authored.
 \end{quote}
 
+Because the answers belong to the project rather than to one command, both
+commands use them. \texttt{zg run} takes a stored answer as its default and
+records a new one, so a value given once need not be given again; \texttt{-{}-input}
+still overrides for a single run, and that answer is remembered too.
+\texttt{zg config} lists them beside every other project choice:
+
+\begin{lstlisting}[style=shell]
+Configuration
+Field       Value              Asks
+recipient   alice@example.org  Intake address
+send_mode   draft              Reply mode
+\end{lstlisting}
+
+\texttt{zg deploy status} does not repeat that table. What a deployment adds is
+whether the running service still matches those answers, which its freshness
+checks report.
+
 So the question ``I answered that during \texttt{zg deploy} --- where is it
 tomorrow?'' has a single answer, and it is a file you can open, edit, and
 commit. Secrets are the one exception: they go to a private file and are never

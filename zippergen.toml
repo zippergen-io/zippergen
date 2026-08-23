@@ -1,6 +1,4 @@
 # Visible, versionable ZipperGen project configuration.
-schema_version = 2
-project_id = "79c972d2c0424c01aabca1d3a78c04c8"
 name = "zippergen"
 specification_file = "specification.md"
 workflow_entry = "examples/call_intake.py:call_intake"
@@ -10,12 +8,16 @@ workflow_entry = "examples/call_intake.py:call_intake"
 
 [connectors.configurations."inbox"]
 "account" = "me"
-"kind" = "gmail"
 "connection" = "google"
+"kind" = "gmail"
 "query" = "is:unread"
 
 [connectors.configurations."records"]
-"kind" = "google-sheets"
 "connection" = "google"
+"kind" = "google-sheets"
 "spreadsheet_id" = "1AbC"
 "tab" = "Calls"
+
+[configuration]
+"max_retries" = 1
+"request" = "Interrupt me"

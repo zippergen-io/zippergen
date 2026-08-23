@@ -332,6 +332,44 @@ def _effective_routing(
     return effective_routing
 
 
+def _configuration_rows(
+    workspace: Workspace,
+    module: ModuleType | None,
+) -> list[dict[str, object]]:
+    """The project's answers to its workflow's declared questions.
+
+    These live in `zippergen.toml` beside every other project choice, so the
+    command that shows a project's configuration must show them. Leaving them
+    out is what made a value seem to belong to the deployment rather than to
+    the project that authored it.
+    """
+
+    from zippergen.deployment import deployment_spec_from_module
+
+    stored = workspace.configuration_values()
+    if module is None:
+        return [
+            {"name": name, "value": value, "declared": False}
+            for name, value in sorted(stored.items())
+        ]
+    try:
+        spec = deployment_spec_from_module(module)
+    except Exception:
+        return []
+    rows: list[dict[str, object]] = []
+    for field in spec.fields:
+        rows.append({
+            "name": field.name,
+            "prompt": field.prompt,
+            "value": stored.get(field.name),
+            "answered": field.name in stored,
+            "secret": field.secret,
+            "default": field.default,
+            "choices": list(field.choices),
+        })
+    return rows
+
+
 def configuration_report(
     workspace: Workspace,
     *,
@@ -582,6 +620,7 @@ def configuration_report(
             "workflow": workflow_spec,
             "specification": str(workspace.specification_path),
         },
+        "configuration": _configuration_rows(workspace, module),
         "providers": {"connections": provider_rows},
         "models": {
             "configurations": model_rows,

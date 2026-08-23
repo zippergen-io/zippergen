@@ -1688,6 +1688,7 @@ def _run_workflow_from_project(args, workspace) -> int:
         ),
         input_func=input,
         output_func=print,
+        workspace=workspace,
     )
     options = _parse_options(args.option)
     routing = project_model_routing(
@@ -4081,27 +4082,6 @@ def _record_answers_in_project(
         workspace.write_configuration_values(answers)
 
 
-def _stored_deployment_configuration(
-    profile: Mapping[str, object],
-) -> tuple[DeploymentSpec, dict[str, object]] | None:
-    """The declared fields and this deployment's answers, read from the profile.
-
-    The profile records the declaration it was configured against, so a stored
-    configuration can be shown without importing the workflow.
-    """
-
-    raw = profile.get("deployment_spec")
-    if not isinstance(raw, Mapping) or not raw.get("fields"):
-        return None
-    spec = normalize_deployment_spec(dict(raw))
-    stored: dict[str, object] = {}
-    for field in spec.fields:
-        stored[field.name] = _profile_field_value(
-            dict(profile), field, _load_deployment_secrets(dict(profile))
-        )
-    return spec, stored
-
-
 def _field_display_value(field: DeploymentField, value: object) -> str:
     """Render one value for a person, without printing a secret."""
 
@@ -4742,16 +4722,9 @@ def _status_command(args) -> int:
         marker = "OK" if check["status"] == "ok" else "WARN"
         print(f"{marker} {check['name']}: {check['detail']}")
     _print_status(status)
-    configuration = _stored_deployment_configuration(profile)
-    if configuration is not None:
-        spec, stored = configuration
-        _print_deployment_configuration(
-            spec,
-            stored,
-            {name: FIELD_SOURCE_DEPLOYMENT for name in stored},
-            heading="Configuration",
-            stored_in=str(_deployment_profile_path(args.name)),
-        )
+    # The values themselves belong to the project, and `zippergen config`
+    # shows them. What a deployment adds is whether the running service still
+    # matches them, which the freshness checks above already report.
     return 0
 
 

@@ -641,45 +641,6 @@ def test_a_reported_configuration_never_prints_a_secret(capsys):
     assert "a@b.com" in output
 
 
-def test_a_stored_configuration_is_readable_without_the_workflow(tmp_path, monkeypatch):
-    """`deploy status` must answer 'where do these values live' on its own."""
-
-    from zippergen.deployment import DeploymentField, DeploymentSpec
-    from zippergen.serve import _stored_deployment_configuration
-
-    monkeypatch.setenv("ZIPPERGEN_HOME", str(tmp_path / "home"))
-    spec = DeploymentSpec(
-        description="under test",
-        fields=(DeploymentField("recipient", "Recipient", target="option"),),
-    )
-    profile = {
-        "name": "stored",
-        "deployment_spec": spec.as_dict(),
-        "options": {"recipient": "kept@example.com"},
-    }
-
-    found = _stored_deployment_configuration(profile)
-
-    assert found is not None
-    recovered_spec, stored = found
-    assert [field.name for field in recovered_spec.fields] == ["recipient"]
-    assert stored["recipient"] == "kept@example.com"
-
-
-def test_a_profile_without_a_declaration_shows_no_configuration(tmp_path, monkeypatch):
-    from zippergen.serve import _stored_deployment_configuration
-
-    monkeypatch.setenv("ZIPPERGEN_HOME", str(tmp_path / "home"))
-
-    assert _stored_deployment_configuration({"name": "bare"}) is None
-
-
-# The invariant: every non-secret answer a person gives is kept in the visible
-# project file, and the deployment profile is derived from it. Two places to
-# author configuration is what made "where is the value I typed?" have two
-# answers depending on which code path collected it.
-
-
 def _configuration_spec():
     from zippergen.deployment import DeploymentField, DeploymentSpec
 

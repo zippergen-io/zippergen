@@ -156,6 +156,49 @@ def _nested_assignment_rows(
     return rows
 
 
+def _configuration_display(row: dict) -> str:
+    """Render one answer without printing a secret."""
+
+    if row.get("secret"):
+        return "(stored privately)" if row.get("answered") else "(not set)"
+    if not row.get("answered"):
+        default = row.get("default")
+        return (
+            f"(not set; default {default})"
+            if default is not None
+            else "(not set)"
+        )
+    return str(row.get("value"))
+
+
+def _render_project_configuration(renderer, report: dict) -> None:
+    """Show the project's answers to its workflow's declared questions.
+
+    They are stored in the project manifest beside every other choice, so the
+    command that shows a project's configuration shows them too.
+    """
+
+    rows = report.get("configuration") or []
+    if not isinstance(rows, list):
+        return
+    renderer.framed_section("Configuration")
+    _render_columns_or_empty(
+        renderer,
+        "Answers",
+        ("Field", "Value", "Asks"),
+        [
+            (
+                row.get("name"),
+                _configuration_display(row),
+                row.get("prompt") or "",
+            )
+            for row in rows
+            if isinstance(row, dict)
+        ],
+        empty="This workflow declares no configuration.",
+    )
+
+
 def _render_columns_or_empty(
     renderer: TerminalRenderer,
     title: str,
@@ -212,6 +255,7 @@ def render_configuration(
             ("Manifest", project.get("manifest"), None),
         ],
     )
+    _render_project_configuration(renderer, report)
     renderer.framed_section("Providers")
     providers = report.get("providers") or {}
     assert isinstance(providers, dict)

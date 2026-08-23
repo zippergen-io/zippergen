@@ -400,8 +400,15 @@ def collect_workflow_inputs(
     interactive: bool,
     input_func: InputFunc = input,
     output_func: OutputFunc = print,
+    workspace: "Workspace | None" = None,
 ) -> dict[str, object]:
-    """Collect typed workflow inputs from overrides and declared defaults."""
+    """Collect typed workflow inputs from overrides, the project, and defaults.
+
+    An answer stored in the project's configuration is the default here, and a
+    new answer is written back to it. A run and a deployment therefore read the
+    same values from the same place: an answer given once does not have to be
+    given again, in either command.
+    """
 
     supplied = dict(provided or {})
     expected_names = {name for name, _value_type, _lifeline in workflow.inputs}
@@ -412,6 +419,7 @@ def collect_workflow_inputs(
         )
 
     fields = _deployment_input_fields(module)
+    stored = workspace.configuration_values() if workspace is not None else {}
     collected: dict[str, object] = {}
     missing = [
         name
@@ -423,12 +431,19 @@ def collect_workflow_inputs(
         output_func("═══════════════")
     for name, value_type, _lifeline in workflow.inputs:
         field = fields.get(name)
-        has_default = field is not None and field.default is not None
+        # The project's answer outranks the declared default: a declared
+        # default is what to do when nobody has answered, and somebody has.
+        answered = field is not None and field.name in stored
         default = (
-            field.default
-            if field is not None and field.default is not None
-            else None
+            stored[field.name]
+            if answered and field is not None
+            else (
+                field.default
+                if field is not None and field.default is not None
+                else None
+            )
         )
+        has_default = default is not None
         if name in supplied:
             value = supplied[name]
         elif interactive:
@@ -450,7 +465,26 @@ def collect_workflow_inputs(
                 "or run in an interactive terminal."
             )
         collected[name] = _coerce_input(name, value, value_type)
+    _record_inputs_in_project(fields, collected, workspace)
     return collected
+
+
+def _record_inputs_in_project(
+    fields: dict[str, DeploymentField],
+    collected: Mapping[str, object],
+    workspace: "Workspace | None",
+) -> None:
+    """Keep a run's answers where a deployment would have kept them."""
+
+    if workspace is None or not fields:
+        return
+    answers = dict(workspace.configuration_values())
+    for name, field in fields.items():
+        if field.secret or name not in collected:
+            continue
+        answers[field.name] = collected[name]
+    if answers != workspace.configuration_values():
+        workspace.write_configuration_values(answers)
 
 
 def _recorded_model_settings(
@@ -699,6 +733,7 @@ def _run_durable_in_project(
             interactive=interactive,
             input_func=input_func,
             output_func=output_func,
+            workspace=workspace,
         )
         routing = project_model_routing(
             workspace,

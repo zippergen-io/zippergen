@@ -1379,3 +1379,131 @@ def test_a_malformed_rename_marker_has_an_explicit_recovery_path(project):
     assert workspace.load()["rename_in_progress"] == "not-a-rename"
     assert "approval-bot" in workspace.provider_connections()
     assert "alerts-bot" not in workspace.provider_connections()
+
+
+# A value stored in the project belongs to the project, so every command that
+# uses it reads it from there. Wiring only `deploy` to it left `run` asking for
+# answers already written down, and left `zg config` silent about a section of
+# the file it exists to show.
+
+_REMEMBERING_WORKFLOW = '''
+from zippergen import Lifeline, pure, workflow
+from zippergen.deployment import DeploymentField, DeploymentSpec
+
+A = Lifeline("A")
+
+zippergen_deployment = DeploymentSpec(
+    description="under test",
+    fields=(
+        DeploymentField("recipient", "Address", target="input", required=True),
+        DeploymentField("rounds", "Rounds", target="input", default=3),
+    ),
+)
+
+
+@pure
+def echo(recipient: str, rounds: int) -> str:
+    return f"{recipient} x{rounds}"
+
+
+@workflow
+def remembering(recipient: str @ A, rounds: int @ A) -> str:
+    A: out = echo(recipient, rounds)
+    return out @ A
+'''
+
+
+def _remembering_project(tmp_path, monkeypatch):
+    from zippergen.workspace import Workspace
+
+    home = tmp_path / "home"
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(home))
+    project = tmp_path / "project"
+    project.mkdir()
+    (project / "workflow.py").write_text(_REMEMBERING_WORKFLOW)
+    workspace = Workspace(project, home=home)
+    workspace.initialize_project(name="remembering")
+    workspace.select_workflow("workflow.py:remembering", cwd=project)
+    return workspace
+
+
+def _collect(workspace, provided):
+    import os
+
+    from zippergen.durable_runs import collect_workflow_inputs
+    from zippergen.workflow_io import load_workflow_spec
+
+    previous = os.getcwd()
+    try:
+        os.chdir(workspace.root)
+        workflow, module = load_workflow_spec("workflow.py:remembering")
+        return collect_workflow_inputs(
+            workflow,
+            module,
+            provided,
+            interactive=False,
+            workspace=workspace,
+        )
+    finally:
+        os.chdir(previous)
+
+
+def test_a_run_records_its_answers_in_the_project(tmp_path, monkeypatch):
+    workspace = _remembering_project(tmp_path, monkeypatch)
+
+    _collect(workspace, {"recipient": "alice@example.org"})
+
+    assert workspace.configuration_values() == {
+        "recipient": "alice@example.org",
+        "rounds": 3,
+    }
+
+
+def test_a_later_run_needs_no_answer_it_already_has(tmp_path, monkeypatch):
+    """Without this, `run` asks again for a value `deploy` had written down."""
+
+    workspace = _remembering_project(tmp_path, monkeypatch)
+    workspace.write_configuration_values({"recipient": "kept@example.org"})
+
+    collected = _collect(workspace, {})
+
+    assert collected["recipient"] == "kept@example.org"
+    assert collected["rounds"] == 3, "a declared default still applies"
+
+
+def test_a_stored_answer_outranks_the_declared_default(tmp_path, monkeypatch):
+    workspace = _remembering_project(tmp_path, monkeypatch)
+    workspace.write_configuration_values(
+        {"recipient": "kept@example.org", "rounds": 9}
+    )
+
+    assert _collect(workspace, {})["rounds"] == 9
+
+
+def test_an_explicit_input_wins_and_is_remembered(tmp_path, monkeypatch):
+    workspace = _remembering_project(tmp_path, monkeypatch)
+    workspace.write_configuration_values(
+        {"recipient": "kept@example.org", "rounds": 3}
+    )
+
+    collected = _collect(workspace, {"rounds": 9})
+
+    assert collected["rounds"] == 9
+    assert workspace.configuration_values()["rounds"] == 9
+
+
+def test_zg_config_shows_the_projects_answers(tmp_path, monkeypatch, capsys):
+    """The command that shows a project's configuration shows all of it."""
+
+    from zippergen.serve import main
+
+    workspace = _remembering_project(tmp_path, monkeypatch)
+    workspace.write_configuration_values({"recipient": "shown@example.org"})
+    monkeypatch.chdir(workspace.root)
+
+    assert main(["config"]) == 0
+
+    output = capsys.readouterr().out
+    assert "Configuration" in output
+    assert "shown@example.org" in output
+    assert "Address" in output, "the question is shown beside the answer"
