@@ -28,6 +28,7 @@ def test_it_creates_a_project_and_stops(tmp_path):
     output = _init(tmp_path)
 
     assert sorted(path.name for path in tmp_path.iterdir()) == [
+        ".zippergen",
         "AGENTS.md",
         "CLAUDE.md",
         "specification.md",
@@ -45,7 +46,10 @@ def test_the_manifest_is_valid_and_names_the_directory(tmp_path):
 
     assert manifest["name"] == "call-intake"
     assert manifest["specification_file"] == "specification.md"
-    assert manifest["schema_version"] >= 1
+    # Everything in this file is a choice a person made. Identity and schema
+    # bookkeeping are not choices, and are not written here.
+    assert "project_id" not in manifest
+    assert "schema_version" not in manifest
 
 
 def test_an_explicit_name_overrides_the_directory(tmp_path):
@@ -149,10 +153,26 @@ def test_it_asks_nothing(tmp_path):
     assert result.returncode == 0, result.stderr
 
 
-@pytest.mark.parametrize("filename", ["zippergen.lock", "workflow.py", ".zippergen"])
-def test_it_creates_no_workflow_lock_or_private_state(tmp_path, filename):
-    """Configuration, the workflow and private state are not init's business."""
+@pytest.mark.parametrize("filename", ["zippergen.lock", "workflow.py"])
+def test_it_creates_no_workflow_or_lock(tmp_path, filename):
+    """Configuration and the workflow are not init's business."""
 
     _init(tmp_path)
 
     assert not (tmp_path / filename).exists()
+
+
+def test_it_mints_a_local_identity_that_ignores_itself(tmp_path):
+    """The identity keys private state, so it must not travel with a clone.
+
+    Creating a project is the one moment it is minted. Keeping it in an
+    ignored local file, rather than in versioned configuration, is what makes
+    "do not copy this value" unnecessary to say.
+    """
+
+    _init(tmp_path)
+
+    identity = (tmp_path / ".zippergen" / "project-id").read_text().strip()
+    assert len(identity) == 32
+    assert (tmp_path / ".zippergen" / ".gitignore").read_text().strip() == "*"
+    assert "project_id" not in (tmp_path / "zippergen.toml").read_text()

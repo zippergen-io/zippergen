@@ -31,7 +31,6 @@ from zippergen.value_codec import decode_value, encode_value
 
 WORKSPACE_SCHEMA_VERSION = 2
 RUN_SCHEMA_VERSION = 2
-PROJECT_SCHEMA_VERSION = 2
 
 
 # Three files here carry a schema version: the project manifest, the workspace
@@ -46,7 +45,6 @@ PROJECT_SCHEMA_VERSION = 2
 #
 # Each entry upgrades a record from its key version to the next one. Empty means
 # no older shape is known yet; the refusal below still says what to do.
-_PROJECT_UPGRADES: dict[int, Callable[[dict], None]] = {}
 _WORKSPACE_UPGRADES: dict[int, Callable[[dict], None]] = {}
 _RUN_UPGRADES: dict[int, Callable[[dict], None]] = {}
 
@@ -389,6 +387,10 @@ def _slug(text: str) -> str:
     return value or "project"
 
 
+PROJECT_STATE_DIRECTORY = ".zippergen"
+PROJECT_ID_FILE = "project-id"
+
+
 def _workspace_key(root: Path, project_id: str | None = None) -> str:
     identity = f"{root}\0{project_id or ''}"
     digest = hashlib.sha256(identity.encode()).hexdigest()[:10]
@@ -651,9 +653,33 @@ class Workspace:
         )
         self.home = Path(home).expanduser() if home is not None else zippergen_home()
 
-    def _project_id(self) -> str | None:
-        """Read only the portable identity needed to locate private state."""
+    @property
+    def project_state_directory(self) -> Path:
+        return self.root / PROJECT_STATE_DIRECTORY
 
+    @property
+    def project_id_path(self) -> Path:
+        return self.project_state_directory / PROJECT_ID_FILE
+
+    def _project_id(self) -> str | None:
+        """Read the identity that keys this checkout's private state.
+
+        The identity is generated, not chosen, and must not survive a clone:
+        two checkouts sharing one id would share one credential store. So it
+        lives in an ignored local file rather than in versioned configuration,
+        and nobody has to be told not to copy it.
+
+        This is a pure read. A project written before the identity moved still
+        carries it in the manifest, and is read from there until something
+        writes, at which point it is adopted into the local file.
+        """
+
+        try:
+            local = self.project_id_path.read_text(encoding="utf-8").strip()
+        except (FileNotFoundError, OSError, UnicodeDecodeError):
+            local = ""
+        if local:
+            return local
         try:
             raw = tomllib.loads(self.manifest_path.read_text(encoding="utf-8"))
         except (
@@ -665,6 +691,41 @@ class Workspace:
             return None
         value = str(raw.get("project_id") or "").strip()
         return value or None
+
+    def _write_project_identity(self, identity: str) -> str:
+        self.project_state_directory.mkdir(parents=True, exist_ok=True)
+        # The directory keeps itself out of version control, so a project does
+        # not need its own .gitignore entry for ZipperGen's local state.
+        _atomic_write_text(self.project_state_directory / ".gitignore", "*\n")
+        _atomic_write_text(self.project_id_path, f"{identity}\n")
+        return identity
+
+    def ensure_project_identity(self) -> str | None:
+        """Adopt an existing identity into local state. Never invent one.
+
+        Creating a project is the only thing that mints an identity. An
+        existing project that has none must keep none: the workspace key hashes
+        this value, so inventing one moves the project to a different workspace
+        directory and strands the credentials already saved there.
+
+        That also settles the case that looks identical from here -- a clone,
+        whose local state did not travel with it. It simply has no identity,
+        and its workspace is keyed by its own path, which is already different
+        from the checkout it came from.
+        """
+
+        if not self.manifest_path.is_file():
+            return None
+        existing = self._project_id()
+        if existing is None or self.project_id_path.is_file():
+            return existing
+        self._write_project_identity(existing)
+        # Adopting is a one-time move, so finish it: rewrite the manifest
+        # without the bookkeeping it used to carry. Leaving those keys behind
+        # keeps a file that still looks like it holds an identity nobody reads
+        # any more. This branch cannot run again once the local file exists.
+        self._write_project_configuration()
+        return existing
 
     @property
     def directory(self) -> Path:
@@ -705,7 +766,6 @@ class Workspace:
 
         if not self.manifest_path.exists():
             return {
-                "schema_version": PROJECT_SCHEMA_VERSION,
                 "project_id": None,
                 "name": self.root.name,
                 "specification_file": SPECIFICATION_FILE_NAME,
@@ -746,17 +806,10 @@ class Workspace:
             raise WorkspaceError(
                 f"Could not read project manifest {self.manifest_path}: {exc}"
             ) from exc
-        _migrate_record(
-            manifest,
-            current=PROJECT_SCHEMA_VERSION,
-            upgrades=_PROJECT_UPGRADES,
-            what="project manifest",
-            path=self.manifest_path,
-            recreate=(
-                "Recreate it with 'zippergen init' in this directory, then "
-                "reapply its configuration."
-            ),
-        )
+        # No schema stamp is written into project configuration: everything in
+        # that file is a choice a person made. If a future change to the format
+        # is ever breaking, the stamp returns then and its absence means this,
+        # the original layout.
         name = str(manifest.get("name") or "").strip()
         if not name:
             raise WorkspaceError(f"Project name is empty in {self.manifest_path}.")
@@ -876,8 +929,7 @@ class Workspace:
             raise WorkspaceError("Project configuration must be a table.")
         configuration = _scalar_values(raw_configuration, field="configuration")
         return {
-            "schema_version": PROJECT_SCHEMA_VERSION,
-            "project_id": str(manifest.get("project_id") or "").strip() or None,
+            "project_id": self._project_id(),
             "name": name,
             "specification_file": specification,
             "workflow_entry": workflow_entry,
@@ -935,16 +987,14 @@ class Workspace:
             else manifest["configuration"],
             field="configuration",
         )
+        # Everything written here is meaningful project configuration. The
+        # identity that keys private state is local, generated, and ignored by
+        # version control, so a clone cannot inherit another checkout's
+        # credentials by copying a file.
+        self.ensure_project_identity()
         lines = [
             "# Visible, versionable ZipperGen project configuration.",
-            f"schema_version = {PROJECT_SCHEMA_VERSION}",
         ]
-        # A project made before project_id existed has none, and must keep none.
-        # The workspace key hashes this value, so writing a placeholder here, or
-        # backfilling a fresh id, would move the project to a different
-        # workspace directory and strand the credentials saved in the old one.
-        if manifest.get("project_id"):
-            lines.append(f"project_id = {_toml_string(manifest['project_id'])}")
         lines.extend([
             f"name = {_toml_string(manifest['name'])}",
             f"specification_file = {_toml_string(manifest['specification_file'])}",
@@ -1121,8 +1171,6 @@ class Workspace:
             )
         content = (
             "# Visible, versionable ZipperGen project configuration.\n"
-            f"schema_version = {PROJECT_SCHEMA_VERSION}\n"
-            f"project_id = {_toml_string(uuid.uuid4().hex)}\n"
             f"name = {_toml_string(project_name)}\n"
             f"specification_file = {_toml_string(specification_file)}\n"
         )
@@ -1131,6 +1179,10 @@ class Workspace:
                 f"framework_directory = {_toml_string(framework_directory)}\n"
             )
         _atomic_write_text(self.manifest_path, content)
+        # Creating a project is the one moment an identity is minted, so
+        # reinitializing a path cannot inherit the previous project's private
+        # state even though the path is the same.
+        self._write_project_identity(uuid.uuid4().hex)
         self._ensure_project_gitignore(framework_directory)
         return self.project_manifest()
 
@@ -1142,6 +1194,7 @@ class Workspace:
                 f"Not a ZipperGen project: {self.root}. Run 'zg init' in the "
                 "project directory first."
             )
+        self.ensure_project_identity()
         return self.project_manifest()
 
     @property

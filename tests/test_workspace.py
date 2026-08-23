@@ -73,7 +73,11 @@ def test_workflow_entry_lives_in_visible_project_manifest(tmp_path):
     )
     assert workspace.absolute_spec(selected) == str(workflow_path) + ":review"
     assert workspace.state_path.is_relative_to(home)
-    assert not (root / ".zippergen").exists()
+    # The project's local state holds only its identity; everything the
+    # manifest describes is resolved from the manifest itself.
+    assert sorted(
+        path.name for path in (root / ".zippergen").iterdir()
+    ) == [".gitignore", "project-id"]
 
 
 def test_fresh_clone_resolves_workflow_from_manifest_without_private_state(tmp_path):
