@@ -552,3 +552,123 @@ def test_a_world_readable_log_from_an_earlier_release_is_made_private(
 
     assert log_path.stat().st_mode & 0o077 == 0
     assert log_path.read_text() == "from an earlier release\n", "log kept"
+
+
+# A configured deployment is the result of four sources with a fixed
+# precedence. Reporting the value without the source leaves an operator unable
+# to tell a deliberate setting from a default nobody chose -- which is exactly
+# what `deploy --yes` does silently.
+
+
+def _sources_for(profile, *, overrides=None, environ=None, monkeypatch=None):
+    from zippergen.deployment import DeploymentField, DeploymentSpec
+    from zippergen.serve import _collect_deployment_fields
+
+    spec = DeploymentSpec(
+        description="under test",
+        fields=(
+            DeploymentField("recipient", "Recipient", target="option"),
+            DeploymentField("mode", "Mode", target="option", default="draft"),
+            DeploymentField("token", "Token", target="env"),
+        ),
+    )
+    sources: dict[str, str] = {}
+    values, _ = _collect_deployment_fields(
+        spec,
+        profile,
+        overrides=overrides or {},
+        interactive=False,
+        sources=sources,
+    )
+    return values, sources
+
+
+def test_each_field_reports_where_its_value_came_from(tmp_path, monkeypatch):
+    from zippergen import serve
+
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("token", "from-the-environment")
+    profile = {
+        "name": "sources",
+        "options": {"recipient": "kept@example.com"},
+    }
+
+    values, sources = _sources_for(profile, overrides={"mode": "send"})
+
+    assert values["recipient"] == "kept@example.com"
+    assert sources["recipient"] == serve.FIELD_SOURCE_DEPLOYMENT
+    assert values["mode"] == "send"
+    assert sources["mode"] == serve.FIELD_SOURCE_OVERRIDE
+    assert values["token"] == "from-the-environment"
+    assert sources["token"] == serve.FIELD_SOURCE_ENVIRONMENT
+
+
+def test_a_value_nobody_chose_is_named_a_default(tmp_path, monkeypatch):
+    from zippergen import serve
+
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(tmp_path / "home"))
+    monkeypatch.delenv("token", raising=False)
+
+    values, sources = _sources_for({"name": "defaults"})
+
+    assert values["mode"] == "draft"
+    assert sources["mode"] == serve.FIELD_SOURCE_DEFAULT
+    assert sources["recipient"] == serve.FIELD_SOURCE_UNSET
+
+
+def test_a_reported_configuration_never_prints_a_secret(capsys):
+    from zippergen.deployment import DeploymentField, DeploymentSpec
+    from zippergen.serve import _print_deployment_configuration
+
+    spec = DeploymentSpec(
+        description="under test",
+        fields=(
+            DeploymentField("api_key", "Key", target="env", secret=True),
+            DeploymentField("recipient", "Recipient", target="option"),
+        ),
+    )
+
+    _print_deployment_configuration(
+        spec,
+        {"api_key": "sk-do-not-print-me", "recipient": "a@b.com"},
+        {"api_key": "environment", "recipient": "this deployment"},
+        heading="Configuration",
+    )
+
+    output = capsys.readouterr().out
+    assert "sk-do-not-print-me" not in output
+    assert "18 characters" in output
+    assert "a@b.com" in output
+
+
+def test_a_stored_configuration_is_readable_without_the_workflow(tmp_path, monkeypatch):
+    """`deploy status` must answer 'where do these values live' on its own."""
+
+    from zippergen.deployment import DeploymentField, DeploymentSpec
+    from zippergen.serve import _stored_deployment_configuration
+
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(tmp_path / "home"))
+    spec = DeploymentSpec(
+        description="under test",
+        fields=(DeploymentField("recipient", "Recipient", target="option"),),
+    )
+    profile = {
+        "name": "stored",
+        "deployment_spec": spec.as_dict(),
+        "options": {"recipient": "kept@example.com"},
+    }
+
+    found = _stored_deployment_configuration(profile)
+
+    assert found is not None
+    recovered_spec, stored = found
+    assert [field.name for field in recovered_spec.fields] == ["recipient"]
+    assert stored["recipient"] == "kept@example.com"
+
+
+def test_a_profile_without_a_declaration_shows_no_configuration(tmp_path, monkeypatch):
+    from zippergen.serve import _stored_deployment_configuration
+
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(tmp_path / "home"))
+
+    assert _stored_deployment_configuration({"name": "bare"}) is None

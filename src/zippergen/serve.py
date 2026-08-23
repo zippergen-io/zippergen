@@ -36,6 +36,7 @@ from zippergen.deployment import (
     DeploymentSetup,
     DeploymentSpec,
     deployment_spec_from_module,
+    normalize_deployment_spec,
 )
 from zippergen.deployment_platform import (
     deployment_launchd_path as _deployment_launchd_path,
@@ -3841,12 +3842,26 @@ def _display_default(value: object, *, secret: bool) -> str:
     return f" [{value}]"
 
 
+# Where a deployment field's value came from. A configured deployment is the
+# result of four sources with a fixed precedence, and reporting only the value
+# leaves an operator unable to tell a deliberate setting from a default nobody
+# chose. `zg deploy --yes` in particular answers every prompt silently, so the
+# source is the only thing that makes it reviewable.
+FIELD_SOURCE_DEPLOYMENT = "this deployment"
+FIELD_SOURCE_ENVIRONMENT = "environment"
+FIELD_SOURCE_DEFAULT = "declared default"
+FIELD_SOURCE_OVERRIDE = "--set"
+FIELD_SOURCE_ENTERED = "entered now"
+FIELD_SOURCE_UNSET = "unset"
+
+
 def _collect_deployment_fields(
     spec: DeploymentSpec,
     profile: dict[str, object],
     *,
     overrides: dict[str, object],
     interactive: bool,
+    sources: dict[str, str] | None = None,
 ) -> tuple[dict[str, object], dict[str, str]]:
     declared = {field.name for field in spec.fields}
     unknown = sorted(set(overrides) - declared)
@@ -3869,13 +3884,21 @@ def _collect_deployment_fields(
                 f"{field.target_name} in the deployment environment."
             )
         current = _profile_field_value(profile, field, existing_secrets)
+        origin = FIELD_SOURCE_DEPLOYMENT
         if current is None and field.target == "env":
             current = os.environ.get(field.target_name)
+            origin = FIELD_SOURCE_ENVIRONMENT
         if current is None:
             current = field.default
+            origin = FIELD_SOURCE_DEFAULT
+        if current is None:
+            origin = FIELD_SOURCE_UNSET
         if field.name in overrides:
             current = overrides[field.name]
+            origin = FIELD_SOURCE_OVERRIDE
         values[field.name] = current
+        if sources is not None:
+            sources[field.name] = origin
     values["__llm_specs__"] = selected_llm_specs(
         profile.get("llm"),
         profile.get("llms"),
@@ -3895,6 +3918,8 @@ def _collect_deployment_fields(
             else:
                 entered = input(label)
             values[field.name] = _parse_guided_value(entered, current)
+            if sources is not None and values[field.name] != current:
+                sources[field.name] = FIELD_SOURCE_ENTERED
         value = values.get(field.name)
         if field.required and (value is None or str(value).strip() == ""):
             if field.secret:
@@ -3946,6 +3971,67 @@ def _collect_deployment_fields(
     profile["inputs"] = inputs
     profile["environment"] = environment
     return values, secrets
+
+
+def _stored_deployment_configuration(
+    profile: Mapping[str, object],
+) -> tuple[DeploymentSpec, dict[str, object]] | None:
+    """The declared fields and this deployment's answers, read from the profile.
+
+    The profile records the declaration it was configured against, so a stored
+    configuration can be shown without importing the workflow.
+    """
+
+    raw = profile.get("deployment_spec")
+    if not isinstance(raw, Mapping) or not raw.get("fields"):
+        return None
+    spec = normalize_deployment_spec(dict(raw))
+    stored: dict[str, object] = {}
+    for field in spec.fields:
+        stored[field.name] = _profile_field_value(
+            dict(profile), field, _load_deployment_secrets(dict(profile))
+        )
+    return spec, stored
+
+
+def _field_display_value(field: DeploymentField, value: object) -> str:
+    """Render one value for a person, without printing a secret."""
+
+    if field.secret:
+        text = str(value or "")
+        return f"({len(text)} characters, stored privately)" if text else "(not set)"
+    if value is None or str(value) == "":
+        return "(not set)"
+    return str(value)
+
+
+def _print_deployment_configuration(
+    spec: DeploymentSpec,
+    values: Mapping[str, object],
+    sources: Mapping[str, str],
+    *,
+    heading: str,
+    stored_in: str | None = None,
+) -> None:
+    """Say what this deployment is configured with, and where each value came from."""
+
+    from zippergen.rendering import TerminalRenderer
+
+    fields = [field for field in spec.fields if _field_enabled(field, dict(values))]
+    if not fields:
+        return
+    rows: list[tuple[object, ...]] = [
+        (
+            field.name,
+            _field_display_value(field, values.get(field.name)),
+            sources.get(field.name, ""),
+        )
+        for field in fields
+    ]
+    TerminalRenderer().columns(heading, ("Field", "Value", "From"), rows)
+    if stored_in:
+        print(f"Stored in {stored_in}")
+        print(f"Change one with: zippergen deploy --set FIELD=VALUE")
 
 
 def _setup_enabled(step: DeploymentSetup, values: dict[str, object]) -> bool:
@@ -4074,11 +4160,20 @@ def _apply_deploy_arguments(
 
     overrides = _parse_inputs(args.set)
     interactive = not args.yes and sys.stdin.isatty()
+    sources: dict[str, str] = {}
     values, secrets = _collect_deployment_fields(
         spec,
         profile,
         overrides=overrides,
         interactive=interactive,
+        sources=sources,
+    )
+    # Every deploy says what it is configured with. A non-interactive `--yes`
+    # answers each prompt from an existing deployment, the environment, or a
+    # declared default without showing any of them, which is precisely when an
+    # operator cannot otherwise tell which.
+    _print_deployment_configuration(
+        spec, values, sources, heading="Configuration"
     )
     secrets.update(runtime_secrets)
     return values, secrets
@@ -4537,6 +4632,16 @@ def _status_command(args) -> int:
         marker = "OK" if check["status"] == "ok" else "WARN"
         print(f"{marker} {check['name']}: {check['detail']}")
     _print_status(status)
+    configuration = _stored_deployment_configuration(profile)
+    if configuration is not None:
+        spec, stored = configuration
+        _print_deployment_configuration(
+            spec,
+            stored,
+            {name: FIELD_SOURCE_DEPLOYMENT for name in stored},
+            heading="Configuration",
+            stored_in=str(_deployment_profile_path(args.name)),
+        )
     return 0
 
 
