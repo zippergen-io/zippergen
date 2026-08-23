@@ -258,10 +258,10 @@ def test_google_kinds_say_when_authorization_is_still_missing(tmp_path):
 
 
 def test_binding_works_against_a_real_workflow_requirement(tmp_path):
-    """`call_intake` declares call-mailbox and call-records."""
+    """`inbox_triage` declares incoming-mail and triage-records."""
 
     root = _project(tmp_path)
-    example = Path(__file__).resolve().parents[1] / "examples" / "call_intake.py"
+    example = Path(__file__).resolve().parents[1] / "examples" / "inbox_triage.py"
     (root / "workflow.py").write_text(example.read_text())
     workspace = Workspace(root, home=root.parent / "home")
     workspace.initialize_project()
@@ -269,12 +269,12 @@ def test_binding_works_against_a_real_workflow_requirement(tmp_path):
 
     first = _run(root, "connector", "configure", "inbox", "google-work", "gmail")
     first_binding = _run(
-        root, "connector", "assign", "call-mailbox", "inbox"
+        root, "connector", "assign", "incoming-mail", "inbox"
     )
     second = _run(root, "connector", "configure", "records", "google-work", "google-sheets",
                   "--spreadsheet-id", "1", "--tab", "Calls")
     second_binding = _run(
-        root, "connector", "assign", "call-records", "records"
+        root, "connector", "assign", "triage-records", "records"
     )
 
     assert first.returncode == 0, first.stderr
@@ -283,14 +283,14 @@ def test_binding_works_against_a_real_workflow_requirement(tmp_path):
     assert second_binding.returncode == 0, second_binding.stderr
     manifest = tomllib.loads((root / "zippergen.toml").read_text())
     assert manifest["connectors"]["bindings"] == {
-        "call-mailbox": "inbox",
-        "call-records": "records",
+        "incoming-mail": "inbox",
+        "triage-records": "records",
     }
 
 
 def test_binding_rejects_the_wrong_connector_kind(tmp_path):
     root = _project(tmp_path)
-    example = Path(__file__).resolve().parents[1] / "examples" / "call_intake.py"
+    example = Path(__file__).resolve().parents[1] / "examples" / "inbox_triage.py"
     (root / "workflow.py").write_text(example.read_text())
     Workspace(root, home=root.parent / "home").initialize_project()
     _provider(root, "approval-bot", "telegram")
@@ -305,7 +305,7 @@ def test_binding_rejects_the_wrong_connector_kind(tmp_path):
         "1",
     )
 
-    result = _run(root, "connector", "assign", "call-mailbox", "approval-chat")
+    result = _run(root, "connector", "assign", "incoming-mail", "approval-chat")
 
     assert configured.returncode == 0, configured.stderr
     assert result.returncode != 0
@@ -398,7 +398,7 @@ def test_naming_a_participant_points_at_the_requirement_it_owns(tmp_path):
     """
 
     root = _project(tmp_path)
-    example = Path(__file__).resolve().parents[1] / "examples" / "call_intake.py"
+    example = Path(__file__).resolve().parents[1] / "examples" / "inbox_triage.py"
     (root / "workflow.py").write_text(example.read_text())
     Workspace(root, home=root.parent / "home").initialize_project()
     _provider(root, "approval-bot", "telegram")
@@ -411,7 +411,7 @@ def test_naming_a_participant_points_at_the_requirement_it_owns(tmp_path):
 
     assert result.returncode != 0
     assert "has no human action" in result.stderr
-    assert "'call-mailbox'" in result.stderr
+    assert "'incoming-mail'" in result.stderr
 
 
 def test_the_slot_table_lists_both_kinds_of_target_with_the_name_to_type(
@@ -420,14 +420,14 @@ def test_the_slot_table_lists_both_kinds_of_target_with_the_name_to_type(
     """One table, so nobody has to infer the keying from an error message."""
 
     root = _project(tmp_path)
-    example = Path(__file__).resolve().parents[1] / "examples" / "call_intake.py"
+    example = Path(__file__).resolve().parents[1] / "examples" / "inbox_triage.py"
     (root / "workflow.py").write_text(example.read_text())
     Workspace(root, home=root.parent / "home").initialize_project()
 
     shown = _run(root, "connector").stdout
 
     assert "Slots" in shown
-    assert "call-mailbox" in shown
+    assert "incoming-mail" in shown
     assert "gmail for Mailbox" in shown
     assert "not assigned" in shown
 
@@ -440,7 +440,7 @@ def test_google_scopes_are_read_off_the_workflow(tmp_path):
     """
 
     root = _project(tmp_path)
-    example = Path(__file__).resolve().parents[1] / "examples" / "call_intake.py"
+    example = Path(__file__).resolve().parents[1] / "examples" / "inbox_triage.py"
     (root / "workflow.py").write_text(example.read_text())
     Workspace(root, home=root.parent / "home").initialize_project()
     _provider(root, "google-main", "google")
@@ -450,8 +450,8 @@ def test_google_scopes_are_read_off_the_workflow(tmp_path):
          "--spreadsheet-id", "1", "--tab", "Calls"),
     ):
         assert _run(root, "connector", "configure", *arguments).returncode == 0
-    assert _run(root, "connector", "assign", "call-mailbox", "inbox").returncode == 0
-    assert _run(root, "connector", "assign", "call-records", "records").returncode == 0
+    assert _run(root, "connector", "assign", "incoming-mail", "inbox").returncode == 0
+    assert _run(root, "connector", "assign", "triage-records", "records").returncode == 0
 
     result = _run(root, "provider", "authorize", "google-main", input_text="\n")
 
@@ -468,7 +468,7 @@ def test_scopes_are_known_before_anything_is_assigned(tmp_path):
     """
 
     root = _project(tmp_path)
-    example = Path(__file__).resolve().parents[1] / "examples" / "call_intake.py"
+    example = Path(__file__).resolve().parents[1] / "examples" / "inbox_triage.py"
     (root / "workflow.py").write_text(example.read_text())
     Workspace(root, home=root.parent / "home").initialize_project()
     _provider(root, "google-main", "google")
@@ -483,7 +483,7 @@ def test_two_google_connections_cannot_be_guessed_between(tmp_path):
     """Two candidates and no wiring is genuinely ambiguous, so it asks."""
 
     root = _project(tmp_path)
-    example = Path(__file__).resolve().parents[1] / "examples" / "call_intake.py"
+    example = Path(__file__).resolve().parents[1] / "examples" / "inbox_triage.py"
     (root / "workflow.py").write_text(example.read_text())
     Workspace(root, home=root.parent / "home").initialize_project()
     _provider(root, "google-main", "google")

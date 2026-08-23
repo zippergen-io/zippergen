@@ -37,15 +37,26 @@ def test_private_writer_refuses_a_symlink(tmp_path):
     assert victim.read_text() == "keep"
 
 
-def test_shipped_google_examples_use_the_private_token_writer():
-    root = Path(__file__).resolve().parents[1]
-    # Every shipped Google client, so a new one cannot quietly write a token
-    # with default permissions. Kept as a list rather than a directory scan:
-    # the point is that each shipped client was looked at.
-    for name in (
-        "call_intake_email_client.py",
-        "call_intake_sheets_client.py",
-    ):
-        source = (root / "examples" / name).read_text()
-        assert "write_private_text(TOKEN_PATH" in source
-        assert "TOKEN_PATH.write_text" not in source
+def test_a_workspace_secrets_file_is_owner_only_after_a_write(tmp_path):
+    """Credentials land here, so the guarantee belongs to the library.
+
+    It used to be checked on the example Google clients instead, which meant
+    it held only for code somebody chose to copy. The guarantee belongs here,
+    where every credential is actually written, and it must survive a
+    permissive umask.
+    """
+
+    from zippergen.workspace import Workspace
+
+    workspace = Workspace(tmp_path / "project", home=tmp_path / "home")
+    workspace.initialize_project(name="secretive")
+
+    previous = os.umask(0o022)
+    try:
+        workspace.save_secrets({"OPENAI_API_KEY": "sk-do-not-share"})
+    finally:
+        os.umask(previous)
+
+    assert workspace.secrets_path.is_file()
+    assert workspace.secrets_path.stat().st_mode & 0o077 == 0
+    assert "sk-do-not-share" in workspace.secrets_path.read_text()
