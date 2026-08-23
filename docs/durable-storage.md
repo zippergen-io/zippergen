@@ -412,6 +412,34 @@ events also evict older incidents exactly like important events. For example, a
 four-participant poller measured at 14 events per minute fills the default in
 about 12 hours even when almost every poll finds nothing.
 
+So the trace is a **window, not an archive**, and the window is measured in
+events rather than in days. A long-running deployment always has a horizon
+behind which it can no longer say what happened, and a busy period moves that
+horizon closer: the same incident worth investigating is also what evicts the
+evidence fastest. Nothing warns you when a particular event ages out.
+
+Two things follow for operators. First, capture a trace worth keeping at the
+time, rather than expecting to find it later:
+
+```bash
+zg deploy trace --json --tail 5000 > "incident-$(date +%F).json"
+```
+
+Second, do not size the budget for normal operation. Size it so the noisiest
+plausible day still leaves the window longer than the time it takes you to
+notice a problem and go looking. A poller idling at 14 events per minute needs
+roughly 20,000 rows per day; the same workflow under a burst of real mail needs
+several times that.
+
+Raising the budget is the only lever that reliably widens the window.
+`visible=False` suppresses just that action's own start and completion events,
+so it removes a small fraction of a polling loop's traffic — the surrounding
+decisions, control sends, and receives are still recorded.
+
+None of this touches recovery. `history` is never read to restore a workflow, so
+an evicted event costs observability and nothing else: a deployment whose whole
+trace was discarded still resumes exactly where it was.
+
 Measure the workflow's real event rate and payload-size distribution before
 choosing a value. A very large budget is not free: the periodic prune uses an
 offset scan and runs on the writer path. The row ceiling also does not bound the
