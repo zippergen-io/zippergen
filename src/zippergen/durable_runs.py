@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 import shutil
+import sys
 import threading
 import time
 from collections.abc import Callable, Mapping
@@ -24,6 +25,7 @@ from zippergen.human_backends import (
     make_cli_human_backend,
     make_sqlite_human_backend,
 )
+from zippergen.activity import ActivityIndicator
 from zippergen.models import (
     ModelSettings,
     apply_model_overrides,
@@ -865,6 +867,34 @@ def _run_durable_in_project(
         output_func=output_func,
     )
 
+    # A run that calls a model or an assistant is silent for minutes at a
+    # time, and silence is indistinguishable from a hang. The trace already
+    # reports every action's start and end, so the same events drive a line
+    # saying what is running.
+    activity = ActivityIndicator(
+        sys.stderr, interactive=renderer is None and sys.stderr.isatty()
+    )
+
+    def report_activity(event: object) -> None:
+        if not isinstance(event, dict):
+            return
+        kind = event.get("type")
+        if kind not in {"act_start", "act", "act_failed"}:
+            return
+        key = id(event.get("seq")) if event.get("seq") is None else int(event["seq"])
+        label = f"{event.get('lifeline')} · {event.get('action')}"
+        person = event.get("action_kind") == "human"
+        if kind == "act_start":
+            if person:
+                activity.person_waiting(True)
+            else:
+                activity.started(key, label)
+            return
+        if person:
+            activity.person_waiting(False)
+        else:
+            activity.finished(key)
+
     def managed_human_backend(action, action_inputs):
         workspace.update_run(selected_run_id, status="waiting")
         try:
@@ -914,6 +944,7 @@ def _run_durable_in_project(
                 store_path=store_path,
                 timeout=timeout,
                 mock_delay=(0.0, 0.0),
+                trace=report_activity,
                 human_backend=selected_human_backend,
                 assistant_backend=(
                     make_cli_assistant_backend(
@@ -939,6 +970,9 @@ def _run_durable_in_project(
             error=f"{type(exc).__name__}: {exc}",
         )
         raise
+    finally:
+        # However the run ends, the terminal gets its line back.
+        activity.close()
 
     updated = workspace.update_run(
         selected_run_id,

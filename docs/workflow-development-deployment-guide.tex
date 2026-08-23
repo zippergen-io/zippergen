@@ -648,6 +648,22 @@ loop runs three times, this branch is taken. They say nothing about whether a
 real model would produce good text. Both matter, and they are different questions.
 \end{notebox}
 
+\subsection{Knowing it is still working}
+
+A workflow that calls a model or a coding assistant can be busy for minutes
+with nothing to print, and silence looks exactly like a hang. A foreground run
+therefore shows what is running and for how long:
+
+\begin{lstlisting}[style=shell]
+- Implementer . implement . 3m12s
+\end{lstlisting}
+
+The line is erased when the action finishes, so it never appears in a result.
+It is drawn on standard error and only into an interactive terminal: redirected
+output, a deployment log and a test see nothing, and a result can still be
+piped. It also stops while a person is being asked something, because a prompt
+is read from the same terminal.
+
 \subsection{Durable runs}
 
 A durable run records coordination state and completed external-action results
