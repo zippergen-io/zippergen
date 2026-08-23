@@ -11,7 +11,11 @@ so the workflow keeps running until you stop it — which is the point: this is
 something you deploy, not something you launch by hand each time.
 
 The mailbox here is a directory of text files, so the tutorial needs no
-credentials. `examples/call_intake.py` is the same shape against real Gmail.
+credentials, and the person is asked at the terminal.
+`examples/inbox_triage.py` is the same shape wired to real services: Gmail
+instead of a directory, Google Sheets instead of a print, and deployed as a
+supervised service. Where a `@human` question is asked -- terminal, Telegram --
+is project configuration, not something either workflow declares.
 
     mkdir -p mailbox
     echo "Can we meet on Thursday" > mailbox/01.txt

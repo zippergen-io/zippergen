@@ -28,6 +28,10 @@ Running and deploying
 `poll_seconds` and `message_limit` are declared below, so `--yes` supplies
 them and remembers whatever you change. A limit of 0 means run until stopped.
 
+`examples/email_approval.py` is the same shape with no credentials at all: a
+directory of text files instead of Gmail, and a person asked at the terminal.
+Read that one first.
+
 What this is meant to show
 --------------------------
 
