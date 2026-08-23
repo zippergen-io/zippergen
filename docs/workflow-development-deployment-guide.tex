@@ -576,6 +576,27 @@ again after changing the project assignments.
 request without printing the credential. Use \texttt{zg model unassign TARGET}
 before removing a configuration that is still referenced.
 
+\subsection{Where an assistant may work}
+
+\texttt{workspace} names the directory an \texttt{@assistant} action reads and,
+with \texttt{access="write"}, edits. Declare it as an \textbf{absolute path}.
+
+A relative one is resolved against the root the workflow runs from, and a
+deployment runs from its immutable bundle under \texttt{ZIPPERGEN\_HOME}
+rather than from the project directory. So \path{../target} names one
+directory during development and a different, absent one once deployed. That
+is checked before a deployment is applied:
+
+\begin{lstlisting}[style=shell]
+FAIL assistant workspace implement: '../sandbox' resolves to
+     ~/.zippergen/apps/demo/sandbox, which does not exist. A deployment runs
+     from its immutable bundle, not from the project directory, so a relative
+     workspace means something different once deployed. Declare an absolute path
+\end{lstlisting}
+
+An absolute path is not portable, which is correct: a write-capable workspace
+names one directory on one machine that this action may edit.
+
 \subsection{Choosing a coding assistant}
 
 An \texttt{@assistant} action runs Codex or Claude against a repository. Choose

@@ -911,3 +911,147 @@ def test_a_deployment_with_no_declaration_reports_nothing_to_compare(
 
     assert check["status"] == "ok"
     assert "0 answer(s)" in str(check["detail"])
+
+
+# An assistant workspace is resolved against the root the workflow runs from,
+# and a deployment runs from an immutable bundle rather than the project
+# directory. A relative path therefore names one directory during development
+# and a different, absent one once deployed -- and validating from the project
+# cannot see it.
+
+
+_WORKSPACE_WORKFLOW = """
+from zippergen import Lifeline, assistant, workflow
+
+Worker = Lifeline("Worker")
+
+
+@assistant(
+    instructions_file="instructions.md",
+    access="write",
+    workspace={declared!r},
+)
+def work(task: str) -> str: ...
+
+
+@workflow
+def workspace_demo(task: str @ Worker) -> str:
+    Worker: done = work(task)
+    return done @ Worker
+"""
+
+
+def _workspace_workflow(tmp_path, declared):
+    """Build a real workflow module: @workflow rewrites its own source."""
+
+    from zippergen.workflow_io import load_workflow_spec
+
+    project = tmp_path / "wf"
+    project.mkdir(exist_ok=True)
+    (project / "instructions.md").write_text("Do the work.")
+    (project / "workflow.py").write_text(
+        _WORKSPACE_WORKFLOW.format(declared=declared)
+    )
+    previous = Path.cwd()
+    try:
+        os.chdir(project)
+        workflow, _module = load_workflow_spec("workflow.py:workspace_demo")
+    finally:
+        os.chdir(previous)
+    return workflow
+
+
+def test_a_relative_workspace_is_refused_before_the_service_starts(
+    tmp_path, monkeypatch
+):
+    """The failure is otherwise invisible until the assistant runs.
+
+    The working directory deliberately makes ``../sandbox`` resolve to a real
+    directory, so a check that resolved from the current directory instead of
+    the bundle would wrongly pass.
+    """
+
+    from zippergen.deployment_checks import _assistant_workspace_checks
+
+    # The real layout: the target sits beside the project, and the bundle
+    # lives somewhere else entirely under ZIPPERGEN_HOME.
+    (tmp_path / "sandbox").mkdir()
+    bundle = tmp_path / "home" / "apps" / "demo" / "20260101-000000"
+    bundle.mkdir(parents=True)
+    workflow = _workspace_workflow(tmp_path, "../sandbox")
+    monkeypatch.chdir(tmp_path / "wf")
+
+    checks = _assistant_workspace_checks(workflow, bundle)
+
+    assert [check["status"] for check in checks] == ["fail"]
+    detail = str(checks[0]["detail"])
+    assert "immutable bundle" in detail
+    assert "Declare an absolute path" in detail
+
+
+def test_an_absolute_workspace_resolves_the_same_from_the_bundle(tmp_path):
+    from zippergen.deployment_checks import _assistant_workspace_checks
+
+    target = tmp_path / "sandbox"
+    target.mkdir()
+    bundle = tmp_path / "home" / "apps" / "demo" / "20260101-000000"
+    bundle.mkdir(parents=True)
+
+    checks = _assistant_workspace_checks(
+        _workspace_workflow(tmp_path, str(target)), bundle
+    )
+
+    assert [check["status"] for check in checks] == ["ok"]
+    assert str(target) in str(checks[0]["detail"])
+
+
+def test_an_absolute_workspace_that_is_gone_is_still_reported(tmp_path):
+    from zippergen.deployment_checks import _assistant_workspace_checks
+
+    bundle = tmp_path / "home" / "apps" / "demo" / "20260101-000000"
+    bundle.mkdir(parents=True)
+
+    checks = _assistant_workspace_checks(
+        _workspace_workflow(tmp_path, str(tmp_path / "removed")), bundle
+    )
+
+    assert [check["status"] for check in checks] == ["fail"]
+    assert "does not exist" in str(checks[0]["detail"])
+
+
+def test_the_workspace_check_runs_as_part_of_the_deployment_checks(
+    tmp_path, monkeypatch
+):
+    """A helper nothing calls would let the trap through unnoticed."""
+
+    from zippergen.deployment_checks import _doctor_checks
+
+    home = tmp_path / "home"
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(home))
+    (tmp_path / "sandbox").mkdir()
+    bundle = home / "apps" / "demo" / "20260101-000000"
+    bundle.mkdir(parents=True)
+    _workspace_workflow(tmp_path, "../sandbox")
+    for name in ("workflow.py", "instructions.md"):
+        (bundle / name).write_text((tmp_path / "wf" / name).read_text())
+
+    checks = _doctor_checks(
+        "demo",
+        include_systemd=False,
+        before_start=True,
+        check_artifacts=False,
+        profile_override={
+            "name": "demo",
+            "cwd": str(bundle),
+            "workflow": "workflow.py:workspace_demo",
+            "store": str(home / "runs" / "demo.sqlite"),
+            "log": str(home / "logs" / "demo.log"),
+        },
+    )
+
+    workspace_checks = [
+        check for check in checks
+        if str(check["name"]).startswith("assistant workspace")
+    ]
+    assert workspace_checks, "the deployment checks must include it"
+    assert all(check["status"] == "fail" for check in workspace_checks)

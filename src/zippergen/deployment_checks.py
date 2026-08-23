@@ -191,6 +191,50 @@ def deployment_freshness_checks(
     return checks
 
 
+def _assistant_workspace_checks(
+    workflow: Workflow,
+    deployment_cwd: Path,
+) -> list[dict[str, object]]:
+    """Check each assistant workspace from where the service will actually run.
+
+    A workspace is resolved against the root the workflow runs from, and a
+    deployment runs from an immutable bundle rather than from the project
+    directory. So a relative path names one directory during development and a
+    different, absent one once deployed. Validating from the project cannot see
+    that; this is the first place that can, and it is still before anything
+    starts.
+    """
+
+    from zippergen.validation import assistant_actions
+
+    checks: list[dict[str, object]] = []
+    for action in assistant_actions(workflow):
+        declared = action.workspace
+        if not declared:
+            continue
+        requested = Path(declared).expanduser()
+        resolved = (
+            requested.resolve()
+            if requested.is_absolute()
+            else (deployment_cwd / requested).resolve()
+        )
+        name = f"assistant workspace {action.name}"
+        if resolved.is_dir():
+            checks.append(_doctor_check("ok", name, str(resolved)))
+            continue
+        if requested.is_absolute():
+            detail = f"does not exist: {resolved}"
+        else:
+            detail = (
+                f"{declared!r} resolves to {resolved}, which does not exist. "
+                "A deployment runs from its immutable bundle, not from the "
+                "project directory, so a relative workspace means something "
+                "different once deployed. Declare an absolute path"
+            )
+        checks.append(_doctor_check("fail", name, detail))
+    return checks
+
+
 def _configuration_freshness_check(
     profile: Mapping[str, object],
     source_cwd: Path,
@@ -797,6 +841,7 @@ def _doctor_checks(
             checks.append(_doctor_check("fail", "workflow import", f"{type(exc).__name__}: {exc}"))
         else:
             checks.append(_doctor_check("ok", "workflow import", f"{profile['workflow']} -> {workflow.name}"))
+            checks.extend(_assistant_workspace_checks(workflow, cwd))
         finally:
             os.chdir(old_cwd)
 
