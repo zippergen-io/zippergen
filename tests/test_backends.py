@@ -506,7 +506,13 @@ def test_configured_model_settings_reach_the_provider(monkeypatch):
 
 
 def test_a_configured_setting_beats_the_environment(monkeypatch):
-    """The environment stays an operational override, not the way in."""
+    """Configuration wins; the environment is a fallback, not an override.
+
+    The order is: model configuration, then the environment variable, then the
+    built-in default. Calling the variable an override would describe the
+    opposite precedence -- a value written beside one model must not be changed
+    by a process-wide variable that says nothing about which model it meant.
+    """
 
     import zippergen.backends as backends_module
 
@@ -524,7 +530,12 @@ def test_a_configured_setting_beats_the_environment(monkeypatch):
 
     seen.clear()
     backend_from_spec("openai:gpt-4o")
-    assert seen["max_tokens"] == 999, "the environment still applies when unset"
+    assert seen["max_tokens"] == 999, "the environment supplies an unset value"
+
+    monkeypatch.delenv("OPENAI_MAX_TOKENS")
+    seen.clear()
+    backend_from_spec("openai:gpt-4o")
+    assert seen["max_tokens"] == 2048, "and the built-in default is last"
 
 
 def test_two_routes_share_a_backend_only_when_every_setting_matches(monkeypatch):

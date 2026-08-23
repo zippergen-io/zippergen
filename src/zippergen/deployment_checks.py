@@ -15,6 +15,7 @@ import shutil
 import sqlite3
 import subprocess
 import sys
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -186,7 +187,78 @@ def deployment_freshness_checks(
         )
     finally:
         os.chdir(previous)
+    checks.append(_configuration_freshness_check(profile, source_cwd))
     return checks
+
+
+def _configuration_freshness_check(
+    profile: Mapping[str, object],
+    source_cwd: Path,
+) -> dict[str, object]:
+    """Report answers edited in the project but not yet deployed.
+
+    The project file is where answers are authored and the profile is what is
+    running, so the two can differ the moment somebody edits one. Reporting it
+    beside runtime and workflow freshness answers the same question about the
+    third thing a deployment is made of.
+    """
+
+    from zippergen.workspace import Workspace, WorkspaceError
+
+    stored = _stored_deployment_answers(profile)
+    try:
+        authored = Workspace(source_cwd).configuration_values()
+    except (WorkspaceError, OSError) as exc:
+        return _doctor_check(
+            "warn",
+            "configuration",
+            f"freshness cannot be compared: {exc}",
+            freshness="unavailable",
+        )
+    differing = sorted(
+        name
+        for name in set(stored) | set(authored)
+        if str(stored.get(name)) != str(authored.get(name))
+    )
+    if not differing:
+        return _doctor_check(
+            "ok",
+            "configuration",
+            f"current; {len(stored)} answer(s) match zippergen.toml",
+            freshness="current",
+        )
+    detail = "; ".join(
+        f"{name}: deployed {stored.get(name)!r}, project {authored.get(name)!r}"
+        for name in differing
+    )
+    return _doctor_check(
+        "warn",
+        "configuration",
+        f"{detail}. Redeploy to apply the project's answers",
+        freshness="stale",
+    )
+
+
+def _stored_deployment_answers(
+    profile: Mapping[str, object],
+) -> dict[str, object]:
+    """The answers this deployment is actually running."""
+
+    raw = profile.get("deployment_spec")
+    if not isinstance(raw, Mapping) or not raw.get("fields"):
+        return {}
+    from zippergen.deployment import normalize_deployment_spec
+
+    spec = normalize_deployment_spec(dict(raw))
+    answers: dict[str, object] = {}
+    for field in spec.fields:
+        if field.secret:
+            continue
+        for section in ("options", "inputs"):
+            values = profile.get(section)
+            if isinstance(values, Mapping) and field.target_name in values:
+                answers[field.name] = values[field.target_name]
+    return answers
 
 
 def _safe_json_loads(value):

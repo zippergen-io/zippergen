@@ -809,11 +809,21 @@ explicit unsupported value rather than silently dropping it.
 \texttt{-{}-max-tokens} caps one response and \texttt{-{}-timeout} is how long
 one call may take.
 
-These are ordinary configuration, not something a workflow declares. A
-provider environment variable such as \texttt{OLLAMA\_MAX\_TOKENS} still works
-as an operational override where nothing is configured, but it is no longer
-the way in: declaring a deployment field merely to set one would be a second
-configuration mechanism for a value that belongs beside the model.
+These are ordinary configuration, not something a workflow declares. Declaring
+a deployment field merely to set one would be a second configuration mechanism
+for a value that belongs beside the model.
+
+A provider environment variable such as \texttt{OLLAMA\_MAX\_TOKENS} is still
+read, but as a \emph{fallback}, not an override: it supplies a setting nobody
+configured, and a configured one wins. The order is
+
+\begin{center}
+model configuration \quad$\rightarrow$\quad environment variable
+\quad$\rightarrow$\quad built-in default
+\end{center}
+
+so a value written beside the model cannot be changed by a process-wide
+variable that says nothing about which model it meant.
 
 \subsection{Asking a person}
 
@@ -1039,6 +1049,20 @@ The order is fixed: \path{zippergen.toml} first, then the environment for an
 \texttt{env} field, then the declared default, and \texttt{-{}-set} overrides
 all of them. \texttt{zg deploy status} prints the same table for a deployment
 already running, together with the path of the profile derived from it.
+
+Because the project file is where answers are authored and the profile is what
+is running, the two can differ the moment somebody edits one. So freshness is
+reported for all three things a deployment is made of:
+
+\begin{lstlisting}[style=shell]
+OK   ZipperGen runtime: current (source hash)
+OK   workflow source: current (source hash)
+WARN configuration: max_rounds: deployed 9, project 2. Redeploy to apply
+     the project's answers
+\end{lstlisting}
+
+Secrets are never named there: they are not project configuration, so there is
+nothing to compare.
 
 A deployment configured before answers were kept in the project still holds
 them only in its profile. The next \texttt{zg deploy} adopts them and writes

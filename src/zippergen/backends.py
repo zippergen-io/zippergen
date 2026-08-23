@@ -889,11 +889,12 @@ def backend_from_spec(
     idle_timeout = chosen.idle_timeout
 
     def sized(variable: str, fallback_value: int) -> int:
-        """Configured max tokens, or the environment, or the built-in default.
+        """Configured max tokens, else the environment, else the built-in default.
 
-        The environment stays available as an operational override, but it is
-        no longer the only way in: a standard inference setting is configured
-        beside the model, like temperature.
+        Note the order: configuration wins. The environment is a fallback for a
+        setting nobody configured, not an override of one somebody did -- a
+        value written beside the model must not be changed by a process-wide
+        variable that says nothing about which model it meant.
         """
 
         return (

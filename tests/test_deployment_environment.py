@@ -295,9 +295,13 @@ def test_freshness_distinguishes_runtime_and_workflow_source(
     )
 
     current = deployment_freshness_checks(profile)
+    # A deployment is made of three things, and each reports whether what is
+    # running matches the project: the runtime, the workflow bundle, and the
+    # answers.
     assert [(item["name"], item["freshness"]) for item in current] == [
         ("ZipperGen runtime", "current"),
         ("workflow source", "current"),
+        ("configuration", "current"),
     ]
 
     workflow_path.write_text(WORKFLOW_SOURCE + "\n# changed but not committed\n")

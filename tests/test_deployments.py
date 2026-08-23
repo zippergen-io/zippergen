@@ -827,3 +827,87 @@ def test_an_edited_project_file_wins_over_the_published_profile(
     )
 
     assert values["recipient"] == "edited@example.org"
+
+
+# A deployment is made of three things: the runtime, the workflow bundle, and
+# the answers. Two of them already report whether the deployment runs something
+# older than the project. The third did not, so a value edited in
+# zippergen.toml looked applied when it was not.
+
+
+def _drift_profile(tmp_path, monkeypatch, deployed):
+    from zippergen.deployment import DeploymentField, DeploymentSpec
+    from zippergen.workspace import Workspace
+
+    home = tmp_path / "home"
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(home))
+    project = tmp_path / "project"
+    project.mkdir()
+    workspace = Workspace(project, home=home)
+    workspace.initialize_project(name="drifting")
+    spec = DeploymentSpec(
+        description="under test",
+        fields=(
+            DeploymentField("rounds", "Rounds", target="option"),
+            DeploymentField("token", "Token", target="env", secret=True),
+        ),
+    )
+    return workspace, {
+        "name": "drifting",
+        "source_cwd": str(project),
+        "deployment_spec": spec.as_dict(),
+        "options": {"rounds": deployed},
+    }
+
+
+def test_configuration_matching_the_project_reports_current(tmp_path, monkeypatch):
+    from zippergen.deployment_checks import _configuration_freshness_check
+
+    workspace, profile = _drift_profile(tmp_path, monkeypatch, deployed=9)
+    workspace.write_configuration_values({"rounds": 9})
+
+    check = _configuration_freshness_check(profile, workspace.root)
+
+    assert check["status"] == "ok"
+    assert check["freshness"] == "current"
+
+
+def test_an_answer_edited_but_not_deployed_is_reported(tmp_path, monkeypatch):
+    from zippergen.deployment_checks import _configuration_freshness_check
+
+    workspace, profile = _drift_profile(tmp_path, monkeypatch, deployed=9)
+    workspace.write_configuration_values({"rounds": 2})
+
+    check = _configuration_freshness_check(profile, workspace.root)
+
+    assert check["status"] == "warn"
+    assert check["freshness"] == "stale"
+    detail = str(check["detail"])
+    assert "deployed 9" in detail and "project 2" in detail
+    assert "Redeploy" in detail
+
+
+def test_drift_reporting_never_names_a_secret(tmp_path, monkeypatch):
+    from zippergen.deployment_checks import _stored_deployment_answers
+
+    _workspace, profile = _drift_profile(tmp_path, monkeypatch, deployed=9)
+    profile["environment"] = {"token": "sk-do-not-report-me"}
+
+    answers = _stored_deployment_answers(profile)
+
+    assert "token" not in answers
+    assert answers == {"rounds": 9}
+
+
+def test_a_deployment_with_no_declaration_reports_nothing_to_compare(
+    tmp_path, monkeypatch
+):
+    from zippergen.deployment_checks import _configuration_freshness_check
+
+    workspace, profile = _drift_profile(tmp_path, monkeypatch, deployed=9)
+    profile.pop("deployment_spec")
+
+    check = _configuration_freshness_check(profile, workspace.root)
+
+    assert check["status"] == "ok"
+    assert "0 answer(s)" in str(check["detail"])
