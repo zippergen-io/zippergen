@@ -1016,3 +1016,43 @@ def test_the_workspace_check_runs_as_part_of_the_deployment_checks(
     ]
     assert workspace_checks, "the deployment checks must include it"
     assert all(check["status"] == "fail" for check in workspace_checks)
+
+
+def test_drift_reads_every_section_a_field_can_be_delivered_to(tmp_path, monkeypatch):
+    """A field goes to the section its target names, and all are read.
+
+    Reading only options and inputs made every non-secret `env` field report
+    drift on every check: the project held an answer and the deployment looked
+    as though it held none.
+    """
+
+    from zippergen.deployment import DeploymentField, DeploymentSpec
+    from zippergen.deployment_checks import _stored_deployment_answers
+
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(tmp_path / "home"))
+    spec = DeploymentSpec(
+        description="under test",
+        fields=(
+            DeploymentField("rounds", "Rounds", target="option"),
+            DeploymentField("task", "Task", target="input"),
+            DeploymentField(
+                "OLLAMA_MAX_TOKENS", "Max tokens", target="env"
+            ),
+            DeploymentField("token", "Token", target="env", secret=True),
+        ),
+    )
+
+    answers = _stored_deployment_answers({
+        "name": "every-section",
+        "deployment_spec": spec.as_dict(),
+        "options": {"rounds": 4},
+        "inputs": {"task": "fix it"},
+        "environment": {"OLLAMA_MAX_TOKENS": "4096", "token": "sk-secret"},
+    })
+
+    assert answers == {
+        "rounds": 4,
+        "task": "fix it",
+        "OLLAMA_MAX_TOKENS": "4096",
+    }
+    assert "token" not in answers, "a secret is never compared or named"

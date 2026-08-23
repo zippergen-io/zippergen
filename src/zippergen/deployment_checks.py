@@ -298,7 +298,11 @@ def _stored_deployment_answers(
     for field in spec.fields:
         if field.secret:
             continue
-        for section in ("options", "inputs"):
+        # A field is delivered to whichever section its target names, so all
+        # three are read. Leaving out "environment" made every non-secret
+        # env field report drift forever: the project had an answer and the
+        # deployment appeared to have none.
+        for section in ("options", "inputs", "environment"):
             values = profile.get(section)
             if isinstance(values, Mapping) and field.target_name in values:
                 answers[field.name] = values[field.target_name]
