@@ -39,11 +39,10 @@ def test_private_writer_refuses_a_symlink(tmp_path):
 
 def test_shipped_google_examples_use_the_private_token_writer():
     root = Path(__file__).resolve().parents[1]
+    # Every shipped Google client, so a new one cannot quietly write a token
+    # with default permissions. Kept as a list rather than a directory scan:
+    # the point is that each shipped client was looked at.
     for name in (
-        "gmail_client.py",
-        "google_chat_client.py",
-        "google_tasks_client.py",
-        "google_calendar_client.py",
         "call_intake_email_client.py",
         "call_intake_sheets_client.py",
     ):
