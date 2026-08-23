@@ -185,23 +185,31 @@ A ZipperGen project is a directory. \texttt{zg init} creates one:
 \midrule
 \path{specification.md} & yes & what the workflow should do, in prose \\
 \path{workflow.py} & yes & the coordination, as Python \\
-\path{zippergen.toml} & yes & models, assistants, connectors, entry point, no secrets \\
+\path{zippergen.toml} & yes & every non-secret choice: models, assistants, connectors, deployment answers, entry point \\
 \path{AGENTS.md} & yes & points a coding agent at \texttt{zg skill} \\
 \path{CLAUDE.md} & yes & points Claude Code at \path{AGENTS.md} \\
+\path{.zippergen/} & no & this checkout's generated identity; ignores itself \\
 \texttt{ZIPPERGEN\_HOME} & no & credentials, runs, deployments \\
 \bottomrule
 \end{tabularx}
 \end{center}
 
-The split that matters is the last row. Everything above it travels with
-the project. The last row describes one machine. A colleague who clones
-the repository gets the workflow, the specification and the configuration, and
+The split that matters is between the committed rows and the last two.
+Everything committed travels with the project. A colleague who clones the
+repository gets the workflow, the specification and the configuration, and
 supplies their own keys.
+
+\path{.zippergen/} holds one generated value that keys this checkout's private
+state. It must \emph{not} travel with a clone: two checkouts sharing one
+identity would share one credential store. So it is not in
+\path{zippergen.toml}, it is not committed, and the directory contains a
+\path{.gitignore} of its own so no project needs an entry for it. Clone the
+repository and the clone simply gets its own identity. Move the whole working
+directory and the identity moves with it. There is no rule to remember.
 
 \subsection{\texttt{zippergen.toml}}
 
 \begin{lstlisting}
-schema_version = 2
 name = "email-approval"
 specification_file = "specification.md"
 workflow_entry = "workflow.py:email_approval"
@@ -229,7 +237,14 @@ chat_id = "12345678"
 
 [connectors.assignments.lifelines]
 Mailbox = "approval-chat"
+
+[configuration]
+recipient = "intake@example.org"
+send_mode = "draft"
 \end{lstlisting}
+
+Everything here is a choice somebody made. There is no schema stamp and no
+generated identity, because neither is a choice.
 
 It is an ordinary file. Edit it in an editor, or let a coding agent edit it.
 Nothing in ZipperGen owns it. \texttt{workflow\_entry} is why most commands do
@@ -845,7 +860,8 @@ workflow portable:
 & says & lives in \\
 \midrule
 requirement & what kind of thing is needed & \path{workflow.py}, committed \\
-configuration & which actual mailbox or chat & \path{zippergen.toml}, committed \\
+deployment field & what a person must be asked & \path{workflow.py}, committed \\
+configuration & which actual mailbox, chat, or answer & \path{zippergen.toml}, committed \\
 credential & the token & this machine only, never committed \\
 \bottomrule
 \end{tabular}
@@ -939,6 +955,72 @@ bundle and managed environment:
 zg deploy stop
 zg deploy                     # rebuild and start the updated deployment
 \end{lstlisting}
+
+\subsection{Configuration: what a deployment is asked}
+
+A workflow can declare the values a person must supply for it to be deployed
+--- a mailbox address, a polling interval, whether replies are drafted or
+sent. The declaration lives with the workflow, so the question, its default,
+and its permitted answers are reviewed like any other code:
+
+\begin{lstlisting}
+zippergen_deployment = DeploymentSpec(
+    description="Watch a mailbox and reply.",
+    fields=(
+        DeploymentField("recipient", "Intake address", target="option",
+                        required=True),
+        DeploymentField("send_mode", "Reply mode", target="option",
+                        default="draft", choices=("draft", "send", "log")),
+    ),
+)
+\end{lstlisting}
+
+\texttt{target} says where an answer is delivered: \texttt{"option"} to
+\texttt{-{}-option}, \texttt{"input"} to a workflow input, \texttt{"env"} to an
+environment variable. An \texttt{env} field may also be \texttt{secret}.
+
+\paragraph{Where the answers are.} One rule covers every one of them:
+
+\begin{quote}
+Every non-secret answer is kept in \path{zippergen.toml}, under
+\texttt{[configuration]}. The deployment profile is derived from it, never
+authored.
+\end{quote}
+
+So the question ``I answered that during \texttt{zg deploy} --- where is it
+tomorrow?'' has a single answer, and it is a file you can open, edit, and
+commit. Secrets are the one exception: they go to a private file and are never
+written into project configuration.
+
+Answer a question without being prompted, and change one later, with the same
+flag:
+
+\begin{lstlisting}[style=shell]
+zg deploy --set send_mode=send --yes
+\end{lstlisting}
+
+\paragraph{What \texttt{-{}-yes} uses.} \texttt{-{}-yes} answers every prompt
+without asking, which is only safe if you can see what it chose. So every
+deploy prints its configuration and where each value came from:
+
+\begin{lstlisting}[style=shell]
+Configuration
+Field       Value                From
+recipient   intake@example.org   zippergen.toml
+send_mode   send                 --set
+poll_secs   60                   declared default
+\end{lstlisting}
+
+The order is fixed: \path{zippergen.toml} first, then the environment for an
+\texttt{env} field, then the declared default, and \texttt{-{}-set} overrides
+all of them. \texttt{zg deploy status} prints the same table for a deployment
+already running, together with the path of the profile derived from it.
+
+A deployment configured before answers were kept in the project still holds
+them only in its profile. The next \texttt{zg deploy} adopts them and writes
+them into \path{zippergen.toml}; the table reports them as coming from
+\texttt{this deployment} that once, and from \path{zippergen.toml} thereafter.
+There is no migration command.
 
 \subsection{The five lifecycle operations}
 

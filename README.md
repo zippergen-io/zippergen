@@ -438,7 +438,9 @@ ZIPPERGEN_RUN_SYSTEMD_INTEGRATION=1 uv run pytest -q tests/test_systemd_deploy_i
 
 A workflow can ask a person on Telegram, read Gmail, or write to Google
 Sheets. Which chat, which spreadsheet, which Gmail query: that is project
-configuration, and it goes in `zippergen.toml`. Credentials never go there:
+configuration, and it goes in `zippergen.toml`. So does every answer you give
+while deploying, under `[configuration]` — one rule, so a value you typed is
+always somewhere you can open and edit. Credentials never go there:
 
 ```bash
 zg provider configure approval-bot telegram

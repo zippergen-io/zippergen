@@ -212,13 +212,19 @@ That is the whole of project creation. It writes four files and stops: it asks
 you nothing, and it configures nothing.
 
 \begin{itemize}
-  \item \texttt{zippergen.toml} is the project's visible configuration. It is
+  \item \texttt{zippergen.toml} is the project's visible configuration: every
+        non-secret choice, including the answers you give when deploying. It is
         committed, and it never contains a credential.
   \item \texttt{specification.md} says what the workflow is meant to do, in prose.
   \item \texttt{AGENTS.md} tells a coding agent to run
         \texttt{zippergen skill} before touching workflow code.
   \item \texttt{CLAUDE.md} points Claude Code at the same shared instructions.
 \end{itemize}
+
+It also creates \path{.zippergen/}, holding one generated value that identifies
+this checkout so its credentials can be found again. That is not configuration
+and not yours to edit, so it is not in \path{zippergen.toml}; the directory
+ignores itself, so a clone gets its own identity and never inherits yours.
 
 \section{Describe what you want}
 
