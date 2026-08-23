@@ -196,3 +196,23 @@ def test_every_command_is_documented(documents):
     )
 
     assert not missing, "undocumented commands: " + ", ".join(missing)
+
+
+def test_the_skill_says_how_to_decide_what_a_user_configures(tmp_path):
+    """An agent that only sees the mechanism will hard-code values.
+
+    The reference shows `DeploymentField` with a secret token, which teaches
+    how to declare one and nothing about when to. Without the judgment, a
+    generated workflow gets an address written into it, and changing it later
+    needs a code change and a redeploy.
+    """
+
+    text = (skill_directory() / "SKILL.md").read_text(encoding="utf-8")
+
+    assert "Decide what the user configures" in text
+    # The three questions, in order, and the case for leaving a value alone.
+    assert "connector" in text and "DeploymentField" in text
+    assert "would a second deployment of this same workflow plausibly answer" in text
+    assert "it is not configuration" in text
+    # One place for answers, so no second mechanism is invented.
+    assert "[configuration]" in text

@@ -388,6 +388,61 @@ projection. That holds even when it works inside a loop around that decision
 and is told each round whether to continue. When you explain a workflow, say
 so. It is the property the projection gives you, and one command checks it.
 
+## Decide what the user configures
+
+A value someone would plausibly answer differently must not be written into the
+workflow. An address, a mailbox, a threshold, a mode: hard-coding one forces a
+code change, review, and redeploy to alter something that was never code.
+
+Three questions decide where a value belongs. Ask them in order:
+
+1. Does it name an external resource ZipperGen can reach and check -- a
+   mailbox, a chat, a spreadsheet? Configure a **connector**, so
+   `zg connector check` can report an empty or broken one before deployment.
+2. Is it a model knob -- which model, sampling temperature, local idle
+   release? Configure a **model**, so one workflow serves every provider.
+3. Otherwise, would a second deployment of this same workflow plausibly answer
+   it differently? Declare a **`DeploymentField`**.
+
+The negative case matters as much: if every deployment would answer
+identically, it is not configuration. Leave it a constant in the code rather
+than adding a question nobody has an interesting answer to.
+
+```python
+zippergen_deployment = DeploymentSpec(
+    description="Watch a mailbox and reply.",
+    fields=(
+        DeploymentField(
+            "recipient",
+            "Intake address",
+            target="option",
+            required=True,
+        ),
+        DeploymentField(
+            "send_mode",
+            "Reply mode",
+            target="option",
+            default="draft",
+            choices=("draft", "send", "log"),
+        ),
+    ),
+)
+```
+
+`target` says where the answer is delivered: `"option"` to `--option`,
+`"input"` to a workflow input, `"env"` to an environment variable. Give a
+`default` and `choices` wherever there is a sensible one, so the question can
+be answered without reading the source. Only an `env` field may be `secret`.
+
+Every non-secret answer is stored in `zippergen.toml` under `[configuration]`,
+and the deployment profile is derived from it. So do not build a second way to
+carry settings -- no dotenv file, no JSON beside the workflow, no module-level
+constant a user is expected to edit. One place, already visible and committed.
+
+Prefer a mode with named `choices` over a boolean flag: `send_mode` with
+`draft`/`send`/`log` says what will happen, where `dry_run=True` makes the
+reader guess.
+
 ## Prepare deployment
 
 Keep deployment declarations data-only and colocated with the workflow module.
