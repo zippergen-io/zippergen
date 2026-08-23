@@ -24,13 +24,151 @@ class _ModelWorkspace(Protocol):
 
 
 @dataclass(frozen=True)
+class ModelSettings:
+    """How one model target is invoked, as a single value.
+
+    These belong together because they are answered together and travel
+    together: a setting reaches a backend through the routing, the runtime, the
+    workflow and the deployment profile. Carrying one dictionary per setting
+    instead meant that adding an ordinary knob like ``max_tokens`` touched
+    roughly twenty call sites, so it was easier to route it through an
+    environment variable than to add it properly -- which is how a standard
+    inference setting came to be configured differently from ``temperature``.
+
+    ``None`` means "not set here": the backend keeps its own default.
+    """
+
+    temperature: float | None = None
+    max_tokens: int | None = None
+    timeout: float | None = None
+    idle_timeout: float | None = None
+
+    def merged_with(self, other: "ModelSettings") -> "ModelSettings":
+        """Return *other*'s stated values laid over this one's."""
+
+        return ModelSettings(
+            temperature=(
+                self.temperature if other.temperature is None else other.temperature
+            ),
+            max_tokens=(
+                self.max_tokens if other.max_tokens is None else other.max_tokens
+            ),
+            timeout=self.timeout if other.timeout is None else other.timeout,
+            idle_timeout=(
+                self.idle_timeout
+                if other.idle_timeout is None
+                else other.idle_timeout
+            ),
+        )
+
+    def as_dict(self) -> dict[str, float | int]:
+        """Return only the settings that were actually stated."""
+
+        return {
+            name: value
+            for name, value in (
+                ("temperature", self.temperature),
+                ("max_tokens", self.max_tokens),
+                ("timeout", self.timeout),
+                ("idle_timeout", self.idle_timeout),
+            )
+            if value is not None
+        }
+
+    @property
+    def is_empty(self) -> bool:
+        return not self.as_dict()
+
+
+MODEL_SETTING_NAMES = ("temperature", "max_tokens", "timeout", "idle_timeout")
+
+
+def model_setting_text(value: float | int) -> str:
+    """Render one setting the way a person wrote it.
+
+    A whole number stays whole: a temperature entered as 0 is stored as "0",
+    not "0.0", so a configuration round-trips through TOML unchanged.
+    """
+
+    number = float(value)
+    return str(int(number)) if number.is_integer() else str(number)
+
+
+def model_settings_from_mapping(
+    value: Mapping[str, object] | None,
+    *,
+    subject: str,
+) -> ModelSettings:
+    """Read settings from stored or command-line data, rejecting bad numbers."""
+
+    if not value:
+        return ModelSettings()
+    return ModelSettings(
+        temperature=_setting_number(
+            value.get("temperature"), name="temperature",
+            subject=subject, maximum=1.0,
+        ),
+        max_tokens=_setting_integer(value.get("max_tokens"), subject=subject),
+        timeout=_setting_number(
+            value.get("timeout"), name="timeout", subject=subject, positive=True
+        ),
+        idle_timeout=_setting_number(
+            value.get("idle_timeout"), name="idle timeout", subject=subject
+        ),
+    )
+
+
+def _setting_number(
+    raw: object,
+    *,
+    name: str,
+    subject: str,
+    maximum: float | None = None,
+    positive: bool = False,
+) -> float | None:
+    if raw is None or str(raw).strip() == "":
+        return None
+    try:
+        number = float(str(raw).strip())
+    except ValueError as exc:
+        raise SystemExit(
+            f"Model {name} for {subject} must be a number."
+        ) from exc
+    if not math.isfinite(number) or number < 0 or (positive and number == 0):
+        raise SystemExit(
+            f"Model {name} for {subject} must be a "
+            f"{'positive' if positive else 'non-negative'} finite number."
+        )
+    if maximum is not None and number > maximum:
+        raise SystemExit(
+            f"Model {name} for {subject} must be between 0 and {maximum:g}."
+        )
+    return number
+
+
+def _setting_integer(raw: object, *, subject: str) -> int | None:
+    if raw is None or str(raw).strip() == "":
+        return None
+    try:
+        number = int(str(raw).strip())
+    except ValueError as exc:
+        raise SystemExit(
+            f"Model max tokens for {subject} must be a whole number."
+        ) from exc
+    if number <= 0:
+        raise SystemExit(
+            f"Model max tokens for {subject} must be greater than zero."
+        )
+    return number
+
+
+@dataclass(frozen=True)
 class ModelRouting:
     """Concrete runtime model specs resolved from named project settings."""
 
     default_spec: str
     overrides: dict[str, str]
-    idle_timeouts: dict[str, float]
-    temperatures: dict[str, float]
+    settings: dict[str, ModelSettings]
 
 
 def normalize_llm_overrides(values: object) -> dict[str, str]:
@@ -170,7 +308,7 @@ def project_model_routing(
 
     fallback = str(fallback_default).strip() or "mock"
     if not workspace.has_model_assignment_profile(workflow_spec):
-        return ModelRouting(fallback, {}, {}, {})
+        return ModelRouting(fallback, {}, {})
 
     profile = workspace.model_assignment_profile(
         workflow_spec,
@@ -214,44 +352,18 @@ def project_model_routing(
     # stored assignment may outlive an action only until validation, where the
     # explicit error is much safer than silently routing another model.
     routes = effective_llm_routes(workflow, default_spec, named_overrides)
-    idle_timeouts: dict[str, float] = {}
-    temperatures: dict[str, float] = {}
+    settings: dict[str, ModelSettings] = {}
     for target in routes:
         participant = target.partition(".")[0]
         selected = target_configurations.get(
             target,
             target_configurations.get(participant, default_configuration),
         )
-        raw_timeout = str(selected.get("idle_timeout") or "").strip()
-        if raw_timeout:
-            try:
-                timeout = float(raw_timeout)
-            except ValueError as exc:
-                raise SystemExit(
-                    f"Model configuration idle timeout for {target} must be a number."
-                ) from exc
-            if not math.isfinite(timeout) or timeout < 0:
-                raise SystemExit(
-                    f"Model configuration idle timeout for {target} must be a "
-                    "non-negative finite number."
-                )
-            idle_timeouts[target] = timeout
-        raw_temperature = str(selected.get("temperature") or "").strip()
-        if raw_temperature:
-            try:
-                temperature = float(raw_temperature)
-            except ValueError as exc:
-                raise SystemExit(
-                    f"Model configuration temperature for {target} must be a number."
-                ) from exc
-            if not math.isfinite(temperature) or not 0 <= temperature <= 1:
-                raise SystemExit(
-                    f"Model configuration temperature for {target} must be "
-                    "between 0 and 1."
-                )
-            temperatures[target] = temperature
+        resolved = model_settings_from_mapping(selected, subject=target)
+        if not resolved.is_empty:
+            settings[target] = resolved
 
-    return ModelRouting(default_spec, named_overrides, idle_timeouts, temperatures)
+    return ModelRouting(default_spec, named_overrides, settings)
 
 
 def apply_model_overrides(
@@ -259,8 +371,7 @@ def apply_model_overrides(
     *,
     default_spec: str | None = None,
     overrides: Mapping[str, str] | None = None,
-    idle_timeouts: Mapping[str, float] | None = None,
-    temperatures: Mapping[str, float] | None = None,
+    settings: Mapping[str, ModelSettings] | None = None,
 ) -> ModelRouting:
     """Apply direct command-line choices over one project routing snapshot.
 
@@ -274,30 +385,27 @@ def apply_model_overrides(
         if not selected_default:
             raise SystemExit("The default LLM spec must not be empty.")
         selected_overrides: dict[str, str] = {}
-        selected_idle_timeouts: dict[str, float] = {}
-        selected_temperatures: dict[str, float] = {}
+        selected_settings: dict[str, ModelSettings] = {}
     else:
         selected_default = routing.default_spec
         selected_overrides = dict(routing.overrides)
-        selected_idle_timeouts = dict(routing.idle_timeouts)
-        selected_temperatures = dict(routing.temperatures)
+        selected_settings = dict(routing.settings)
 
     for target, spec in normalize_llm_overrides(overrides).items():
-        selected_idle_timeouts.pop(target, None)
-        selected_temperatures.pop(target, None)
+        # Routing a target somewhere else discards settings chosen for the
+        # model it used to use.
+        selected_settings.pop(target, None)
         if spec.casefold() in {"inherit", "default"}:
             selected_overrides.pop(target, None)
         else:
             selected_overrides[target] = spec
-    selected_idle_timeouts.update(
-        {str(target): float(value) for target, value in (idle_timeouts or {}).items()}
-    )
-    selected_temperatures.update(
-        {str(target): float(value) for target, value in (temperatures or {}).items()}
-    )
+    for target, value in (settings or {}).items():
+        name = str(target)
+        selected_settings[name] = selected_settings.get(
+            name, ModelSettings()
+        ).merged_with(value)
     return ModelRouting(
         selected_default,
         selected_overrides,
-        selected_idle_timeouts,
-        selected_temperatures,
+        selected_settings,
     )

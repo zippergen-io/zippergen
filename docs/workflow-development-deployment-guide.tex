@@ -784,12 +784,36 @@ A model configuration that names a local connection also accepts
 model after that long without a call. It is rejected for any other kind of
 connection, because only a local server has memory of yours to release.
 
-Any model configuration accepts
-\texttt{-{}-temperature VALUE} from 0 to 1. This is portable project behavior,
-and an explicit \texttt{@llm(temperature=...)} on one action takes precedence.
-Zero reduces sampling variation; it is not a determinism guarantee. Some
-current model families removed sampling parameters, so configuration checks
-reject an explicit unsupported value rather than silently dropping it.
+Any model configuration accepts the settings that describe how the model is
+invoked, stored beside it in \path{zippergen.toml}:
+
+\begin{lstlisting}[style=shell]
+zg model configure classifier local-main qwen3 \
+  --temperature 0.2 --max-tokens 4096 --timeout 120
+\end{lstlisting}
+
+\begin{lstlisting}
+[models.configurations."classifier"]
+connection = "local-main"
+model = "qwen3"
+temperature = 0.2
+max_tokens = 4096
+timeout = 120
+\end{lstlisting}
+
+\texttt{-{}-temperature} runs from 0 to 1 and an explicit
+\texttt{@llm(temperature=...)} on one action takes precedence. Zero reduces
+sampling variation; it is not a determinism guarantee. Some current model
+families removed sampling parameters, so configuration checks reject an
+explicit unsupported value rather than silently dropping it.
+\texttt{-{}-max-tokens} caps one response and \texttt{-{}-timeout} is how long
+one call may take.
+
+These are ordinary configuration, not something a workflow declares. A
+provider environment variable such as \texttt{OLLAMA\_MAX\_TOKENS} still works
+as an operational override where nothing is configured, but it is no longer
+the way in: declaring a deployment field merely to set one would be a second
+configuration mechanism for a value that belongs beside the model.
 
 \subsection{Asking a person}
 

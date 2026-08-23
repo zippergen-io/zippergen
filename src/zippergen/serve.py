@@ -33,6 +33,7 @@ from types import ModuleType
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
+    from zippergen.models import ModelSettings
     from zippergen.workspace import Workspace
 
 from zippergen.deployment import (
@@ -239,6 +240,62 @@ def _parse_options(pairs: list[str]) -> dict:
     return _parse_inputs(pairs)
 
 
+def _profile_model_settings(
+    profile: Mapping[str, object],
+) -> dict[str, "ModelSettings"]:
+    """Read model settings from a deployment profile, old shape or new.
+
+    A profile published before settings became one value carries a dictionary
+    per setting. Reading both here is the whole migration: the next deploy
+    republishes it in the current shape.
+    """
+
+    from zippergen.models import ModelSettings, model_settings_from_mapping
+
+    stored = profile.get("llm_settings")
+    if isinstance(stored, Mapping):
+        return {
+            str(target): model_settings_from_mapping(value, subject=str(target))
+            for target, value in stored.items()
+        }
+    settings: dict[str, ModelSettings] = {}
+    for key, name in (
+        ("llm_idle_timeouts", "idle_timeout"),
+        ("llm_temperatures", "temperature"),
+    ):
+        raw = profile.get(key)
+        if not isinstance(raw, Mapping):
+            continue
+        for target, value in raw.items():
+            target = str(target)
+            merged = settings.get(target, ModelSettings())
+            settings[target] = merged.merged_with(
+                model_settings_from_mapping({name: value}, subject=target)
+            )
+    return settings
+
+
+def _profile_idle_timeouts(profile: Mapping[str, object]) -> dict[str, float]:
+    """The idle-release times a profile carries, whichever shape it uses."""
+
+    return {
+        target: chosen.idle_timeout
+        for target, chosen in _profile_model_settings(profile).items()
+        if chosen.idle_timeout is not None
+    }
+
+
+def _idle_timeout_settings(pairs: list[str]) -> dict[str, "ModelSettings"]:
+    """Turn --llm-idle-timeout-for pairs into per-target model settings."""
+
+    from zippergen.models import ModelSettings
+
+    return {
+        target: ModelSettings(idle_timeout=seconds)
+        for target, seconds in _parse_llm_idle_timeouts(pairs).items()
+    }
+
+
 def _parse_llm_idle_timeouts(pairs: list[str]) -> dict[str, float]:
     values = _parse_inputs(pairs)
     timeouts: dict[str, float] = {}
@@ -277,9 +334,9 @@ def _run_args_from_deployment(profile: dict[str, object]):
         llm_for=_jsonable_kv_pairs(normalize_llm_overrides(profile.get("llms"))),
         llm_idle_timeout=profile.get("llm_idle_timeout"),
         llm_idle_timeout_for=_jsonable_kv_pairs(
-            profile.get("llm_idle_timeouts") or {}  # type: ignore[arg-type]
+            _profile_idle_timeouts(profile)  # type: ignore[arg-type]
         ),
-        llm_temperatures=profile.get("llm_temperatures") or {},
+        llm_settings=_profile_model_settings(profile),
         assistant=profile.get("assistant") or None,
         assistants=normalize_assistant_overrides(profile.get("assistants")),
         store=str(profile["store"]),
@@ -1643,13 +1700,11 @@ def _run_workflow_from_project(args, workspace) -> int:
         routing,
         default_spec=args.llm,
         overrides=_parse_inputs(args.llm_for),
-        idle_timeouts=_parse_llm_idle_timeouts(args.llm_idle_timeout_for),
-        temperatures=getattr(args, "llm_temperatures", None),
+        settings=_idle_timeout_settings(args.llm_idle_timeout_for),
     )
     selected_llm = routing.default_spec
     llms = routing.overrides
-    llm_idle_timeouts = routing.idle_timeouts
-    llm_temperatures = routing.temperatures
+    llm_settings = routing.settings
     from zippergen.models import effective_llm_routes, fake_model_notice
 
     notice = fake_model_notice(effective_llm_routes(wf, selected_llm, llms))
@@ -1732,8 +1787,7 @@ def _run_workflow_from_project(args, workspace) -> int:
         assistant=assistant_routing.default_backend,
         assistants=assistant_routing.overrides,
         llm_idle_timeout=args.llm_idle_timeout,
-        llm_idle_timeouts=llm_idle_timeouts,
-        llm_temperatures=llm_temperatures,
+        llm_settings=llm_settings,
         store_path=store_path,
         inputs=inputs,
         options=options,
@@ -1743,8 +1797,9 @@ def _run_workflow_from_project(args, workspace) -> int:
     configure_kwargs = {
         "timeout": args.timeout,
         "llm_idle_timeout": args.llm_idle_timeout,
-        "llm_idle_timeouts": llm_idle_timeouts,
-        "llm_temperatures": llm_temperatures,
+        "llm_settings": {
+            target: chosen.as_dict() for target, chosen in llm_settings.items()
+        },
         "execution": execution,
         "store_path": store_path,
         "assistant_root": str(workspace.root),
@@ -1861,7 +1916,7 @@ def _durable_run_from_project(args, workspace) -> int:
         llm=args.llm,
         llms=normalize_llm_overrides(_parse_inputs(args.llm_for)),
         llm_idle_timeout=args.llm_idle_timeout,
-        llm_idle_timeouts=_parse_llm_idle_timeouts(
+        llm_settings=_idle_timeout_settings(
             args.llm_idle_timeout_for
         ),
         assistant=None,
@@ -2369,6 +2424,12 @@ def _model_command(args) -> int:
             temperature = args.temperature
             if temperature is None and existing.get("temperature") is not None:
                 temperature = float(str(existing["temperature"]))
+            max_tokens = args.max_tokens
+            if max_tokens is None and existing.get("max_tokens") is not None:
+                max_tokens = int(float(str(existing["max_tokens"])))
+            timeout = args.timeout
+            if timeout is None and existing.get("timeout") is not None:
+                timeout = float(str(existing["timeout"]))
             value = configure_model(
                 workspace,
                 name,
@@ -2376,6 +2437,8 @@ def _model_command(args) -> int:
                 model,
                 idle_timeout=idle_timeout,
                 temperature=temperature,
+                max_tokens=max_tokens,
+                timeout=timeout,
             )
             print(
                 f"Saved model configuration {name}: "
@@ -4491,8 +4554,7 @@ def _deploy_command_locked(args) -> int:
             "llm": None,
             "llms": {},
             "llm_idle_timeout": None,
-            "llm_idle_timeouts": {},
-            "llm_temperatures": {},
+            "llm_settings": {},
             "assistant": None,
             "assistants": {},
             "options": {},
@@ -4535,8 +4597,10 @@ def _deploy_command_locked(args) -> int:
     profile["llm"] = model_routing.default_spec
     profile["llms"] = model_routing.overrides
     profile["llm_idle_timeout"] = None
-    profile["llm_idle_timeouts"] = model_routing.idle_timeouts
-    profile["llm_temperatures"] = model_routing.temperatures
+    profile["llm_settings"] = {
+        target: chosen.as_dict()
+        for target, chosen in model_routing.settings.items()
+    }
     assistant_routing = project_assistant_routing(
         model_workspace,
         model_workflow_spec,
@@ -5656,6 +5720,16 @@ def _parse_cli_args(
             "Default sampling temperature from 0 to 1; an @llm action may "
             "override it."
         ),
+    )
+    model_configure.add_argument(
+        "--max-tokens",
+        type=int,
+        help="Most tokens this model may generate in one response.",
+    )
+    model_configure.add_argument(
+        "--timeout",
+        type=float,
+        help="Seconds to wait for one response before giving up.",
     )
     model_configure.add_argument("--project", help="Project root.")
     model_assign = model_sub.add_parser(

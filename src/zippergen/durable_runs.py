@@ -8,7 +8,7 @@ import os
 import shutil
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from contextlib import contextmanager
 from pathlib import Path
 from types import ModuleType
@@ -25,6 +25,7 @@ from zippergen.human_backends import (
     make_sqlite_human_backend,
 )
 from zippergen.models import (
+    ModelSettings,
     apply_model_overrides,
     effective_llm_routes,
     normalize_llm_overrides,
@@ -450,6 +451,40 @@ def collect_workflow_inputs(
     return collected
 
 
+def _recorded_model_settings(
+    record: Mapping[str, object],
+) -> dict[str, "ModelSettings"]:
+    """Read model settings from a run record, old shape or new.
+
+    Runs recorded before settings became one value carry a dictionary per
+    setting. Reading both here is all the migration a resumed run needs.
+    """
+
+    from zippergen.models import model_settings_from_mapping
+
+    stored = record.get("llm_settings")
+    if isinstance(stored, Mapping):
+        return {
+            str(target): model_settings_from_mapping(value, subject=str(target))
+            for target, value in stored.items()
+        }
+    settings: dict[str, ModelSettings] = {}
+    for key, name in (
+        ("llm_idle_timeouts", "idle_timeout"),
+        ("llm_temperatures", "temperature"),
+    ):
+        raw = record.get(key)
+        if not isinstance(raw, Mapping):
+            continue
+        for target, value in raw.items():
+            target = str(target)
+            merged = settings.get(target, ModelSettings())
+            settings[target] = merged.merged_with(
+                model_settings_from_mapping({name: value}, subject=target)
+            )
+    return settings
+
+
 def _load_and_validate(workspace: Workspace, stored_spec: str):
     from zippergen.validation import validate_workflow
 
@@ -475,8 +510,7 @@ def _run_setup_hook(
     llm: str,
     llms: dict[str, str],
     llm_idle_timeout: float | None,
-    llm_idle_timeouts: dict[str, float],
-    llm_temperatures: dict[str, float],
+    llm_settings: Mapping[str, "ModelSettings"],
     assistant: str | None,
     assistants: dict[str, str],
     store_path: str,
@@ -495,8 +529,7 @@ def _run_setup_hook(
             assistant=assistant,
             assistants=assistants,
             llm_idle_timeout=llm_idle_timeout,
-            llm_idle_timeouts=llm_idle_timeouts,
-            llm_temperatures=llm_temperatures,
+            llm_settings=llm_settings,
             store_path=store_path,
             inputs=inputs,
             options=dict(options),
@@ -516,7 +549,7 @@ def run_durable(
     llm: str | None = None,
     llms: dict[str, str] | None = None,
     llm_idle_timeout: float | None = None,
-    llm_idle_timeouts: dict[str, float] | None = None,
+    llm_settings: Mapping[str, "ModelSettings"] | None = None,
     assistant: str | None = None,
     assistants: dict[str, str] | None = None,
     options: dict[str, object] | None = None,
@@ -542,7 +575,7 @@ def run_durable(
             llm=llm,
             llms=llms,
             llm_idle_timeout=llm_idle_timeout,
-            llm_idle_timeouts=llm_idle_timeouts,
+            llm_settings=llm_settings,
             assistant=assistant,
             assistants=assistants,
             options=options,
@@ -568,7 +601,7 @@ def _run_durable_in_project(
     llm: str | None,
     llms: dict[str, str] | None,
     llm_idle_timeout: float | None,
-    llm_idle_timeouts: dict[str, float] | None,
+    llm_settings: Mapping[str, "ModelSettings"] | None,
     assistant: str | None,
     assistants: dict[str, str] | None,
     options: dict[str, object] | None,
@@ -591,7 +624,7 @@ def _run_durable_in_project(
         or llm is not None
         or llms
         or llm_idle_timeout is not None
-        or llm_idle_timeouts
+        or llm_settings
         or assistant is not None
         or assistants
         or options
@@ -631,16 +664,7 @@ def _run_durable_in_project(
             if record.get("llm_idle_timeout") is not None
             else None
         )
-        selected_idle_timeouts = {
-            str(target): float(value)
-            for target, value in (
-                record.get("llm_idle_timeouts") or {}
-            ).items()
-        }
-        selected_temperatures = {
-            str(target): float(value)
-            for target, value in (record.get("llm_temperatures") or {}).items()
-        }
+        selected_settings = _recorded_model_settings(record)
         selected_assistant = (
             str(record["assistant"]) if record.get("assistant") else None
         )
@@ -684,13 +708,12 @@ def _run_durable_in_project(
             routing,
             default_spec=llm,
             overrides=llms,
-            idle_timeouts=llm_idle_timeouts,
+            settings=llm_settings,
         )
         selected_llm = routing.default_spec
         selected_llms = routing.overrides
         selected_idle_timeout = llm_idle_timeout
-        selected_idle_timeouts = routing.idle_timeouts
-        selected_temperatures = routing.temperatures
+        selected_settings = routing.settings
         assistant_routing = project_assistant_routing(
             workspace,
             stored_spec,
@@ -734,8 +757,7 @@ def _run_durable_in_project(
             llm=selected_llm,
             llms=selected_llms,
             llm_idle_timeout=selected_idle_timeout,
-            llm_idle_timeouts=selected_idle_timeouts,
-            llm_temperatures=selected_temperatures,
+            llm_settings=selected_settings,
             assistant=selected_assistant,
             assistants=selected_assistants,
             options=run_options,
@@ -794,9 +816,11 @@ def _run_durable_in_project(
                 (f"Model · {participant}", spec, None)
                 for participant, spec in routes.items()
             )
-            if selected_idle_timeouts:
-                run_rows.extend(
-                    (
+            for target, chosen in sorted(selected_settings.items()):
+                stated = dict(chosen.as_dict())
+                if "idle_timeout" in stated:
+                    seconds = stated.pop("idle_timeout")
+                    run_rows.append((
                         f"Idle release · {target}",
                         (
                             "after every call"
@@ -804,11 +828,18 @@ def _run_durable_in_project(
                             else f"after {seconds:g} seconds"
                         ),
                         None,
-                    )
-                    for target, seconds in sorted(
-                        selected_idle_timeouts.items()
-                    )
-                )
+                    ))
+                if stated:
+                    run_rows.append((
+                        f"Model settings · {target}",
+                        ", ".join(
+                            f"{name}={value:g}"
+                            if isinstance(value, float)
+                            else f"{name}={value}"
+                            for name, value in sorted(stated.items())
+                        ),
+                        None,
+                    ))
         else:
             run_rows.append(("Models", "none; no LLM actions", None))
         renderer.table(
@@ -858,8 +889,7 @@ def _run_durable_in_project(
                 llm=selected_llm,
                 llms=selected_llms,
                 llm_idle_timeout=selected_idle_timeout,
-                llm_idle_timeouts=selected_idle_timeouts,
-                llm_temperatures=selected_temperatures,
+                llm_settings=selected_settings,
                 assistant=selected_assistant,
                 assistants=selected_assistants,
                 store_path=store_path,
@@ -879,8 +909,7 @@ def _run_durable_in_project(
             workflow.configure(
                 llm_config,
                 llm_idle_timeout=selected_idle_timeout,
-                llm_idle_timeouts=selected_idle_timeouts,
-                llm_temperatures=selected_temperatures,
+                llm_settings=selected_settings,
                 execution="sqlite",
                 store_path=store_path,
                 timeout=timeout,

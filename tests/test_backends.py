@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from zippergen import Json, Lifeline, llm, workflow
+from zippergen.models import ModelSettings
 from zippergen.backends import (
     _parse_response,
     ManagedBackend,
@@ -223,10 +224,8 @@ def test_managed_backend_is_lazy_and_releases_after_call():
 def test_router_uses_route_specific_idle_release(monkeypatch):
     selected: list[tuple[str, float | None]] = []
 
-    def fake_backend_from_spec(
-        spec, *, fallback=None, idle_timeout=None, temperature=None
-    ):
-        selected.append((spec, idle_timeout))
+    def fake_backend_from_spec(spec, *, fallback=None, settings=None):
+        selected.append((spec, settings.idle_timeout if settings else None))
         return (lambda action, inputs: {"text": "done"}), spec
 
     monkeypatch.setattr(
@@ -240,7 +239,7 @@ def test_router_uses_route_specific_idle_release(monkeypatch):
             "Reviewer": "local:mistral",
         },
         idle_timeout=600,
-        idle_timeouts={"Writer": 0},
+        settings={"Writer": ModelSettings(idle_timeout=0)},
     )
 
     assert selected == [
@@ -254,11 +253,9 @@ def test_router_shares_one_managed_backend_for_one_local_configuration(
 ):
     built = []
 
-    def fake_backend_from_spec(
-        spec, *, fallback=None, idle_timeout=None, temperature=None
-    ):
+    def fake_backend_from_spec(spec, *, fallback=None, settings=None):
         backend = lambda action, inputs: {"text": "done"}
-        built.append((spec, idle_timeout, backend))
+        built.append((spec, settings, backend))
         return backend, spec
 
     monkeypatch.setattr(
@@ -271,7 +268,10 @@ def test_router_shares_one_managed_backend_for_one_local_configuration(
             "Writer": "local:qwen2.5:7b",
             "Reviewer": "ollama:qwen2.5:7b",
         },
-        idle_timeouts={"Writer": 300, "Reviewer": 300},
+        settings={
+            "Writer": ModelSettings(idle_timeout=300),
+            "Reviewer": ModelSettings(idle_timeout=300),
+        },
     )
 
     assert len(built) == 1
@@ -282,7 +282,7 @@ def test_router_rejects_conflicting_idle_policies_across_local_aliases(
 ):
     monkeypatch.setattr(
         "zippergen.backends.backend_from_spec",
-        lambda spec, *, fallback=None, idle_timeout=None, temperature=None: (
+        lambda spec, *, fallback=None, settings=None: (
             lambda action, inputs: {"text": "done"},
             spec,
         ),
@@ -294,7 +294,10 @@ def test_router_rejects_conflicting_idle_policies_across_local_aliases(
                 "Writer": "local:qwen2.5:7b",
                 "Reviewer": "ollama:qwen2.5:7b",
             },
-            idle_timeouts={"Writer": 300, "Reviewer": 0},
+            settings={
+                "Writer": ModelSettings(idle_timeout=300),
+                "Reviewer": ModelSettings(idle_timeout=0),
+            },
         )
 
 
@@ -401,7 +404,9 @@ def test_ollama_backend_idle_timeout_unloads_model(monkeypatch):
 
     monkeypatch.setattr("zippergen.backends.request.urlopen", fake_urlopen)
 
-    backend, label = backend_from_spec("ollama:qwen2.5:7b", idle_timeout=0)
+    backend, label = backend_from_spec(
+        "ollama:qwen2.5:7b", settings=ModelSettings(idle_timeout=0)
+    )
     action = SimpleNamespace(
         name="say",
         system_prompt="You are concise.",
@@ -432,7 +437,7 @@ def test_workflow_configure_accepts_positional_llm_spec():
 def test_workflow_configure_does_not_route_non_llm_participants():
     config_observed_workflow.configure(
         "local:qwen2.5:14b",
-        llm_idle_timeouts={"ConfigUser": 300},
+        llm_settings={"ConfigUser": ModelSettings(idle_timeout=300)},
         execution="memory",
         timeout=5,
     )
@@ -471,3 +476,73 @@ def test_lifeline_router_prefers_an_exact_action_override():
         ("participant", "draft"),
         ("action", "revise"),
     ]
+
+
+# One settings value, not one dictionary per setting. Threading each knob
+# separately is why `max_tokens` -- an ordinary inference setting -- was
+# reachable only through an environment variable while `temperature` was
+# configured beside the model.
+
+
+def test_configured_model_settings_reach_the_provider(monkeypatch):
+    import zippergen.backends as backends_module
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    seen: dict[str, object] = {}
+    monkeypatch.setattr(
+        backends_module,
+        "make_openai_backend",
+        lambda **kwargs: (seen.update(kwargs), (lambda a, i: {}))[1],
+    )
+
+    backend_from_spec(
+        "openai:gpt-4o",
+        settings=ModelSettings(temperature=0.2, max_tokens=4096, timeout=120),
+    )
+
+    assert seen["max_tokens"] == 4096
+    assert seen["timeout"] == 120
+    assert seen["temperature"] == 0.2
+
+
+def test_a_configured_setting_beats_the_environment(monkeypatch):
+    """The environment stays an operational override, not the way in."""
+
+    import zippergen.backends as backends_module
+
+    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("OPENAI_MAX_TOKENS", "999")
+    seen: dict[str, object] = {}
+    monkeypatch.setattr(
+        backends_module,
+        "make_openai_backend",
+        lambda **kwargs: (seen.update(kwargs), (lambda a, i: {}))[1],
+    )
+
+    backend_from_spec("openai:gpt-4o", settings=ModelSettings(max_tokens=4096))
+    assert seen["max_tokens"] == 4096
+
+    seen.clear()
+    backend_from_spec("openai:gpt-4o")
+    assert seen["max_tokens"] == 999, "the environment still applies when unset"
+
+
+def test_two_routes_share_a_backend_only_when_every_setting_matches(monkeypatch):
+    built: list[object] = []
+    monkeypatch.setattr(
+        "zippergen.backends.backend_from_spec",
+        lambda spec, *, fallback=None, settings=None: (
+            built.append(settings),
+            (lambda a, i: {}),
+        )[1] and ((lambda a, i: {}), spec),
+    )
+
+    router_from_specs(
+        {"Writer": "openai:gpt-4o", "Reviewer": "openai:gpt-4o"},
+        settings={
+            "Writer": ModelSettings(max_tokens=4096),
+            "Reviewer": ModelSettings(max_tokens=512),
+        },
+    )
+
+    assert len(built) == 2, "different max_tokens must not share one backend"

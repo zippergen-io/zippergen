@@ -10,8 +10,10 @@ import sys
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from collections.abc import Mapping
 from types import ModuleType
 
+from zippergen.models import ModelSettings
 from zippergen.syntax import Lifeline, Workflow
 
 
@@ -39,8 +41,7 @@ class RunConfig:
     assistant: str | None
     assistants: dict[str, str]
     llm_idle_timeout: float | None
-    llm_idle_timeouts: dict[str, float]
-    llm_temperatures: dict[str, float]
+    llm_settings: "Mapping[str, ModelSettings]"
     store_path: str | None
     inputs: dict[str, object]
     options: dict[str, object]

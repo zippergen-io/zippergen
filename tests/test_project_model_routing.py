@@ -100,7 +100,7 @@ def test_project_model_assignment_drives_plain_and_durable_runs(
     assert record["llms"] == {
         "Writer": f"scripted@scripted-tests:{root / 'replies.json'}"
     }
-    assert record["llm_temperatures"] == {"Writer": 0.4}
+    assert record["llm_settings"] == {"Writer": {"temperature": 0.4}}
 
 
 def test_action_assignment_overrides_its_participant_assignment(
@@ -189,3 +189,70 @@ def test_global_cli_model_replaces_project_assignments_for_plain_run(
     assert json.loads(capsys.readouterr().out) == {
         "result": "[draft_reply:draft]"
     }
+
+
+def test_model_settings_are_configured_beside_the_model(tmp_path, monkeypatch):
+    """A standard inference setting is model configuration, not an env var.
+
+    `temperature` was configurable here while `max_tokens` was reachable only
+    through `OLLAMA_MAX_TOKENS`, so a workflow had to declare a deployment
+    field just to set one. Both now live in the same place.
+    """
+
+    import tomllib
+
+    from zippergen.configuration_mutations import configure_model
+    from zippergen.workspace import Workspace
+
+    home = tmp_path / "home"
+    root = tmp_path / "project"
+    root.mkdir()
+    workspace = Workspace(root, home=home)
+    workspace.initialize_project(name="settings")
+    workspace.save_provider_connection("local-main", {"kind": "local"})
+
+    configure_model(
+        workspace,
+        "qwen",
+        "local-main",
+        "qwen3",
+        temperature=0.2,
+        max_tokens=4096,
+        timeout=120,
+    )
+
+    stored = tomllib.loads(workspace.manifest_path.read_text())
+    configured = stored["models"]["configurations"]["qwen"]
+    assert configured["temperature"] == 0.2
+    assert configured["max_tokens"] == 4096
+    assert configured["timeout"] == 120.0
+
+
+def test_a_run_record_written_before_settings_were_one_value_still_resumes(
+    tmp_path,
+):
+    """Old runs carry a dictionary per setting; reading both is the migration."""
+
+    from zippergen.durable_runs import _recorded_model_settings
+
+    recovered = _recorded_model_settings({
+        "llm_temperatures": {"Writer": 0.4},
+        "llm_idle_timeouts": {"Writer": 300, "Reviewer": 0},
+    })
+
+    assert recovered["Writer"].temperature == 0.4
+    assert recovered["Writer"].idle_timeout == 300
+    assert recovered["Reviewer"].idle_timeout == 0
+    assert recovered["Reviewer"].temperature is None
+
+
+def test_a_profile_written_before_settings_were_one_value_still_deploys():
+    from zippergen.serve import _profile_model_settings
+
+    recovered = _profile_model_settings({
+        "llm_temperatures": {"Writer": 0.4},
+        "llm_idle_timeouts": {"Writer": 300},
+    })
+
+    assert recovered["Writer"].temperature == 0.4
+    assert recovered["Writer"].idle_timeout == 300

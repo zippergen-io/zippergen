@@ -24,6 +24,8 @@ def configure_model(
     *,
     idle_timeout: float | None = None,
     temperature: float | None = None,
+    max_tokens: int | None = None,
+    timeout: float | None = None,
 ) -> dict[str, str]:
     selected_connection = connection.strip()
     selected_model = model.strip()
@@ -39,6 +41,14 @@ def configure_model(
         if not math.isfinite(temperature) or not 0 <= temperature <= 1:
             raise WorkspaceError("Temperature must be between 0 and 1.")
         values["temperature"] = str(temperature)
+    if max_tokens is not None:
+        if max_tokens <= 0:
+            raise WorkspaceError("Max tokens must be greater than zero.")
+        values["max_tokens"] = str(max_tokens)
+    if timeout is not None:
+        if not math.isfinite(timeout) or timeout <= 0:
+            raise WorkspaceError("Timeout must be a positive finite number of seconds.")
+        values["timeout"] = str(timeout)
     return workspace.save_model_configuration(name, values)
 
 

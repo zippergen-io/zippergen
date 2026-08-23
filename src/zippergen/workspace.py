@@ -106,7 +106,9 @@ _IGNORED_DISCOVERY_PARTS = {
     "venv",
 }
 
-_MODEL_PROJECT_FIELDS = frozenset({"connection", "model", "temperature"})
+_MODEL_PROJECT_FIELDS = frozenset(
+    {"connection", "model", "temperature", "max_tokens", "timeout"}
+)
 # Checks are always live, so their results are never stored.  These are the
 # fields that describe one machine rather than the project.
 _MODEL_SITE_FIELDS = frozenset({"idle_timeout"})
@@ -290,11 +292,21 @@ def _validated_model_configuration(
         "provider": provider,
         "spec": connected_model_spec(connection, provider, model),
     }
-    temperature = _temperature(
-        value.get("temperature"), subject=f"Model configuration {normalized!r}"
+    # Every setting that reaches the provider is validated the same way and
+    # stored beside the model it belongs to. A standard inference setting must
+    # not have to arrive through an environment variable.
+    from zippergen.models import (
+        MODEL_SETTING_NAMES,
+        model_setting_text,
+        model_settings_from_mapping,
     )
-    if temperature:
-        result["temperature"] = temperature
+
+    settings = model_settings_from_mapping(
+        value, subject=f"model configuration {normalized!r}"
+    )
+    for name, setting in settings.as_dict().items():
+        if name in MODEL_SETTING_NAMES and name in _MODEL_PROJECT_FIELDS:
+            result[name] = model_setting_text(setting)
     return result
 
 
@@ -1471,12 +1483,18 @@ class Workspace:
             for key, value in raw_project.items()
             if isinstance(value, dict)
         }
+        # Written from the validated result rather than a hand-written list,
+        # so a newly supported setting is stored the moment it is accepted.
         project_configuration: dict[str, object] = {
             "connection": validated["connection"],
             "model": validated["model"],
         }
-        if validated.get("temperature"):
-            project_configuration["temperature"] = float(validated["temperature"])
+        for setting in ("temperature", "max_tokens", "timeout"):
+            stated = validated.get(setting)
+            if stated:
+                project_configuration[setting] = (
+                    int(float(stated)) if setting == "max_tokens" else float(stated)
+                )
         project_configurations[normalized] = project_configuration
         models["configurations"] = project_configurations
         self._write_project_configuration(models=models)
@@ -2150,8 +2168,7 @@ class Workspace:
         llm: str,
         llms: dict[str, str] | None = None,
         llm_idle_timeout: float | None = None,
-        llm_idle_timeouts: dict[str, float] | None = None,
-        llm_temperatures: dict[str, float] | None = None,
+        llm_settings: Mapping[str, Any] | None = None,
         assistant: str | None = None,
         assistants: dict[str, str] | None = None,
         options: dict[str, object] | None = None,
@@ -2185,13 +2202,9 @@ class Workspace:
             "llm": llm,
             "llms": dict(llms or {}),
             "llm_idle_timeout": llm_idle_timeout,
-            "llm_idle_timeouts": {
-                str(target): float(value)
-                for target, value in (llm_idle_timeouts or {}).items()
-            },
-            "llm_temperatures": {
-                str(target): float(value)
-                for target, value in (llm_temperatures or {}).items()
+            "llm_settings": {
+                str(target): dict(value.as_dict())
+                for target, value in (llm_settings or {}).items()
             },
             "assistant": assistant,
             "assistants": dict(assistants or {}),

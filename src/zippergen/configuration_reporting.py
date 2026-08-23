@@ -385,8 +385,7 @@ def configuration_report(
     resolved_models: dict[str, object] = {
         "default": "mock",
         "overrides": {},
-        "idle_timeouts": {},
-        "temperatures": {},
+        "settings": {},
     }
     checks: list[Check] = []
     for item in model_rows:
@@ -437,8 +436,10 @@ def configuration_report(
             resolved_models = {
                 "default": routing.default_spec,
                 "overrides": routing.overrides,
-                "idle_timeouts": routing.idle_timeouts,
-                "temperatures": routing.temperatures,
+                "settings": {
+                    target: chosen.as_dict()
+                    for target, chosen in routing.settings.items()
+                },
             }
             checks.append(
                 _check(

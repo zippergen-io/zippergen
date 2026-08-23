@@ -920,8 +920,7 @@ class Workflow:
                   timeout: float  = 60.0,
                   mock_delay: tuple[float, float] = (1.0, 2.0),
                   llm_idle_timeout: float | None = None,
-                  llm_idle_timeouts: Mapping[str, float] | None = None,
-                  llm_temperatures: Mapping[str, float] | None = None,
+                  llm_settings: Mapping[str, object] | None = None,
                   execution: str | None = None,
                   store_path: str | None = None,
                   human_backend: object | None = None,
@@ -944,10 +943,10 @@ class Workflow:
         mock_delay : delay range used by the mock backend when ``llm="mock"``.
         llm_idle_timeout : for local managed backends such as Ollama, release
                   the model after this many seconds without LLM calls.
-        llm_idle_timeouts : optional participant or action-specific idle
-                  release times for managed local backends.
-        llm_temperatures : optional participant or action-specific model
-                  temperatures. An ``@llm`` value takes precedence.
+        llm_settings : optional per-participant or per-action model settings
+                  -- temperature, max_tokens, timeout, idle_timeout -- as
+                  ``ModelSettings`` or a plain mapping. An ``@llm`` value takes
+                  precedence over a configured temperature.
         execution : ``"sqlite"`` for durable execution or ``"memory"`` for
                     an in-process disposable run.
         store_path : optional SQLite store path used when ``execution="sqlite"``.
@@ -965,8 +964,7 @@ class Workflow:
         return _workflow_configure(self, llm=llm, backend=backend, trace=trace, timeout=timeout,
                                    mock_delay=mock_delay,
                                    llm_idle_timeout=llm_idle_timeout,
-                                   llm_idle_timeouts=llm_idle_timeouts,
-                                   llm_temperatures=llm_temperatures,
+                                   llm_settings=llm_settings,
                                    execution=execution, store_path=store_path,
                                    human_backend=human_backend,
                                    assistant=assistant,

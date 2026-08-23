@@ -1566,8 +1566,7 @@ def _workflow_configure(
     timeout: float = 60.0,
     mock_delay: tuple[float, float] = (1.0, 2.0),
     llm_idle_timeout: float | None = None,
-    llm_idle_timeouts: Mapping[str, float] | None = None,
-    llm_temperatures: Mapping[str, float] | None = None,
+    llm_settings: Mapping[str, object] | None = None,
     execution: str | None = None,
     store_path: str | None = None,
     human_backend: object | None = None,
@@ -1579,24 +1578,18 @@ def _workflow_configure(
         not math.isfinite(llm_idle_timeout) or llm_idle_timeout < 0
     ):
         raise ValueError("llm_idle_timeout must be non-negative.")
-    normalized_idle_timeouts = {
-        str(target): float(value)
-        for target, value in (llm_idle_timeouts or {}).items()
-    }
-    if any(
-        not math.isfinite(value) or value < 0
-        for value in normalized_idle_timeouts.values()
-    ):
-        raise ValueError("llm_idle_timeouts values must be non-negative.")
-    normalized_temperatures = {
-        str(target): float(value)
-        for target, value in (llm_temperatures or {}).items()
-    }
-    if any(
-        not math.isfinite(value) or not 0 <= value <= 1
-        for value in normalized_temperatures.values()
-    ):
-        raise ValueError("llm_temperatures values must be between 0 and 1.")
+    from zippergen.models import ModelSettings, model_settings_from_mapping
+
+    normalized_settings: dict[str, ModelSettings] = {}
+    for target, value in (llm_settings or {}).items():
+        name = str(target)
+        normalized_settings[name] = (
+            value
+            if isinstance(value, ModelSettings)
+            else model_settings_from_mapping(
+                value if isinstance(value, Mapping) else None, subject=name
+            )
+        )
     if callable(llm):
         if backend is not None:
             raise ValueError("Use either positional backend/llm or 'backend=', not both.")
@@ -1622,8 +1615,7 @@ def _workflow_configure(
             routes,
             fallback=lambda a, i: mock_llm(a, i, min_delay=mock_delay[0], max_delay=mock_delay[1]),
             idle_timeout=llm_idle_timeout,
-            idle_timeouts=normalized_idle_timeouts,
-            temperatures=normalized_temperatures,
+            settings=normalized_settings,
         )
         wf._rt._backend = built_backend
     if backend is not None:

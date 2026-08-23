@@ -9,6 +9,10 @@ import threading
 import time
 from datetime import datetime
 from collections.abc import Callable, Mapping
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from zippergen.models import ModelSettings
 from dataclasses import dataclass
 from pathlib import Path
 from urllib import request
@@ -861,8 +865,7 @@ def backend_from_spec(
     spec: str,
     *,
     fallback: Callable | None = None,
-    idle_timeout: float | None = None,
-    temperature: float | None = None,
+    settings: "ModelSettings | None" = None,
 ) -> tuple[Callable, str]:
     """Build an LLM backend from a compact spec such as ``"openai:gpt-4o"``.
 
@@ -878,6 +881,33 @@ def backend_from_spec(
     ``OPENAI_API_KEY`` is used for OpenAI and ``OLLAMA_BASE_URL`` can override
     the local Ollama endpoint.
     """
+
+    from zippergen.models import ModelSettings
+
+    chosen = settings or ModelSettings()
+    temperature = chosen.temperature
+    idle_timeout = chosen.idle_timeout
+
+    def sized(variable: str, fallback_value: int) -> int:
+        """Configured max tokens, or the environment, or the built-in default.
+
+        The environment stays available as an operational override, but it is
+        no longer the only way in: a standard inference setting is configured
+        beside the model, like temperature.
+        """
+
+        return (
+            chosen.max_tokens
+            if chosen.max_tokens is not None
+            else _env_int(variable, fallback_value)
+        )
+
+    def waited(variable: str, fallback_value: float) -> float:
+        return (
+            chosen.timeout
+            if chosen.timeout is not None
+            else _env_float(variable, fallback_value)
+        )
 
     provider_token, model = _split_llm_spec(spec)
     provider, connection = _provider_parts(provider_token)
@@ -907,8 +937,8 @@ def backend_from_spec(
                 api_key=api_key,
                 model=model,
                 temperature=temperature,
-                max_tokens=_env_int("MISTRAL_MAX_TOKENS", 2048),
-                timeout=_env_float("MISTRAL_TIMEOUT", 90.0),
+                max_tokens=sized("MISTRAL_MAX_TOKENS", 2048),
+                timeout=waited("MISTRAL_TIMEOUT", 90.0),
             ),
             f"Mistral ({model})",
         )
@@ -932,8 +962,8 @@ def backend_from_spec(
                 model=model,
                 base_url=base_url,
                 temperature=temperature,
-                max_tokens=_env_int("OPENAI_MAX_TOKENS", 2048),
-                timeout=_env_float("OPENAI_TIMEOUT", 90.0),
+                max_tokens=sized("OPENAI_MAX_TOKENS", 2048),
+                timeout=waited("OPENAI_TIMEOUT", 90.0),
             ),
             f"OpenAI-compatible ({model})",
         )
@@ -950,8 +980,8 @@ def backend_from_spec(
         )
         assert base_url is not None
         assert api_key is not None
-        max_tokens = _env_int("OLLAMA_MAX_TOKENS", 512)
-        timeout = _env_float("OLLAMA_TIMEOUT", 120.0)
+        max_tokens = sized("OLLAMA_MAX_TOKENS", 512)
+        timeout = waited("OLLAMA_TIMEOUT", 120.0)
         if idle_timeout is None:
             idle_timeout = _env_optional_float("OLLAMA_IDLE_TIMEOUT")
         release_timeout = _env_float("OLLAMA_RELEASE_TIMEOUT", 5.0)
@@ -986,8 +1016,8 @@ def backend_from_spec(
                 api_key=api_key,
                 model=model,
                 temperature=temperature,
-                max_tokens=_env_int("ANTHROPIC_MAX_TOKENS", 1024),
-                timeout=_env_float("ANTHROPIC_TIMEOUT", 90.0),
+                max_tokens=sized("ANTHROPIC_MAX_TOKENS", 1024),
+                timeout=waited("ANTHROPIC_TIMEOUT", 90.0),
             ),
             f"Claude ({model})",
         )
@@ -1001,17 +1031,22 @@ def validate_local_idle_policies(
     routes: Mapping[str, str | Callable],
     *,
     idle_timeout: float | None = None,
-    idle_timeouts: Mapping[str, float] | None = None,
+    settings: "Mapping[str, ModelSettings] | None" = None,
 ) -> None:
     """Reject contradictory release policies for one physical local model."""
 
-    route_idle_timeouts = dict(idle_timeouts or {})
-    unknown_idle_routes = sorted(set(route_idle_timeouts) - set(routes))
+    route_settings = dict(settings or {})
+    unknown_idle_routes = sorted(set(route_settings) - set(routes))
     if unknown_idle_routes:
         raise ValueError(
             "Idle release refers to unknown LLM route(s): "
             + ", ".join(unknown_idle_routes)
         )
+    route_idle_timeouts = {
+        route: chosen.idle_timeout
+        for route, chosen in route_settings.items()
+        if chosen.idle_timeout is not None
+    }
 
     policies: dict[str, list[tuple[str, float | None]]] = {}
     for route, provider in routes.items():
@@ -1047,8 +1082,7 @@ def router_from_specs(
     fallback: Callable | None = None,
     fallback_label: str = "mock LLM",
     idle_timeout: float | None = None,
-    idle_timeouts: Mapping[str, float] | None = None,
-    temperatures: Mapping[str, float] | None = None,
+    settings: "Mapping[str, ModelSettings] | None" = None,
 ) -> tuple[Callable, str]:
     """Build a participant and action backend router from compact LLM specs.
 
@@ -1062,35 +1096,38 @@ def router_from_specs(
             raise RuntimeError("No routes configured.")
         return fallback, fallback_label
 
+    from zippergen.models import ModelSettings
+
     built_backends: dict[str, Callable] = {}
     labels: list[str] = []
+    # Two backends may be shared only when every setting that reaches the
+    # provider matches, so the whole settings value is part of the key.
     shared_backends: dict[
-        tuple[str, float | None, float | None], tuple[Callable, str]
+        tuple[str, ModelSettings], tuple[Callable, str]
     ] = {}
-    route_idle_timeouts = dict(idle_timeouts or {})
-    route_temperatures = dict(temperatures or {})
-    unknown_temperature_routes = sorted(set(route_temperatures) - set(routes))
-    if unknown_temperature_routes:
+    route_settings = dict(settings or {})
+    unknown_routes = sorted(set(route_settings) - set(routes))
+    if unknown_routes:
         raise ValueError(
-            "Temperature refers to unknown LLM route(s): "
-            + ", ".join(unknown_temperature_routes)
+            "Model settings refer to unknown LLM route(s): "
+            + ", ".join(unknown_routes)
         )
     validate_local_idle_policies(
         routes,
         idle_timeout=idle_timeout,
-        idle_timeouts=route_idle_timeouts,
+        settings=route_settings,
     )
     for lifeline_name, provider in routes.items():
         if callable(provider):
             built_backends[lifeline_name] = provider
             labels.append(f"{lifeline_name}=custom")
         else:
+            chosen = route_settings.get(lifeline_name, ModelSettings())
             selected_idle_timeout = (
-                route_idle_timeouts[lifeline_name]
-                if lifeline_name in route_idle_timeouts
+                chosen.idle_timeout
+                if chosen.idle_timeout is not None
                 else idle_timeout
             )
-            selected_temperature = route_temperatures.get(lifeline_name)
             provider_token, model = _split_llm_spec(provider)
             provider_name, connection = _provider_parts(provider_token)
             managed_local = provider_name in {"local", "ollama"}
@@ -1101,18 +1138,19 @@ def router_from_specs(
                     f"local:{model}" if model is not None else "local"
                 )
             ) if managed_local else provider
-            cache_key = (
-                physical_spec,
-                selected_idle_timeout if managed_local else None,
-                selected_temperature,
+            effective = ModelSettings(
+                temperature=chosen.temperature,
+                max_tokens=chosen.max_tokens,
+                timeout=chosen.timeout,
+                idle_timeout=selected_idle_timeout if managed_local else None,
             )
+            cache_key = (physical_spec, effective)
             cached = shared_backends.get(cache_key)
             if cached is None:
                 cached = backend_from_spec(
                     provider,
                     fallback=fallback,
-                    idle_timeout=selected_idle_timeout,
-                    temperature=selected_temperature,
+                    settings=effective,
                 )
                 shared_backends[cache_key] = cached
             backend, label = cached
