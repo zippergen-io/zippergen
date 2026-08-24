@@ -1,3 +1,4 @@
+import hashlib
 import json
 import os
 import tomllib
@@ -73,11 +74,11 @@ def test_workflow_entry_lives_in_visible_project_manifest(tmp_path):
     )
     assert workspace.absolute_spec(selected) == str(workflow_path) + ":review"
     assert workspace.state_path.is_relative_to(home)
-    # The project's local state holds only its identity; everything the
-    # manifest describes is resolved from the manifest itself.
+    # The project's local state holds only its identity and stable private
+    # address; everything the manifest describes is resolved from the manifest.
     assert sorted(
         path.name for path in (root / ".zippergen").iterdir()
-    ) == [".gitignore", "project-id"]
+    ) == [".gitignore", "project-id", "workspace-name"]
 
 
 def test_fresh_clone_resolves_workflow_from_manifest_without_private_state(tmp_path):
@@ -279,6 +280,7 @@ def test_moving_a_project_keeps_its_workspace_and_deployment_name(tmp_path):
     original.initialize_project(name="movable")
     workspace_directory = original.directory
     deployment_name = original.directory.name
+    assert deployment_name.startswith("before-")
 
     moved_root = tmp_path / "after"
     original_root.rename(moved_root)
@@ -286,6 +288,52 @@ def test_moving_a_project_keeps_its_workspace_and_deployment_name(tmp_path):
 
     assert moved.directory == workspace_directory
     assert moved.directory.name == deployment_name
+
+
+def test_an_existing_path_derived_workspace_keeps_its_address_after_upgrade(
+    tmp_path,
+):
+    home = tmp_path / "state"
+    original_root = tmp_path / "call-intake"
+    original_root.mkdir()
+    original = Workspace(original_root, home=home)
+    original.initialize_project(name="call-intake")
+    identity = original.project_id_path.read_text().strip()
+    workspace_name_path = original.project_state_directory / "workspace-name"
+    workspace_name_path.unlink(missing_ok=True)
+    old_digest = hashlib.sha256(
+        f"{original_root.resolve()}\0{identity}".encode()
+    ).hexdigest()[:10]
+    old_directory = home / "workspaces" / f"call-intake-{old_digest}"
+    old_directory.mkdir(parents=True)
+
+    assert original.directory == old_directory
+
+    moved_root = tmp_path / "renamed"
+    original_root.rename(moved_root)
+    moved = Workspace(moved_root, home=home)
+
+    assert moved.directory == old_directory
+
+
+def test_identity_digest_recovers_a_workspace_after_its_prefix_changes(tmp_path):
+    home = tmp_path / "state"
+    original_root = tmp_path / "original"
+    original_root.mkdir()
+    original = Workspace(original_root, home=home)
+    original.initialize_project(name="original")
+    identity = original.project_id_path.read_text().strip()
+    digest = hashlib.sha256(identity.encode()).hexdigest()[:10]
+    original.workspace_name_path.unlink()
+    existing = home / "workspaces" / f"project-{digest}"
+    existing.mkdir(parents=True)
+    moved_root = tmp_path / "renamed"
+    original_root.rename(moved_root)
+
+    moved = Workspace(moved_root, home=home)
+
+    assert moved.directory == existing
+    assert moved.workspace_name_path.read_text().strip() == existing.name
 
 
 def test_a_manifest_without_a_project_id_keeps_its_workspace_after_a_write(

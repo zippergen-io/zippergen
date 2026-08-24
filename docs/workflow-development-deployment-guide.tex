@@ -188,7 +188,7 @@ A ZipperGen project is a directory. \texttt{zg init} creates one:
 \path{zippergen.toml} & yes & every non-secret choice: models, assistants, connectors, deployment answers, entry point \\
 \path{AGENTS.md} & yes & points a coding agent at \texttt{zg skill} \\
 \path{CLAUDE.md} & yes & points Claude Code at \path{AGENTS.md} \\
-\path{.zippergen/} & no & this checkout's generated identity; ignores itself \\
+\path{.zippergen/} & no & this checkout's generated identity and stable private workspace name; ignores itself \\
 \texttt{ZIPPERGEN\_HOME} & no & credentials, runs, deployments \\
 \bottomrule
 \end{tabularx}
@@ -199,14 +199,15 @@ Everything committed travels with the project. A colleague who clones the
 repository gets the workflow, the specification and the configuration, and
 supplies their own keys.
 
-\path{.zippergen/} holds one generated value that keys this checkout's private
-state. It must \emph{not} travel with a clone: two checkouts sharing one
-identity would share one credential store. So it is not in
-\path{zippergen.toml}, it is not committed, and the directory contains a
-\path{.gitignore} of its own so no project needs an entry for it. A clone has no
-identity and is keyed by its own path until it is initialized as a new project.
-Move the whole working directory and the existing identity moves with it. There
-is no rule to remember.
+\path{.zippergen/} holds the generated identity that keys this checkout's
+private state and the stable name of that state directory. Neither may travel
+with a clone: two checkouts sharing them would share one credential store. So
+they are not in \path{zippergen.toml}, they are not committed, and the directory
+contains a \path{.gitignore} of its own so no project needs an entry for it. A
+clone has no identity and is keyed by its own path until it is initialized as a
+new project. Move the whole working directory and both local values move with
+it, preserving the workspace and deployment address. There is no rule to
+remember.
 
 \subsection{\texttt{zippergen.toml}}
 
@@ -1125,9 +1126,9 @@ nothing to compare.
 
 \subsection{The five lifecycle operations}
 
-A project has exactly one deployment. Once initialized, its identity comes from
-the project id alone, which is why none of these commands takes a name and why
-moving the project preserves its deployment.
+A project has exactly one deployment. Once initialized, the project id owns one
+stable deployment address recorded in local checkout state. That is why none of
+these commands takes a name and why moving the project preserves its deployment.
 
 Two independent questions decide which one you want: does it rebuild what will
 run, and does it keep the durable state? Nothing else separates them.

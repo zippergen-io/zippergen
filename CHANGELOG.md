@@ -27,6 +27,8 @@ Operational notes:
 - Durable store compatibility remains strict. An incompatible workflow change
   requires `zg deploy reset`, which archives and replaces the current recovery
   state and leaves the deployment stopped.
+- Existing workspace and deployment addresses are retained across the switch
+  to identity-based lookup; new names keep a readable project-directory prefix.
 - `zg deploy remove` archives the profile, store, and log by default, deletes
   credentials and rebuildable artifacts, and unregisters the service.
 - Trace retention remains a per-store row budget, defaulting to 10,000 rows.

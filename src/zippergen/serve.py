@@ -1458,9 +1458,9 @@ def _print_status(status: dict[str, object]) -> None:
 def _resolved_deployment_name(args) -> str:
     """Return the private identity of this project's one deployment.
 
-    The identity combines the project path with the versioned project id used
-    by private workspace state. Reinitializing a path therefore cannot inherit
-    the previous project's deployment.
+    The stable workspace name belongs to the checkout's local identity.
+    Reinitializing a path therefore cannot inherit the previous project's
+    deployment.
     """
 
     from zippergen.workspace import Workspace
@@ -1475,18 +1475,22 @@ def _resolved_deployment_name(args) -> str:
         )
     profile = _load_deployment_profile(name)
     source = profile.get("source_cwd")
-    if not source or Path(str(source)).resolve() != workspace.root:
-        raise SystemExit(
-            f"Deployment profile {path} does not belong to this project. "
-            "Remove it and deploy again."
-        )
     profile_project_id = str(profile.get("project_id") or "")
     project_id = str(workspace.project_manifest().get("project_id") or "")
-    if profile_project_id != project_id:
+    if project_id and profile_project_id != project_id:
         raise SystemExit(
             "This deployment belongs to an earlier project identity at the "
             "same path. Inspect it with 'zg deploy list' and remove orphaned "
             "deployments with 'zg deploy prune'."
+        )
+    if not project_id and (
+        profile_project_id
+        or not source
+        or Path(str(source)).resolve() != workspace.root
+    ):
+        raise SystemExit(
+            f"Deployment profile {path} does not belong to this project. "
+            "Remove it and deploy again."
         )
     return name
 
@@ -4154,6 +4158,14 @@ def _deployment_context(
     source: bool = False,
 ) -> tuple[dict[str, object], Workflow, ModuleType, DeploymentSpec]:
     profile = _load_deployment_profile(name)
+    return _deployment_context_from_profile(profile, source=source)
+
+
+def _deployment_context_from_profile(
+    profile: dict[str, object],
+    *,
+    source: bool = False,
+) -> tuple[dict[str, object], Workflow, ModuleType, DeploymentSpec]:
     cwd_key = "source_cwd" if source and profile.get("source_cwd") else "cwd"
     workflow_key = "source_workflow" if source and profile.get("source_workflow") else "workflow"
     cwd = Path(str(profile.get(cwd_key) or ".")).expanduser()
@@ -4168,7 +4180,7 @@ def _deployment_context(
 
 
 def _workflow_source_identity(spec: str, cwd: Path) -> str:
-    """Canonicalize a workflow reference without importing it."""
+    """Identify a workflow by its project-relative path when possible."""
 
     module_ref, separator, workflow_name = spec.partition(":")
     if not _looks_like_path(module_ref):
@@ -4176,8 +4188,12 @@ def _workflow_source_identity(spec: str, cwd: Path) -> str:
     path = Path(module_ref).expanduser()
     if not path.is_absolute():
         path = cwd / path
-    resolved = str(path.resolve())
-    return resolved + (f":{workflow_name}" if separator else "")
+    resolved = path.resolve()
+    try:
+        source = resolved.relative_to(cwd.resolve()).as_posix()
+    except ValueError:
+        source = str(resolved)
+    return source + (f":{workflow_name}" if separator else "")
 
 
 def _apply_deploy_arguments(
@@ -4438,8 +4454,8 @@ def _deploy_command(args) -> int:
 
 def _deploy_command_locked(args) -> int:
     # The workflow and the deployment both come from the project. The private
-    # deployment identity is derived from project path + project id and is
-    # never typed by the user.
+    # deployment identity is the checkout's stable private workspace name and
+    # is never typed by the user.
     from zippergen.workspace import Workspace
 
     args.target = _resolved_workflow_spec(args)
@@ -4458,6 +4474,12 @@ def _deploy_command_locked(args) -> int:
         recorded_cwd = Path(
             str(profile.get("source_cwd") or profile.get("cwd") or ".")
         ).expanduser()
+        profile_project_id = str(profile.get("project_id") or "")
+        source_moved = bool(
+            workspace_project_id
+            and profile_project_id == workspace_project_id
+            and recorded_cwd.resolve() != deployment_workspace.root
+        )
         selected = _workflow_source_identity(args.target, deployment_workspace.root)
         recorded = _workflow_source_identity(recorded_source, recorded_cwd)
         if selected != recorded:
@@ -4489,8 +4511,13 @@ def _deploy_command_locked(args) -> int:
             profile["environment"] = {}
         else:
             # Redeploying the same program: retain its answered settings.
-            profile, workflow, module, spec = _deployment_context(
-                existing, source=True
+            if source_moved:
+                profile["workflow"] = args.target
+                profile["cwd"] = str(deployment_workspace.root)
+                profile["source_workflow"] = args.target
+                profile["source_cwd"] = str(deployment_workspace.root)
+            profile, workflow, module, spec = _deployment_context_from_profile(
+                profile, source=True
             )
     else:
         args.name = deployment_name

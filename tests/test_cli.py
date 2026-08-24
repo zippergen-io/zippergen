@@ -2224,6 +2224,46 @@ def test_explicit_redeploy_replaces_the_named_deployment_source(
     assert json.loads(captured.out) == {"result": "updated?"}
 
 
+def test_redeploy_after_moving_a_project_keeps_its_durable_deployment(
+    tmp_path, monkeypatch, capsys
+):
+    project = tmp_path / "before"
+    project.mkdir()
+    workflow_path = project / "workflow.py"
+    workflow_path.write_text(WORKFLOW_SOURCE)
+    zippergen_home = tmp_path / "zg-home"
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(zippergen_home))
+    workspace = Workspace(project, home=zippergen_home)
+    workspace.initialize_project(name="movable")
+    workspace.select_workflow("workflow.py:hello", cwd=project)
+    monkeypatch.chdir(project)
+    deploy = [
+        "deploy",
+        "--yes",
+        "--no-start",
+        "--no-bundle",
+        "--no-install",
+        "--no-setup",
+        "--no-doctor",
+    ]
+    assert _deploy_main_for_test(deploy) == 0
+    capsys.readouterr()
+    profile_path = _the_deployment(zippergen_home)
+    deployment_name = json.loads(profile_path.read_text())["name"]
+    assert _run_prepared_deployment(zippergen_home) == 0
+    capsys.readouterr()
+
+    moved = tmp_path / "after"
+    project.rename(moved)
+    monkeypatch.chdir(moved)
+
+    assert _deploy_main_for_test(deploy) == 0
+
+    profile = json.loads(profile_path.read_text())
+    assert profile["name"] == deployment_name
+    assert Path(profile["source_cwd"]) == moved
+
+
 def test_redeploy_applies_an_explicit_history_budget_to_the_existing_store(
     tmp_path,
     monkeypatch,

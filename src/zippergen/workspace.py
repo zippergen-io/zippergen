@@ -375,17 +375,21 @@ def _slug(text: str) -> str:
 
 PROJECT_STATE_DIRECTORY = ".zippergen"
 PROJECT_ID_FILE = "project-id"
+WORKSPACE_NAME_FILE = "workspace-name"
 
 
 def _workspace_key(root: Path, project_id: str | None = None) -> str:
     if project_id:
-        # The identity is local to this checkout, so unlike the old versioned
-        # identity it cannot be shared accidentally by two clones.  It can
-        # therefore be the whole key: moving the checkout keeps its private
-        # state and the deployment name derived from that state directory.
         digest = hashlib.sha256(project_id.encode()).hexdigest()[:10]
-        return f"project-{digest}"
+        return f"{_slug(root.name)}-{digest}"
     digest = hashlib.sha256(str(root).encode()).hexdigest()[:10]
+    return f"{_slug(root.name)}-{digest}"
+
+
+def _path_derived_workspace_key(root: Path, project_id: str) -> str:
+    """The address used before identity alone determined workspace ownership."""
+
+    digest = hashlib.sha256(f"{root}\0{project_id}".encode()).hexdigest()[:10]
     return f"{_slug(root.name)}-{digest}"
 
 
@@ -653,6 +657,10 @@ class Workspace:
     def project_id_path(self) -> Path:
         return self.project_state_directory / PROJECT_ID_FILE
 
+    @property
+    def workspace_name_path(self) -> Path:
+        return self.project_state_directory / WORKSPACE_NAME_FILE
+
     def _project_id(self) -> str | None:
         """Read the identity that keys this checkout's private state.
 
@@ -674,13 +682,63 @@ class Workspace:
         # not need its own .gitignore entry for ZipperGen's local state.
         _atomic_write_text(self.project_state_directory / ".gitignore", "*\n")
         _atomic_write_text(self.project_id_path, f"{identity}\n")
+        self._write_workspace_name(_workspace_key(self.root, identity))
         return identity
+
+    def _recorded_workspace_name(self) -> str | None:
+        try:
+            name = self.workspace_name_path.read_text(encoding="utf-8").strip()
+        except FileNotFoundError:
+            return None
+        except (OSError, UnicodeDecodeError) as exc:
+            raise WorkspaceError(
+                f"Could not read workspace name {self.workspace_name_path}: {exc}"
+            ) from exc
+        if not name or name != _slug(name):
+            raise WorkspaceError(
+                f"Invalid workspace name in {self.workspace_name_path}: {name!r}."
+            )
+        return name
+
+    def _write_workspace_name(self, name: str) -> None:
+        self.project_state_directory.mkdir(parents=True, exist_ok=True)
+        _atomic_write_text(self.workspace_name_path, f"{name}\n")
+
+    def _workspace_name(self) -> str:
+        identity = self._project_id()
+        if identity is None:
+            return _workspace_key(self.root)
+        recorded = self._recorded_workspace_name()
+        if recorded is not None:
+            return recorded
+
+        workspaces = self.home / "workspaces"
+        canonical = _workspace_key(self.root, identity)
+        previous = _path_derived_workspace_key(self.root, identity)
+        if (workspaces / previous).is_dir():
+            chosen = previous
+        elif (workspaces / canonical).is_dir():
+            chosen = canonical
+        else:
+            digest = hashlib.sha256(identity.encode()).hexdigest()[:10]
+            matches = sorted(
+                path.name
+                for path in workspaces.glob(f"*-{digest}")
+                if path.is_dir()
+            )
+            if len(matches) > 1:
+                raise WorkspaceError(
+                    "Several workspaces claim this project identity: "
+                    + ", ".join(matches)
+                    + f". Record the intended name in {self.workspace_name_path}."
+                )
+            chosen = matches[0] if matches else canonical
+        self._write_workspace_name(chosen)
+        return chosen
 
     @property
     def directory(self) -> Path:
-        return self.home / "workspaces" / _workspace_key(
-            self.root, self._project_id()
-        )
+        return self.home / "workspaces" / self._workspace_name()
 
     @property
     def state_path(self) -> Path:

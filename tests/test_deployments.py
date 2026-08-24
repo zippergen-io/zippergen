@@ -2,6 +2,7 @@ import json
 import os
 import plistlib
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -43,6 +44,53 @@ def test_deployment_profile_preserves_typed_inputs(tmp_path, monkeypatch):
     loaded = _load_deployment_profile("typed-inputs")
     assert loaded["inputs"] == {"coordinates": (1, [2, 3])}
     assert type(loaded["inputs"]["coordinates"]) is tuple
+
+
+def test_cli_resolves_a_deployment_through_its_retained_workspace_name(
+    tmp_path, monkeypatch
+):
+    import hashlib
+
+    from zippergen.serve import _resolved_deployment_name
+    from zippergen.workspace import Workspace
+
+    home = tmp_path / "home"
+    project = tmp_path / "call-intake"
+    project.mkdir()
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(home))
+    workspace = Workspace(project, home=home)
+    workspace.initialize_project(name="call-intake")
+    identity = workspace.project_id_path.read_text().strip()
+    workspace.workspace_name_path.unlink()
+    digest = hashlib.sha256(
+        f"{project.resolve()}\0{identity}".encode()
+    ).hexdigest()[:10]
+    old_name = f"call-intake-{digest}"
+    (home / "workspaces" / old_name).mkdir(parents=True)
+    profile = {
+        "schema_version": DEPLOYMENT_PROFILE_SCHEMA_VERSION,
+        "name": old_name,
+        "project_id": identity,
+        "cwd": str(project),
+        "source_cwd": str(project),
+        "store": str(home / "runs" / f"{old_name}.sqlite"),
+        "log": str(home / "logs" / f"{old_name}.log"),
+        "python": "/usr/bin/python3",
+        "inputs": {},
+    }
+    _write_deployment_artifacts(profile)
+
+    resolved = _resolved_deployment_name(SimpleNamespace(project=str(project)))
+
+    assert resolved == old_name
+    assert workspace.workspace_name_path.read_text().strip() == old_name
+
+    moved_project = tmp_path / "renamed"
+    project.rename(moved_project)
+
+    assert _resolved_deployment_name(
+        SimpleNamespace(project=str(moved_project))
+    ) == old_name
 
 
 def test_deployment_artifacts_are_private_under_a_permissive_umask(
