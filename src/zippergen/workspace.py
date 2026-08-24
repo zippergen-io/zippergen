@@ -660,29 +660,13 @@ class Workspace:
         two checkouts sharing one id would share one credential store. So it
         lives in an ignored local file rather than in versioned configuration,
         and nobody has to be told not to copy it.
-
-        This is a pure read. A project written before the identity moved still
-        carries it in the manifest, and is read from there until something
-        writes, at which point it is adopted into the local file.
         """
 
         try:
             local = self.project_id_path.read_text(encoding="utf-8").strip()
         except (FileNotFoundError, OSError, UnicodeDecodeError):
-            local = ""
-        if local:
-            return local
-        try:
-            raw = tomllib.loads(self.manifest_path.read_text(encoding="utf-8"))
-        except (
-            FileNotFoundError,
-            OSError,
-            UnicodeDecodeError,
-            tomllib.TOMLDecodeError,
-        ):
             return None
-        value = str(raw.get("project_id") or "").strip()
-        return value or None
+        return local or None
 
     def _write_project_identity(self, identity: str) -> str:
         self.project_state_directory.mkdir(parents=True, exist_ok=True)
@@ -691,33 +675,6 @@ class Workspace:
         _atomic_write_text(self.project_state_directory / ".gitignore", "*\n")
         _atomic_write_text(self.project_id_path, f"{identity}\n")
         return identity
-
-    def ensure_project_identity(self) -> str | None:
-        """Adopt an existing identity into local state. Never invent one.
-
-        Creating a project is the only thing that mints an identity. An
-        existing project that has none must keep none: the workspace key hashes
-        this value, so inventing one moves the project to a different workspace
-        directory and strands the credentials already saved there.
-
-        That also settles the case that looks identical from here -- a clone,
-        whose local state did not travel with it. It simply has no identity,
-        and its workspace is keyed by its own path, which is already different
-        from the checkout it came from.
-        """
-
-        if not self.manifest_path.is_file():
-            return None
-        existing = self._project_id()
-        if existing is None or self.project_id_path.is_file():
-            return existing
-        self._write_project_identity(existing)
-        # Adopting is a one-time move, so finish it: rewrite the manifest
-        # without the bookkeeping it used to carry. Leaving those keys behind
-        # keeps a file that still looks like it holds an identity nobody reads
-        # any more. This branch cannot run again once the local file exists.
-        self._write_project_configuration()
-        return existing
 
     @property
     def directory(self) -> Path:
@@ -1000,7 +957,6 @@ class Workspace:
         # identity that keys private state is local, generated, and ignored by
         # version control, so a clone cannot inherit another checkout's
         # credentials by copying a file.
-        self.ensure_project_identity()
         lines = [
             "# Visible, versionable ZipperGen project configuration.",
             f"schema_version = {PROJECT_SCHEMA_VERSION}",
@@ -1205,7 +1161,6 @@ class Workspace:
                 f"Not a ZipperGen project: {self.root}. Run 'zg init' in the "
                 "project directory first."
             )
-        self.ensure_project_identity()
         return self.project_manifest()
 
     @property

@@ -291,11 +291,11 @@ def test_moving_a_project_keeps_its_workspace_and_deployment_name(tmp_path):
 def test_a_manifest_without_a_project_id_keeps_its_workspace_after_a_write(
     tmp_path,
 ):
-    """A project older than project_id must not be moved by a config write.
+    """A project without a local identity must not move on a config write.
 
-    The workspace key hashes project_id, so writing anything in place of an
-    absent one, including the string "None", sends the project to a different
-    workspace directory and strands the credentials already saved there.
+    The workspace key hashes the local identity when one exists, so inventing
+    one sends the project to a different workspace directory and strands the
+    credentials already saved there.
 
     One write is enough to catch this. A placeholder is stable once stored, so
     comparing two later writes to each other would pass on the broken code.
