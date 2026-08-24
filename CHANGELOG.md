@@ -19,8 +19,10 @@ Highlights:
 - Gmail, Google Sheets, Telegram, and coding-assistant integrations.
 - External-action attempt, duration, and failure diagnostics, including honest
   incomplete attempts after process death.
-- Strict version gates for project, workspace, run, and deployment-profile
-  metadata; incompatible formats are refused rather than migrated.
+- Project manifests, workspace state, run records, deployment profiles, and the
+  durable store use strict version gates. A file written by a newer ZipperGen
+  is refused rather than rewritten. There are no migrations because there is
+  no earlier released format.
 
 Operational notes:
 

@@ -321,25 +321,23 @@ Three cases, kept distinct:
 - **A fresh start** — `zg deploy reset`, new store, new claim.
 - **An incompatible edit** — refused with a clear error naming `zg deploy reset`.
 
-### The deployment profile is not durable state
+### Version gates
 
 The store is never migrated: a control position only means something under the
 program that wrote it, so an incompatible edit is refused and you reset.
 
-A deployment's **profile** is the opposite case, and follows the opposite rule.
-It is configuration — where the store lives, which model to route to, what the
-deployment fields were answered with — so it is carried forward across schema
-changes rather than refused. `_load_deployment_profile` upgrades an older
-profile in memory; the next command that edits the deployment writes the
-current schema out. Reading a profile never rewrites it.
+The first release applies the same strict rule to the project manifest,
+workspace state, run records, and deployment profiles. There is no earlier
+released format to migrate. A record with an older internal prerelease schema
+is refused with replacement instructions. A record written by a newer
+ZipperGen is refused with an instruction to upgrade, and is never rewritten by
+the older reader. The unstamped project manifest is the one explicitly
+supported initial layout.
 
-Refusing an old profile would in fact have no way out. `zg deploy` is the
-command that writes a current profile, and it loads the existing one first, so
-the advice to redeploy could not be followed. `zg deploy remove` also has to
-load the profile before it can unregister and archive the deployment, so it is
-not a migration path either. A schema a given ZipperGen cannot carry forward —
-an unknown one, or one written by a newer version — is still refused, and says
-which it is.
+Future releases may add an explicit metadata migration for a format that was
+actually released. No empty migration table ships in anticipation of one: the
+version gate remains the extension point, and the release that changes a format
+must add its migration and an old-format fixture together.
 
 For a profile that can be read, `zg deploy remove` unregisters the service and
 moves the profile, durable store, and log together under
@@ -348,15 +346,9 @@ environment, source bundle, and service files because those are either private
 or rebuildable. The archive is no longer an active deployment: deploying again
 creates a new store. `remove --purge` keeps no archive at all.
 
-The same rule covers the project manifest, the workspace state, and a run
-record, all of which are configuration. One rule, applied in one place per file:
-
-> **Configuration is carried forward. Durable recovery state is refused, with an
-> error naming the command that replaces it.**
-
-`tests/test_upgrade_path.py` is the only place that runs current code over state
-an older ZipperGen wrote. Every other test builds its state fresh, which is why
-two upgrade failures reached a real deployment before it existed.
+`tests/test_upgrade_path.py` exercises every version gate with deliberately
+mismatched records. That test remains the place to add a real previous-release
+fixture when a future format changes.
 
 ### What the fingerprint covers, exactly
 
