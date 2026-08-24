@@ -1097,7 +1097,9 @@ zg config --unset send_mode
 \end{lstlisting}
 
 A value outside a field's declared \texttt{choices} is refused, and a name the
-workflow never declared is refused with the ones it did. The same answers can
+workflow never declared is refused with the ones it did. Setting and forgetting
+one field in a single command is refused rather than resolved silently, and
+\texttt{-{}-json} reports what was written rather than falling back to prose. The same answers can
 also be given while deploying, with \texttt{zg deploy -{}-set field=value},
 which is convenient when you are deploying anyway.
 

@@ -1797,3 +1797,91 @@ def optional_only() -> bool:
     output = capsys.readouterr().out
     assert "ready" in output
     assert "To finish, run:" not in output
+
+
+def _flags_project(tmp_path, monkeypatch):
+    from zippergen.workspace import Workspace
+
+    home = tmp_path / "home"
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(home))
+    project = tmp_path / "flags"
+    project.mkdir()
+    (project / "workflow.py").write_text('''
+from zippergen import Lifeline, pure, workflow
+from zippergen.deployment import DeploymentField, DeploymentSpec
+
+A = Lifeline("A")
+
+zippergen_deployment = DeploymentSpec(
+    description="under test",
+    fields=(
+        DeploymentField("mode", "Mode", target="option", default="draft"),
+        DeploymentField("other", "Other", target="option", default="x"),
+    ),
+)
+
+
+@pure
+def go() -> str:
+    return "ok"
+
+
+@workflow
+def flags() -> str:
+    A: out = go()
+    return out @ A
+''')
+    workspace = Workspace(project, home=home)
+    workspace.initialize_project(name="flags")
+    workspace.select_workflow("workflow.py:flags", cwd=project)
+    monkeypatch.chdir(project)
+    return workspace
+
+
+def test_setting_and_forgetting_one_field_at_once_is_refused(
+    tmp_path, monkeypatch
+):
+    """The output disagreed with the file: it stored the value, then said
+    "Forgot". Unsets were applied first and reported last."""
+
+    from zippergen.serve import main
+
+    workspace = _flags_project(tmp_path, monkeypatch)
+
+    with pytest.raises(SystemExit) as caught:
+        main(["config", "--set", "mode=live", "--unset", "mode"])
+
+    assert "both set and unset in one command: mode" in str(caught.value)
+    assert workspace.configuration_values() == {}, "nothing was written"
+
+
+def test_setting_one_field_while_forgetting_another_still_works(
+    tmp_path, monkeypatch
+):
+    from zippergen.serve import main
+
+    workspace = _flags_project(tmp_path, monkeypatch)
+    workspace.write_configuration_values({"mode": "live"})
+
+    assert main(["config", "--set", "other=y", "--unset", "mode"]) == 0
+
+    assert workspace.configuration_values() == {"other": "y"}
+
+
+def test_a_json_request_stays_json_when_it_writes(tmp_path, monkeypatch, capsys):
+    """`--json` printed human prose for a mutation, so a script could not read
+    what it had just done."""
+
+    import json
+
+    from zippergen.serve import main
+
+    workspace = _flags_project(tmp_path, monkeypatch)
+
+    assert main(["config", "--json", "--set", "mode=live"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["set"] == {"mode": "live"}
+    assert payload["unset"] == []
+    assert payload["configuration"]["mode"] == "live"
+    assert payload["manifest"] == str(workspace.manifest_path)

@@ -2040,6 +2040,7 @@ def _apply_configuration_answers(
     *,
     set_pairs: list[str],
     unset_names: list[str],
+    as_json: bool = False,
 ) -> bool:
     """Answer or forget declared configuration questions, and say what changed.
 
@@ -2061,6 +2062,16 @@ def _apply_configuration_answers(
     spec = deployment_spec_from_module(module)
     declared = {field.name: field for field in spec.fields}
     answers = dict(workspace.configuration_values())
+
+    # One field cannot be both answered and forgotten. Applying unsets first
+    # and reporting them last made the output disagree with the file.
+    both = sorted(set(_parse_inputs(set_pairs)) & set(unset_names))
+    if both:
+        raise SystemExit(
+            "These fields are both set and unset in one command: "
+            + ", ".join(both)
+            + ". Choose one."
+        )
 
     for name in unset_names:
         field = declared.get(name)
@@ -2089,6 +2100,23 @@ def _apply_configuration_answers(
         answers[name] = value
 
     workspace.write_configuration_values(answers)
+    if as_json:
+        # A machine-readable request stays machine-readable, whether it reads
+        # or writes.
+        print(json.dumps(
+            {
+                "manifest": str(workspace.manifest_path),
+                "set": {
+                    name: answers[name]
+                    for name in sorted(_parse_inputs(set_pairs))
+                },
+                "unset": sorted(set(unset_names)),
+                "configuration": answers,
+            },
+            indent=2,
+            default=str,
+        ))
+        return True
     for name in sorted(set(_parse_inputs(set_pairs))):
         print(f"Set {name} = {answers[name]!r}")
     for name in sorted(set(unset_names)):
@@ -2128,6 +2156,7 @@ def _configuration_command(args) -> int:
         workspace,
         set_pairs=getattr(args, "set", []),
         unset_names=getattr(args, "unset", []),
+        as_json=getattr(args, "json", False),
     )
     if changed:
         return 0
