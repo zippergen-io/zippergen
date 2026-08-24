@@ -1555,3 +1555,137 @@ def test_zg_config_shows_the_projects_answers(tmp_path, monkeypatch, capsys):
     assert "Configuration" in output
     assert "shown@example.org" in output
     assert "Address" in output, "the question is shown beside the answer"
+
+
+# A diagnostic that reports a hole without naming the command that fills it
+# leaves the reader to reconstruct a dozen setup commands from the manual.
+
+
+def test_check_names_the_command_for_each_unmet_requirement(
+    tmp_path, monkeypatch, capsys
+):
+    from zippergen.serve import main
+
+    from zippergen.workspace import Workspace
+
+    home = tmp_path / "home"
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(home))
+    project = tmp_path / "connectorless"
+    project.mkdir()
+    workspace = Workspace(project, home=home)
+    workspace.initialize_project(name="connectorless")
+    (workspace.root / "workflow.py").write_text('''
+from zippergen import (
+    ConnectorRequirement, Lifeline, effect, human, workflow,
+)
+
+Person = Lifeline("Person")
+
+zippergen_connectors = (
+    ConnectorRequirement(
+        name="alerts",
+        kind="telegram",
+        participant="Person",
+        capabilities=("send-message",),
+        access="read-write",
+        description="Where the question is asked.",
+    ),
+)
+
+
+@human(kind="confirm", instruction="Ready?", outputs=["ready: bool"])
+def ask(): ...
+
+
+@workflow
+def needs_a_connector() -> bool:
+    Person: ready = ask()
+    return ready @ Person
+''')
+    workspace.select_workflow("workflow.py:needs_a_connector", cwd=workspace.root)
+    monkeypatch.chdir(workspace.root)
+
+    main(["check"])
+
+    output = capsys.readouterr().out
+    assert "To finish, run:" in output
+    assert "connector configure" in output
+    assert "connector assign alerts" in output
+
+
+def test_a_ready_project_is_told_to_run_nothing(tmp_path, monkeypatch, capsys):
+    from zippergen.serve import main
+
+    workspace = _remembering_project(tmp_path, monkeypatch)
+    monkeypatch.chdir(workspace.root)
+
+    main(["check"])
+
+    assert "To finish, run:" not in capsys.readouterr().out
+
+
+# Answering a project's questions used to require building a deployment.
+
+
+def test_an_answer_can_be_given_without_deploying(tmp_path, monkeypatch, capsys):
+    from zippergen.serve import main
+
+    workspace = _remembering_project(tmp_path, monkeypatch)
+    monkeypatch.chdir(workspace.root)
+
+    assert main(["config", "--set", "recipient=alice@example.org"]) == 0
+
+    assert workspace.configuration_values()["recipient"] == "alice@example.org"
+    output = capsys.readouterr().out
+    assert "Set recipient" in output
+    assert str(workspace.manifest_path) in output
+
+
+def test_an_answer_can_be_forgotten(tmp_path, monkeypatch, capsys):
+    from zippergen.serve import main
+
+    workspace = _remembering_project(tmp_path, monkeypatch)
+    workspace.write_configuration_values({"recipient": "alice@example.org"})
+    monkeypatch.chdir(workspace.root)
+
+    assert main(["config", "--unset", "recipient"]) == 0
+
+    assert "recipient" not in workspace.configuration_values()
+
+
+def test_an_undeclared_field_is_refused_and_the_real_ones_named(
+    tmp_path, monkeypatch
+):
+    from zippergen.serve import main
+
+    workspace = _remembering_project(tmp_path, monkeypatch)
+    monkeypatch.chdir(workspace.root)
+
+    with pytest.raises(SystemExit) as caught:
+        main(["config", "--set", "nonsense=1"])
+
+    message = str(caught.value)
+    assert "declares no configuration field 'nonsense'" in message
+    assert "recipient" in message, "the available fields are named"
+
+
+def test_setting_a_value_outside_the_declared_choices_is_refused(
+    tmp_path, monkeypatch
+):
+    from zippergen.deployment import DeploymentField, DeploymentSpec
+    from zippergen.serve import _apply_configuration_answers, main
+
+    workspace = _remembering_project(tmp_path, monkeypatch)
+    (workspace.root / "workflow.py").write_text(
+        _REMEMBERING_WORKFLOW.replace(
+            'DeploymentField("rounds", "Rounds", target="input", default=3),',
+            'DeploymentField("rounds", "Rounds", target="input", default="a",\n'
+            '                        choices=("a", "b")),',
+        )
+    )
+    monkeypatch.chdir(workspace.root)
+
+    with pytest.raises(SystemExit) as caught:
+        main(["config", "--set", "rounds=z"])
+
+    assert "must be one of a, b" in str(caught.value)

@@ -1086,12 +1086,17 @@ tomorrow?'' has a single answer, and it is a file you can open, edit, and
 commit. Secrets are the one exception: they go to a private file and are never
 written into project configuration.
 
-Answer a question without being prompted, and change one later, with the same
-flag:
+Answer a question, or change one later, without building anything:
 
 \begin{lstlisting}[style=shell]
-zg deploy --set send_mode=send --yes
+zg config --set recipient=intake@example.org --set send_mode=send
+zg config --unset send_mode
 \end{lstlisting}
+
+A value outside a field's declared \texttt{choices} is refused, and a name the
+workflow never declared is refused with the ones it did. The same answers can
+also be given while deploying, with \texttt{zg deploy -{}-set field=value},
+which is convenient when you are deploying anyway.
 
 \paragraph{What \texttt{-{}-yes} uses.} \texttt{-{}-yes} answers every prompt
 without asking, which is only safe if you can see what it chose. So every

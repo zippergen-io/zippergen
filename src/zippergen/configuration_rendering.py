@@ -430,6 +430,29 @@ def render_configuration(
     )
 
 
+def _render_next_commands(renderer: TerminalRenderer, checks: list) -> None:
+    """List the commands that would satisfy what is not ready.
+
+    Reporting a hole without naming the command that fills it leaves a reader
+    to reconstruct a dozen setup commands, and their order, from the manual.
+    Only unsatisfied checks contribute, and each command is listed once.
+    """
+
+    commands: list[str] = []
+    for item in checks:
+        if not isinstance(item, dict) or item.get("status") == "ok":
+            continue
+        fix = str(item.get("fix") or "").strip()
+        if fix and fix not in commands:
+            commands.append(fix)
+    if not commands:
+        return
+    renderer.emit("")
+    renderer.emit("To finish, run:")
+    for command in commands:
+        renderer.emit(f"  {command}")
+
+
 def render_readiness(
     report: dict[str, object],
     renderer: TerminalRenderer,
@@ -515,6 +538,7 @@ def render_readiness(
             rows,
             empty="No checks.",
         )
+    _render_next_commands(renderer, checks)
 
 
 def render_model_configuration(

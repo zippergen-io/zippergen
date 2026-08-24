@@ -33,14 +33,21 @@ def _check(
     detail: str,
     *,
     scopes: Sequence[str] = (),
+    fix: str = "",
 ) -> Check:
-    """Describe one check and the configuration domains that depend on it."""
+    """Describe one check, what it depends on, and how to satisfy it.
+
+    A diagnostic that reports a hole without naming the command that fills it
+    leaves the reader to reconstruct the order of a dozen setup commands from
+    the manual. `fix` carries that command, so reading the check is enough.
+    """
 
     return {
         "status": status,
         "name": name,
         "detail": detail,
         "scopes": tuple(scopes),
+        "fix": fix,
     }
 
 
@@ -151,6 +158,11 @@ def _static_connector_checks(
                     if requirement.required
                     else "optional, not assigned",
                     scopes=("connector",),
+                    fix=(
+                        f"zippergen connector configure NAME CONNECTION "
+                        f"{requirement.kind}, then zippergen connector assign "
+                        f"{requirement.name} NAME"
+                    ),
                 )
             )
             continue
@@ -162,6 +174,10 @@ def _static_connector_checks(
                     f"connector requirement {requirement.name}",
                     f"configuration {configuration!r} does not exist",
                     scopes=("connector",),
+                    fix=(
+                        f"zippergen connector configure {configuration} "
+                        f"CONNECTION {requirement.kind}"
+                    ),
                 )
             )
         elif selected.get("kind") != requirement.kind:
@@ -309,6 +325,7 @@ def _site_checks(
                         "fail",
                         f"provider connection {connection}",
                         "configuration does not exist",
+                        fix=f"zippergen provider configure {connection} KIND",
                         scopes=connection_scopes,
                     )
                 )
@@ -347,6 +364,15 @@ def _site_checks(
                     if available
                     else f"{label} missing on this computer",
                     scopes=connection_scopes,
+                    fix=(
+                        ""
+                        if available
+                        else (
+                            f"zippergen provider authorize {connection}"
+                            if kind == "google"
+                            else f"zippergen provider set-credential {connection}"
+                        )
+                    ),
                 )
             )
             if kind == "google" and not google_support_reported:

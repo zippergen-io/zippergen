@@ -2035,6 +2035,73 @@ def _workflow_command(args) -> int:
     return 0
 
 
+def _apply_configuration_answers(
+    workspace: "Workspace",
+    *,
+    set_pairs: list[str],
+    unset_names: list[str],
+) -> bool:
+    """Answer or forget declared configuration questions, and say what changed.
+
+    Answering a project's questions used to require `zippergen deploy`, which
+    builds a bundle and a managed environment as a side effect of writing a
+    line to a file. Every other thing in the project manifest has a command
+    that writes it without building anything; this is that command.
+    """
+
+    if not set_pairs and not unset_names:
+        return False
+
+    from zippergen.deployment import deployment_spec_from_module
+
+    workflow_spec = workspace.resolve_workflow()
+    _workflow, module = load_workflow_spec(
+        workspace.absolute_spec(workflow_spec)
+    )
+    spec = deployment_spec_from_module(module)
+    declared = {field.name: field for field in spec.fields}
+    answers = dict(workspace.configuration_values())
+
+    for name in unset_names:
+        if name not in declared:
+            raise SystemExit(_unknown_configuration_field(name, declared))
+        answers.pop(name, None)
+
+    for pair in _parse_inputs(set_pairs).items():
+        name, value = pair
+        field = declared.get(name)
+        if field is None:
+            raise SystemExit(_unknown_configuration_field(name, declared))
+        if field.secret:
+            raise SystemExit(
+                f"Configuration field {name!r} is secret and is not stored in "
+                "the project. Provide it in the deployment environment."
+            )
+        if field.choices and str(value) not in field.choices:
+            raise SystemExit(
+                f"Configuration field {name!r} must be one of "
+                + ", ".join(field.choices)
+                + f"; got {value!r}."
+            )
+        answers[name] = value
+
+    workspace.write_configuration_values(answers)
+    for name in sorted(set(_parse_inputs(set_pairs))):
+        print(f"Set {name} = {answers[name]!r}")
+    for name in sorted(set(unset_names)):
+        print(f"Forgot {name}")
+    print(f"Stored in {workspace.manifest_path}")
+    return True
+
+
+def _unknown_configuration_field(name: str, declared: dict) -> str:
+    available = ", ".join(sorted(declared)) or "none"
+    return (
+        f"This workflow declares no configuration field {name!r}. "
+        f"Available: {available}."
+    )
+
+
 def _configuration_command(args) -> int:
     from zippergen.project_configuration import (
         configuration_report,
@@ -2044,6 +2111,13 @@ def _configuration_command(args) -> int:
     from zippergen.workspace import Workspace, WorkspaceError
 
     workspace = Workspace(getattr(args, "project", None))
+    changed = _apply_configuration_answers(
+        workspace,
+        set_pairs=getattr(args, "set", []),
+        unset_names=getattr(args, "unset", []),
+    )
+    if changed:
+        return 0
     try:
         report = configuration_report(
             workspace,
@@ -5551,6 +5625,23 @@ def _parse_cli_args(
     )
     config.add_argument("--json", action="store_true", help="Print JSON.")
     config.add_argument("--project", help="Project root.")
+    config.add_argument(
+        "--set",
+        action="append",
+        default=[],
+        metavar="field=value",
+        help=(
+            "Answer one of the workflow's declared configuration questions "
+            "and store it in zippergen.toml. Repeatable."
+        ),
+    )
+    config.add_argument(
+        "--unset",
+        action="append",
+        default=[],
+        metavar="field",
+        help="Forget one stored answer. Repeatable.",
+    )
 
     check = sub.add_parser(
         "check",
