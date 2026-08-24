@@ -89,7 +89,6 @@ from zippergen.deployment_profiles import (
     _load_deployment_profile,
     _load_deployment_secrets,
     _profile_environment,
-    _profile_field_value,
     _profile_mapping,
     _profile_options,
 )
@@ -3916,7 +3915,6 @@ def _display_default(value: object, *, secret: bool) -> str:
 # chose. `zg deploy --yes` in particular answers every prompt silently, so the
 # source is the only thing that makes it reviewable.
 FIELD_SOURCE_PROJECT = "zippergen.toml"
-FIELD_SOURCE_DEPLOYMENT = "this deployment"
 FIELD_SOURCE_ENVIRONMENT = "environment"
 FIELD_SOURCE_DEFAULT = "declared default"
 FIELD_SOURCE_OVERRIDE = "--set"
@@ -3961,12 +3959,6 @@ def _collect_deployment_fields(
             )
         current = None if field.secret else project_answers.get(field.name)
         origin = FIELD_SOURCE_PROJECT
-        if current is None:
-            # A deployment configured before answers were kept in the project
-            # still has them only in its profile. Adopting the value here, and
-            # writing it back below, migrates it the first time it is deployed.
-            current = _profile_field_value(profile, field, existing_secrets)
-            origin = FIELD_SOURCE_DEPLOYMENT
         if current is None and field.target == "env":
             current = os.environ.get(field.target_name)
             origin = FIELD_SOURCE_ENVIRONMENT
@@ -4071,14 +4063,16 @@ def _record_answers_in_project(
 
     if workspace is None:
         return
-    answers = {
-        field.name: values[field.name]
-        for field in spec.fields
-        if not field.secret
-        and values.get(field.name) is not None
-        and _field_enabled(field, dict(values))
-    }
-    if answers != workspace.configuration_values():
+    original_answers = workspace.configuration_values()
+    answers = dict(original_answers)
+    for field in spec.fields:
+        if (
+            not field.secret
+            and values.get(field.name) is not None
+            and _field_enabled(field, dict(values))
+        ):
+            answers[field.name] = values[field.name]
+    if answers != original_answers:
         workspace.write_configuration_values(answers)
 
 

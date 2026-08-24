@@ -262,7 +262,7 @@ def _configuration_freshness_check(
     differing = sorted(
         name
         for name in set(stored) | set(authored)
-        if str(stored.get(name)) != str(authored.get(name))
+        if stored.get(name) != authored.get(name)
     )
     if not differing:
         return _doctor_check(

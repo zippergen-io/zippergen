@@ -560,7 +560,9 @@ def test_a_world_readable_log_from_an_earlier_release_is_made_private(
 # what `deploy --yes` does silently.
 
 
-def _sources_for(profile, *, overrides=None, environ=None, monkeypatch=None):
+def _sources_for(
+    profile, *, overrides=None, environ=None, monkeypatch=None, workspace=None
+):
     from zippergen.deployment import DeploymentField, DeploymentSpec
     from zippergen.serve import _collect_deployment_fields
 
@@ -579,6 +581,7 @@ def _sources_for(profile, *, overrides=None, environ=None, monkeypatch=None):
         overrides=overrides or {},
         interactive=False,
         sources=sources,
+        workspace=workspace,
     )
     return values, sources
 
@@ -588,15 +591,16 @@ def test_each_field_reports_where_its_value_came_from(tmp_path, monkeypatch):
 
     monkeypatch.setenv("ZIPPERGEN_HOME", str(tmp_path / "home"))
     monkeypatch.setenv("token", "from-the-environment")
-    profile = {
-        "name": "sources",
-        "options": {"recipient": "kept@example.com"},
-    }
+    workspace = _workspace_at(tmp_path, monkeypatch)
+    workspace.write_configuration_values({"recipient": "kept@example.com"})
+    profile = {"name": "sources"}
 
-    values, sources = _sources_for(profile, overrides={"mode": "send"})
+    values, sources = _sources_for(
+        profile, overrides={"mode": "send"}, workspace=workspace
+    )
 
     assert values["recipient"] == "kept@example.com"
-    assert sources["recipient"] == serve.FIELD_SOURCE_DEPLOYMENT
+    assert sources["recipient"] == serve.FIELD_SOURCE_PROJECT
     assert values["mode"] == "send"
     assert sources["mode"] == serve.FIELD_SOURCE_OVERRIDE
     assert values["token"] == "from-the-environment"
@@ -730,41 +734,50 @@ def test_a_secret_is_never_written_to_the_visible_project_file(
     assert "sk-do-not-commit-me" not in workspace.manifest_path.read_text()
 
 
-def test_a_deployment_configured_before_this_rule_migrates_itself(
-    tmp_path, monkeypatch
-):
-    """An older deployment holds its answers only in its profile.
-
-    Adopting them on the next deploy, and writing them into the project, is the
-    whole migration: no separate command, and nothing for an operator to run.
-    """
-
-    from zippergen import serve
+def test_a_disabled_conditional_answer_remains_in_the_project(tmp_path, monkeypatch):
+    from zippergen.deployment import DeploymentField, DeploymentSpec
     from zippergen.serve import _collect_deployment_fields
 
     workspace = _workspace_at(tmp_path, monkeypatch)
-    assert workspace.configuration_values() == {}
-    legacy_profile = {
-        "name": "configured",
-        "options": {"recipient": "legacy@example.org", "rounds": 7},
-    }
-    sources: dict[str, str] = {}
+    spec = DeploymentSpec(
+        description="under test",
+        fields=(
+            DeploymentField("mode", "Mode", target="option"),
+            DeploymentField(
+                "api_host",
+                "API host",
+                target="option",
+                when="mode",
+                when_values=("live",),
+            ),
+        ),
+    )
+    workspace.write_configuration_values(
+        {"mode": "live", "api_host": "https://api.example.org"}
+    )
 
-    values, _ = _collect_deployment_fields(
-        _configuration_spec(),
-        legacy_profile,
-        overrides={},
+    _collect_deployment_fields(
+        spec,
+        {"name": "configured"},
+        overrides={"mode": "fake"},
         interactive=False,
-        sources=sources,
         workspace=workspace,
     )
 
-    assert values["recipient"] == "legacy@example.org"
-    assert sources["recipient"] == serve.FIELD_SOURCE_DEPLOYMENT
     assert workspace.configuration_values() == {
-        "recipient": "legacy@example.org",
-        "rounds": 7,
+        "mode": "fake",
+        "api_host": "https://api.example.org",
     }
+
+    values, _ = _collect_deployment_fields(
+        spec,
+        {"name": "configured"},
+        overrides={"mode": "live"},
+        interactive=False,
+        workspace=workspace,
+    )
+
+    assert values["api_host"] == "https://api.example.org"
 
 
 def test_an_edited_project_file_wins_over_the_published_profile(
@@ -831,6 +844,37 @@ def test_configuration_matching_the_project_reports_current(tmp_path, monkeypatc
 
     assert check["status"] == "ok"
     assert check["freshness"] == "current"
+
+
+def test_reordered_structured_answers_report_current(tmp_path, monkeypatch):
+    from zippergen.deployment import DeploymentField, DeploymentSpec
+    from zippergen.deployment_checks import _configuration_freshness_check
+
+    workspace, profile = _drift_profile(tmp_path, monkeypatch, deployed=9)
+    spec = DeploymentSpec(
+        description="under test",
+        fields=(DeploymentField("payload", "Payload", target="option"),),
+    )
+    profile["deployment_spec"] = spec.as_dict()
+    profile["options"] = {"payload": {"b": 2, "a": 1}}
+    workspace.write_configuration_values({"payload": {"a": 1, "b": 2}})
+
+    check = _configuration_freshness_check(profile, workspace.root)
+
+    assert check["status"] == "ok"
+    assert check["freshness"] == "current"
+
+
+def test_answers_with_different_types_report_stale(tmp_path, monkeypatch):
+    from zippergen.deployment_checks import _configuration_freshness_check
+
+    workspace, profile = _drift_profile(tmp_path, monkeypatch, deployed=1)
+    workspace.write_configuration_values({"rounds": "1"})
+
+    check = _configuration_freshness_check(profile, workspace.root)
+
+    assert check["status"] == "warn"
+    assert check["freshness"] == "stale"
 
 
 def test_an_answer_edited_but_not_deployed_is_reported(tmp_path, monkeypatch):

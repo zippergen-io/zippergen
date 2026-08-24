@@ -1104,8 +1104,10 @@ poll_secs   60                   declared default
 
 The order is fixed: \path{zippergen.toml} first, then the environment for an
 \texttt{env} field, then the declared default, and \texttt{-{}-set} overrides
-all of them. \texttt{zg deploy status} prints the same table for a deployment
-already running, together with the path of the profile derived from it.
+all of them. Each \texttt{zg deploy} prints this table before publishing the
+service. For an existing deployment, use \texttt{zg config} to inspect the
+values and \texttt{zg deploy status} to see whether the published answers are
+still current.
 
 Because the project file is where answers are authored and the profile is what
 is running, the two can differ the moment somebody edits one. So freshness is
@@ -1121,16 +1123,11 @@ WARN configuration: max_rounds: deployed 9, project 2. Redeploy to apply
 Secrets are never named there: they are not project configuration, so there is
 nothing to compare.
 
-A deployment configured before answers were kept in the project still holds
-them only in its profile. The next \texttt{zg deploy} adopts them and writes
-them into \path{zippergen.toml}; the table reports them as coming from
-\texttt{this deployment} that once, and from \path{zippergen.toml} thereafter.
-There is no migration command.
-
 \subsection{The five lifecycle operations}
 
-A project has exactly one deployment. Its identity comes from the project path
-and project id, which is why none of these commands takes a name.
+A project has exactly one deployment. Once initialized, its identity comes from
+the project id alone, which is why none of these commands takes a name and why
+moving the project preserves its deployment.
 
 Two independent questions decide which one you want: does it rebuild what will
 run, and does it keep the durable state? Nothing else separates them.
