@@ -1,4 +1,5 @@
 # Visible, versionable ZipperGen project configuration.
+schema_version = 2
 name = "zippergen"
 specification_file = "specification.md"
 workflow_entry = "examples/call_intake.py:call_intake"

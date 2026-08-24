@@ -19,7 +19,8 @@ Highlights:
 - Gmail, Google Sheets, Telegram, and coding-assistant integrations.
 - External-action attempt, duration, and failure diagnostics, including honest
   incomplete attempts after process death.
-- Upgrade paths for project, workspace, run, and deployment-profile metadata.
+- Strict version gates for project, workspace, run, and deployment-profile
+  metadata; incompatible formats are refused rather than migrated.
 
 Operational notes:
 

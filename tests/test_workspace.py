@@ -271,6 +271,23 @@ def test_reinitializing_the_same_path_creates_a_new_private_identity(tmp_path):
     assert second.directory != first_directory
 
 
+def test_moving_a_project_keeps_its_workspace_and_deployment_name(tmp_path):
+    home = tmp_path / "state"
+    original_root = tmp_path / "before"
+    original_root.mkdir()
+    original = Workspace(original_root, home=home)
+    original.initialize_project(name="movable")
+    workspace_directory = original.directory
+    deployment_name = original.directory.name
+
+    moved_root = tmp_path / "after"
+    original_root.rename(moved_root)
+    moved = Workspace(moved_root, home=home)
+
+    assert moved.directory == workspace_directory
+    assert moved.directory.name == deployment_name
+
+
 def test_a_manifest_without_a_project_id_keeps_its_workspace_after_a_write(
     tmp_path,
 ):

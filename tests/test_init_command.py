@@ -46,10 +46,10 @@ def test_the_manifest_is_valid_and_names_the_directory(tmp_path):
 
     assert manifest["name"] == "call-intake"
     assert manifest["specification_file"] == "specification.md"
-    # Everything in this file is a choice a person made. Identity and schema
-    # bookkeeping are not choices, and are not written here.
+    # Identity is local to this checkout. The format stamp is what stops an
+    # older writer from erasing choices it does not understand.
     assert "project_id" not in manifest
-    assert "schema_version" not in manifest
+    assert manifest["schema_version"] >= 1
 
 
 def test_an_explicit_name_overrides_the_directory(tmp_path):

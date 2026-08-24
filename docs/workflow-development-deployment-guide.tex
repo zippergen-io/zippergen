@@ -203,13 +203,15 @@ supplies their own keys.
 state. It must \emph{not} travel with a clone: two checkouts sharing one
 identity would share one credential store. So it is not in
 \path{zippergen.toml}, it is not committed, and the directory contains a
-\path{.gitignore} of its own so no project needs an entry for it. Clone the
-repository and the clone simply gets its own identity. Move the whole working
-directory and the identity moves with it. There is no rule to remember.
+\path{.gitignore} of its own so no project needs an entry for it. A clone has no
+identity and is keyed by its own path until it is initialized as a new project.
+Move the whole working directory and the existing identity moves with it. There
+is no rule to remember.
 
 \subsection{\texttt{zippergen.toml}}
 
 \begin{lstlisting}
+schema_version = 2
 name = "email-approval"
 specification_file = "specification.md"
 workflow_entry = "workflow.py:email_approval"
@@ -243,8 +245,9 @@ recipient = "intake@example.org"
 send_mode = "draft"
 \end{lstlisting}
 
-Everything here is a choice somebody made. There is no schema stamp and no
-generated identity, because neither is a choice.
+Everything here except \texttt{schema\_version} is a choice somebody made. The
+stamp lets an older ZipperGen refuse a file whose newer fields it would erase;
+the generated identity remains local because it must not travel with a clone.
 
 It is an ordinary file. Edit it in an editor, or let a coding agent edit it.
 Nothing in ZipperGen owns it. \texttt{workflow\_entry} is why most commands do

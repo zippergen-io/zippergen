@@ -26,6 +26,7 @@ from zippergen.deployment_profiles import (
 from zippergen.store import SCHEMA_VERSION, StoreSchemaError, open_store
 from zippergen.value_codec import encode_value
 from zippergen.workspace import (
+    PROJECT_SCHEMA_VERSION,
     RUN_SCHEMA_VERSION,
     WORKSPACE_SCHEMA_VERSION,
     Workspace,
@@ -38,13 +39,7 @@ from zippergen.workspace import (
 # ---------------------------------------------------------------------------
 
 
-def test_a_previous_deployment_profile_still_loads(tmp_path, monkeypatch):
-    """The failure that had no way out.
-
-    `zg deploy` writes a current profile, and loads the existing one first, so
-    refusing the old schema meant the advice to redeploy could not be followed.
-    `zg deploy remove` keeps the profile, so nothing else unblocked it either.
-    """
+def test_a_previous_deployment_profile_is_refused(tmp_path, monkeypatch):
 
     monkeypatch.setenv("ZIPPERGEN_HOME", str(tmp_path / "home"))
     directory = tmp_path / "home" / "deployments"
@@ -56,14 +51,8 @@ def test_a_previous_deployment_profile_still_loads(tmp_path, monkeypatch):
         "options": {"send_mode": "send"},
     }))
 
-    profile = _load_deployment_profile("old")
-
-    assert profile["schema_version"] == DEPLOYMENT_PROFILE_SCHEMA_VERSION
-    # The settings someone answered are the reason to migrate rather than start
-    # again, so they must survive with their types.
-    assert profile["options"] == {"send_mode": "send"}
-    assert profile["inputs"] == {"number": 3}
-    assert isinstance(profile["inputs"]["number"], int)
+    with pytest.raises(SystemExit, match="No migration is available"):
+        _load_deployment_profile("old")
 
 
 @pytest.mark.parametrize(
@@ -98,7 +87,7 @@ def test_an_unreadably_old_configuration_says_what_to_do(tmp_path, monkeypatch):
         _load_deployment_profile("ancient")
 
     message = str(caught.value)
-    assert "cannot carry forward" in message
+    assert "No migration is available" in message
     assert "zippergen deploy" in message
 
 
@@ -116,27 +105,45 @@ def test_a_newer_configuration_says_to_upgrade(tmp_path, monkeypatch):
         _load_deployment_profile("future")
 
 
-def test_a_project_manifest_carrying_an_old_schema_stamp_is_still_read(
-    tmp_path, monkeypatch
-):
-    """`zippergen.toml` holds choices a person made, and no bookkeeping.
-
-    Project configuration carries no schema stamp: an older file simply has one
-    key nobody reads. Refusing such a file would strand a colleague holding a
-    version-controlled project, and unlike a deployment there is no `reset` to
-    fall back on. If a breaking format change ever needs one, the stamp returns
-    then, and its absence identifies this layout.
-    """
+def test_an_unstamped_project_manifest_is_the_first_layout(tmp_path, monkeypatch):
+    """Absence identifies the initial format; a stated mismatch is refused."""
 
     monkeypatch.chdir(tmp_path)
     (tmp_path / "zippergen.toml").write_text(
-        "schema_version = 1\nname = 'p'\nspecification_file = 'spec.md'\n"
+        "name = 'p'\nspecification_file = 'spec.md'\n"
     )
 
     manifest = Workspace(tmp_path).project_manifest()
 
     assert manifest["name"] == "p"
     assert manifest["specification_file"] == "spec.md"
+
+
+def test_a_project_manifest_with_a_different_old_schema_is_refused(tmp_path):
+    (tmp_path / "zippergen.toml").write_text(
+        f"schema_version = {PROJECT_SCHEMA_VERSION - 1}\n"
+        "name = 'old'\nspecification_file = 'spec.md'\n"
+    )
+
+    with pytest.raises(WorkspaceError, match="No migration is available"):
+        Workspace(tmp_path).project_manifest()
+
+
+def test_a_project_manifest_written_by_a_newer_zippergen_is_refused(tmp_path):
+    path = tmp_path / "zippergen.toml"
+    original = (
+        f"schema_version = {PROJECT_SCHEMA_VERSION + 1}\n"
+        "name = 'future'\n"
+        "specification_file = 'spec.md'\n"
+        "future_root = 'keep me'\n"
+        "\n[future]\nmode = 'keep me too'\n"
+    )
+    path.write_text(original)
+
+    with pytest.raises(WorkspaceError, match="newer ZipperGen"):
+        Workspace(tmp_path).write_configuration_values({"answer": 42})
+
+    assert path.read_text() == original, "refusing must leave future data untouched"
 
 
 def test_a_project_manifest_identity_is_adopted_without_moving_the_workspace(
@@ -247,7 +254,8 @@ def test_adopting_an_identity_clears_the_bookkeeping_it_came_from(tmp_path):
     workspace.require_project()
 
     after = tomllib.loads((root / "zippergen.toml").read_text())
-    assert sorted(set(before) - set(after)) == ["project_id", "schema_version"]
+    assert sorted(set(before) - set(after)) == ["project_id"]
+    assert after["schema_version"] == PROJECT_SCHEMA_VERSION
     assert after["connectors"] == before["connectors"]
     assert after["providers"] == before["providers"]
     assert workspace.project_id_path.read_text().strip() == (

@@ -1,9 +1,9 @@
 """Project-aware state for the ZipperGen development experience.
 
-Visible project identity lives in ``zippergen.toml``: one canonical
+Visible project configuration lives in ``zippergen.toml``: one canonical
 ``specification.md``, one workflow entry point, and portable model, assistant,
 and connector configuration can be reviewed, versioned, and recovered from a
-clone.
+clone. The checkout identity is local and ignored by version control.
 Machine-specific workspace state and its separate owner-only secret file stay
 below ``ZIPPERGEN_HOME`` rather than in the user's Git checkout; the ordinary
 workspace record is non-secret. The CLI uses this module to manage durable
@@ -23,7 +23,7 @@ import time
 import tomllib
 import uuid
 from pathlib import Path
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from typing import Any
 
 from zippergen.value_codec import decode_value, encode_value
@@ -31,38 +31,18 @@ from zippergen.value_codec import decode_value, encode_value
 
 WORKSPACE_SCHEMA_VERSION = 2
 RUN_SCHEMA_VERSION = 2
+PROJECT_SCHEMA_VERSION = 2
 
 
-# Three files here carry a schema version: the project manifest, the workspace
-# state, and a run record. All three are configuration, not durable recovery
-# state, so the rule for them is the one the deployment profile follows: carry
-# an older one forward when its shape is known, and refuse clearly otherwise.
-#
-# Only the durable store refuses outright, and for a reason that does not apply
-# here: a control position means something only under the program that wrote it.
-# Copying that refusal onto configuration is what left an upgrade no way
-# through, twice.
-#
-# Each entry upgrades a record from its key version to the next one. Empty means
-# no older shape is known yet; the refusal below still says what to do.
-_WORKSPACE_UPGRADES: dict[int, Callable[[dict], None]] = {}
-_RUN_UPGRADES: dict[int, Callable[[dict], None]] = {}
-
-
-def _migrate_record(
+def _require_record_schema(
     record: dict,
     *,
     current: int,
-    upgrades: dict[int, Callable[[dict], None]],
     what: str,
     path: Path,
     recreate: str,
 ) -> None:
-    """Bring one stored record up to the current schema, in memory.
-
-    Nothing is written back: reading should not rewrite. The next command that
-    edits the record writes the current schema out.
-    """
+    """Refuse a record whose format this version does not understand."""
 
     version = record.get("schema_version")
     if version == current:
@@ -78,16 +58,10 @@ def _migrate_record(
             f"reads {current}. It was written by a newer ZipperGen; upgrade "
             "this one to use it."
         )
-    while version < current:
-        upgrade = upgrades.get(version)
-        if upgrade is None:
-            raise WorkspaceError(
-                f"The {what} in {path} uses schema {version}, which this "
-                f"ZipperGen cannot carry forward. {recreate}"
-            )
-        upgrade(record)
-        version += 1
-        record["schema_version"] = version
+    raise WorkspaceError(
+        f"The {what} in {path} uses schema {version}, but this ZipperGen reads "
+        f"{current}. No migration is available. {recreate}"
+    )
 PROJECT_MANIFEST_NAME = "zippergen.toml"
 SPECIFICATION_FILE_NAME = "specification.md"
 _IGNORED_DISCOVERY_PARTS = {
@@ -404,8 +378,14 @@ PROJECT_ID_FILE = "project-id"
 
 
 def _workspace_key(root: Path, project_id: str | None = None) -> str:
-    identity = f"{root}\0{project_id or ''}"
-    digest = hashlib.sha256(identity.encode()).hexdigest()[:10]
+    if project_id:
+        # The identity is local to this checkout, so unlike the old versioned
+        # identity it cannot be shared accidentally by two clones.  It can
+        # therefore be the whole key: moving the checkout keeps its private
+        # state and the deployment name derived from that state directory.
+        digest = hashlib.sha256(project_id.encode()).hexdigest()[:10]
+        return f"project-{digest}"
+    digest = hashlib.sha256(str(root).encode()).hexdigest()[:10]
     return f"{_slug(root.name)}-{digest}"
 
 
@@ -778,6 +758,7 @@ class Workspace:
 
         if not self.manifest_path.exists():
             return {
+                "schema_version": PROJECT_SCHEMA_VERSION,
                 "project_id": None,
                 "name": self.root.name,
                 "specification_file": SPECIFICATION_FILE_NAME,
@@ -818,10 +799,25 @@ class Workspace:
             raise WorkspaceError(
                 f"Could not read project manifest {self.manifest_path}: {exc}"
             ) from exc
-        # No schema stamp is written into project configuration: everything in
-        # that file is a choice a person made. If a future change to the format
-        # is ever breaking, the stamp returns then and its absence means this,
-        # the original layout.
+        version = manifest.get("schema_version")
+        if version is not None:
+            if not isinstance(version, int) or isinstance(version, bool):
+                raise WorkspaceError(
+                    f"The project manifest in {self.manifest_path} has an invalid "
+                    f"schema version ({version!r})."
+                )
+            if version > PROJECT_SCHEMA_VERSION:
+                raise WorkspaceError(
+                    f"The project manifest in {self.manifest_path} uses schema "
+                    f"{version}, but this ZipperGen reads {PROJECT_SCHEMA_VERSION}. "
+                    "It was written by a newer ZipperGen; upgrade this one to use it."
+                )
+            if version < PROJECT_SCHEMA_VERSION:
+                raise WorkspaceError(
+                    f"The project manifest in {self.manifest_path} uses schema "
+                    f"{version}, but this ZipperGen reads {PROJECT_SCHEMA_VERSION}. "
+                    "No migration is available."
+                )
         name = str(manifest.get("name") or "").strip()
         if not name:
             raise WorkspaceError(f"Project name is empty in {self.manifest_path}.")
@@ -941,6 +937,7 @@ class Workspace:
             raise WorkspaceError("Project configuration must be a table.")
         configuration = _scalar_values(raw_configuration, field="configuration")
         return {
+            "schema_version": PROJECT_SCHEMA_VERSION,
             "project_id": self._project_id(),
             "name": name,
             "specification_file": specification,
@@ -1006,6 +1003,7 @@ class Workspace:
         self.ensure_project_identity()
         lines = [
             "# Visible, versionable ZipperGen project configuration.",
+            f"schema_version = {PROJECT_SCHEMA_VERSION}",
         ]
         lines.extend([
             f"name = {_toml_string(manifest['name'])}",
@@ -1183,6 +1181,7 @@ class Workspace:
             )
         content = (
             "# Visible, versionable ZipperGen project configuration.\n"
+            f"schema_version = {PROJECT_SCHEMA_VERSION}\n"
             f"name = {_toml_string(project_name)}\n"
             f"specification_file = {_toml_string(specification_file)}\n"
         )
@@ -1307,10 +1306,9 @@ class Workspace:
         if not self.state_path.exists():
             return self.default_state()
         state = _read_json(self.state_path)
-        _migrate_record(
+        _require_record_schema(
             state,
             current=WORKSPACE_SCHEMA_VERSION,
-            upgrades=_WORKSPACE_UPGRADES,
             what="workspace state",
             path=self.state_path,
             recreate=(
@@ -2228,10 +2226,9 @@ class Workspace:
 
     def load_run(self, run_id: str) -> dict[str, Any]:
         record = _read_json(self.run_path(run_id))
-        _migrate_record(
+        _require_record_schema(
             record,
             current=RUN_SCHEMA_VERSION,
-            upgrades=_RUN_UPGRADES,
             what="run record",
             path=self.run_path(run_id),
             recreate="Start a new run with 'zippergen run --durable'.",

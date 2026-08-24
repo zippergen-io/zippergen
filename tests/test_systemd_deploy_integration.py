@@ -18,7 +18,6 @@ import sys
 import pytest
 
 from zippergen.deployment_platform import slug
-from zippergen.deployment_profiles import DEPLOYMENT_PROFILE_SCHEMA_VERSION
 from zippergen.store import SCHEMA_VERSION
 from zippergen.workspace import Workspace
 
@@ -94,8 +93,6 @@ def test_real_systemd_stop_upgrade_reset_start(tmp_path):
 
         profile_path = home / "deployments" / f"{slug(name)}.json"
         profile = json.loads(profile_path.read_text())
-        profile["schema_version"] = DEPLOYMENT_PROFILE_SCHEMA_VERSION - 1
-        profile_path.write_text(json.dumps(profile))
         store = Path(profile["store"])
         connection = sqlite3.connect(store)
         connection.execute(
