@@ -207,7 +207,9 @@ contains a \path{.gitignore} of its own so no project needs an entry for it. A
 clone has no identity and is keyed by its own path until it is initialized as a
 new project. Move the whole working directory and both local values move with
 it, preserving the workspace and deployment address. There is no rule to
-remember.
+remember. The private workspace name keeps the directory prefix from when it
+was first recorded; after a move that prefix is historical, not stale state to
+delete.
 
 \subsection{\texttt{zippergen.toml}}
 

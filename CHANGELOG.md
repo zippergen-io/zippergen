@@ -29,6 +29,8 @@ Operational notes:
   state and leaves the deployment stopped.
 - Existing workspace and deployment addresses are retained across the switch
   to identity-based lookup; new names keep a readable project-directory prefix.
+  A legacy project moved before its address is recorded now refuses with a
+  recovery instruction instead of silently selecting an empty workspace.
 - `zg deploy remove` archives the profile, store, and log by default, deletes
   credentials and rebuildable artifacts, and unregisters the service.
 - Trace retention remains a per-store row budget, defaulting to 10,000 rows.

@@ -732,7 +732,14 @@ class Workspace:
                     + ", ".join(matches)
                     + f". Record the intended name in {self.workspace_name_path}."
                 )
-            chosen = matches[0] if matches else canonical
+            if not matches:
+                raise WorkspaceError(
+                    "No workspace was found for this project identity. If you "
+                    "moved this project before ZipperGen recorded its stable "
+                    "workspace name, record the existing workspace directory "
+                    f"name in {self.workspace_name_path}, then retry."
+                )
+            chosen = matches[0]
         self._write_workspace_name(chosen)
         return chosen
 
@@ -1329,15 +1336,24 @@ class Workspace:
                 "rebuilt on the next command."
             ),
         )
-        if Path(str(state.get("project_root"))).resolve() != self.root:
+        root_moved = Path(str(state.get("project_root"))).resolve() != self.root
+        if root_moved and not (
+            self._project_id()
+            and self._recorded_workspace_name() == self.directory.name
+        ):
             raise WorkspaceError(
                 f"Workspace {self.state_path} belongs to another project root."
             )
+        if root_moved:
+            state["project_root"] = str(self.root)
         # Workspace state is intentionally limited to site facts. Project
         # identity, configurations, and assignments live in zippergen.toml.
         state.setdefault("model_configuration_overrides", {})
         state.setdefault("provider_connection_overrides", {})
         state.setdefault(Workspace._RENAME_MARKER, None)
+        if root_moved:
+            state["updated_at"] = _timestamp()
+            _atomic_write_json(self.state_path, state)
         return state
 
     def update(self, **changes: object) -> dict[str, Any]:

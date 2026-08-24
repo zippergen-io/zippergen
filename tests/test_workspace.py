@@ -281,6 +281,7 @@ def test_moving_a_project_keeps_its_workspace_and_deployment_name(tmp_path):
     workspace_directory = original.directory
     deployment_name = original.directory.name
     assert deployment_name.startswith("before-")
+    original.update(current_run="run-before-move")
 
     moved_root = tmp_path / "after"
     original_root.rename(moved_root)
@@ -288,6 +289,8 @@ def test_moving_a_project_keeps_its_workspace_and_deployment_name(tmp_path):
 
     assert moved.directory == workspace_directory
     assert moved.directory.name == deployment_name
+    assert moved.load()["current_run"] == "run-before-move"
+    assert moved.load()["project_root"] == str(moved_root)
 
 
 def test_an_existing_path_derived_workspace_keeps_its_address_after_upgrade(
@@ -334,6 +337,39 @@ def test_identity_digest_recovers_a_workspace_after_its_prefix_changes(tmp_path)
 
     assert moved.directory == existing
     assert moved.workspace_name_path.read_text().strip() == existing.name
+
+
+def test_a_legacy_project_moved_before_lookup_refuses_an_empty_workspace(tmp_path):
+    home = tmp_path / "state"
+    original_root = tmp_path / "legacy"
+    original_root.mkdir()
+    original = Workspace(original_root, home=home)
+    original.initialize_project(name="legacy")
+    identity = original.project_id_path.read_text().strip()
+    original.workspace_name_path.unlink()
+    legacy_digest = hashlib.sha256(
+        f"{original_root.resolve()}\0{identity}".encode()
+    ).hexdigest()[:10]
+    legacy_name = f"legacy-{legacy_digest}"
+    legacy_directory = home / "workspaces" / legacy_name
+    legacy_directory.mkdir(parents=True)
+
+    moved_root = tmp_path / "moved"
+    original_root.rename(moved_root)
+    moved = Workspace(moved_root, home=home)
+
+    with pytest.raises(WorkspaceError) as raised:
+        _ = moved.directory
+
+    message = str(raised.value)
+    assert "No workspace was found for this project identity" in message
+    assert str(moved.workspace_name_path) in message
+    assert not moved.workspace_name_path.exists()
+    identity_digest = hashlib.sha256(identity.encode()).hexdigest()[:10]
+    assert not (home / "workspaces" / f"moved-{identity_digest}").exists()
+
+    moved.workspace_name_path.write_text(f"{legacy_name}\n")
+    assert moved.directory == legacy_directory
 
 
 def test_a_manifest_without_a_project_id_keeps_its_workspace_after_a_write(
