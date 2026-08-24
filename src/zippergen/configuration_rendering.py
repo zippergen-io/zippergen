@@ -227,13 +227,24 @@ def _idle_release_display(item: Mapping[str, object]) -> str:
 
 
 def _effective_model_display(item: Mapping[str, object]) -> str:
-    temperature = item.get("temperature")
-    suffix = (
+    settings = item.get("settings")
+    values = dict(settings) if isinstance(settings, Mapping) else {}
+    temperature = values.get("temperature", item.get("temperature"))
+    parts = [
         f"T={float(str(temperature)):g}"
         if temperature is not None
         else "T=provider"
-    )
-    return f"{item.get('effective')} · {suffix}"
+    ]
+    for name, label in (
+        ("max_tokens", "max"),
+        ("timeout", "timeout"),
+        ("idle_timeout", "idle"),
+    ):
+        value = values.get(name)
+        if value is not None:
+            suffix = "s" if name in {"timeout", "idle_timeout"} else ""
+            parts.append(f"{label}={float(str(value)):g}{suffix}")
+    return f"{item.get('effective')} · " + " · ".join(parts)
 
 
 def render_configuration(
@@ -284,6 +295,8 @@ def render_configuration(
             item.get("connection") or "-",
             item.get("model") or "-",
             item.get("temperature") if item.get("temperature") is not None else "default",
+            item.get("max_tokens") if item.get("max_tokens") is not None else "default",
+            item.get("timeout") if item.get("timeout") is not None else "default",
             _idle_release_display(item),
             item.get("source"),
         )
@@ -293,7 +306,16 @@ def render_configuration(
     _render_columns_or_empty(
         renderer,
         "Configurations",
-        ("Name", "Connection", "Model", "Temperature", "Idle release", "Source"),
+        (
+            "Name",
+            "Connection",
+            "Model",
+            "Temperature",
+            "Max tokens",
+            "Timeout",
+            "Idle release",
+            "Source",
+        ),
         model_configuration_rows,
         empty="No configurations.",
     )
@@ -512,6 +534,8 @@ def render_model_configuration(
             item.get("connection") or "-",
             item.get("model") or "-",
             item.get("temperature") if item.get("temperature") is not None else "default",
+            item.get("max_tokens") if item.get("max_tokens") is not None else "default",
+            item.get("timeout") if item.get("timeout") is not None else "default",
             _idle_release_display(item),
             item.get("source"),
         )
@@ -521,7 +545,16 @@ def render_model_configuration(
     _render_columns_or_empty(
         renderer,
         "Configurations",
-        ("Name", "Connection", "Model", "Temperature", "Idle release", "Source"),
+        (
+            "Name",
+            "Connection",
+            "Model",
+            "Temperature",
+            "Max tokens",
+            "Timeout",
+            "Idle release",
+            "Source",
+        ),
         configuration_rows,
         empty="No configurations.",
     )

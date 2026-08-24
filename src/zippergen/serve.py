@@ -242,14 +242,9 @@ def _parse_options(pairs: list[str]) -> dict:
 def _profile_model_settings(
     profile: Mapping[str, object],
 ) -> dict[str, "ModelSettings"]:
-    """Read model settings from a deployment profile, old shape or new.
+    """Read the unified model settings from a deployment profile."""
 
-    A profile published before settings became one value carries a dictionary
-    per setting. Reading both here is the whole migration: the next deploy
-    republishes it in the current shape.
-    """
-
-    from zippergen.models import ModelSettings, model_settings_from_mapping
+    from zippergen.models import model_settings_from_mapping
 
     stored = profile.get("llm_settings")
     if isinstance(stored, Mapping):
@@ -257,21 +252,7 @@ def _profile_model_settings(
             str(target): model_settings_from_mapping(value, subject=str(target))
             for target, value in stored.items()
         }
-    settings: dict[str, ModelSettings] = {}
-    for key, name in (
-        ("llm_idle_timeouts", "idle_timeout"),
-        ("llm_temperatures", "temperature"),
-    ):
-        raw = profile.get(key)
-        if not isinstance(raw, Mapping):
-            continue
-        for target, value in raw.items():
-            target = str(target)
-            merged = settings.get(target, ModelSettings())
-            settings[target] = merged.merged_with(
-                model_settings_from_mapping({name: value}, subject=target)
-            )
-    return settings
+    return {}
 
 
 def _profile_idle_timeouts(profile: Mapping[str, object]) -> dict[str, float]:

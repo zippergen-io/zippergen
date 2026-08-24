@@ -490,11 +490,7 @@ def _record_inputs_in_project(
 def _recorded_model_settings(
     record: Mapping[str, object],
 ) -> dict[str, "ModelSettings"]:
-    """Read model settings from a run record, old shape or new.
-
-    Runs recorded before settings became one value carry a dictionary per
-    setting. Reading both here is all the migration a resumed run needs.
-    """
+    """Read the unified model settings from a run record."""
 
     from zippergen.models import model_settings_from_mapping
 
@@ -504,21 +500,7 @@ def _recorded_model_settings(
             str(target): model_settings_from_mapping(value, subject=str(target))
             for target, value in stored.items()
         }
-    settings: dict[str, ModelSettings] = {}
-    for key, name in (
-        ("llm_idle_timeouts", "idle_timeout"),
-        ("llm_temperatures", "temperature"),
-    ):
-        raw = record.get(key)
-        if not isinstance(raw, Mapping):
-            continue
-        for target, value in raw.items():
-            target = str(target)
-            merged = settings.get(target, ModelSettings())
-            settings[target] = merged.merged_with(
-                model_settings_from_mapping({name: value}, subject=target)
-            )
-    return settings
+    return {}
 
 
 def _load_and_validate(workspace: Workspace, stored_spec: str):

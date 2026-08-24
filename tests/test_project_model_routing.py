@@ -226,33 +226,3 @@ def test_model_settings_are_configured_beside_the_model(tmp_path, monkeypatch):
     assert configured["temperature"] == 0.2
     assert configured["max_tokens"] == 4096
     assert configured["timeout"] == 120.0
-
-
-def test_a_run_record_written_before_settings_were_one_value_still_resumes(
-    tmp_path,
-):
-    """Old runs carry a dictionary per setting; reading both is the migration."""
-
-    from zippergen.durable_runs import _recorded_model_settings
-
-    recovered = _recorded_model_settings({
-        "llm_temperatures": {"Writer": 0.4},
-        "llm_idle_timeouts": {"Writer": 300, "Reviewer": 0},
-    })
-
-    assert recovered["Writer"].temperature == 0.4
-    assert recovered["Writer"].idle_timeout == 300
-    assert recovered["Reviewer"].idle_timeout == 0
-    assert recovered["Reviewer"].temperature is None
-
-
-def test_a_profile_written_before_settings_were_one_value_still_deploys():
-    from zippergen.serve import _profile_model_settings
-
-    recovered = _profile_model_settings({
-        "llm_temperatures": {"Writer": 0.4},
-        "llm_idle_timeouts": {"Writer": 300},
-    })
-
-    assert recovered["Writer"].temperature == 0.4
-    assert recovered["Writer"].idle_timeout == 300

@@ -502,6 +502,54 @@ def test_config_json_resolves_assignments_without_exposing_secrets(
     assert "must-not-be-printed" not in json.dumps(report)
 
 
+def test_config_reports_every_effective_model_setting(project, capsys):
+    _root, workspace = project
+    workspace.save_model_configuration(
+        "writer",
+        {
+            "connection": "local-main",
+            "model": "qwen3:14b",
+            "temperature": "0.4",
+            "max_tokens": "4096",
+            "timeout": "120",
+            "idle_timeout": "30",
+        },
+    )
+    workspace.save_model_assignment_profile(
+        "workflow.py:email_approval",
+        default="mock",
+        lifelines={"Writer": "writer"},
+    )
+
+    assert main(["config", "--json"]) == 0
+    report = json.loads(capsys.readouterr().out)
+    writer = next(
+        item
+        for item in report["effective_routing"]
+        if item["participant"] == "Writer" and item["kind"] == "model"
+    )
+
+    assert writer["settings"] == {
+        "temperature": 0.4,
+        "max_tokens": 4096,
+        "timeout": 120.0,
+        "idle_timeout": 30.0,
+    }
+    configured = next(
+        item for item in report["models"]["configurations"]
+        if item["name"] == "writer"
+    )
+    assert configured["max_tokens"] == "4096"
+    assert configured["timeout"] == "120"
+
+    assert main(["model"]) == 0
+    output = capsys.readouterr().out
+    assert "Max tokens" in output
+    assert "Timeout" in output
+    assert "4096" in output
+    assert "120" in output
+
+
 def test_config_check_reports_missing_site_credentials(project, capsys):
     main(["model", "configure", "writer", "openai-main", "gpt-4o-mini"])
     main(["model", "assign", "Writer", "writer"])

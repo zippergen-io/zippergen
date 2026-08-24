@@ -83,10 +83,14 @@ def _effective_routing(
             if isinstance(raw_model_overrides, Mapping)
             else {}
         )
-        raw_temperatures = resolved_models.get("temperatures") or {}
-        model_temperatures = (
-            {str(key): float(value) for key, value in raw_temperatures.items()}
-            if isinstance(raw_temperatures, Mapping)
+        raw_model_settings = resolved_models.get("settings") or {}
+        model_settings = (
+            {
+                str(key): dict(value)
+                for key, value in raw_model_settings.items()
+                if isinstance(value, Mapping)
+            }
+            if isinstance(raw_model_settings, Mapping)
             else {}
         )
         raw_model_actions = model_profile.get("actions") or {}
@@ -138,8 +142,14 @@ def _effective_routing(
                     if isinstance(definition, Mapping)
                     else None
                 )
-                configured_temperature = model_temperatures.get(
-                    target, model_temperatures.get(participant)
+                configured_settings = model_settings.get(
+                    target, model_settings.get(participant, {})
+                )
+                raw_configured_temperature = configured_settings.get("temperature")
+                configured_temperature = (
+                    float(raw_configured_temperature)
+                    if raw_configured_temperature is not None
+                    else None
                 )
                 accepts_temperature = model_accepts_temperature(selected)
                 effective_temperature = (
@@ -200,6 +210,11 @@ def _effective_routing(
                                 scopes=("model",),
                             )
                         )
+                effective_settings = dict(configured_settings)
+                if effective_temperature is not None:
+                    effective_settings["temperature"] = effective_temperature
+                else:
+                    effective_settings.pop("temperature", None)
                 effective_routing.append(
                     {
                         "participant": participant,
@@ -207,6 +222,7 @@ def _effective_routing(
                         "kind": "model",
                         "configuration": configuration,
                         "effective": selected,
+                        "settings": effective_settings,
                         "temperature": effective_temperature,
                         "temperature_source": (
                             "action"
@@ -411,6 +427,8 @@ def configuration_report(
             "spec": values.get("spec", ""),
             "idle_timeout": values.get("idle_timeout"),
             "temperature": values.get("temperature"),
+            "max_tokens": values.get("max_tokens"),
+            "timeout": values.get("timeout"),
             "source": _project_model_source(manifest, name, values),
         }
         for name, values in sorted(model_configurations.items())
