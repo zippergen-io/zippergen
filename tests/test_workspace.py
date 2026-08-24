@@ -591,3 +591,67 @@ def test_project_configuration_survives_a_fresh_clone(
     assert "idle_timeout" not in manifest_text
     assert "http://gpu:11434/v1" not in manifest_text
     assert "private" not in manifest_text
+
+
+def test_an_ambiguous_identity_refuses_even_when_one_claimant_is_canonical(
+    tmp_path,
+):
+    """Ambiguity is decided before any preference is applied.
+
+    Checking the canonical name first let one claimant win silently, which is
+    the outcome this refusal exists to prevent.
+    """
+
+    import hashlib
+
+    home = tmp_path / "home"
+    root = tmp_path / "mailbox"
+    root.mkdir()
+    workspace = Workspace(root, home=home)
+    workspace.initialize_project(name="mailbox")
+    identity = workspace._project_id()
+    assert identity is not None
+    digest = hashlib.sha256(identity.encode()).hexdigest()[:10]
+    (home / "workspaces" / f"mailbox-{digest}").mkdir(parents=True, exist_ok=True)
+    (home / "workspaces" / f"project-{digest}").mkdir(parents=True, exist_ok=True)
+    workspace.workspace_name_path.unlink(missing_ok=True)
+
+    with pytest.raises(WorkspaceError) as caught:
+        Workspace(root, home=home).directory
+
+    message = str(caught.value)
+    assert f"mailbox-{digest}" in message and f"project-{digest}" in message
+
+
+def test_an_unreadable_identity_is_not_treated_as_an_absent_one(tmp_path):
+    """A clone legitimately has none; a corrupt file is a different thing.
+
+    Treating them alike sent credential lookup to a different workspace with
+    no indication that anything had happened.
+    """
+
+    home = tmp_path / "home"
+    root = tmp_path / "mailbox"
+    root.mkdir()
+    workspace = Workspace(root, home=home)
+    workspace.initialize_project(name="mailbox")
+    workspace.workspace_name_path.unlink(missing_ok=True)
+    workspace.project_id_path.write_bytes(b"\xff\xfe not utf-8")
+
+    with pytest.raises(WorkspaceError) as caught:
+        Workspace(root, home=home).directory
+
+    assert "identity file cannot be read" in str(caught.value)
+
+
+def test_a_clone_without_any_identity_still_resolves(tmp_path):
+    """The absent case must keep working: it is how every clone starts."""
+
+    home = tmp_path / "home"
+    root = tmp_path / "cloned"
+    root.mkdir()
+    (root / "zippergen.toml").write_text(
+        'schema_version = 2\nname = "cloned"\nspecification_file = "spec.md"\n'
+    )
+
+    assert Workspace(root, home=home).directory.name.startswith("cloned-")

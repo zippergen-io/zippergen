@@ -243,10 +243,105 @@ def test_a_store_from_a_newer_zippergen_is_refused_and_names_reset(tmp_path):
 
     message = str(caught.value)
     assert f"schema {SCHEMA_VERSION + 1}" in message
-    assert "reset" in message
+    # A newer store is upgraded to, not reset: resetting would destroy state a
+    # newer ZipperGen wrote. "Reset" remains the instruction for a store this
+    # version cannot read for any other reason.
+    assert "upgrade this one" in message
+    assert "not modified" in message
 
 
 def test_a_current_store_still_opens(tmp_path):
     path = tmp_path / "now.sqlite"
     open_store(str(path)).close()
     open_store(str(path)).close()
+
+
+def test_a_future_store_is_refused_without_being_touched(tmp_path):
+    """Looking at a store must not change it.
+
+    Switching to WAL is a persistent file property, so an installation that
+    merely opened a store written by a newer ZipperGen left it permanently
+    altered. An installation cannot acquire that restraint later; only the
+    version that will one day be the old one can ship with it.
+    """
+
+    import hashlib
+    import sqlite3
+
+    from zippergen.store import SCHEMA_VERSION, StoreSchemaError, open_store
+
+    store = tmp_path / "future.sqlite"
+    open_store(str(store)).close()
+    connection = sqlite3.connect(store)
+    connection.execute("PRAGMA journal_mode=DELETE")
+    connection.execute(
+        "UPDATE store_meta SET value=? WHERE key='schema_version'",
+        (str(SCHEMA_VERSION + 1),),
+    )
+    connection.commit()
+    connection.close()
+    for suffix in ("-wal", "-shm"):
+        (tmp_path / f"future.sqlite{suffix}").unlink(missing_ok=True)
+
+    before = hashlib.sha256(store.read_bytes()).hexdigest()
+
+    with pytest.raises(StoreSchemaError) as caught:
+        open_store(str(store))
+
+    assert "newer ZipperGen" in str(caught.value)
+    assert hashlib.sha256(store.read_bytes()).hexdigest() == before
+    assert (
+        sqlite3.connect(store).execute("PRAGMA journal_mode").fetchone()[0]
+        == "delete"
+    ), "the journal mode is a persistent property and must be left alone"
+    assert sorted(path.name for path in tmp_path.iterdir()) == ["future.sqlite"]
+
+
+@pytest.mark.parametrize("version", [2.0, "2", True, None])
+def test_a_schema_version_that_is_not_a_whole_number_is_refused(
+    tmp_path, version
+):
+    """`3.0 == 3` in Python, so the type is decided before the value."""
+
+    import json
+
+    from zippergen.workspace import Workspace, WorkspaceError
+
+    root = tmp_path / "project"
+    root.mkdir()
+    workspace = Workspace(root, home=tmp_path / "home")
+    workspace.initialize_project(name="typed")
+    workspace.update(anything=1)
+    state = json.loads(workspace.state_path.read_text())
+    state["schema_version"] = version
+    workspace.state_path.write_text(json.dumps(state))
+
+    with pytest.raises(WorkspaceError):
+        Workspace(root, home=tmp_path / "home").load()
+
+
+def test_a_deployment_profile_version_must_be_a_whole_number(
+    tmp_path, monkeypatch
+):
+    import json
+
+    from zippergen.deployment_profiles import (
+        DEPLOYMENT_PROFILE_SCHEMA_VERSION,
+        _load_deployment_profile,
+    )
+
+    home = tmp_path / "home"
+    (home / "deployments").mkdir(parents=True)
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(home))
+    (home / "deployments" / "floaty.json").write_text(json.dumps({
+        "schema_version": float(DEPLOYMENT_PROFILE_SCHEMA_VERSION),
+        "name": "floaty",
+        "store": str(home / "runs/floaty.sqlite"),
+        "log": str(home / "logs/floaty.log"),
+        "cwd": str(tmp_path),
+    }))
+
+    with pytest.raises(SystemExit) as caught:
+        _load_deployment_profile("floaty")
+
+    assert "does not say which schema it uses" in str(caught.value)

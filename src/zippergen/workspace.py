@@ -45,13 +45,15 @@ def _require_record_schema(
     """Refuse a record whose format this version does not understand."""
 
     version = record.get("schema_version")
-    if version == current:
-        return
+    # The type is decided before the value. `3.0 == 3` in Python, so testing
+    # equality first let a float past a gate that exists to accept one shape.
     if not isinstance(version, int) or isinstance(version, bool):
         raise WorkspaceError(
             f"The {what} in {path} does not say which schema it uses "
             f"({version!r}). {recreate}"
         )
+    if version == current:
+        return
     if version > current:
         raise WorkspaceError(
             f"The {what} in {path} uses schema {version}, but this ZipperGen "
@@ -670,10 +672,21 @@ class Workspace:
         and nobody has to be told not to copy it.
         """
 
+        if not self.project_id_path.exists():
+            # A clone legitimately has none: the file is ignored by version
+            # control and does not travel.
+            return None
         try:
             local = self.project_id_path.read_text(encoding="utf-8").strip()
-        except (FileNotFoundError, OSError, UnicodeDecodeError):
-            return None
+        except (OSError, UnicodeDecodeError) as exc:
+            # An identity that exists but cannot be read is not the same as one
+            # that was never there. Treating them alike sends credential lookup
+            # to a different workspace without saying so.
+            raise WorkspaceError(
+                f"This project's identity file cannot be read: "
+                f"{self.project_id_path} ({exc}). Restore it, or delete it to "
+                "let this checkout be keyed by its path."
+            ) from exc
         return local or None
 
     def _write_project_identity(self, identity: str) -> str:
@@ -715,23 +728,26 @@ class Workspace:
         workspaces = self.home / "workspaces"
         canonical = _workspace_key(self.root, identity)
         previous = _path_derived_workspace_key(self.root, identity)
+        # Ambiguity is decided before any preference is applied. Checking the
+        # canonical name first let one claimant win silently, which is the
+        # outcome this refusal exists to prevent.
+        digest = hashlib.sha256(identity.encode()).hexdigest()[:10]
+        matches = sorted(
+            path.name
+            for path in workspaces.glob(f"*-{digest}")
+            if path.is_dir()
+        )
+        if len(matches) > 1:
+            raise WorkspaceError(
+                "Several workspaces claim this project identity: "
+                + ", ".join(matches)
+                + f". Record the intended name in {self.workspace_name_path}."
+            )
         if (workspaces / previous).is_dir():
             chosen = previous
         elif (workspaces / canonical).is_dir():
             chosen = canonical
         else:
-            digest = hashlib.sha256(identity.encode()).hexdigest()[:10]
-            matches = sorted(
-                path.name
-                for path in workspaces.glob(f"*-{digest}")
-                if path.is_dir()
-            )
-            if len(matches) > 1:
-                raise WorkspaceError(
-                    "Several workspaces claim this project identity: "
-                    + ", ".join(matches)
-                    + f". Record the intended name in {self.workspace_name_path}."
-                )
             if not matches:
                 raise WorkspaceError(
                     "No workspace was found for this project identity. If you "

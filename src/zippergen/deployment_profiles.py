@@ -33,14 +33,15 @@ def _require_deployment_profile_schema(
     """Refuse a profile whose format this version does not understand."""
 
     version = profile.get("schema_version")
-    if version == DEPLOYMENT_PROFILE_SCHEMA_VERSION:
-        return
+    # The type is decided before the value: `3.0 == 3` in Python.
     if not isinstance(version, int) or isinstance(version, bool):
         raise SystemExit(
             f"Deployment profile {path} does not say which schema it uses "
             f"({version!r}). Remove the file and run 'zippergen deploy' to "
             "create a current one; you will be asked for its settings again."
         )
+    if version == DEPLOYMENT_PROFILE_SCHEMA_VERSION:
+        return
     if version > DEPLOYMENT_PROFILE_SCHEMA_VERSION:
         raise SystemExit(
             f"Deployment profile {path} uses schema {version}, but this "

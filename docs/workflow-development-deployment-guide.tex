@@ -204,8 +204,11 @@ private state and the stable name of that state directory. Neither may travel
 with a clone: two checkouts sharing them would share one credential store. So
 they are not in \path{zippergen.toml}, they are not committed, and the directory
 contains a \path{.gitignore} of its own so no project needs an entry for it. A
-clone has no identity and is keyed by its own path until it is initialized as a
-new project. Move the whole working directory and both local values move with
+clone has no identity at all and is keyed by its own path. \texttt{zippergen
+init} does not change that: it returns immediately when a manifest already
+exists, and an identity is minted only when a project is created. A clone
+therefore never inherits the original's private state, because it never learns
+the original's identity. Move the whole working directory and both local values move with
 it, preserving the workspace and deployment address. There is no rule to
 remember. The private workspace name keeps the directory prefix from when it
 was first recorded; after a move that prefix is historical, not stale state to

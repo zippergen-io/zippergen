@@ -194,6 +194,13 @@ def open_store(path: str) -> sqlite3.Connection:
     )
     conn.execute("PRAGMA busy_timeout=5000")
 
+    # Read the version before changing anything about the file. Switching to
+    # WAL below is a persistent property, so an installation that merely looked
+    # at a store written by a newer ZipperGen would leave it permanently
+    # altered -- and an installation cannot acquire that restraint later, only
+    # ship with it.
+    _refuse_future_store(conn)
+
     # Switching to WAL takes a lock upgrade that SQLite deliberately does not run
     # the busy handler for, so two processes opening a fresh file together can see
     # "database is locked" here regardless of busy_timeout. WAL is a persistent
@@ -296,6 +303,36 @@ def _reject_replay_era_store(conn: sqlite3.Connection) -> None:
             "by replaying an event log. Its state cannot be carried over. Reset "
             "the deployment with 'zg deploy reset', or delete the run store and "
             "start again."
+        )
+
+
+def _refuse_future_store(conn: sqlite3.Connection) -> None:
+    """Refuse a store from a newer ZipperGen without modifying it.
+
+    This reads and nothing else. A store this version cannot recognise for any
+    other reason -- empty, foreign, an older schema -- is left to the full
+    check, which runs once the connection is configured.
+    """
+
+    try:
+        row = conn.execute(
+            "SELECT value FROM store_meta WHERE key='schema_version'"
+        ).fetchone()
+    except sqlite3.Error:
+        # No store_meta yet, or not a readable database. Either way there is no
+        # version to compare, and saying so is the later check's job.
+        return
+    if row is None:
+        return
+    try:
+        version = int(str(row[0]))
+    except ValueError:
+        return
+    if version > SCHEMA_VERSION:
+        raise StoreSchemaError(
+            f"This durable store uses schema {version}, but this ZipperGen "
+            f"reads {SCHEMA_VERSION}. It was written by a newer ZipperGen; "
+            "upgrade this one to use it. The store was not modified."
         )
 
 

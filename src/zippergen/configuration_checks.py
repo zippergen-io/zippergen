@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from contextlib import contextmanager
 from pathlib import Path
 from types import ModuleType
@@ -13,7 +13,7 @@ from zippergen.configuration_inventory import _provider, _used_connector_names
 from zippergen.connector_wiring import human_action_sites
 from zippergen.connectors import connector_requirements_from_module
 from zippergen.google_auth import google_support_installed
-from zippergen.models import selected_llm_specs
+from zippergen.models import ModelSettings, selected_llm_specs
 from zippergen.provider_connections import (
     provider_credential_field,
     provider_credential_label,
@@ -216,12 +216,52 @@ def _temporary_environment(values: dict[str, str]):
                 os.environ[name] = value
 
 
+def _settings_for_specs(
+    resolved_models: dict[str, object],
+) -> dict[str, "ModelSettings"]:
+    """Map each routed spec to the settings that will be used with it.
+
+    Settings are recorded per target -- a participant or an action -- while a
+    live check is per spec, because one spec may serve several targets. Where
+    targets on one spec disagree, no settings are used rather than a guess.
+    """
+
+    from zippergen.models import model_settings_from_mapping
+
+    raw = resolved_models.get("settings")
+    if not isinstance(raw, Mapping):
+        return {}
+    overrides = resolved_models.get("overrides")
+    default_spec = str(resolved_models.get("default") or "")
+    routes = dict(overrides) if isinstance(overrides, Mapping) else {}
+
+    by_spec: dict[str, ModelSettings] = {}
+    conflicting: set[str] = set()
+    for target, value in raw.items():
+        spec = str(routes.get(target, routes.get(str(target).partition(".")[0], default_spec)))
+        chosen = model_settings_from_mapping(value, subject=str(target))
+        if spec in by_spec and by_spec[spec] != chosen:
+            conflicting.add(spec)
+        by_spec[spec] = chosen
+    for spec in conflicting:
+        by_spec.pop(spec, None)
+    return by_spec
+
+
 def _live_model_check(
     spec: str,
     environment: dict[str, str],
     *,
     project_root: Path,
+    settings: "ModelSettings | None" = None,
 ) -> None:
+    """Reach the provider the way the workflow will, settings included.
+
+    Checking with a backend's own defaults can pass where the configured
+    timeout would fail, or fail where the configured one would not. A readiness
+    check that does not use the configured settings is not checking readiness.
+    """
+
     from zippergen.backends import backend_from_spec, load_scripted_script
 
     provider = _provider(spec)
@@ -246,6 +286,7 @@ def _live_model_check(
         backend, _label = backend_from_spec(
             spec,
             fallback=lambda _action, _inputs: {"reply": "OK"},
+            settings=settings,
         )
         backend(action, {})
 
@@ -480,6 +521,7 @@ def _site_checks(
                 )
 
         if live:
+            settings_by_spec = _settings_for_specs(resolved_models)
             unique_specs = dict.fromkeys(specs)
             for spec in unique_specs:
                 try:
@@ -487,6 +529,7 @@ def _site_checks(
                         spec,
                         environment,
                         project_root=workspace.root,
+                        settings=settings_by_spec.get(spec),
                     )
                 except Exception as exc:
                     checks.append(

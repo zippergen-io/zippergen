@@ -224,7 +224,9 @@ you nothing, and it configures nothing.
 It also creates \path{.zippergen/}, holding one generated value that identifies
 this checkout so its credentials can be found again. That is not configuration
 and not yours to edit, so it is not in \path{zippergen.toml}; the directory
-ignores itself, so a clone gets its own identity and never inherits yours.
+ignores itself, so it does not travel with a clone. Somebody who clones this
+project gets no identity, is keyed by their own path, and never reaches your
+credentials.
 
 \section{Describe what you want}
 

@@ -2063,8 +2063,14 @@ def _apply_configuration_answers(
     answers = dict(workspace.configuration_values())
 
     for name in unset_names:
-        if name not in declared:
+        field = declared.get(name)
+        if field is None:
             raise SystemExit(_unknown_configuration_field(name, declared))
+        if field.secret:
+            # A secret was never in the project file, so "forgetting" it here
+            # would report the verb rather than the outcome -- and on a
+            # credential, where an operator may read it as deletion.
+            raise SystemExit(_secret_not_in_the_project(name))
         answers.pop(name, None)
 
     for pair in _parse_inputs(set_pairs).items():
@@ -2073,10 +2079,7 @@ def _apply_configuration_answers(
         if field is None:
             raise SystemExit(_unknown_configuration_field(name, declared))
         if field.secret:
-            raise SystemExit(
-                f"Configuration field {name!r} is secret and is not stored in "
-                "the project. Provide it in the deployment environment."
-            )
+            raise SystemExit(_secret_not_in_the_project(name))
         if field.choices and str(value) not in field.choices:
             raise SystemExit(
                 f"Configuration field {name!r} must be one of "
@@ -2092,6 +2095,16 @@ def _apply_configuration_answers(
         print(f"Forgot {name}")
     print(f"Stored in {workspace.manifest_path}")
     return True
+
+
+def _secret_not_in_the_project(name: str) -> str:
+    """One sentence for both --set and --unset, because it is one fact."""
+
+    return (
+        f"Configuration field {name!r} is secret, so it is not stored in the "
+        "project and cannot be set or forgotten here. Provide it in the "
+        "deployment environment."
+    )
 
 
 def _unknown_configuration_field(name: str, declared: dict) -> str:
@@ -2132,11 +2145,7 @@ def _configuration_command(args) -> int:
     if getattr(args, "json", False):
         print(json.dumps(report, indent=2, default=str))
     else:
-        render_configuration(
-            report,
-            TerminalRenderer(),
-            show_checks=False,
-        )
+        render_configuration(report, TerminalRenderer())
     return 0
 
 

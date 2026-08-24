@@ -250,9 +250,9 @@ def _effective_model_display(item: Mapping[str, object]) -> str:
 def render_configuration(
     report: dict[str, object],
     renderer: TerminalRenderer,
-    *,
-    show_checks: bool = False,
 ) -> None:
+    """Render the project's configuration. Readiness is `render_readiness`."""
+
     project = report["project"]
     assert isinstance(project, dict)
     renderer.framed_section("Project")
@@ -404,30 +404,6 @@ def render_configuration(
         ],
         empty="No local credentials or tools are required.",
     )
-    if not show_checks:
-        return
-    raw_checks = report.get("checks") or []
-    checks = raw_checks if isinstance(raw_checks, list) else []
-    renderer.framed_section("Readiness")
-    _render_columns_or_empty(
-        renderer,
-        "Checks",
-        ("Status", "Check", "Detail"),
-        [
-            (
-                renderer.status_mark(
-                    "success" if item.get("status") == "ok" else (
-                        "warning" if item.get("status") == "warn" else "error"
-                    )
-                ),
-                item.get("name"),
-                item.get("detail"),
-            )
-            for item in checks
-            if isinstance(item, dict)
-        ],
-        empty="No checks.",
-    )
 
 
 def _render_next_commands(renderer: TerminalRenderer, checks: list) -> None:
@@ -438,19 +414,35 @@ def _render_next_commands(renderer: TerminalRenderer, checks: list) -> None:
     Only unsatisfied checks contribute, and each command is listed once.
     """
 
+    # Only a failure means the project is not ready, so only a failure asks for
+    # work. Including warnings printed "ready" and a list of commands together,
+    # which cannot both be true.
+    failing = [
+        item
+        for item in checks
+        if isinstance(item, dict) and item.get("status") == "fail"
+    ]
+    if not failing:
+        return
     commands: list[str] = []
-    for item in checks:
-        if not isinstance(item, dict) or item.get("status") == "ok":
-            continue
+    for item in failing:
         fix = str(item.get("fix") or "").strip()
         if fix and fix not in commands:
             commands.append(fix)
-    if not commands:
-        return
     renderer.emit("")
+    if not commands:
+        # Every failure here needs a judgement rather than a command -- a
+        # mismatched connector kind, say. Saying so beats an empty heading.
+        renderer.emit("Not ready. The checks above say what is wrong.")
+        return
     renderer.emit("To finish, run:")
     for command in commands:
         renderer.emit(f"  {command}")
+    if len(commands) < len(failing):
+        renderer.emit(
+            "  ... and see the checks above; not every problem has a "
+            "single command."
+        )
 
 
 def render_readiness(

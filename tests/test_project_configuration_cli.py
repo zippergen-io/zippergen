@@ -1689,3 +1689,111 @@ def test_setting_a_value_outside_the_declared_choices_is_refused(
         main(["config", "--set", "rounds=z"])
 
     assert "must be one of a, b" in str(caught.value)
+
+
+def test_a_secret_cannot_be_set_or_forgotten_here(tmp_path, monkeypatch):
+    """`--unset` said "Forgot token" for a value never stored and untouched.
+
+    That is the attempted verb reported instead of the outcome, on a
+    credential, where an operator may reasonably read it as deletion.
+    """
+
+    from zippergen.serve import main
+    from zippergen.workspace import Workspace
+
+    home = tmp_path / "home"
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(home))
+    project = tmp_path / "secretive"
+    project.mkdir()
+    (project / "workflow.py").write_text('''
+from zippergen import Lifeline, pure, workflow
+from zippergen.deployment import DeploymentField, DeploymentSpec
+
+A = Lifeline("A")
+
+zippergen_deployment = DeploymentSpec(
+    description="under test",
+    fields=(
+        DeploymentField("token", "Token", target="env", secret=True),
+        DeploymentField("mode", "Mode", target="option", default="live"),
+    ),
+)
+
+
+@pure
+def go() -> str:
+    return "ok"
+
+
+@workflow
+def secretive() -> str:
+    A: out = go()
+    return out @ A
+''')
+    workspace = Workspace(project, home=home)
+    workspace.initialize_project(name="secretive")
+    workspace.select_workflow("workflow.py:secretive", cwd=project)
+    monkeypatch.chdir(project)
+
+    for flag in ("--set", "--unset"):
+        argument = "token=sk-do-not-store" if flag == "--set" else "token"
+        with pytest.raises(SystemExit) as caught:
+            main(["config", flag, argument])
+        assert "is secret" in str(caught.value)
+        assert "cannot be set or forgotten here" in str(caught.value)
+
+    assert "token" not in workspace.manifest_path.read_text()
+    assert main(["config", "--unset", "mode"]) == 0, "an ordinary field still works"
+
+
+def test_a_ready_project_is_never_told_to_run_something(tmp_path, monkeypatch, capsys):
+    """"Overall: ready" and "To finish, run:" cannot both be true.
+
+    An unassigned optional connector is a warning, not a failure, so it must
+    not generate work for a project that is ready.
+    """
+
+    from zippergen.serve import main
+    from zippergen.workspace import Workspace
+
+    home = tmp_path / "home"
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(home))
+    project = tmp_path / "optional"
+    project.mkdir()
+    (project / "workflow.py").write_text('''
+from zippergen import ConnectorRequirement, Lifeline, human, workflow
+
+P = Lifeline("P")
+
+zippergen_connectors = (
+    ConnectorRequirement(
+        name="optional-alerts",
+        kind="telegram",
+        participant="P",
+        capabilities=("send-message",),
+        access="read-write",
+        required=False,
+        description="Optional.",
+    ),
+)
+
+
+@human(kind="confirm", instruction="ok?", outputs=["ready: bool"])
+def ask(): ...
+
+
+@workflow
+def optional_only() -> bool:
+    P: ready = ask()
+    return ready @ P
+''')
+    workspace = Workspace(project, home=home)
+    workspace.initialize_project(name="optional")
+    workspace.select_workflow("workflow.py:optional_only", cwd=project)
+    monkeypatch.chdir(project)
+
+    main(["check"])
+
+    output = capsys.readouterr().out
+    assert "ready" in output
+    assert "To finish, run:" not in output
