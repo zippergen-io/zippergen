@@ -14,6 +14,10 @@ This is a pure configuration layer. Nothing here renders or prompts.
 
 from __future__ import annotations
 
+import os
+import sys
+import threading
+
 from collections.abc import Mapping
 from types import ModuleType
 from typing import Any
@@ -423,3 +427,44 @@ def human_connector_factory(
         return TelegramNotifierGroup(tuple(notifiers))
 
     return build
+
+
+# ---------------------------------------------------------------------------
+# Worker lifecycle
+#
+# The module that decides what a connector needs also owns starting it, so a
+# contributor changing connector behaviour does not have to know that the CLI
+# holds the thread.
+# ---------------------------------------------------------------------------
+
+def _start_deployment_connector_workers(
+    profile: dict[str, object],
+) -> tuple[threading.Thread, ...]:
+    """Start best-effort connector bridges owned by this service process."""
+
+    raw = profile.get("connectors") or {}
+    if not isinstance(raw, dict):
+        return ()
+    from zippergen.connector_wiring import human_connector_factory
+
+    factory = human_connector_factory(raw, os.environ)
+    if factory is None:
+        return ()
+    connector = factory(str(profile["store"]))
+    thread = threading.Thread(
+        target=connector.run_forever,
+        name="connector-telegram",
+        daemon=True,
+    )
+    thread.start()
+    targets = sorted(
+        str(value.get("target"))
+        for value in raw.values()
+        if isinstance(value, dict) and value.get("type") == "human"
+    )
+    print(
+        "Telegram connector started for " + ", ".join(targets),
+        file=sys.stderr,
+        flush=True,
+    )
+    return (thread,)

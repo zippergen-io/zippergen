@@ -138,9 +138,11 @@ The supporting modules are deliberately split by responsibility:
 - `deployment_checks.py` — readiness and health checks;
 - `deployment_platform.py` — paths plus launchd/systemd operations;
 - `deployments.py` — removal, reset, and storage/log maintenance;
-- `deployment_publication.py` — managed home, artifacts, unit, store setup;
+- `deployment_publication.py` — managed home, artifacts, unit, store setup,
+  and the declared setup steps a deployment runs;
 - `execution_inspection.py` and `live_display.py` — durable observation,
   including trace interpretation;
+- `connector_wiring.py` — connector records, credentials, and worker lifecycle;
 - `process_environment.py` — the one environment overlay used by runs, checks,
   and foreground commands.
 

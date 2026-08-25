@@ -26,6 +26,8 @@ import time
 from collections.abc import Mapping
 from pathlib import Path
 
+from zippergen.deployment import DeploymentSetup, DeploymentSpec
+from zippergen.deployment_profiles import _deployment_environment
 from zippergen.deployment_platform import (
     deployment_launchd_path as _deployment_launchd_path,
     deployment_profile_path as _deployment_profile_path,
@@ -278,3 +280,61 @@ def _write_deployment_secrets(path: Path, values: dict[str, str]) -> None:
         path,
         json.dumps(values, indent=2, sort_keys=True) + "\n",
     )
+
+
+# ---------------------------------------------------------------------------
+# Declared setup steps
+#
+# Deciding which steps apply and running them is deployment behaviour, not
+# argument parsing. The CLI sequences and reports; the semantics live here.
+# ---------------------------------------------------------------------------
+
+def _setup_enabled(step: DeploymentSetup, values: dict[str, object]) -> bool:
+    if not step.when:
+        return True
+    current = values.get(step.when)
+    if not step.when_values:
+        return bool(current)
+    text = str(current)
+    return any(
+        text.startswith(expected[:-1]) if expected.endswith("*") else text == expected
+        for expected in step.when_values
+    )
+
+
+def _run_deployment_setup(
+    profile: dict[str, object],
+    spec: DeploymentSpec,
+    values: dict[str, object],
+    *,
+    skip_setup: bool,
+) -> None:
+    if skip_setup:
+        return
+    environment = {**os.environ, **_deployment_environment(profile)}
+    replacements = {
+        "python": str(profile.get("python") or sys.executable),
+        "cwd": str(profile["cwd"]),
+        "deployment": str(profile["name"]),
+    }
+    for step in spec.setup:
+        if not _setup_enabled(step, values):
+            continue
+        if step.creates_env:
+            created_path = environment.get(step.creates_env, "")
+            if created_path and Path(created_path).expanduser().exists():
+                print(f"Setup already complete: {step.description}")
+                continue
+        command = [part.format(**replacements) for part in step.command]
+        print(f"Setup: {step.description}")
+        try:
+            subprocess.run(
+                command,
+                cwd=str(profile["cwd"]),
+                env=environment,
+                check=True,
+            )
+        except subprocess.CalledProcessError as exc:
+            raise SystemExit(
+                f"Deployment setup {step.name!r} failed with exit code {exc.returncode}."
+            ) from exc

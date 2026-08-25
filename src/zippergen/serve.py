@@ -112,6 +112,9 @@ from zippergen.deployment_checks import (
     _store_status,
     _systemd_active_check,
 )
+from zippergen.connector_wiring import (
+    _start_deployment_connector_workers,
+)
 from zippergen.connectors import (
     CONNECTOR_KINDS,
     connector_requirements_from_module,
@@ -160,6 +163,8 @@ from zippergen.deployments import (
 )
 from zippergen.deployment_publication import (
     _apply_existing_history_keep,
+    _run_deployment_setup,
+    _setup_enabled,
     _write_deployment_secrets,
     _deployment_command,
     _initialize_deployment_store,
@@ -3621,57 +3626,6 @@ def _print_deployment_configuration(
         print(f"Change one with: zippergen deploy --set FIELD=VALUE")
 
 
-def _setup_enabled(step: DeploymentSetup, values: dict[str, object]) -> bool:
-    if not step.when:
-        return True
-    current = values.get(step.when)
-    if not step.when_values:
-        return bool(current)
-    text = str(current)
-    return any(
-        text.startswith(expected[:-1]) if expected.endswith("*") else text == expected
-        for expected in step.when_values
-    )
-
-
-def _run_deployment_setup(
-    profile: dict[str, object],
-    spec: DeploymentSpec,
-    values: dict[str, object],
-    *,
-    skip_setup: bool,
-) -> None:
-    if skip_setup:
-        return
-    environment = {**os.environ, **_deployment_environment(profile)}
-    replacements = {
-        "python": str(profile.get("python") or sys.executable),
-        "cwd": str(profile["cwd"]),
-        "deployment": str(profile["name"]),
-    }
-    for step in spec.setup:
-        if not _setup_enabled(step, values):
-            continue
-        if step.creates_env:
-            created_path = environment.get(step.creates_env, "")
-            if created_path and Path(created_path).expanduser().exists():
-                print(f"Setup already complete: {step.description}")
-                continue
-        command = [part.format(**replacements) for part in step.command]
-        print(f"Setup: {step.description}")
-        try:
-            subprocess.run(
-                command,
-                cwd=str(profile["cwd"]),
-                env=environment,
-                check=True,
-            )
-        except subprocess.CalledProcessError as exc:
-            raise SystemExit(
-                f"Deployment setup {step.name!r} failed with exit code {exc.returncode}."
-            ) from exc
-
-
 def _deployment_context_from_profile(
     profile: dict[str, object],
     *,
@@ -4152,39 +4106,6 @@ def _launch_deployment_command(args) -> int:
     ]
     os.execve(str(python), arguments, dict(os.environ))
     raise AssertionError("os.execve returned")
-
-
-def _start_deployment_connector_workers(
-    profile: dict[str, object],
-) -> tuple[threading.Thread, ...]:
-    """Start best-effort connector bridges owned by this service process."""
-
-    raw = profile.get("connectors") or {}
-    if not isinstance(raw, dict):
-        return ()
-    from zippergen.connector_wiring import human_connector_factory
-
-    factory = human_connector_factory(raw, os.environ)
-    if factory is None:
-        return ()
-    connector = factory(str(profile["store"]))
-    thread = threading.Thread(
-        target=connector.run_forever,
-        name="connector-telegram",
-        daemon=True,
-    )
-    thread.start()
-    targets = sorted(
-        str(value.get("target"))
-        for value in raw.values()
-        if isinstance(value, dict) and value.get("type") == "human"
-    )
-    print(
-        "Telegram connector started for " + ", ".join(targets),
-        file=sys.stderr,
-        flush=True,
-    )
-    return (thread,)
 
 
 # launchd and systemd each have their own words for the same few situations.
