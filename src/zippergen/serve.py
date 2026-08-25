@@ -4249,55 +4249,108 @@ def _status_command(args) -> int:
     return 0
 
 
-def _other_execution_line(args, *, owner: str) -> str | None:
-    """Name the project's other execution when it is the one that is live.
+@dataclass(frozen=True)
+class _OtherExecution:
+    """What this project's other half is doing, or why we cannot say.
 
-    A project has two places its workflow can run: a deployed service, and a
-    selected durable run. Only one may execute at a time. Each status command
-    reports the execution it owns, so a person who asks the wrong one sees a
-    stopped service or a finished run and concludes nothing is happening --
-    while the other half is mid-workflow. Neither command can answer for the
-    other, but each can say where to look.
+    A project has two places its workflow can run -- a deployed service and a
+    selected durable run -- and only one may execute at a time. Each status
+    command owns one half, so it must be able to say something about the
+    other.
 
-    This line reports on something the command does not own -- a project may
-    have no deployment, or no run at all. When the other half cannot be
-    determined, the command still answers in full for the half it does own.
+    "Nothing there" and "could not tell" are different answers and are kept
+    apart here. Collapsing them let a corrupt profile or an unreachable
+    service manager read exactly like a project that simply has no
+    deployment, which is the misleading outcome this line exists to prevent.
     """
 
-    if owner == "run":
-        from zippergen.deployment_platform import (
-            deployment_service_status,
-            service_is_running,
-        )
+    #: absent | idle | executing | unreadable
+    state: str
+    detail: str = ""
 
-        try:
-            name = _resolved_deployment_name(args)
-            service = deployment_service_status(name)
-        except (Exception, SystemExit):
-            return None
-        if not service_is_running(service):
-            return None
-        return (
-            f"Also executing: deployment {name} is running. "
-            "Its state is separate from this run; see zippergen deploy status."
-        )
+    @property
+    def line(self) -> str | None:
+        """The sentence to print, or None when there is nothing to say."""
 
-    from zippergen.workspace import Workspace
+        if self.state == "executing":
+            return f"Also executing: {self.detail}"
+        if self.state == "unreadable":
+            return f"WARN other execution: {self.detail}"
+        return None
+
+
+def _other_deployment_execution(args) -> _OtherExecution:
+    from zippergen.workspace import WorkspaceError
+    from zippergen.deployment_platform import (
+        deployment_service_status,
+        service_is_running,
+    )
+
+    try:
+        name = _resolved_deployment_name(args)
+    except (SystemExit, WorkspaceError):
+        # Expected absence: this project has no deployment.
+        return _OtherExecution("absent")
+    try:
+        service = deployment_service_status(name)
+    except Exception as exc:
+        return _OtherExecution(
+            "unreadable",
+            f"deployment {name} could not be queried "
+            f"({type(exc).__name__}: {exc}); see zippergen deploy status.",
+        )
+    state = str(service.get("state") or "unknown")
+    if state == "unknown":
+        return _OtherExecution(
+            "unreadable",
+            f"deployment {name} state is unknown "
+            f"({service.get('detail') or 'the service manager could not be asked'}); "
+            "it may be running. See zippergen deploy status.",
+        )
+    if not service_is_running(service):
+        return _OtherExecution("idle")
+    return _OtherExecution(
+        "executing",
+        f"deployment {name} is running. Its state is separate from this "
+        "run; see zippergen deploy status.",
+    )
+
+
+def _other_run_execution(args) -> _OtherExecution:
+    from zippergen.workspace import Workspace, WorkspaceError
 
     try:
         record = Workspace(getattr(args, "project", None)).current_run()
-    except (Exception, SystemExit):
-        return None
+    except (SystemExit, WorkspaceError):
+        return _OtherExecution("absent")
+    except Exception as exc:
+        return _OtherExecution(
+            "unreadable",
+            f"the selected durable run could not be read "
+            f"({type(exc).__name__}: {exc}); see zippergen run status.",
+        )
     if record is None:
-        return None
+        return _OtherExecution("absent")
     status = str(record.get("status") or "")
     if status not in {"running", "waiting"}:
-        return None
+        return _OtherExecution("idle")
     waiting = " and is waiting for a person" if status == "waiting" else ""
-    return (
-        f"Also executing: durable run {record['run_id']} is {status}{waiting}. "
-        "Its state is separate from this deployment; see zippergen run status."
+    return _OtherExecution(
+        "executing",
+        f"durable run {record['run_id']} is {status}{waiting}. Its state is "
+        "separate from this deployment; see zippergen run status.",
     )
+
+
+def _other_execution_line(args, *, owner: str) -> str | None:
+    """Name the project's other execution, or warn that it cannot be read."""
+
+    observed = (
+        _other_deployment_execution(args)
+        if owner == "run"
+        else _other_run_execution(args)
+    )
+    return observed.line
 
 
 def _run_status_command(args) -> int:
