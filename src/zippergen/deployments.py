@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import json
+import sqlite3
 from pathlib import Path
 import shutil
 import time
@@ -779,3 +780,122 @@ def remove_deployment_artifacts(
         artifact_count=len(artifacts),
         archive=archive,
     )
+
+
+# ---------------------------------------------------------------------------
+# Inventory and shared-inbox pruning
+#
+# Listing what is deployed on this computer, and clearing spent updates from
+# inboxes several deployments share, are storage-maintenance operations. They
+# belong beside removal and reset rather than in the CLI that invokes them.
+# ---------------------------------------------------------------------------
+
+def _deployment_inventory() -> list[dict[str, object]]:
+    """Return every host deployment and whether its owning project still exists."""
+
+    from zippergen.deployment_platform import deployment_service_status
+    from zippergen.workspace import Workspace, WorkspaceError
+
+    rows: list[dict[str, object]] = []
+    for path in sorted(_deployments_dir().glob("*.json")):
+        if path.name.endswith(".secrets.json"):
+            continue
+        try:
+            profile = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            rows.append(
+                {
+                    "name": path.stem,
+                    "project": "unknown",
+                    "ownership": f"invalid profile: {exc}",
+                    "orphaned": True,
+                    "service": "unknown",
+                    "profile_loadable": False,
+                }
+            )
+            continue
+        if not isinstance(profile, dict):
+            rows.append(
+                {
+                    "name": path.stem,
+                    "project": "unknown",
+                    "ownership": "invalid profile: top-level value is not an object",
+                    "orphaned": True,
+                    "service": "unknown",
+                    "profile_loadable": False,
+                }
+            )
+            continue
+        name = str(profile.get("name") or path.stem)
+        profile_loadable = True
+        source = Path(str(profile.get("source_cwd") or "")).expanduser()
+        orphaned = False
+        ownership = "current"
+        if not source.is_dir():
+            orphaned = True
+            ownership = "project directory is missing"
+        elif not (source / "zippergen.toml").is_file():
+            orphaned = True
+            ownership = "project manifest is missing"
+        else:
+            try:
+                current_id = str(
+                    Workspace(source).project_manifest().get("project_id") or ""
+                )
+            except WorkspaceError as exc:
+                orphaned = True
+                ownership = f"project manifest is invalid: {exc}"
+            else:
+                recorded_id = str(profile.get("project_id") or "")
+                if recorded_id != current_id:
+                    orphaned = True
+                    ownership = "project identity changed"
+        service = deployment_service_status(name)
+        rows.append(
+            {
+                "name": name,
+                "project": str(source) if str(source) else "unknown",
+                "ownership": ownership,
+                "orphaned": orphaned,
+                "service": service.get("state") or "unknown",
+                "profile_loadable": profile_loadable,
+            }
+        )
+    return rows
+
+
+def _prune_shared_connector_inboxes(*, keep_days: float, preview: bool = False) -> int:
+    """Drop inbound updates nobody claimed.
+
+    An update waits in a shared bot inbox until the deployment it belongs to
+    absorbs it, because that deployment may simply be stopped. What is left
+    after long enough belongs to a task that no longer exists, and only age can
+    say so. The lock files beside these stores are never removed: an advisory
+    lock lives on the inode, so unlinking the path while a process holds it
+    would let the next one lock a fresh inode and believe it was alone.
+    """
+
+    from zippergen.telegram_inbox import count_stale_updates, prune_updates
+
+    directory = _zippergen_home() / "connectors"
+    if not directory.is_dir():
+        return 0
+    total = 0
+    for path in sorted(directory.glob("telegram-*.sqlite")):
+        conn = sqlite3.connect(str(path), isolation_level=None, timeout=5.0)
+        try:
+            if preview:
+                total += count_stale_updates(conn, older_than_days=keep_days)
+                continue
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                total += prune_updates(conn, older_than_days=keep_days)
+                conn.execute("COMMIT")
+            except BaseException:
+                conn.execute("ROLLBACK")
+                raise
+        except sqlite3.DatabaseError:
+            continue
+        finally:
+            conn.close()
+    return total

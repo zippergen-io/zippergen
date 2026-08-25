@@ -151,7 +151,33 @@ from zippergen.semantic import (
     workflow_semantics,
 )
 from zippergen.assistant_backends import ASSISTANT_BACKENDS
-from zippergen.syntax import Workflow, is_reserved_control_text
+from zippergen.deployments import (
+    _deployment_inventory,
+    _prune_shared_connector_inboxes,
+)
+from zippergen.deployment_publication import (
+    _apply_existing_history_keep,
+    _write_deployment_secrets,
+    _deployment_command,
+    _initialize_deployment_store,
+    _install_launchd_agent,
+    _install_systemd_unit,
+    _prepare_managed_home,
+    _profile_history_keep,
+    _write_deployment_artifacts,
+)
+from zippergen.execution_inspection import (
+    _control_values,
+    _trace_duration,
+    _trace_fields,
+    _trace_time,
+    _load_trace_events,
+    _trace_row,
+    _trace_rows,
+    _trace_seconds,
+    _trace_value,
+)
+from zippergen.syntax import Workflow
 from zippergen.store import (
     complete_human_task,
     ensure_human_task_token,
@@ -283,14 +309,6 @@ def _parse_llm_idle_timeouts(pairs: list[str]) -> dict[str, float]:
     return timeouts
 
 
-def _write_deployment_secrets(path: Path, values: dict[str, str]) -> None:
-    ensure_private_directory(path.parent)
-    write_private_text(
-        path,
-        json.dumps(values, indent=2, sort_keys=True) + "\n",
-    )
-
-
 def _jsonable_kv_pairs(values: Mapping[str, object]) -> list[str]:
     return [f"{key}={json.dumps(value, default=str)}" for key, value in sorted(values.items())]
 
@@ -316,232 +334,6 @@ def _run_args_from_deployment(profile: dict[str, object]):
         timeout=timeout,
         execution=str(profile.get("execution", "sqlite")),
     )
-
-
-def _deployment_command(name: str, *, python_executable: str | None = None) -> str:
-    python = python_executable or sys.executable
-    return (
-        f"{shlex.quote(python)} -m zippergen.serve __launch-deployment "
-        f"--profile {shlex.quote(_slug(name))}"
-    )
-
-
-def _prepare_managed_home(profile: Mapping[str, object]) -> None:
-    """Make everything ZipperGen owns under its home private, before it is read.
-
-    The managed home is ZipperGen's workspace rather than part of any one
-    deployment, so preparing it is a precondition for evaluating a candidate,
-    not a step in publishing one. Doing it only at publication time is what
-    made the readiness checks demand a state that only publication created, so
-    a first deploy failed on the home, and a later one on a log file left
-    world-readable by an earlier release.
-
-    Directories and the log file are one job for that reason: the checks ask
-    the same question of both, so both are answered in the same place.
-
-    Called more than once per deploy on purpose: every step is idempotent.
-    """
-
-    home = _zippergen_home()
-    ensure_private_directory(home)
-    store_path = Path(str(profile["store"])).expanduser()
-    log_path = Path(str(profile["log"])).expanduser()
-    if log_path.is_symlink():
-        raise SystemExit(f"Refusing a symlinked deployment log: {log_path}")
-    for directory in (store_path.parent, log_path.parent, _deployments_dir()):
-        directory.mkdir(parents=True, exist_ok=True)
-        try:
-            directory.resolve().relative_to(home.resolve())
-        except ValueError:
-            continue
-        ensure_private_directory(directory)
-
-    try:
-        log_path.resolve().relative_to(home.resolve())
-    except ValueError:
-        return
-    log_fd = os.open(log_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-    os.close(log_fd)
-    log_path.chmod(0o600)
-
-
-def _write_deployment_artifacts(profile: dict[str, object]) -> None:
-    name = str(profile["name"])
-    profile_path = _deployment_profile_path(name)
-    script_path = _deployment_script_path(name)
-    service_path = _deployment_service_path(name)
-    launchd_path = _deployment_launchd_path(name)
-    _prepare_managed_home(profile)
-
-    stored_profile = dict(profile)
-    stored_profile["inputs"] = encode_value(profile.get("inputs") or {})
-    write_private_text(
-        script_path,
-        "#!/bin/sh\n"
-        "set -eu\n"
-        f"cd {shlex.quote(str(_zippergen_home()))}\n"
-        f"exec env ZIPPERGEN_HOME={shlex.quote(str(_zippergen_home()))} "
-        f"{_deployment_command(name)}\n"
-    )
-    script_path.chmod(0o700)
-    write_private_text(
-        service_path,
-        "[Unit]\n"
-        f"Description=ZipperGen deployment {name}\n"
-        "After=network-online.target\n\n"
-        "[Service]\n"
-        "Type=simple\n"
-        "UMask=0077\n"
-        f"WorkingDirectory={_zippergen_home()}\n"
-        f"ExecStart={script_path}\n"
-        "Restart=on-failure\n"
-        "RestartSec=10\n"
-        f"StandardOutput=append:{profile['log']}\n"
-        f"StandardError=append:{profile['log']}\n\n"
-        "[Install]\n"
-        "WantedBy=default.target\n"
-    )
-    launchd = {
-        "Label": _launchd_label(name),
-        "ProgramArguments": [str(script_path)],
-        "WorkingDirectory": str(_zippergen_home()),
-        "RunAtLoad": True,
-        "KeepAlive": {"SuccessfulExit": False},
-        "ThrottleInterval": 10,
-        "StandardOutPath": str(profile["log"]),
-        "StandardErrorPath": str(profile["log"]),
-        "ProcessType": "Background",
-        "Umask": 0o077,
-    }
-    write_private_bytes(launchd_path, plistlib.dumps(launchd, sort_keys=True))
-    # The profile is the publication point: the service reads it to decide
-    # which immutable bundle and configuration to run. Write every supporting
-    # artifact first so a profile never points at files we have not finished.
-    write_private_text(
-        profile_path,
-        json.dumps(stored_profile, indent=2, sort_keys=True) + "\n"
-    )
-
-
-def _profile_history_keep(profile: Mapping[str, object]) -> int | None:
-    """The history budget this deployment asked for, if it asked for one."""
-
-    raw = profile.get("history_keep")
-    if raw is None:
-        return None
-    try:
-        keep = int(raw)  # type: ignore[arg-type]
-    except (TypeError, ValueError):
-        raise SystemExit(
-            f"Deployment history_keep is not a whole number: {raw!r}. "
-            "Set it again with 'zg deploy --history-keep N'."
-        ) from None
-    if keep < 0:
-        raise SystemExit(
-            f"Deployment history_keep is negative: {keep}. "
-            "Set it again with 'zg deploy --history-keep N'."
-        )
-    return keep
-
-
-def _initialize_deployment_store(profile: dict[str, object]) -> bool:
-    """Allocate one valid durable store for a deployment if it has none.
-
-    An ordinary ``zg deploy`` writes a store only here, immediately after it
-    creates it. Deploying is configuration while the store is state, so an
-    ordinary redeploy never has to open incompatible recovery state; readiness
-    checks report that state instead. The explicit ``--history-keep`` option is
-    the narrow exception handled below because that option directly owns one
-    store setting.
-
-    A reset archives the old store and lands here with a fresh one, so the
-    deployment's history budget is stamped on at creation. Without that, every
-    reset would quietly put the trace back to the default.
-    """
-
-    path = Path(str(profile["store"])).expanduser()
-    if path.exists():
-        return False
-    path.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        connection = open_store(str(path))
-        keep = _profile_history_keep(profile)
-        if keep is not None:
-            write_history_keep(connection, keep)
-    except SystemExit:
-        raise
-    except Exception as exc:
-        raise SystemExit(
-            f"Could not initialize deployment store {path}: "
-            f"{type(exc).__name__}: {exc}"
-        ) from exc
-    connection.close()
-    return True
-
-
-def _apply_existing_history_keep(
-    profile: dict[str, object],
-    *,
-    requested: int | None,
-    store_created: bool,
-) -> int | None:
-    """Apply an explicit deploy-time budget to a store that already exists.
-
-    A profile setting is the reset default; the store setting controls the
-    running deployment. Recording only the former makes ``--history-keep`` look
-    successful while leaving live behavior unchanged. Opening an existing
-    store remains conditional on this explicit state-setting request, so an
-    ordinary redeploy still never trips over incompatible recovery state.
-    """
-
-    if requested is None or store_created:
-        return None
-    path = Path(str(profile["store"])).expanduser()
-    try:
-        connection = open_store(str(path))
-        try:
-            previous = read_history_keep(connection)
-            connection.execute("BEGIN IMMEDIATE")
-            try:
-                write_history_keep(connection, requested)
-                connection.execute("COMMIT")
-            except BaseException:
-                connection.execute("ROLLBACK")
-                raise
-        finally:
-            connection.close()
-    except Exception as exc:
-        raise SystemExit(
-            f"Could not apply --history-keep to existing store {path}: "
-            f"{type(exc).__name__}: {exc}"
-        ) from exc
-    return previous
-
-
-def _install_systemd_unit(profile: dict[str, object], *, dry_run: bool = False) -> Path:
-    name = str(profile["name"])
-    source = _deployment_service_path(name)
-    target = _installed_systemd_service_path(name)
-    if dry_run:
-        print(f"Install systemd unit: {source} -> {target}")
-        return target
-    _write_deployment_artifacts(profile)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    write_private_text(target, source.read_text())
-    return target
-
-
-def _install_launchd_agent(profile: dict[str, object], *, dry_run: bool = False) -> Path:
-    name = str(profile["name"])
-    source = _deployment_launchd_path(name)
-    target = _installed_launchd_path(name)
-    if dry_run:
-        print(f"Install launchd agent: {source} -> {target}")
-        return target
-    _write_deployment_artifacts(profile)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    write_private_bytes(target, source.read_bytes())
-    return target
 
 
 def _deployment_lifecycle_command(args, action: str) -> int:
@@ -909,56 +701,10 @@ def _print_execution_reference(reference: _ExecutionReference) -> None:
     renderer.emit()
 
 
-def _safe_json_loads(value):
-    if value is None:
-        return None
-    try:
-        return json.loads(value)
-    except (TypeError, json.JSONDecodeError):
-        return value
-
-
 def _fmt_time(ts: float | None) -> str:
     if ts is None:
         return "-"
     return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(ts))
-
-
-def _load_trace_events(
-    store_path: str,
-    *,
-    after_rowid: int = 0,
-    limit: int = 50,
-    newest: bool = True,
-) -> list[dict]:
-    if limit <= 0:
-        raise SystemExit("--tail must be greater than 0.")
-    path = Path(store_path).expanduser()
-    if not path.exists():
-        raise SystemExit(f"Store does not exist: {store_path}")
-    # A trace refresh is observational. In particular, do not use open_store()
-    # here: its schema-claim transaction takes the WAL writer lock and can make
-    # readers wait for gaps in a busy multi-lifeline workflow.
-    conn = open_store_readonly(path)
-    try:
-        order = "DESC" if newest else "ASC"
-        rows = conn.execute(
-            "SELECT id, role, payload FROM history WHERE id>? "
-            f"ORDER BY id {order} LIMIT ?",
-            (after_rowid, limit),
-        ).fetchall()
-    finally:
-        conn.close()
-    if newest:
-        rows = list(reversed(rows))
-    return [
-        {
-            "rowid": row[0],
-            "role": row[1],
-            "event": _safe_json_loads(row[2]),
-        }
-        for row in rows
-    ]
 
 
 def _load_human_tasks(
@@ -998,233 +744,6 @@ def _load_human_tasks(
 def _short_text(value: object, *, limit: int = 120) -> str:
     text = "" if value is None else str(value).replace("\n", " ")
     return text if len(text) <= limit else text[: limit - 1] + "..."
-
-
-def _trace_seconds(value: object) -> float | None:
-    if not isinstance(value, (int, float)) or isinstance(value, bool):
-        return None
-    timestamp = float(value)
-    if not math.isfinite(timestamp):
-        return None
-    return timestamp
-
-
-def _trace_time(value: object) -> str:
-    timestamp = _trace_seconds(value)
-    if timestamp is None:
-        return "—"
-    try:
-        return datetime.fromtimestamp(timestamp).astimezone().isoformat(
-            sep=" ", timespec="milliseconds"
-        )
-    except (OSError, OverflowError, ValueError):
-        return "—"
-
-
-def _trace_value(value: object, *, limit: int = 120) -> str:
-    text = json.dumps(value, ensure_ascii=False, default=str, sort_keys=True)
-    return text if len(text) <= limit else text[: limit - 1] + "…"
-
-
-def _trace_fields(value: object) -> str:
-    if not isinstance(value, dict):
-        return _trace_value(value)
-    return " · ".join(
-        f"{name}={_trace_value(field)}" for name, field in value.items()
-    )
-
-
-def _control_values(values: object) -> tuple[bool, list[object]]:
-    if not isinstance(values, list):
-        return False, []
-    is_control = any(is_reserved_control_text(value) for value in values)
-    visible: list[object] = []
-    for value in values:
-        if not is_reserved_control_text(value):
-            visible.append(value)
-    return is_control, visible
-
-
-def _trace_duration(seconds: float) -> str:
-    if seconds < 0.001:
-        return "<1ms"
-    if seconds < 1:
-        return f"{round(seconds * 1000)}ms"
-    if seconds < 60:
-        return f"{seconds:.2f}s"
-    minutes, remainder = divmod(seconds, 60)
-    return f"{int(minutes)}m {remainder:.1f}s"
-
-
-def _trace_row(
-    item: dict,
-    *,
-    duration: float | None = None,
-    incomplete: bool = False,
-) -> tuple[str, str, str, str, str]:
-    role = str(item.get("role") or "-")
-    event = item.get("event")
-    if not isinstance(event, dict):
-        return "—", f"#{item['rowid']}", role, "event", _trace_value(event)
-
-    timestamp = _trace_time(event.get("recorded_at"))
-    event_type = event.get("type", "event")
-    if event_type == "send":
-        source = event.get("from", role)
-        target = event.get("to", "?")
-        channel = event.get("channel") or "-"
-        control, visible_values = _control_values(event.get("values"))
-        if control:
-            detail = f"{source} → {target} [{channel}]"
-            if visible_values:
-                detail += f" · value={_trace_value(visible_values[0])}"
-            return timestamp, f"#{item['rowid']}", role, "control send", detail
-        detail = f"{source} → {target} [{channel}]"
-        bindings = event.get("bindings") or {}
-        if bindings:
-            detail += f" · {_trace_fields(bindings)}"
-        return timestamp, f"#{item['rowid']}", role, "send", detail
-    if event_type == "recv":
-        source = event.get("from", "?")
-        target = event.get("to", role)
-        channel = event.get("channel") or "-"
-        bindings = event.get("bindings") or {}
-        detail = f"{source} → {target} [{channel}]"
-        if bindings:
-            detail += f" · {_trace_fields(bindings)}"
-        kind = "control receive" if event.get("ctrl") else "receive"
-        return timestamp, f"#{item['rowid']}", role, kind, detail
-    if event_type in {"act_start", "act", "act_failed"}:
-        action = event.get("action", "?")
-        action_kind = event.get("action_kind") or "action"
-        phase = (
-            "incomplete"
-            if event_type == "act_start" and incomplete
-            else "start" if event_type == "act_start"
-            else "failed" if event_type == "act_failed"
-            else "done"
-        )
-        detail = str(action)
-        seq = event.get("seq")
-        if seq is not None:
-            detail += f" · seq={seq}"
-        payload = (
-            event.get("inputs")
-            if event_type == "act_start"
-            else event.get("outputs")
-            if event_type == "act"
-            else {
-                key: event[key]
-                for key in ("error", "message")
-                if event.get(key)
-            }
-        ) or {}
-        if payload:
-            detail += f" · {_trace_fields(payload)}"
-        if duration is not None:
-            detail += f" · {_trace_duration(duration)}"
-        if incomplete:
-            detail += " · no completion recorded"
-        return (
-            timestamp,
-            f"#{item['rowid']}",
-            role,
-            f"{action_kind} {phase}",
-            detail,
-        )
-    if event_type == "llm_retry":
-        action = event.get("action", "?")
-        detail = str(action)
-        if event.get("detail"):
-            detail += f" · {event['detail']}"
-        return timestamp, f"#{item['rowid']}", role, "LLM retry", detail
-    if event_type == "decision":
-        decision_kind = event.get("kind", "if")
-        value = event.get("value")
-        label = (
-            "continue" if value else "exit"
-        ) if decision_kind == "while" else ("true" if value else "false")
-        detail = f"{decision_kind} → {label}"
-        condition = event.get("formula") or event.get("condition")
-        if condition:
-            detail += f" · {condition}"
-        return timestamp, f"#{item['rowid']}", role, "decision", detail
-
-    remainder = {
-        key: value
-        for key, value in event.items()
-        if key not in {"type", "recorded_at"}
-    }
-    return (
-        timestamp,
-        f"#{item['rowid']}",
-        role,
-        str(event_type),
-        _trace_fields(remainder),
-    )
-
-
-def _trace_rows(
-    events: list[dict],
-    *,
-    mark_unmatched_incomplete: bool = True,
-) -> list[tuple[object, ...]]:
-    starts: dict[tuple[object, ...], list[tuple[int, float | None]]] = {}
-    matched_starts: set[int] = set()
-    durations: dict[int, float] = {}
-    for item in events:
-        role = str(item.get("role") or "-")
-        event = item.get("event")
-        if not isinstance(event, dict):
-            continue
-        timestamp = _trace_seconds(event.get("recorded_at"))
-        attempt_id = event.get("attempt_id")
-        seq = event.get("seq")
-        key: tuple[object, ...] | None
-        if isinstance(attempt_id, str) and attempt_id:
-            key = ("attempt", attempt_id)
-        elif type(seq) is int:
-            key = ("sequence", role, seq)
-        else:
-            key = None
-        if key is None:
-            continue
-        if event.get("type") == "act_start":
-            starts.setdefault(key, []).append((int(item["rowid"]), timestamp))
-        elif event.get("type") in {"act", "act_failed"} and starts.get(key):
-            start_rowid, started_at = starts[key].pop()
-            matched_starts.add(start_rowid)
-            stored_ms = event.get("duration_ms")
-            if isinstance(stored_ms, (int, float)) and stored_ms >= 0:
-                durations[int(item["rowid"])] = stored_ms / 1000
-            elif timestamp is not None and started_at is not None:
-                measured = timestamp - started_at
-                if measured >= 0:
-                    durations[int(item["rowid"])] = measured
-
-    rows: list[tuple[object, ...]] = []
-    for item in events:
-        event = item.get("event")
-        rowid = int(item["rowid"])
-        incomplete = (
-            mark_unmatched_incomplete
-            and isinstance(event, dict)
-            and event.get("type") == "act_start"
-            and rowid not in matched_starts
-        )
-        duration = durations.get(rowid)
-        if duration is None and isinstance(event, dict):
-            stored_ms = event.get("duration_ms")
-            if isinstance(stored_ms, (int, float)) and stored_ms >= 0:
-                duration = stored_ms / 1000
-        rows.append(
-            _trace_row(
-                item,
-                duration=duration,
-                incomplete=incomplete,
-            )
-        )
-    return rows
 
 
 def _print_trace_events(events: list[dict]) -> None:
@@ -3023,80 +2542,6 @@ def _directory_size(path: Path) -> str:
     return _format_bytes(total)
 
 
-def _deployment_inventory() -> list[dict[str, object]]:
-    """Return every host deployment and whether its owning project still exists."""
-
-    from zippergen.deployment_platform import deployment_service_status
-    from zippergen.workspace import Workspace, WorkspaceError
-
-    rows: list[dict[str, object]] = []
-    for path in sorted(_deployments_dir().glob("*.json")):
-        if path.name.endswith(".secrets.json"):
-            continue
-        try:
-            profile = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            rows.append(
-                {
-                    "name": path.stem,
-                    "project": "unknown",
-                    "ownership": f"invalid profile: {exc}",
-                    "orphaned": True,
-                    "service": "unknown",
-                    "profile_loadable": False,
-                }
-            )
-            continue
-        if not isinstance(profile, dict):
-            rows.append(
-                {
-                    "name": path.stem,
-                    "project": "unknown",
-                    "ownership": "invalid profile: top-level value is not an object",
-                    "orphaned": True,
-                    "service": "unknown",
-                    "profile_loadable": False,
-                }
-            )
-            continue
-        name = str(profile.get("name") or path.stem)
-        profile_loadable = True
-        source = Path(str(profile.get("source_cwd") or "")).expanduser()
-        orphaned = False
-        ownership = "current"
-        if not source.is_dir():
-            orphaned = True
-            ownership = "project directory is missing"
-        elif not (source / "zippergen.toml").is_file():
-            orphaned = True
-            ownership = "project manifest is missing"
-        else:
-            try:
-                current_id = str(
-                    Workspace(source).project_manifest().get("project_id") or ""
-                )
-            except WorkspaceError as exc:
-                orphaned = True
-                ownership = f"project manifest is invalid: {exc}"
-            else:
-                recorded_id = str(profile.get("project_id") or "")
-                if recorded_id != current_id:
-                    orphaned = True
-                    ownership = "project identity changed"
-        service = deployment_service_status(name)
-        rows.append(
-            {
-                "name": name,
-                "project": str(source) if str(source) else "unknown",
-                "ownership": ownership,
-                "orphaned": orphaned,
-                "service": service.get("state") or "unknown",
-                "profile_loadable": profile_loadable,
-            }
-        )
-    return rows
-
-
 def _deployment_list_command(args) -> int:
     from zippergen.rendering import TerminalRenderer
 
@@ -3124,43 +2569,6 @@ def _deployment_list_command(args) -> int:
         ],
     )
     return 0
-
-
-def _prune_shared_connector_inboxes(*, keep_days: float, preview: bool = False) -> int:
-    """Drop inbound updates nobody claimed.
-
-    An update waits in a shared bot inbox until the deployment it belongs to
-    absorbs it, because that deployment may simply be stopped. What is left
-    after long enough belongs to a task that no longer exists, and only age can
-    say so. The lock files beside these stores are never removed: an advisory
-    lock lives on the inode, so unlinking the path while a process holds it
-    would let the next one lock a fresh inode and believe it was alone.
-    """
-
-    from zippergen.telegram_inbox import count_stale_updates, prune_updates
-
-    directory = _zippergen_home() / "connectors"
-    if not directory.is_dir():
-        return 0
-    total = 0
-    for path in sorted(directory.glob("telegram-*.sqlite")):
-        conn = sqlite3.connect(str(path), isolation_level=None, timeout=5.0)
-        try:
-            if preview:
-                total += count_stale_updates(conn, older_than_days=keep_days)
-                continue
-            conn.execute("BEGIN IMMEDIATE")
-            try:
-                total += prune_updates(conn, older_than_days=keep_days)
-                conn.execute("COMMIT")
-            except BaseException:
-                conn.execute("ROLLBACK")
-                raise
-        except sqlite3.DatabaseError:
-            continue
-        finally:
-            conn.close()
-    return total
 
 
 def _deployment_prune_command(args) -> int:
@@ -4362,6 +3770,11 @@ def _apply_deploy_arguments(
     return values, secrets
 
 
+# `_finalize_guided_deployment` and `_run_deployment_setup` stay here on
+# purpose. They sequence typed domain calls and report progress to the
+# terminal, which is exactly what this module is for. The steps they call --
+# preparing the home, writing artifacts, initialising the store -- live in
+# `deployment_publication.py`.
 def _finalize_guided_deployment(
     profile: dict[str, object],
     spec: DeploymentSpec,

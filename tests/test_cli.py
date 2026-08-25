@@ -3758,17 +3758,20 @@ def test_process_death_before_profile_publication_keeps_the_old_release(
         "secrets_file": str(tmp_path / "candidate-secrets.json"),
     }
 
+    # Patch the module that owns the write, not the CLI that dispatches to it.
+    from zippergen import deployment_publication
+
     pid = os.fork()
     if pid == 0:
-        original = serve.write_private_text
+        original = deployment_publication.write_private_text
 
         def die_before_profile(path, content):
             if Path(path) == profile_path:
                 os.kill(os.getpid(), signal.SIGKILL)
             return original(path, content)
 
-        serve.write_private_text = die_before_profile
-        serve._write_deployment_artifacts(candidate)
+        deployment_publication.write_private_text = die_before_profile
+        deployment_publication._write_deployment_artifacts(candidate)
         os._exit(0)
 
     _finished, status = os.waitpid(pid, 0)
