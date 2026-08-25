@@ -433,9 +433,32 @@ class TelegramNotifier:
         except Exception:
             pass
 
+    def _owns_token(self, token: str) -> bool:
+        """Does this deployment's store hold the task this token answers?
+
+        A token nobody here issued belongs to another deployment sharing the
+        bot. Reading it is the only way to know before deciding anything else.
+        """
+
+        conn = open_store(self.store_path)
+        try:
+            record = load_human_task_token(conn, token)
+        finally:
+            conn.close()
+        if record is None:
+            return False
+        return str(record["channel"]) == self.channel
+
     def _process_callback(self, callback: dict) -> str:
         parsed = parse_callback_data(str(callback.get("data") or ""))
         if parsed is None:
+            return NOT_MINE
+        token, value = parsed
+        # Ownership is established before any policy is applied to the update.
+        # Several deployments may share one bot and chat, and SETTLED removes
+        # the update from the shared inbox for all of them -- so refusing on a
+        # local actor policy first let one deployment consume another's answer.
+        if not self._owns_token(token):
             return NOT_MINE
         message = callback.get("message") or {}
         chat = message.get("chat") or {}
@@ -450,7 +473,6 @@ class TelegramNotifier:
             )
             return SETTLED
 
-        token, value = parsed
         try:
             conn = open_store(self.store_path)
             try:

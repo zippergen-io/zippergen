@@ -340,8 +340,13 @@ def test_cli_backends_keep_prompts_out_of_argv_and_isolate_secrets(
     calls: list[tuple[list[str], dict[str, object]]] = []
     monkeypatch.setenv("ZIPPERGEN_PROVIDER_PRIVATE_API_KEY", "provider-secret")
     monkeypatch.setenv("WORKFLOW_PRIVATE_VALUE", "workflow-secret")
-    monkeypatch.setenv("OPENAI_API_KEY", "codex-auth")
-    monkeypatch.setenv("ANTHROPIC_API_KEY", "claude-auth")
+    # These name a workflow model credential and an assistant credential at
+    # once, so neither is forwarded. See
+    # tests/test_assistant_credential_isolation.py for the full rule.
+    monkeypatch.setenv("OPENAI_API_KEY", "workflow-key")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "workflow-key")
+    monkeypatch.setenv("CODEX_HOME", "/home/operator/.codex")
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", "/home/operator/.claude")
     monkeypatch.setattr(
         "zippergen.assistant_backends.shutil.which",
         lambda name: f"/tools/{name}",
@@ -368,10 +373,14 @@ def test_cli_backends_keep_prompts_out_of_argv_and_isolate_secrets(
         assert isinstance(environment, dict)
         assert "ZIPPERGEN_PROVIDER_PRIVATE_API_KEY" not in environment
         assert "WORKFLOW_PRIVATE_VALUE" not in environment
-    assert calls[0][1]["env"]["OPENAI_API_KEY"] == "codex-auth"
-    assert "ANTHROPIC_API_KEY" not in calls[0][1]["env"]
-    assert calls[1][1]["env"]["ANTHROPIC_API_KEY"] == "claude-auth"
-    assert "OPENAI_API_KEY" not in calls[1][1]["env"]
+    for _, kwargs in calls:
+        assert "OPENAI_API_KEY" not in kwargs["env"]
+        assert "ANTHROPIC_API_KEY" not in kwargs["env"]
+    # Each CLI is told where its own login lives, and nothing about the other.
+    assert calls[0][1]["env"]["CODEX_HOME"] == "/home/operator/.codex"
+    assert "CLAUDE_CONFIG_DIR" not in calls[0][1]["env"]
+    assert calls[1][1]["env"]["CLAUDE_CONFIG_DIR"] == "/home/operator/.claude"
+    assert "CODEX_HOME" not in calls[1][1]["env"]
     assert "--ephemeral" in calls[0][0]
     assert "--no-session-persistence" in calls[1][0]
 

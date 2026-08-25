@@ -348,6 +348,13 @@ def pure(fn: Callable | None = None, *, visible: bool = True):
 
     The output name is taken from the function name and its type from the
     return annotation.
+
+    ``@pure`` is a statement by the author, not a checked property. ZipperGen
+    runs the function as ordinary Python and cannot tell whether it touches
+    the outside world. What the choice controls is recovery: a ``@pure``
+    action may be recomputed freely after a crash, while ``@effect`` is
+    replayed at least once and must tolerate that. Marking something pure that
+    writes, sends, or charges means a crash can do it twice with no record.
     """
     def decorator(fn: Callable) -> PureAction:
         inputs = _extract_inputs(fn)

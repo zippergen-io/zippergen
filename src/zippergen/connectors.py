@@ -18,12 +18,15 @@ CONNECTORS_ENV = "ZIPPERGEN_CONNECTORS_JSON"
 
 
 _NAME = re.compile(r"[A-Za-z][A-Za-z0-9._-]{0,63}")
-_KINDS = {
-    "telegram",
-    "gmail",
-    "google-sheets",
-    "google-calendar",
-}
+#: The connector kinds ZipperGen supports, in the order they are shown.
+#:
+#: This is the only declaration. Everything that offers, routes, or renders a
+#: connector kind derives its list from here, so a kind cannot be accepted in a
+#: workflow without a provider that serves it and a command that configures it.
+#: ``tests/test_connector_kinds.py`` holds the two halves together.
+CONNECTOR_KINDS = ("telegram", "gmail", "google-sheets")
+
+_KINDS = frozenset(CONNECTOR_KINDS)
 _ACCESS = {"read-only", "write", "read-write"}
 
 
@@ -34,7 +37,14 @@ class ConnectorRequirement:
     name: str
     kind: str
     participant: str
+    #: What this connector is used for, written for a reader. ZipperGen does
+    #: not enforce these, and cannot: a capability is a claim about a remote
+    #: service, and the token that reaches it carries whatever scopes the
+    #: provider granted. Narrowing what a connector may do is the provider's
+    #: job, done when you authorize it. These strings tell a reviewer what to
+    #: check for; they are not a sandbox.
     capabilities: tuple[str, ...] = ()
+    #: Likewise descriptive. ``access`` records the intent under review.
     access: str = "read-only"
     description: str = ""
     required: bool = True

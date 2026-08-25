@@ -5,17 +5,14 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping, Sequence
 
 from zippergen.configuration_inventory import _provider
+from zippergen.connectors import CONNECTOR_KINDS
 from zippergen.configuration_reporting import _selected_checks
 from zippergen.rendering import TerminalRenderer
 
 
-CONNECTOR_ROUTE_KINDS = (
-    "human",
-    "telegram",
-    "gmail",
-    "google-sheets",
-    "google-calendar",
-)
+#: A person is a route too, so the rendered list is the supported connector
+#: kinds plus the terminal.
+CONNECTOR_ROUTE_KINDS = ("human", *CONNECTOR_KINDS)
 
 
 def _routing_status(renderer: TerminalRenderer, item: Mapping[str, object]) -> str:

@@ -12,7 +12,6 @@ from typing import Iterable
 from zippergen.deployment_platform import (
     service_may_be_attached,
     deployment_bundles_dir as _deployment_bundles_dir,
-    deployment_environment_dir as _deployment_environment_dir,
     deployment_environment_releases_dir as _deployment_environment_releases_dir,
     deployment_launchd_path as _deployment_launchd_path,
     deployment_profile_path as _deployment_profile_path,
@@ -167,12 +166,6 @@ def deployment_artifacts(
             "Installed launchd agent",
             _installed_launchd_path(name),
             "launch/installed.plist",
-        ),
-        _artifact(
-            "Managed environment",
-            _deployment_environment_dir(name),
-            "runtime/environment",
-            kind="directory",
         ),
         _artifact(
             "Managed environment generations",

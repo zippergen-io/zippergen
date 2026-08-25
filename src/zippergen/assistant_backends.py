@@ -86,21 +86,22 @@ _ASSISTANT_BASE_ENVIRONMENT = {
     "XDG_STATE_HOME",
 }
 
+# Where each CLI keeps the login it established for itself, and nothing more.
+#
+# A workflow process holds credentials for every model it routes to, and
+# `OPENAI_API_KEY` and `ANTHROPIC_API_KEY` name both a workflow model
+# credential and an assistant credential. Forwarding them let a workflow's key
+# override the login the operator established with `codex login` or
+# `claude`, silently spending the wrong account and defeating the separation
+# this environment exists to create.
+#
+# So an assistant authenticates exactly as it would if the same person ran it
+# directly: it is given the paths where its own login lives, and no key. An
+# assistant that genuinely needs its own automated credential should be given
+# one explicitly, never one inferred from a workflow's model routing.
 _ASSISTANT_AUTH_ENVIRONMENT = {
-    "codex": {
-        "AZURE_OPENAI_API_KEY",
-        "CODEX_API_KEY",
-        "CODEX_HOME",
-        "OPENAI_API_KEY",
-        "OPENAI_BASE_URL",
-    },
-    "claude": {
-        "ANTHROPIC_API_KEY",
-        "ANTHROPIC_AUTH_TOKEN",
-        "ANTHROPIC_BASE_URL",
-        "CLAUDE_CODE_OAUTH_TOKEN",
-        "CLAUDE_CONFIG_DIR",
-    },
+    "codex": {"CODEX_HOME"},
+    "claude": {"CLAUDE_CONFIG_DIR"},
 }
 
 
@@ -110,8 +111,9 @@ def _assistant_environment(backend: str) -> dict[str, str]:
     A workflow process can hold credentials for every model and connector it
     uses. Assistant actions process untrusted workflow values, so inheriting
     that process environment would cross an unnecessary security boundary.
-    Keep only ordinary process settings and credentials belonging to the
-    selected assistant itself.
+    Keep only ordinary process settings and the path where the selected
+    assistant keeps its own login. No credential is passed on: the assistant
+    authenticates exactly as it would if this user ran it directly.
     """
 
     allowed = _ASSISTANT_BASE_ENVIRONMENT | _ASSISTANT_AUTH_ENVIRONMENT[backend]

@@ -278,8 +278,10 @@ backend. `zg config` shows the effective backend together with the action's
 of the reviewed `@assistant` declaration. Codex and Claude continue to manage
 their own login and credentials. ZipperGen sends action input over standard
 input, disables each CLI's session persistence, and gives the child only basic
-process settings plus that CLI's own authentication variables. Workflow model
-keys and connector credentials are not inherited by assistant subprocesses.
+process settings plus the path where that CLI keeps its own login. No API key,
+token, or provider base URL is passed on: an assistant authenticates exactly as
+it does when you run it yourself, and workflow model keys and connector
+credentials never reach an assistant subprocess.
 
 ## Deterministic testing
 

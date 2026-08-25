@@ -17,7 +17,6 @@ import venv
 from zippergen.deployment import DeploymentSpec
 from zippergen.deployment_platform import (
     deployment_bundles_dir,
-    deployment_environment_dir,
     deployment_environment_releases_dir,
     slug,
 )
@@ -306,6 +305,43 @@ def bundle_deployment(
     profile["bundled_files"] = [str(path) for path in copied.values()]
 
 
+def _installed_zippergen_origin() -> str | None:
+    """Where this installed copy came from, as an installable requirement.
+
+    An install records its own origin in ``direct_url.json``, so a copy
+    installed from Git can say so instead of naming a version. Without this a
+    deployment asks an index for ``zippergen==<version>``, which does not exist
+    while the package is unpublished -- so following the documented install
+    succeeds and the first deployment fails.
+    """
+
+    import json
+    from importlib.metadata import Distribution, PackageNotFoundError
+
+    try:
+        raw = Distribution.from_name("zippergen").read_text("direct_url.json")
+    except (PackageNotFoundError, OSError):
+        return None
+    if not raw:
+        return None
+    try:
+        recorded = json.loads(raw)
+    except ValueError:
+        return None
+    url = str(recorded.get("url") or "")
+    if not url:
+        return None
+    vcs = recorded.get("vcs_info")
+    if isinstance(vcs, dict) and vcs.get("vcs") == "git":
+        commit = str(vcs.get("commit_id") or "")
+        # Pin the commit: a deployment is an immutable release, and resolving
+        # a branch later would install something the checks never saw.
+        return f"git+{url}@{commit}" if commit else f"git+{url}"
+    if url.startswith("file://"):
+        return url[len("file://"):]
+    return None
+
+
 def _zippergen_install_requirement(
     *,
     extras: tuple[str, ...] = (),
@@ -314,6 +350,13 @@ def _zippergen_install_requirement(
     if (project_root / "pyproject.toml").exists():
         requirement = str(project_root)
     else:
+        origin = _installed_zippergen_origin()
+        if origin is not None:
+            return (
+                f"zippergen[{','.join(sorted(set(extras)))}] @ {origin}"
+                if extras
+                else origin
+            )
         try:
             from importlib.metadata import version
 
@@ -421,11 +464,15 @@ def zippergen_runtime_provenance() -> dict[str, str]:
 def _deployment_zippergen_extras(
     profile: dict[str, object],
 ) -> tuple[str, ...]:
+    from zippergen.provider_connections import _CONNECTOR_KINDS
+
     raw = profile.get("connectors") or {}
     bindings = raw if isinstance(raw, dict) else {}
+    # Which kinds need the extra is the provider's own business, so ask it
+    # rather than keeping a second list here that can fall out of step.
+    google_kinds = _CONNECTOR_KINDS["google"]
     if any(
-        isinstance(value, dict)
-        and value.get("kind") in {"gmail", "google-sheets"}
+        isinstance(value, dict) and value.get("kind") in google_kinds
         for value in bindings.values()
     ):
         return ("google",)
@@ -456,7 +503,6 @@ def prepare_deployment_environment(
         return None
 
     name = str(profile["name"])
-    legacy_environment = deployment_environment_dir(name)
     releases_dir = deployment_environment_releases_dir(name)
     ensure_private_directory(releases_dir)
     version = (
@@ -546,20 +592,20 @@ def prepare_deployment_environment(
             "Managed environment was built but could not publish candidate "
             f"{environment_dir}: {exc}. The previous environment is unchanged."
         ) from None
+    # The generation this one replaces, and only when ZipperGen owns it: a
+    # first deployment has none, and a path outside the managed root belongs
+    # to someone else and is never removed.
     previous_raw = profile.get("environment_dir")
-    previous = (
-        Path(str(previous_raw)).expanduser()
-        if previous_raw
-        else legacy_environment
-    )
-    managed_root = releases_dir.parents[1].resolve()
-    try:
-        previous.resolve(strict=False).relative_to(managed_root)
-    except ValueError:
-        previous = None
-    else:
-        if not (previous.exists() or previous.is_symlink()):
+    previous = Path(str(previous_raw)).expanduser() if previous_raw else None
+    if previous is not None:
+        managed_root = releases_dir.parents[1].resolve()
+        try:
+            previous.resolve(strict=False).relative_to(managed_root)
+        except ValueError:
             previous = None
+        else:
+            if not (previous.exists() or previous.is_symlink()):
+                previous = None
     profile["python"] = str(_deployment_python_path(environment_dir))
     profile["environment_dir"] = str(environment_dir)
     update = DeploymentEnvironmentUpdate(environment_dir, previous)

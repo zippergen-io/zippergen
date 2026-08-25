@@ -44,12 +44,6 @@ def deployment_secrets_path(name: str) -> Path:
     return deployments_dir() / f"{slug(name)}.secrets.json"
 
 
-def deployment_environment_dir(name: str) -> Path:
-    """Legacy single-generation environment path."""
-
-    return zippergen_home() / "environments" / slug(name)
-
-
 def deployment_environment_releases_dir(name: str) -> Path:
     """Directory of immutable environment generations for a deployment."""
 

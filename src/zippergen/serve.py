@@ -110,7 +110,10 @@ from zippergen.deployment_checks import (
     _store_status,
     _systemd_active_check,
 )
-from zippergen.connectors import connector_requirements_from_module
+from zippergen.connectors import (
+    CONNECTOR_KINDS,
+    connector_requirements_from_module,
+)
 from zippergen.models import (
     apply_model_overrides,
     effective_llm_routes,
@@ -2683,8 +2686,40 @@ def _provider_command(args) -> int:
                 command="zg provider remove NAME",
                 choices=_project_choices("provider-connections", args.project),
             )
+            # Removing the connection also deletes the credential stored
+            # under it. That is the right behaviour -- a credential with no
+            # connection is unreachable -- but it is not what "remove an
+            # unused connection" leads a person to expect, and an OAuth
+            # authorization is not always cheap to redo.
+            stored = [
+                key
+                for key in workspace.load_secrets()
+                if key.startswith(f"provider:{name}:")
+            ]
+            if stored and not args.yes:
+                print(
+                    f"Provider connection {name} holds a stored credential. "
+                    "Removing the connection deletes it."
+                )
+                if not sys.stdin.isatty():
+                    raise SystemExit(
+                        "Deleting a stored credential requires confirmation. "
+                        "Re-run with --yes."
+                    )
+                answer = input(
+                    f"Remove {name} and delete its credential? [y/N]: "
+                ).strip().casefold()
+                if answer not in {"y", "yes"}:
+                    print("Nothing was changed.")
+                    return 1
             workspace.remove_provider_connection(name)
-            print(f"Removed provider connection {name}.")
+            if stored:
+                print(
+                    f"Removed provider connection {name} and deleted its "
+                    "stored credential."
+                )
+            else:
+                print(f"Removed provider connection {name}.")
             return 0
         if action == "check" and args.name:
             if args.name not in workspace.provider_connections():
@@ -4264,15 +4299,6 @@ def _run_deployment_setup(
             ) from exc
 
 
-def _deployment_context(
-    name: str,
-    *,
-    source: bool = False,
-) -> tuple[dict[str, object], Workflow, ModuleType, DeploymentSpec]:
-    profile = _load_deployment_profile(name)
-    return _deployment_context_from_profile(profile, source=source)
-
-
 def _deployment_context_from_profile(
     profile: dict[str, object],
     *,
@@ -4836,10 +4862,64 @@ def _status_command(args) -> int:
         marker = "OK" if check["status"] == "ok" else "WARN"
         print(f"{marker} {check['name']}: {check['detail']}")
     _print_status(status)
+    other = _other_execution_line(args, owner="deploy")
+    if other:
+        print(other)
     # The values themselves belong to the project, and `zippergen config`
     # shows them. What a deployment adds is whether the running service still
     # matches them, which the freshness checks above already report.
     return 0
+
+
+def _other_execution_line(args, *, owner: str) -> str | None:
+    """Name the project's other execution when it is the one that is live.
+
+    A project has two places its workflow can run: a deployed service, and a
+    selected durable run. Only one may execute at a time. Each status command
+    reports the execution it owns, so a person who asks the wrong one sees a
+    stopped service or a finished run and concludes nothing is happening --
+    while the other half is mid-workflow. Neither command can answer for the
+    other, but each can say where to look.
+
+    This line reports on something the command does not own -- a project may
+    have no deployment, or no run at all. When the other half cannot be
+    determined, the command still answers in full for the half it does own.
+    """
+
+    if owner == "run":
+        from zippergen.deployment_platform import (
+            deployment_service_status,
+            service_is_running,
+        )
+
+        try:
+            name = _resolved_deployment_name(args)
+            service = deployment_service_status(name)
+        except (Exception, SystemExit):
+            return None
+        if not service_is_running(service):
+            return None
+        return (
+            f"Also executing: deployment {name} is running. "
+            "Its state is separate from this run; see zippergen deploy status."
+        )
+
+    from zippergen.workspace import Workspace
+
+    try:
+        record = Workspace(getattr(args, "project", None)).current_run()
+    except (Exception, SystemExit):
+        return None
+    if record is None:
+        return None
+    status = str(record.get("status") or "")
+    if status not in {"running", "waiting"}:
+        return None
+    waiting = " and is waiting for a person" if status == "waiting" else ""
+    return (
+        f"Also executing: durable run {record['run_id']} is {status}{waiting}. "
+        "Its state is separate from this deployment; see zippergen run status."
+    )
 
 
 def _run_status_command(args) -> int:
@@ -4870,6 +4950,9 @@ def _run_status_command(args) -> int:
         print(f"Status: {payload['run_status']}")
         print(f"Workflow: {payload['workflow']}")
         _print_status(status)
+        other = _other_execution_line(args, owner="run")
+        if other:
+            print(other)
     return 0
 
 
@@ -5764,6 +5847,11 @@ def _parse_cli_args(
     )
     provider_remove.add_argument("name", nargs="?")
     provider_remove.add_argument("--project", help="Project root.")
+    provider_remove.add_argument(
+        "--yes",
+        action="store_true",
+        help="Delete a stored credential without asking.",
+    )
     provider_authorize = provider_sub.add_parser(
         "authorize",
         help="authorize Google here, or with --handoff for another computer",
@@ -5974,7 +6062,7 @@ def _parse_cli_args(
     connector_configure.add_argument(
         "kind",
         nargs="?",
-        choices=("telegram", "gmail", "google-sheets"),
+        choices=CONNECTOR_KINDS,
         help="Required only when the connection supports several connector kinds.",
     )
     connector_configure.add_argument(

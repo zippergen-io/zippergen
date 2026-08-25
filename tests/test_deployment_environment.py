@@ -29,9 +29,11 @@ def test_managed_environment_uses_an_immutable_generation(
     monkeypatch,
 ):
     home = tmp_path / "home"
-    environment = home / "environments" / "reviewed-answer"
-    environment.mkdir(parents=True)
-    (environment / "old-environment").write_text("preserve until success\n")
+    # A directory ZipperGen does not own. It sits beside the generations and
+    # must be left alone: only a recorded previous generation is removed.
+    unowned = home / "environments" / "reviewed-answer"
+    unowned.mkdir(parents=True)
+    (unowned / "not-ours").write_text("left alone\n")
     monkeypatch.setenv("ZIPPERGEN_HOME", str(home))
     monkeypatch.setattr(
         "zippergen.deployment_environment.shutil.which",
@@ -69,7 +71,10 @@ def test_managed_environment_uses_an_immutable_generation(
     assert Path(str(profile["python"])) == managed / "bin" / "python"
     assert isinstance(profile["zippergen_runtime"], dict)
     assert (managed / "bin" / "python").read_text() == "managed python\n"
-    assert not (environment / "old-environment").exists()
+    assert (unowned / "not-ours").exists(), (
+        "publishing a generation must not delete a directory ZipperGen "
+        "never recorded as the previous one"
+    )
     assert not list(managed.parent.glob(".*-building-*"))
 
 

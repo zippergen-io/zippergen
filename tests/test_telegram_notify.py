@@ -1348,3 +1348,116 @@ def test_a_corrupt_task_specification_is_not_reported_as_a_bad_answer(
                 "message": {"chat": {"id": 4242}, "message_id": 5},
             },
         })
+
+
+@pytest.mark.parametrize(
+    "allowed_user_id,description",
+    [
+        (None, "no actor policy"),
+        ("4242", "an actor policy the answering person satisfies"),
+        ("9999", "an actor policy the answering person violates"),
+    ],
+)
+def test_a_foreign_token_stays_in_the_shared_inbox_under_every_actor_policy(
+    tmp_path, monkeypatch, allowed_user_id, description
+):
+    """Ownership is established before any local policy is applied.
+
+    Several deployments may share one bot and one chat, and each holds its own
+    actor policy. ``SETTLED`` removes an update from the shared inbox for
+    everyone, so a deployment that refused on its own actor policy before
+    checking the token consumed an answer addressed to a different deployment
+    -- the other workflow then waited forever for an answer that was given.
+    """
+
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(tmp_path / "home"))
+    store = tmp_path / f"mine-{allowed_user_id}.sqlite"
+    _create_task(store, task_id="task-mine")
+    fingerprint = f"shared-bot-{allowed_user_id}"
+    update = {
+        "update_id": 950,
+        "callback_query": {
+            "id": "cb-950",
+            "data": "zg:yes:token-issued-by-the-other-deployment",
+            "from": {"id": 4242},
+            "message": {"chat": {"id": 4242}, "message_id": 11},
+        },
+    }
+    notifier = TelegramDeploymentNotifier(
+        str(store),
+        FakeTelegramClient([]),
+        connection="approval-bot",
+        routes={
+            "approval-chat": {
+                "chat_id": "4242",
+                "channel": "telegram:approval-chat",
+                **(
+                    {"allowed_user_id": allowed_user_id}
+                    if allowed_user_id is not None
+                    else {}
+                ),
+            }
+        },
+        assignments={"Mailbox": "approval-chat"},
+        fingerprint=fingerprint,
+    )
+
+    assert notifier.process_update(update) == NOT_MINE, description
+
+    inbox = open_inbox(fingerprint)
+    try:
+        record_updates(inbox, [update], offset=950)
+        assert consume_once(fingerprint, notifier.process_update) == 0
+        assert len(list_updates(inbox)) == 1, (
+            f"with {description}, the owning deployment still needs this update"
+        )
+    finally:
+        inbox.close()
+
+
+def test_a_token_this_deployment_owns_still_obeys_its_actor_policy(
+    tmp_path, monkeypatch
+):
+    """Ownership first does not weaken the policy -- it only orders the two."""
+
+    monkeypatch.setenv("ZIPPERGEN_HOME", str(tmp_path / "home"))
+    store = tmp_path / "owned.sqlite"
+    client = FakeTelegramClient([])
+    notifier = TelegramDeploymentNotifier(
+        str(store),
+        client,
+        connection="approval-bot",
+        routes={
+            "approval-chat": {
+                "chat_id": "4242",
+                "channel": "telegram:approval-chat",
+                "allowed_user_id": "9999",
+            }
+        },
+        assignments={"User": "approval-chat"},
+        fingerprint="owned-policy",
+    )
+    _create_task(store, task_id="task-owned")
+    notifier.send_pending_once()
+    token = client.sent[0]["reply_markup"]["inline_keyboard"][0][0][
+        "callback_data"
+    ].split(":", 2)[2]
+
+    update = {
+        "update_id": 951,
+        "callback_query": {
+            "id": "cb-951",
+            "data": f"zg:yes:{token}",
+            "from": {"id": 4242},
+            "message": {"chat": {"id": 4242}, "message_id": 12},
+        },
+    }
+    assert notifier.process_update(update) == SETTLED
+
+    conn = open_store(str(store))
+    try:
+        assert load_human_task_token(conn, token)["used_at"] is None, (
+            "an unauthorized person must not answer a task this deployment owns"
+        )
+    finally:
+        conn.close()
