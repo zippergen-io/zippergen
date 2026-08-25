@@ -15,20 +15,62 @@ from zippergen.workspace import ProjectManifest, Workspace
 import pytest
 
 
-def test_no_module_re_establishes_the_shape_with_assertions() -> None:
-    source_root = pathlib.Path(__file__).resolve().parents[1] / "src" / "zippergen"
-    # Only assertions about the manifest. Reports and decoded JSON are
-    # genuinely untyped at their boundaries and may still be checked.
-    guard = re.compile(
-        r"project_manifest\(\)[^\n]*\n(?:[^\n]*\n){0,3}?[^\n]*assert isinstance"
+MALFORMED = [
+    ("providers", "not-a-section"),
+    ("providers", {"connections": "not-a-table"}),
+    ("providers", {"connections": {"bot": "not-a-table"}}),
+    ("models", {"configurations": "not-a-table"}),
+    ("models", {"configurations": {"fast": "not-a-table"}}),
+    ("models", {"assignments": "not-a-table"}),
+    ("models", {"assignments": {"lifelines": "not-a-table"}}),
+    ("assistants", {"configurations": {"impl": ["not", "a", "table"]}}),
+    ("connectors", {"bindings": "not-a-table"}),
+    ("connectors", {"assignments": {"actions": 7}}),
+]
+
+
+@pytest.mark.parametrize("section,value", MALFORMED)
+def test_a_malformed_section_is_refused_not_cast(section, value) -> None:
+    """The type must be a fact, not a claim.
+
+    A cast once accepted `{"connections": "not-a-table"}` as `Providers` --
+    telling contributors a malformed value was impossible while the writer
+    could still meet one and fail later on an incidental attribute error.
+    Every section now goes through the same decoder the file goes through.
+    """
+
+    from zippergen.workspace import (
+        WorkspaceError,
+        _decode_connectors,
+        _decode_providers,
+        _decode_routed,
+        _section,
     )
-    offenders = sorted(
-        path.name for path in source_root.rglob("*.py") if guard.search(path.read_text())
-    )
-    assert not offenders, (
-        "these modules re-assert a shape the manifest type already carries: "
-        f"{offenders}"
-    )
+
+    decoders = {
+        "providers": _decode_providers,
+        "models": lambda v: _decode_routed(v, field="models", default="mock"),
+        "assistants": lambda v: _decode_routed(v, field="assistants", default=""),
+        "connectors": _decode_connectors,
+    }
+    with pytest.raises(WorkspaceError):
+        _section(value, {}, decode=decoders[section])
+
+
+def test_a_caller_replacement_is_decoded_exactly_like_the_file(tmp_path) -> None:
+    """One decoder, so 'validated' and 'typed' cannot drift apart."""
+
+    from zippergen.workspace import _decode_routed
+
+    written = {
+        "configurations": {"fast": {"provider": "openai", "temperature": 0.2}},
+        "assignments": {"default": "fast", "lifelines": {}, "actions": {}},
+    }
+    decoded = _decode_routed(written, field="models", default="mock")
+
+    # Structure validated, and the typed literal preserved for the writer.
+    assert decoded["assignments"]["default"] == "fast"
+    assert decoded["configurations"]["fast"]["temperature"] == 0.2
 
 
 def test_every_declared_section_is_actually_produced(tmp_path) -> None:

@@ -27,7 +27,8 @@ from collections.abc import Mapping
 from typing import Any
 
 from collections.abc import Mapping
-from typing import TypeVar, TypedDict, cast
+from collections.abc import Callable
+from typing import TypeVar, TypedDict
 
 from zippergen.value_codec import decode_value, encode_value
 from zippergen.assistant_backends import ASSISTANT_BACKENDS
@@ -540,6 +541,30 @@ def _string_values(value: object, *, field: str) -> dict[str, str]:
     }
 
 
+def _named_object_tables(
+    value: object,
+    *,
+    field: str,
+) -> dict[str, dict[str, object]]:
+    """Validate a table of named tables, keeping each value as written.
+
+    The manifest file holds typed TOML literals -- a temperature is the number
+    0.2, not the string "0.2" -- and the writer emits them back the same way.
+    Normalising is a separate step the loader performs for its own consumers.
+    """
+
+    if not isinstance(value, dict):
+        raise WorkspaceError(f"Project {field} must be a table.")
+    result: dict[str, dict[str, object]] = {}
+    for name, raw in value.items():
+        if not isinstance(raw, dict):
+            raise WorkspaceError(f"Project {field}.{name} must be a table.")
+        result[str(name)] = {
+            str(key): item for key, item in raw.items() if item is not None
+        }
+    return result
+
+
 def _named_string_tables(
     value: object,
     *,
@@ -574,6 +599,8 @@ def _named_string_tables(
 #: lives. Covariance also lets the loader's concrete tables fit.
 NamedTable = Mapping[str, Mapping[str, object]]
 
+_Value = TypeVar("_Value")
+
 
 class Assignments(TypedDict):
     default: str
@@ -593,7 +620,7 @@ class Routed(TypedDict):
 class Connectors(TypedDict):
     configurations: NamedTable
     bindings: Mapping[str, str]
-    assignments: Mapping[str, Mapping[str, str]]
+    assignments: Assignments
 
 
 class ProjectManifest(TypedDict):
@@ -619,24 +646,107 @@ def _object_table(value: object, *, field: str) -> dict[str, object]:
     return {str(key): item for key, item in value.items()}
 
 
-_Section = TypeVar("_Section", Providers, Routed, Connectors)
-
-
 def _section(
-    supplied: object | None, loaded: _Section, *, field: str
-) -> _Section:
-    """Return one manifest section, validating only what a caller supplied.
+    supplied: object | None,
+    loaded: _Value,
+    *,
+    decode: Callable[[object], _Value],
+) -> _Value:
+    """Return one manifest section: the loaded one, or a decoded replacement.
 
-    ``loaded`` came from ``project_manifest``, which validated it on the way
-    in; re-checking it would be asserting something already established. A
-    supplied replacement is untrusted, so it goes through ``_object_table``.
-    The cast records what that validation just proved, in the one place that
-    performs it.
+    A caller-supplied replacement gets exactly the decoding the file gets.
+    Casting instead would have made the type a claim rather than a fact --
+    it once accepted ``{"connections": "not-a-table"}`` as ``Providers``,
+    telling contributors a malformed value was impossible while the writer
+    could still meet one and fail later on an incidental attribute.
     """
 
-    if supplied is None:
-        return loaded
-    return cast(_Section, _object_table(supplied, field=field))
+    return loaded if supplied is None else decode(supplied)
+
+
+def _decode_assignments(
+    value: object, *, field: str, default: str
+) -> Assignments:
+    """Decode one routing table: a default plus per-lifeline and per-action names."""
+
+    table = _object_table(value, field=field)
+    return {
+        "default": str(table.get("default") or default),
+        "lifelines": _string_values(
+            table.get("lifelines") or {}, field=f"{field}.lifelines"
+        ),
+        "actions": _string_values(
+            table.get("actions") or {}, field=f"{field}.actions"
+        ),
+    }
+
+
+def _decode_providers(value: object, *, field: str = "providers") -> Providers:
+    table = _object_table(value, field=field)
+    return {
+        "connections": _named_object_tables(
+            table.get("connections") or {}, field=f"{field}.connections"
+        )
+    }
+
+
+def _decode_routed(value: object, *, field: str, default: str) -> Routed:
+    """Models and assistants have the same shape: named configurations, routed."""
+
+    table = _object_table(value, field=field)
+    return {
+        "configurations": _named_object_tables(
+            table.get("configurations") or {}, field=f"{field}.configurations"
+        ),
+        "assignments": _decode_assignments(
+            table.get("assignments") or {},
+            field=f"{field}.assignments",
+            default=default,
+        ),
+    }
+
+
+def _decode_connectors(value: object, *, field: str = "connectors") -> Connectors:
+    table = _object_table(value, field=field)
+    return {
+        "configurations": _named_object_tables(
+            table.get("configurations") or {}, field=f"{field}.configurations"
+        ),
+        "bindings": _string_values(
+            table.get("bindings") or {}, field=f"{field}.bindings"
+        ),
+        "assignments": _decode_assignments(
+            table.get("assignments") or {},
+            field=f"{field}.assignments",
+            default="",
+        ),
+    }
+
+
+def _as_strings(tables: Mapping[str, Mapping[str, object]]) -> dict[str, dict[str, str]]:
+    return {
+        name: {key: str(value) for key, value in table.items()}
+        for name, table in tables.items()
+    }
+
+
+def _normalize_providers(section: Providers) -> Providers:
+    return {"connections": _as_strings(section["connections"])}
+
+
+def _normalize_routed(section: Routed) -> Routed:
+    return {
+        "configurations": _as_strings(section["configurations"]),
+        "assignments": section["assignments"],
+    }
+
+
+def _normalize_connectors(section: Connectors) -> Connectors:
+    return {
+        "configurations": _as_strings(section["configurations"]),
+        "bindings": section["bindings"],
+        "assignments": section["assignments"],
+    }
 
 
 def _safe_project_directory(root: Path, value: object, *, field: str) -> Path:
@@ -911,7 +1021,11 @@ class Workspace:
                 "connectors": {
                     "configurations": {},
                     "bindings": {},
-                    "assignments": {"lifelines": {}, "actions": {}},
+                    "assignments": {
+                        "default": "",
+                        "lifelines": {},
+                        "actions": {},
+                    },
                 },
                 "configuration": {},
                 "exists": False,
@@ -978,83 +1092,20 @@ class Workspace:
                 framework,
                 field="framework_directory",
             )
-        raw_providers = manifest.get("providers") or {}
-        if not isinstance(raw_providers, dict):
-            raise WorkspaceError("Project providers must be a table.")
-        provider_connections = _named_string_tables(
-            raw_providers.get("connections") or {},
-            field="providers.connections",
+        # Decode validates the shape; normalising the named tables to strings
+        # is this reader's own step, so that consumers see one value type
+        # while the file keeps its typed TOML literals.
+        providers_section = _normalize_providers(
+            _decode_providers(manifest.get("providers") or {})
         )
-        raw_models = manifest.get("models") or {}
-        if not isinstance(raw_models, dict):
-            raise WorkspaceError("Project models must be a table.")
-        model_configurations = _named_string_tables(
-            raw_models.get("configurations") or {},
-            field="models.configurations",
+        models_section = _normalize_routed(
+            _decode_routed(manifest.get("models") or {}, field="models", default="mock")
         )
-        raw_model_assignments = raw_models.get("assignments") or {}
-        if not isinstance(raw_model_assignments, dict):
-            raise WorkspaceError("Project models.assignments must be a table.")
-        model_assignments: Assignments = {
-            "default": str(raw_model_assignments.get("default") or "mock"),
-            "lifelines": _string_values(
-                raw_model_assignments.get("lifelines") or {},
-                field="models.assignments.lifelines",
-            ),
-            "actions": _string_values(
-                raw_model_assignments.get("actions") or {},
-                field="models.assignments.actions",
-            ),
-        }
-        raw_assistants = manifest.get("assistants") or {}
-        if not isinstance(raw_assistants, dict):
-            raise WorkspaceError("Project assistants must be a table.")
-        assistant_configurations = _named_string_tables(
-            raw_assistants.get("configurations") or {},
-            field="assistants.configurations",
+        assistants_section = _normalize_routed(
+            _decode_routed(manifest.get("assistants") or {}, field="assistants", default="")
         )
-        raw_assistant_assignments = raw_assistants.get("assignments") or {}
-        if not isinstance(raw_assistant_assignments, dict):
-            raise WorkspaceError(
-                "Project assistants.assignments must be a table."
-            )
-        assistant_assignments: Assignments = {
-            "default": str(raw_assistant_assignments.get("default") or ""),
-            "lifelines": _string_values(
-                raw_assistant_assignments.get("lifelines") or {},
-                field="assistants.assignments.lifelines",
-            ),
-            "actions": _string_values(
-                raw_assistant_assignments.get("actions") or {},
-                field="assistants.assignments.actions",
-            ),
-        }
-        raw_connectors = manifest.get("connectors") or {}
-        if not isinstance(raw_connectors, dict):
-            raise WorkspaceError("Project connectors must be a table.")
-        connector_configurations = _named_string_tables(
-            raw_connectors.get("configurations") or {},
-            field="connectors.configurations",
-        )
-        raw_connector_assignments = raw_connectors.get("assignments") or {}
-        if not isinstance(raw_connector_assignments, dict):
-            raise WorkspaceError(
-                "Project connectors.assignments must be a table."
-            )
-        connector_assignments = {
-            "default": str(raw_connector_assignments.get("default") or ""),
-            "lifelines": _string_values(
-                raw_connector_assignments.get("lifelines") or {},
-                field="connectors.assignments.lifelines",
-            ),
-            "actions": _string_values(
-                raw_connector_assignments.get("actions") or {},
-                field="connectors.assignments.actions",
-            ),
-        }
-        connector_bindings = _string_values(
-            raw_connectors.get("bindings") or {},
-            field="connectors.bindings",
+        connectors_section = _normalize_connectors(
+            _decode_connectors(manifest.get("connectors") or {})
         )
         # The answers a person gave to this project's deployment questions.
         # They live here, beside every other visible choice, so that "where is
@@ -1070,20 +1121,10 @@ class Workspace:
             "specification_file": specification,
             "workflow_entry": workflow_entry,
             "framework_directory": framework,
-            "providers": {"connections": provider_connections},
-            "models": {
-                "configurations": model_configurations,
-                "assignments": model_assignments,
-            },
-            "assistants": {
-                "configurations": assistant_configurations,
-                "assignments": assistant_assignments,
-            },
-            "connectors": {
-                "configurations": connector_configurations,
-                "bindings": connector_bindings,
-                "assignments": connector_assignments,
-            },
+            "providers": providers_section,
+            "models": models_section,
+            "assistants": assistants_section,
+            "connectors": connectors_section,
             "configuration": configuration,
             "exists": True,
         }
@@ -1106,13 +1147,25 @@ class Workspace:
         # Only a section a caller supplied is untrusted, and `_section`
         # validates exactly that case -- once, here, instead of at each of the
         # places that later read it back.
-        provider_data = _section(providers, manifest["providers"], field="providers")
-        model_data = _section(models, manifest["models"], field="models")
+        provider_data = _section(
+            providers, manifest["providers"], decode=_decode_providers
+        )
+        model_data = _section(
+            models,
+            manifest["models"],
+            decode=lambda value: _decode_routed(
+                value, field="models", default="mock"
+            ),
+        )
         assistant_data = _section(
-            assistants, manifest["assistants"], field="assistants"
+            assistants,
+            manifest["assistants"],
+            decode=lambda value: _decode_routed(
+                value, field="assistants", default=""
+            ),
         )
         connector_data = _section(
-            connectors, manifest["connectors"], field="connectors"
+            connectors, manifest["connectors"], decode=_decode_connectors
         )
         configuration_data = _scalar_values(
             configuration
