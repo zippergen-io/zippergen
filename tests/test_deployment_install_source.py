@@ -77,9 +77,11 @@ def test_a_git_install_without_a_commit_still_names_the_repository(
     assert de._installed_zippergen_origin() == f"git+{GIT_URL}"
 
 
-def test_a_local_install_names_the_directory_it_came_from(monkeypatch) -> None:
+def test_a_local_install_keeps_the_uri_it_came_from(monkeypatch) -> None:
+    """The scheme has to survive: it becomes the URL half of a requirement."""
+
     _origin(monkeypatch, {"url": "file:///Users/someone/zippergen"})
-    assert de._installed_zippergen_origin() == "/Users/someone/zippergen"
+    assert de._installed_zippergen_origin() == "file:///Users/someone/zippergen"
 
 
 @pytest.mark.parametrize(
@@ -180,3 +182,39 @@ def test_an_absent_distribution_still_falls_back(monkeypatch) -> None:
 
     monkeypatch.setattr(importlib.metadata, "version", missing)
     assert de._zippergen_install_requirement() == "zippergen"
+
+
+# Every origin shape crossed with every extras shape. The bug lived in the one
+# cell no test occupied: a local origin *and* an extra, which produced
+# `zippergen[google] @ /path` -- accepted by uv, rejected by pip with
+# "Invalid URL: No scheme supplied", breaking the documented no-uv fallback.
+ORIGINS = [
+    ("git", f"git+{GIT_URL}@{COMMIT}"),
+    ("local", "file:///Users/someone/zippergen"),
+]
+
+
+@pytest.mark.parametrize("label,origin", ORIGINS, ids=lambda v: str(v))
+@pytest.mark.parametrize("extras", [(), ("google",)], ids=["no-extras", "extras"])
+def test_every_origin_and_extras_pairing_is_installable(
+    monkeypatch, label, origin, extras
+) -> None:
+    from packaging.requirements import InvalidRequirement, Requirement
+
+    monkeypatch.setattr(de, "_installed_zippergen_origin", lambda: origin)
+    monkeypatch.setattr(de.Path, "exists", lambda _self: False, raising=False)
+    requirement = de._zippergen_install_requirement(extras=extras)
+
+    if extras:
+        # A named PEP 508 requirement: the URL half must carry a scheme, or
+        # pip refuses it outright.
+        assert requirement.startswith("zippergen[google] @ ")
+        url = requirement.split(" @ ", 1)[1]
+        assert "://" in url, f"{url!r} has no scheme; pip will reject it"
+        try:
+            Requirement(requirement)
+        except InvalidRequirement as exc:  # pragma: no cover - failure detail
+            raise AssertionError(f"{requirement!r} is not a valid requirement: {exc}")
+    else:
+        assert requirement == origin
+        assert "://" in requirement

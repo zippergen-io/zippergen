@@ -342,7 +342,11 @@ def _installed_zippergen_origin() -> str | None:
         # a branch later would install something the checks never saw.
         return f"git+{url}@{commit}" if commit else f"git+{url}"
     if url.startswith("file://"):
-        return url[len("file://"):]
+        # Keep the scheme. The origin is used as the URL half of a PEP 508
+        # named requirement -- `zippergen[google] @ <url>` -- and a bare path
+        # there has no scheme, which pip rejects outright. Both installers
+        # accept the file: URI in either position.
+        return url
     return None
 
 
