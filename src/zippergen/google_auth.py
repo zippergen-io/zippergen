@@ -135,21 +135,14 @@ def google_scope_names(scopes: Iterable[str]) -> tuple[str, ...]:
 def google_scope_for_access(kind: str, access: str) -> str:
     """Return the narrowest supported OAuth scope for one requirement."""
 
+    from zippergen.connectors import connector_kind_spec
+
     if access not in {"read-only", "write", "read-write"}:
         raise ValueError(f"Unsupported connector access: {access!r}.")
-    if kind == "gmail":
-        return (
-            GOOGLE_GMAIL_READONLY_SCOPE
-            if access == "read-only"
-            else GOOGLE_GMAIL_MODIFY_SCOPE
-        )
-    if kind == "google-sheets":
-        return (
-            GOOGLE_SHEETS_READONLY_SCOPE
-            if access == "read-only"
-            else GOOGLE_SHEETS_SCOPE
-        )
-    raise ValueError(f"Unsupported Google connector kind: {kind!r}.")
+    spec = connector_kind_spec(kind)
+    if spec is None or not spec.scopes:
+        raise ValueError(f"Unsupported Google connector kind: {kind!r}.")
+    return spec.scopes[access]
 
 
 def google_scopes_for_access(
@@ -157,12 +150,15 @@ def google_scopes_for_access(
 ) -> tuple[str, ...]:
     """Plan minimal scopes for ``(kind, access)`` requirement pairs."""
 
-    from zippergen.provider_connections import connector_kinds_for_provider
+    from zippergen.connectors import connector_kind_spec
 
-    google_kinds = connector_kinds_for_provider("google")
+    def _has_scopes(kind: str) -> bool:
+        spec = connector_kind_spec(kind)
+        return spec is not None and bool(spec.scopes)
+
     strongest: dict[str, str] = {}
     for kind, access in requirements:
-        if kind not in google_kinds:
+        if not _has_scopes(kind):
             continue
         previous = strongest.get(kind)
         if previous in {"write", "read-write"}:

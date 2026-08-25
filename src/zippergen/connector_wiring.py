@@ -21,6 +21,7 @@ from typing import Any
 from zippergen.semantic import workflow_semantics
 from zippergen.syntax import Workflow, _ordered_workflow_lifelines
 from zippergen.workspace import Workspace
+from zippergen.connectors import connector_kind_spec
 from zippergen.provider_connections import (
     connector_kinds_for_provider,
     provider_environment_name,
@@ -269,6 +270,12 @@ def connector_runtime(
             "configuration": name,
             "channel": configuration.get("channel") or requirement.name,
         }
+        spec = connector_kind_spec(requirement.kind)
+        if spec is None:
+            raise ConnectorWiringError(
+                f"Connector {requirement.name!r} declares kind "
+                f"{requirement.kind!r}, which nothing supports."
+            )
         if requirement.kind == "telegram":
             token_env = provider_environment_name(connection, "bot_token")
             record.update(
@@ -282,7 +289,7 @@ def connector_runtime(
                 }
             )
             environment[token_env] = secrets["bot_token"]
-        elif requirement.kind in {"google-sheets", "gmail"}:
+        elif spec.scopes:
             credential_env = provider_environment_name(
                 connection, "authorized_user_json"
             )

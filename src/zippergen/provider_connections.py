@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import re
 
-from zippergen.connectors import CONNECTOR_KINDS
+from zippergen.connectors import CONNECTOR_KIND_SPECS, CONNECTOR_KINDS
 
 
 # ``mock`` is a runtime backend, not a configurable external connection, so it
@@ -28,9 +28,13 @@ _RUNTIME_PROVIDER_KINDS = (*PROVIDER_KINDS, "mock")
 
 _ALIASES = {"claude": "anthropic", "ollama": "local"}
 _MODEL_KINDS = frozenset({"openai", "anthropic", "mistral", "local", "scripted"})
+#: Derived, never written out: which provider serves which kind is a fact of
+#: the kind, declared once in `connectors.CONNECTOR_KIND_SPECS`.
 _CONNECTOR_KINDS = {
-    "telegram": frozenset({"telegram"}),
-    "google": frozenset({"gmail", "google-sheets"}),
+    provider: frozenset(
+        spec.name for spec in CONNECTOR_KIND_SPECS if spec.provider == provider
+    )
+    for provider in {spec.provider for spec in CONNECTOR_KIND_SPECS}
 }
 _CREDENTIAL_FIELDS = {
     "openai": "api_key",

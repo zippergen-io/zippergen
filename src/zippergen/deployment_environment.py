@@ -473,19 +473,18 @@ def zippergen_runtime_provenance() -> dict[str, str]:
 def _deployment_zippergen_extras(
     profile: dict[str, object],
 ) -> tuple[str, ...]:
-    from zippergen.provider_connections import _CONNECTOR_KINDS
+    from zippergen.connectors import connector_kind_spec
 
     raw = profile.get("connectors") or {}
     bindings = raw if isinstance(raw, dict) else {}
-    # Which kinds need the extra is the provider's own business, so ask it
-    # rather than keeping a second list here that can fall out of step.
-    google_kinds = _CONNECTOR_KINDS["google"]
-    if any(
-        isinstance(value, dict) and value.get("kind") in google_kinds
-        for value in bindings.values()
-    ):
-        return ("google",)
-    return ()
+    extras: set[str] = set()
+    for value in bindings.values():
+        if not isinstance(value, dict):
+            continue
+        spec = connector_kind_spec(value.get("kind"))
+        if spec is not None and spec.extra:
+            extras.add(spec.extra)
+    return tuple(sorted(extras))
 
 
 def prepare_deployment_environment(

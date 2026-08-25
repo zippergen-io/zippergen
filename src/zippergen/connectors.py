@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from collections.abc import Mapping
+from dataclasses import dataclass, field
 from types import ModuleType
 
 __all__ = [
@@ -18,15 +19,79 @@ CONNECTORS_ENV = "ZIPPERGEN_CONNECTORS_JSON"
 
 
 _NAME = re.compile(r"[A-Za-z][A-Za-z0-9._-]{0,63}")
-#: The connector kinds ZipperGen supports, in the order they are shown.
-#:
-#: This is the only declaration. Everything that offers, routes, or renders a
-#: connector kind derives its list from here, so a kind cannot be accepted in a
-#: workflow without a provider that serves it and a command that configures it.
-#: ``tests/test_connector_kinds.py`` holds the two halves together.
-CONNECTOR_KINDS = ("telegram", "gmail", "google-sheets")
+@dataclass(frozen=True)
+class ConnectorKindSpec:
+    """Everything that is true of one connector kind, in one place.
+
+    Adding a kind used to mean touching a provider mapping, a configuration
+    branch, a credential-wiring branch, an authorization branch, a readiness
+    branch and an install extra -- each in a different module, each looking
+    reasonable alone. A kind could satisfy every name-based completeness test
+    and still be impossible to configure or wire.
+
+    A kind exists here or not at all, and ``tests/test_connector_kinds.py``
+    checks each field against the code that consumes it.
+    """
+
+    #: The name a workflow writes in a ``ConnectorRequirement``.
+    name: str
+    #: The provider connection kind that serves it.
+    provider: str
+    #: The credential field the provider stores for it.
+    credential: str
+    #: Portable configuration keys a person answers, beyond name/connection.
+    settings: tuple[str, ...]
+    #: The optional install extra a deployment needs, if any.
+    extra: str | None = None
+    #: OAuth scopes by access level, for kinds whose provider uses OAuth.
+    scopes: Mapping[str, str] = field(default_factory=dict)
+
+
+#: The connector kinds ZipperGen supports, in the order they are offered.
+CONNECTOR_KIND_SPECS: tuple[ConnectorKindSpec, ...] = (
+    ConnectorKindSpec(
+        name="telegram",
+        provider="telegram",
+        credential="bot_token",
+        settings=("chat_id", "allowed_user_id"),
+    ),
+    ConnectorKindSpec(
+        name="gmail",
+        provider="google",
+        credential="authorized_user_json",
+        settings=("account", "query"),
+        extra="google",
+        scopes={
+            "read-only": "https://www.googleapis.com/auth/gmail.readonly",
+            "write": "https://www.googleapis.com/auth/gmail.modify",
+            "read-write": "https://www.googleapis.com/auth/gmail.modify",
+        },
+    ),
+    ConnectorKindSpec(
+        name="google-sheets",
+        provider="google",
+        credential="authorized_user_json",
+        settings=("spreadsheet_id", "tab"),
+        extra="google",
+        scopes={
+            "read-only": "https://www.googleapis.com/auth/spreadsheets.readonly",
+            "write": "https://www.googleapis.com/auth/spreadsheets",
+            "read-write": "https://www.googleapis.com/auth/spreadsheets",
+        },
+    ),
+)
+
+CONNECTOR_KINDS = tuple(spec.name for spec in CONNECTOR_KIND_SPECS)
+
+_SPECS = {spec.name: spec for spec in CONNECTOR_KIND_SPECS}
 
 _KINDS = frozenset(CONNECTOR_KINDS)
+
+
+def connector_kind_spec(kind: object) -> ConnectorKindSpec | None:
+    """Return the spec for one kind, or None when nothing declares it."""
+
+    return _SPECS.get(str(kind or "").strip())
 _ACCESS = {"read-only", "write", "read-write"}
 
 
