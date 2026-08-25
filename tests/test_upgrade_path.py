@@ -345,3 +345,102 @@ def test_a_deployment_profile_version_must_be_a_whole_number(
         _load_deployment_profile("floaty")
 
     assert "does not say which schema it uses" in str(caught.value)
+
+
+# One rule orders `open_store`: nothing about the file is changed until the
+# store has been identified. These cover the ways a store can fail to be
+# identified, because testing one of them and asserting the rule is how a
+# locked store came to be converted to WAL by a reader that refused it.
+
+
+def _future_store(directory):
+    import sqlite3
+
+    from zippergen.store import SCHEMA_VERSION, open_store
+
+    path = directory / "future.sqlite"
+    open_store(str(path)).close()
+    connection = sqlite3.connect(path)
+    connection.execute("PRAGMA journal_mode=DELETE")
+    connection.execute(
+        "UPDATE store_meta SET value=? WHERE key='schema_version'",
+        (str(SCHEMA_VERSION + 1),),
+    )
+    connection.commit()
+    connection.close()
+    for suffix in ("-wal", "-shm"):
+        (directory / f"future.sqlite{suffix}").unlink(missing_ok=True)
+    return path
+
+
+def test_a_future_store_keeps_its_permissions(tmp_path):
+    """Permissions are persistent too, so they are set after identification."""
+
+    import stat
+
+    from zippergen.store import StoreSchemaError, open_store
+
+    store = _future_store(tmp_path)
+    store.chmod(0o640)
+
+    with pytest.raises(StoreSchemaError):
+        open_store(str(store))
+
+    assert stat.S_IMODE(store.stat().st_mode) == 0o640
+
+
+def test_a_locked_store_is_refused_rather_than_assumed_versionless(tmp_path):
+    """A locked store reads as "no version"; that is not "nothing to protect"."""
+
+    import hashlib
+    import subprocess
+    import sys
+    import textwrap
+
+    from zippergen.store import StoreSchemaError, open_store
+
+    store = _future_store(tmp_path)
+    before = hashlib.sha256(store.read_bytes()).hexdigest()
+    holder_source = tmp_path / "holder.py"
+    holder_source.write_text(textwrap.dedent('''
+        import sqlite3, sys, time
+        connection = sqlite3.connect(sys.argv[1], timeout=30)
+        connection.execute("BEGIN EXCLUSIVE")
+        print("locked", flush=True)
+        time.sleep(8)
+        connection.rollback()
+    '''))
+    holder = subprocess.Popen(
+        [sys.executable, str(holder_source), str(store)],
+        stdout=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert holder.stdout is not None
+        holder.stdout.readline()
+        with pytest.raises(StoreSchemaError) as caught:
+            open_store(str(store))
+    finally:
+        holder.kill()
+        holder.wait()
+
+    assert "was not modified" in str(caught.value)
+    assert hashlib.sha256(store.read_bytes()).hexdigest() == before
+    assert sorted(path.name for path in tmp_path.iterdir()) == [
+        "future.sqlite",
+        "holder.py",
+    ]
+
+
+def test_a_corrupt_store_says_what_to_do(tmp_path):
+    """A raw SQLite error tells a person nothing about their options."""
+
+    from zippergen.store import StoreSchemaError, open_store
+
+    store = tmp_path / "corrupt.sqlite"
+    store.write_text("not a database at all")
+
+    with pytest.raises(StoreSchemaError) as caught:
+        open_store(str(store))
+
+    assert "reset the run or deployment" in str(caught.value)

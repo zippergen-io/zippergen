@@ -226,3 +226,68 @@ def test_model_settings_are_configured_beside_the_model(tmp_path, monkeypatch):
     assert configured["temperature"] == 0.2
     assert configured["max_tokens"] == 4096
     assert configured["timeout"] == 120.0
+
+
+# A readiness check that enumerates specs assumes one spec is one invocation.
+# It is not, and checking one of several and reporting the model ready says
+# more than was tested.
+
+
+def test_two_targets_on_one_model_are_two_invocations():
+    from zippergen.models import ModelSettings, model_invocations
+
+    pairs = model_invocations(
+        "openai:gpt",
+        {"Writer": "openai:gpt", "Reviewer": "openai:gpt"},
+        {"Writer": ModelSettings(timeout=1)},
+    )
+
+    timeouts = {chosen.timeout for _spec, chosen in pairs}
+    assert timeouts == {1.0, None}, (
+        "the target using backend defaults is its own invocation"
+    )
+
+
+def test_conflicting_settings_are_both_checked_not_discarded():
+    from zippergen.models import ModelSettings, model_invocations
+
+    pairs = model_invocations(
+        "openai:gpt",
+        {"Writer": "openai:gpt", "Reviewer": "openai:gpt"},
+        {
+            "Writer": ModelSettings(timeout=1),
+            "Reviewer": ModelSettings(timeout=9),
+        },
+    )
+
+    assert sorted(chosen.timeout for _spec, chosen in pairs) == [1.0, 9.0]
+
+
+def test_a_named_but_unrouted_configuration_is_checked_with_its_settings():
+    """Checking a configuration by name must use the settings it would use."""
+
+    from zippergen.models import ModelSettings, model_invocations
+
+    pairs = model_invocations(
+        "mock",
+        {},
+        {},
+        extra={"local@local-main:qwen": ModelSettings(timeout=12)},
+    )
+
+    assert ("local@local-main:qwen", ModelSettings(timeout=12)) in pairs
+
+
+def test_identical_invocations_are_checked_once():
+    from zippergen.models import ModelSettings, model_invocations
+
+    pairs = model_invocations(
+        "openai:gpt",
+        {"Writer": "openai:gpt", "Reviewer": "openai:gpt"},
+        {
+            "Writer": ModelSettings(timeout=5),
+            "Reviewer": ModelSettings(timeout=5),
+        },
+    )
+
+    assert len(pairs) == 1

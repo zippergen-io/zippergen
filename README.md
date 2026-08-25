@@ -62,7 +62,18 @@ pipx install "git+https://github.com/zippergen-io/zippergen.git"
 python3 -m venv .venv && .venv/bin/pip install "git+https://github.com/zippergen-io/zippergen.git"
 ```
 
-This pins whatever commit is current, so rerun the same command to update.
+This pins whatever commit is current. To update, rerun the same command with
+`--refresh`, since Git sources are cached by resolved commit:
+
+```bash
+uv tool install --force --refresh "git+https://github.com/zippergen-io/zippergen.git"
+```
+
+Gmail and Google Sheets need one extra:
+
+```bash
+uv tool install "zippergen[google] @ git+https://github.com/zippergen-io/zippergen.git"
+```
 
 ZipperGen needs Python 3.11 or newer. It has no other dependencies. It
 installs two commands: `zippergen`, and `zg` for short.

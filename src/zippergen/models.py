@@ -171,6 +171,37 @@ class ModelRouting:
     settings: dict[str, ModelSettings]
 
 
+def model_invocations(
+    default_spec: str,
+    overrides: Mapping[str, str],
+    settings: Mapping[str, ModelSettings],
+    *,
+    extra: Mapping[str, ModelSettings] | None = None,
+) -> list[tuple[str, ModelSettings]]:
+    """Every distinct way a model will be invoked: one spec, one set of settings.
+
+    A readiness check that enumerates specs assumes one spec means one
+    invocation. It does not: two participants on one model with different
+    timeouts are two invocations, and a named configuration nobody has assigned
+    yet is a third. Checking one of them and reporting the model ready says
+    more than was tested.
+
+    ``extra`` carries configurations that are named but unrouted, so checking
+    one by name exercises the settings it would actually use.
+    """
+
+    targets = set(overrides) | set(settings)
+    pairs: list[tuple[str, ModelSettings]] = []
+    for target in sorted(targets):
+        spec = overrides.get(target, default_spec)
+        pairs.append((spec, settings.get(target, ModelSettings())))
+    if default_spec and not any(spec == default_spec for spec, _ in pairs):
+        pairs.append((default_spec, ModelSettings()))
+    for spec, chosen in sorted((extra or {}).items()):
+        pairs.append((spec, chosen))
+    return list(dict.fromkeys(pairs))
+
+
 def normalize_llm_overrides(values: object) -> dict[str, str]:
     """Return a string mapping from persisted or CLI-provided model overrides."""
 

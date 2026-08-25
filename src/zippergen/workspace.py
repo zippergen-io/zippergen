@@ -679,15 +679,20 @@ class Workspace:
         try:
             local = self.project_id_path.read_text(encoding="utf-8").strip()
         except (OSError, UnicodeDecodeError) as exc:
-            # An identity that exists but cannot be read is not the same as one
-            # that was never there. Treating them alike sends credential lookup
-            # to a different workspace without saying so.
-            raise WorkspaceError(
-                f"This project's identity file cannot be read: "
-                f"{self.project_id_path} ({exc}). Restore it, or delete it to "
-                "let this checkout be keyed by its path."
-            ) from exc
-        return local or None
+            raise WorkspaceError(self._unusable_identity(exc)) from exc
+        if not local:
+            # An identity file that exists must contain one. Empty and
+            # unreadable are the same fact -- this checkout claims an identity
+            # it cannot state -- and neither is the same as having none.
+            raise WorkspaceError(self._unusable_identity("it is empty"))
+        return local
+
+    def _unusable_identity(self, reason: object) -> str:
+        return (
+            f"This project's identity file cannot be used: "
+            f"{self.project_id_path} ({reason}). Restore it, or delete it to "
+            "let this checkout be keyed by its path."
+        )
 
     def _write_project_identity(self, identity: str) -> str:
         self.project_state_directory.mkdir(parents=True, exist_ok=True)
@@ -728,15 +733,20 @@ class Workspace:
         workspaces = self.home / "workspaces"
         canonical = _workspace_key(self.root, identity)
         previous = _path_derived_workspace_key(self.root, identity)
-        # Ambiguity is decided before any preference is applied. Checking the
-        # canonical name first let one claimant win silently, which is the
-        # outcome this refusal exists to prevent.
+        # Ambiguity is decided before any preference is applied, over every
+        # name this project could be under: the two it would be given, and any
+        # directory carrying its identity digest. Scanning one naming scheme
+        # let a legacy workspace win silently beside a canonical one.
         digest = hashlib.sha256(identity.encode()).hexdigest()[:10]
-        matches = sorted(
+        matches = sorted({
             path.name
             for path in workspaces.glob(f"*-{digest}")
             if path.is_dir()
-        )
+        } | {
+            name
+            for name in (canonical, previous)
+            if (workspaces / name).is_dir()
+        })
         if len(matches) > 1:
             raise WorkspaceError(
                 "Several workspaces claim this project identity: "

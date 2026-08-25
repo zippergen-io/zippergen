@@ -321,6 +321,25 @@ Three cases, kept distinct:
 - **A fresh start** — `zg deploy reset`, new store, new claim.
 - **An incompatible edit** — refused with a clear error naming `zg deploy reset`.
 
+### Nothing is written until the store is identified
+
+Opening a store reads what it is before changing anything about it. Both the
+journal mode and the file permissions are persistent properties, so an
+installation that merely looked at a store written by a newer ZipperGen would
+leave it altered — and an installation cannot acquire that restraint later,
+only ship with it.
+
+Identification has three outcomes and no others:
+
+- **no tables** — a store about to be created, safe to configure;
+- **a stated version** — compared, and a newer one refused;
+- **it cannot be read** — refused, because a locked store and a newer store are
+  indistinguishable from here and only one of them is safe to modify.
+
+That last case is why database errors are not swallowed. A locked store reads
+as "no version", and treating that as "nothing to protect" is how a newer store
+came to be converted to WAL by a reader that then refused it.
+
 ### Version gates
 
 The store is never migrated: a control position only means something under the

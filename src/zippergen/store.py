@@ -173,14 +173,22 @@ CREATE TABLE IF NOT EXISTS history (
 
 
 def open_store(path: str) -> sqlite3.Connection:
+    # One rule orders everything below: nothing about the file is changed until
+    # the store has been identified. Permissions and journal mode are both
+    # persistent, so an installation that merely looked at a store written by a
+    # newer ZipperGen would leave it altered -- and an installation cannot
+    # acquire that restraint later, only ship with it.
     connection_path = path
+    store_path: Path | None = None
     if path != ":memory:" and not path.startswith("file:"):
         store_path = Path(path).expanduser()
-        # The store holds workflow variables and human approval tokens. Create it
-        # owner-private before SQLite first opens it rather than relying on umask.
-        fd = os.open(store_path, os.O_RDWR | os.O_CREAT, 0o600)
-        os.close(fd)
-        store_path.chmod(0o600)
+        if not store_path.exists():
+            # The store holds workflow variables and human approval tokens.
+            # Create it owner-private before SQLite first opens it rather than
+            # relying on umask. Creating it means there is nothing to identify.
+            fd = os.open(store_path, os.O_RDWR | os.O_CREAT, 0o600)
+            os.close(fd)
+            store_path.chmod(0o600)
         connection_path = str(store_path)
 
     # isolation_level=None -> autocommit; transactions are driven explicitly.
@@ -199,7 +207,9 @@ def open_store(path: str) -> sqlite3.Connection:
     # at a store written by a newer ZipperGen would leave it permanently
     # altered -- and an installation cannot acquire that restraint later, only
     # ship with it.
-    _refuse_future_store(conn)
+    _identify_store(conn)
+    if store_path is not None:
+        store_path.chmod(0o600)
 
     # Switching to WAL takes a lock upgrade that SQLite deliberately does not run
     # the busy handler for, so two processes opening a fresh file together can see
@@ -285,50 +295,88 @@ def open_store_readonly(path: str | Path) -> sqlite3.Connection:
     return conn
 
 
-def _reject_replay_era_store(conn: sqlite3.Connection) -> None:
-    """Refuse a store written by the replay/snapshot design.
+# A store written by the replay/snapshot design. Its recovery state lives in an
+# event log and per-role snapshots that no longer exist, and there is nothing to
+# migrate to: the old store kept positions into a log rather than the
+# interpreter state itself. It is a shape with its own advice, so identifying it
+# is part of identifying the file.
+_REPLAY_ERA_TABLES = frozenset(
+    {"events", "snapshots", "cursors", "recovery_high_water"}
+)
+_REPLAY_ERA_ADVICE = (
+    "This durable store was written by an older ZipperGen that recovered "
+    "by replaying an event log. Its state cannot be carried over. Reset "
+    "the deployment with 'zg deploy reset', or delete the run store and "
+    "start again."
+)
 
-    Its recovery state lives in an event log and per-role snapshots that no
-    longer exist. There is nothing to migrate to, because the old store kept
-    positions into a log rather than the interpreter state itself.
-    """
+
+def _reject_replay_era_store(conn: sqlite3.Connection) -> None:
+    """Kept for the read-only opener, which does not identify before reading."""
 
     row = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name IN "
         "('events','snapshots','cursors','recovery_high_water') LIMIT 1"
     ).fetchone()
     if row is not None:
-        raise StoreSchemaError(
-            "This durable store was written by an older ZipperGen that recovered "
-            "by replaying an event log. Its state cannot be carried over. Reset "
-            "the deployment with 'zg deploy reset', or delete the run store and "
-            "start again."
-        )
+        raise StoreSchemaError(_REPLAY_ERA_ADVICE)
 
 
-def _refuse_future_store(conn: sqlite3.Connection) -> None:
-    """Refuse a store from a newer ZipperGen without modifying it.
+def _identify_store(conn: sqlite3.Connection) -> None:
+    """Read what this file is, and refuse anything this version must not touch.
 
-    This reads and nothing else. A store this version cannot recognise for any
-    other reason -- empty, foreign, an older schema -- is left to the full
-    check, which runs once the connection is configured.
+    Three outcomes, and nothing else:
+
+    * it has no tables -- a store about to be created, safe to configure;
+    * it states a version -- compare, and refuse a newer one;
+    * it cannot be read -- refuse, because an unreadable file and a newer store
+      are indistinguishable from here, and only one of them is safe to modify.
+
+    That last case is why this does not swallow database errors. A locked store
+    reads as "no version", and treating that as "nothing to protect" is how a
+    newer store came to be converted to WAL by an older reader.
     """
 
+    try:
+        tables = {
+            str(row[0])
+            for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
+    except sqlite3.Error as exc:
+        raise StoreSchemaError(
+            f"This durable store could not be read ({exc}). It was not "
+            "modified. If another process holds it, wait and retry; if the "
+            "file is damaged, reset the run or deployment and start again."
+        ) from exc
+
+    if not tables:
+        return
+    if tables & _REPLAY_ERA_TABLES:
+        raise StoreSchemaError(_REPLAY_ERA_ADVICE)
+    if "store_meta" not in tables:
+        raise StoreSchemaError(
+            "This SQLite file is not a current ZipperGen durable store. "
+            "Reset the run or deployment and start again."
+        )
     try:
         row = conn.execute(
             "SELECT value FROM store_meta WHERE key='schema_version'"
         ).fetchone()
-    except sqlite3.Error:
-        # No store_meta yet, or not a readable database. Either way there is no
-        # version to compare, and saying so is the later check's job.
-        return
-    if row is None:
-        return
+    except sqlite3.Error as exc:
+        raise StoreSchemaError(
+            f"This durable store could not be read ({exc}). It was not "
+            "modified. If another process holds it, wait and retry; if the "
+            "file is damaged, reset the run or deployment and start again."
+        ) from exc
+
+    stated = None if row is None else str(row[0])
     try:
-        version = int(str(row[0]))
+        version = int(stated) if stated is not None else None
     except ValueError:
-        return
-    if version > SCHEMA_VERSION:
+        version = None
+    if version is not None and version > SCHEMA_VERSION:
         raise StoreSchemaError(
             f"This durable store uses schema {version}, but this ZipperGen "
             f"reads {SCHEMA_VERSION}. It was written by a newer ZipperGen; "

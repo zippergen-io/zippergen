@@ -6,7 +6,7 @@ instruction text the deleted shell generated when it invoked an assistant — wh
 required a git checkout and disappears with the shell.
 
 This module makes the skill reachable from the installed package instead, so
-`pip install zippergen` is enough:
+an ordinary install is enough:
 
     zippergen skill              print it
     zippergen skill --agents-md  print an AGENTS.md that points at it

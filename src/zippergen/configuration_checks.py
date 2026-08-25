@@ -216,36 +216,38 @@ def _temporary_environment(values: dict[str, str]):
                 os.environ[name] = value
 
 
-def _settings_for_specs(
+def _model_invocations(
     resolved_models: dict[str, object],
-) -> dict[str, "ModelSettings"]:
-    """Map each routed spec to the settings that will be used with it.
+    model_configurations: dict[str, dict[str, str]],
+    model_names: tuple[str, ...],
+) -> list[tuple[str, "ModelSettings"]]:
+    """Ask the model layer what will run, rather than reconstructing it here."""
 
-    Settings are recorded per target -- a participant or an action -- while a
-    live check is per spec, because one spec may serve several targets. Where
-    targets on one spec disagree, no settings are used rather than a guess.
-    """
+    from zippergen.models import model_invocations, model_settings_from_mapping
 
-    from zippergen.models import model_settings_from_mapping
-
-    raw = resolved_models.get("settings")
-    if not isinstance(raw, Mapping):
-        return {}
     overrides = resolved_models.get("overrides")
-    default_spec = str(resolved_models.get("default") or "")
-    routes = dict(overrides) if isinstance(overrides, Mapping) else {}
-
-    by_spec: dict[str, ModelSettings] = {}
-    conflicting: set[str] = set()
-    for target, value in raw.items():
-        spec = str(routes.get(target, routes.get(str(target).partition(".")[0], default_spec)))
-        chosen = model_settings_from_mapping(value, subject=str(target))
-        if spec in by_spec and by_spec[spec] != chosen:
-            conflicting.add(spec)
-        by_spec[spec] = chosen
-    for spec in conflicting:
-        by_spec.pop(spec, None)
-    return by_spec
+    raw_settings = resolved_models.get("settings")
+    settings = {
+        str(target): model_settings_from_mapping(value, subject=str(target))
+        for target, value in (
+            raw_settings.items() if isinstance(raw_settings, Mapping) else ()
+        )
+    }
+    # A configuration that is named but unrouted is still checkable by name, so
+    # it is checked with the settings it would actually use.
+    extra = {
+        str(model_configurations[name]["spec"]): model_settings_from_mapping(
+            model_configurations[name], subject=name
+        )
+        for name in model_names
+        if name in model_configurations
+    }
+    return model_invocations(
+        str(resolved_models.get("default") or ""),
+        dict(overrides) if isinstance(overrides, Mapping) else {},
+        settings,
+        extra=extra,
+    )
 
 
 def _live_model_check(
@@ -521,15 +523,17 @@ def _site_checks(
                 )
 
         if live:
-            settings_by_spec = _settings_for_specs(resolved_models)
-            unique_specs = dict.fromkeys(specs)
-            for spec in unique_specs:
+            # Check every distinct way a model will be invoked, not every
+            # distinct spec. One spec can be two invocations.
+            for spec, chosen in _model_invocations(
+                resolved_models, model_configurations, model_names
+            ):
                 try:
                     _live_model_check(
                         spec,
                         environment,
                         project_root=workspace.root,
-                        settings=settings_by_spec.get(spec),
+                        settings=chosen,
                     )
                 except Exception as exc:
                     checks.append(

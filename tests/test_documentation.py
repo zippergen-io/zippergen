@@ -47,3 +47,39 @@ def test_no_document_tells_a_reader_to_install_from_pypi_yet():
         "these tell a reader to install a package that is not published: "
         + ", ".join(str(path) for path in offenders)
     )
+
+
+def test_nothing_anywhere_tells_a_reader_to_install_from_pypi_yet():
+    """`pip install zippergen` fails: the package is not published.
+
+    The previous version of this test scanned selected documents for one
+    literal string, and missed both a runtime error message and an extras
+    command. It now scans every file a reader can reach, for the shape of the
+    instruction rather than one spelling of it.
+
+    Delete this test when the name is on PyPI.
+    """
+
+    import re
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    pattern = re.compile(r"""pip install ["']?zippergen(\[[a-z]+\])?["']?(?!\s*[@\w./:-])""")
+    searched = [
+        *root.glob("*.md"),
+        *(root / "docs").rglob("*.md"),
+        *(root / "docs").rglob("*.tex"),
+        *(root / "src").rglob("*.py"),
+        *(root / "src").rglob("*.md"),
+        *(root / ".agents").rglob("*.md"),
+    ]
+    offenders = [
+        str(path.relative_to(root))
+        for path in searched
+        if pattern.search(path.read_text(encoding="utf-8"))
+    ]
+
+    assert not offenders, (
+        "these tell a reader to install a package that is not published: "
+        + ", ".join(offenders)
+    )

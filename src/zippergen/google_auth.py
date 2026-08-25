@@ -31,6 +31,22 @@ _GOOGLE_SCOPE_NAMES = {
 _GOOGLE_AUTHORIZATION_PREFIX = "zg-google-v1"
 
 
+INSTALL_SOURCE = "git+https://github.com/zippergen-io/zippergen.git"
+
+
+def install_command(*, extra: str | None = None) -> str:
+    """The one true way to install this version, extras included.
+
+    Every message that tells somebody how to install ZipperGen asks here. A
+    second copy of the command is a second thing to update when the answer
+    changes, and the copies that are messages rather than documents are the
+    ones nobody thinks to look for.
+    """
+
+    target = f"zippergen[{extra}] @ {INSTALL_SOURCE}" if extra else INSTALL_SOURCE
+    return f'uv tool install "{target}"'
+
+
 class GoogleConnectorError(RuntimeError):
     """A Google connector error phrased for a person to act on."""
 
@@ -67,7 +83,7 @@ def google_imports():
     except ImportError as exc:
         raise GoogleConnectorError(
             "Google connector support is not installed. Install it with "
-            'pip install "zippergen[google]".'
+            f"{install_command(extra='google')}."
         ) from exc
     return AuthorizedSession, Request, Credentials, InstalledAppFlow
 

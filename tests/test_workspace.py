@@ -641,7 +641,7 @@ def test_an_unreadable_identity_is_not_treated_as_an_absent_one(tmp_path):
     with pytest.raises(WorkspaceError) as caught:
         Workspace(root, home=home).directory
 
-    assert "identity file cannot be read" in str(caught.value)
+    assert "identity file cannot be used" in str(caught.value)
 
 
 def test_a_clone_without_any_identity_still_resolves(tmp_path):
@@ -655,3 +655,54 @@ def test_a_clone_without_any_identity_still_resolves(tmp_path):
     )
 
     assert Workspace(root, home=home).directory.name.startswith("cloned-")
+
+
+def test_an_empty_identity_file_is_refused_like_an_unreadable_one(tmp_path):
+    """An identity file that exists must contain one.
+
+    Empty and unreadable are the same fact -- this checkout claims an identity
+    it cannot state -- and neither is the same as having none.
+    """
+
+    home = tmp_path / "home"
+    root = tmp_path / "mailbox"
+    root.mkdir()
+    workspace = Workspace(root, home=home)
+    workspace.initialize_project(name="mailbox")
+    workspace.workspace_name_path.unlink(missing_ok=True)
+    workspace.project_id_path.write_text("")
+
+    with pytest.raises(WorkspaceError) as caught:
+        Workspace(root, home=home).directory
+
+    assert "cannot be used" in str(caught.value)
+
+
+def test_a_legacy_workspace_beside_a_canonical_one_is_ambiguous(tmp_path):
+    """The two naming schemes use different digests, so one scan misses one.
+
+    Note the resolved root: `Workspace.root` resolves symlinks, and building a
+    candidate name from an unresolved path produces a name the resolver never
+    looks for.
+    """
+
+    from zippergen.workspace import _path_derived_workspace_key, _workspace_key
+
+    home = tmp_path / "home"
+    root = tmp_path / "mailbox"
+    root.mkdir()
+    workspace = Workspace(root, home=home)
+    workspace.initialize_project(name="mailbox")
+    identity = workspace._project_id()
+    assert identity is not None
+    for name in (
+        _workspace_key(workspace.root, identity),
+        _path_derived_workspace_key(workspace.root, identity),
+    ):
+        (home / "workspaces" / name).mkdir(parents=True, exist_ok=True)
+    workspace.workspace_name_path.unlink(missing_ok=True)
+
+    with pytest.raises(WorkspaceError) as caught:
+        Workspace(root, home=home).directory
+
+    assert "Several workspaces claim this project identity" in str(caught.value)
