@@ -8,6 +8,7 @@ from types import ModuleType
 from typing import Protocol
 
 from zippergen.syntax import AssistantAction, Workflow
+from zippergen.assistant_backends import ASSISTANT_BACKENDS
 
 
 class _AssistantWorkspace(Protocol):
@@ -86,7 +87,7 @@ def normalize_assistant_overrides(values: object) -> dict[str, str]:
     for target, backend in values.items():
         name = str(target).strip()
         selected = str(backend).strip().casefold()
-        if not name or selected not in {"codex", "claude"}:
+        if not name or selected not in set(ASSISTANT_BACKENDS):
             raise SystemExit(
                 "Assistant routes require TARGET=codex or TARGET=claude."
             )
@@ -104,7 +105,7 @@ def effective_assistant_routes(
     """Validate concrete assistant routes against the workflow."""
 
     default = str(default_backend or "").strip().casefold() or None
-    if default not in {None, "codex", "claude"}:
+    if default not in {None, *ASSISTANT_BACKENDS}:
         raise SystemExit("The default assistant backend must be codex or claude.")
     selected = normalize_assistant_overrides(overrides)
     known = set(assistant_targets(workflow, module)) - {"default"}
@@ -149,7 +150,7 @@ def project_assistant_routing(
                 "[assistants.configurations] in zippergen.toml."
             )
         backend = str(value.get("backend") or "").strip().casefold()
-        if backend not in {"codex", "claude"}:
+        if backend not in set(ASSISTANT_BACKENDS):
             raise SystemExit(
                 f"Assistant configuration {selected!r} must select codex or "
                 "claude."

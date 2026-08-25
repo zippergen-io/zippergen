@@ -433,10 +433,10 @@ def test_generated_control_variables_avoid_names_the_author_used():
     """
 
     from zippergen.syntax import occurring_variables
-    from zippergen.projection import _ControlVariables
+    from zippergen.projection import _Context
 
     occupied = frozenset({"_ctrl1", "_ctrl2", "_ctrl4"})
-    allocator = _ControlVariables(occupied)
+    allocator = _Context(occupied)
     issued = [allocator.fresh().name for _ in range(3)]
 
     assert issued == ["_ctrl3", "_ctrl5", "_ctrl6"]
@@ -574,4 +574,105 @@ def test_one_predicate_answers_whether_a_value_is_control():
     assert not offenders, (
         "these modules re-test the reserved prefix instead of asking "
         f"is_reserved_control_text: {offenders}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Completeness: every global construct must have a projection rule
+# ---------------------------------------------------------------------------
+
+def _one_of_each_global_statement():
+    """A minimal instance of every member of the global `Stmt` union."""
+
+    A = Lifeline("A")
+    B = Lifeline("B")
+    v = Var("v", int)
+    msg = MsgStmt(A, (VarExpr(v),), B, (VarExpr(v),))
+    return {
+        EmptyStmt: EmptyStmt(),
+        MsgStmt: msg,
+        CoregionStmt: CoregionStmt((msg,)),
+        ActStmt: ActStmt(A, _make_x, (), (Var("q", str),)),
+        SkipStmt: SkipStmt(A),
+        SeqStmt: SeqStmt(msg, EmptyStmt()),
+        IfStmt: IfStmt(lambda _e: True, A, msg, EmptyStmt()),
+        WhileStmt: WhileStmt(lambda _e: False, A, msg, EmptyStmt()),
+        ParallelStmt: ParallelStmt((msg, EmptyStmt())),
+    }
+
+
+def test_every_global_construct_has_a_projection_rule():
+    """A construct with no rule fails only when someone projects it.
+
+    `_project` takes AnyStmt, because SeqStmt/IfStmt/WhileStmt are shared by
+    global and local programs and carry AnyStmt children. That means pyright
+    cannot force a new global member to gain a rule -- a contributor can add a
+    construct, wire the builder and the runtime, and leave projection out with
+    every check still green. This test is what forces it.
+    """
+
+    import typing
+
+    from zippergen.projection import _Context, _project
+    from zippergen.syntax import Stmt
+
+    declared = {member for member in typing.get_args(Stmt)}
+    covered = _one_of_each_global_statement()
+    missing = declared - set(covered)
+    assert not missing, (
+        "the global Stmt union gained member(s) this test does not build, so "
+        f"nothing checks that projection handles them: {sorted(m.__name__ for m in missing)}"
+    )
+
+    for member, instance in covered.items():
+        for lifeline in (Lifeline("A"), Lifeline("B"), Lifeline("C")):
+            try:
+                _project(instance, lifeline, _Context(frozenset()))
+            except TypeError as exc:
+                raise AssertionError(
+                    f"{member.__name__} has no projection rule: {exc}"
+                ) from exc
+
+
+def test_participation_is_analysed_once_per_node_not_once_per_query():
+    """The paper's analysis is syntax-directed and linear; so is this one.
+
+    Projection asks for the participants of both continuations at every
+    `if`/`while`, and each ask used to re-walk the whole subtree. Nested
+    control constructs therefore cost O(|P|^2) per lifeline. Counting node
+    visits is what makes the difference visible -- wall-clock would not.
+    """
+
+    from zippergen import syntax
+    from zippergen.projection import _Context, _project
+
+    A = Lifeline("A")
+    B = Lifeline("B")
+    v = Var("v", int)
+    msg = MsgStmt(A, (VarExpr(v),), B, (VarExpr(v),))
+
+    # Twelve nested conditionals: deep enough that rescanning is unmistakable.
+    body = msg
+    for _ in range(12):
+        body = IfStmt(lambda _e: True, A, body, msg)
+    workflow_body = SeqStmt(body, EmptyStmt())
+
+    visits = 0
+    original = syntax._participation_set
+
+    def counting(stmt, memo):
+        nonlocal visits
+        visits += 1
+        return original(stmt, memo)
+
+    syntax._participation_set = counting
+    try:
+        _project(workflow_body, B, _Context(frozenset()))
+    finally:
+        syntax._participation_set = original
+
+    nodes = 2 * 12 + 2
+    assert visits <= nodes * 2, (
+        f"{visits} analyses for about {nodes} nodes: participation is being "
+        "recomputed rather than consulted"
     )

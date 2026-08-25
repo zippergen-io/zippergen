@@ -22,7 +22,9 @@ from zippergen.provider_connections import (
     split_model_spec,
 )
 from zippergen.syntax import LLMAction, Workflow
+from zippergen.process_environment import temporary_environment
 from zippergen.workspace import Workspace
+from zippergen.assistant_backends import ASSISTANT_BACKENDS
 
 
 Check = dict[str, object]
@@ -203,20 +205,6 @@ def _static_connector_checks(
     return checks
 
 
-@contextmanager
-def _temporary_environment(values: dict[str, str]):
-    previous = {name: os.environ.get(name) for name in values}
-    os.environ.update(values)
-    try:
-        yield
-    finally:
-        for name, value in previous.items():
-            if value is None:
-                os.environ.pop(name, None)
-            else:
-                os.environ[name] = value
-
-
 def _model_invocations(
     resolved_models: dict[str, object],
     model_configurations: dict[str, dict[str, str]],
@@ -287,7 +275,7 @@ def _live_model_check(
         user_prompt="Reply with OK.",
         parse_format="text",
     )
-    with _temporary_environment(environment):
+    with temporary_environment(environment):
         backend, _label = backend_from_spec(
             spec,
             fallback=lambda _action, _inputs: {"reply": "OK"},
@@ -497,7 +485,7 @@ def _site_checks(
         selected_assistant_backends = {
             str(item.get("backend"))
             for item in resolved_assistants
-            if item.get("backend") in {"codex", "claude"}
+            if item.get("backend") in set(ASSISTANT_BACKENDS)
         }
         selected_assistant_backends.update(
             assistant_configurations[name]["backend"]

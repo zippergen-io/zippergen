@@ -27,6 +27,7 @@ from collections.abc import Mapping
 from typing import Any
 
 from zippergen.value_codec import decode_value, encode_value
+from zippergen.assistant_backends import ASSISTANT_BACKENDS
 
 
 WORKSPACE_SCHEMA_VERSION = 2
@@ -1949,7 +1950,7 @@ class Workspace:
                     f"Assistant configuration {name!r} must be a table."
                 )
             backend = str(configuration.get("backend") or "").strip().casefold()
-            if backend not in {"codex", "claude"}:
+            if backend not in set(ASSISTANT_BACKENDS):
                 raise WorkspaceError(
                     f"Assistant configuration {name!r} must select backend "
                     "'codex' or 'claude'."
@@ -1968,7 +1969,7 @@ class Workspace:
             name, subject="assistant configuration"
         )
         selected = backend.strip().casefold()
-        if selected not in {"codex", "claude"}:
+        if selected not in set(ASSISTANT_BACKENDS):
             raise WorkspaceError(
                 "An assistant configuration backend must be 'codex' or "
                 "'claude'."

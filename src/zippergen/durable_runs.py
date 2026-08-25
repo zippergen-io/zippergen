@@ -38,6 +38,7 @@ from zippergen.models import (
 from zippergen.rendering import StatusKind, TerminalRenderer
 from zippergen.semantic import semantic_snapshot, workflow_semantics
 from zippergen.syntax import Json, Workflow, validate_zvalue
+from zippergen.process_environment import temporary_environment
 from zippergen.workspace import Workspace, WorkspaceError
 from zippergen.workflow_io import (
     RunConfig,
@@ -313,20 +314,6 @@ def collect_development_environment(
     if secrets_changed:
         workspace.save_secrets(saved_secrets)
     return environment
-
-
-@contextmanager
-def _temporary_environment(values: dict[str, str]):
-    previous = {name: os.environ.get(name) for name in values}
-    os.environ.update(values)
-    try:
-        yield
-    finally:
-        for name, value in previous.items():
-            if value is None:
-                os.environ.pop(name, None)
-            else:
-                os.environ[name] = value
 
 
 def _parse_guided_value(raw: str) -> object:
@@ -928,7 +915,7 @@ def _run_durable_in_project(
     )
 
     try:
-        with _temporary_environment(environment):
+        with temporary_environment(environment):
             _run_setup_hook(
                 workflow_spec=stored_spec,
                 workflow=workflow,

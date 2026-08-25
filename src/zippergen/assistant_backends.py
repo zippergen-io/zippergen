@@ -99,6 +99,16 @@ _ASSISTANT_BASE_ENVIRONMENT = {
 # directly: it is given the paths where its own login lives, and no key. An
 # assistant that genuinely needs its own automated credential should be given
 # one explicitly, never one inferred from a workflow's model routing.
+#: The coding assistants ZipperGen can run, in the order they are offered.
+#:
+#: This is the only declaration. Configuration, workspace parsing, checks,
+#: completion, and the CLI choice lists all read it, so a backend cannot
+#: become executable without also being configurable and offerable -- the
+#: partial-update failure that a set repeated in ten places invites.
+#: ``tests/test_assistant_backends_declaration.py`` holds them together.
+ASSISTANT_BACKENDS = ("codex", "claude")
+
+
 _ASSISTANT_AUTH_ENVIRONMENT = {
     "codex": {"CODEX_HOME"},
     "claude": {"CLAUDE_CONFIG_DIR"},
@@ -284,7 +294,7 @@ def make_cli_assistant_backend(
     passed directly to the selected executable.
     """
 
-    if default is not None and default not in {"codex", "claude"}:
+    if default is not None and default not in set(ASSISTANT_BACKENDS):
         raise ValueError(
             f"assistant backend must be 'codex' or 'claude', got {default!r}"
         )
@@ -295,7 +305,7 @@ def make_cli_assistant_backend(
     invalid = sorted(
         target
         for target, backend in selected_routes.items()
-        if backend not in {"codex", "claude"}
+        if backend not in set(ASSISTANT_BACKENDS)
     )
     if invalid:
         raise ValueError(
@@ -315,7 +325,7 @@ def make_cli_assistant_backend(
             or selected_routes.get(participant)
             or default
         )
-        if selected not in {"codex", "claude"}:
+        if selected not in set(ASSISTANT_BACKENDS):
             raise AssistantExecutionError(
                 f"Assistant action '{action.name}' has no backend. Assign a "
                 "named assistant configuration, provide an assistant backend "

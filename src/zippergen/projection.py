@@ -25,11 +25,16 @@ __all__ = ["project"]
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-def _receivers(p_left: AnyStmt, p_right: AnyStmt, owner: Lifeline) -> list[Lifeline]:
+def _receivers(
+    p_left: AnyStmt,
+    p_right: AnyStmt,
+    owner: Lifeline,
+    context: "_Context",
+) -> list[Lifeline]:
     """
     Compute R = (L(p_left) ∪ L(p_right)) - {owner}, sorted by name (the ≺ order).
     """
-    combined = participation_set(p_left) | participation_set(p_right)
+    combined = context.participants(p_left) | context.participants(p_right)
     return sorted(combined - {owner}, key=lambda l: l.name)
 
 
@@ -49,8 +54,12 @@ def _ctrl_sends(
     return [SendStmt(owner, (lit, tag), C, channel) for C in receivers]
 
 
-class _ControlVariables:
-    """Allocates the receive-guard variables _ctrl1, _ctrl2, … for one lifeline.
+class _Context:
+    """The whole-program facts the recursion carries: fresh names, and who
+    participates where.
+
+    Both are properties of the entire workflow rather than of one step, so
+    both are established once per projection and consulted, never recomputed.
 
     The paper requires each generated variable to be fresh -- not occurring in
     P. Freshness is a property of the whole program, not of the allocation
@@ -66,6 +75,12 @@ class _ControlVariables:
     def __init__(self, occupied: frozenset[str]) -> None:
         self._occupied = occupied
         self._issued = 0
+        self._participation: dict[int, frozenset[Lifeline]] = {}
+
+    def participants(self, stmt: AnyStmt) -> frozenset[Lifeline]:
+        """L(stmt), computed once per node for this projection."""
+
+        return participation_set(stmt, self._participation)
 
     def fresh(self) -> Var:
         while True:
@@ -88,7 +103,7 @@ def _parallel_channel(stmt: ParallelStmt, branch_index: int, parent_channel: str
 # Core projection — structural recursion on Stmt
 # ---------------------------------------------------------------------------
 
-def _project(stmt: AnyStmt, A: Lifeline, counter: _ControlVariables, channel: str = "main") -> LocalStmt:
+def _project(stmt: AnyStmt, A: Lifeline, context: _Context, channel: str = "main") -> LocalStmt:
     """π_A(stmt) — one step of the structural recursion."""
 
     match stmt:
@@ -118,7 +133,7 @@ def _project(stmt: AnyStmt, A: Lifeline, counter: _ControlVariables, channel: st
                     receives=tuple((msg.sender, msg.bindings) for msg in messages),
                     channel=channel,
                 )
-            return cast(LocalStmt, seq(*(_project(msg, A, counter, channel) for msg in messages)))
+            return cast(LocalStmt, seq(*(_project(msg, A, context, channel) for msg in messages)))
 
         # act X(ys) := f(xs)
         case ActStmt(lifeline=X):
@@ -130,17 +145,17 @@ def _project(stmt: AnyStmt, A: Lifeline, counter: _ControlVariables, channel: st
 
         # P1 ; P2
         case SeqStmt(first=p1, second=p2):
-            return cast(LocalStmt, seq(_project(p1, A, counter, channel), _project(p2, A, counter, channel)))
+            return cast(LocalStmt, seq(_project(p1, A, context, channel), _project(p2, A, context, channel)))
 
         # parallel { P_i }_i
         case ParallelStmt(branches=branches):
             local_branches: list[LocalStmt] = []
             branch_indices: list[int] = []
             for i, branch in enumerate(branches):
-                if A not in participation_set(branch):
+                if A not in context.participants(branch):
                     continue
                 branch_channel = _parallel_channel(stmt, i, channel)
-                local_branches.append(_project(branch, A, counter, branch_channel))
+                local_branches.append(_project(branch, A, context, branch_channel))
                 branch_indices.append(i)
             if not local_branches:
                 return EmptyStmt()
@@ -148,7 +163,7 @@ def _project(stmt: AnyStmt, A: Lifeline, counter: _ControlVariables, channel: st
 
         # if c@B then P_⊤ else P_⊥
         case IfStmt(condition=c, owner=B, branch_true=p_true, branch_false=p_false):
-            r_if = _receivers(p_true, p_false, B)
+            r_if = _receivers(p_true, p_false, B, context)
             tag = make_kappa_ctrl(canonical_construct_key(stmt))   # κ_ctrl^P: keyed on construct content
 
             if A == B:
@@ -158,22 +173,22 @@ def _project(stmt: AnyStmt, A: Lifeline, counter: _ControlVariables, channel: st
                     owner=B,
                     branch_true=seq(
                         *_ctrl_sends(B, True,  r_if, tag, channel),
-                        _project(p_true,  B, counter, channel),
+                        _project(p_true,  B, context, channel),
                     ),
                     branch_false=seq(
                         *_ctrl_sends(B, False, r_if, tag, channel),
-                        _project(p_false, B, counter, channel),
+                        _project(p_false, B, context, channel),
                     ),
                 )
             elif A in frozenset(r_if):
                 # Receiver: wait for B's decision, branch accordingly.
-                ctrl = counter.fresh()
+                ctrl = context.fresh()
                 return IfRecvStmt(
                     lifeline=A,
                     bindings=(VarExpr(ctrl), tag),
                     sender=B,
-                    branch_true=_project(p_true,  A, counter, channel),
-                    branch_false=_project(p_false, A, counter, channel),
+                    branch_true=_project(p_true,  A, context, channel),
+                    branch_false=_project(p_false, A, context, channel),
                     channel=channel,
                 )
             else:
@@ -181,7 +196,7 @@ def _project(stmt: AnyStmt, A: Lifeline, counter: _ControlVariables, channel: st
 
         # while c@B do P_body exit P_exit
         case WhileStmt(condition=c, owner=B, body=p_body, exit_body=p_exit):
-            r_while = _receivers(p_body, p_exit, B)
+            r_while = _receivers(p_body, p_exit, B, context)
             tag = make_kappa_ctrl(canonical_construct_key(stmt))   # κ_ctrl^P: keyed on construct content
 
             if A == B:
@@ -191,28 +206,34 @@ def _project(stmt: AnyStmt, A: Lifeline, counter: _ControlVariables, channel: st
                     owner=B,
                     body=seq(
                         *_ctrl_sends(B, True,  r_while, tag, channel),
-                        _project(p_body, B, counter, channel),
+                        _project(p_body, B, context, channel),
                     ),
                     exit_body=seq(
                         *_ctrl_sends(B, False, r_while, tag, channel),
-                        _project(p_exit, B, counter, channel),
+                        _project(p_exit, B, context, channel),
                     ),
                 )
             elif A in frozenset(r_while):
                 # Receiver: loop decision comes from B each iteration.
-                ctrl = counter.fresh()
+                ctrl = context.fresh()
                 return WhileRecvStmt(
                     lifeline=A,
                     bindings=(VarExpr(ctrl), tag),
                     sender=B,
-                    body=_project(p_body, A, counter, channel),
-                    exit_body=_project(p_exit, A, counter, channel),
+                    body=_project(p_body, A, context, channel),
+                    exit_body=_project(p_exit, A, context, channel),
                     channel=channel,
                 )
             else:
                 return EmptyStmt()
 
         case _:
+            # Reached only when a global IR member gains no projection rule.
+            # The type model cannot catch this: SeqStmt, IfStmt and WhileStmt
+            # carry AnyStmt children because they are shared by global and
+            # local programs, so `stmt` cannot be narrowed to Stmt without
+            # making those nodes generic. `test_projection.py` closes the gap
+            # by projecting every member of Stmt.
             raise TypeError(f"Unknown statement type: {type(stmt).__name__}")
 
 
@@ -237,4 +258,4 @@ def project(wf: Workflow, lifeline: Lifeline) -> LocalStmt:
         | {var.name for var in wf.vars}
         | {var.name for var, _lifeline in wf.outputs}
     )
-    return _project(wf.body, lifeline, _ControlVariables(frozenset(occupied)))
+    return _project(wf.body, lifeline, _Context(frozenset(occupied)))

@@ -1563,7 +1563,6 @@ Current (broken) workflow:
         def _inner_trace(event: dict) -> None:
             if trace:
                 trace({**event, "path": my_path})
-        wf._trace = _inner_trace
 
         # Extract inner workflow parameter names to build initial_envs.
         inner_params: list[str] = []
@@ -1581,8 +1580,7 @@ Current (broken) workflow:
             finally:
                 t.name = saved
 
-        wf._backend = _inner_backend
-        wf._timeout = 180
+        wf.configure(backend=_inner_backend, trace=_inner_trace, timeout=180)
         try:
             result = wf._run_once(inputs_for_wf)
         finally:

@@ -8,6 +8,7 @@ from zippergen.project_configuration import (
 )
 from zippergen.workspace import Workspace, WorkspaceError
 from zippergen.workflow_io import load_workflow_spec
+from zippergen.assistant_backends import ASSISTANT_BACKENDS
 
 
 #: Which candidates complete a positional argument, as
@@ -133,7 +134,7 @@ def completion_candidates(
     }:
         return _parser_choices((kind.removesuffix("-actions"),))
     if kind == "assistant-backends":
-        return ["codex", "claude"]
+        return list(ASSISTANT_BACKENDS)
     if kind == "provider-kinds":
         from zippergen.provider_connections import PROVIDER_KINDS
 

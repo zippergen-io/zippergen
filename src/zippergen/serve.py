@@ -34,7 +34,9 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from zippergen.models import ModelSettings
-    from zippergen.workspace import Workspace
+
+from zippergen.process_environment import temporary_environment
+from zippergen.workspace import Workspace
 
 from zippergen.deployment import (
     DeploymentField,
@@ -148,6 +150,7 @@ from zippergen.semantic import (
     semantic_snapshot,
     workflow_semantics,
 )
+from zippergen.assistant_backends import ASSISTANT_BACKENDS
 from zippergen.syntax import Workflow, is_reserved_control_text
 from zippergen.store import (
     complete_human_task,
@@ -161,22 +164,6 @@ from zippergen.store import (
     read_history_keep,
     write_history_keep,
 )
-
-
-@contextmanager
-def _temporary_environment(values: Mapping[str, str]):
-    """Apply private runtime values for one foreground command."""
-
-    previous = {name: os.environ.get(name) for name in values}
-    os.environ.update({name: str(value) for name, value in values.items()})
-    try:
-        yield
-    finally:
-        for name, value in previous.items():
-            if value is None:
-                os.environ.pop(name, None)
-            else:
-                os.environ[name] = value
 
 
 def _parse_inputs(pairs: list[str]) -> dict:
@@ -557,18 +544,6 @@ def _install_launchd_agent(profile: dict[str, object], *, dry_run: bool = False)
     return target
 
 
-
-
-
-
-
-
-
-
-
-
-
-
 def _deployment_lifecycle_command(args, action: str) -> int:
     from zippergen.deployment_platform import deployment_service_status
 
@@ -932,8 +907,6 @@ def _print_execution_reference(reference: _ExecutionReference) -> None:
         )
     renderer.emit(f"Store: {reference.store}")
     renderer.emit()
-
-
 
 
 def _safe_json_loads(value):
@@ -1808,7 +1781,7 @@ def _run_workflow_from_project(args, workspace) -> int:
         )
     )
     try:
-        with _temporary_environment(runtime_environment):
+        with temporary_environment(runtime_environment):
             _call_setup_hook(module, config)
             if llms:
                 wf.configure(
@@ -1949,8 +1922,6 @@ def _show_command(args) -> int:
     else:
         print(str(data["code"]))
     return 0
-
-
 
 
 def _validate_command(args) -> int:
@@ -2771,7 +2742,7 @@ def _assistant_command(args) -> int:
                 args.backend,
                 label="Assistant backend",
                 command="zg assistant configure NAME BACKEND",
-                choices=("codex", "claude"),
+                choices=ASSISTANT_BACKENDS,
                 default=str(existing.get("backend") or "") or None,
             )
             check = _name_check("assistant configuration")
@@ -5971,7 +5942,7 @@ def _parse_cli_args(
     assistant_configure.add_argument(
         "backend",
         nargs="?",
-        choices=("codex", "claude"),
+        choices=ASSISTANT_BACKENDS,
         help="Coding-assistant CLI selected by this configuration.",
     )
     assistant_configure.add_argument("--project", help="Project root.")

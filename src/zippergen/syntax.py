@@ -885,45 +885,11 @@ class Workflow:
     ns: dict = field(default_factory=dict)  # workflow's global namespace (for condition lambdas)
     _rt: _WorkflowRuntime = field(default_factory=_WorkflowRuntime, init=False, repr=False)
 
-    # Convenience property shims so planner.py and tests can still write
-    # wf._backend = x, wf._trace = x, wf._timeout = x without changes.
-    @property
-    def _backend(self): return self._rt._backend
-    @_backend.setter
-    def _backend(self, v): self._rt._backend = v
-
-    @property
-    def _trace(self): return self._rt._trace
-    @_trace.setter
-    def _trace(self, v): self._rt._trace = v
-
-    @property
-    def _timeout(self): return self._rt._timeout
-    @_timeout.setter
-    def _timeout(self, v): self._rt._timeout = v
-
-    @property
-    def _run_lock(self): return self._rt._run_lock
-
-    @property
-    def _human_backend(self): return self._rt._human_backend
-    @_human_backend.setter
-    def _human_backend(self, v): self._rt._human_backend = v
-
-    @property
-    def _assistant_backend(self): return self._rt._assistant_backend
-    @_assistant_backend.setter
-    def _assistant_backend(self, v): self._rt._assistant_backend = v
-
-    @property
-    def _execution(self): return self._rt._execution
-    @_execution.setter
-    def _execution(self, v): self._rt._execution = v
-
-    @property
-    def _store_path(self): return self._rt._store_path
-    @_store_path.setter
-    def _store_path(self, v): self._rt._store_path = v
+    # Mutable runtime state lives only on ``_rt``. It is set through
+    # ``configure`` -- or, inside the runtime itself, on ``_rt`` directly.
+    # There is no second path: shadow properties on the IR object taught
+    # contributors that either was fine, which is how a runtime field ends up
+    # on the wrong layer.
 
     @property
     def output_var(self) -> "Var | None":
@@ -1041,9 +1007,19 @@ def seq(*stmts: AnyStmt) -> AnyStmt:
 # participation_set — L(P) from the paper (Definition 8)
 # ---------------------------------------------------------------------------
 
-def participation_set(stmt: AnyStmt) -> frozenset[Lifeline]:
+def participation_set(
+    stmt: AnyStmt,
+    memo: dict[int, frozenset[Lifeline]] | None = None,
+) -> frozenset[Lifeline]:
     """
     Compute the set of lifelines that appear in a statement.
+
+    Pass ``memo`` to analyse each node once across many queries. Projection
+    asks for the participants of every ``if``/``while`` continuation and every
+    parallel branch, and each ask re-walked the whole subtree -- so a chain of
+    nested control constructs cost O(|P|^2) per lifeline instead of the linear
+    analysis the paper describes. The memo is keyed by node identity and lives
+    for one projection, during which the workflow body holds every node alive.
 
     L(ε)                        = ∅
     L(msg A(x) → B(y))          = {A, B}
@@ -1054,6 +1030,27 @@ def participation_set(stmt: AnyStmt) -> frozenset[Lifeline]:
     L(if c@B then P1 else P2)   = {B} ∪ L(P1) ∪ L(P2)
     L(while c@B do P exit P')   = {B} ∪ L(P) ∪ L(P')
     """
+    if memo is not None:
+        cached = memo.get(id(stmt))
+        if cached is not None:
+            return cached
+    result = _participation_set(stmt, memo)
+    if memo is not None:
+        memo[id(stmt)] = result
+    return result
+
+
+def _participants(
+    stmt: AnyStmt, memo: dict[int, frozenset[Lifeline]] | None
+) -> frozenset[Lifeline]:
+    return participation_set(stmt, memo)
+
+
+def _participation_set(
+    stmt: AnyStmt, memo: dict[int, frozenset[Lifeline]] | None
+) -> frozenset[Lifeline]:
+    """The rules themselves; ``participation_set`` owns the memo."""
+
     match stmt:
         case EmptyStmt():
             return frozenset()
@@ -1070,15 +1067,15 @@ def participation_set(stmt: AnyStmt) -> frozenset[Lifeline]:
         case SkipStmt(lifeline=a):
             return frozenset({a})
         case SeqStmt(first=p1, second=p2):
-            return participation_set(p1) | participation_set(p2)
+            return _participants(p1, memo) | _participants(p2, memo)
         case IfStmt(owner=b, branch_true=p1, branch_false=p2):
-            return frozenset({b}) | participation_set(p1) | participation_set(p2)
+            return frozenset({b}) | _participants(p1, memo) | _participants(p2, memo)
         case WhileStmt(owner=b, body=p, exit_body=q):
-            return frozenset({b}) | participation_set(p) | participation_set(q)
+            return frozenset({b}) | _participants(p, memo) | _participants(q, memo)
         case ParallelStmt(branches=branches) | ParallelLocalStmt(branches=branches):
             branch_participants: frozenset[Lifeline] = frozenset()
             for branch in branches:
-                branch_participants |= participation_set(branch)
+                branch_participants |= _participants(branch, memo)
             return branch_participants
         case SendStmt(lifeline=a):
             return frozenset({a})
@@ -1089,9 +1086,9 @@ def participation_set(stmt: AnyStmt) -> frozenset[Lifeline]:
         case SelfAssignStmt(lifeline=a):
             return frozenset({a})
         case IfRecvStmt(lifeline=a, sender=b, branch_true=p1, branch_false=p2):
-            return frozenset({a, b}) | participation_set(p1) | participation_set(p2)
+            return frozenset({a, b}) | _participants(p1, memo) | _participants(p2, memo)
         case WhileRecvStmt(lifeline=a, sender=b, body=p, exit_body=q):
-            return frozenset({a, b}) | participation_set(p) | participation_set(q)
+            return frozenset({a, b}) | _participants(p, memo) | _participants(q, memo)
         case _:
             raise TypeError(f"Unknown statement type: {type(stmt).__name__}")
 

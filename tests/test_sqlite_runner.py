@@ -418,7 +418,7 @@ def test_repeated_status_updates_do_not_rewrite_the_row(tmp_path):
 
 def test_workflow_call_uses_sqlite_execution_by_default():
     wf = _two_role_branch_workflow()
-    assert wf._execution == "sqlite"
+    assert wf._rt._execution == "sqlite"
     wf.configure(timeout=10)
     assert wf(x=7) is True
 
