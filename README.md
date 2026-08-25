@@ -626,7 +626,7 @@ The formal results are described in these papers:
 - Bollig. *Deadlock-Free Parallel Regions for Projected Workflows*. Accepted
   at EXPRESS/SOS 2026. Preprint forthcoming.
 - Bollig. [Causal Past Logic for Runtime Verification of Distributed LLM Agent
-  Workflows](https://arxiv.org/abs/2605.20923). Under submission.
+  Workflows](https://arxiv.org/abs/2605.20923). Accepted at ICFEM 2026.
 
 Causal Past Logic lets a condition read distributed state that is causally
 visible at that point in the run. It works alongside what projection already
