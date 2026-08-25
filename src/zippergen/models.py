@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 import math
 from typing import Protocol
@@ -176,7 +176,7 @@ def model_invocations(
     overrides: Mapping[str, str],
     settings: Mapping[str, ModelSettings],
     *,
-    extra: Mapping[str, ModelSettings] | None = None,
+    extra: Iterable[tuple[str, ModelSettings]] = (),
 ) -> list[tuple[str, ModelSettings]]:
     """Every distinct way a model will be invoked: one spec, one set of settings.
 
@@ -187,7 +187,10 @@ def model_invocations(
     more than was tested.
 
     ``extra`` carries configurations that are named but unrouted, so checking
-    one by name exercises the settings it would actually use.
+    one by name exercises the settings it would actually use. It is a sequence
+    of pairs rather than a mapping keyed by spec, because two configurations
+    may name one model with different settings -- which is the same thing this
+    function exists to say about routed targets.
     """
 
     targets = set(overrides) | set(settings)
@@ -197,8 +200,7 @@ def model_invocations(
         pairs.append((spec, settings.get(target, ModelSettings())))
     if default_spec and not any(spec == default_spec for spec, _ in pairs):
         pairs.append((default_spec, ModelSettings()))
-    for spec, chosen in sorted((extra or {}).items()):
-        pairs.append((spec, chosen))
+    pairs.extend(extra)
     return list(dict.fromkeys(pairs))
 
 

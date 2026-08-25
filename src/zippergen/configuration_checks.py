@@ -234,14 +234,16 @@ def _model_invocations(
         )
     }
     # A configuration that is named but unrouted is still checkable by name, so
-    # it is checked with the settings it would actually use.
-    extra = {
-        str(model_configurations[name]["spec"]): model_settings_from_mapping(
-            model_configurations[name], subject=name
+    # it is checked with the settings it would actually use. One pair per
+    # configuration: two of them may name one model with different settings.
+    extra = [
+        (
+            str(model_configurations[name]["spec"]),
+            model_settings_from_mapping(model_configurations[name], subject=name),
         )
         for name in model_names
         if name in model_configurations
-    }
+    ]
     return model_invocations(
         str(resolved_models.get("default") or ""),
         dict(overrides) if isinstance(overrides, Mapping) else {},

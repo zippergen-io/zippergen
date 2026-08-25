@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from zippergen.serve import main
 from zippergen.workspace import Workspace
 
@@ -272,7 +274,7 @@ def test_a_named_but_unrouted_configuration_is_checked_with_its_settings():
         "mock",
         {},
         {},
-        extra={"local@local-main:qwen": ModelSettings(timeout=12)},
+        extra=[("local@local-main:qwen", ModelSettings(timeout=12))],
     )
 
     assert ("local@local-main:qwen", ModelSettings(timeout=12)) in pairs
@@ -291,3 +293,55 @@ def test_identical_invocations_are_checked_once():
     )
 
     assert len(pairs) == 1
+
+
+# The cases below cross the two axes that matter -- where an invocation comes
+# from (routed or named) against whether two of them share a spec -- because
+# testing one cell of that square is how a whole column went unchecked.
+
+
+@pytest.mark.parametrize("routed", [True, False])
+def test_two_invocations_on_one_spec_survive_however_they_arise(routed):
+    """Routed or merely named, one spec can still be two invocations."""
+
+    from zippergen.configuration_checks import _model_invocations
+    from zippergen.models import ModelSettings, model_settings_from_mapping
+
+    if routed:
+        resolved = {
+            "default": "openai:gpt",
+            "overrides": {"Writer": "openai:gpt", "Reviewer": "openai:gpt"},
+            "settings": {
+                "Writer": {"timeout": 1},
+                "Reviewer": {"timeout": 120},
+            },
+        }
+        pairs = _model_invocations(resolved, {}, ())
+    else:
+        resolved = {"default": "mock", "overrides": {}, "settings": {}}
+        configurations = {
+            "fast": {"spec": "openai:gpt", "timeout": "1"},
+            "slow": {"spec": "openai:gpt", "timeout": "120"},
+        }
+        pairs = _model_invocations(resolved, configurations, ("fast", "slow"))
+
+    timeouts = sorted(
+        chosen.timeout
+        for spec, chosen in pairs
+        if spec == "openai:gpt" and chosen.timeout is not None
+    )
+    assert timeouts == [1.0, 120.0]
+
+
+def test_two_named_configurations_that_agree_are_checked_once():
+    from zippergen.configuration_checks import _model_invocations
+
+    resolved = {"default": "mock", "overrides": {}, "settings": {}}
+    configurations = {
+        "a": {"spec": "openai:gpt", "timeout": "5"},
+        "b": {"spec": "openai:gpt", "timeout": "5"},
+    }
+
+    pairs = _model_invocations(resolved, configurations, ("a", "b"))
+
+    assert sum(1 for spec, _ in pairs if spec == "openai:gpt") == 1
