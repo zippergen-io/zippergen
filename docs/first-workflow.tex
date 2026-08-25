@@ -801,7 +801,7 @@ On an ordinary Linux machine:
 \begin{lstlisting}[style=shell]
 git clone https://github.com/me/email-approval.git && cd email-approval
 python3 -m venv .venv && source .venv/bin/activate
-pip install zippergen
+pip install "git+https://github.com/zippergen-io/zippergen.git"
 
 zg provider configure approval-bot telegram
 zg provider set-credential approval-bot

@@ -23,3 +23,27 @@ def test_documented_python_examples_exist():
         )
 
     assert not missing, "documented examples do not exist:\n" + "\n".join(missing)
+
+
+def test_no_document_tells_a_reader_to_install_from_pypi_yet():
+    """`pip install zippergen` fails: the package is not published.
+
+    It is the first command a reader runs, so it must work. Delete this test
+    when the name is on PyPI and the plain command is true again.
+    """
+
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1]
+    sources = [root / "README.md", *(root / "docs").glob("*.tex")]
+    sources += list((root / "docs").glob("*.md"))
+    offenders = [
+        path.relative_to(root)
+        for path in sources
+        if "pip install zippergen" in path.read_text(encoding="utf-8")
+    ]
+
+    assert not offenders, (
+        "these tell a reader to install a package that is not published: "
+        + ", ".join(str(path) for path in offenders)
+    )

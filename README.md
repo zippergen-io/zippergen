@@ -49,9 +49,20 @@ commands, and you never have to go through the agent to use them.
 
 ## Install
 
+Not on PyPI yet, so install it from this repository:
+
 ```bash
-pip install zippergen
+uv tool install "git+https://github.com/zippergen-io/zippergen.git"
 ```
+
+Or with pipx, or into a virtual environment:
+
+```bash
+pipx install "git+https://github.com/zippergen-io/zippergen.git"
+python3 -m venv .venv && .venv/bin/pip install "git+https://github.com/zippergen-io/zippergen.git"
+```
+
+This pins whatever commit is current, so rerun the same command to update.
 
 ZipperGen needs Python 3.11 or newer. It has no other dependencies. It
 installs two commands: `zippergen`, and `zg` for short.
