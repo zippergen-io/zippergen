@@ -194,6 +194,10 @@ def _render_project_configuration(renderer, report: dict) -> None:
         ],
         empty="This workflow declares no configuration.",
     )
+    # Every other family shows its own failed checks here. Without this, a
+    # declaration that could not be read rendered as "declares no
+    # configuration" -- which is the misreading this check exists to prevent.
+    _render_selected_checks(report, renderer, "configuration")
 
 
 def _render_columns_or_empty(

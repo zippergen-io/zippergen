@@ -460,6 +460,12 @@ def configuration_report(
                     fix="Fix zippergen_deployment in the workflow module.",
                 )
             )
+            # Everything below reads the module, and several of those readers
+            # parse the declaration again. A module whose declaration cannot
+            # be built is not usable for any of them, and the failure is
+            # already reported, so it is set aside here rather than raised
+            # again -- unhandled -- from somewhere further down.
+            module = None
     for item in model_rows:
         if item.get("temperature") is not None and not model_accepts_temperature(
             str(item.get("spec") or "")

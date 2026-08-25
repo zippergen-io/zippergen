@@ -1885,3 +1885,69 @@ def test_a_json_request_stays_json_when_it_writes(tmp_path, monkeypatch, capsys)
     assert payload["unset"] == []
     assert payload["configuration"]["mode"] == "live"
     assert payload["manifest"] == str(workspace.manifest_path)
+
+
+# ---------------------------------------------------------------------------
+# A declaration that cannot be read is a reported failure, not an empty one
+# ---------------------------------------------------------------------------
+
+MALFORMED_WORKFLOW = '''
+from zippergen import Lifeline, Var, workflow
+from zippergen.actions import pure
+
+Worker = Lifeline("Worker")
+out = Var("out", str)
+
+
+@pure
+def go() -> str:
+    return "ok"
+
+
+@workflow
+def broken() -> str:
+    Worker: out = go()
+    return out @ Worker
+
+
+# A declaration a person could plausibly write, and which cannot be built:
+# every field needs a prompt.
+zippergen_deployment = {
+    "description": "demo",
+    "fields": [{"name": "mailbox"}],
+}
+'''
+
+
+@pytest.fixture
+def malformed_declaration(project):
+    root, workspace = project
+    (root / "workflow.py").write_text(MALFORMED_WORKFLOW)
+    return root, workspace
+
+
+def test_a_malformed_declaration_is_reported_not_swallowed(
+    malformed_declaration, capsys
+):
+    """It used to read as "this workflow asks nothing".
+
+    `_configuration_rows` caught every exception and returned no rows, so a
+    typo in `zippergen_deployment` produced a workflow that appeared to have
+    no configuration at all, and the real TypeError never reached the person
+    who had to fix it.
+    """
+
+    assert main(["config"]) == 0
+    output = capsys.readouterr().out
+    assert "deployment declaration" in output
+    assert "TypeError" in output
+
+
+def test_a_malformed_declaration_refuses_a_readiness_gate(
+    malformed_declaration, capsys
+):
+    """`--strict` must not pass a project whose declaration cannot be read."""
+
+    assert main(["check", "--strict"]) != 0
+    output = capsys.readouterr().out
+    assert "deployment declaration" in output
